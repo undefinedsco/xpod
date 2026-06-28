@@ -8,7 +8,14 @@ export {
 } from './RdfTermSemantics';
 export { RdfQuadIndex } from './RdfQuadIndex';
 export { Rdf3xIndex } from './Rdf3xIndex';
-export { RdfTextIndex } from './RdfTextIndex';
+export { RDF_TEXT_SCHEMA_VERSION, RdfTextIndex, tokenizeNormalizedRdfText } from './RdfTextIndex';
+export {
+  createRdfEntityTextChunks,
+  createRdfEntityTextChunksFromText,
+  parseRdfTextProjectionQuads,
+  rdfTextIndexPolicyRole,
+  type TextIndexPolicyRole,
+} from './RdfTextProjection';
 export { PostgresRdfTextIndex, type PostgresRdfTextIndexOptions } from './PostgresRdfTextIndex';
 export { RdfVectorIndex } from './RdfVectorIndex';
 export { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './PostgresRdfVectorIndex';
@@ -91,6 +98,7 @@ export {
   rdfModelsBenchmarkTargetSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
+  rdfModelsSearchFusionBroadSourceCountForScale,
   runRdfModelsBenchmark,
   runRdfModelsPostgresBenchmark,
   runRdfModelsRdf3xShadowBenchmark,
@@ -169,7 +177,17 @@ export type {
   RdfIndexSpaceObject,
   RdfIndexMetrics,
   RdfIndexPutOptions,
+  RdfBoundedPath,
+  RdfBoundedPathEdge,
+  RdfBoundedPathSearchOptions,
+  RdfBoundedPathSearchResult,
   RdfBindingRow,
+  RdfMaterializedViewBindingSource,
+  RdfMaterializedViewActivationInput,
+  RdfMaterializedViewActivationResult,
+  RdfMaterializedViewBuildInput,
+  RdfMaterializedViewBuildResult,
+  RdfMaterializedViewReadResult,
   RdfConstructTemplate,
   RdfQuadJoinOptions,
   RdfQuadJoinCountOptions,
@@ -189,6 +207,11 @@ export type {
   RdfQueryPatternKey,
   RdfQueryTermPattern,
   RdfQueryVariable,
+  RdfPathEdgeDirection,
+  RdfPathSearchDirection,
+  RdfSchemaExplorerOptions,
+  RdfSchemaExplorerResult,
+  RdfSchemaExplorerTermEntry,
   RdfShadowBackfillOptions,
   RdfShadowBackfillResult,
   RdfShadowDiff,
@@ -201,10 +224,14 @@ export type {
   RdfTextIndexOptions,
   RdfTextIndexSyncLike,
   RdfTextIndexStats,
+  RdfTextRebuildStatus,
+  RdfTextRebuildStatusInput,
+  RdfTextRebuildStatusKind,
   RdfTextSearchOptions,
   RdfTextSearchPattern,
   RdfTextSearchResult,
   RdfTextSourceInput,
+  RdfTextSourceMetadata,
   RdfTextTermDocumentFrequency,
   RdfVectorChunkInput,
   RdfVectorChunkRow,
@@ -218,6 +245,9 @@ export type {
   RdfVectorSearchPattern,
   RdfVectorSearchResult,
   RdfVectorSourceInput,
+  RdfVectorSummaryLifecycleEntry,
+  RdfVectorSummaryLifecycleOptions,
+  RdfVectorSummaryMetadata,
   RdfTermKind,
   RdfTermLookup,
   RdfTermRow,

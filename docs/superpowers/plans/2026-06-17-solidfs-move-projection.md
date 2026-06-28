@@ -4,7 +4,7 @@
 
 **Goal:** Implement recoverable SolidFS file/folder move projection using the existing SolidFS journal and RDF term dictionary rewrite, without introducing a full relative-GSPO resolver.
 
-**Architecture:** Extend SolidFS change types with `moved`, let existing journal persist and replay move entries, and add an RDF engine `rewriteTerms` capability that rewrites safe URI terms at dictionary level before falling back to explicit remap/reconcile. Keep `.meta`/hydration/parser coverage as visible note-style metadata and keep index artifacts internal.
+**Architecture:** Extend SolidFS change types with `moved`, let existing journal persist and replay move entries, and add an RDF engine `rewriteTerms` capability that rewrites safe URI terms at dictionary level before falling back to explicit remap/reconcile. Keep `.meta`/hydration/reader coverage as visible note-style metadata and keep index artifacts internal.
 
 **Tech Stack:** TypeScript, Bun, Vitest, SQLite via `SqliteRuntime`, PostgreSQL/PGlite async executor, RDFJS/N3, existing SolidFS and RDF engine modules.
 
@@ -35,7 +35,7 @@ Modify these focused areas only:
 - `src/storage/rdf/PostgresRdfEngine.ts`
   - Add PostgreSQL term rewrite/remap implementation.
 - `src/solidfs/SolidFsMetaNotes.ts` (new)
-  - Build `.meta` note Turtle snippets or plain data objects for file metadata and parser coverage.
+  - Build `.meta` note Turtle snippets or plain data objects for file metadata and reader coverage.
 - `src/solidfs/WorkspacePrompt.ts` (new)
   - Produce the static workspace semantics prompt and a dynamic summary block.
 - Tests:
@@ -775,7 +775,7 @@ Expected: all pass.
 git add src/solidfs/RdfIndexSolidFsSyncer.ts tests/solidfs/RdfIndexSolidFsSyncer.test.ts src/storage/accessors/MixDataAccessor.ts
 git commit -m "🧭 Project SolidFS moves through RDF term rewrite" -m "Teach the RDF SolidFS syncer to treat moves as URI projection changes and reuse content-derived indexes unless text/vector source projection must be refreshed.
 
-Constraint: Moved content should not be reparsed as a normal update when content hash is unchanged.
+Constraint: Moved content should not be reread as a normal update when content hash is unchanged.
 Rejected: Delete and replace source for every move | loses the term dictionary write-amplification benefit.
 Confidence: medium
 Scope-risk: moderate
@@ -800,7 +800,7 @@ Create `tests/solidfs/SolidFsMetaNotes.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import { buildFileMetadataNote, buildParserCoverageNote } from '../../src/solidfs';
+import { buildFileMetadataNote, buildReaderCoverageNote } from '../../src/solidfs';
 
 describe('SolidFS .meta notes', () => {
   it('builds file metadata note triples without exposing storage secrets', () => {
@@ -823,22 +823,22 @@ describe('SolidFS .meta notes', () => {
     expect(ttl).not.toContain('cachePath');
   });
 
-  it('builds parser coverage note with partial page coverage', () => {
-    const ttl = buildParserCoverageNote({
-      subject: '#parser-pdf-v1',
+  it('builds reader coverage note with partial page coverage', () => {
+    const ttl = buildReaderCoverageNote({
+      subject: '#reader-pdf-v1',
       about: './report.pdf',
-      parserKind: 'pdf',
-      parserVersion: 'pdf-v1',
+      readerKind: 'pdf',
+      readerVersion: 'pdf-v1',
       coverageUnit: 'page',
       coveredRange: '1-12',
-      parsedUnits: 12,
+      readUnits: 12,
       totalUnits: 240,
       status: 'partial',
     });
 
-    expect(ttl).toContain('udfs:noteKind "parser-coverage"');
+    expect(ttl).toContain('udfs:noteKind "reader-coverage"');
     expect(ttl).toContain('udfs:coveredRange "1-12"');
-    expect(ttl).toContain('udfs:parsedUnits 12');
+    expect(ttl).toContain('udfs:readUnits 12');
     expect(ttl).toContain('udfs:totalUnits 240');
   });
 });
@@ -895,7 +895,7 @@ Expected: fails because files/functions do not exist.
 
 ```ts
 export type SolidFsMaterializationClass = 'byline-local' | 'placeholder-r2' | 'hydrated-r2';
-export type SolidFsParserCoverageStatus = 'none' | 'partial' | 'complete' | 'stale' | 'failed';
+export type SolidFsReaderCoverageStatus = 'none' | 'partial' | 'complete' | 'stale' | 'failed';
 
 export interface FileMetadataNoteInput {
   subject: string;
@@ -908,16 +908,16 @@ export interface FileMetadataNoteInput {
   materializationClass: SolidFsMaterializationClass;
 }
 
-export interface ParserCoverageNoteInput {
+export interface ReaderCoverageNoteInput {
   subject: string;
   about: string;
-  parserKind: string;
-  parserVersion: string;
+  readerKind: string;
+  readerVersion: string;
   coverageUnit: 'page' | 'line' | 'byte' | 'section' | 'symbol' | 'rdf-resource';
   coveredRange: string;
-  parsedUnits: number;
+  readUnits: number;
   totalUnits?: number;
-  status: SolidFsParserCoverageStatus;
+  status: SolidFsReaderCoverageStatus;
 }
 
 const PREFIXES = '@prefix dct: <http://purl.org/dc/terms/> .\n@prefix sioc: <http://rdfs.org/sioc/ns#> .\n@prefix udfs: <https://vocab.undefineds.co/udfs#> .\n\n';
@@ -937,18 +937,18 @@ export function buildFileMetadataNote(input: FileMetadataNoteInput): string {
   return `${PREFIXES}${lines.join('\n')}\n`;
 }
 
-export function buildParserCoverageNote(input: ParserCoverageNoteInput): string {
+export function buildReaderCoverageNote(input: ReaderCoverageNoteInput): string {
   const lines = [
     `${term(input.subject)} a udfs:Note ;`,
     `  sioc:about ${term(input.about)} ;`,
-    '  dct:title "Parser coverage" ;',
+    '  dct:title "Reader coverage" ;',
     `  dct:description ${literal(`Parsed ${input.coveredRange}.`)} ;`,
-    '  udfs:noteKind "parser-coverage" ;',
-    `  udfs:parserKind ${literal(input.parserKind)} ;`,
-    `  udfs:parserVersion ${literal(input.parserVersion)} ;`,
+    '  udfs:noteKind "reader-coverage" ;',
+    `  udfs:readerKind ${literal(input.readerKind)} ;`,
+    `  udfs:readerVersion ${literal(input.readerVersion)} ;`,
     `  udfs:coverageUnit ${literal(input.coverageUnit)} ;`,
     `  udfs:coveredRange ${literal(input.coveredRange)} ;`,
-    `  udfs:parsedUnits ${input.parsedUnits} ;`,
+    `  udfs:readUnits ${input.readUnits} ;`,
   ];
   if (input.totalUnits !== undefined) lines.push(`  udfs:totalUnits ${input.totalUnits} ;`);
   lines.push(`  udfs:status ${literal(input.status)} .`);
@@ -980,7 +980,7 @@ export interface WorkspaceSummaryPromptInput {
 }
 
 export function buildWorkspaceSemanticsPrompt(): string {
-  return `## Workspace Semantics\n\nYou are operating inside an Xpod SolidFS materialized workspace.\n\n- Directory entries are complete: \`ls\` and \`find\` show the workspace tree.\n- Text/by-line files are materialized locally and can be read with normal tools.\n- Large binary/media/remote-object files may appear as placeholders.\n- Placeholder metadata is available through \`.meta\` and workspace tools.\n- Do not assume placeholder bytes are the real content.\n- Hydration has cost; inspect metadata before choosing metadata, thumbnail, range-read, or full hydration.\n- Writes are tracked by the SolidFS journal and must be committed or rolled back by runtime.\n- Search/vector/index artifacts are internal; use search/parser tools rather than looking for index files.\n`;
+  return `## Workspace Semantics\n\nYou are operating inside an Xpod SolidFS materialized workspace.\n\n- Directory entries are complete: \`ls\` and \`find\` show the workspace tree.\n- Text/by-line files are materialized locally and can be read with normal tools.\n- Large binary/media/remote-object files may appear as placeholders.\n- Placeholder metadata is available through \`.meta\` and workspace tools.\n- Do not assume placeholder bytes are the real content.\n- Hydration has cost; inspect metadata before choosing metadata, thumbnail, range-read, or full hydration.\n- Writes are tracked by the SolidFS journal and must be committed or rolled back by runtime.\n- Search/vector/index artifacts are internal; use search/reader tools rather than looking for index files.\n`;
 }
 
 export function buildWorkspaceSummaryPrompt(input: WorkspaceSummaryPromptInput): string {
@@ -1025,7 +1025,7 @@ Expected: pass.
 
 ```bash
 git add src/solidfs/SolidFsMetaNotes.ts src/solidfs/WorkspacePrompt.ts src/solidfs/index.ts tests/solidfs/SolidFsMetaNotes.test.ts tests/solidfs/WorkspacePrompt.test.ts
-git commit -m "🧭 Describe SolidFS materialization for agents" -m "Add reusable .meta note and workspace prompt helpers so Agent runtime can reason about placeholders, parser coverage, and hydration cost without exposing index artifacts.
+git commit -m "🧭 Describe SolidFS materialization for agents" -m "Add reusable .meta note and workspace prompt helpers so Agent runtime can reason about placeholders, reader coverage, and hydration cost without exposing index artifacts.
 
 Constraint: .meta is visible resource description; index artifacts remain internal.
 Rejected: Auto-hydrate large files on read | hides cost and can consume unbounded disk/network.

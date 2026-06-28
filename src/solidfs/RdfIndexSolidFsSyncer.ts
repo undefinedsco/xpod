@@ -19,6 +19,8 @@ import {
   isRdfDocumentPath,
   normalizeContentType,
 } from '../storage/rdf/RdfContentTypes';
+import { createRdfEntityTextChunksFromText } from '../storage/rdf/RdfTextProjection';
+import { contentTypeForPath } from './SolidFsPathUtils';
 import type { SolidFsChange, SolidFsManifest, SolidFsSyncer } from './types';
 
 type MaybePromise<T> = T | Promise<T>;
@@ -33,6 +35,30 @@ export interface RdfIndexSolidFsSyncerOptions {
 
 export interface RdfIndexSolidFsVectorizeInput extends RdfVectorSourceInput {
   text: string;
+}
+
+export interface RdfIndexSolidFsRebuildOptions {
+  dryRun?: boolean;
+  resetDerivedIndexes?: boolean;
+}
+
+export interface RdfIndexSolidFsRebuildResult {
+  scanned: number;
+  indexedRdfDocuments: number;
+  indexedTextSources: number;
+  upToDateTextSources: number;
+  indexedVectorSources: number;
+  failed: number;
+  errors: RdfIndexSolidFsRebuildError[];
+  skipped: number;
+  dryRun: boolean;
+  resetDerivedIndexes: boolean;
+}
+
+export interface RdfIndexSolidFsRebuildError {
+  path: string;
+  source?: string;
+  message: string;
 }
 
 /**
@@ -62,6 +88,181 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     return isRdfPath(relativePath) || (needsTextSource ? isTextPath(relativePath) : false);
   }
 
+  public async rebuildWorkspace(
+    workspace: SolidFsManifest,
+    options: RdfIndexSolidFsRebuildOptions = {},
+  ): Promise<RdfIndexSolidFsRebuildResult> {
+    const dryRun = options.dryRun === true;
+    const resetDerivedIndexes = options.resetDerivedIndexes === true;
+    const result: RdfIndexSolidFsRebuildResult = {
+      scanned: 0,
+      indexedRdfDocuments: 0,
+      indexedTextSources: 0,
+      upToDateTextSources: 0,
+      indexedVectorSources: 0,
+      failed: 0,
+      errors: [],
+      skipped: 0,
+      dryRun,
+      resetDerivedIndexes,
+    };
+
+    if (resetDerivedIndexes && !dryRun) {
+      await this.textIndex?.clear();
+      await this.vectorIndex?.clear();
+    }
+
+    for (const entry of workspace.entries) {
+      result.scanned += 1;
+      const change: SolidFsChange = {
+        path: entry.path,
+        resource: entry.resource,
+        source: entry.source,
+        sourcePath: entry.sourcePath,
+        contentType: entry.contentType ?? contentTypeForPath(entry.path),
+        projection: entry.projection,
+        type: 'updated',
+        sourceVersion: entry.sourceVersion,
+      };
+      if (!this.shouldTrackPath(change.path)) {
+        result.skipped += 1;
+        continue;
+      }
+      const hasRdfTarget = Boolean(this.resolveIdentifier(change, workspace) && isRdfChange(change));
+      const hasTextTarget = Boolean(this.textIndex && isTextSearchIndexableChange(change));
+      const hasVectorTarget = Boolean(this.vectorIndex && isTextIndexableChange(change));
+      const textUpToDate = hasTextTarget && !resetDerivedIndexes
+        ? await this.isTextSourceUpToDate(change, workspace)
+        : false;
+      const shouldIndexText = hasTextTarget && !textUpToDate;
+      if (!hasRdfTarget && !hasTextTarget && !hasVectorTarget) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (textUpToDate) {
+        result.upToDateTextSources += 1;
+      }
+
+      if (dryRun) {
+        if (hasRdfTarget) {
+          result.indexedRdfDocuments += 1;
+        }
+        if (shouldIndexText) {
+          result.indexedTextSources += 1;
+        }
+        if (hasVectorTarget) {
+          result.indexedVectorSources += 1;
+        }
+        continue;
+      }
+
+      try {
+        if (textUpToDate) {
+          await this.recordTextRebuildStatus(change, workspace, 'skipped', 'source-current');
+        }
+        await this.syncRebuildChange(change, workspace, {
+          rdf: hasRdfTarget,
+          text: shouldIndexText,
+          vector: hasVectorTarget,
+        });
+        if (hasRdfTarget) {
+          result.indexedRdfDocuments += 1;
+        }
+        if (shouldIndexText) {
+          result.indexedTextSources += 1;
+          await this.recordTextRebuildStatus(change, workspace, 'indexed', 'rebuild');
+        }
+        if (hasVectorTarget) {
+          result.indexedVectorSources += 1;
+        }
+      } catch (error) {
+        result.failed += 1;
+        result.errors.push({
+          path: change.path,
+          source: this.sourceInput(change, workspace).source,
+          message: errorMessage(error),
+        });
+        if (hasTextTarget) {
+          await this.recordTextRebuildStatus(change, workspace, 'error', 'rebuild', errorMessage(error));
+        }
+      }
+    }
+
+    return result;
+  }
+
+  private async isTextSourceUpToDate(change: SolidFsChange, workspace: SolidFsManifest): Promise<boolean> {
+    if (!this.textIndex) {
+      return false;
+    }
+    const source = this.sourceInput(change, workspace);
+    if (!source.sourceVersion && !source.sourceHash) {
+      return false;
+    }
+    const current = await this.textIndex.sourceMetadata(source.source);
+    if (!current) {
+      return false;
+    }
+    return (source.sourceVersion === undefined || current.sourceVersion === source.sourceVersion)
+      && (source.sourceHash === undefined || current.sourceHash === source.sourceHash);
+  }
+
+  private async syncRebuildChange(
+    change: SolidFsChange,
+    workspace: SolidFsManifest,
+    options: {
+      rdf: boolean;
+      text: boolean;
+      vector: boolean;
+    },
+  ): Promise<void> {
+    const source = this.sourceInput(change, workspace);
+    const identifier = this.resolveIdentifier(change, workspace);
+    if (options.rdf && identifier && isRdfChange(change)) {
+      await this.index.syncLocalRdfDocument(
+        identifier,
+        guardStream(createReadStream(change.sourcePath)),
+        change.contentType,
+        source,
+      );
+    }
+
+    let text: string | undefined;
+    if (options.text || options.vector) {
+      text = await readFile(change.sourcePath, 'utf8');
+    }
+    if (options.text && this.textIndex && text !== undefined) {
+      await this.textIndex.indexText(
+        source,
+        text,
+        isRdfChange(change) ? await createRdfEntityTextChunksFromText(source, text) : undefined,
+      );
+    }
+    if (options.vector && this.vectorIndex && this.vectorizeText && text !== undefined) {
+      const chunks = await this.vectorizeText({ ...source, text });
+      await this.vectorIndex.indexVector(source, chunks);
+    }
+  }
+
+  private async recordTextRebuildStatus(
+    change: SolidFsChange,
+    workspace: SolidFsManifest,
+    status: 'indexed' | 'skipped' | 'error',
+    reason: string,
+    message?: string,
+  ): Promise<void> {
+    if (!this.textIndex) {
+      return;
+    }
+    await this.textIndex.recordRebuildStatus({
+      ...this.sourceInput(change, workspace),
+      status,
+      reason,
+      ...(message ? { message } : {}),
+    });
+  }
+
   public async sync(change: SolidFsChange, workspace: SolidFsManifest): Promise<void> {
     if (change.type === 'moved') {
       await this.syncMoved(change, workspace);
@@ -86,7 +287,7 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
       if (identifier && isRdfChange(change)) {
         await this.index.deleteLocalRdfIndex(identifier);
       }
-      if (this.textIndex && isTextIndexableChange(change)) {
+      if (this.textIndex && isTextSearchIndexableChange(change)) {
         await this.textIndex.deleteSource(source);
       }
       if (this.vectorIndex && isTextIndexableChange(change)) {
@@ -105,12 +306,18 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
       );
     }
 
-    if ((this.textIndex || this.vectorIndex) && isTextIndexableChange(change)) {
+    const textSearchIndexable = isTextSearchIndexableChange(change);
+    const vectorIndexable = isTextIndexableChange(change);
+    if ((this.textIndex && textSearchIndexable) || (this.vectorIndex && vectorIndexable)) {
       const text = await readFile(change.sourcePath, 'utf8');
-      if (this.textIndex) {
-        await this.textIndex.indexText(source, text);
+      if (this.textIndex && textSearchIndexable) {
+        await this.textIndex.indexText(
+          source,
+          text,
+          isRdfChange(change) ? await createRdfEntityTextChunksFromText(source, text) : undefined,
+        );
       }
-      if (this.vectorIndex && this.vectorizeText) {
+      if (this.vectorIndex && this.vectorizeText && vectorIndexable) {
         const chunks = await this.vectorizeText({ ...source, text });
         await this.vectorIndex.indexVector(source, chunks);
       }
@@ -122,10 +329,12 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     const previousSource = previousSourceFromChange(change, workspace);
     const previousRdf = isPreviousRdfChange(change);
     const nextRdf = isRdfChange(change);
-    const previousTextIndexable = isPreviousTextIndexableChange(change);
-    const nextTextIndexable = isTextIndexableChange(change);
+    const previousTextSearchIndexable = isPreviousTextSearchIndexableChange(change);
+    const nextTextSearchIndexable = isTextSearchIndexableChange(change);
+    const previousVectorIndexable = isPreviousTextIndexableChange(change);
+    const nextVectorIndexable = isTextIndexableChange(change);
 
-    if (!previousRdf && !nextRdf && !previousTextIndexable && !nextTextIndexable) {
+    if (!previousRdf && !nextRdf && !previousTextSearchIndexable && !nextTextSearchIndexable && !previousVectorIndexable && !nextVectorIndexable) {
       return;
     }
 
@@ -136,12 +345,22 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
         await this.index.deleteLocalRdfIndex({ path: previousSource });
       }
     } else if (!previousRdf && nextRdf) {
-      await this.syncMovedSearchIndexes(change, previousSource, nextSource, previousTextIndexable, false);
+      await this.syncMovedSearchIndexes(change, previousSource, nextSource, {
+        previousTextSearchIndexable,
+        nextTextSearchIndexable: false,
+        previousVectorIndexable,
+        nextVectorIndexable: false,
+      });
       await this.syncTrackedChange({ ...change, type: 'updated' }, workspace);
       return;
     }
 
-    await this.syncMovedSearchIndexes(change, previousSource, nextSource, previousTextIndexable, nextTextIndexable);
+    await this.syncMovedSearchIndexes(change, previousSource, nextSource, {
+      previousTextSearchIndexable,
+      nextTextSearchIndexable,
+      previousVectorIndexable,
+      nextVectorIndexable,
+    });
   }
 
   private async syncMovedRdf(
@@ -193,31 +412,41 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
     change: SolidFsChange,
     previousSource: string | undefined,
     nextSource: RdfTextSourceInput & RdfVectorSourceInput,
-    previousTextIndexable: boolean,
-    nextTextIndexable: boolean,
+    options: {
+      previousTextSearchIndexable: boolean;
+      nextTextSearchIndexable: boolean;
+      previousVectorIndexable: boolean;
+      nextVectorIndexable: boolean;
+    },
   ): Promise<void> {
     if (!this.textIndex && !this.vectorIndex) {
       return;
     }
 
     let text: string | undefined;
-    if (previousTextIndexable && previousSource) {
+    if (previousSource) {
       if (this.textIndex) {
-        await this.textIndex.deleteSource(previousSource);
+        if (options.previousTextSearchIndexable) {
+          await this.textIndex.deleteSource(previousSource);
+        }
       }
-      if (this.vectorIndex) {
+      if (this.vectorIndex && options.previousVectorIndexable) {
         await this.vectorIndex.deleteSource(previousSource);
       }
     }
-    if (!nextTextIndexable) {
+    if (!options.nextTextSearchIndexable && !options.nextVectorIndexable) {
       return;
     }
 
-    if (this.textIndex) {
+    if (this.textIndex && options.nextTextSearchIndexable) {
       text ??= await readFile(change.sourcePath, 'utf8');
-      await this.textIndex.indexText(nextSource, text);
+      await this.textIndex.indexText(
+        nextSource,
+        text,
+        isRdfChange(change) ? await createRdfEntityTextChunksFromText(nextSource, text) : undefined,
+      );
     }
-    if (this.vectorIndex && this.vectorizeText) {
+    if (this.vectorIndex && this.vectorizeText && options.nextVectorIndexable) {
       text ??= await readFile(change.sourcePath, 'utf8');
       const chunks = await this.vectorizeText({ ...nextSource, text });
       await this.vectorIndex.indexVector(nextSource, chunks);
@@ -231,8 +460,13 @@ export class RdfIndexSolidFsSyncer implements SolidFsSyncer {
       localPath: change.path.split(path.sep).join('/'),
       contentType: change.contentType,
       sourceVersion: change.sourceVersion,
+      sourceHash: change.contentHash,
     };
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 type RdfTermRewriteCapable = {
@@ -283,6 +517,10 @@ function isTextIndexableChange(change: SolidFsChange): boolean {
   return isLineAddressableRdfChange(change) || isTextChange(change);
 }
 
+function isTextSearchIndexableChange(change: SolidFsChange): boolean {
+  return isRdfChange(change) || isTextChange(change);
+}
+
 function isTrackedChange(change: SolidFsChange): boolean {
   return isRdfChange(change) || isTextChange(change);
 }
@@ -313,6 +551,10 @@ function isPreviousTextChange(change: SolidFsChange): boolean {
 
 function isPreviousTextIndexableChange(change: SolidFsChange): boolean {
   return isPreviousLineAddressableRdfChange(change) || isPreviousTextChange(change);
+}
+
+function isPreviousTextSearchIndexableChange(change: SolidFsChange): boolean {
+  return isPreviousRdfChange(change) || isPreviousTextChange(change);
 }
 
 function isRdfPath(filePath: string): boolean {

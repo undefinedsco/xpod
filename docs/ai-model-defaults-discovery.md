@@ -62,7 +62,7 @@ Recommended defaults:
 | --- | --- | --- |
 | reader/OCR | Recommend upgrade, require user confirmation | Reader cache can be rebuilt and behavior drift is acceptable when visible. |
 | chat | Recommend upgrade, require user confirmation | Behavior drift affects answers and agent tone. |
-| embedding | Pinned or compatible only | Changing model changes vector space and requires re-indexing or parallel indexes. |
+| embedding | Recommend upgrade, require user confirmation and migration plan | Changing model changes vector space, so switching must trigger re-indexing or a parallel index profile. |
 | runtime/coding agent | Pinned | Execution behavior and tool-use semantics can drift. |
 | custom provider | Pinned | Discovery cannot safely infer provider semantics. |
 
@@ -127,6 +127,11 @@ interface ModelDefaultChangeAudit {
 ## Runtime Resolution
 
 Every execution must record the concrete model that was actually used.
+Model resolution returns provider/model/policy metadata and, when needed, a
+`credentialId`; it does not return raw secrets. Reader and embedding execution
+must resolve the raw secret only at invocation time through the host
+`CredentialResolver` defined in
+[Extension Runtime and Credential Resolution](extension-runtime-and-credential-resolution.md).
 
 ```ts
 interface ResolvedModelUse {
@@ -165,7 +170,11 @@ Allowed strategies:
    profile.
 3. Use both profiles temporarily during migration, but report mixed coverage.
 
-Do not silently change `embeddingModel` for an existing workspace or Pod.
+Secretary may recommend embedding upgrades the same way it recommends reader/chat
+upgrades, but the recommendation must include the index impact and migration
+choice. Do not silently change `embeddingModel` for an existing workspace or
+Pod. User approval should update the selected embedding model and create or
+schedule the required migration/parallel-index work.
 
 ## Suggested Model Metadata
 
@@ -221,6 +230,11 @@ The user's Pod stores:
 - credentials;
 - default policy and audit records if needed.
 
+Pod settings are the authority for Provider / Model / Credential resources, but
+runtime records, reader cache keys, discovery results, and embedding index
+profiles should store only provider/model ids and `credentialId`, never the raw
+`apiKey` / token value.
+
 The catalog/discovery layer stores or derives:
 
 - known provider aliases;
@@ -242,7 +256,7 @@ Catalog/discovery data is rebuildable. Pod settings are user authority.
 4. User approval writes the selected model/default into the Pod.
 5. Runtime records the concrete model used for every run, reader cache, and
    embedding index.
-6. Embedding model changes require explicit migration or a parallel index
-   profile.
+6. Embedding model changes can be recommended to users, but applying them
+   requires explicit migration or a parallel index profile.
 7. Historical runs and cache/index entries remain explainable after provider
    catalog changes.

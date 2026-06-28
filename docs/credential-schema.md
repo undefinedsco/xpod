@@ -1,5 +1,14 @@
 # Credential Schema
 
+> **状态：历史 schema 说明 / 非当前建模权威。** 本文保留早期 `udfs:`
+> Credential vocabulary 的设计背景。当前业务建模权威是 `@undefineds.co/models`
+> 的 `credentialResource` / `aiProviderResource` / `aiModelResource`，路径和 id
+> 规则见 [Solid / Pod 建模约定](solid-modeling.md)。Reader、embedding、Agent
+> runtime 等执行路径只在 Pod 中持久化 provider / model / `credentialId`；原始
+> `apiKey` / token 只能由
+> [Extension Runtime and Credential Resolution](extension-runtime-and-credential-resolution.md)
+> 的 `CredentialResolver` 在执行时读取进内存，不应写入 Run、cache、索引或日志。
+
 本文档定义了 Xpod 中用于存储用户密钥和凭据的统一 Schema，遵循 RDF Schema 标准，并复用 W3C Security Vocabulary 中已定义的属性。
 
 ## 命名空间

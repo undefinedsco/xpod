@@ -1,7 +1,14 @@
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, afterEach, beforeEach } from 'vitest';
-import { RdfTextIndex } from '../../../src/storage/rdf';
+import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
+import { DataFactory } from 'n3';
+import {
+  RdfTextIndex,
+  createRdfEntityTextChunks,
+  createRdfEntityTextChunksFromText,
+  rdfTextIndexPolicyRole,
+  tokenizeNormalizedRdfText,
+} from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 
 describe('RdfTextIndex', () => {
@@ -16,6 +23,743 @@ describe('RdfTextIndex', () => {
   afterEach(() => {
     index.close();
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('records the text index schema version idempotently', () => {
+    expect(index.schemaVersion()).toBe(2);
+
+    index.close();
+    index.open();
+
+    expect(index.schemaVersion()).toBe(2);
+  });
+
+  it('creates structural source path indexes for subtree filtering', () => {
+    const db = (index as unknown as {
+      requireDb(): {
+        prepare<T>(sql: string): { all(...params: unknown[]): T[] };
+      };
+    }).requireDb();
+
+    const indexes = db.prepare<{ name: string }>('PRAGMA index_list(rdf_text_sources)').all().map((row) => row.name);
+
+    expect(indexes).toEqual(expect.arrayContaining([
+      'rdf_text_sources_local_path',
+      'rdf_text_sources_workspace_local_path',
+    ]));
+  });
+
+  it('upgrades legacy text entity tables with provenance columns on open', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'legacy-text.sqlite');
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE rdf_text_entities (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity TEXT NOT NULL,
+          source_id INTEGER NOT NULL,
+          chunk_id INTEGER NOT NULL,
+          predicate TEXT,
+          label TEXT,
+          occurrences INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+      `);
+    } finally {
+      db.close();
+    }
+
+    const legacyIndex = new RdfTextIndex({ path: dbPath });
+    legacyIndex.open();
+    try {
+      const columns = createSqliteRuntime().openDatabase(dbPath);
+      try {
+        expect(columns.prepare<{ name: string }>('PRAGMA table_info(rdf_text_entities)').all().map((column) => column.name))
+          .toEqual(expect.arrayContaining(['value', 'datatype', 'language', 'policy_role']));
+      } finally {
+        columns.close();
+      }
+
+      legacyIndex.indexText({
+        source: 'https://pod.example/alice/data/legacy.ttl',
+        workspace: 'https://pod.example/alice/',
+        localPath: 'data/legacy.ttl',
+        contentType: 'text/turtle',
+      }, 'ignored', [{
+        chunkKey: 'legacy',
+        ordinal: 0,
+        level: 0,
+        content: 'legacy provenance',
+        startOffset: 0,
+        endOffset: 17,
+        entities: [{
+          entity: 'https://pod.example/alice/data/legacy.ttl#task',
+          predicate: 'https://schema.org/description',
+          value: 'legacy provenance',
+          datatype: 'http://www.w3.org/2001/XMLSchema#string',
+          policyRole: 'searchableText',
+        }],
+      }]);
+      expect(legacyIndex.search({ query: 'legacy' })[0].entities[0]).toMatchObject({
+        value: 'legacy provenance',
+        datatype: 'http://www.w3.org/2001/XMLSchema#string',
+        policyRole: 'searchableText',
+      });
+    } finally {
+      legacyIndex.close();
+    }
+  });
+
+  it('persists per-source rebuild status for diagnostics', () => {
+    const source = 'https://pod.example/alice/docs/rebuild.md';
+
+    index.recordRebuildStatus({
+      source,
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/rebuild.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'v1',
+      status: 'indexed',
+      reason: 'full-rebuild',
+    });
+    expect(index.rebuildStatus(source)).toMatchObject({
+      source,
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/rebuild.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'v1',
+      status: 'indexed',
+      reason: 'full-rebuild',
+    });
+
+    index.recordRebuildStatus({
+      source,
+      workspace: 'https://pod.example/alice/',
+      status: 'error',
+      message: 'failed to read source',
+    });
+    expect(index.rebuildStatus(source)).toMatchObject({
+      source,
+      status: 'error',
+      message: 'failed to read source',
+    });
+  });
+
+  it('classifies RDF text index policy roles before projection', () => {
+    expect(rdfTextIndexPolicyRole('https://schema.org/name')).toBe('searchableText');
+    expect(rdfTextIndexPolicyRole('https://example.test/apiKey')).toBe('sensitiveText');
+    expect(rdfTextIndexPolicyRole('http://www.w3.org/ns/auth/acl#accessTo')).toBe('system');
+    expect(rdfTextIndexPolicyRole('https://vocab.xpod.dev/credential#label')).toBe('system');
+    expect(rdfTextIndexPolicyRole('https://vocab.xpod.dev/ai#label')).toBe('system');
+    expect(rdfTextIndexPolicyRole('https://schema.org/priority')).toBe('structured');
+    expect(rdfTextIndexPolicyRole('https://schema.org/knows')).toBe('relation');
+    expect(rdfTextIndexPolicyRole('https://example.test/customerInternalMemo')).toBe('displayOnlyText');
+  });
+
+  it('projects RDF entity literals without indexing raw RDF syntax or sensitive fields', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      source: 'https://pod.example/alice/data/profile.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'data/profile.ttl',
+      contentType: 'text/turtle',
+    };
+    const subject = namedNode('https://pod.example/alice/data/profile.ttl#me');
+    const chunks = createRdfEntityTextChunks(source, [
+      quad(subject, namedNode('https://schema.org/name'), literal('Alice Searchable')),
+      quad(subject, namedNode('https://schema.org/description'), literal('中文全文索引可检索')),
+      quad(subject, namedNode('https://example.test/privateApiKey'), literal('sk-secret-value')),
+      quad(subject, namedNode('https://example.test/internalCode'), literal('internal hidden value')),
+      quad(subject, namedNode('https://schema.org/knows'), namedNode('https://schema.org/Person')),
+    ]);
+
+    index.indexText(source, '@prefix schema: <https://schema.org/> .', chunks);
+
+    expect(index.search({ query: 'alice searchable' })).toMatchObject([
+      {
+        source: source.source,
+        content: expect.stringContaining('Alice Searchable'),
+        entities: [
+          { entity: subject.value, predicate: 'https://schema.org/description', occurrences: 1 },
+          { entity: subject.value, predicate: 'https://schema.org/name', occurrences: 1 },
+        ],
+      },
+    ]);
+    expect(index.search({ query: '全文索引' })).toHaveLength(1);
+    expect(index.search({ query: 'schema.org' })).toEqual([]);
+    expect(index.search({ query: 'sk-secret-value' })).toEqual([]);
+    expect(index.search({ query: 'internal hidden value' })).toEqual([]);
+  });
+
+  it('indexes policy-allowed RDF string literals beyond name and description', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      source: 'https://pod.example/alice/data/policy-literals.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'data/policy-literals.ttl',
+      contentType: 'text/turtle',
+    };
+    const subject = namedNode('https://pod.example/alice/data/policy-literals.ttl#note');
+    const chunks = createRdfEntityTextChunks(source, [
+      quad(subject, namedNode('https://schema.org/comment'), literal('allowed comment marker')),
+      quad(subject, namedNode('https://schema.org/priority'), literal('urgent structured marker')),
+      quad(subject, namedNode('https://example.test/customerInternalMemo'), literal('display-only memo marker')),
+      quad(subject, namedNode('https://example.test/accessToken'), literal('secret token marker')),
+    ]);
+
+    index.indexText(source, 'ignored raw rdf text', chunks);
+
+    expect(index.search({ query: 'allowed comment marker' })).toMatchObject([
+      {
+        entities: [
+          {
+            entity: subject.value,
+            predicate: 'https://schema.org/comment',
+            value: 'allowed comment marker',
+            policyRole: 'searchableText',
+          },
+        ],
+      },
+    ]);
+    expect(index.search({ query: 'urgent structured marker' })).toEqual([]);
+    expect(index.search({ query: 'display-only memo marker' })).toEqual([]);
+    expect(index.search({ query: 'secret token marker' })).toEqual([]);
+  });
+
+  it('produces equivalent RDF entity text projection across RDF syntaxes', async () => {
+    const source = 'https://pod.example/alice/data/equivalent.ttl';
+    const subject = `${source}#task`;
+    const workspace = 'https://pod.example/alice/';
+    const content = 'description: 中文等价\nname: Equivalent Task';
+    const expected = {
+      chunkKey: expect.stringMatching(/^[a-f0-9]{24}$/),
+      ordinal: 0,
+      level: 0,
+      heading: 'Equivalent Task',
+      path: [],
+      content,
+      startOffset: 0,
+      endOffset: content.length,
+      entities: [
+        {
+          entity: subject,
+          predicate: 'https://schema.org/description',
+          value: '中文等价',
+          datatype: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString',
+          language: 'zh',
+          policyRole: 'searchableText',
+        },
+        {
+          entity: subject,
+          predicate: 'https://schema.org/name',
+          value: 'Equivalent Task',
+          datatype: 'http://www.w3.org/2001/XMLSchema#string',
+          language: undefined,
+          policyRole: 'searchableText',
+        },
+      ],
+    };
+    const cases = [
+      {
+        localPath: 'data/equivalent.ttl',
+        contentType: 'text/turtle',
+        text: `
+          @prefix schema: <https://schema.org/> .
+          <#task> schema:name "Equivalent Task" ;
+            schema:description "中文等价"@zh .
+        `,
+      },
+      {
+        localPath: 'data/equivalent.nt',
+        contentType: 'application/n-triples',
+        text: `
+          <${subject}> <https://schema.org/name> "Equivalent Task" .
+          <${subject}> <https://schema.org/description> "中文等价"@zh .
+        `,
+      },
+      {
+        localPath: 'data/equivalent.trig',
+        contentType: 'application/trig',
+        text: `
+          @prefix schema: <https://schema.org/> .
+          { <#task> schema:description "中文等价"@zh ; schema:name "Equivalent Task" . }
+        `,
+      },
+      {
+        localPath: 'data/equivalent.jsonld',
+        contentType: 'application/ld+json',
+        text: JSON.stringify({
+          '@id': subject,
+          'https://schema.org/name': 'Equivalent Task',
+          'https://schema.org/description': { '@value': '中文等价', '@language': 'zh' },
+        }),
+      },
+      {
+        localPath: 'data/equivalent.rdf',
+        contentType: 'application/rdf+xml',
+        text: `
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+                   xmlns:schema="https://schema.org/">
+            <rdf:Description rdf:about="${subject}">
+              <schema:name>Equivalent Task</schema:name>
+              <schema:description xml:lang="zh">中文等价</schema:description>
+            </rdf:Description>
+          </rdf:RDF>
+        `,
+      },
+    ];
+
+    for (const syntax of cases) {
+      await expect(createRdfEntityTextChunksFromText({
+        source,
+        workspace,
+        localPath: syntax.localPath,
+        contentType: syntax.contentType,
+      }, syntax.text)).resolves.toMatchObject([expected]);
+    }
+  });
+
+  it('does not index known credential or provider config namespaces even when the local name is textual', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      source: 'https://pod.example/alice/settings/credentials.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'settings/credentials.ttl',
+      contentType: 'text/turtle',
+    };
+    const agent = namedNode('https://pod.example/alice/settings/credentials.ttl#agent');
+    const credential = namedNode('https://pod.example/alice/settings/credentials.ttl#cred');
+    const provider = namedNode('https://pod.example/alice/settings/providers.ttl#openai');
+    const chunks = createRdfEntityTextChunks(source, [
+      quad(agent, namedNode('https://schema.org/name'), literal('Visible Agent')),
+      quad(credential, namedNode('https://vocab.xpod.dev/credential#label'), literal('Personal OpenAI Credential')),
+      quad(provider, namedNode('https://vocab.xpod.dev/ai#label'), literal('OpenAI Provider Label')),
+    ]);
+
+    index.indexText(source, 'ignored raw rdf text', chunks);
+
+    expect(index.search({ query: 'visible agent' })).toHaveLength(1);
+    expect(index.search({ query: 'personal openai credential' })).toEqual([]);
+    expect(index.search({ query: 'provider label' })).toEqual([]);
+  });
+
+  it('boosts RDF entity name/title fields above repeated body-only matches', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      source: 'https://pod.example/alice/data/entities.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'data/entities.ttl',
+      contentType: 'text/turtle',
+    };
+    const bodyOnly = namedNode('https://pod.example/alice/data/entities.ttl#body');
+    const titled = namedNode('https://pod.example/alice/data/entities.ttl#title');
+    const chunks = createRdfEntityTextChunks(source, [
+      quad(bodyOnly, namedNode('https://schema.org/description'), literal('alpha alpha alpha alpha alpha body')),
+      quad(titled, namedNode('https://schema.org/name'), literal('alpha title')),
+    ]);
+
+    index.indexText(source, 'ignored raw rdf text', chunks);
+
+    const results = index.search({ query: 'alpha', limit: 2 });
+    expect(results.map((result) => result.entities[0]?.entity)).toEqual([
+      titled.value,
+      bodyOnly.value,
+    ]);
+    expect(results[0].heading).toBe('alpha title');
+    expect(results[0].score).toBeGreaterThan(results[1].score);
+  });
+
+  it('preserves RDF literal provenance and policy role on entity text mentions', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      source: 'https://pod.example/alice/data/provenance.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'data/provenance.ttl',
+      contentType: 'text/turtle',
+    };
+    const subject = namedNode('https://pod.example/alice/data/provenance.ttl#task');
+    const chunks = createRdfEntityTextChunks(source, [
+      quad(subject, namedNode('https://schema.org/description'), literal('中文 provenance', 'zh')),
+    ]);
+
+    index.indexText(source, 'ignored raw rdf text', chunks);
+
+    expect(index.search({ query: 'provenance' })[0].entities).toEqual([
+      expect.objectContaining({
+        entity: subject.value,
+        predicate: 'https://schema.org/description',
+        value: '中文 provenance',
+        datatype: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString',
+        language: 'zh',
+        policyRole: 'searchableText',
+      }),
+    ]);
+  });
+
+  it('hydrates entity mentions in one batch for normal search result sets', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      source: 'https://pod.example/alice/data/batch-hydration.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'data/batch-hydration.ttl',
+      contentType: 'text/turtle',
+    };
+    const first = namedNode('https://pod.example/alice/data/batch-hydration.ttl#first');
+    const second = namedNode('https://pod.example/alice/data/batch-hydration.ttl#second');
+    const third = namedNode('https://pod.example/alice/data/batch-hydration.ttl#third');
+
+    index.indexText(source, 'ignored raw rdf text', createRdfEntityTextChunks(source, [
+      quad(first, namedNode('https://schema.org/name'), literal('shared batch alpha one')),
+      quad(second, namedNode('https://schema.org/name'), literal('shared batch alpha two')),
+      quad(third, namedNode('https://schema.org/name'), literal('shared batch alpha three')),
+    ]));
+
+    const batchHydrate = vi.spyOn(index as unknown as {
+      entitiesForChunks(chunkIds: number[]): Map<number, unknown[]>;
+    }, 'entitiesForChunks');
+    const singleHydrate = vi.spyOn(index as unknown as {
+      entitiesForChunk(chunkId: number): unknown[];
+    }, 'entitiesForChunk');
+
+    const results = index.search({ query: 'shared batch alpha', limit: 3 });
+
+    expect(results).toHaveLength(3);
+    expect(results.map((result) => result.entities[0]?.entity)).toEqual([
+      first.value,
+      second.value,
+      third.value,
+    ]);
+    expect(batchHydrate).toHaveBeenCalledTimes(1);
+    expect(batchHydrate.mock.calls[0]?.[0]).toHaveLength(3);
+    expect(singleHydrate).not.toHaveBeenCalled();
+  });
+
+  it('exposes internal source and retrieval point identity for entity and file chunks', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const entitySource = {
+      sourceKey: 'source-node:entity-identity',
+      source: 'https://pod.example/alice/data/identity.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'data/identity.ttl',
+      contentType: 'text/turtle',
+    };
+    const subject = namedNode('https://pod.example/alice/data/identity.ttl#task');
+    const chunks = createRdfEntityTextChunks(entitySource, [
+      quad(subject, namedNode('https://schema.org/description'), literal('entity retrieval identity marker')),
+    ]);
+
+    index.indexText(entitySource, 'ignored raw rdf text', chunks);
+
+    const entityResult = index.search({ query: 'entity retrieval identity' })[0];
+    expect(entityResult).toMatchObject({
+      sourceKey: entitySource.sourceKey,
+      retrievalPointKey: entityResult.chunkKey,
+      retrievalKind: 'entity-card',
+    });
+
+    const fileSource = {
+      sourceKey: 'source-node:file-identity',
+      source: 'https://pod.example/alice/docs/identity.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/identity.md',
+      contentType: 'text/markdown',
+    };
+    index.indexText(fileSource, '# Identity\n\nfile retrieval marker');
+
+    const fileResult = index.search({ query: 'file retrieval marker' })[0];
+    expect(fileResult).toMatchObject({
+      sourceKey: fileSource.sourceKey,
+      retrievalPointKey: fileResult.chunkKey,
+      retrievalKind: 'file-chunk',
+    });
+  });
+
+  it('moves a text source locator without changing source or retrieval point identity', () => {
+    const source = {
+      sourceKey: 'source-node:moved-guide',
+      source: 'https://pod.example/alice/docs/old-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/old-guide.md',
+      contentType: 'text/markdown',
+      sourceVersion: 'v1',
+      sourceHash: 'content-hash-1',
+    };
+    index.indexText(source, '# Guide\n\nmove identity marker');
+    const before = index.search({ query: 'move identity marker' })[0];
+
+    expect(index.moveSource(source.source, {
+      source: 'https://pod.example/alice/archive/new-guide.md',
+      workspace: source.workspace,
+      localPath: 'archive/new-guide.md',
+      contentType: source.contentType,
+      sourceVersion: 'v2',
+      sourceHash: source.sourceHash,
+    })).toBe(1);
+
+    expect(index.sourceMetadata(source.source)).toBeUndefined();
+    expect(index.sourceMetadata('https://pod.example/alice/archive/new-guide.md')).toMatchObject({
+      sourceKey: source.sourceKey,
+      source: 'https://pod.example/alice/archive/new-guide.md',
+      localPath: 'archive/new-guide.md',
+      sourceVersion: 'v2',
+      sourceHash: source.sourceHash,
+    });
+    expect(index.search({ query: 'move identity marker', source: source.source })).toEqual([]);
+
+    const after = index.search({ query: 'move identity marker' })[0];
+    expect(after).toMatchObject({
+      sourceKey: source.sourceKey,
+      source: 'https://pod.example/alice/archive/new-guide.md',
+      localPath: 'archive/new-guide.md',
+      chunkKey: before.chunkKey,
+      retrievalPointKey: before.retrievalPointKey,
+      retrievalKind: 'file-chunk',
+    });
+  });
+
+  it('does not rewrite content chunks or term postings when only the source path changes', () => {
+    const source = {
+      sourceKey: 'source-node:weak-path-guide',
+      source: 'https://pod.example/alice/docs/weak-path.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/weak-path.md',
+      contentType: 'text/markdown',
+      sourceHash: 'content-hash-weak-path',
+    };
+    index.indexText(source, '# Guide\n\nweak path move marker');
+    const db = (index as unknown as {
+      requireDb(): {
+        prepare<T>(sql: string): {
+          get(...params: unknown[]): T | undefined;
+          all(...params: unknown[]): T[];
+        };
+      };
+    }).requireDb();
+    const beforeChunk = db.prepare<{ id: number; updated_at: string }>(`
+      SELECT chunk.id, chunk.updated_at
+      FROM rdf_text_chunks chunk
+      JOIN rdf_text_sources source ON source.id = chunk.source_id
+      WHERE source.source = ?
+    `).get(source.source);
+    const beforeTermIds = db.prepare<{ id: number }>(`
+      SELECT term.id
+      FROM rdf_text_terms term
+      JOIN rdf_text_chunks chunk ON chunk.id = term.chunk_id
+      JOIN rdf_text_sources source ON source.id = chunk.source_id
+      WHERE source.source = ?
+      ORDER BY term.id ASC
+    `).all(source.source).map((row) => row.id);
+
+    expect(index.moveSource(source.source, {
+      source: 'https://pod.example/alice/archive/weak-path.md',
+      workspace: source.workspace,
+      localPath: 'archive/weak-path.md',
+      contentType: source.contentType,
+      sourceHash: source.sourceHash,
+    })).toBe(1);
+
+    const afterChunk = db.prepare<{ id: number; updated_at: string }>(`
+      SELECT chunk.id, chunk.updated_at
+      FROM rdf_text_chunks chunk
+      JOIN rdf_text_sources source ON source.id = chunk.source_id
+      WHERE source.source = ?
+    `).get('https://pod.example/alice/archive/weak-path.md');
+    const afterTermIds = db.prepare<{ id: number }>(`
+      SELECT term.id
+      FROM rdf_text_terms term
+      JOIN rdf_text_chunks chunk ON chunk.id = term.chunk_id
+      JOIN rdf_text_sources source ON source.id = chunk.source_id
+      WHERE source.source = ?
+      ORDER BY term.id ASC
+    `).all('https://pod.example/alice/archive/weak-path.md').map((row) => row.id);
+
+    expect(afterChunk).toEqual(beforeChunk);
+    expect(afterTermIds).toEqual(beforeTermIds);
+  });
+
+  it('filters text search by local path subtree after a source move', () => {
+    const source = {
+      sourceKey: 'source-node:subtree-guide',
+      source: 'https://pod.example/alice/docs/guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/guide.md',
+      contentType: 'text/markdown',
+    };
+    index.indexText(source, '# Guide\n\nsubtree identity marker');
+    const before = index.search({
+      query: 'subtree identity',
+      workspace: source.workspace,
+      localPathPrefix: 'docs/',
+    });
+    expect(before.map((result) => result.sourceKey)).toEqual([source.sourceKey]);
+
+    expect(index.moveSource(source.source, {
+      source: 'https://pod.example/alice/archive/guide.md',
+      workspace: source.workspace,
+      localPath: 'archive/guide.md',
+      contentType: source.contentType,
+    })).toBe(1);
+
+    expect(index.search({
+      query: 'subtree identity',
+      workspace: source.workspace,
+      localPathPrefix: 'docs/',
+    })).toEqual([]);
+    const after = index.search({
+      query: 'subtree identity',
+      workspace: source.workspace,
+      localPathPrefix: 'archive/',
+    });
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      sourceKey: source.sourceKey,
+      source: 'https://pod.example/alice/archive/guide.md',
+      localPath: 'archive/guide.md',
+      chunkKey: before[0].chunkKey,
+      retrievalPointKey: before[0].retrievalPointKey,
+    });
+  });
+
+  it('records oversized source text as skipped instead of silently truncating', () => {
+    index.close();
+    index = new RdfTextIndex({ path: ':memory:', maxSourceBytes: 8 });
+    index.open();
+    const source = {
+      source: 'https://pod.example/alice/docs/too-large.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/too-large.md',
+      contentType: 'text/markdown',
+    };
+
+    index.indexText(source, 'alpha beta gamma');
+
+    expect(index.search({ query: 'alpha' })).toEqual([]);
+    expect(index.stats()).toMatchObject({ sourceCount: 0, chunkCount: 0 });
+    expect(index.rebuildStatus(source.source)).toMatchObject({
+      source: source.source,
+      workspace: source.workspace,
+      status: 'skipped',
+      reason: 'maxSourceBytes',
+      message: 'source text is 16 bytes; maxSourceBytes is 8',
+    });
+  });
+
+  it('records capped chunk indexing when a source exceeds maxChunksPerSource', () => {
+    index.close();
+    index = new RdfTextIndex({ path: ':memory:', maxChunksPerSource: 1 });
+    index.open();
+    const source = {
+      source: 'https://pod.example/alice/docs/chunk-budget.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/chunk-budget.md',
+      contentType: 'text/markdown',
+    };
+
+    index.indexText(source, 'ignored', [
+      {
+        chunkKey: 'kept',
+        ordinal: 0,
+        level: 0,
+        content: 'alpha kept chunk',
+        startOffset: 0,
+        endOffset: 16,
+      },
+      {
+        chunkKey: 'capped-out',
+        ordinal: 1,
+        level: 0,
+        content: 'beta capped chunk',
+        startOffset: 17,
+        endOffset: 34,
+      },
+    ]);
+
+    expect(index.search({ query: 'alpha' }).map((result) => result.chunkKey)).toEqual(['kept']);
+    expect(index.search({ query: 'beta' })).toEqual([]);
+    expect(index.stats()).toMatchObject({ sourceCount: 1, chunkCount: 1 });
+    expect(index.rebuildStatus(source.source)).toMatchObject({
+      status: 'capped',
+      reason: 'maxChunksPerSource',
+      message: 'source produced 2 chunks; maxChunksPerSource is 1',
+    });
+  });
+
+  it('projects long RDF literal fields as bounded field chunks instead of entity-card body', () => {
+    const { namedNode, literal, quad } = DataFactory;
+    const source = {
+      source: 'https://pod.example/alice/data/long-field.ttl',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'data/long-field.ttl',
+      contentType: 'text/turtle',
+    };
+    const subject = namedNode('https://pod.example/alice/data/long-field.ttl#task');
+    const chunks = createRdfEntityTextChunks(source, [
+      quad(subject, namedNode('https://schema.org/name'), literal('Long Field Task')),
+      quad(subject, namedNode('https://schema.org/description'), literal('long literal marker that should be field chunked')),
+    ], { maxFieldBytes: 16 });
+
+    expect(chunks.map((chunk) => ({
+      kind: chunk.retrievalKind,
+      content: chunk.content,
+    }))).toEqual([
+      {
+        kind: 'entity-card',
+        content: 'name: Long Field Task',
+      },
+      {
+        kind: 'field-chunk',
+        content: 'description: long literal marker that should be field chunked',
+      },
+    ]);
+
+    index.indexText(source, 'ignored raw rdf text', chunks);
+
+    expect(index.search({ query: 'long field task' })).toMatchObject([
+      { retrievalKind: 'entity-card' },
+    ]);
+    expect(index.search({ query: 'long literal marker' })).toMatchObject([
+      {
+        retrievalKind: 'field-chunk',
+        entities: [
+          {
+            entity: subject.value,
+            predicate: 'https://schema.org/description',
+            value: 'long literal marker that should be field chunked',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('projects folder metadata as a folder-card retrieval point', () => {
+    const source = {
+      sourceKey: 'source-node:docs-folder',
+      source: 'https://pod.example/alice/docs/',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/',
+      contentType: 'inode/directory',
+    };
+    const text = 'Docs folder contains runtime notes and launch checklists.';
+
+    index.indexText(source, text);
+
+    const results = index.search({ query: 'runtime notes' });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      sourceKey: source.sourceKey,
+      source: source.source,
+      localPath: 'docs/',
+      retrievalKind: 'folder-card',
+      heading: 'docs',
+      path: ['docs'],
+      content: text,
+      startOffset: 0,
+      endOffset: text.length,
+    });
   });
 
   it('indexes markdown heading chunks with deterministic source offsets', () => {
@@ -62,6 +806,131 @@ describe('RdfTextIndex', () => {
       sourceCount: 1,
       chunkCount: 3,
     });
+  });
+
+  it('boosts heading matches above repeated body-only matches', () => {
+    index.indexText({
+      source: 'https://pod.example/alice/docs/body.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/body.md',
+      contentType: 'text/markdown',
+    }, [
+      '# Body',
+      '',
+      'alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha',
+    ].join('\n'));
+    index.indexText({
+      source: 'https://pod.example/alice/docs/title.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/title.md',
+      contentType: 'text/markdown',
+    }, [
+      '# Alpha',
+      '',
+      'short body',
+    ].join('\n'));
+
+    const results = index.search({ query: 'alpha', limit: 2 });
+
+    expect(results.map((result) => result.localPath)).toEqual([
+      'docs/title.md',
+      'docs/body.md',
+    ]);
+    expect(results[0].score).toBeGreaterThan(results[1].score);
+    expect(results[0].scoreComponents).toMatchObject({
+      sourceType: 'text',
+      algorithm: 'occurrence-heading-boost',
+      normalizedQuery: 'alpha',
+      occurrenceScore: 1,
+      headingBoost: 100,
+    });
+    expect(results[0].scoreComponents?.score).toBe(results[0].score);
+    expect(results[1].scoreComponents).toMatchObject({
+      sourceType: 'text',
+      algorithm: 'occurrence-heading-boost',
+      normalizedQuery: 'alpha',
+      occurrenceScore: 10,
+      headingBoost: 0,
+    });
+    expect(results[1].scoreComponents?.score).toBe(results[1].score);
+  });
+
+  it('limits text search results per source before applying the global window', () => {
+    index.indexText({
+      source: 'https://pod.example/alice/docs/a.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/a.md',
+      contentType: 'text/markdown',
+    }, 'ignored', [
+      {
+        chunkKey: 'a-0',
+        ordinal: 0,
+        level: 1,
+        content: 'alpha first chunk',
+        startOffset: 0,
+        endOffset: 17,
+      },
+      {
+        chunkKey: 'a-1',
+        ordinal: 1,
+        level: 1,
+        content: 'alpha second chunk',
+        startOffset: 18,
+        endOffset: 36,
+      },
+    ]);
+    index.indexText({
+      source: 'https://pod.example/alice/docs/b.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/b.md',
+      contentType: 'text/markdown',
+    }, 'ignored', [
+      {
+        chunkKey: 'b-0',
+        ordinal: 0,
+        level: 1,
+        content: 'alpha other source',
+        startOffset: 0,
+        endOffset: 18,
+      },
+    ]);
+
+    const results = index.search({
+      query: 'alpha',
+      orderBy: [{ field: 'ordinal', direction: 'asc' }],
+      perSourceLimit: 1,
+    });
+
+    expect(results.map((result) => `${result.localPath}:${result.chunkKey}`)).toEqual([
+      'docs/a.md:a-0',
+      'docs/b.md:b-0',
+    ]);
+  });
+
+  it('tokenizes CJK text as indexed n-grams without latin substring matches', () => {
+    expect(tokenizeNormalizedRdfText('alpha 中文全文索引')).toEqual([
+      'alpha',
+      '中文',
+      '文全',
+      '全文',
+      '文索',
+      '索引',
+    ]);
+
+    index.indexText({
+      source: 'https://pod.example/alice/docs/search.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/search.md',
+      contentType: 'text/markdown',
+    }, [
+      '# Search',
+      '',
+      'alphabet soup supports 中文全文索引可检索',
+    ].join('\n'));
+
+    expect(index.search({ query: '全文索引' }).map((row) => row.localPath)).toEqual(['docs/search.md']);
+    expect(index.search({ query: 'alpha' })).toEqual([]);
+    expect(index.search({ query: 'alphabet' }).map((row) => row.localPath)).toEqual(['docs/search.md']);
   });
 
   it('does not create raw normalized chunk text indexes for long text payloads', () => {
@@ -222,6 +1091,78 @@ describe('RdfTextIndex', () => {
       sourceCount: 1,
       chunkCount: 3,
     });
+  });
+
+
+  it('filters text chunks by RDF entity mentions and replaces stale mentions', () => {
+    const source = {
+      source: 'https://pod.example/alice/docs/entities.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/entities.md',
+      contentType: 'text/markdown',
+    };
+    const task = 'https://pod.example/alice/.data/task/default/index.ttl#this';
+    const run = 'https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_1';
+    const stale = 'https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl#run_stale';
+
+    index.indexText(source, 'ignored full text', [
+      {
+        chunkKey: 'chunk-task',
+        ordinal: 0,
+        level: 1,
+        heading: 'Task',
+        path: ['Task'],
+        content: 'Alpha task handoff mentions runtime.',
+        startOffset: 0,
+        endOffset: 36,
+        entities: [
+          { entity: task, predicate: 'https://schema.org/about', label: 'Default task' },
+          { entity: run, predicate: 'https://schema.org/mentions', occurrences: 2 },
+        ],
+      },
+      {
+        chunkKey: 'chunk-other',
+        ordinal: 1,
+        level: 1,
+        heading: 'Other',
+        path: ['Other'],
+        content: 'Alpha unrelated note.',
+        startOffset: 37,
+        endOffset: 58,
+        entities: [{ entity: stale }],
+      },
+    ]);
+
+    expect(index.search({ query: 'alpha', entities: [task] })).toMatchObject([
+      {
+        chunkKey: 'chunk-task',
+        entities: [
+          { entity: run, predicate: 'https://schema.org/mentions', occurrences: 2 },
+          { entity: task, predicate: 'https://schema.org/about', label: 'Default task', occurrences: 1 },
+        ],
+      },
+    ]);
+    expect(index.search({ query: '', entities: [run] }).map((result) => result.chunkKey)).toEqual(['chunk-task']);
+    expect(index.estimateSearchCardinality({ query: '', entities: [task, run] })).toMatchObject({
+      rows: 1,
+      indexChoice: 'text-entity-posting',
+    });
+    expect(index.stats()).toMatchObject({ entityMentionCount: 3 });
+
+    index.indexText(source, 'replacement', [
+      {
+        chunkKey: 'replacement',
+        ordinal: 0,
+        level: 0,
+        content: 'Replacement text mentions task only.',
+        startOffset: 0,
+        endOffset: 36,
+        entities: [{ entity: task }],
+      },
+    ]);
+
+    expect(index.search({ query: '', entities: [stale] })).toEqual([]);
+    expect(index.stats()).toMatchObject({ entityMentionCount: 1 });
   });
 
   it('replaces chunks for a source atomically when re-indexing', () => {
@@ -450,6 +1391,23 @@ describe('RdfTextIndex', () => {
       source: 'text-term-posting',
       indexChoice: 'text-term-posting',
     });
+  });
+
+  it('hydrates entities only for SQL-windowed text search results', () => {
+    for (let i = 0; i < 5; i += 1) {
+      index.indexText({
+        source: `https://pod.example/alice/docs/${i}.txt`,
+        workspace: 'https://pod.example/alice/',
+        localPath: `docs/${i}.txt`,
+        contentType: 'text/plain',
+      }, 'alpha alpha');
+    }
+    const hydrateSpy = vi.spyOn(index as any, 'entitiesForChunk');
+
+    const results = index.search({ query: 'alpha', limit: 1 });
+
+    expect(results).toHaveLength(1);
+    expect(hydrateSpy).not.toHaveBeenCalled();
   });
 
   it('uses explicit source-local ordering before applying the search window', () => {

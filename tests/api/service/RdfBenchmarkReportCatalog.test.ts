@@ -27,6 +27,21 @@ describe('RdfBenchmarkReportCatalog', () => {
           concurrency: 4,
           caseProfile: 'extreme',
           rdfAccelerationProfile: 'pg-hot-operators',
+          textSearchBackend: 'pg-native-fts',
+          benchmarkGateConfigSources: [
+            {
+              kind: 'report-config',
+              path: '/tmp/models-postgres-baseline.json',
+              calibratedLimits: true,
+              seed: {
+                driver: 'pg',
+                scale: 'medium',
+                targetQuads: 36_000,
+                caseProfile: 'extreme',
+                rdfAccelerationProfile: 'baseline',
+              },
+            },
+          ],
           ingestDurationMs: 3734,
           bulkLoad: {
             copyFromRows: {
@@ -48,6 +63,33 @@ describe('RdfBenchmarkReportCatalog', () => {
           concurrencyGate: {
             matched: true,
             failedCases: [],
+          },
+          servingRegressionGate: {
+            matched: true,
+            thresholds: {
+              maxScannedRows: 1000,
+              maxP95DurationMs: 100,
+            },
+            failedCases: [],
+          },
+          fusionBenchmarkGate: {
+            matched: false,
+            thresholds: {
+              maxScannedRows: 2000,
+              maxP95DurationMs: 200,
+            },
+            failedCases: ['broad agent context text vector fusion query'],
+            cases: [
+              {
+                name: 'broad agent context text vector fusion query',
+                hardFiltersBeforeRank: true,
+                batchedBroadCandidateJoin: true,
+                baselineComparison: {
+                  matched: false,
+                  failedReasons: ['baseline-p95-regression'],
+                },
+              },
+            ],
           },
           refreshBenchmark: {
             durationMs: 1416,
@@ -79,7 +121,15 @@ describe('RdfBenchmarkReportCatalog', () => {
             },
           },
           cases: [],
-          queryCases: [],
+          queryCases: [
+            {
+              name: 'agent context text vector fusion query',
+              physicalPlan: [
+                'TextSearch("runtime approvals"@workspace:file://macbook.local/Users/alice/project/)',
+                'PostgresNativeFts(TextSearch pg-ts-rank-cd)',
+              ],
+            },
+          ],
         },
       }),
       'utf8',
@@ -97,10 +147,26 @@ describe('RdfBenchmarkReportCatalog', () => {
       driver: 'pg',
       caseProfile: 'extreme',
       rdfAccelerationProfile: 'pg-hot-operators',
+      textSearchBackend: 'pg-native-fts',
       seedQuadCount: 45_656,
       targetQuadCount: 36_000,
       planMatched: true,
       concurrencyMatched: true,
+      servingRegressionMatched: true,
+      servingRegressionThresholdsConfigured: true,
+      failedServingRegressionCases: [],
+      fusionBenchmarkMatched: false,
+      fusionBenchmarkThresholdsConfigured: true,
+      failedFusionBenchmarkCases: ['broad agent context text vector fusion query'],
+      fusionBaselineComparisonMatched: false,
+      failedFusionBaselineComparisonCases: ['broad agent context text vector fusion query'],
+      benchmarkGateConfigSourcesConfigured: true,
+      fusionBaselineReportSourceConfigured: true,
+      benchmarkGateConfigSourceShapeMismatches: [],
+      fusionBaselineReportSourceBaselineProfileConfigured: true,
+      fusionHardFiltersBeforeRankCaseCount: 1,
+      fusionBatchedBroadCandidateJoinCaseCount: 1,
+      nativeTextFtsCaseCount: 1,
       ingestDurationMs: 3734,
       copyRows: 65_166,
       copyFallbacks: 0,
@@ -132,5 +198,105 @@ describe('RdfBenchmarkReportCatalog', () => {
     }).snapshot();
 
     expect(snapshot.reportCount).toBe(0);
+  });
+
+  it('summarizes benchmark gate config source shape mismatches from report artifacts', async () => {
+    const reportDir = path.join(testRoot, 'rdf-engine', 'shape-mismatch');
+    await mkdir(reportDir, { recursive: true });
+    await writeFile(
+      path.join(reportDir, 'models-postgres-2026-06-09T07-00-00-000Z-shape.json'),
+      JSON.stringify({
+        seed: {
+          driver: 'pg',
+          scale: 'large',
+          targetQuadCount: 1_000_000,
+          seedQuadCount: 1_025_000,
+          fullScale: true,
+          benchmarkGateConfigSources: [
+            {
+              kind: 'report-config',
+              path: '/tmp/small-report.json',
+              seed: {
+                driver: 'pglite',
+                scale: 'small',
+                targetQuads: 48,
+                caseProfile: 'all',
+              },
+            },
+          ],
+        },
+        report: {
+          engine: 'postgres-rdf',
+          scale: 'large',
+          caseProfile: 'all',
+          generatedAt: '2026-06-09T07:00:00.000Z',
+          failedPlanCases: [],
+          cases: [],
+          queryCases: [],
+        },
+      }),
+      'utf8',
+    );
+
+    const snapshot = await new RdfBenchmarkReportCatalog({
+      roots: [testRoot],
+      packageRoot: process.cwd(),
+    }).snapshot();
+
+    expect(snapshot.reports[0]).toMatchObject({
+      benchmarkGateConfigSourcesConfigured: true,
+      fusionBaselineReportSourceConfigured: true,
+      benchmarkGateConfigSourceShapeMismatches: [
+        'source[0].driver expected pg, got pglite',
+        'source[0].scale expected large, got small',
+        'source[0].targetQuads expected 1000000, got 48',
+      ],
+    });
+  });
+
+  it('treats report-derived benchmark gate sources without seed shape as unauditable', async () => {
+    const reportDir = path.join(testRoot, 'rdf-engine', 'missing-source-shape');
+    await mkdir(reportDir, { recursive: true });
+    await writeFile(
+      path.join(reportDir, 'models-postgres-2026-06-09T07-10-00-000Z-missing-source-shape.json'),
+      JSON.stringify({
+        seed: {
+          driver: 'pg',
+          scale: 'large',
+          targetQuadCount: 1_000_000,
+          seedQuadCount: 1_025_000,
+          fullScale: true,
+          benchmarkGateConfigSources: [
+            {
+              kind: 'baseline-report',
+              path: '/tmp/baseline-without-seed.json',
+            },
+          ],
+        },
+        report: {
+          engine: 'postgres-rdf',
+          scale: 'large',
+          caseProfile: 'all',
+          generatedAt: '2026-06-09T07:10:00.000Z',
+          failedPlanCases: [],
+          cases: [],
+          queryCases: [],
+        },
+      }),
+      'utf8',
+    );
+
+    const snapshot = await new RdfBenchmarkReportCatalog({
+      roots: [testRoot],
+      packageRoot: process.cwd(),
+    }).snapshot();
+
+    expect(snapshot.reports[0]).toMatchObject({
+      benchmarkGateConfigSourcesConfigured: true,
+      fusionBaselineReportSourceConfigured: true,
+      benchmarkGateConfigSourceShapeMismatches: [
+        'source[0].seed is missing',
+      ],
+    });
   });
 });

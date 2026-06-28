@@ -13,6 +13,7 @@
 - 直接以 RDF-3X target 作为主查询内核方向；当前 term-id quad index 只是过渡 baseline，不把它包装成 RDF-3X。
 - Hexastore 只作为历史/对比参照，QLever 只作为后续执行层参考；三者不作为并列运行时组合。
 - 让全文、结构化 RDF 查询、未来向量检索在同一套资源身份和索引模型里协同。
+- Progressive Semantic Index 的文件级 L0 摘要、reader tree L1..Ln、retrieval point 和 index method 生命周期见 [Progressive Semantic Index](progressive-semantic-index.md)。RDF Engine 只消费这些 retrieval point 与 search/vector/entity 派生索引，不把全量原文 chunk 或 embedding 当作 RDF 事实源。
 
 ## 非目标
 
@@ -857,6 +858,93 @@ workspace
   - 非 by-line 标准 RDF：`.rdf` / `.rdfs` / `.owl` / `application/rdf+xml`。这些格式可解析、镜像并全量同步到结构化 RDF index，但不进入 SolidFS by-line 自动追踪，也不走单文档增量 patch。
 - `RdfIndexSolidFsSyncer` 在 direct workspace commit 时会把标准 RDF 文档同步到结构化 RDF index；配置了 text index 时，仅把 line-addressable RDF 文本、Markdown、plain text 同步到 `RdfTextIndex`；配置了 vector index 时也只消费同一批 text-indexable source，并且必须显式提供 `vectorizeText`，不在 syncer 内部绑定 embedding provider；RDF/XML 这类非 by-line 标准 RDF 只做全量解析刷新，不进入文本/by-line 索引；syncer 通过 `shouldTrackPath(...)` 声明路径范围，避免 SolidFS 为文本/向量索引监听所有文件。
 
+
+### Full-text index boundary
+
+PG `tsvector`、SQLite FTS5、term posting table、trigram/LIKE 这类全文能力只是 physical text operator。
+它们的输入模型是“文本行/文档 -> token postings -> candidate rows”，不原生理解 RDF 的 S/P/O/G、
+BGP 变量绑定、named graph、ACL/ACR、predicate 选择性或 SPARQL algebra。因此不能把“启用 PG/SQLite
+FTS”理解成已经获得 QLever 的 SPARQL+Text 执行模型。
+
+Xpod 需要区分三类 text search：
+
+1. **RDF term lexical index**：面向 `rdf_terms` 的 lexical value，例如 literal、IRI、label 或
+   `STR(?term)` 的 contains/prefix/regex 子集。执行形态是 text operator 命中 `term_id`，再 join
+   `rdf_quads.g/s/p/o = term_id`。它服务 SPO/G term 查询，但不是文档全文检索。
+2. **RetrievalPoint / document FTS**：面向文件、folder summary、heading、chunk、OCR/reader 输出等
+   retrieval point。执行形态是 text operator 返回 `pointId` / `sourceNodeId` / `chunkKey`，再与 RDF、
+   path、ACL/ACR 和 vector source join。
+3. **QLever-style planner integration**：把 text candidates 作为 query planner 的一等 source，和 RDF BGP、
+   path scope、ACL/ACR、vector、ORDER/LIMIT/top-k 在同一个 plan 中 cost、join 和排序。
+
+因此：
+
+```text
+PG/SQLite FTS = physical index/operator
+RDF-3X        = RDF join/statistics baseline
+QLever-style  = integrated planner/execution model
+```
+
+PG/SQLite FTS 可以作为第 1 类或第 2 类的底层 operator，但不能替代第 3 类。真正的性能目标是让
+`TextMatchSource` 在 `SolidRdfEngine` planner 内产生可 join 的候选，而不是先把大批 text hits materialize
+到 TS 层再做 RDF/path/ACL 过滤。
+
+公开 SPARQL 层暂不承诺完整 SPARQL+Text 语法。当前已支持的是内部 `RdfQuery.textSearch[]` /
+`vectorSearch[]` source；如果后续暴露 SPARQL+Text，需要先定义函数语义、score 变量、top-k、权限过滤和
+fallback/correction 行为，再映射到同一套 planner source。
+
+
+### QLever-style fusion planner and path handling
+
+QLever-style 能力在 Xpod 中不表示“把 PG/SQLite 放到上游 QLever backend 后面”。正确边界是：
+`SolidRdfEngine` 内部提供统一 logical planner，把 RDF BGP、FTS、vector、path scope 和 ACL/ACR
+视为同一个 query plan 里的 candidate source / constraint，再把 physical operator 下放到 SQLite 或
+PostgreSQL。
+
+```text
+Query / Search Request
+  -> SolidRdfEngine logical planner
+      - RdfBgpSource
+      - TextMatchSource
+      - VectorMatchSource
+      - PathScopeSource
+      - FolderSemanticSource
+      - AclScopeSource
+  -> physical operators
+      local:  SQLite covering index / FTS5 / vector artifact
+      cloud:  PostgreSQL btree/GIN/trgm/ltree-like tables / vector backend
+```
+
+性能目标不是在 TS 层拼接多个检索结果，而是让 text/vector/path/ACL/RDF 在 planner 内统一 cost、join、
+filter、fusion score、top-k 和 fallback。FTS / vector 返回的候选必须尽早变成可 join 的 `pointId` /
+`sourceNodeId` source，而不是先 materialize 成大数组再由应用层过滤。
+
+路径处理分两层：
+
+1. **Path structural index**：结构硬约束，负责 exact path、prefix/subtree、parent-child、depth、workspace、
+   extension、ACL/ACR 继承和文件移动。它由 `SourceNode` / closure / ltree-like 派生表提供，不依赖 FTS
+   或 embedding 保证正确性。
+2. **Folder retrieval point**：folder 本身进入 FTS/VEC，表达路径所在信息架构的语义。不要把 full path
+   作为每个 file/chunk 的独立 vector 事实；folder semantic score 可和 file/heading/content score 融合。
+
+FTS 可以把 basename、folder title、folder summary、path segments 当成弱字段或 boost；vector 可以检索
+folder summary / locator projection。但 raw path embedding 不能替代 ltree 语义。移动目录时，content FTS、
+semantic vector、reader cache 和 entity mention 应通过 stable `sourceNodeId` / `pointId` 复用；需要追赶的只是
+current path / URI / breadcrumb / weak path tokens / graph prefix materialization 等派生层。
+
+一个典型融合计划：
+
+```text
+PathScopeSource(folderNode)
+  -> AclScopeSource(principal)
+  -> TextMatchSource(query) OR VectorMatchSource(queryEmbedding)
+  -> RdfBgpSource(relationships)
+  -> score fusion + top-k
+```
+
+当 text/vector 命中很窄时，planner 也可以先走 `TextMatchSource` / `VectorMatchSource`，再 join
+`PathScopeSource` 和 `AclScopeSource`。顺序由统计信息、candidate cardinality 和权限 scope 决定。
+
 ## Query Engine Scope
 
 第一阶段必须覆盖 app 常用查询，而不是追求一次性完整 SPARQL 1.1：
@@ -1337,6 +1425,112 @@ compare(A, B)
 
 - server-owned Pod 默认不加载 Comunica。
 - federation/plugin/client external workspace 才加载兼容层。
+
+
+## Product-grade acceleration slice（2026-06）
+
+本 slice 继续保持一个原则：Pod RDF facts / SolidFS 文件是事实源；下列能力都是
+`SolidRdfEngine` / `PostgresRdfEngine` 内部派生执行层，不暴露为 QLever backend，也不
+形成第二份业务事实。
+
+### n-column materialized views
+
+`PostgresRdfEngine` 提供可 join 的 n-column materialized view，而不是只缓存最终 JSON
+结果：
+
+- `materializeView({ key, version, query, variables, scope, activate })` 执行源查询并把
+  binding rows 写入 `rdf_materialized_views` 与 `rdf_materialized_view_cells`。
+- `readMaterializedView(...)` 读取当前 active 版本，可选择变量、`limit`、`offset`。
+- `activateMaterializedView({ key, version, scope, factsDataVersion })` 在同一事务里关闭旧
+  active build 并打开目标 build，实现 versioned rebuild + atomic cutover。
+- `RdfQuery.materializedViews[]` 会在执行前展开成 `VALUES` binding source，再参与既有
+  BGP / RDF-3X / PG hot-operator join 计划。
+
+Materialized view 的身份是：
+
+```text
+view_key + view_version + scope_hash + facts_data_version
+```
+
+同一个 `view_key + view_version + scope_hash` 同时只允许一个 active build。`scope` 必须
+包含 principal / basePath / auth model / permission version / allow-deny graph 信息中会影响
+可见结果的部分；否则跨用户、跨权限复用会返回错误结果。缺失 active build 时默认报错；只有
+`required: false` 的 query source 可静默跳过。
+
+它和 `rdf_materialized_result_cache` 的区别：
+
+| 能力 | materialized view | materialized result cache |
+| --- | --- | --- |
+| 数据形态 | 行/列 binding cells，可继续 join | 完整 query result payload |
+| 使用位置 | `RdfQuery.materializedViews[]` -> `VALUES` | 同一 query/template 的 warm result |
+| 生命周期 | build inactive -> atomic activate | 按 ttl/bytes/entries prune |
+| 权威性 | 派生，可重建 | 派生，可删除 |
+
+### Entity-aware text index
+
+全文索引粒度对齐 `source/chunk`，不是 SPO/triple。SPO/GSPO 继续承担结构化事实查询；
+text/vector 承担文件和资源上下文的检索。二者通过 entity mention bridge 相连：
+
+```text
+rdf_text_sources
+  -> rdf_text_chunks
+      -> rdf_text_terms       # normalized posting / DF statistics
+      -> rdf_text_entities    # chunk -> entity/predicate mentions
+```
+
+`RdfTextChunkInput.entities[]` 写入 chunk 中出现的 RDF entity、可选 predicate、label 和
+occurrences。`RdfTextSearchOptions.entities[]` 表示返回 chunk 必须同时包含这些 entity；
+`query: ''` 时可以执行 entity-only search。这让检索可以表达：
+
+1. 先按 FTS/text 命中文本 chunk；
+2. 再要求 chunk 含有某些 RDF resource / predicate；
+3. 最后用 RDF BGP 对命中的 source/chunk 做结构化过滤或补齐上下文。
+
+Embedding 也应复用同一个 chunk 语义：`rdf_vector_chunks.chunk_key/source` 与
+`rdf_text_chunks.chunk_key/source` 对齐，entity bridge 继续作为 chunk 到 RDF graph 的公共锚点。
+不要把 embedding 做到单条 SPO 上；那会把语义上下文切得过碎，并让召回结果难以和文件/标题层级对应。
+
+### Schema explorer / autocomplete
+
+`exploreSchema({ query, graphPrefix, limit })` 是第一版产品可用的 schema/autocomplete surface。
+它只从当前 facts 和 `rdf_terms` 派生建议，不写 durable schema resource：
+
+- `graphs`: graph cardinality candidates；
+- `predicates`: predicate cardinality candidates；
+- `classes`: `rdf:type` object candidates；
+- `terms`: 任意 term 的 subject/predicate/object/graph 出现计数。
+
+`query` 是面向 term value 的轻量 substring/prefix 过滤，`graphPrefix` 用于限制到某个 Pod
+目录/业务 surface。这个接口用于 UI autocomplete、schema explorer 和调试，不替代 RDF schema / OWL
+推理。
+
+### Bounded path search
+
+`searchPaths({ start, target, direction, predicates, graphPrefix, maxDepth, maxPaths })` 提供受限
+BFS 图邻接搜索：
+
+- `direction`: `out | in | both`；
+- `predicates`: 可选谓词白名单；
+- `graphPrefix`: Pod 目录级限制；
+- `maxDepth` / `maxPaths`: 必填语义上的硬上限，防止递归 path 查询拖垮 server-owned Pod。
+
+该接口不是完整 SPARQL property path 替代品；它是产品功能里的“找关系路径/解释上下文”工具。
+不支持无界 `*` / `+` 递归；需要更复杂图算法时应先有明确产品 case 和 benchmark。
+
+### W3C compliance/deviation gate
+
+`docs/rdf-sparql-compliance-gate.json` 是机器可读的 compliance/deviation manifest：
+
+- `gateCommand` 固定到 `bun run test:w3c`；
+- `w3cTargetSubset` 列出当前 embedded primary path 必须保持无 fallback 的 W3C 子集；
+- `deviations` 列出有意不支持或暂缓的能力，并要求 runtime correction action 与 manifest 一致。
+
+server-owned Pod 默认禁止隐式 fallback 到外部/federated executor。unsupported shape 必须返回明确错误、
+capability、hint/correction；不能 silently fallback 后让用户以为本地 engine 支持该能力。
+
+GeoSPARQL 当前策略是 `deferred-until-product-need`：只有出现具体 Xpod 产品查询、数据规模、正确性语义和
+benchmark 目标后，才把 native GeoSPARQL 纳入 embedded engine。当前 GeoSPARQL query 应 route 到可信
+external executor 或由上层产品显式拒绝。
 
 ## 验收
 

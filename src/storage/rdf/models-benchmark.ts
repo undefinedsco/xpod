@@ -51,6 +51,13 @@ export type RdfBenchmarkCaseProfile = 'default' | 'extreme' | 'fusion' | 'all';
 export const RDF_MODELS_SYNTHETIC_MESSAGE_QUADS = 9;
 export const RDF_MODELS_NATIVE_STRESS_MESSAGE_QUADS = 9;
 export const RDF_MODELS_NATIVE_STRESS_MESSAGE_COUNT = 1024;
+export const RDF_MODELS_SEARCH_FUSION_BROAD_SOURCE_COUNT = 32;
+
+const RDF_MODELS_SEARCH_FUSION_BROAD_SOURCE_COUNTS: Record<RdfBenchmarkScale, number> = {
+  small: RDF_MODELS_SEARCH_FUSION_BROAD_SOURCE_COUNT,
+  medium: 256,
+  large: 4096,
+};
 
 const RDF_MODELS_SCALE_TARGET_QUADS: Record<RdfBenchmarkScale, number> = {
   small: 48,
@@ -102,6 +109,9 @@ export interface RdfModelPostgresBenchmarkRunOptions extends RdfModelBenchmarkRu
   refreshMutationQuadsPerSource?: number;
   warmupIterations?: number;
   concurrency?: number;
+  servingRegressionThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkBaselines?: Record<string, RdfModelPostgresBenchmarkGateBaseline>;
 }
 
 export interface RdfModelBenchmarkResult {
@@ -162,6 +172,7 @@ export interface RdfModelBenchmarkReport {
   generatedAt: string;
   planMatched: boolean;
   failedPlanCases: string[];
+  performanceCosts: RdfModelBenchmarkPerformanceCosts;
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   queryCases: RdfModelQueryBenchmarkResult[];
@@ -178,13 +189,38 @@ export interface RdfModelPostgresBenchmarkReport {
   planMatched: boolean;
   failedPlanCases: string[];
   concurrencyGate: RdfModelPostgresConcurrencyGate;
+  servingRegressionGate: RdfModelPostgresServingRegressionGate;
+  fusionBenchmarkGate: RdfModelPostgresFusionBenchmarkGate;
   refresh?: RdfDerivedIndexRefreshResult;
   refreshBenchmark?: RdfModelPostgresRefreshBenchmark;
   postWriteRefreshBenchmark?: RdfModelPostgresPostWriteRefreshBenchmark;
   coldStartBenchmark?: RdfModelPostgresColdStartBenchmark;
+  performanceCosts: RdfModelBenchmarkPerformanceCosts;
   storage: RdfEngineStorageStats;
   cases: RdfModelBenchmarkResult[];
   queryCases: RdfModelQueryBenchmarkResult[];
+}
+
+export interface RdfModelBenchmarkPerformanceCosts {
+  storageOverhead: {
+    factsBytes: number;
+    derivedBytes: number;
+    totalBytes: number;
+    derivedToFactsRatio: number;
+    totalToFactsRatio: number;
+  };
+  indexBuild?: {
+    durationMs: number;
+    refreshed: boolean;
+    plannerStatsDurationMs?: number;
+    rebuildMode?: RdfModelPostgresRefreshBenchmark['rebuildMode'];
+    dirtyGraphs?: number;
+    dirtyPairs?: number;
+    dirtyTerms?: number;
+  };
+  coldStart?: {
+    durationMs?: number;
+  };
 }
 
 export interface RdfModelPostgresColdStartBenchmark {
@@ -260,6 +296,90 @@ export interface RdfModelPostgresConcurrencyGate {
   failedCases: string[];
 }
 
+export interface RdfModelPostgresBenchmarkGateThresholds {
+  maxP95DurationMs?: number;
+  maxScannedRows?: number;
+  cases?: Record<string, RdfModelPostgresBenchmarkGateCaseThresholds>;
+}
+
+export interface RdfModelPostgresBenchmarkGateCaseThresholds {
+  maxP95DurationMs?: number;
+  maxScannedRows?: number;
+}
+
+export interface RdfModelPostgresBenchmarkGateBaseline {
+  label?: string;
+  p95DurationMs?: number;
+  scannedRows?: number;
+  maxP95DurationMs?: number;
+  maxScannedRows?: number;
+}
+
+export interface RdfModelPostgresServingRegressionGate {
+  enabled: boolean;
+  caseProfile: RdfBenchmarkCaseProfile;
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  cases: RdfModelPostgresServingRegressionGateCase[];
+  matched: boolean;
+  failedCases: string[];
+}
+
+export interface RdfModelPostgresServingRegressionGateCase {
+  name: string;
+  matched: boolean;
+  planMatched: boolean;
+  expectedPlan: string[];
+  missingPlan: string[];
+  failedReasons: string[];
+  physicalPlan: string[];
+  scannedRows: number;
+  returnedRows: number;
+  p95DurationMs: number;
+}
+
+export interface RdfModelPostgresFusionBenchmarkGate {
+  enabled: boolean;
+  caseProfile: RdfBenchmarkCaseProfile;
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  cases: RdfModelPostgresFusionBenchmarkGateCase[];
+  matched: boolean;
+  failedCases: string[];
+}
+
+export interface RdfModelPostgresFusionBenchmarkGateCase {
+  name: string;
+  matched: boolean;
+  planMatched: boolean;
+  failedReasons: string[];
+  baselineComparison?: RdfModelPostgresBenchmarkGateBaselineComparison;
+  candidateSources: string[];
+  sourceEstimateCount: number;
+  hardFiltersBeforeRank: boolean;
+  rankInputs: boolean;
+  rankWeights: boolean;
+  rankTieBreaker: boolean;
+  resultCacheBypassed: boolean;
+  broadCandidateRows: number;
+  batchedBroadCandidateJoin: boolean;
+  scannedRows: number;
+  returnedRows: number;
+  p95DurationMs: number;
+}
+
+export interface RdfModelPostgresBenchmarkGateBaselineComparison {
+  label?: string;
+  matched: boolean;
+  failedReasons: string[];
+  p95DurationMsBaseline?: number;
+  maxP95DurationMs?: number;
+  p95DurationMsDelta?: number;
+  p95DurationMsRatio?: number;
+  scannedRowsBaseline?: number;
+  maxScannedRows?: number;
+  scannedRowsDelta?: number;
+  scannedRowsRatio?: number;
+}
+
 export interface RdfModelPostgresConcurrencyGateCase {
   name: string;
   concurrency: number;
@@ -282,6 +402,7 @@ export interface RdfModelsBenchmarkSeedOptions {
   syntheticMessages: number;
   syntheticPodCount: number;
   caseProfile?: RdfBenchmarkCaseProfile;
+  searchFusionBroadSourceCount?: number;
 }
 
 interface RdfModelsSearchFusionSource {
@@ -3048,6 +3169,7 @@ export const rdfModelsSearchFusionQueryBenchmarkCases: readonly RdfModelQueryBen
           scope: {
             workspace: WORKSPACE,
             sourcePrefix: `${DATA}/chat/default/`,
+            accessBasePath: `${DATA}/chat/default/`,
           },
           source: 'message',
           content: 'textContent',
@@ -3062,6 +3184,7 @@ export const rdfModelsSearchFusionQueryBenchmarkCases: readonly RdfModelQueryBen
           scope: {
             workspace: WORKSPACE,
             sourcePrefix: `${DATA}/chat/default/`,
+            accessBasePath: `${DATA}/chat/default/`,
           },
           source: 'message',
           content: 'vectorContent',
@@ -3101,7 +3224,97 @@ export const rdfModelsSearchFusionQueryBenchmarkCases: readonly RdfModelQueryBen
       ],
       limit: 10,
     },
-    expectedPlan: ['text-search-source', 'vector-search-source', 'search-rdf-join', 'search-score-rerank'],
+    expectedPlan: ['text-search-source', 'vector-search-source', 'search-rdf-join', 'planner-source-estimates', 'fusion-rank-inputs', 'fusion-rank-weights', 'fusion-rank-tiebreaker', 'fusion-hard-filters-before-rank', 'search-score-rerank'],
+  },
+  {
+    name: 'broad agent context text vector fusion query',
+    resource: 'message',
+    purpose: 'broad agent context search keeps text/vector/RDF/path/ACL candidate sources visible when many chunks match before final top-k',
+    minScale: 'small',
+    minReturnedRows: 10,
+    query: {
+      patterns: [
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/2026/05/' },
+          subject: { variable: 'message' },
+          predicate: namedNode(RDF_TYPE),
+          object: namedNode(`${MEETING}Message`),
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/2026/05/' },
+          subject: { variable: 'message' },
+          predicate: namedNode(SIOC_HAS_MEMBER),
+          object: { variable: 'thread' },
+        },
+        {
+          graph: { $startsWith: 'https://pod.example/alice/.data/chat/default/2026/05/' },
+          subject: { variable: 'message' },
+          predicate: namedNode(`${UDFS}workspace`),
+          object: namedNode(WORKSPACE),
+        },
+      ],
+      textSearch: [
+        {
+          query: 'candidate retrieval',
+          scope: {
+            workspace: WORKSPACE,
+            sourcePrefix: `${DATA}/chat/default/`,
+            accessBasePath: `${DATA}/chat/default/`,
+          },
+          source: 'message',
+          content: 'textContent',
+          score: 'textScore',
+        },
+      ],
+      vectorSearch: [
+        {
+          embedding: [0.82, 0.48, 0.12],
+          metric: 'cosine',
+          vectorModel: RDF_MODELS_SEARCH_VECTOR_MODEL,
+          scope: {
+            workspace: WORKSPACE,
+            sourcePrefix: `${DATA}/chat/default/`,
+            accessBasePath: `${DATA}/chat/default/`,
+          },
+          source: 'message',
+          content: 'vectorContent',
+          score: 'vectorScore',
+          distance: 'vectorDistance',
+          model: 'embeddingModel',
+        },
+      ],
+      binds: [
+        {
+          variable: 'fusionScore',
+          expression: {
+            type: 'add',
+            expressions: [
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                  { type: 'term', term: literal('0.55', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+                  { type: 'term', term: literal('0.45', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      select: ['message', 'thread', 'textContent', 'textScore', 'vectorContent', 'vectorScore', 'vectorDistance', 'fusionScore'],
+      orderBy: [
+        { variable: 'fusionScore', direction: 'desc' },
+        { variable: 'message' },
+      ],
+      limit: 10,
+    },
+    expectedPlan: ['text-search-source', 'vector-search-source', 'search-rdf-join', 'planner-source-estimates', 'fusion-rank-inputs', 'fusion-rank-weights', 'fusion-rank-tiebreaker', 'fusion-hard-filters-before-rank', 'search-score-rerank'],
   },
 ];
 
@@ -3833,7 +4046,7 @@ export function rdfModelsQueryBenchmarkCasesForProfile(profile: RdfBenchmarkCase
     case 'fusion':
       return rdfModelsSearchFusionQueryBenchmarkCases;
     case 'all':
-      return [...rdfModelsQueryBenchmarkCases, ...rdfModelsExtremeQueryBenchmarkCases];
+      return [...rdfModelsQueryBenchmarkCases, ...rdfModelsExtremeQueryBenchmarkCases, ...rdfModelsSearchFusionQueryBenchmarkCases];
     default: {
       const exhaustive: never = profile;
       return exhaustive;
@@ -3850,7 +4063,7 @@ export function rdfModelsPostgresQueryBenchmarkCasesForProfile(profile: RdfBench
     case 'fusion':
       return rdfModelsSearchFusionQueryBenchmarkCases;
     case 'all':
-      return [...rdfModelsPostgresQueryBenchmarkCases, ...rdfModelsExtremeQueryBenchmarkCases];
+      return [...rdfModelsPostgresQueryBenchmarkCases, ...rdfModelsExtremeQueryBenchmarkCases, ...rdfModelsSearchFusionQueryBenchmarkCases];
     default: {
       const exhaustive: never = profile;
       return exhaustive;
@@ -3927,7 +4140,17 @@ export function buildRdfModelsBenchmarkSeed(options: RdfModelsBenchmarkSeedOptio
   seedSettingsQuads(quads);
   seedCanonicalMessages(quads);
   seedSyntheticThreads(quads, options.syntheticPodCount);
-  seedSyntheticMessages(quads, options.syntheticMessages, options.syntheticPodCount);
+  const caseProfile = options.caseProfile ?? 'default';
+  const searchFusionBroadSourceCount = rdfModelsBenchmarkProfileRequiresSearchFusion(caseProfile)
+    ? Math.max(0, Math.floor(options.searchFusionBroadSourceCount ?? RDF_MODELS_SEARCH_FUSION_BROAD_SOURCE_COUNT))
+    : 0;
+  const syntheticMessages = rdfModelsBenchmarkProfileRequiresSearchFusion(caseProfile)
+    ? Math.max(options.syntheticMessages, searchFusionBroadSourceCount + 3)
+    : options.syntheticMessages;
+  seedSyntheticMessages(quads, syntheticMessages, options.syntheticPodCount);
+  if (searchFusionBroadSourceCount > 0) {
+    seedPrimaryPodSearchFusionMessages(quads, searchFusionBroadSourceCount + 3, options.syntheticPodCount);
+  }
   if (options.caseProfile === 'extreme' || options.caseProfile === 'all') {
     seedNativeStressMessages(quads);
   }
@@ -3936,14 +4159,18 @@ export function buildRdfModelsBenchmarkSeed(options: RdfModelsBenchmarkSeedOptio
 }
 
 export function rdfModelsBenchmarkProfileRequiresSearchFusion(profile: RdfBenchmarkCaseProfile): boolean {
-  return profile === 'fusion';
+  return profile === 'fusion' || profile === 'all';
 }
 
-export function seedRdfModelsSearchFusionIndexes(engine: {
-  indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void;
-  indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void;
-}): void {
-  for (const source of rdfModelsSearchFusionSources()) {
+export function rdfModelsSearchFusionBroadSourceCountForScale(scale: RdfBenchmarkScale): number {
+  return RDF_MODELS_SEARCH_FUSION_BROAD_SOURCE_COUNTS[scale];
+}
+
+export async function seedRdfModelsSearchFusionIndexes(engine: {
+  indexTextSource(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void | Promise<void>;
+  indexVectorSource(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void | Promise<void>;
+}, options: { broadSourceCount?: number } = {}): Promise<void> {
+  for (const source of rdfModelsSearchFusionSources(options.broadSourceCount)) {
     const sourceInput = {
       source: source.source,
       workspace: WORKSPACE,
@@ -3961,8 +4188,8 @@ export function seedRdfModelsSearchFusionIndexes(engine: {
       startOffset: 0,
       endOffset: source.content.length,
     };
-    engine.indexTextSource(sourceInput, source.content, [chunk]);
-    engine.indexVectorSource(sourceInput, [{
+    await engine.indexTextSource(sourceInput, source.content, [chunk]);
+    await engine.indexVectorSource(sourceInput, [{
       ...chunk,
       embedding: source.embedding,
       model: RDF_MODELS_SEARCH_VECTOR_MODEL,
@@ -3970,8 +4197,8 @@ export function seedRdfModelsSearchFusionIndexes(engine: {
   }
 }
 
-function rdfModelsSearchFusionSources(): RdfModelsSearchFusionSource[] {
-  return [
+function rdfModelsSearchFusionSources(broadSourceCount = RDF_MODELS_SEARCH_FUSION_BROAD_SOURCE_COUNT): RdfModelsSearchFusionSource[] {
+  const focusedSources: RdfModelsSearchFusionSource[] = [
     {
       source: syntheticMessageIri(DATA, 0),
       localPath: '.data/chat/default/2026/05/01/messages.ttl#synthetic_0',
@@ -3994,6 +4221,18 @@ function rdfModelsSearchFusionSources(): RdfModelsSearchFusionSource[] {
       embedding: [0.05, 0.1, 0.95],
     },
   ];
+  const broadSources = Array.from({ length: Math.max(0, Math.floor(broadSourceCount)) }, (_, index) => {
+    const sourceIndex = index + 3;
+    const day = String((sourceIndex % 28) + 1).padStart(2, '0');
+    return {
+      source: syntheticMessageIri(DATA, sourceIndex),
+      localPath: `.data/chat/default/2026/05/${day}/messages.ttl#synthetic_${sourceIndex}`,
+      heading: `Candidate Retrieval ${index + 1}`,
+      content: `Candidate retrieval context chunk ${index + 1} with workspace evidence and structured message links.`,
+      embedding: [0.82, 0.48 - (index % 5) * 0.01, 0.12],
+    };
+  });
+  return [...focusedSources, ...broadSources];
 }
 
 function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
@@ -4358,26 +4597,43 @@ function seedSyntheticMessages(quads: Quad[], count: number, podCount: number): 
     const podIndex = index % syntheticPodCount;
     const pod = podIndex === 0 ? RDF_MODELS_BENCHMARK_POD : `https://pod.example/synthetic-${podIndex}`;
     const data = `${pod}/.data`;
-    const thread = syntheticThreadIri(data, index % RDF_MODELS_SYNTHETIC_THREAD_COUNT);
-    const dayNumber = (index % 28) + 1;
-    const day = String(dayNumber).padStart(2, '0');
-    const graph = `${data}/chat/default/2026/05/${day}/messages.ttl`;
-    const message = syntheticMessageIri(data, index);
-    const timestamp = new Date(Date.UTC(2026, 4, dayNumber, 12, 0, index)).toISOString();
-    const score = String((index % 100) + 1);
-    const rank = String(index + 1);
-    quads.push(
-      seedQuad(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
-      seedQuad(message, SIOC_HAS_MEMBER, iri(thread), graph),
-      seedQuad(message, DCT_CREATED, literal(timestamp), graph),
-      seedQuad(message, DCT_MODIFIED, literal(timestamp), graph),
-      seedQuad(message, SIOC_CONTENT, literal(`synthetic searchable message ${index}`), graph),
-      seedQuad(message, `${UDFS}score`, literal(score, iri(XSD_INTEGER)), graph),
-      seedQuad(message, `${UDFS}rank`, literal(rank, iri(XSD_INTEGER)), graph),
-      seedQuad(message, `${UDFS}status`, literal('indexed'), graph),
-      seedQuad(message, `${UDFS}workspace`, iri(WORKSPACE), graph),
-    );
+    seedSyntheticMessage(quads, data, index);
   }
+}
+
+function seedPrimaryPodSearchFusionMessages(quads: Quad[], count: number, podCount: number): void {
+  const syntheticPodCount = Math.max(1, Math.floor(podCount));
+  if (syntheticPodCount === 1) {
+    return;
+  }
+  for (let index = 0; index < count; index += 1) {
+    if (index % syntheticPodCount === 0) {
+      continue;
+    }
+    seedSyntheticMessage(quads, DATA, index);
+  }
+}
+
+function seedSyntheticMessage(quads: Quad[], data: string, index: number): void {
+  const thread = syntheticThreadIri(data, index % RDF_MODELS_SYNTHETIC_THREAD_COUNT);
+  const dayNumber = (index % 28) + 1;
+  const day = String(dayNumber).padStart(2, '0');
+  const graph = `${data}/chat/default/2026/05/${day}/messages.ttl`;
+  const message = syntheticMessageIri(data, index);
+  const timestamp = new Date(Date.UTC(2026, 4, dayNumber, 12, 0, index)).toISOString();
+  const score = String((index % 100) + 1);
+  const rank = String(index + 1);
+  quads.push(
+    seedQuad(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
+    seedQuad(message, SIOC_HAS_MEMBER, iri(thread), graph),
+    seedQuad(message, DCT_CREATED, literal(timestamp), graph),
+    seedQuad(message, DCT_MODIFIED, literal(timestamp), graph),
+    seedQuad(message, SIOC_CONTENT, literal(`synthetic searchable message ${index}`), graph),
+    seedQuad(message, `${UDFS}score`, literal(score, iri(XSD_INTEGER)), graph),
+    seedQuad(message, `${UDFS}rank`, literal(rank, iri(XSD_INTEGER)), graph),
+    seedQuad(message, `${UDFS}status`, literal('indexed'), graph),
+    seedQuad(message, `${UDFS}workspace`, iri(WORKSPACE), graph),
+  );
 }
 
 function seedNativeStressMessages(quads: Quad[]): void {
@@ -4451,6 +4707,7 @@ export function runRdfModelsBenchmark(
     ...results.filter((result) => !result.planMatched).map((result) => result.name),
     ...queryResults.filter((result) => !result.planMatched).map((result) => result.name),
   ];
+  const storage = engine.storageStats();
 
   return {
     engine: 'solid-rdf',
@@ -4460,7 +4717,8 @@ export function runRdfModelsBenchmark(
     generatedAt: new Date().toISOString(),
     planMatched: failedPlanCases.length === 0,
     failedPlanCases,
-    storage: engine.storageStats(),
+    performanceCosts: benchmarkPerformanceCosts(storage),
+    storage,
     cases: results,
     queryCases: queryResults,
   };
@@ -4518,6 +4776,17 @@ export async function runRdfModelsPostgresBenchmark(
     concurrency,
     storageBefore.facts,
   );
+  const servingRegressionGate = runPostgresServingRegressionGate(
+    caseProfile,
+    queryResults,
+    options.servingRegressionThresholds,
+  );
+  const fusionBenchmarkGate = runPostgresFusionBenchmarkGate(
+    caseProfile,
+    queryResults,
+    options.fusionBenchmarkThresholds,
+    options.fusionBenchmarkBaselines,
+  );
   const coldStartBenchmark = postgresColdStartBenchmark(
     storageBefore,
     firstQueryAfterRefresh,
@@ -4528,7 +4797,15 @@ export async function runRdfModelsPostgresBenchmark(
     ...results.filter((result) => !result.planMatched).map((result) => result.name),
     ...queryResults.filter((result) => !result.planMatched).map((result) => result.name),
     ...concurrencyGate.failedCases.map((caseName) => `concurrency:${caseName}`),
+    ...servingRegressionGate.failedCases.map((caseName) => `serving-regression:${caseName}`),
+    ...fusionBenchmarkGate.failedCases.map((caseName) => `fusion:${caseName}`),
   ];
+  const storage = await engine.storageStats();
+  const performanceCosts = benchmarkPerformanceCosts(
+    storage,
+    refreshBenchmark,
+    coldStartBenchmark,
+  );
 
   return {
     engine: 'postgres-rdf',
@@ -4541,13 +4818,48 @@ export async function runRdfModelsPostgresBenchmark(
     planMatched: failedPlanCases.length === 0,
     failedPlanCases,
     concurrencyGate,
+    servingRegressionGate,
+    fusionBenchmarkGate,
     ...(refresh ? { refresh } : {}),
     ...(refreshBenchmark ? { refreshBenchmark } : {}),
     ...(postWriteRefreshBenchmark ? { postWriteRefreshBenchmark } : {}),
     ...(coldStartBenchmark ? { coldStartBenchmark } : {}),
-    storage: await engine.storageStats(),
+    performanceCosts,
+    storage,
     cases: results,
     queryCases: queryResults,
+  };
+}
+
+function benchmarkPerformanceCosts(
+  storage: RdfEngineStorageStats,
+  refreshBenchmark?: RdfModelPostgresRefreshBenchmark,
+  coldStartBenchmark?: RdfModelPostgresColdStartBenchmark,
+): RdfModelBenchmarkPerformanceCosts {
+  return {
+    storageOverhead: {
+      factsBytes: storage.factsBytes,
+      derivedBytes: storage.derivedBytes,
+      totalBytes: storage.totalBytes,
+      derivedToFactsRatio: storage.derivedToFactsRatio,
+      totalToFactsRatio: storage.totalToFactsRatio,
+    },
+    ...(refreshBenchmark ? {
+      indexBuild: {
+        durationMs: refreshBenchmark.durationMs,
+        refreshed: refreshBenchmark.refreshed,
+        ...(refreshBenchmark.plannerStatsDurationMs !== undefined ? { plannerStatsDurationMs: refreshBenchmark.plannerStatsDurationMs } : {}),
+        ...(refreshBenchmark.rebuildMode ? { rebuildMode: refreshBenchmark.rebuildMode } : {}),
+        ...(refreshBenchmark.dirtyGraphs !== undefined ? { dirtyGraphs: refreshBenchmark.dirtyGraphs } : {}),
+        ...(refreshBenchmark.dirtyPairs !== undefined ? { dirtyPairs: refreshBenchmark.dirtyPairs } : {}),
+        ...(refreshBenchmark.dirtyTerms !== undefined ? { dirtyTerms: refreshBenchmark.dirtyTerms } : {}),
+      },
+    } : {}),
+    ...(coldStartBenchmark?.startup ? {
+      coldStart: {
+        ...(coldStartBenchmark.startup.durationMs !== undefined ? { durationMs: coldStartBenchmark.startup.durationMs } : {}),
+      },
+    } : {}),
   };
 }
 
@@ -4843,6 +5155,352 @@ async function runPostgresConcurrencyGate(
     matched: failedCases.length === 0,
     failedCases,
   };
+}
+
+function postgresServingBenchmarkResultsForGate(
+  caseProfile: RdfBenchmarkCaseProfile,
+  queryResults: readonly RdfModelQueryBenchmarkResult[],
+): readonly RdfModelQueryBenchmarkResult[] | undefined {
+  if (caseProfile === 'default') {
+    return queryResults;
+  }
+  if (caseProfile !== 'all') {
+    return undefined;
+  }
+  const servingCaseNames = new Set(rdfModelsPostgresQueryBenchmarkCasesForProfile('default').map((testCase) => testCase.name));
+  return queryResults.filter((result) => servingCaseNames.has(result.name));
+}
+
+function postgresFusionBenchmarkResultsForGate(
+  caseProfile: RdfBenchmarkCaseProfile,
+  queryResults: readonly RdfModelQueryBenchmarkResult[],
+): readonly RdfModelQueryBenchmarkResult[] | undefined {
+  if (caseProfile === 'fusion') {
+    return queryResults;
+  }
+  if (caseProfile !== 'all') {
+    return undefined;
+  }
+  const fusionCaseNames = new Set(rdfModelsSearchFusionQueryBenchmarkCaseNames());
+  return queryResults.filter((result) => fusionCaseNames.has(result.name));
+}
+
+function runPostgresServingRegressionGate(
+  caseProfile: RdfBenchmarkCaseProfile,
+  queryResults: readonly RdfModelQueryBenchmarkResult[],
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds,
+): RdfModelPostgresServingRegressionGate {
+  const gateResults = postgresServingBenchmarkResultsForGate(caseProfile, queryResults);
+  if (!gateResults) {
+    return {
+      enabled: false,
+      caseProfile,
+      ...(thresholds ? { thresholds } : {}),
+      cases: [],
+      matched: true,
+      failedCases: [],
+    };
+  }
+
+  const cases = gateResults.map((result) => postgresServingRegressionGateCase(result, thresholds));
+  const failedCases = cases.filter((result) => !result.matched).map((result) => result.name);
+  return {
+    enabled: true,
+    caseProfile,
+    ...(thresholds ? { thresholds } : {}),
+    cases,
+    matched: failedCases.length === 0,
+    failedCases,
+  };
+}
+
+function postgresServingRegressionGateCase(
+  result: RdfModelQueryBenchmarkResult,
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds,
+): RdfModelPostgresServingRegressionGateCase {
+  const failedReasons = postgresServingRegressionFailures(result, benchmarkGateThresholdsForCase(thresholds, result.name));
+  return {
+    name: result.name,
+    matched: failedReasons.length === 0,
+    planMatched: result.planMatched,
+    expectedPlan: [...result.expectedPlan],
+    missingPlan: [...result.missingPlan],
+    failedReasons,
+    physicalPlan: [...result.physicalPlan],
+    scannedRows: result.scannedRows,
+    returnedRows: result.returnedRows,
+    p95DurationMs: result.p95DurationMs,
+  };
+}
+
+function postgresServingRegressionFailures(
+  result: RdfModelQueryBenchmarkResult,
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds,
+): string[] {
+  const failedReasons = [...result.missingPlan];
+  const planText = result.physicalPlan.join('\n');
+  const numericAggregate = result.expectedPlan.includes('numeric-aggregate')
+    || result.expectedPlan.includes('numeric-aggregate-facts-cutover');
+  const allowedFactsCutover = numericAggregate
+    && planText.includes('PostgresNumericAggregateFactsCutover(');
+
+  if (!result.planMatched) {
+    failedReasons.push('plan-mismatch');
+  }
+  if (!allowedFactsCutover && planText.includes('PostgresFactsQuery')) {
+    failedReasons.push('facts-query-fallback');
+  }
+  if (!allowedFactsCutover
+    && !planText.includes('PostgresRdf3x')
+    && !planText.includes('PostgresMaterializedResultHit')
+    && !planText.includes('PostgresRdfNativeCustomIndex')) {
+    failedReasons.push('missing-rdf3x-serving-path');
+  }
+  if (thresholds?.maxScannedRows !== undefined && result.scannedRows > thresholds.maxScannedRows) {
+    failedReasons.push('scanned-rows-threshold');
+  }
+  if (thresholds?.maxP95DurationMs !== undefined && result.p95DurationMs > thresholds.maxP95DurationMs) {
+    failedReasons.push('p95-duration-threshold');
+  }
+  return [...new Set(failedReasons)];
+}
+
+function runPostgresFusionBenchmarkGate(
+  caseProfile: RdfBenchmarkCaseProfile,
+  queryResults: readonly RdfModelQueryBenchmarkResult[],
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds,
+  baselines?: Readonly<Record<string, RdfModelPostgresBenchmarkGateBaseline>>,
+): RdfModelPostgresFusionBenchmarkGate {
+  const gateResults = postgresFusionBenchmarkResultsForGate(caseProfile, queryResults);
+  if (!gateResults) {
+    return {
+      enabled: false,
+      caseProfile,
+      ...(thresholds ? { thresholds } : {}),
+      cases: [],
+      matched: true,
+      failedCases: [],
+    };
+  }
+
+  const cases = gateResults.map((result) => postgresFusionBenchmarkGateCase(
+    result,
+    thresholds,
+    baselines?.[result.name],
+  ));
+  const failedCases = cases.filter((result) => !result.matched).map((result) => result.name);
+  return {
+    enabled: true,
+    caseProfile,
+    ...(thresholds ? { thresholds } : {}),
+    cases,
+    matched: failedCases.length === 0,
+    failedCases,
+  };
+}
+
+const POSTGRES_FUSION_BATCH_GATE_MIN_CANDIDATE_ROWS = 33;
+
+function postgresFusionBenchmarkGateCase(
+  result: RdfModelQueryBenchmarkResult,
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds,
+  baseline?: RdfModelPostgresBenchmarkGateBaseline,
+): RdfModelPostgresFusionBenchmarkGateCase {
+  const planText = result.physicalPlan.join('\n');
+  const candidateSources = postgresFusionCandidateSources(planText);
+  const sourceEstimateCount = result.physicalPlan
+    .filter((entry) => entry.startsWith('SourceEstimate('))
+    .length;
+  const hardFiltersBeforeRank = planText.includes('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
+  const rankInputs = planText.includes('FusionRankInputs(text:?textScore,vector:?vectorScore,output:?fusionScore)');
+  const rankWeights = planText.includes('FusionRankWeights(text:0.55,vector:0.45,output:?fusionScore)');
+  const rankTieBreaker = planText.includes('FusionRankTieBreaker(asc:?message)');
+  const resultCacheBypassed = !planText.includes('PostgresResultCache');
+  const broadCandidateRows = postgresFusionBroadCandidateRows(result.physicalPlan);
+  const batchedBroadCandidateJoin = postgresFusionBatchedBroadCandidateJoin(planText);
+  const baselineComparison = baseline
+    ? postgresBenchmarkBaselineComparison(result, baseline)
+    : undefined;
+  const failedReasons = postgresFusionBenchmarkFailures({
+    result,
+    candidateSources,
+    sourceEstimateCount,
+    hardFiltersBeforeRank,
+    rankInputs,
+    rankWeights,
+    rankTieBreaker,
+    resultCacheBypassed,
+    broadCandidateRows,
+    batchedBroadCandidateJoin,
+    thresholds: benchmarkGateThresholdsForCase(thresholds, result.name),
+    baselineComparison,
+  });
+
+  return {
+    name: result.name,
+    matched: failedReasons.length === 0,
+    planMatched: result.planMatched,
+    failedReasons,
+    ...(baselineComparison ? { baselineComparison } : {}),
+    candidateSources,
+    sourceEstimateCount,
+    hardFiltersBeforeRank,
+    rankInputs,
+    rankWeights,
+    rankTieBreaker,
+    resultCacheBypassed,
+    broadCandidateRows,
+    batchedBroadCandidateJoin,
+    scannedRows: result.scannedRows,
+    returnedRows: result.returnedRows,
+    p95DurationMs: result.p95DurationMs,
+  };
+}
+
+function postgresFusionCandidateSources(planText: string): string[] {
+  const sources = [
+    'TextMatchSource',
+    'VectorMatchSource',
+    'RdfBgpSource',
+    'PathScopeSource',
+    'AclScopeSource',
+  ];
+  return sources.filter((source) => (
+    planText.includes(`${source}(`)
+    || planText.includes(`SourceEstimate(${source}#`)
+  ));
+}
+
+
+function postgresFusionBroadCandidateRows(physicalPlan: readonly string[]): number {
+  return Math.max(0, ...physicalPlan
+    .map((entry) => {
+      const match = /^SourceEstimate\((?:TextMatchSource|VectorMatchSource)#\d+ rows:(\d+)\b/.exec(entry);
+      return match ? Number(match[1]) : 0;
+    })
+    .filter((value) => Number.isFinite(value)));
+}
+
+function postgresFusionBatchedBroadCandidateJoin(planText: string): boolean {
+  return planText.includes('PostgresFactsBatchScan(')
+    && planText.includes('PostgresFactsSearchBatchSource(');
+}
+
+function postgresFusionBenchmarkFailures(input: {
+  result: RdfModelQueryBenchmarkResult;
+  candidateSources: readonly string[];
+  sourceEstimateCount: number;
+  hardFiltersBeforeRank: boolean;
+  rankInputs: boolean;
+  rankWeights: boolean;
+  rankTieBreaker: boolean;
+  resultCacheBypassed: boolean;
+  broadCandidateRows: number;
+  batchedBroadCandidateJoin: boolean;
+  thresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  baselineComparison?: RdfModelPostgresBenchmarkGateBaselineComparison;
+}): string[] {
+  const requiredSources = [
+    'TextMatchSource',
+    'VectorMatchSource',
+    'RdfBgpSource',
+    'PathScopeSource',
+    'AclScopeSource',
+  ];
+  const failedReasons = [...input.result.missingPlan];
+
+  if (!input.result.planMatched) {
+    failedReasons.push('plan-mismatch');
+  }
+  for (const source of requiredSources) {
+    if (!input.candidateSources.includes(source)) {
+      failedReasons.push(`missing-source:${source}`);
+    }
+  }
+  if (input.sourceEstimateCount < requiredSources.length) {
+    failedReasons.push('missing-source-estimates');
+  }
+  if (!input.hardFiltersBeforeRank) {
+    failedReasons.push('missing-hard-filters-before-rank');
+  }
+  if (!input.rankInputs) {
+    failedReasons.push('missing-rank-inputs');
+  }
+  if (!input.rankWeights) {
+    failedReasons.push('missing-rank-weights');
+  }
+  if (!input.rankTieBreaker) {
+    failedReasons.push('missing-rank-tie-breaker');
+  }
+  if (!input.resultCacheBypassed) {
+    failedReasons.push('result-cache-enabled');
+  }
+  if (
+    input.broadCandidateRows >= POSTGRES_FUSION_BATCH_GATE_MIN_CANDIDATE_ROWS
+    && !input.batchedBroadCandidateJoin
+  ) {
+    failedReasons.push('missing-batched-broad-candidate-join');
+  }
+  if (input.thresholds?.maxScannedRows !== undefined && input.result.scannedRows > input.thresholds.maxScannedRows) {
+    failedReasons.push('scanned-rows-threshold');
+  }
+  if (input.thresholds?.maxP95DurationMs !== undefined && input.result.p95DurationMs > input.thresholds.maxP95DurationMs) {
+    failedReasons.push('p95-duration-threshold');
+  }
+  if (input.baselineComparison && !input.baselineComparison.matched) {
+    failedReasons.push(...input.baselineComparison.failedReasons);
+  }
+  return [...new Set(failedReasons)];
+}
+
+function benchmarkGateThresholdsForCase(
+  thresholds: RdfModelPostgresBenchmarkGateThresholds | undefined,
+  caseName: string,
+): RdfModelPostgresBenchmarkGateCaseThresholds | undefined {
+  if (!thresholds) {
+    return undefined;
+  }
+  const caseThresholds = thresholds.cases?.[caseName];
+  if (!caseThresholds) {
+    return thresholds;
+  }
+  return {
+    maxScannedRows: caseThresholds.maxScannedRows ?? thresholds.maxScannedRows,
+    maxP95DurationMs: caseThresholds.maxP95DurationMs ?? thresholds.maxP95DurationMs,
+  };
+}
+
+function postgresBenchmarkBaselineComparison(
+  result: RdfModelQueryBenchmarkResult,
+  baseline: RdfModelPostgresBenchmarkGateBaseline,
+): RdfModelPostgresBenchmarkGateBaselineComparison {
+  const failedReasons: string[] = [];
+  const comparison: RdfModelPostgresBenchmarkGateBaselineComparison = {
+    ...(baseline.label ? { label: baseline.label } : {}),
+    matched: true,
+    failedReasons,
+  };
+
+  if (baseline.p95DurationMs !== undefined) {
+    comparison.p95DurationMsBaseline = baseline.p95DurationMs;
+    comparison.maxP95DurationMs = baseline.maxP95DurationMs ?? baseline.p95DurationMs;
+    comparison.p95DurationMsDelta = result.p95DurationMs - baseline.p95DurationMs;
+    comparison.p95DurationMsRatio = ratio(result.p95DurationMs, baseline.p95DurationMs);
+    if (result.p95DurationMs > comparison.maxP95DurationMs) {
+      failedReasons.push('baseline-p95-regression');
+    }
+  }
+  if (baseline.scannedRows !== undefined) {
+    comparison.scannedRowsBaseline = baseline.scannedRows;
+    comparison.maxScannedRows = baseline.maxScannedRows ?? baseline.scannedRows;
+    comparison.scannedRowsDelta = result.scannedRows - baseline.scannedRows;
+    comparison.scannedRowsRatio = ratio(result.scannedRows, baseline.scannedRows);
+    if (result.scannedRows > comparison.maxScannedRows) {
+      failedReasons.push('baseline-scanned-rows-regression');
+    }
+  }
+  comparison.matched = failedReasons.length === 0;
+  return comparison;
 }
 
 function selectPostgresConcurrencyGateCases(
@@ -6427,6 +7085,20 @@ function matchesExpectedQueryPlanLabel(label: string, metrics: RdfQueryMetrics):
           || planText.includes('PostgresRdf3xJoin(')
           || planText.includes('PostgresFactsScan(')
           || localIndexScanCount(planText) >= 1);
+    case 'planner-source-estimates':
+      return planText.includes('SourceEstimate(RdfBgpSource#')
+        && planText.includes('SourceEstimate(TextMatchSource#')
+        && planText.includes('SourceEstimate(VectorMatchSource#')
+        && planText.includes('SourceEstimate(PathScopeSource#')
+        && planText.includes('SourceEstimate(AclScopeSource#');
+    case 'fusion-rank-inputs':
+      return planText.includes('FusionRankInputs(text:?textScore,vector:?vectorScore,output:?fusionScore)');
+    case 'fusion-rank-weights':
+      return planText.includes('FusionRankWeights(text:0.55,vector:0.45,output:?fusionScore)');
+    case 'fusion-rank-tiebreaker':
+      return planText.includes('FusionRankTieBreaker(asc:?message)');
+    case 'fusion-hard-filters-before-rank':
+      return planText.includes('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
     case 'search-score-rerank':
       return planText.includes('Bind(?fusionScore:=')
         && planText.includes('Sort');

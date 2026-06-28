@@ -357,6 +357,16 @@ function unsupportedSparqlHint(capability: string): string {
 }
 
 export function sparqlCorrectionForCapability(capability: string): SparqlCorrection {
+  if (capability === 'sparql.geosparql') {
+    return {
+      capability,
+      primaryAction: 'route_external_executor',
+      availableActions: [ 'route_external_executor', 'materialize_intermediate' ],
+      target: 'trusted_client_or_federated_engine',
+      message: 'Route GeoSPARQL queries to a trusted external executor until a concrete Xpod product workload justifies native embedded support.',
+    };
+  }
+
   if (capability === 'sparql.federation.service') {
     return {
       capability,

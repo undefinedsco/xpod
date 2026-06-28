@@ -16,6 +16,7 @@ import {
   rdfModelsBenchmarkSyntheticPodCount,
   runRdfModelsPostgresBenchmark,
   seedRdfModelsSearchFusionIndexes,
+  applyRdfAccessScope,
   type RdfPgAccelerationProfile,
   type RdfQuery,
   type RdfQueryResult,
@@ -147,6 +148,9 @@ describe('PostgresRdfEngine', () => {
     expect(rdfModelsPostgresQueryBenchmarkCasesForProfile('fusion').map((testCase) => testCase.name)).toEqual(
       rdfModelsSearchFusionQueryBenchmarkCaseNames(),
     );
+    expect(rdfModelsPostgresQueryBenchmarkCasesForProfile('all').map((testCase) => testCase.name)).toEqual(
+      expect.arrayContaining(rdfModelsSearchFusionQueryBenchmarkCaseNames()),
+    );
   });
 
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
@@ -235,7 +239,7 @@ describe('PostgresRdfEngine', () => {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('reports cold-start lifecycle stats in storage stats', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-lifecycle-'));
@@ -1811,6 +1815,353 @@ describe('PostgresRdfEngine', () => {
         },
       });
       expect(factsVersionEvictions).toBeGreaterThan(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('builds n-column materialized views and joins active rows as query values', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-materialized-view-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryExplainSlowMs: 0,
+      queryExplainSlowQueryMaxEntries: 2,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const thread = namedNode(`${graph.value}#thread_a`);
+    const scope = { principal: 'https://pod.example/alice/profile/card#me', basePath: 'https://pod.example/alice/' };
+    const viewKey = 'models/chat/default/open-message-thread-view';
+    const viewQuery: RdfQuery = {
+      patterns: [
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+        {
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(THREAD),
+          object: { variable: 'thread' },
+        },
+      ],
+      select: ['message', 'thread'],
+      orderBy: [{ variable: 'message' }],
+      cache: { mode: 'bypass', scope },
+    };
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message1, namedNode(THREAD), thread, graph),
+        quad(message1, namedNode(CONTENT), literal('first open'), graph),
+        quad(message2, namedNode(STATUS), literal('closed'), graph),
+        quad(message2, namedNode(THREAD), thread, graph),
+        quad(message2, namedNode(CONTENT), literal('second later open'), graph),
+      ]);
+
+      const firstBuild = await engine.materializeView({
+        key: viewKey,
+        version: 'v1',
+        query: viewQuery,
+        variables: ['message', 'thread'],
+        scope,
+      });
+      expect(firstBuild).toMatchObject({
+        key: viewKey,
+        version: 'v1',
+        rowCount: 1,
+        variables: ['message', 'thread'],
+        active: true,
+      });
+
+      const firstView = await engine.readMaterializedView({ key: viewKey, version: 'v1', scope });
+      expect(firstView).toMatchObject({
+        key: viewKey,
+        version: 'v1',
+        rowCount: 1,
+        variables: ['message', 'thread'],
+        active: true,
+      });
+      expect(firstView?.rows.map((row) => ({
+        message: row.message.value,
+        thread: row.thread.value,
+      }))).toEqual([{ message: message1.value, thread: thread.value }]);
+      await expect(engine.readMaterializedView({ key: viewKey, version: 'v1' })).resolves.toBeUndefined();
+
+      const firstJoin = await engine.query({
+        materializedViews: [
+          { key: viewKey, version: 'v1', scope, variables: ['message'] },
+        ],
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(CONTENT),
+            object: { variable: 'content' },
+          },
+        ],
+        select: ['message', 'content'],
+        orderBy: [{ variable: 'message' }],
+        cache: { mode: 'bypass' },
+      });
+      expect(firstJoin.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+      expect(firstJoin.bindings.map((binding) => binding.content.value)).toEqual(['first open']);
+      expect(firstJoin.metrics.plan).toContain('Rdf3xJoinTupleValues(?message)');
+
+      await engine.put(quad(message2, namedNode(STATUS), literal('open'), graph));
+      const secondBuild = await engine.materializeView({
+        key: viewKey,
+        version: 'v1',
+        query: viewQuery,
+        variables: ['message', 'thread'],
+        scope,
+        activate: false,
+      });
+      expect(secondBuild.rowCount).toBe(2);
+      expect(secondBuild.factsDataVersion).toBeGreaterThan(firstBuild.factsDataVersion);
+      expect(secondBuild.active).toBe(false);
+
+      const beforeCutover = await engine.query({
+        materializedViews: [
+          { key: viewKey, version: 'v1', scope, variables: ['message'] },
+        ],
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(CONTENT),
+            object: { variable: 'content' },
+          },
+        ],
+        select: ['message', 'content'],
+        orderBy: [{ variable: 'message' }],
+        cache: { mode: 'bypass' },
+      });
+      expect(beforeCutover.bindings.map((binding) => binding.message.value)).toEqual([message1.value]);
+
+      await expect(engine.activateMaterializedView({
+        key: viewKey,
+        version: 'v1',
+        scope,
+        factsDataVersion: secondBuild.factsDataVersion,
+      })).resolves.toMatchObject({
+        key: viewKey,
+        version: 'v1',
+        factsDataVersion: secondBuild.factsDataVersion,
+        previousFactsDataVersion: firstBuild.factsDataVersion,
+        activated: true,
+      });
+
+      const secondJoin = await engine.query({
+        materializedViews: [
+          { key: viewKey, version: 'v1', scope, variables: ['message'] },
+        ],
+        patterns: [
+          {
+            graph,
+            subject: { variable: 'message' },
+            predicate: namedNode(CONTENT),
+            object: { variable: 'content' },
+          },
+        ],
+        select: ['message', 'content'],
+        orderBy: [{ variable: 'message' }],
+        cache: { mode: 'bypass' },
+      });
+      expect(secondJoin.bindings.map((binding) => binding.message.value)).toEqual([message1.value, message2.value]);
+      expect(secondJoin.bindings.map((binding) => binding.content.value)).toEqual(['first open', 'second later open']);
+
+      const executor = (engine as unknown as {
+        requireExecutor(): { query<T>(sql: string, params?: unknown[]): Promise<T[]> };
+      }).requireExecutor();
+      const activeRows = await executor.query<{ count: number | string }>(`
+        SELECT COUNT(*) AS count
+        FROM rdf_materialized_views
+        WHERE view_key = $1
+          AND view_version = $2
+          AND active = TRUE
+      `, [viewKey, 'v1']);
+      expect(Number(activeRows[0]?.count ?? 0)).toBe(1);
+      const activeCells = await executor.query<{ count: number | string }>(`
+        SELECT COUNT(*) AS count
+        FROM rdf_materialized_view_cells cell
+        JOIN rdf_materialized_views view
+          ON view.view_key = cell.view_key
+         AND view.view_version = cell.view_version
+         AND view.scope_hash = cell.scope_hash
+         AND view.facts_data_version = cell.facts_data_version
+        WHERE view.view_key = $1
+          AND view.view_version = $2
+          AND view.active = TRUE
+      `, [viewKey, 'v1']);
+      expect(Number(activeCells[0]?.count ?? 0)).toBe(4);
+
+      await expect(engine.query({
+        materializedViews: [{ key: viewKey, version: 'v1', scope: { principal: 'https://pod.example/bob/profile/card#me' } }],
+        patterns: [],
+        select: ['message'],
+        cache: { mode: 'bypass' },
+      })).rejects.toThrow(/materialized view is not active/);
+
+      await expect(engine.deleteMaterializedView({ key: viewKey, version: 'v1', scope })).resolves.toBe(2);
+      await expect(engine.readMaterializedView({ key: viewKey, version: 'v1', scope })).resolves.toBeUndefined();
+      const remainingCells = await executor.query<{ count: number | string }>(`
+        SELECT COUNT(*) AS count
+        FROM rdf_materialized_view_cells
+        WHERE view_key = $1
+          AND view_version = $2
+      `, [viewKey, 'v1']);
+      expect(Number(remainingCells[0]?.count ?? 0)).toBe(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('explores schema and autocomplete candidates from RDF facts', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-schema-explorer-'));
+    const engine = new PostgresRdfEngine({ driver: 'pglite', dataDir });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const otherGraph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const run = namedNode(`${otherGraph.value}#run_1`);
+    const messageClass = namedNode('https://schema.example/Message');
+    const runClass = namedNode('https://schema.example/Run');
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(message, rdfType, messageClass, graph),
+        quad(message, namedNode(STATUS), literal('open'), graph),
+        quad(message, namedNode(CONTENT), literal('schema explorer message'), graph),
+        quad(run, rdfType, runClass, otherGraph),
+        quad(run, namedNode(STATUS), literal('running'), otherGraph),
+      ]);
+
+      const all = await engine.exploreSchema({ limit: 10 });
+      expect(all.graphs.map((entry) => entry.graph.value)).toEqual(expect.arrayContaining([graph.value, otherGraph.value]));
+      expect(all.predicates.map((entry) => entry.predicate.value)).toEqual(expect.arrayContaining([
+        rdfType.value,
+        STATUS,
+        CONTENT,
+      ]));
+      expect(all.classes.map((entry) => entry.object.value)).toEqual(expect.arrayContaining([
+        messageClass.value,
+        runClass.value,
+      ]));
+      expect(all.terms.map((entry) => entry.term.value)).toEqual(expect.arrayContaining([
+        message.value,
+        messageClass.value,
+        STATUS,
+      ]));
+
+      const chatOnlyMessage = await engine.exploreSchema({
+        query: 'message',
+        graphPrefix: 'https://pod.example/alice/.data/chat/',
+        limit: 10,
+      });
+      expect(chatOnlyMessage.graphs.map((entry) => entry.graph.value)).toEqual([graph.value]);
+      expect(chatOnlyMessage.classes.map((entry) => entry.object.value)).toEqual([messageClass.value]);
+      expect(chatOnlyMessage.terms.map((entry) => entry.term.value)).toEqual(expect.arrayContaining([
+        message.value,
+        messageClass.value,
+      ]));
+      expect(chatOnlyMessage.terms.map((entry) => entry.term.value)).not.toContain(run.value);
+
+      const statusOnly = await engine.exploreSchema({ query: 'status', limit: 5 });
+      expect(statusOnly.predicates.map((entry) => entry.predicate.value)).toEqual([STATUS]);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('searches bounded RDF paths with predicate, direction, and graph-prefix limits', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-path-search-'));
+    const engine = new PostgresRdfEngine({ driver: 'pglite', dataDir });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const otherGraph = namedNode('https://pod.example/alice/.data/task/default/2026/05/18/runs.ttl');
+    const a = namedNode(`${graph.value}#a`);
+    const b = namedNode(`${graph.value}#b`);
+    const c = namedNode(`${graph.value}#c`);
+    const d = namedNode(`${graph.value}#d`);
+    const outside = namedNode(`${otherGraph.value}#outside`);
+    const replyTo = namedNode('http://rdfs.org/sioc/ns#has_reply');
+    const mentions = namedNode('https://schema.org/mentions');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(a, replyTo, b, graph),
+        quad(b, replyTo, c, graph),
+        quad(a, mentions, d, graph),
+        quad(a, replyTo, outside, otherGraph),
+      ]);
+
+      const forward = await engine.searchPaths({
+        start: a,
+        target: c,
+        predicates: [replyTo],
+        graphPrefix: 'https://pod.example/alice/.data/chat/',
+        maxDepth: 2,
+        maxPaths: 5,
+      });
+      expect(forward).toMatchObject({
+        truncated: false,
+        maxDepth: 2,
+      });
+      expect(forward.paths.map((path) => path.nodes.map((node) => node.value))).toEqual([
+        [a.value, b.value, c.value],
+      ]);
+      expect(forward.paths[0].edges.map((edge) => ({
+        predicate: edge.predicate.value,
+        direction: edge.direction,
+      }))).toEqual([
+        { predicate: replyTo.value, direction: 'out' },
+        { predicate: replyTo.value, direction: 'out' },
+      ]);
+
+      const tooShallow = await engine.searchPaths({
+        start: a,
+        target: c,
+        predicates: [replyTo],
+        graphPrefix: 'https://pod.example/alice/.data/chat/',
+        maxDepth: 1,
+      });
+      expect(tooShallow.paths).toEqual([]);
+
+      const inverse = await engine.searchPaths({
+        start: c,
+        target: a,
+        direction: 'in',
+        predicates: [replyTo],
+        graphPrefix: 'https://pod.example/alice/.data/chat/',
+        maxDepth: 2,
+      });
+      expect(inverse.paths.map((path) => path.nodes.map((node) => node.value))).toEqual([
+        [c.value, b.value, a.value],
+      ]);
+      expect(inverse.paths[0].edges.map((edge) => edge.direction)).toEqual(['in', 'in']);
+
+      const oneHopAllPredicates = await engine.searchPaths({
+        start: a,
+        graphPrefix: 'https://pod.example/alice/.data/chat/',
+        maxDepth: 1,
+        maxPaths: 10,
+      });
+      expect(oneHopAllPredicates.paths.map((path) => path.nodes.map((node) => node.value))).toEqual([
+        [a.value, b.value],
+        [a.value, d.value],
+      ]);
+      expect(oneHopAllPredicates.paths.map((path) => path.edges[0].graph.value)).toEqual([graph.value, graph.value]);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -4793,7 +5144,7 @@ describe('PostgresRdfEngine', () => {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('uses COPY stream capability for large RDF term and quad staging inserts', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-bulk-copy-'));
@@ -6088,6 +6439,20 @@ describe('PostgresRdfEngine', () => {
       expect(report.concurrencyGate.cases.every((testCase) => testCase.returnedRows.every((rows) => rows === testCase.expectedReturnedRows))).toBe(true);
       expect(report.concurrencyGate.cases.every((testCase) => testCase.checksums.every((value) => value === testCase.expectedChecksum))).toBe(true);
       expect(report.concurrencyGate.cases.every((testCase) => testCase.orderedChecksums.every((value) => value === testCase.expectedOrderedChecksum))).toBe(true);
+      expect(report.servingRegressionGate).toMatchObject({
+        enabled: true,
+        matched: true,
+        failedCases: [],
+      });
+      expect(report.servingRegressionGate.thresholds).toBeUndefined();
+      expect(report.servingRegressionGate.cases.map((testCase) => testCase.name)).toEqual(
+        report.queryCases.map((testCase) => testCase.name),
+      );
+      expect(report.servingRegressionGate.cases.every((testCase) => testCase.planMatched)).toBe(true);
+      expect(report.servingRegressionGate.cases.every((testCase) => testCase.matched)).toBe(true);
+      expect(report.servingRegressionGate.cases.every((testCase) => testCase.failedReasons.length === 0)).toBe(true);
+      expect(report.servingRegressionGate.cases.every((testCase) => testCase.p95DurationMs >= 0)).toBe(true);
+      expect(report.servingRegressionGate.cases.every((testCase) => testCase.scannedRows >= 0)).toBe(true);
       const smallQueryCaseCount = rdfModelsPostgresQueryBenchmarkCasesForProfile('default')
         .filter((testCase) => testCase.minScale === 'small')
         .length;
@@ -6265,6 +6630,58 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('fails the serving regression gate when explicit scanned-row thresholds are exceeded', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-serving-threshold-benchmark-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+    const queryCase = rdfModelsPostgresQueryBenchmarkCasesForProfile('default')
+      .find((testCase) => testCase.name === 'modeled thread message page query');
+
+    try {
+      expect(queryCase).toBeDefined();
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: defaultSyntheticMessagesForRdfModelsScale('small'),
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+      }));
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'small',
+        iterations: 1,
+        warmupIterations: 0,
+        concurrency: 1,
+        cases: [],
+        queryCases: [queryCase!],
+        servingRegressionThresholds: {
+          maxScannedRows: 0,
+        },
+      });
+
+      expect(report.planMatched).toBe(false);
+      expect(report.failedPlanCases).toEqual(['serving-regression:modeled thread message page query']);
+      expect(report.servingRegressionGate).toMatchObject({
+        enabled: true,
+        matched: false,
+        thresholds: {
+          maxScannedRows: 0,
+        },
+        failedCases: ['modeled thread message page query'],
+      });
+      expect(report.servingRegressionGate.cases[0]).toMatchObject({
+        name: 'modeled thread message page query',
+        matched: false,
+        failedReasons: ['scanned-rows-threshold'],
+      });
+      expect(report.servingRegressionGate.cases[0].scannedRows).toBeGreaterThan(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('covers native ordered-page cutover in the PostgreSQL custom-index models benchmark gate', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-custom-index-ordered-page-benchmark-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);
@@ -6310,7 +6727,144 @@ describe('PostgresRdfEngine', () => {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
+
+  it('builds strict P3 release evidence from an all-profile PostgreSQL benchmark run', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-all-p3-gate-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+    });
+
+    try {
+      const broadSourceCount = 64;
+      const servingCase = rdfModelsPostgresQueryBenchmarkCasesForProfile('default')
+        .find((testCase) => testCase.name === 'modeled thread message page query');
+      const broadCase = rdfModelsPostgresQueryBenchmarkCasesForProfile('fusion')
+        .find((testCase) => testCase.name === 'broad agent context text vector fusion query');
+      expect(servingCase).toBeDefined();
+      expect(broadCase).toBeDefined();
+
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: broadSourceCount + 3,
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+        caseProfile: 'all',
+        searchFusionBroadSourceCount: broadSourceCount,
+      }));
+      await seedRdfModelsSearchFusionIndexes(engine, { broadSourceCount });
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'small',
+        iterations: 3,
+        warmupIterations: 1,
+        caseProfile: 'all',
+        servingRegressionThresholds: {
+          maxScannedRows: 10_000,
+          maxP95DurationMs: 10_000,
+        },
+        fusionBenchmarkThresholds: {
+          maxScannedRows: 10_000,
+          maxP95DurationMs: 10_000,
+        },
+        queryCases: [servingCase!, broadCase!],
+        fusionBenchmarkBaselines: {
+          'broad agent context text vector fusion query': {
+            label: 'strict-p3-test-baseline',
+            scannedRows: 1,
+            p95DurationMs: 1,
+            maxScannedRows: 10_000,
+            maxP95DurationMs: 10_000,
+          },
+        },
+      });
+
+      expect(report.servingRegressionGate).toMatchObject({
+        enabled: true,
+        thresholds: {
+          maxScannedRows: 10_000,
+          maxP95DurationMs: 10_000,
+        },
+        matched: true,
+        failedCases: [],
+      });
+      expect(report.servingRegressionGate.cases.map((testCase) => testCase.name)).toEqual([servingCase!.name]);
+      expect(report.fusionBenchmarkGate).toMatchObject({
+        enabled: true,
+        matched: true,
+        failedCases: [],
+      });
+      expect(report.fusionBenchmarkGate.cases.map((testCase) => testCase.name)).toEqual([broadCase!.name]);
+      expect(report.fusionBenchmarkGate.cases[0]).toMatchObject({
+        matched: true,
+        batchedBroadCandidateJoin: true,
+        baselineComparison: {
+          label: 'strict-p3-test-baseline',
+          matched: true,
+          scannedRowsBaseline: 1,
+          p95DurationMsBaseline: 1,
+          maxScannedRows: 10_000,
+          maxP95DurationMs: 10_000,
+        },
+      });
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('batches bound-source RDF fact joins for broad PostgreSQL fusion candidates', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-batch-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+    });
+
+    try {
+      const broadSourceCount = 64;
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: broadSourceCount + 3,
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+        caseProfile: 'fusion',
+        searchFusionBroadSourceCount: broadSourceCount,
+      }));
+      await seedRdfModelsSearchFusionIndexes(engine, { broadSourceCount });
+
+      const broadCase = rdfModelsPostgresQueryBenchmarkCasesForProfile('fusion')
+        .find((testCase) => testCase.name === 'broad agent context text vector fusion query');
+      expect(broadCase).toBeDefined();
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'small',
+        iterations: 1,
+        warmupIterations: 0,
+        caseProfile: 'fusion',
+        queryCases: [broadCase!],
+      });
+
+      const broadFusion = report.queryCases[0];
+      const membershipScans = broadFusion.physicalPlan
+        .filter((entry) => entry === 'Rdf3xMembershipScan').length;
+
+      const broadFusionGate = report.fusionBenchmarkGate.cases[0];
+
+      expect(broadFusion.returnedRows).toBe(10);
+      expect(broadFusion.physicalPlan.some((entry) => entry.startsWith('PostgresFactsBatchScan('))).toBe(true);
+      expect(membershipScans).toBeLessThanOrEqual(6);
+      expect(broadFusionGate.batchedBroadCandidateJoin).toBe(true);
+      expect(broadFusionGate.failedReasons).not.toContain('missing-batched-broad-candidate-join');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('runs text/vector fusion benchmark cases on PostgreSQL facts with configured search indexes', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-benchmark-'));
@@ -6329,34 +6883,181 @@ describe('PostgresRdfEngine', () => {
         syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
         caseProfile: 'fusion',
       }));
-      seedRdfModelsSearchFusionIndexes(engine);
+      await seedRdfModelsSearchFusionIndexes(engine);
 
       const report = await runRdfModelsPostgresBenchmark(engine, {
         scale: 'small',
         iterations: 1,
         warmupIterations: 0,
         caseProfile: 'fusion',
+        fusionBenchmarkBaselines: {
+          'broad agent context text vector fusion query': {
+            label: 'p0-p1-p2-physical-source-baseline',
+            scannedRows: 10_000,
+            p95DurationMs: 10_000,
+          },
+        },
       });
 
       expect(report.planMatched).toBe(true);
       expect(report.failedPlanCases).toEqual([]);
       expect(report.cases).toHaveLength(0);
       expect(report.queryCases.map((testCase) => testCase.name)).toEqual(rdfModelsSearchFusionQueryBenchmarkCaseNames());
+      expect(report.queryCases.map((testCase) => testCase.name)).toContain('broad agent context text vector fusion query');
+      expect(report.fusionBenchmarkGate).toMatchObject({
+        enabled: true,
+        caseProfile: 'fusion',
+        matched: true,
+        failedCases: [],
+      });
+      expect(report.fusionBenchmarkGate.cases.map((testCase) => testCase.name)).toEqual(report.queryCases.map((testCase) => testCase.name));
 
       const fusion = report.queryCases[0];
+      const fusionGate = report.fusionBenchmarkGate.cases[0];
       expect(fusion.returnedRows).toBe(2);
       expect(fusion.indexChoices).toEqual(expect.arrayContaining(['text-chunk', 'vector-chunk']));
       expect(fusion.physicalPlan.some((entry) => entry.startsWith('TextSearch('))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => entry.startsWith('TextMatchSource('))).toBe(true);
       expect(fusion.physicalPlan.some((entry) => entry.startsWith('VectorSearch('))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => entry.startsWith('VectorMatchSource('))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => /^SourceEstimate\(TextMatchSource#0 rows:\d+ cost:\d+ selectivity:/.test(entry))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => /^SourceEstimate\(VectorMatchSource#0 rows:\d+ cost:\d+ selectivity:/.test(entry))).toBe(true);
+      expect(fusion.physicalPlan.some((entry) => /^SourceEstimate\(RdfBgpSource#0 rows:\d+ cost:\d+ selectivity:/.test(entry))).toBe(true);
       expect(fusion.physicalPlan.some((entry) => entry.startsWith('PostgresFactsScan('))).toBe(true);
       expect(fusion.physicalPlan.some((entry) => entry.startsWith('PostgresFactsBind(?fusionScore:='))).toBe(true);
+      expect(fusion.physicalPlan).toContain('FusionRankInputs(text:?textScore,vector:?vectorScore,output:?fusionScore)');
+      expect(fusion.physicalPlan).toContain('FusionRankWeights(text:0.55,vector:0.45,output:?fusionScore)');
+      expect(fusion.physicalPlan).toContain('FusionRankTieBreaker(asc:?message)');
+      expect(fusion.physicalPlan).toContain('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
       expect(fusion.physicalPlan).toContain('PostgresFactsSort(desc:fusionScore,asc:message)');
       expect(fusion.physicalPlan.join('\n')).not.toContain('PostgresResultCache');
+      expect(fusionGate).toMatchObject({
+        matched: true,
+        planMatched: true,
+        failedReasons: [],
+        hardFiltersBeforeRank: true,
+        rankInputs: true,
+        rankWeights: true,
+        rankTieBreaker: true,
+        resultCacheBypassed: true,
+        returnedRows: 2,
+      });
+      expect(fusionGate.candidateSources).toEqual(expect.arrayContaining([
+        'TextMatchSource',
+        'VectorMatchSource',
+        'RdfBgpSource',
+        'PathScopeSource',
+        'AclScopeSource',
+      ]));
+      expect(fusionGate.sourceEstimateCount).toBeGreaterThanOrEqual(5);
+      expect(fusionGate.scannedRows).toBe(fusion.scannedRows);
+      expect(fusionGate.p95DurationMs).toBe(fusion.p95DurationMs);
+      const broadFusion = report.queryCases.find((testCase) => testCase.name === 'broad agent context text vector fusion query');
+      const broadFusionGate = report.fusionBenchmarkGate.cases.find((testCase) => testCase.name === 'broad agent context text vector fusion query');
+      expect(broadFusion?.returnedRows).toBe(10);
+      expect(broadFusion?.physicalPlan).toContain('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
+      expect(broadFusion?.physicalPlan).toContain('PostgresFactsLimit');
+      expect(broadFusionGate).toMatchObject({
+        matched: true,
+        planMatched: true,
+        returnedRows: 10,
+        hardFiltersBeforeRank: true,
+        resultCacheBypassed: true,
+        baselineComparison: {
+          label: 'p0-p1-p2-physical-source-baseline',
+          matched: true,
+          scannedRowsBaseline: 10_000,
+          p95DurationMsBaseline: 10_000,
+        },
+      });
+      expect(broadFusionGate?.baselineComparison?.scannedRowsRatio).toBeLessThanOrEqual(1);
+      expect(broadFusionGate?.baselineComparison?.p95DurationMsRatio).toBeLessThanOrEqual(1);
+      expect(broadFusionGate?.candidateSources).toEqual(expect.arrayContaining([
+        'TextMatchSource',
+        'VectorMatchSource',
+        'RdfBgpSource',
+        'PathScopeSource',
+        'AclScopeSource',
+      ]));
+      expect(broadFusionGate?.scannedRows).toBeGreaterThanOrEqual(10);
+      expect(report.performanceCosts).toMatchObject({
+        storageOverhead: {
+          factsBytes: expect.any(Number),
+          derivedBytes: expect.any(Number),
+          totalBytes: expect.any(Number),
+          derivedToFactsRatio: expect.any(Number),
+          totalToFactsRatio: expect.any(Number),
+        },
+        indexBuild: {
+          durationMs: expect.any(Number),
+          refreshed: true,
+        },
+      });
+      expect(report.performanceCosts.storageOverhead.totalBytes).toBe(report.storage.totalBytes);
+      expect(report.performanceCosts.indexBuild?.durationMs).toBe(report.refreshBenchmark?.durationMs);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
+
+  it('fails the fusion benchmark gate when explicit scanned-row thresholds are exceeded', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-threshold-benchmark-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+    });
+
+    try {
+      await engine.open();
+      await engine.put(buildRdfModelsBenchmarkSeed({
+        syntheticMessages: defaultSyntheticMessagesForRdfModelsScale('small'),
+        syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
+        caseProfile: 'fusion',
+      }));
+      await seedRdfModelsSearchFusionIndexes(engine);
+
+      const report = await runRdfModelsPostgresBenchmark(engine, {
+        scale: 'small',
+        iterations: 1,
+        warmupIterations: 0,
+        caseProfile: 'fusion',
+        fusionBenchmarkThresholds: {
+          maxScannedRows: 0,
+        },
+      });
+
+      expect(report.planMatched).toBe(false);
+      expect(report.failedPlanCases).toEqual(expect.arrayContaining([
+        'fusion:agent context text vector fusion query',
+        'fusion:broad agent context text vector fusion query',
+      ]));
+      expect(report.fusionBenchmarkGate).toMatchObject({
+        enabled: true,
+        caseProfile: 'fusion',
+        matched: false,
+        thresholds: {
+          maxScannedRows: 0,
+        },
+        failedCases: expect.arrayContaining([
+          'agent context text vector fusion query',
+          'broad agent context text vector fusion query',
+        ]),
+      });
+      expect(report.fusionBenchmarkGate.cases[0]).toMatchObject({
+        name: 'agent context text vector fusion query',
+        matched: false,
+        failedReasons: ['scanned-rows-threshold'],
+      });
+      expect(report.fusionBenchmarkGate.cases[0].scannedRows).toBeGreaterThan(0);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it('rejects PostgreSQL text/vector fusion queries before cache lookup when search indexes are not configured', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-missing-index-'));
@@ -6370,6 +7071,547 @@ describe('PostgresRdfEngine', () => {
       await engine.open();
       const [fusion] = rdfModelsPostgresQueryBenchmarkCasesForProfile('fusion');
       await expect(engine.query(fusion.query)).rejects.toThrow('RdfQuery textSearch requires a configured RdfTextIndex');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes text-search entity constraints into PostgreSQL text index joins', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-text-entity-query-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const task = namedNode('https://pod.example/alice/.data/tasks/default.ttl#task_1');
+    const matchingSource = namedNode('https://pod.example/alice/projects/demo/matching.md');
+    const wrongEntitySource = namedNode('https://pod.example/alice/projects/demo/wrong-entity.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(matchingSource, rdfType, docType, matchingSource),
+        quad(wrongEntitySource, rdfType, docType, wrongEntitySource),
+      ]);
+      await engine.indexTextSource({
+        source: matchingSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'matching.md',
+        contentType: 'text/markdown',
+      }, '', [{
+        chunkKey: 'matching-task',
+        ordinal: 0,
+        level: 1,
+        heading: 'Matching',
+        path: ['Matching'],
+        content: 'Managed runtime handoff mentions the task.',
+        startOffset: 0,
+        endOffset: 43,
+        entities: [{ entity: task.value, predicate: 'https://schema.org/about' }],
+      }]);
+      await engine.indexTextSource({
+        source: wrongEntitySource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'wrong-entity.md',
+        contentType: 'text/markdown',
+      }, '', [{
+        chunkKey: 'wrong-task',
+        ordinal: 0,
+        level: 1,
+        heading: 'Wrong',
+        path: ['Wrong'],
+        content: 'Managed runtime handoff mentions another task.',
+        startOffset: 0,
+        endOffset: 46,
+        entities: [{ entity: 'https://pod.example/alice/.data/tasks/default.ttl#task_2' }],
+      }]);
+
+      const result = await engine.query({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          entities: [task.value],
+          source: 'source',
+          content: 'snippet',
+        }],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings.map((binding) => binding.source.value)).toEqual([matchingSource.value]);
+      expect(result.metrics.plan).toContain('TextSearch("managed runtime"@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet entities:1)');
+      expect(result.metrics.indexChoices).toContain('text-chunk');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('binds PostgreSQL text-search source and retrieval-point provenance for Agent context projection', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-text-context-provenance-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const task = namedNode('https://pod.example/alice/.data/tasks/default.ttl#task_1');
+    const source = namedNode('https://pod.example/alice/projects/demo/context.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(source, rdfType, docType, source),
+      ]);
+      await engine.indexTextSource({
+        source: source.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'context.md',
+        contentType: 'text/markdown',
+        sourceKey: 'source-node:context',
+      }, '', [{
+        chunkKey: 'context-task',
+        ordinal: 0,
+        level: 1,
+        heading: 'Context',
+        path: ['Context'],
+        content: 'Managed runtime handoff mentions the task.',
+        startOffset: 0,
+        endOffset: 43,
+        retrievalKind: 'file-chunk',
+        entities: [{
+          entity: task.value,
+          predicate: 'https://schema.org/about',
+          value: 'Managed runtime handoff mentions the task.',
+          policyRole: 'searchableText',
+          occurrences: 1,
+        }],
+      }]);
+
+      const result = await engine.query({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+          sourceKey: 'sourceKey',
+          retrievalPoint: 'retrievalPointKey',
+          retrievalKind: 'retrievalKind',
+          entityProvenance: 'entityProvenance',
+          scoreComponents: 'scoreComponents',
+        } as any],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        select: ['source', 'snippet', 'sourceKey', 'retrievalPointKey', 'retrievalKind', 'entityProvenance', 'scoreComponents'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].sourceKey.value).toBe('source-node:context');
+      expect(result.bindings[0].retrievalPointKey.value).toBe('context-task');
+      expect(result.bindings[0].retrievalKind.value).toBe('file-chunk');
+      expect(JSON.parse(result.bindings[0].scoreComponents.value)).toMatchObject({
+        sourceType: 'text',
+        algorithm: 'occurrence-heading-boost',
+        normalizedQuery: 'managed runtime',
+        occurrenceScore: 1,
+      });
+      expect(JSON.parse(result.bindings[0].entityProvenance.value)).toEqual([{
+        entity: task.value,
+        predicate: 'https://schema.org/about',
+        value: 'Managed runtime handoff mentions the task.',
+        policyRole: 'searchableText',
+        occurrences: 1,
+      }]);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('filters PostgreSQL text-search candidates by local path subtree scope', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-text-local-path-prefix-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docsSource = namedNode('https://pod.example/alice/projects/demo/docs/runbook.md');
+    const archiveSource = namedNode('https://pod.example/alice/projects/demo/archive/runbook.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(docsSource, rdfType, docType, docsSource),
+        quad(archiveSource, rdfType, docType, archiveSource),
+      ]);
+      await engine.indexTextSource({
+        source: docsSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'docs/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Docs\n\nManaged runtime subtree marker.\n');
+      await engine.indexTextSource({
+        source: archiveSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'archive/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Archive\n\nManaged runtime subtree marker.\n');
+
+      const result = await engine.query({
+        textSearch: [{
+          query: 'managed runtime subtree',
+          scope: {
+            workspace: 'https://pod.example/alice/projects/demo/',
+            localPathPrefix: 'docs/',
+          },
+          source: 'source',
+          localPath: 'localPath',
+          content: 'snippet',
+        }],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        select: ['source', 'localPath', 'snippet'],
+      });
+
+      expect(result.bindings.map((binding) => binding.localPath.value)).toEqual(['docs/runbook.md']);
+      expect(result.metrics.plan).toContain('PathScopeSource(workspace:https://pod.example/alice/projects/demo/,local-path-prefix:docs/)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports PostgreSQL textSearch source-local top-K pushdown in the physical plan', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-text-topk-plan-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const first = namedNode('https://pod.example/alice/projects/demo/a.md');
+    const second = namedNode('https://pod.example/alice/projects/demo/b.md');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(first, rdfType, docType, first),
+        quad(second, rdfType, docType, second),
+      ]);
+      await engine.indexTextSource({
+        source: first.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'a.md',
+        contentType: 'text/markdown',
+      }, '# A\n\nManaged runtime.\n');
+      await engine.indexTextSource({
+        source: second.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'b.md',
+        contentType: 'text/markdown',
+      }, '# B\n\nManaged runtime managed runtime.\n');
+
+      const result = await engine.query(applyRdfAccessScope({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+          orderBy: [{ field: 'source', direction: 'desc' }],
+          limit: 1,
+        }],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        select: ['source', 'snippet'],
+      }, {
+        basePath: 'https://pod.example/alice/projects/demo/',
+        mode: 'read',
+        principal: 'https://id.example/alice/profile/card#me',
+        allowedGraphUrls: [second.value],
+        deniedGraphPrefixes: ['https://pod.example/alice/projects/private/'],
+        version: 'acl-v1',
+      }));
+
+      expect(result.bindings.map((binding) => binding.source.value)).toEqual([second.value]);
+      expect(result.metrics.plan).toContain('TextSearch("managed runtime"@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet limit:1 order:source:desc)');
+      expect(result.metrics.plan).toContain('PathScopeSource(workspace:https://pod.example/alice/projects/demo/,prefix:https://pod.example/alice/projects/demo/)');
+      expect(result.metrics.plan).toContain('AclScopeSource(base-path:https://pod.example/alice/projects/demo/ allowed:1 denied-prefix:1)');
+      expect(result.metrics.plan).toContain('TopKPushdown(TextSearch limit:1 order:source:desc)');
+      expect(result.metrics.plan).toContain('NoTsFullMaterialize(TextSearch)');
+      const textPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('TextSearch('));
+      const rdfPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('PostgresFactsScan('));
+      expect(textPlan).toBeGreaterThanOrEqual(0);
+      expect(rdfPlan).toBeGreaterThanOrEqual(0);
+      expect(textPlan).toBeLessThan(rdfPlan);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('filters unauthorized PostgreSQL candidates before final fusion ranking', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-acl-rank-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const publicSource = namedNode('https://pod.example/alice/.data/public/fusion.md');
+    const privateSource = namedNode('https://pod.example/alice/.data/private/fusion.md');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(publicSource, rdfType, docType, publicSource),
+        quad(privateSource, rdfType, docType, privateSource),
+      ]);
+      await engine.indexTextSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/fusion.md',
+        contentType: 'text/markdown',
+      }, '# Public\n\nManaged runtime approvals.\n');
+      await engine.indexTextSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/fusion.md',
+        contentType: 'text/markdown',
+      }, '# Private managed runtime\n\nManaged runtime managed runtime managed runtime approvals.\n');
+      await engine.indexVectorSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/fusion.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'public',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime approvals.',
+        startOffset: 0,
+        endOffset: 26,
+        embedding: [0.1, 1],
+        model: 'test-embed',
+      }]);
+      await engine.indexVectorSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/fusion.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'private',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime approvals with private high score.',
+        startOffset: 0,
+        endOffset: 49,
+        embedding: [1, 0],
+        model: 'test-embed',
+      }]);
+
+      const result = await engine.query(applyRdfAccessScope({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'textSnippet',
+          score: 'textScore',
+        }],
+        vectorSearch: [{
+          embedding: [1, 0],
+          vectorModel: 'test-embed',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'vectorSnippet',
+          score: 'vectorScore',
+        }],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        binds: [{
+          variable: 'fusionScore',
+          expression: {
+            type: 'add',
+            expressions: [
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                  { type: 'term', term: literal('0.55', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+                  { type: 'term', term: literal('0.45', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+            ],
+          },
+        }],
+        select: ['source', 'fusionScore'],
+        orderBy: [
+          { variable: 'fusionScore', direction: 'desc' },
+          { variable: 'source' },
+        ],
+        limit: 1,
+      }, {
+        basePath: 'https://pod.example/alice/.data/',
+        mode: 'read',
+        principal: 'https://id.example/alice/profile/card#me',
+        allowedGraphUrls: [publicSource.value],
+        deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+        version: 'acl-v1',
+      }));
+
+      expect(result.bindings.map((binding) => binding.source.value)).toEqual([publicSource.value]);
+      expect(result.metrics.plan).toContain('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
+      expect(result.metrics.plan).toContain('AclScopeSource(base-path:https://pod.example/alice/.data/ allowed:1 denied-prefix:1)');
+      expect(result.metrics.plan.join('\n')).not.toContain('PostgresResultCache');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('orders selective PostgreSQL text search before broad RDF scans by estimate', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-text-estimate-order-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const selected = namedNode('https://pod.example/alice/projects/demo/selected.md');
+
+    try {
+      await engine.open();
+      const docs = Array.from({ length: 40 }, (_value, index) => (
+        index === 0
+          ? selected
+          : namedNode(`https://pod.example/alice/projects/demo/doc-${index}.md`)
+      ));
+      await engine.put(docs.map((source) => quad(source, rdfType, docType, source)));
+      await engine.indexTextSource({
+        source: selected.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'selected.md',
+        contentType: 'text/markdown',
+      }, '# Selected\n\nRare planner marker.\n');
+
+      const result = await engine.query({
+        textSearch: [{
+          query: 'rare planner marker',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings.map((binding) => binding.source.value)).toEqual([selected.value]);
+      const textPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('TextSearch('));
+      const rdfPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('PostgresFactsScan('));
+      expect(textPlan).toBeGreaterThanOrEqual(0);
+      expect(rdfPlan).toBeGreaterThanOrEqual(0);
+      expect(textPlan).toBeLessThan(rdfPlan);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports PostgreSQL textSearch per-source cap pushdown in the physical plan', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-text-per-source-plan-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const source = namedNode('https://pod.example/alice/projects/demo/capped.md');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(source, rdfType, docType, source),
+      ]);
+      await engine.indexTextSource({
+        source: source.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'capped.md',
+        contentType: 'text/markdown',
+      }, '# A\n\nManaged runtime.\n\n# B\n\nManaged runtime again.\n');
+
+      const result = await engine.query(applyRdfAccessScope({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+          perSourceLimit: 1,
+        }],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        select: ['source', 'snippet'],
+      }, {
+        basePath: 'https://pod.example/alice/projects/demo/',
+        mode: 'read',
+        principal: 'https://id.example/alice/profile/card#me',
+        allowedGraphUrls: [source.value],
+        version: 'acl-v1',
+      }));
+
+      expect(result.metrics.plan).toContain('PerSourceCap(TextSearch per-source:1)');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -6451,7 +7693,7 @@ describe('PostgresRdfEngine', () => {
       await rm(textIndexDir, { recursive: true, force: true });
       await rm(vectorIndexDir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('wires cloud RDF storage to PostgreSQL hot operators in the open-source config', async () => {
     const cloudConfig = JSON.parse(await readFile(path.join(process.cwd(), 'config/cloud.json'), 'utf8'));

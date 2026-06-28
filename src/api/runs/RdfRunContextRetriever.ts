@@ -109,6 +109,10 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
           workspace: 'workspace',
           localPath: 'localPath',
           contentType: 'contentType',
+          sourceKey: 'sourceKey',
+          retrievalPoint: 'retrievalPointKey',
+          retrievalKind: 'retrievalKind',
+          entityProvenance: 'entityProvenance',
         },
       ],
       select: [
@@ -120,6 +124,10 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
         'textContent',
         'textHeading',
         'textScore',
+        'sourceKey',
+        'retrievalPointKey',
+        'retrievalKind',
+        'entityProvenance',
       ],
       orderBy: [{ variable: 'textScore', direction: 'desc' }],
       limit,
@@ -205,7 +213,27 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
     const accessScope = typeof this.options.accessScope === 'function'
       ? this.options.accessScope(input)
       : this.options.accessScope;
-    return accessScope ? applyRdfAccessScope(query, accessScope) : query;
+    if (!accessScope) {
+      this.assertAccessScopeOptional(input);
+      return query;
+    }
+    this.assertAccessScopeComplete(input, accessScope);
+    return applyRdfAccessScope(query, accessScope);
+  }
+
+  private assertAccessScopeOptional(input: RunContextRetrievalInput<TContext>): void {
+    if (isRemoteWorkspace(input.config.workspace)) {
+      throw new Error('RDF Run context retrieval requires an access scope for remote Pod workspaces');
+    }
+  }
+
+  private assertAccessScopeComplete(input: RunContextRetrievalInput<TContext>, accessScope: RdfAccessScope): void {
+    if (!isRemoteWorkspace(input.config.workspace)) {
+      return;
+    }
+    if (!accessScope.principal || !accessScope.version) {
+      throw new Error('RDF Run context retrieval requires principal and permission version for remote Pod workspaces');
+    }
   }
 
   private bindingToContextItem(row: RdfBindingRow): RunRetrievedContextItem | undefined {
@@ -221,9 +249,15 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
     const heading = termValue(row.textHeading) || termValue(row.vectorHeading);
     const vectorDistance = termNumber(row.vectorDistance);
     const vectorModel = termValue(row.vectorModel);
+    const entityProvenance = parseJsonArray(termValue(row.entityProvenance));
     const metadata = compactRecord({
+      untrustedContext: true,
       textChunk: termValue(row.textChunk),
       vectorChunk: termValue(row.vectorChunk),
+      sourceKey: termValue(row.sourceKey),
+      retrievalPointKey: termValue(row.retrievalPointKey),
+      retrievalKind: termValue(row.retrievalKind),
+      entityProvenance,
       textScore,
       vectorScore,
       vectorDistance,
@@ -240,6 +274,15 @@ export class RdfRunContextRetriever<TContext = StoreContext> implements RunConte
       heading,
       metadata,
     };
+  }
+}
+
+function isRemoteWorkspace(workspaceValue: string): boolean {
+  try {
+    const workspace = new URL(workspaceValue);
+    return workspace.protocol === 'http:' || workspace.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 
@@ -269,4 +312,16 @@ function termNumber(term: RdfBindingRow[string] | undefined): number | undefined
 function compactRecord(input: Record<string, unknown>): Record<string, unknown> | undefined {
   const entries = Object.entries(input).filter(([, value]) => value !== undefined);
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function parseJsonArray(value: string | undefined): unknown[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }

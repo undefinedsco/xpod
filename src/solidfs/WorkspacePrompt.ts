@@ -22,7 +22,7 @@ You are operating inside an Xpod SolidFS materialized workspace.
 - Do not assume placeholder bytes are the real content.
 - Hydration has cost; inspect metadata before choosing metadata, thumbnail, range-read, or full hydration.
 - Writes are tracked by the SolidFS journal and must be committed or rolled back by runtime.
-- Search/vector/index artifacts are internal; use search/parser tools rather than looking for index files.
+- Search/vector/index artifacts are internal; use search/reader tools rather than looking for index files.
 `;
 }
 

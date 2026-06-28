@@ -4,6 +4,7 @@ import type { QuintPattern, TermMatch } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfQuadIndex } from './RdfQuadIndex';
 import { Rdf3xIndex } from './Rdf3xIndex';
+import { describeFusionRankPlan } from './RdfFusionRankPlan';
 import { isFiniteNumericLexical, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
 import type {
   RdfBindExpression,
@@ -137,6 +138,16 @@ interface PatternJoinResult {
 interface RequiredSourceEstimate {
   rows: number;
   costRows: number;
+}
+
+interface RequiredSourceChoice {
+  source: RequiredSource;
+  index: number;
+  connected: boolean;
+  disconnectedPenalty: number;
+  estimatedRows: number;
+  estimatedCostRows: number;
+  rank: number;
 }
 
 export class RdfQueryExecutor {
@@ -402,6 +413,7 @@ export class RdfQueryExecutor {
     if ((query.binds?.length ?? 0) > 0) {
       bindings = this.applyBinds(bindings, query.binds ?? []);
       metrics.plan.push(`Bind(${(query.binds ?? []).map(describeBind).join(',')})`);
+      metrics.plan.push(...describeFusionRankPlan(query));
     }
 
     for (const rawOptionalGroup of query.optional ?? []) {
@@ -552,19 +564,28 @@ export class RdfQueryExecutor {
     const boundVariables = this.boundVariables(bindings);
     const hasBoundVariables = boundVariables.size > 0;
     const sampleBinding = bindings[0] ?? {};
-    const choices = sources.map((source, index) => {
+    const choices: RequiredSourceChoice[] = sources.map((source, index) => {
       const sourceVariables = variablesInRequiredSource(source);
       const connected = sourceVariables.length === 0
         || sourceVariables.some((variableName) => boundVariables.has(variableName));
       const estimate = this.estimateSource(source, bindings, filters, metrics);
       return {
+        source,
         index,
+        connected,
         disconnectedPenalty: hasBoundVariables && !connected ? 1 : 0,
         estimatedRows: estimate.rows,
         estimatedCostRows: estimate.costRows,
         rank: this.sourceRank(source, sampleBinding),
       };
     });
+
+    if (sources.some((source) => source.kind === 'text' || source.kind === 'vector')) {
+      metrics.plan.push(...choices.flatMap((choice) => [
+        describeRequiredSourceEstimate(choice),
+        ...describeRequiredScopeSourceEstimates(choice),
+      ]));
+    }
 
     choices.sort((left, right) => (
       left.disconnectedPenalty - right.disconnectedPenalty
@@ -917,12 +938,12 @@ export class RdfQueryExecutor {
       }
       case 'text': {
         const bindings = this.joinTextSearch(input, source, metrics);
-        metrics.plan.push(`TextSearch(${describeTextSearch(source.pattern)})`);
+        metrics.plan.push(...describeTextSearchPlan(source.pattern));
         return bindings;
       }
       case 'vector': {
         const bindings = this.joinVectorSearch(input, source, metrics);
-        metrics.plan.push(`VectorSearch(${describeVectorSearch(source.pattern)})`);
+        metrics.plan.push(...describeVectorSearchPlan(source.pattern));
         return bindings;
       }
       case 'values': {
@@ -1793,11 +1814,14 @@ export class RdfQueryExecutor {
       source: exactSource,
       workspace: pattern.scope?.workspace,
       sourcePrefix: pattern.scope?.sourcePrefix,
+      localPathPrefix: pattern.scope?.localPathPrefix,
       allowedSources: pattern.scope?.allowedSources,
       deniedSources: pattern.scope?.deniedSources,
       deniedSourcePrefixes: pattern.scope?.deniedSourcePrefixes,
+      entities: pattern.entities,
       limit: includeWindow ? pattern.limit : undefined,
       offset: includeWindow ? pattern.offset : undefined,
+      perSourceLimit: pattern.perSourceLimit,
       orderBy: pattern.orderBy,
     };
   }
@@ -1806,10 +1830,16 @@ export class RdfQueryExecutor {
     return {
       embedding: pattern.embedding,
       metric: pattern.metric,
+      provider: pattern.vectorProvider,
       model: pattern.vectorModel,
+      modelVersion: pattern.vectorModelVersion,
+      inputKind: pattern.vectorInputKind,
+      inputHash: pattern.vectorInputHash,
+      projectionPolicyVersion: pattern.vectorProjectionPolicyVersion,
       source: exactSource,
       workspace: pattern.scope?.workspace,
       sourcePrefix: pattern.scope?.sourcePrefix,
+      localPathPrefix: pattern.scope?.localPathPrefix,
       allowedSources: pattern.scope?.allowedSources,
       deniedSources: pattern.scope?.deniedSources,
       deniedSourcePrefixes: pattern.scope?.deniedSourcePrefixes,
@@ -2959,6 +2989,92 @@ function variablesInRequiredSource(source: RequiredSource): string[] {
   ].filter((value): value is string => Boolean(value));
 }
 
+function describeRequiredSourceEstimate(choice: RequiredSourceChoice): string {
+  return describeRequiredSourceEstimateEntry(
+    describeRequiredSourceName(choice.source),
+    choice.estimatedRows,
+    choice.estimatedCostRows,
+    describeRequiredSourceTopK(choice.source),
+    choice.connected,
+  );
+}
+
+function describeRequiredScopeSourceEstimates(choice: RequiredSourceChoice): string[] {
+  if (choice.source.kind !== 'text' && choice.source.kind !== 'vector') {
+    return [];
+  }
+  const scope = choice.source.pattern.scope;
+  if (!scope) {
+    return [];
+  }
+
+  const entries: string[] = [];
+  if (scope.workspace || scope.sourcePrefix || scope.localPathPrefix) {
+    entries.push(describeRequiredSourceEstimateEntry(
+      `PathScopeSource#${choice.index}`,
+      choice.estimatedRows,
+      choice.estimatedCostRows,
+      'none',
+      choice.connected,
+    ));
+  }
+  if (
+    scope.accessBasePath
+    || (scope.allowedSources?.length ?? 0) > 0
+    || (scope.deniedSources?.length ?? 0) > 0
+    || (scope.deniedSourcePrefixes?.length ?? 0) > 0
+  ) {
+    entries.push(describeRequiredSourceEstimateEntry(
+      `AclScopeSource#${choice.index}`,
+      choice.estimatedRows,
+      choice.estimatedCostRows,
+      'none',
+      choice.connected,
+    ));
+  }
+  return entries;
+}
+
+function describeRequiredSourceEstimateEntry(
+  source: string,
+  estimatedRows: number,
+  estimatedCostRows: number,
+  topK: string,
+  connected: boolean,
+): string {
+  const rows = Math.max(0, Math.ceil(estimatedRows));
+  const costRows = Math.max(0, Math.ceil(estimatedCostRows));
+  const selectivity = costRows > 0 ? rows / costRows : 0;
+  return `SourceEstimate(${source} rows:${rows} cost:${costRows} selectivity:${formatPlanRatio(selectivity)} topk:${topK} connected:${connected})`;
+}
+
+function describeRequiredSourceName(source: RequiredSource): string {
+  switch (source.kind) {
+    case 'pattern':
+      return `RdfBgpSource#${source.originalIndex}`;
+    case 'text':
+      return `TextMatchSource#${source.originalIndex}`;
+    case 'vector':
+      return `VectorMatchSource#${source.originalIndex}`;
+    case 'values':
+      return `ValuesSource#${source.originalIndex}`;
+  }
+}
+
+function describeRequiredSourceTopK(source: RequiredSource): string {
+  if (source.kind === 'text' || source.kind === 'vector') {
+    return hasSearchWindow(source) ? 'source-local' : 'none';
+  }
+  return 'none';
+}
+
+function formatPlanRatio(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '0.000';
+  }
+  return Math.max(0, Math.min(1, value)).toFixed(3);
+}
+
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
@@ -3408,9 +3524,92 @@ function describeTextSearch(pattern: RdfTextSearchPattern): string {
     : pattern.scope?.sourcePrefix
     ? `prefix:${pattern.scope.sourcePrefix}`
     : '*';
+  const entityConstraint = pattern.entities?.length ? ` entities:${pattern.entities.length}` : '';
   const window = describeSearchWindow(pattern.limit, pattern.offset);
   const order = describeSearchOrder(pattern.orderBy);
-  return `${JSON.stringify(pattern.query)}@${scope}${bindings ? ` ${bindings}` : ''}${window}${order}`;
+  return `${JSON.stringify(pattern.query)}@${scope}${bindings ? ` ${bindings}` : ''}${entityConstraint}${window}${order}`;
+}
+
+function describeTextSearchPlan(pattern: RdfTextSearchPattern): string[] {
+  const source = describeTextSearch(pattern);
+  const entries = [
+    `TextSearch(${source})`,
+    `TextMatchSource(${source})`,
+  ];
+  entries.push(...describeSearchScopePlan(pattern.scope));
+  const topK = describeTextSearchTopKPushdown(pattern);
+  if (topK) {
+    entries.push(topK, 'NoTsFullMaterialize(TextSearch)');
+  }
+  const perSourceCap = describeTextSearchPerSourceCap(pattern);
+  if (perSourceCap) {
+    entries.push(perSourceCap);
+  }
+  return entries;
+}
+
+function describeVectorSearchPlan(pattern: RdfVectorSearchPattern): string[] {
+  const source = describeVectorSearch(pattern);
+  const entries = [
+    `VectorSearch(${source})`,
+    `VectorMatchSource(${source})`,
+  ];
+  entries.push(...describeSearchScopePlan(pattern.scope));
+  const topK = describeVectorSearchTopKPushdown(pattern);
+  if (topK) {
+    entries.push(topK, 'NoTsFullMaterialize(VectorSearch)');
+  }
+  return entries;
+}
+
+function describeVectorSearchTopKPushdown(pattern: RdfVectorSearchPattern): string | undefined {
+  const window = describeSearchWindow(pattern.limit, pattern.offset).trim();
+  if (!window) {
+    return undefined;
+  }
+  const order = describeSearchOrder(pattern.orderBy).trim();
+  return `TopKPushdown(VectorSearch ${[window, order].filter(Boolean).join(' ')})`;
+}
+
+function describeTextSearchTopKPushdown(pattern: RdfTextSearchPattern): string | undefined {
+  const window = describeSearchWindow(pattern.limit, pattern.offset).trim();
+  if (!window) {
+    return undefined;
+  }
+  const order = describeSearchOrder(pattern.orderBy).trim();
+  return `TopKPushdown(TextSearch ${[window, order].filter(Boolean).join(' ')})`;
+}
+
+function describeTextSearchPerSourceCap(pattern: RdfTextSearchPattern): string | undefined {
+  if (pattern.perSourceLimit === undefined || !Number.isFinite(pattern.perSourceLimit)) {
+    return undefined;
+  }
+  return `PerSourceCap(TextSearch per-source:${Math.max(0, Math.trunc(pattern.perSourceLimit))})`;
+}
+
+function describeSearchScopePlan(scope: RdfTextSearchPattern['scope']): string[] {
+  if (!scope) {
+    return [];
+  }
+  const entries: string[] = [];
+  const pathParts = [
+    scope.workspace ? `workspace:${scope.workspace}` : undefined,
+    scope.sourcePrefix ? `prefix:${scope.sourcePrefix}` : undefined,
+    scope.localPathPrefix ? `local-path-prefix:${scope.localPathPrefix}` : undefined,
+  ].filter(Boolean);
+  if (pathParts.length > 0) {
+    entries.push(`PathScopeSource(${pathParts.join(',')})`);
+  }
+  const aclParts = [
+    scope.accessBasePath ? `base-path:${scope.accessBasePath}` : undefined,
+    scope.allowedSources ? `allowed:${scope.allowedSources.length}` : undefined,
+    scope.deniedSources?.length ? `denied:${scope.deniedSources.length}` : undefined,
+    scope.deniedSourcePrefixes?.length ? `denied-prefix:${scope.deniedSourcePrefixes.length}` : undefined,
+  ].filter(Boolean);
+  if (aclParts.length > 0) {
+    entries.push(`AclScopeSource(${aclParts.join(' ')})`);
+  }
+  return entries;
 }
 
 function describeVectorSearch(pattern: RdfVectorSearchPattern): string {
@@ -3522,6 +3721,15 @@ function describeQueryOrder(orderBy: NonNullable<RdfQuery['orderBy']>): string {
 function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
   return (queryPlan ?? []).filter((entry) => (
     entry.startsWith('TextSearch(')
+      || entry.startsWith('TextMatchSource(')
+      || entry.startsWith('VectorSearch(')
+      || entry.startsWith('VectorMatchSource(')
+      || entry.startsWith('PathScopeSource(')
+      || entry.startsWith('AclScopeSource(')
+      || entry.startsWith('TopKPushdown(')
+      || entry.startsWith('PerSourceCap(')
+      || entry === 'NoTsFullMaterialize(TextSearch)'
+      || entry === 'NoTsFullMaterialize(VectorSearch)'
       || entry.startsWith('Rdf3x')
       || entry === 'GraphMembershipFilter'
       || entry === 'GraphPrefixMembershipFilter'
@@ -3790,9 +3998,14 @@ function bindTextSearchResult(
     [pattern.content, DataFactory.literal(result.content) as Term],
     [pattern.heading, result.heading ? DataFactory.literal(result.heading) as Term : undefined],
     [pattern.score, decimalLiteral(result.score)],
+    [pattern.scoreComponents, result.scoreComponents ? DataFactory.literal(JSON.stringify(result.scoreComponents)) as Term : undefined],
     [pattern.workspace, DataFactory.namedNode(result.workspace) as Term],
     [pattern.localPath, result.localPath ? DataFactory.literal(result.localPath) as Term : undefined],
     [pattern.contentType, result.contentType ? DataFactory.literal(result.contentType) as Term : undefined],
+    [pattern.sourceKey, DataFactory.literal(result.sourceKey) as Term],
+    [pattern.retrievalPoint, DataFactory.literal(result.retrievalPointKey) as Term],
+    [pattern.retrievalKind, DataFactory.literal(result.retrievalKind) as Term],
+    [pattern.entityProvenance, DataFactory.literal(JSON.stringify(result.entities)) as Term],
     [pattern.ordinal, integerLiteral(result.ordinal)],
     [pattern.level, integerLiteral(result.level)],
     [pattern.startOffset, integerLiteral(result.startOffset)],
@@ -3826,14 +4039,22 @@ function bindVectorSearchResult(
     [pattern.heading, result.heading ? DataFactory.literal(result.heading) as Term : undefined],
     [pattern.score, decimalLiteral(result.score)],
     [pattern.distance, decimalLiteral(result.distance)],
+    [pattern.scoreComponents, result.scoreComponents ? DataFactory.literal(JSON.stringify(result.scoreComponents)) as Term : undefined],
     [pattern.workspace, DataFactory.namedNode(result.workspace) as Term],
     [pattern.localPath, result.localPath ? DataFactory.literal(result.localPath) as Term : undefined],
     [pattern.contentType, result.contentType ? DataFactory.literal(result.contentType) as Term : undefined],
+    [pattern.sourceKey, DataFactory.literal(result.sourceKey) as Term],
+    [pattern.retrievalPoint, DataFactory.literal(result.retrievalPointKey) as Term],
     [pattern.ordinal, integerLiteral(result.ordinal)],
     [pattern.level, integerLiteral(result.level)],
     [pattern.startOffset, integerLiteral(result.startOffset)],
     [pattern.endOffset, integerLiteral(result.endOffset)],
+    [pattern.provider, result.provider ? DataFactory.literal(result.provider) as Term : undefined],
     [pattern.model, result.model ? DataFactory.literal(result.model) as Term : undefined],
+    [pattern.modelVersion, result.modelVersion ? DataFactory.literal(result.modelVersion) as Term : undefined],
+    [pattern.inputKind, result.inputKind ? DataFactory.literal(result.inputKind) as Term : undefined],
+    [pattern.inputHash, result.inputHash ? DataFactory.literal(result.inputHash) as Term : undefined],
+    [pattern.projectionPolicyVersion, result.projectionPolicyVersion ? DataFactory.literal(result.projectionPolicyVersion) as Term : undefined],
   ];
 
   for (const [variableName, term] of candidates) {

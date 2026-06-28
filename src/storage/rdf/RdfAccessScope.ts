@@ -69,22 +69,14 @@ export function rdfAccessCacheScope(scope?: RdfAccessScope): RdfQueryCacheScope 
 
 export function applyRdfAccessScope(query: RdfQuery, scope?: RdfAccessScope): RdfQuery {
   const cacheScope = rdfAccessCacheScope(scope);
-  if (!isRestrictiveRdfAccessScope(scope)) {
-    return cacheScope
-      ? {
-          ...query,
-          cache: {
-            ...query.cache,
-            scope: mergeRdfQueryCacheScopes(query.cache?.scope, cacheScope),
-          },
-        }
-      : query;
+  if (!scope) {
+    return query;
   }
 
   const state: ApplyState = {
     impossibleGraph: DataFactory.namedNode('urn:xpod:rdf-access-denied') as unknown as Term,
   };
-  const scoped = applyScopeToQuery(query, scope!, state);
+  const scoped = applyScopeToQuery(query, scope, state);
   return {
     ...scoped,
     cache: {
@@ -108,12 +100,12 @@ function mergeRdfQueryCacheScopes(
 }
 
 export function filterRdfAccessGraphs(graphs: Iterable<string>, scope?: RdfAccessScope): Set<string> {
-  if (!isRestrictiveRdfAccessScope(scope)) {
+  if (!scope) {
     return new Set(graphs);
   }
   const filtered = new Set<string>();
   for (const graph of graphs) {
-    if (rdfAccessGraphAllowed(graph, scope!)) {
+    if (rdfAccessGraphAllowed(graph, scope)) {
       filtered.add(graph);
     }
   }
@@ -121,6 +113,9 @@ export function filterRdfAccessGraphs(graphs: Iterable<string>, scope?: RdfAcces
 }
 
 export function rdfAccessGraphAllowed(graph: string, scope: RdfAccessScope): boolean {
+  if (!graph.startsWith(scope.basePath)) {
+    return false;
+  }
   if (scope.allowedGraphUrls?.length && !scope.allowedGraphUrls.includes(graph)) {
     return false;
   }
@@ -247,9 +242,19 @@ function scopeGraphOperators(
   impossibleGraph: Term,
 ): RdfQueryTermPattern {
   const operators = { ...(graph as Record<string, unknown>) };
+  const prefix = intersectSourcePrefix(
+    typeof operators.$startsWith === 'string' ? operators.$startsWith : undefined,
+    scope.basePath,
+  );
+  if (prefix === false) {
+    return impossibleGraph;
+  }
+  if (prefix) {
+    operators.$startsWith = prefix;
+  }
   if (scope.allowedGraphUrls?.length) {
     const allowedTerms = scope.allowedGraphUrls
-      .filter((url) => graphOperatorsMayMatch(graph, url))
+      .filter((url) => graphOperatorsMayMatch(operators as RdfQueryTermPattern, url))
       .map((url) => DataFactory.namedNode(url) as unknown as Term);
     if (allowedTerms.length === 0) {
       return impossibleGraph;
@@ -287,6 +292,11 @@ function graphOperatorsMayMatch(graph: RdfQueryTermPattern, graphUrl: string): b
 }
 
 function addGraphAccessFilters(filters: RdfQueryFilter[], variable: string, scope: RdfAccessScope): void {
+  filters.push({
+    variable,
+    operator: '$startsWith',
+    value: scope.basePath,
+  });
   if (scope.allowedGraphUrls?.length) {
     filters.push({
       variable,
@@ -361,6 +371,7 @@ function scopeSearchSources(existing: RdfSearchScope | undefined, scope: RdfAcce
 
   return {
     ...existing,
+    accessBasePath: scope.basePath,
     ...(prefix ? { sourcePrefix: prefix } : {}),
     ...(allowedSources ? { allowedSources } : {}),
     ...(deniedSources ? { deniedSources } : {}),

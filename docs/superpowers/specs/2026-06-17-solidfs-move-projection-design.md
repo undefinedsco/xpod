@@ -39,7 +39,7 @@ GSPO Projection Layer
   graph/subject/predicate/object are stored as term ids through rdf_terms
 
 Derived Semantic Layer
-  parser tree / retrieval points / text index / vector index
+  reader tree / retrieval points / text index / vector index
   anchored by fileId + contentHash
 ```
 
@@ -162,7 +162,7 @@ Safe by default:
 - graph/source URI terms;
 - Xpod system-generated URI terms;
 - `.meta` / `.acl` projection URI terms;
-- parser/retrieval exposed URI terms.
+- reader/retrieval exposed URI terms.
 
 Not rewritten by default:
 
@@ -180,10 +180,10 @@ If a target URI term already exists, rewrite becomes remap/merge rather than dir
 ```text
 authority = user's real local filesystem
 workspace = same real directory
-cache = metadata/parser/index artifacts only, not file bodies
+cache = metadata/reader/index artifacts only, not file bodies
 ```
 
-Local mode should not reshape the user directory with symlinks. `fileId` exists for indexing, journal, parser cache, embedding reuse, and projection state.
+Local mode should not reshape the user directory with symlinks. `fileId` exists for indexing, journal, reader cache, embedding reuse, and projection state.
 
 ### Cloud
 
@@ -225,7 +225,7 @@ Preferred order is metadata, thumbnail, preview, or range-read before full hydra
 
 ## `.meta` note convention
 
-`.meta` is visible resource description. It may contain note-like resources that describe the original file and derived parser/index coverage. It must not contain secrets, signed URLs, local cache paths, journal cursors, locks, or raw index artifacts.
+`.meta` is visible resource description. It may contain note-like resources that describe the original file and derived reader/index coverage. It must not contain secrets, signed URLs, local cache paths, journal cursors, locks, or raw index artifacts.
 
 Use the note vocabulary style and existing Solid/PDS conventions where appropriate. PDS Notepad fields are useful for titles, content, timestamps, and authorship, but the notepad `pim:next` line linked-list structure is not suitable for metadata state.
 
@@ -257,21 +257,21 @@ Example:
   udfs:contentHash "sha256:..." ;
   udfs:materializationClass "placeholder-r2" .
 
-<#parser-pdf-v1> a udfs:Note ;
+<#reader-pdf-v1> a udfs:Note ;
   sioc:about <./report.pdf> ;
-  dct:title "PDF parser coverage" ;
+  dct:title "PDF reader coverage" ;
   dct:description "Parsed pages 1-12 of 240." ;
-  udfs:noteKind "parser-coverage" ;
-  udfs:parserKind "pdf" ;
-  udfs:parserVersion "pdf-v1" ;
+  udfs:noteKind "reader-coverage" ;
+  udfs:readerKind "pdf" ;
+  udfs:readerVersion "pdf-v1" ;
   udfs:coverageUnit "page" ;
   udfs:coveredRange "1-12" ;
-  udfs:parsedUnits 12 ;
+  udfs:readUnits 12 ;
   udfs:totalUnits 240 ;
   udfs:status "partial" .
 ```
 
-## Parser and index visibility
+## Reader and index visibility
 
 Visibility levels:
 
@@ -280,13 +280,13 @@ Visible in workspace:
   content files, .meta, .acl
 
 Visible through tools/API:
-  parser tree, outline, retrieval points, parser coverage
+  reader tree, outline, retrieval points, reader coverage
 
 Not visible:
   FTS postings, vector files, ANN graph, planner stats, term dictionary internals
 ```
 
-Parser tree is content structure and can be shown to AI through tools such as `inspect_structure`, `expand_file`, and `read_section`. Index artifacts are implementation details and should only be accessed through search/query APIs.
+Reader tree is content structure and can be shown to AI through tools such as `inspect_structure`, `expand_file`, and `read_section`. Index artifacts are implementation details and should only be accessed through search/query APIs.
 
 ## Agent workspace prompt
 
@@ -302,7 +302,7 @@ You are operating inside an Xpod SolidFS materialized workspace.
 - Do not assume placeholder bytes are the real content.
 - Hydration has cost; inspect metadata before choosing metadata, thumbnail, range-read, or full hydration.
 - Writes are tracked by the SolidFS journal and must be committed or rolled back by runtime.
-- Search/vector/index artifacts are internal; use search/parser tools rather than looking for index files.
+- Search/vector/index artifacts are internal; use search/reader tools rather than looking for index files.
 ```
 
 A dynamic workspace summary should also be provided, including root, authority type, materialization counts, free local cache, hydration limits, and available tools.
@@ -332,7 +332,7 @@ Term rewrite conflicts must be explicit:
 
 - Add or align FileRecord/materialization state.
 - Implement cloud materialized working cache semantics.
-- Define `.meta` note convention for file metadata, hydration hints, and parser coverage.
+- Define `.meta` note convention for file metadata, hydration hints, and reader coverage.
 - Extend SolidFS journal change payload for `moved` entries.
 - Implement TermDictionaryRewrite for safe graph/source/system terms.
 - Add AI workspace prompt and hydrate tool contract.
@@ -342,23 +342,23 @@ Term rewrite conflicts must be explicit:
 - Add `moved_prefix` journal compression for large directory moves.
 - Add finer term usage/provenance tracking.
 - Improve collision/remap performance.
-- Expose parser tree as virtual resource/API.
+- Expose reader tree as virtual resource/API.
 - Add thumbnail/range-read pipelines for large remote objects.
 
 ## Testing strategy
 
-- Move a single text file and verify FileRecord, `.meta`, GSPO graph/source projection, and parser cache reuse.
+- Move a single text file and verify FileRecord, `.meta`, GSPO graph/source projection, and reader cache reuse.
 - Move a directory with multiple files and verify one `tx_id` groups the move entries.
 - Simulate crash after local move but before projection rewrite; verify journal replay completes.
 - Simulate term collision and verify remap or reconcile behavior.
 - Verify user-authored absolute IRIs are not rewritten by default.
 - Verify cloud placeholder appears in `ls/find`, text files work with `rg`, and large object read returns hydration decision metadata.
 - Verify dirty hydrated files are not pruned.
-- Verify `.meta` parser coverage reports partial/complete/stale states.
+- Verify `.meta` reader coverage reports partial/complete/stale states.
 
 ## Decisions fixed for P0
 
-- Use `udfs:noteKind`, `udfs:materializationClass`, `udfs:hydrationState`, `udfs:parserKind`, `udfs:parserVersion`, `udfs:coverageUnit`, `udfs:coveredRange`, `udfs:parsedUnits`, `udfs:totalUnits`, `udfs:contentHash`, `udfs:byteSize`, and `udfs:mediaType` as the first vocabulary surface. These terms may later move into `@undefineds.co/models` vocab exports, but the semantic names are fixed here.
+- Use `udfs:noteKind`, `udfs:materializationClass`, `udfs:hydrationState`, `udfs:readerKind`, `udfs:readerVersion`, `udfs:coverageUnit`, `udfs:coveredRange`, `udfs:readUnits`, `udfs:totalUnits`, `udfs:contentHash`, `udfs:byteSize`, and `udfs:mediaType` as the first vocabulary surface. These terms may later move into `@undefineds.co/models` vocab exports, but the semantic names are fixed here.
 - Use `sioc:about` as the canonical note target predicate in `.meta` for this feature. If shared models later standardize another predicate, readers may accept it as compatibility, but writers should emit `sioc:about`.
 - P0 directory target conflicts fail by default. `merge-dir` is not a default behavior and must be an explicit future option.
 - P0 term rewrite safety is inferred conservatively from quad slot and source/projection scope: graph/source and Xpod-generated projection terms can rewrite; subject/object content terms are skipped unless they are known Xpod projection terms. A dedicated usage/provenance table is P1.

@@ -306,4 +306,7 @@ In implementation terms, CSS and the API service are internal parts of Xpod's ru
 - `docs/deployment-modes.md` — local vs cloud deployment
 - `docs/architecture.md` — system architecture overview
 - `docs/COMPONENTS.md` — component overrides and architecture extensions
+- `docs/extension-runtime-and-credential-resolution.md` — shared extension runtime, session normalization, and just-in-time credential resolution
+- `docs/progressive-semantic-index.md` — reader / retrieval point / index lifecycle for files and Agent search
+- `docs/rdf-engine-spec.md` — SolidFS-backed RDF query, text, vector, and product-grade acceleration boundary
 - `docs/sidecar-api.md` — sidecar API patterns

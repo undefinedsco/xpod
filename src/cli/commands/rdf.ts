@@ -1,6 +1,13 @@
 import type { Argv, CommandModule } from 'yargs';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { podSchema } from '@undefineds.co/models';
+import {
+  LocalSolidFS,
+  RdfIndexSolidFsSyncer,
+  type RdfIndexSolidFsRebuildResult,
+} from '../../solidfs';
+import type { LocalRdfIndexAccessor } from '../../storage/accessors/MixDataAccessor';
+import { RdfTextIndex } from '../../storage/rdf';
 import { requireAuthContext } from '../lib/auth-context';
 import { handleCliError, writeJsonResult } from '../lib/output';
 import {
@@ -36,6 +43,22 @@ interface RdfQueryArgs extends RdfArgs {
 interface RdfSchemaArgs extends RdfArgs {
   schema?: string;
   field?: string;
+}
+
+interface RdfTextRebuildArgs extends RdfArgs {
+  workspace: string;
+  'source-path'?: string;
+  'text-index': string;
+  'dry-run': boolean;
+  reset: boolean;
+}
+
+export interface RdfTextRebuildCommandInput {
+  workspace: string;
+  sourcePath?: string;
+  textIndex: string;
+  dryRun?: boolean;
+  reset?: boolean;
 }
 
 function rdfOptions<T>(yargs: Argv): Argv<T> {
@@ -98,6 +121,37 @@ export function resolveSparqlEndpoint(podRoot: string, scope?: string): string {
     : podRoot;
   const container = base.endsWith('/') ? base : `${base}/`;
   return new URL('-/sparql', container).toString();
+}
+
+const textRebuildNoopRdfIndex: LocalRdfIndexAccessor = {
+  async syncLocalRdfDocument() {},
+  async deleteLocalRdfIndex() {},
+};
+
+export async function executeRdfTextRebuildCommand(
+  input: RdfTextRebuildCommandInput,
+): Promise<RdfIndexSolidFsRebuildResult> {
+  const textIndex = new RdfTextIndex({ path: input.textIndex });
+  textIndex.open();
+  try {
+    const syncer = new RdfIndexSolidFsSyncer({
+      index: textRebuildNoopRdfIndex,
+      textIndex,
+      resolveIdentifier: () => undefined,
+    });
+    const solidfs = new LocalSolidFS({ syncer });
+    const workspace = await solidfs.prepare({
+      workspace: input.workspace,
+      sourcePath: input.sourcePath,
+      projection: 'direct',
+    });
+    return await syncer.rebuildWorkspace(workspace.manifest, {
+      dryRun: input.dryRun,
+      resetDerivedIndexes: input.reset,
+    });
+  } finally {
+    textIndex.close();
+  }
 }
 
 const getCommand: CommandModule<object, RdfGetArgs> = {
@@ -260,6 +314,36 @@ const predicatesCommand: CommandModule<object, RdfSchemaArgs> = {
   },
 };
 
+const textRebuildCommand: CommandModule<object, RdfTextRebuildArgs> = {
+  command: 'text-rebuild <workspace>',
+  describe: 'Rebuild derived RDF text indexes for a SolidFS workspace',
+  builder: (yargs) =>
+    rdfOptions<RdfTextRebuildArgs>(yargs)
+      .positional('workspace', { type: 'string', demandOption: true, description: 'Workspace URI or absolute local path' })
+      .option('source-path', { type: 'string', description: 'Local source directory when workspace is a remote URI' })
+      .option('text-index', { type: 'string', demandOption: true, description: 'SQLite RDF text index path' })
+      .option('dry-run', { type: 'boolean', default: false, description: 'Scan and report without writing derived index rows' })
+      .option('reset', { type: 'boolean', default: false, description: 'Clear derived text index rows before rebuilding' }),
+  handler: async (argv) => {
+    try {
+      const result = await executeRdfTextRebuildCommand({
+        workspace: argv.workspace,
+        sourcePath: argv['source-path'],
+        textIndex: argv['text-index'],
+        dryRun: argv['dry-run'],
+        reset: argv.reset,
+      });
+      if (argv.json) {
+        writeJsonResult(result, 'rdf_text_rebuild');
+        return;
+      }
+      console.log(JSON.stringify(result, null, 2));
+    } catch (error) {
+      handleCliError(error, argv.json);
+    }
+  },
+};
+
 export const rdfCommand: CommandModule<object, RdfArgs> = {
   command: 'rdf',
   describe: 'RDF graph/resource operations',
@@ -270,6 +354,7 @@ export const rdfCommand: CommandModule<object, RdfArgs> = {
       .command(queryCommand)
       .command(classesCommand)
       .command(predicatesCommand)
+      .command(textRebuildCommand)
       .demandCommand(1, 'Please specify an RDF subcommand') as unknown as Argv<RdfArgs>),
   handler: () => {},
 };

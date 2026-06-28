@@ -7,6 +7,7 @@ import { getSharedPool, releaseSharedPool } from '../database/PostgresPoolManage
 import { RDF_TERM_VALUE_HEAD_LENGTH, rdfTermValueHead } from './RdfTermDictionary';
 import { isFiniteNumericLexical, isRdfNumericDatatype, isRdfNumericTerm, rdfNumericValue } from './RdfTermSemantics';
 import { rdfSubjectStarJoinKey, rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
+import { describeFusionRankPlan } from './RdfFusionRankPlan';
 import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
 import { PostgresRdfTextIndex, type PostgresRdfTextIndexOptions } from './PostgresRdfTextIndex';
@@ -39,7 +40,20 @@ import type {
   RdfIndexSpaceObject,
   RdfIndexStats,
   RdfLiteralDatatypeDistribution,
+  RdfBoundedPath,
+  RdfBoundedPathSearchOptions,
+  RdfBoundedPathSearchResult,
+  RdfPathEdgeDirection,
+  RdfMaterializedViewActivationInput,
+  RdfMaterializedViewActivationResult,
   RdfMaterializedResultCacheStats,
+  RdfMaterializedViewBindingSource,
+  RdfMaterializedViewBuildInput,
+  RdfMaterializedViewBuildResult,
+  RdfMaterializedViewReadResult,
+  RdfSchemaExplorerOptions,
+  RdfSchemaExplorerResult,
+  RdfSchemaExplorerTermEntry,
   RdfTextChunkInput,
   RdfTextIndexLike,
   RdfTextIndexOptions,
@@ -112,13 +126,18 @@ const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const RDF_LANG_STRING = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString';
+const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const POSTGRES_RDF_SCHEMA_VERSION = 1;
 const POSTGRES_RDF3X_SCHEMA_VERSION = 1;
 const PG_STRING_ESCAPE = '\u001f';
 const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
 const RDF_MATERIALIZED_RESULT_CACHE_TABLE = 'rdf_materialized_result_cache';
+const RDF_MATERIALIZED_VIEW_TABLE = 'rdf_materialized_views';
+const RDF_MATERIALIZED_VIEW_CELL_TABLE = 'rdf_materialized_view_cells';
 const RDF_DIRTY_SOURCE_TABLE = 'rdf_dirty_sources';
 const RDF_MAINTENANCE_LEASE_TABLE = 'rdf_maintenance_leases';
+const PG_BOUND_SOURCE_EXACT_SEARCH_MAX = 32;
+const PG_FACTS_BATCH_BOUND_TERM_MIN_ROWS = 32;
 const RDF_ACCESS_CONTROL_OVERRIDE_TABLE = 'rdf_access_control_overrides';
 const RDF_TERMS_TABLE = 'rdf_terms';
 const RDF_DERIVED_INDEX_MAINTENANCE_LEASE = 'rdf-derived-indexes';
@@ -134,6 +153,7 @@ const DEFAULT_QUERY_RESULT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_ENTRIES = 256;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MATERIALIZED_RESULT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const DEFAULT_RDF_MATERIALIZED_VIEW_VERSION = 'default';
 const DEFAULT_QUERY_TEMPLATE_CACHE_MAX_ENTRIES = 512;
 const DEFAULT_QUERY_TEMPLATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_COMPILED_SQL_TEMPLATES_PER_QUERY_TEMPLATE = 8;
@@ -370,6 +390,11 @@ interface PgFactsQueryOptions {
   planPrefix?: string[];
 }
 
+type PgRequiredSource =
+  | { kind: 'pattern'; pattern: RdfQueryPattern; originalIndex: number }
+  | { kind: 'text'; pattern: RdfTextSearchPattern; originalIndex: number }
+  | { kind: 'vector'; pattern: RdfVectorSearchPattern; originalIndex: number };
+
 interface PgNumericAggregateFactsCutoverDecision {
   minSourceRows: number;
   maxSourceRows: number;
@@ -467,6 +492,53 @@ interface PgMaterializedResultResolution {
 
 interface PgMaterializedResultCacheRow extends PgQueryResultCacheRow {
   template_key?: string;
+}
+
+interface PgMaterializedViewRow {
+  view_key: string;
+  view_version: string;
+  scope_hash: string;
+  facts_data_version: number | string;
+  variables: string[] | string;
+  row_count: number | string;
+  active: boolean | string;
+  created_at: string;
+  activated_at: string | null;
+}
+
+interface PgMaterializedViewCellRow {
+  row_index: number | string;
+  variable: string;
+  term_json: string;
+}
+
+interface PgNormalizedSchemaExplorerOptions {
+  query: string;
+  graphPrefix: string;
+  limit: number;
+}
+
+interface PgNormalizedPathSearchOptions {
+  direction: 'out' | 'in' | 'both';
+  graphPrefix: string;
+  maxDepth: number;
+  maxPaths: number;
+}
+
+interface PgPathEdgeRow {
+  graph_id: number;
+  subject_id: number;
+  predicate_id: number;
+  object_id: number;
+}
+
+interface PgPathEdgeState extends PgPathEdgeRow {
+  direction: RdfPathEdgeDirection;
+}
+
+interface PgPathState {
+  nodeIds: number[];
+  edges: PgPathEdgeState[];
 }
 
 interface PgResolvedQueryCacheScope {
@@ -2207,8 +2279,473 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return await this.requireVectorIndex().search(options);
   }
 
+  public async materializeView(input: RdfMaterializedViewBuildInput): Promise<RdfMaterializedViewBuildResult> {
+    await this.ensureReady();
+    const viewKey = normalizeMaterializedViewKey(input.key);
+    const viewVersion = normalizeMaterializedViewVersion(input.version);
+    const scope = resolveRdfQueryCacheScope(input.scope ?? input.query.cache?.scope);
+    const factsDataVersion = await this.readFactsDataVersion();
+    const sourceQuery = stripMaterializedViewBuildCache(input.query);
+    const result = await this.query(sourceQuery);
+    const variables = normalizeMaterializedViewVariables(
+      input.variables ?? input.query.select ?? inferBindingVariables(result.bindings),
+    );
+    if (input.maxRows !== undefined && result.bindings.length > Math.max(0, Math.floor(input.maxRows))) {
+      throw new Error(`RDF materialized view ${viewKey} produced ${result.bindings.length} rows, exceeding maxRows=${input.maxRows}`);
+    }
+
+    const viewShape = JSON.stringify(normalizeQueryCacheValue({
+      key: viewKey,
+      version: viewVersion,
+      variables,
+      queryShape: stableRdfQueryShape(input.query),
+      scope: scope.shape,
+    }));
+    const queryShape = stableRdfQueryShape(input.query);
+    const active = input.activate !== false;
+    const cells = materializedViewCells(result.bindings, variables);
+
+    await this.requireExecutor().transaction(async (tx) => {
+      await tx.exec(`
+        INSERT INTO ${RDF_MATERIALIZED_VIEW_TABLE} (
+          view_key,
+          view_version,
+          scope_hash,
+          scope_shape,
+          scope_principal,
+          scope_base_path,
+          scope_mode,
+          scope_authorization_model,
+          scope_permission_version,
+          scope_allowed_graph_urls,
+          scope_denied_graph_urls,
+          scope_denied_graph_prefixes,
+          facts_data_version,
+          view_shape,
+          query_shape,
+          variables,
+          row_count,
+          active,
+          created_at,
+          activated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, FALSE, NOW(), NULL)
+        ON CONFLICT (view_key, view_version, scope_hash, facts_data_version) DO UPDATE
+        SET scope_shape = EXCLUDED.scope_shape,
+            scope_principal = EXCLUDED.scope_principal,
+            scope_base_path = EXCLUDED.scope_base_path,
+            scope_mode = EXCLUDED.scope_mode,
+            scope_authorization_model = EXCLUDED.scope_authorization_model,
+            scope_permission_version = EXCLUDED.scope_permission_version,
+            scope_allowed_graph_urls = EXCLUDED.scope_allowed_graph_urls,
+            scope_denied_graph_urls = EXCLUDED.scope_denied_graph_urls,
+            scope_denied_graph_prefixes = EXCLUDED.scope_denied_graph_prefixes,
+            view_shape = EXCLUDED.view_shape,
+            query_shape = EXCLUDED.query_shape,
+            variables = EXCLUDED.variables,
+            row_count = EXCLUDED.row_count,
+            active = FALSE,
+            activated_at = NULL,
+            created_at = NOW()
+      `, [
+        viewKey,
+        viewVersion,
+        scope.hash,
+        scope.shape,
+        scope.principal,
+        scope.basePath,
+        scope.mode,
+        scope.authorizationModel,
+        scope.permissionVersion,
+        scope.allowedGraphUrls,
+        scope.deniedGraphUrls,
+        scope.deniedGraphPrefixes,
+        factsDataVersion,
+        viewShape,
+        queryShape,
+        variables,
+        result.bindings.length,
+      ]);
+      await tx.exec(`
+        DELETE FROM ${RDF_MATERIALIZED_VIEW_CELL_TABLE}
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+          AND facts_data_version = $4
+      `, [viewKey, viewVersion, scope.hash, factsDataVersion]);
+      for (const cell of cells) {
+        await tx.exec(`
+          INSERT INTO ${RDF_MATERIALIZED_VIEW_CELL_TABLE} (
+            view_key,
+            view_version,
+            scope_hash,
+            facts_data_version,
+            row_index,
+            variable,
+            term_json
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, [viewKey, viewVersion, scope.hash, factsDataVersion, cell.rowIndex, cell.variable, cell.termJson]);
+      }
+      if (active) {
+        await tx.exec(`
+          UPDATE ${RDF_MATERIALIZED_VIEW_TABLE}
+          SET active = FALSE
+          WHERE view_key = $1
+            AND view_version = $2
+            AND scope_hash = $3
+            AND active = TRUE
+        `, [viewKey, viewVersion, scope.hash]);
+        await tx.exec(`
+          UPDATE ${RDF_MATERIALIZED_VIEW_TABLE}
+          SET active = TRUE,
+              activated_at = NOW()
+          WHERE view_key = $1
+            AND view_version = $2
+            AND scope_hash = $3
+            AND facts_data_version = $4
+        `, [viewKey, viewVersion, scope.hash, factsDataVersion]);
+      }
+    });
+
+    return {
+      key: viewKey,
+      version: viewVersion,
+      scopeHash: scope.hash,
+      factsDataVersion,
+      variables,
+      rowCount: result.bindings.length,
+      active,
+    };
+  }
+
+  public async readMaterializedView(source: RdfMaterializedViewBindingSource): Promise<RdfMaterializedViewReadResult | undefined> {
+    await this.ensureReady();
+    const viewKey = normalizeMaterializedViewKey(source.key);
+    const viewVersion = normalizeMaterializedViewVersion(source.version);
+    const scope = resolveRdfQueryCacheScope(source.scope);
+    const views = await this.requireExecutor().query<PgMaterializedViewRow>(`
+      SELECT *
+      FROM ${RDF_MATERIALIZED_VIEW_TABLE}
+      WHERE view_key = $1
+        AND view_version = $2
+        AND scope_hash = $3
+        AND active = TRUE
+      ORDER BY activated_at DESC NULLS LAST, facts_data_version DESC
+      LIMIT 1
+    `, [viewKey, viewVersion, scope.hash]);
+    const view = views[0];
+    if (!view) {
+      return undefined;
+    }
+
+    const storedVariables = normalizeMaterializedViewVariables(parsePgTextArray(view.variables));
+    const requestedVariables = source.variables
+      ? normalizeMaterializedViewVariables(source.variables)
+      : storedVariables;
+    for (const variable of requestedVariables) {
+      if (!storedVariables.includes(variable)) {
+        throw new Error(`RDF materialized view ${viewKey} does not contain variable: ${variable}`);
+      }
+    }
+
+    const variablePlaceholders = requestedVariables.map((_variable, index) => `$${5 + index}`).join(', ');
+    const rows = await this.requireExecutor().query<PgMaterializedViewCellRow>(`
+      SELECT row_index, variable, term_json
+      FROM ${RDF_MATERIALIZED_VIEW_CELL_TABLE}
+      WHERE view_key = $1
+        AND view_version = $2
+        AND scope_hash = $3
+        AND facts_data_version = $4
+        AND variable IN (${variablePlaceholders})
+      ORDER BY row_index ASC, variable ASC
+    `, [viewKey, viewVersion, scope.hash, Number(view.facts_data_version), ...requestedVariables]);
+    const allBindings = bindingsFromMaterializedViewCells(rows);
+    const offset = Math.max(0, source.offset ?? 0);
+    const limit = source.limit === undefined ? undefined : Math.max(0, source.limit);
+    const slicedBindings = allBindings.slice(offset, limit === undefined ? undefined : offset + limit);
+    return {
+      key: viewKey,
+      version: viewVersion,
+      scopeHash: scope.hash,
+      factsDataVersion: Number(view.facts_data_version),
+      variables: requestedVariables,
+      rows: slicedBindings,
+      rowCount: Number(view.row_count),
+      active: pgBoolean(view.active),
+      createdAt: view.created_at,
+      ...(view.activated_at ? { activatedAt: view.activated_at } : {}),
+    };
+  }
+
+  public async activateMaterializedView(source: RdfMaterializedViewActivationInput): Promise<RdfMaterializedViewActivationResult> {
+    await this.ensureReady();
+    const viewKey = normalizeMaterializedViewKey(source.key);
+    const viewVersion = normalizeMaterializedViewVersion(source.version);
+    const scope = resolveRdfQueryCacheScope(source.scope);
+    return await this.requireExecutor().transaction(async (tx) => {
+      const targetRows = await tx.query<{ facts_data_version: number | string }>(`
+        SELECT facts_data_version
+        FROM ${RDF_MATERIALIZED_VIEW_TABLE}
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+          ${source.factsDataVersion === undefined ? '' : 'AND facts_data_version = $4'}
+        ORDER BY facts_data_version DESC
+        LIMIT 1
+      `, source.factsDataVersion === undefined
+        ? [viewKey, viewVersion, scope.hash]
+        : [viewKey, viewVersion, scope.hash, source.factsDataVersion]);
+      const target = targetRows[0];
+      if (!target) {
+        throw new Error(`RDF materialized view build is not available for activation: ${viewKey}`);
+      }
+      const factsDataVersion = Number(target.facts_data_version);
+      const previousRows = await tx.query<{ facts_data_version: number | string }>(`
+        SELECT facts_data_version
+        FROM ${RDF_MATERIALIZED_VIEW_TABLE}
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+          AND active = TRUE
+        ORDER BY activated_at DESC NULLS LAST, facts_data_version DESC
+        LIMIT 1
+      `, [viewKey, viewVersion, scope.hash]);
+      await tx.exec(`
+        UPDATE ${RDF_MATERIALIZED_VIEW_TABLE}
+        SET active = FALSE
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+          AND active = TRUE
+      `, [viewKey, viewVersion, scope.hash]);
+      const activated = await tx.query<{ facts_data_version: number | string }>(`
+        UPDATE ${RDF_MATERIALIZED_VIEW_TABLE}
+        SET active = TRUE,
+            activated_at = NOW()
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+          AND facts_data_version = $4
+        RETURNING facts_data_version
+      `, [viewKey, viewVersion, scope.hash, factsDataVersion]);
+      return {
+        key: viewKey,
+        version: viewVersion,
+        scopeHash: scope.hash,
+        factsDataVersion: Number(activated[0]?.facts_data_version ?? factsDataVersion),
+        activated: activated.length > 0,
+        ...(previousRows[0] ? { previousFactsDataVersion: Number(previousRows[0].facts_data_version) } : {}),
+      };
+    });
+  }
+
+  public async deleteMaterializedView(source: RdfMaterializedViewBindingSource): Promise<number> {
+    await this.ensureReady();
+    const viewKey = normalizeMaterializedViewKey(source.key);
+    const viewVersion = normalizeMaterializedViewVersion(source.version);
+    const scope = resolveRdfQueryCacheScope(source.scope);
+    return await this.requireExecutor().transaction(async (tx) => {
+      const rows = await tx.query<{ facts_data_version: number | string }>(`
+        SELECT facts_data_version
+        FROM ${RDF_MATERIALIZED_VIEW_TABLE}
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+      `, [viewKey, viewVersion, scope.hash]);
+      await tx.exec(`
+        DELETE FROM ${RDF_MATERIALIZED_VIEW_CELL_TABLE}
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+      `, [viewKey, viewVersion, scope.hash]);
+      await tx.exec(`
+        DELETE FROM ${RDF_MATERIALIZED_VIEW_TABLE}
+        WHERE view_key = $1
+          AND view_version = $2
+          AND scope_hash = $3
+      `, [viewKey, viewVersion, scope.hash]);
+      return rows.length;
+    });
+  }
+
+  public async exploreSchema(options: RdfSchemaExplorerOptions = {}): Promise<RdfSchemaExplorerResult> {
+    await this.ensureReady();
+    const normalized = normalizeSchemaExplorerOptions(options);
+    const [graphs, predicates, classes, terms] = await Promise.all([
+      this.schemaGraphSuggestions(normalized),
+      this.schemaPredicateSuggestions(normalized),
+      this.schemaClassSuggestions(normalized),
+      this.schemaTermSuggestions(normalized),
+    ]);
+    return {
+      graphs,
+      predicates,
+      classes,
+      terms,
+    };
+  }
+
+  public async searchPaths(options: RdfBoundedPathSearchOptions): Promise<RdfBoundedPathSearchResult> {
+    await this.ensureReady();
+    const normalized = normalizePathSearchOptions(options);
+    const startId = await this.requireDictionary().find(options.start);
+    if (startId === undefined) {
+      return emptyPathSearchResult(normalized.maxDepth);
+    }
+    const targetId = options.target ? await this.requireDictionary().find(options.target) : undefined;
+    if (options.target && targetId === undefined) {
+      return emptyPathSearchResult(normalized.maxDepth);
+    }
+    const predicateIds: number[] = [];
+    for (const predicate of options.predicates ?? []) {
+      const predicateId = await this.requireDictionary().find(predicate);
+      if (predicateId === undefined) {
+        return emptyPathSearchResult(normalized.maxDepth);
+      }
+      predicateIds.push(predicateId);
+    }
+
+    let frontier: PgPathState[] = [{ nodeIds: [startId], edges: [] }];
+    const complete: PgPathState[] = [];
+    let scannedEdges = 0;
+    let truncated = false;
+    for (let depth = 0; depth < normalized.maxDepth && frontier.length > 0 && complete.length < normalized.maxPaths; depth += 1) {
+      const frontierIds = uniqueNumbers(frontier.map((state) => state.nodeIds[state.nodeIds.length - 1]));
+      const edgeLimit = Math.min(10_000, Math.max(128, normalized.maxPaths * 128));
+      const rows = await this.pathEdgesForFrontier(frontierIds, predicateIds, normalized, edgeLimit);
+      scannedEdges += rows.length;
+      if (rows.length >= edgeLimit) {
+        truncated = true;
+      }
+
+      const nextFrontier: PgPathState[] = [];
+      for (const state of frontier) {
+        const currentId = state.nodeIds[state.nodeIds.length - 1];
+        for (const row of rows) {
+          for (const candidate of pathTraversalCandidates(row, currentId, normalized.direction)) {
+            if (state.nodeIds.includes(candidate.nextId)) {
+              continue;
+            }
+            const next: PgPathState = {
+              nodeIds: [...state.nodeIds, candidate.nextId],
+              edges: [...state.edges, { ...row, direction: candidate.direction }],
+            };
+            if (targetId === undefined || candidate.nextId === targetId) {
+              complete.push(next);
+              if (complete.length >= normalized.maxPaths) {
+                truncated = true;
+                break;
+              }
+            }
+            if (targetId === undefined || candidate.nextId !== targetId) {
+              nextFrontier.push(next);
+            }
+          }
+          if (complete.length >= normalized.maxPaths) {
+            break;
+          }
+        }
+        if (complete.length >= normalized.maxPaths) {
+          break;
+        }
+      }
+      if (nextFrontier.length > normalized.maxPaths) {
+        truncated = true;
+      }
+      frontier = nextFrontier.slice(0, normalized.maxPaths);
+    }
+
+    return {
+      paths: await this.materializePathStates(complete.slice(0, normalized.maxPaths)),
+      truncated,
+      scannedEdges,
+      maxDepth: normalized.maxDepth,
+    };
+  }
+
+  private async pathEdgesForFrontier(
+    frontierIds: number[],
+    predicateIds: number[],
+    options: PgNormalizedPathSearchOptions,
+    edgeLimit: number,
+  ): Promise<PgPathEdgeRow[]> {
+    if (frontierIds.length === 0) {
+      return [];
+    }
+    const params: unknown[] = [];
+    const frontierSql = frontierIds.map((id) => addPgParam(params, id)).join(', ');
+    const conditions: string[] = [];
+    if (options.direction === 'out') {
+      conditions.push(`q.subject_id IN (${frontierSql})`);
+    } else if (options.direction === 'in') {
+      conditions.push(`q.object_id IN (${frontierSql})`);
+    } else {
+      conditions.push(`(q.subject_id IN (${frontierSql}) OR q.object_id IN (${frontierSql}))`);
+    }
+    if (predicateIds.length > 0) {
+      conditions.push(`q.predicate_id IN (${predicateIds.map((id) => addPgParam(params, id)).join(', ')})`);
+    }
+    const graphJoin = options.graphPrefix
+      ? `JOIN rdf_terms graph ON graph.id = q.graph_id AND graph.value LIKE ${addPgParam(params, `${options.graphPrefix}%`)}`
+      : '';
+    return await this.requireExecutor().query<PgPathEdgeRow>(`
+      SELECT q.graph_id, q.subject_id, q.predicate_id, q.object_id
+      FROM ${RDF_FACTS_TABLE} q
+      ${graphJoin}
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY q.graph_id, q.subject_id, q.predicate_id, q.object_id
+      LIMIT ${addPgParam(params, edgeLimit)}
+    `, params);
+  }
+
+  private async materializePathStates(states: PgPathState[]): Promise<RdfBoundedPath[]> {
+    const ids = uniqueNumbers(states.flatMap((state) => [
+      ...state.nodeIds,
+      ...state.edges.flatMap((edge) => [edge.graph_id, edge.subject_id, edge.predicate_id, edge.object_id]),
+    ]));
+    const terms = await this.requireDictionary().rowsForIds(ids);
+    return states.map((state) => ({
+      nodes: state.nodeIds.map((id) => this.requiredTerm(terms, id)),
+      edges: state.edges.map((edge) => ({
+        graph: this.requiredTerm(terms, edge.graph_id),
+        subject: this.requiredTerm(terms, edge.subject_id),
+        predicate: this.requiredTerm(terms, edge.predicate_id),
+        object: this.requiredTerm(terms, edge.object_id),
+        direction: edge.direction,
+      })),
+    }));
+  }
+
+  private async expandMaterializedViewSources(query: RdfQuery): Promise<RdfQuery> {
+    if ((query.materializedViews?.length ?? 0) === 0) {
+      return query;
+    }
+
+    const sources: RdfValuesBindingSource[] = [];
+    for (const source of query.materializedViews ?? []) {
+      const view = await this.readMaterializedView(source);
+      if (!view) {
+        if (source.required === false) {
+          continue;
+        }
+        throw new Error(`RDF materialized view is not active: ${source.key}`);
+      }
+      sources.push({
+        variables: view.variables,
+        rows: view.rows,
+      });
+    }
+    const { materializedViews: _materializedViews, ...rest } = query;
+    return {
+      ...rest,
+      values: [...(query.values ?? []), ...sources],
+    };
+  }
+
   public async query(query: RdfQuery): Promise<RdfQueryResult> {
     await this.ensureReady();
+    query = await this.expandMaterializedViewSources(query);
     this.assertSearchIndexesConfigured(query);
     const template = this.resolveQueryTemplate(query);
     const materialized = this.resolveMaterializedResult(query);
@@ -2747,6 +3284,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     `);
     await this.initializeQueryResultCacheSchema(executor);
     await this.initializeMaterializedResultCacheSchema(executor);
+    await this.initializeMaterializedViewSchema(executor);
     await this.initializeRdf3xSchema(executor);
   }
 
@@ -2948,6 +3486,58 @@ export class PostgresRdfEngine implements RdfEngineLike {
     `);
   }
 
+  private async initializeMaterializedViewSchema(executor: AsyncSqlExecutor): Promise<void> {
+    await executor.exec(`
+      CREATE TABLE IF NOT EXISTS ${RDF_MATERIALIZED_VIEW_TABLE} (
+        view_key TEXT NOT NULL,
+        view_version TEXT NOT NULL DEFAULT '${DEFAULT_RDF_MATERIALIZED_VIEW_VERSION}',
+        scope_hash TEXT NOT NULL,
+        scope_shape TEXT NOT NULL,
+        scope_principal TEXT,
+        scope_base_path TEXT,
+        scope_mode TEXT,
+        scope_authorization_model TEXT,
+        scope_permission_version TEXT,
+        scope_allowed_graph_urls TEXT[],
+        scope_denied_graph_urls TEXT[],
+        scope_denied_graph_prefixes TEXT[],
+        facts_data_version BIGINT NOT NULL,
+        view_shape TEXT NOT NULL,
+        query_shape TEXT NOT NULL,
+        variables TEXT[] NOT NULL,
+        row_count BIGINT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        activated_at TIMESTAMPTZ,
+        PRIMARY KEY (view_key, view_version, scope_hash, facts_data_version)
+      )
+    `);
+    await executor.exec(`
+      CREATE TABLE IF NOT EXISTS ${RDF_MATERIALIZED_VIEW_CELL_TABLE} (
+        view_key TEXT NOT NULL,
+        view_version TEXT NOT NULL DEFAULT '${DEFAULT_RDF_MATERIALIZED_VIEW_VERSION}',
+        scope_hash TEXT NOT NULL,
+        facts_data_version BIGINT NOT NULL,
+        row_index BIGINT NOT NULL,
+        variable TEXT NOT NULL,
+        term_json TEXT NOT NULL,
+        PRIMARY KEY (view_key, view_version, scope_hash, facts_data_version, row_index, variable)
+      )
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_materialized_views_active
+      ON ${RDF_MATERIALIZED_VIEW_TABLE} (view_key, view_version, scope_hash, active, activated_at)
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_materialized_views_version
+      ON ${RDF_MATERIALIZED_VIEW_TABLE} (facts_data_version)
+    `);
+    await executor.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_materialized_view_cells_view
+      ON ${RDF_MATERIALIZED_VIEW_CELL_TABLE} (view_key, view_version, scope_hash, facts_data_version, row_index)
+    `);
+  }
+
   private async ensureCompatibleSchemaVersion(executor: AsyncSqlExecutor): Promise<void> {
     await executor.exec(`
       CREATE TABLE IF NOT EXISTS rdf_index_metadata (
@@ -2970,6 +3560,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_QUERY_RESULT_CACHE_TABLE}`);
       await tx.exec(`DROP TABLE IF EXISTS ${RDF_MATERIALIZED_RESULT_CACHE_TABLE}`);
+      await tx.exec(`DROP TABLE IF EXISTS ${RDF_MATERIALIZED_VIEW_CELL_TABLE}`);
+      await tx.exec(`DROP TABLE IF EXISTS ${RDF_MATERIALIZED_VIEW_TABLE}`);
       await tx.exec('DELETE FROM rdf_index_metadata');
       await tx.exec(
         "INSERT INTO rdf_index_metadata (key, value) VALUES ('schema_version', $1)",
@@ -3828,6 +4420,39 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private async orderPgRequiredSources(sources: PgRequiredSource[]): Promise<PgRequiredSource[]> {
+    const ranked = await Promise.all(sources.map(async (source, originalOrder) => ({
+      source,
+      originalOrder,
+      priority: pgRequiredSourcePriority(source),
+      estimateRows: await this.estimatePgRequiredSourceRows(source),
+    })));
+    return ranked
+      .sort((left, right) => (
+        left.priority - right.priority
+          || left.estimateRows - right.estimateRows
+          || left.originalOrder - right.originalOrder
+      ))
+      .map((entry) => entry.source);
+  }
+
+  private async estimatePgRequiredSourceRows(source: PgRequiredSource): Promise<number> {
+    switch (source.kind) {
+      case 'pattern': {
+        const compiled = compilePatternForBinding(source.pattern, {});
+        if (!compiled) {
+          return 0;
+        }
+        const resolved = await this.resolvePattern(compiled);
+        return resolved.unresolved ? 0 : await this.estimateResolvedRows(resolved);
+      }
+      case 'text':
+        return (await this.requireTextIndex().estimateSearchCardinality(textSearchOptions(source.pattern))).rows;
+      case 'vector':
+        return (await this.requireVectorIndex().estimateSearchCardinality(vectorSearchOptions(source.pattern))).rows;
+    }
+  }
+
   private async queryFacts(query: RdfQuery, options?: PgFactsQueryOptions): Promise<RdfQueryResult> {
     const start = options?.start ?? Date.now();
     const metrics = this.localMetrics(start, 0, 0, 0, ['facts-post-filter'], [
@@ -3855,29 +4480,55 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     if (bindings.length > 0) {
-      for (const pattern of requiredPatterns) {
-        bindings = await this.joinFactsPattern(bindings, pattern, query.filters ?? [], metrics, false);
-        metrics.plan.push(`PostgresFactsScan(${describeQueryPattern(pattern)})`);
-        if (bindings.length === 0) {
-          break;
+      const requiredSources = await this.orderPgRequiredSources(buildPgRequiredSources(requiredPatterns, query));
+      for (const source of requiredSources) {
+        switch (source.kind) {
+          case 'pattern': {
+            const beforeScannedRows = metrics.scannedRows;
+            bindings = await this.joinFactsPattern(bindings, source.pattern, query.filters ?? [], metrics, false);
+            metrics.plan.push(describePgSourceEstimate(
+              `RdfBgpSource#${source.originalIndex}`,
+              bindings.length,
+              metrics.scannedRows - beforeScannedRows,
+              'none',
+              true,
+            ));
+            metrics.plan.push(`PostgresFactsScan(${describeQueryPattern(source.pattern)})`);
+            break;
+          }
+          case 'text': {
+            const connected = pgSearchSourceConnected(bindings, source.pattern);
+            const beforeScannedRows = metrics.scannedRows;
+            bindings = await this.joinFactsTextSearch(bindings, source.pattern, metrics);
+            const scannedRows = metrics.scannedRows - beforeScannedRows;
+            metrics.plan.push(describePgSourceEstimate(
+              `TextMatchSource#${source.originalIndex}`,
+              scannedRows,
+              scannedRows,
+              describePgSearchTopK(source.pattern),
+              connected,
+            ));
+            metrics.plan.push(...describePgSearchScopeSourceEstimates(source.pattern, source.originalIndex, scannedRows, scannedRows, connected));
+            metrics.plan.push(...describeTextSearchPlan(source.pattern));
+            break;
+          }
+          case 'vector': {
+            const connected = pgSearchSourceConnected(bindings, source.pattern);
+            const beforeScannedRows = metrics.scannedRows;
+            bindings = await this.joinFactsVectorSearch(bindings, source.pattern, metrics);
+            const scannedRows = metrics.scannedRows - beforeScannedRows;
+            metrics.plan.push(describePgSourceEstimate(
+              `VectorMatchSource#${source.originalIndex}`,
+              scannedRows,
+              scannedRows,
+              describePgSearchTopK(source.pattern),
+              connected,
+            ));
+            metrics.plan.push(...describePgSearchScopeSourceEstimates(source.pattern, source.originalIndex, scannedRows, scannedRows, connected));
+            metrics.plan.push(...describeVectorSearchPlan(source.pattern));
+            break;
+          }
         }
-      }
-    }
-
-    if (bindings.length > 0) {
-      for (const pattern of query.textSearch ?? []) {
-        bindings = await this.joinFactsTextSearch(bindings, pattern, metrics);
-        metrics.plan.push(`TextSearch(${describeTextSearch(pattern)})`);
-        if (bindings.length === 0) {
-          break;
-        }
-      }
-    }
-
-    if (bindings.length > 0) {
-      for (const pattern of query.vectorSearch ?? []) {
-        bindings = await this.joinFactsVectorSearch(bindings, pattern, metrics);
-        metrics.plan.push(`VectorSearch(${describeVectorSearch(pattern)})`);
         if (bindings.length === 0) {
           break;
         }
@@ -3887,6 +4538,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if ((query.binds?.length ?? 0) > 0 && bindings.length > 0) {
       bindings = this.applyFactsBinds(bindings, query.binds ?? []);
       metrics.plan.push(`PostgresFactsBind(${(query.binds ?? []).map(describeBind).join(',')})`);
+      metrics.plan.push(...describeFusionRankPlan(query));
     }
 
     for (const rawOptionalGroup of query.optional ?? []) {
@@ -5767,6 +6419,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
     metrics: RdfQueryMetrics,
     optional: boolean,
   ): Promise<RdfBindingRow[]> {
+    const batched = await this.tryJoinFactsPatternByBoundTerm(input, pattern, filters, metrics, optional);
+    if (batched) {
+      return batched;
+    }
+    return await this.joinFactsPatternPerBinding(input, pattern, filters, metrics, optional);
+  }
+
+  private async joinFactsPatternPerBinding(
+    input: RdfBindingRow[],
+    pattern: RdfQueryPattern,
+    filters: RdfQueryFilter[],
+    metrics: RdfQueryMetrics,
+    optional: boolean,
+  ): Promise<RdfBindingRow[]> {
     const output: RdfBindingRow[] = [];
     for (const binding of input) {
       const compiled = compilePatternForBinding(pattern, binding);
@@ -5796,6 +6462,68 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return output;
   }
 
+  private async tryJoinFactsPatternByBoundTerm(
+    input: RdfBindingRow[],
+    pattern: RdfQueryPattern,
+    filters: RdfQueryFilter[],
+    metrics: RdfQueryMetrics,
+    optional: boolean,
+  ): Promise<RdfBindingRow[] | undefined> {
+    const candidate = pgBoundTermBatchCandidate(input, pattern);
+    if (!candidate) {
+      return undefined;
+    }
+
+    const batchPattern = {
+      ...pattern,
+      [candidate.key]: { $in: candidate.terms },
+    } satisfies RdfQueryPattern;
+    const compiled = compilePatternForBinding(batchPattern, {});
+    if (!compiled) {
+      return undefined;
+    }
+
+    const scan = isPgSqlScanCompatiblePattern(compiled)
+      ? await this.scanNative(compiled)
+      : await this.scanPostFilter(compiled);
+    metrics.scannedRows += scan.metrics.matchedRows;
+    metrics.indexChoices.push(scan.metrics.indexChoice);
+    metrics.plan.push(...storagePlanMarkers(scan.metrics.queryPlan));
+    metrics.plan.push(`PostgresFactsBatchScan(?${candidate.variable}:${candidate.terms.length})`);
+
+    const output: RdfBindingRow[] = [];
+    const matchedBindings = new Set<RdfBindingRow>();
+    for (const value of scan.quads) {
+      const bucket = candidate.buckets.get(termToId(value[candidate.key] as any));
+      if (!bucket) {
+        continue;
+      }
+      for (const binding of bucket) {
+        const next = bindQuadPattern(pattern, binding, value);
+        if (next && matchesNewlyBoundFilters(next, binding, filters)) {
+          output.push(next);
+          matchedBindings.add(binding);
+        }
+      }
+    }
+
+    if (optional) {
+      for (const bindings of candidate.buckets.values()) {
+        for (const binding of bindings) {
+          if (!matchedBindings.has(binding)) {
+            output.push(binding);
+          }
+        }
+      }
+    }
+
+    if (candidate.unbatched.length > 0) {
+      output.push(...await this.joinFactsPatternPerBinding(candidate.unbatched, pattern, filters, metrics, optional));
+    }
+
+    return output;
+  }
+
   private async joinFactsTextSearch(
     input: RdfBindingRow[],
     pattern: RdfTextSearchPattern,
@@ -5806,8 +6534,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (sourceVariable && canUseBoundSourceSearch(input, pattern, sourceVariable)) {
       return await this.joinFactsTextSearchByBoundSource(input, pattern, sourceVariable, metrics);
     }
+    if (sourceVariable && canUseGlobalSearchForBoundSources(input, pattern, sourceVariable)) {
+      const results = await this.textSearchResults(pattern);
+      this.appendTextSearchBackendPlan(metrics, results);
+      metrics.scannedRows += results.length;
+      metrics.plan.push(`PostgresFactsSearchBatchSource(TextSearch ?${sourceVariable}:${boundSearchSourceCount(input, sourceVariable)})`);
+      return bindTextSearchResultsBySource(input, pattern, sourceVariable, results);
+    }
 
     const results = await this.textSearchResults(pattern);
+    this.appendTextSearchBackendPlan(metrics, results);
     metrics.scannedRows += results.length;
 
     const output: RdfBindingRow[] = [];
@@ -5831,6 +6567,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const sourceVariable = pattern.source;
     if (sourceVariable && canUseBoundSourceSearch(input, pattern, sourceVariable)) {
       return await this.joinFactsVectorSearchByBoundSource(input, pattern, sourceVariable, metrics);
+    }
+    if (sourceVariable && canUseGlobalSearchForBoundSources(input, pattern, sourceVariable)) {
+      const results = await this.vectorSearchResults(pattern);
+      metrics.scannedRows += results.length;
+      metrics.plan.push(`PostgresFactsSearchBatchSource(VectorSearch ?${sourceVariable}:${boundSearchSourceCount(input, sourceVariable)})`);
+      return bindVectorSearchResultsBySource(input, pattern, sourceVariable, results);
     }
 
     const results = await this.vectorSearchResults(pattern);
@@ -5866,6 +6608,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!term) {
         globalResults ??= await this.textSearchResults(pattern);
         results = globalResults;
+        this.appendTextSearchBackendPlan(metrics, results);
         if (!countedGlobal) {
           metrics.scannedRows += results.length;
           countedGlobal = true;
@@ -5877,6 +6620,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           cache.set(term.value, await this.textSearchResults(pattern, term.value));
         }
         results = cache.get(term.value) ?? [];
+        this.appendTextSearchBackendPlan(metrics, results);
         if (!countedSources.has(term.value)) {
           metrics.scannedRows += results.length;
           countedSources.add(term.value);
@@ -5942,6 +6686,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async textSearchResults(pattern: RdfTextSearchPattern, exactSource?: string): Promise<RdfTextSearchResult[]> {
     return await this.requireTextIndex().search(textSearchOptions(pattern, exactSource));
+  }
+
+  private appendTextSearchBackendPlan(metrics: RdfQueryMetrics, results: readonly RdfTextSearchResult[]): void {
+    if (!results.some((result) => result.scoreComponents?.algorithm === 'pg-ts-rank-cd')) {
+      return;
+    }
+    pushUniquePlan(metrics.plan, 'PostgresNativeFts(TextSearch pg-ts-rank-cd)');
+    pushUniquePlan(metrics.plan, 'PostgresNativeFtsGin(TextSearch)');
+    pushUniquePlan(metrics.plan, 'PostgresNativeFtsRank(ts_rank_cd)');
   }
 
   private async vectorSearchResults(pattern: RdfVectorSearchPattern, exactSource?: string): Promise<RdfVectorSearchResult[]> {
@@ -9378,6 +10131,172 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
+  private async schemaGraphSuggestions(options: PgNormalizedSchemaExplorerOptions): Promise<RdfCardinalityDistributions['graphs']> {
+    const params: unknown[] = [];
+    const conditions = schemaTermConditions('graph', options, params, true);
+    const rows = await this.requireExecutor().query<{
+      graph_id: number;
+      quad_count: number | string;
+      distinct_subjects: number | string;
+      distinct_predicates: number | string;
+      distinct_objects: number | string;
+    }>(`
+      SELECT
+        q.graph_id,
+        COUNT(*) AS quad_count,
+        COUNT(DISTINCT q.subject_id) AS distinct_subjects,
+        COUNT(DISTINCT q.predicate_id) AS distinct_predicates,
+        COUNT(DISTINCT q.object_id) AS distinct_objects
+      FROM ${RDF_FACTS_TABLE} q
+      JOIN rdf_terms graph ON graph.id = q.graph_id
+      ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
+      GROUP BY q.graph_id
+      ORDER BY COUNT(*) DESC, q.graph_id ASC
+      LIMIT ${addPgParam(params, options.limit)}
+    `, params);
+    const terms = await this.requireDictionary().rowsForIds(rows.map((row) => row.graph_id));
+    return rows.map((row) => ({
+      graph: this.cardinalityTerm(terms, row.graph_id),
+      quadCount: Number(row.quad_count ?? 0) || 0,
+      distinctSubjects: Number(row.distinct_subjects ?? 0) || 0,
+      distinctPredicates: Number(row.distinct_predicates ?? 0) || 0,
+      distinctObjects: Number(row.distinct_objects ?? 0) || 0,
+    }));
+  }
+
+  private async schemaPredicateSuggestions(options: PgNormalizedSchemaExplorerOptions): Promise<RdfCardinalityDistributions['predicates']> {
+    const params: unknown[] = [];
+    const conditions = schemaTermConditions('predicate', options, params, false);
+    const graphJoin = appendSchemaGraphPrefixCondition('q', 'graph', options, conditions, params);
+    const rows = await this.requireExecutor().query<{
+      predicate_id: number;
+      quad_count: number | string;
+      graph_count: number | string;
+      distinct_subjects: number | string;
+      distinct_objects: number | string;
+    }>(`
+      SELECT
+        q.predicate_id,
+        COUNT(*) AS quad_count,
+        COUNT(DISTINCT q.graph_id) AS graph_count,
+        COUNT(DISTINCT q.subject_id) AS distinct_subjects,
+        COUNT(DISTINCT q.object_id) AS distinct_objects
+      FROM ${RDF_FACTS_TABLE} q
+      JOIN rdf_terms predicate ON predicate.id = q.predicate_id
+      ${graphJoin}
+      ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
+      GROUP BY q.predicate_id
+      ORDER BY COUNT(*) DESC, q.predicate_id ASC
+      LIMIT ${addPgParam(params, options.limit)}
+    `, params);
+    const terms = await this.requireDictionary().rowsForIds(rows.map((row) => row.predicate_id));
+    return rows.map((row) => ({
+      predicate: this.cardinalityTerm(terms, row.predicate_id),
+      quadCount: Number(row.quad_count ?? 0) || 0,
+      graphCount: Number(row.graph_count ?? 0) || 0,
+      distinctSubjects: Number(row.distinct_subjects ?? 0) || 0,
+      distinctObjects: Number(row.distinct_objects ?? 0) || 0,
+    }));
+  }
+
+  private async schemaClassSuggestions(options: PgNormalizedSchemaExplorerOptions): Promise<RdfCardinalityDistributions['predicateObjects']> {
+    const rdfTypeId = await this.requireDictionary().find(namedNode(RDF_TYPE));
+    if (rdfTypeId === undefined) {
+      return [];
+    }
+    const params: unknown[] = [rdfTypeId];
+    const conditions = ['q.predicate_id = $1', ...schemaTermConditions('object', options, params, false)];
+    const graphJoin = appendSchemaGraphPrefixCondition('q', 'graph', options, conditions, params);
+    const rows = await this.requireExecutor().query<{
+      predicate_id: number;
+      object_id: number;
+      quad_count: number | string;
+      graph_count: number | string;
+      distinct_subjects: number | string;
+    }>(`
+      SELECT
+        q.predicate_id,
+        q.object_id,
+        COUNT(*) AS quad_count,
+        COUNT(DISTINCT q.graph_id) AS graph_count,
+        COUNT(DISTINCT q.subject_id) AS distinct_subjects
+      FROM ${RDF_FACTS_TABLE} q
+      JOIN rdf_terms object ON object.id = q.object_id
+      ${graphJoin}
+      WHERE ${conditions.join(' AND ')}
+      GROUP BY q.predicate_id, q.object_id
+      ORDER BY COUNT(*) DESC, q.object_id ASC
+      LIMIT ${addPgParam(params, options.limit)}
+    `, params);
+    const terms = await this.requireDictionary().rowsForIds(rows.flatMap((row) => [row.predicate_id, row.object_id]));
+    return rows.map((row) => ({
+      predicate: this.cardinalityTerm(terms, row.predicate_id),
+      object: this.cardinalityTerm(terms, row.object_id),
+      quadCount: Number(row.quad_count ?? 0) || 0,
+      graphCount: Number(row.graph_count ?? 0) || 0,
+      distinctSubjects: Number(row.distinct_subjects ?? 0) || 0,
+    }));
+  }
+
+  private async schemaTermSuggestions(options: PgNormalizedSchemaExplorerOptions): Promise<RdfSchemaExplorerTermEntry[]> {
+    const params: unknown[] = [];
+    const graphJoin = options.graphPrefix
+      ? `JOIN rdf_terms graph ON graph.id = q.graph_id AND graph.value LIKE ${addPgParam(params, `${options.graphPrefix}%`)}`
+      : '';
+    const termConditions = schemaTermConditions('term', options, params, false);
+    const rows = await this.requireExecutor().query<{
+      term_id: number;
+      subject_quad_count: number | string;
+      predicate_quad_count: number | string;
+      object_quad_count: number | string;
+      graph_quad_count: number | string;
+    }>(`
+      WITH scoped_quads AS (
+        SELECT q.*
+        FROM ${RDF_FACTS_TABLE} q
+        ${graphJoin}
+      ),
+      uses AS (
+        SELECT subject_id AS term_id, COUNT(*) AS subject_quad_count, 0::bigint AS predicate_quad_count, 0::bigint AS object_quad_count, 0::bigint AS graph_quad_count
+        FROM scoped_quads GROUP BY subject_id
+        UNION ALL
+        SELECT predicate_id AS term_id, 0::bigint, COUNT(*) AS predicate_quad_count, 0::bigint, 0::bigint
+        FROM scoped_quads GROUP BY predicate_id
+        UNION ALL
+        SELECT object_id AS term_id, 0::bigint, 0::bigint, COUNT(*) AS object_quad_count, 0::bigint
+        FROM scoped_quads GROUP BY object_id
+        UNION ALL
+        SELECT graph_id AS term_id, 0::bigint, 0::bigint, 0::bigint, COUNT(*) AS graph_quad_count
+        FROM scoped_quads GROUP BY graph_id
+      )
+      SELECT
+        uses.term_id,
+        SUM(uses.subject_quad_count) AS subject_quad_count,
+        SUM(uses.predicate_quad_count) AS predicate_quad_count,
+        SUM(uses.object_quad_count) AS object_quad_count,
+        SUM(uses.graph_quad_count) AS graph_quad_count
+      FROM uses
+      JOIN rdf_terms term ON term.id = uses.term_id
+      ${termConditions.length ? `WHERE ${termConditions.join(' AND ')}` : ''}
+      GROUP BY uses.term_id
+      ORDER BY (
+        SUM(uses.subject_quad_count)
+        + SUM(uses.predicate_quad_count)
+        + SUM(uses.object_quad_count)
+        + SUM(uses.graph_quad_count)
+      ) DESC, uses.term_id ASC
+      LIMIT ${addPgParam(params, options.limit)}
+    `, params);
+    const terms = await this.requireDictionary().rowsForIds(rows.map((row) => row.term_id));
+    return rows.map((row) => ({
+      term: this.cardinalityTerm(terms, row.term_id),
+      subjectQuadCount: Number(row.subject_quad_count ?? 0) || 0,
+      predicateQuadCount: Number(row.predicate_quad_count ?? 0) || 0,
+      objectQuadCount: Number(row.object_quad_count ?? 0) || 0,
+      graphQuadCount: Number(row.graph_quad_count ?? 0) || 0,
+    }));
+  }
+
   private async literalDatatypeDistribution(): Promise<RdfLiteralDatatypeDistribution[]> {
     const rows = await this.requireExecutor().query<{
       datatype: string | null;
@@ -10088,6 +11007,91 @@ function sqlLikeContains(value: string): string {
   return `%${value.toLowerCase().replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
 }
 
+function addPgParam(params: unknown[], value: unknown): string {
+  params.push(value);
+  return `$${params.length}`;
+}
+
+function normalizeSchemaExplorerOptions(options: RdfSchemaExplorerOptions): PgNormalizedSchemaExplorerOptions {
+  const limit = Number.isFinite(options.limit)
+    ? Math.min(100, Math.max(1, Math.floor(Number(options.limit))))
+    : 20;
+  return {
+    query: options.query?.trim().slice(0, 512).toLowerCase() ?? '',
+    graphPrefix: options.graphPrefix?.trim().slice(0, 2048) ?? '',
+    limit,
+  };
+}
+
+function schemaTermConditions(
+  termAlias: string,
+  options: PgNormalizedSchemaExplorerOptions,
+  params: unknown[],
+  includeGraphPrefix: boolean,
+): string[] {
+  const conditions: string[] = [];
+  if (options.query) {
+    conditions.push(`LOWER(${termAlias}.value) LIKE ${addPgParam(params, sqlLikeContains(options.query))} ESCAPE '\\'`);
+  }
+  if (includeGraphPrefix && options.graphPrefix) {
+    conditions.push(`${termAlias}.value LIKE ${addPgParam(params, `${options.graphPrefix}%`)}`);
+  }
+  return conditions;
+}
+
+function appendSchemaGraphPrefixCondition(
+  quadAlias: string,
+  graphAlias: string,
+  options: PgNormalizedSchemaExplorerOptions,
+  conditions: string[],
+  params: unknown[],
+): string {
+  if (!options.graphPrefix) {
+    return '';
+  }
+  conditions.push(`${graphAlias}.value LIKE ${addPgParam(params, `${options.graphPrefix}%`)}`);
+  return `JOIN rdf_terms ${graphAlias} ON ${graphAlias}.id = ${quadAlias}.graph_id`;
+}
+
+function normalizePathSearchOptions(options: RdfBoundedPathSearchOptions): PgNormalizedPathSearchOptions {
+  const maxDepth = Number.isFinite(options.maxDepth)
+    ? Math.min(8, Math.max(1, Math.floor(Number(options.maxDepth))))
+    : 3;
+  const maxPaths = Number.isFinite(options.maxPaths)
+    ? Math.min(500, Math.max(1, Math.floor(Number(options.maxPaths))))
+    : 50;
+  return {
+    direction: options.direction ?? 'out',
+    graphPrefix: options.graphPrefix?.trim().slice(0, 2048) ?? '',
+    maxDepth,
+    maxPaths,
+  };
+}
+
+function emptyPathSearchResult(maxDepth: number): RdfBoundedPathSearchResult {
+  return {
+    paths: [],
+    truncated: false,
+    scannedEdges: 0,
+    maxDepth,
+  };
+}
+
+function pathTraversalCandidates(
+  row: PgPathEdgeRow,
+  currentId: number,
+  direction: PgNormalizedPathSearchOptions['direction'],
+): Array<{ nextId: number; direction: RdfPathEdgeDirection }> {
+  const candidates: Array<{ nextId: number; direction: RdfPathEdgeDirection }> = [];
+  if ((direction === 'out' || direction === 'both') && row.subject_id === currentId) {
+    candidates.push({ nextId: row.object_id, direction: 'out' });
+  }
+  if ((direction === 'in' || direction === 'both') && row.object_id === currentId) {
+    candidates.push({ nextId: row.subject_id, direction: 'in' });
+  }
+  return candidates;
+}
+
 function compareDerivedCacheCandidates(left: PgDerivedCacheCandidate, right: PgDerivedCacheCandidate): number {
   return right.lastUsedAtMs - left.lastUsedAtMs
     || right.createdAtMs - left.createdAtMs
@@ -10430,6 +11434,94 @@ function deserializeTerm(term: SerializedRdfTerm): Term {
   }
 }
 
+function stripMaterializedViewBuildCache(query: RdfQuery): RdfQuery {
+  const cache = {
+    ...(query.cache ?? {}),
+    mode: 'bypass' as const,
+  };
+  delete cache.materialized;
+  return {
+    ...query,
+    cache,
+  };
+}
+
+function normalizeMaterializedViewKey(key: string): string {
+  const normalized = key.trim();
+  if (!normalized) {
+    throw new Error('RDF materialized view key must not be empty');
+  }
+  return normalized;
+}
+
+function normalizeMaterializedViewVersion(version: string | number | undefined): string {
+  const normalized = version === undefined ? DEFAULT_RDF_MATERIALIZED_VIEW_VERSION : String(version).trim();
+  if (!normalized) {
+    throw new Error('RDF materialized view version must not be empty');
+  }
+  return normalized;
+}
+
+function normalizeMaterializedViewVariables(variables: string[]): string[] {
+  const normalized = uniqueStrings(variables.map((variable) => variable.trim()).filter(Boolean));
+  if (normalized.length === 0) {
+    throw new Error('RDF materialized view requires at least one variable');
+  }
+  return normalized;
+}
+
+function inferBindingVariables(bindings: RdfBindingRow[]): string[] {
+  return uniqueStrings(bindings.flatMap((binding) => Object.keys(binding))).sort();
+}
+
+function materializedViewCells(
+  bindings: RdfBindingRow[],
+  variables: string[],
+): Array<{ rowIndex: number; variable: string; termJson: string }> {
+  return bindings.flatMap((binding, rowIndex) => variables.flatMap((variable) => {
+    const term = binding[variable];
+    return term ? [{ rowIndex, variable, termJson: JSON.stringify(serializeTerm(term)) }] : [];
+  }));
+}
+
+function bindingsFromMaterializedViewCells(rows: PgMaterializedViewCellRow[]): RdfBindingRow[] {
+  const bindings = new Map<number, RdfBindingRow>();
+  for (const row of rows) {
+    const rowIndex = Number(row.row_index);
+    const binding = bindings.get(rowIndex) ?? {};
+    binding[row.variable] = deserializeTerm(JSON.parse(row.term_json) as SerializedRdfTerm);
+    bindings.set(rowIndex, binding);
+  }
+  return [...bindings.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, binding]) => binding);
+}
+
+function parsePgTextArray(value: string[] | string): string[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+  if (trimmed.startsWith('[')) {
+    return JSON.parse(trimmed) as string[];
+  }
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+    return [trimmed];
+  }
+  const body = trimmed.slice(1, -1);
+  if (!body) {
+    return [];
+  }
+  return body.split(',').map((entry) => entry.replace(/^"(.*)"$/, '$1').replace(/\\"/g, '"'));
+}
+
+function pgBoolean(value: boolean | string): boolean {
+  return value === true || value === 't' || value === 'true';
+}
+
 function withQueryCachePlan(result: RdfQueryResult, ...markers: string[]): RdfQueryResult {
   return {
     ...result,
@@ -10740,6 +11832,15 @@ function patternEqualities(slotsByVariable: Map<string, PgPatternKey[]>): PgPatt
 function storagePlanMarkers(queryPlan: string[] | undefined): string[] {
   return (queryPlan ?? []).filter((entry) => (
     entry.startsWith('TextSearch(')
+      || entry.startsWith('TextMatchSource(')
+      || entry.startsWith('VectorSearch(')
+      || entry.startsWith('VectorMatchSource(')
+      || entry.startsWith('PathScopeSource(')
+      || entry.startsWith('AclScopeSource(')
+      || entry.startsWith('TopKPushdown(')
+      || entry.startsWith('PerSourceCap(')
+      || entry === 'NoTsFullMaterialize(TextSearch)'
+      || entry === 'NoTsFullMaterialize(VectorSearch)'
       || entry.startsWith('Rdf3x')
       || entry === 'GraphMembershipFilter'
       || entry === 'GraphPrefixMembershipFilter'
@@ -11466,7 +12567,206 @@ function describeTextSearch(pattern: RdfTextSearchPattern): string {
     : pattern.scope?.sourcePrefix
       ? `prefix:${pattern.scope.sourcePrefix}`
       : '*';
-  return `${JSON.stringify(pattern.query)}@${scope}${bindings ? ` ${bindings}` : ''}${describeSearchWindow(pattern.limit, pattern.offset)}${describeSearchOrder(pattern.orderBy)}`;
+  const entityConstraint = pattern.entities?.length ? ` entities:${pattern.entities.length}` : '';
+  return `${JSON.stringify(pattern.query)}@${scope}${bindings ? ` ${bindings}` : ''}${entityConstraint}${describeSearchWindow(pattern.limit, pattern.offset)}${describeSearchOrder(pattern.orderBy)}`;
+}
+
+function describeTextSearchPlan(pattern: RdfTextSearchPattern): string[] {
+  const source = describeTextSearch(pattern);
+  const entries = [
+    `TextSearch(${source})`,
+    `TextMatchSource(${source})`,
+  ];
+  entries.push(...describeSearchScopePlan(pattern.scope));
+  const topK = describeTextSearchTopKPushdown(pattern);
+  if (topK) {
+    entries.push(topK, 'NoTsFullMaterialize(TextSearch)');
+  }
+  const perSourceCap = describeTextSearchPerSourceCap(pattern);
+  if (perSourceCap) {
+    entries.push(perSourceCap);
+  }
+  return entries;
+}
+
+function pushUniquePlan(plan: string[], entry: string): void {
+  if (!plan.includes(entry)) {
+    plan.push(entry);
+  }
+}
+
+function describePgSourceEstimate(
+  source: string,
+  estimatedRows: number,
+  estimatedCostRows: number,
+  topK: string,
+  connected: boolean,
+): string {
+  const rows = Math.max(0, Math.ceil(estimatedRows));
+  const costRows = Math.max(rows, Math.ceil(estimatedCostRows));
+  const selectivity = costRows > 0 ? rows / costRows : 0;
+  return `SourceEstimate(${source} rows:${rows} cost:${costRows} selectivity:${formatPlanRatio(selectivity)} topk:${topK} connected:${connected})`;
+}
+
+function describePgSearchScopeSourceEstimates(
+  pattern: RdfTextSearchPattern | RdfVectorSearchPattern,
+  sourceIndex: number,
+  estimatedRows: number,
+  estimatedCostRows: number,
+  connected: boolean,
+): string[] {
+  const scope = pattern.scope;
+  if (!scope) {
+    return [];
+  }
+
+  const entries: string[] = [];
+  if (scope.workspace || scope.sourcePrefix || scope.localPathPrefix) {
+    entries.push(describePgSourceEstimate(
+      `PathScopeSource#${sourceIndex}`,
+      estimatedRows,
+      estimatedCostRows,
+      'none',
+      connected,
+    ));
+  }
+  if (
+    scope.accessBasePath
+    || (scope.allowedSources?.length ?? 0) > 0
+    || (scope.deniedSources?.length ?? 0) > 0
+    || (scope.deniedSourcePrefixes?.length ?? 0) > 0
+  ) {
+    entries.push(describePgSourceEstimate(
+      `AclScopeSource#${sourceIndex}`,
+      estimatedRows,
+      estimatedCostRows,
+      'none',
+      connected,
+    ));
+  }
+  return entries;
+}
+
+function buildPgRequiredSources(
+  requiredPatterns: RdfQueryPattern[],
+  query: RdfQuery,
+): PgRequiredSource[] {
+  return [
+    ...requiredPatterns.map((pattern, originalIndex): PgRequiredSource => ({
+      kind: 'pattern',
+      pattern,
+      originalIndex,
+    })),
+    ...(query.textSearch ?? []).map((pattern, originalIndex): PgRequiredSource => ({
+      kind: 'text',
+      pattern,
+      originalIndex,
+    })),
+    ...(query.vectorSearch ?? []).map((pattern, originalIndex): PgRequiredSource => ({
+      kind: 'vector',
+      pattern,
+      originalIndex,
+    })),
+  ];
+}
+
+function pgRequiredSourcePriority(source: PgRequiredSource): number {
+  if (source.kind !== 'pattern' && hasSearchWindow(source.pattern)) {
+    return 0;
+  }
+  return 1;
+}
+
+function describePgSearchTopK(pattern: RdfTextSearchPattern | RdfVectorSearchPattern): string {
+  return hasSearchWindow(pattern) ? 'source-local' : 'none';
+}
+
+function pgSearchSourceConnected(
+  bindings: RdfBindingRow[],
+  pattern: RdfTextSearchPattern | RdfVectorSearchPattern,
+): boolean {
+  const variables = [
+    pattern.source,
+    pattern.chunk,
+    pattern.content,
+    pattern.heading,
+    pattern.score,
+  ].filter((value): value is string => Boolean(value));
+  if (pattern.source === undefined && variables.length === 0) {
+    return true;
+  }
+  return bindings.some((binding) => variables.some((variableName) => binding[variableName] !== undefined));
+}
+
+function formatPlanRatio(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '0.000';
+  }
+  return Math.max(0, Math.min(1, value)).toFixed(3);
+}
+
+function describeVectorSearchPlan(pattern: RdfVectorSearchPattern): string[] {
+  const source = describeVectorSearch(pattern);
+  const entries = [
+    `VectorSearch(${source})`,
+    `VectorMatchSource(${source})`,
+  ];
+  entries.push(...describeSearchScopePlan(pattern.scope));
+  const topK = describeVectorSearchTopKPushdown(pattern);
+  if (topK) {
+    entries.push(topK, 'NoTsFullMaterialize(VectorSearch)');
+  }
+  return entries;
+}
+
+function describeVectorSearchTopKPushdown(pattern: RdfVectorSearchPattern): string | undefined {
+  const window = describeSearchWindow(pattern.limit, pattern.offset).trim();
+  if (!window) {
+    return undefined;
+  }
+  const order = describeSearchOrder(pattern.orderBy).trim();
+  return `TopKPushdown(VectorSearch ${[window, order].filter(Boolean).join(' ')})`;
+}
+
+function describeTextSearchTopKPushdown(pattern: RdfTextSearchPattern): string | undefined {
+  const window = describeSearchWindow(pattern.limit, pattern.offset).trim();
+  if (!window) {
+    return undefined;
+  }
+  const order = describeSearchOrder(pattern.orderBy).trim();
+  return `TopKPushdown(TextSearch ${[window, order].filter(Boolean).join(' ')})`;
+}
+
+function describeTextSearchPerSourceCap(pattern: RdfTextSearchPattern): string | undefined {
+  if (pattern.perSourceLimit === undefined || !Number.isFinite(pattern.perSourceLimit)) {
+    return undefined;
+  }
+  return `PerSourceCap(TextSearch per-source:${Math.max(0, Math.trunc(pattern.perSourceLimit))})`;
+}
+
+function describeSearchScopePlan(scope: RdfTextSearchPattern['scope']): string[] {
+  if (!scope) {
+    return [];
+  }
+  const entries: string[] = [];
+  const pathParts = [
+    scope.workspace ? `workspace:${scope.workspace}` : undefined,
+    scope.sourcePrefix ? `prefix:${scope.sourcePrefix}` : undefined,
+    scope.localPathPrefix ? `local-path-prefix:${scope.localPathPrefix}` : undefined,
+  ].filter(Boolean);
+  if (pathParts.length > 0) {
+    entries.push(`PathScopeSource(${pathParts.join(',')})`);
+  }
+  const aclParts = [
+    scope.accessBasePath ? `base-path:${scope.accessBasePath}` : undefined,
+    scope.allowedSources ? `allowed:${scope.allowedSources.length}` : undefined,
+    scope.deniedSources?.length ? `denied:${scope.deniedSources.length}` : undefined,
+    scope.deniedSourcePrefixes?.length ? `denied-prefix:${scope.deniedSourcePrefixes.length}` : undefined,
+  ].filter(Boolean);
+  if (aclParts.length > 0) {
+    entries.push(`AclScopeSource(${aclParts.join(' ')})`);
+  }
+  return entries;
 }
 
 function describeVectorSearch(pattern: RdfVectorSearchPattern): string {
@@ -11508,11 +12808,14 @@ function textSearchOptions(pattern: RdfTextSearchPattern, exactSource?: string):
     source: exactSource,
     workspace: pattern.scope?.workspace,
     sourcePrefix: pattern.scope?.sourcePrefix,
+    localPathPrefix: pattern.scope?.localPathPrefix,
     allowedSources: pattern.scope?.allowedSources,
     deniedSources: pattern.scope?.deniedSources,
     deniedSourcePrefixes: pattern.scope?.deniedSourcePrefixes,
+    entities: pattern.entities,
     limit: pattern.limit,
     offset: pattern.offset,
+    perSourceLimit: pattern.perSourceLimit,
     orderBy: pattern.orderBy,
   };
 }
@@ -11521,10 +12824,16 @@ function vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: stri
   return {
     embedding: pattern.embedding,
     metric: pattern.metric,
+    provider: pattern.vectorProvider,
     model: pattern.vectorModel,
+    modelVersion: pattern.vectorModelVersion,
+    inputKind: pattern.vectorInputKind,
+    inputHash: pattern.vectorInputHash,
+    projectionPolicyVersion: pattern.vectorProjectionPolicyVersion,
     source: exactSource,
     workspace: pattern.scope?.workspace,
     sourcePrefix: pattern.scope?.sourcePrefix,
+    localPathPrefix: pattern.scope?.localPathPrefix,
     allowedSources: pattern.scope?.allowedSources,
     deniedSources: pattern.scope?.deniedSources,
     deniedSourcePrefixes: pattern.scope?.deniedSourcePrefixes,
@@ -11533,6 +12842,130 @@ function vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: stri
     threshold: pattern.threshold,
     orderBy: pattern.orderBy,
   };
+}
+
+
+interface PgBoundTermBatchCandidate {
+  key: PgPatternKey;
+  variable: string;
+  terms: Term[];
+  buckets: Map<string, RdfBindingRow[]>;
+  unbatched: RdfBindingRow[];
+}
+
+function pgBoundTermBatchCandidate(
+  input: RdfBindingRow[],
+  pattern: RdfQueryPattern,
+): PgBoundTermBatchCandidate | undefined {
+  if (input.length < PG_FACTS_BATCH_BOUND_TERM_MIN_ROWS) {
+    return undefined;
+  }
+  const keyOrder: PgPatternKey[] = ['subject', 'object', 'predicate', 'graph'];
+  for (const key of keyOrder) {
+    const patternValue = pattern[key];
+    if (!isVariable(patternValue)) {
+      continue;
+    }
+    const buckets = new Map<string, RdfBindingRow[]>();
+    const termsByKey = new Map<string, Term>();
+    const unbatched: RdfBindingRow[] = [];
+    for (const binding of input) {
+      const term = binding[patternValue.variable];
+      if (!term || !termKindsForPatternKey(key).includes(postgresRdfTermKind(term))) {
+        unbatched.push(binding);
+        continue;
+      }
+      const termKey = termToId(term as any);
+      termsByKey.set(termKey, term);
+      const bucket = buckets.get(termKey);
+      if (bucket) {
+        bucket.push(binding);
+      } else {
+        buckets.set(termKey, [binding]);
+      }
+    }
+    if (termsByKey.size >= PG_FACTS_BATCH_BOUND_TERM_MIN_ROWS) {
+      return {
+        key,
+        variable: patternValue.variable,
+        terms: [...termsByKey.values()],
+        buckets,
+        unbatched,
+      };
+    }
+  }
+  return undefined;
+}
+
+function canUseGlobalSearchForBoundSources(
+  input: RdfBindingRow[],
+  pattern: RdfTextSearchPattern | RdfVectorSearchPattern,
+  sourceVariable: string,
+): boolean {
+  return !hasSearchWindow(pattern) && boundSearchSourceCount(input, sourceVariable) > PG_BOUND_SOURCE_EXACT_SEARCH_MAX;
+}
+
+function boundSearchSourceCount(input: RdfBindingRow[], sourceVariable: string): number {
+  const sources = new Set<string>();
+  for (const binding of input) {
+    const term = binding[sourceVariable];
+    if (term?.termType === 'NamedNode') {
+      sources.add(term.value);
+    }
+  }
+  return sources.size;
+}
+
+function bindTextSearchResultsBySource(
+  input: RdfBindingRow[],
+  pattern: RdfTextSearchPattern,
+  sourceVariable: string,
+  results: RdfTextSearchResult[],
+): RdfBindingRow[] {
+  return bindSearchResultsBySource(input, sourceVariable, results, (binding, result) => bindTextSearchResult(binding, pattern, result));
+}
+
+function bindVectorSearchResultsBySource(
+  input: RdfBindingRow[],
+  pattern: RdfVectorSearchPattern,
+  sourceVariable: string,
+  results: RdfVectorSearchResult[],
+): RdfBindingRow[] {
+  return bindSearchResultsBySource(input, sourceVariable, results, (binding, result) => bindVectorSearchResult(binding, pattern, result));
+}
+
+function bindSearchResultsBySource<Result extends { source: string }>(
+  input: RdfBindingRow[],
+  sourceVariable: string,
+  results: Result[],
+  bind: (binding: RdfBindingRow, result: Result) => RdfBindingRow | null,
+): RdfBindingRow[] {
+  const resultsBySource = new Map<string, Result[]>();
+  for (const result of results) {
+    const bucket = resultsBySource.get(result.source);
+    if (bucket) {
+      bucket.push(result);
+    } else {
+      resultsBySource.set(result.source, [result]);
+    }
+  }
+
+  const output: RdfBindingRow[] = [];
+  for (const binding of input) {
+    const term = binding[sourceVariable];
+    const candidates = term === undefined
+      ? results
+      : term.termType === 'NamedNode'
+        ? resultsBySource.get(term.value) ?? []
+        : [];
+    for (const result of candidates) {
+      const next = bind(binding, result);
+      if (next) {
+        output.push(next);
+      }
+    }
+  }
+  return output;
 }
 
 function canUseBoundSourceSearch(
@@ -11561,7 +12994,7 @@ function canUseBoundSourceSearch(
     boundSources.add(term.value);
   }
 
-  return sawBound && boundSources.size > 0;
+  return sawBound && boundSources.size > 0 && boundSources.size <= PG_BOUND_SOURCE_EXACT_SEARCH_MAX;
 }
 
 function hasSearchWindow(pattern: RdfTextSearchPattern | RdfVectorSearchPattern): boolean {
@@ -11581,9 +13014,14 @@ function bindTextSearchResult(
     [pattern.content, DataFactory.literal(result.content) as Term],
     [pattern.heading, result.heading ? DataFactory.literal(result.heading) as Term : undefined],
     [pattern.score, decimalLiteral(result.score)],
+    [pattern.scoreComponents, result.scoreComponents ? DataFactory.literal(JSON.stringify(result.scoreComponents)) as Term : undefined],
     [pattern.workspace, DataFactory.namedNode(result.workspace) as Term],
     [pattern.localPath, result.localPath ? DataFactory.literal(result.localPath) as Term : undefined],
     [pattern.contentType, result.contentType ? DataFactory.literal(result.contentType) as Term : undefined],
+    [pattern.sourceKey, DataFactory.literal(result.sourceKey) as Term],
+    [pattern.retrievalPoint, DataFactory.literal(result.retrievalPointKey) as Term],
+    [pattern.retrievalKind, DataFactory.literal(result.retrievalKind) as Term],
+    [pattern.entityProvenance, DataFactory.literal(JSON.stringify(result.entities)) as Term],
     [pattern.ordinal, integerLiteral(result.ordinal)],
     [pattern.level, integerLiteral(result.level)],
     [pattern.startOffset, integerLiteral(result.startOffset)],
@@ -11617,14 +13055,22 @@ function bindVectorSearchResult(
     [pattern.heading, result.heading ? DataFactory.literal(result.heading) as Term : undefined],
     [pattern.score, decimalLiteral(result.score)],
     [pattern.distance, decimalLiteral(result.distance)],
+    [pattern.scoreComponents, result.scoreComponents ? DataFactory.literal(JSON.stringify(result.scoreComponents)) as Term : undefined],
     [pattern.workspace, DataFactory.namedNode(result.workspace) as Term],
     [pattern.localPath, result.localPath ? DataFactory.literal(result.localPath) as Term : undefined],
     [pattern.contentType, result.contentType ? DataFactory.literal(result.contentType) as Term : undefined],
+    [pattern.sourceKey, DataFactory.literal(result.sourceKey) as Term],
+    [pattern.retrievalPoint, DataFactory.literal(result.retrievalPointKey) as Term],
     [pattern.ordinal, integerLiteral(result.ordinal)],
     [pattern.level, integerLiteral(result.level)],
     [pattern.startOffset, integerLiteral(result.startOffset)],
     [pattern.endOffset, integerLiteral(result.endOffset)],
+    [pattern.provider, result.provider ? DataFactory.literal(result.provider) as Term : undefined],
     [pattern.model, result.model ? DataFactory.literal(result.model) as Term : undefined],
+    [pattern.modelVersion, result.modelVersion ? DataFactory.literal(result.modelVersion) as Term : undefined],
+    [pattern.inputKind, result.inputKind ? DataFactory.literal(result.inputKind) as Term : undefined],
+    [pattern.inputHash, result.inputHash ? DataFactory.literal(result.inputHash) as Term : undefined],
+    [pattern.projectionPolicyVersion, result.projectionPolicyVersion ? DataFactory.literal(result.projectionPolicyVersion) as Term : undefined],
   ];
 
   for (const [variableName, term] of candidates) {

@@ -1840,6 +1840,19 @@ describe('Managed Agents Inngest Chat backend', () => {
                 heading: 'Launch',
                 text: 'Launch checklist lives in notes.md',
                 score: 0.87,
+                metadata: {
+                  untrustedContext: true,
+                  sourceKey: 'source-node:notes',
+                  retrievalPointKey: 'file-chunk:notes.md#launch',
+                  retrievalKind: 'file-chunk',
+                  entityProvenance: [{
+                    entity: 'https://pod.example/alice/.data/task/default/index.ttl#this',
+                    predicate: 'https://schema.org/about',
+                    value: 'Launch checklist lives in notes.md',
+                    policyRole: 'searchableText',
+                    occurrences: 1,
+                  }],
+                },
               },
               {
                 kind: 'rdf_literal',
@@ -1875,8 +1888,14 @@ describe('Managed Agents Inngest Chat backend', () => {
       ]);
       const contextText = replaceMessagesMock.mock.calls[0][0][1].content[0].text;
       expect(contextText).toContain('kind=text_chunk');
+      expect(contextText).toContain('UNTRUSTED_CONTEXT');
       expect(contextText).toContain('score=0.8700');
       expect(contextText).toContain('source=file://localhost/workspace/notes.md');
+      expect(contextText).toContain('sourceKey=source-node:notes');
+      expect(contextText).toContain('retrievalPoint=file-chunk:notes.md#launch');
+      expect(contextText).toContain('retrievalKind=file-chunk');
+      expect(contextText).toContain('entity=https://pod.example/alice/.data/task/default/index.ttl#this');
+      expect(contextText).toContain('predicate=https://schema.org/about');
       expect(contextText).toContain('Launch checklist lives in notes.md');
       expect(contextText).toContain('Task priority is high');
       expect(promptMock).toHaveBeenCalledWith('current prompt', {

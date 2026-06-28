@@ -92,10 +92,374 @@ describe('RdfVectorIndex', () => {
     });
     expect(results[0].score).toBeGreaterThan(results[1].score);
     expect(results[0].distance).toBeLessThan(results[1].distance);
+    expect(results[0].scoreComponents).toMatchObject({
+      sourceType: 'vector',
+      metric: 'cosine',
+      dimensions: 3,
+      dotProduct: 0.9,
+      candidateMagnitude: 1,
+    });
+    expect(results[0].scoreComponents?.score).toBeCloseTo(results[0].score);
+    expect(results[0].scoreComponents?.distance).toBeCloseTo(results[0].distance);
+    expect(results[0].scoreComponents?.queryMagnitude).toBeCloseTo(Math.sqrt(0.82));
     expect(index.stats()).toMatchObject({
       sourceCount: 2,
       chunkCount: 3,
       componentCount: 9,
+    });
+  });
+
+  it('exposes source and retrieval point identity for vector chunks', () => {
+    index.indexVector({
+      sourceKey: 'source-node:vector-guide',
+      source: 'https://pod.example/alice/docs/vector-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/vector-guide.md',
+      contentType: 'text/markdown',
+    }, [
+      {
+        chunkKey: 'shared-point',
+        ordinal: 0,
+        level: 1,
+        heading: 'Vector Guide',
+        content: 'Shared retrieval point.',
+        startOffset: 0,
+        endOffset: 23,
+        embedding: [1, 0],
+        model: 'test-embed',
+      },
+    ]);
+
+    const result = index.search({
+      embedding: [1, 0],
+      workspace: 'https://pod.example/alice/',
+      model: 'test-embed',
+    })[0];
+
+    expect(result).toMatchObject({
+      sourceKey: 'source-node:vector-guide',
+      chunkKey: 'shared-point',
+      retrievalPointKey: 'shared-point',
+    });
+  });
+
+  it('persists summary metadata for derived summary embedding inputs', () => {
+    index.indexVector({
+      sourceKey: 'source-node:summary-guide',
+      source: 'https://pod.example/alice/docs/summary-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/summary-guide.md',
+      contentType: 'text/markdown',
+      sourceHash: 'source-hash-v1',
+    }, [
+      {
+        chunkKey: 'summary-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Short summary.',
+        startOffset: 0,
+        endOffset: 100,
+        embedding: [1, 0],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        inputKind: 'semantic',
+        inputHash: 'sha256:summary-input',
+        projectionPolicyVersion: 'rdf-vector-projection-v1',
+        summaryMetadata: {
+          status: 'summarized',
+          provider: 'summary-provider',
+          model: 'summary-model',
+          promptVersion: 'summary-v1',
+          sourceHash: 'source-hash-v1',
+          originalChars: 100,
+          summaryChars: 14,
+          rounds: 1,
+        },
+      } as any,
+    ]);
+
+    const result = index.search({
+      embedding: [1, 0],
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      inputKind: 'semantic',
+    })[0] as any;
+
+    expect(result.summaryMetadata).toEqual({
+      status: 'summarized',
+      provider: 'summary-provider',
+      model: 'summary-model',
+      promptVersion: 'summary-v1',
+      sourceHash: 'source-hash-v1',
+      originalChars: 100,
+      summaryChars: 14,
+      rounds: 1,
+    });
+  });
+
+  it('lists summary lifecycle records for derived summary embeddings', () => {
+    const summaryMetadata = {
+      status: 'summarized' as const,
+      provider: 'summary-provider',
+      model: 'summary-model',
+      promptVersion: 'summary-v1',
+      sourceHash: 'source-hash-v1',
+      originalChars: 100,
+      summaryChars: 14,
+      rounds: 1,
+    };
+    index.indexVector({
+      sourceKey: 'source-node:summary-guide',
+      source: 'https://pod.example/alice/docs/summary-guide.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/summary-guide.md',
+      contentType: 'text/markdown',
+      sourceHash: 'source-hash-v1',
+    }, [
+      {
+        chunkKey: 'summary-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Short summary.',
+        startOffset: 0,
+        endOffset: 100,
+        embedding: [1, 0],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        inputKind: 'semantic',
+        inputHash: 'sha256:summary-input',
+        projectionPolicyVersion: 'rdf-vector-projection-v1',
+        summaryMetadata,
+      },
+      {
+        chunkKey: 'raw-point',
+        ordinal: 1,
+        level: 1,
+        content: 'Raw content.',
+        startOffset: 0,
+        endOffset: 12,
+        embedding: [0, 1],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        inputKind: 'semantic',
+        inputHash: 'sha256:raw-input',
+        projectionPolicyVersion: 'rdf-vector-projection-v1',
+      },
+    ]);
+
+    expect(index.summaryLifecycle({
+      source: 'https://pod.example/alice/docs/summary-guide.md',
+    })).toEqual([expect.objectContaining({
+      sourceKey: 'source-node:summary-guide',
+      source: 'https://pod.example/alice/docs/summary-guide.md',
+      localPath: 'docs/summary-guide.md',
+      chunkKey: 'summary-point',
+      retrievalPointKey: 'summary-point',
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      inputKind: 'semantic',
+      inputHash: 'sha256:summary-input',
+      projectionPolicyVersion: 'rdf-vector-projection-v1',
+      summaryMetadata,
+      updatedAt: expect.any(String),
+    })]);
+    expect(index.summaryLifecycle({
+      source: 'https://pod.example/alice/docs/missing.md',
+    })).toEqual([]);
+  });
+
+  it('keeps parallel provider/model-specific vectors for the same retrieval point', () => {
+    const source = {
+      sourceKey: 'source-node:shared-vector',
+      source: 'https://pod.example/alice/docs/shared-vector.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/shared-vector.md',
+      contentType: 'text/markdown',
+    };
+
+    index.indexVector(source, [
+      {
+        chunkKey: 'same-point',
+        ordinal: 0,
+        level: 1,
+        content: 'DashScope semantic projection.',
+        startOffset: 0,
+        endOffset: 30,
+        embedding: [1, 0],
+        provider: 'dashscope',
+        model: 'text-embedding-v4',
+        modelVersion: '2026-06',
+        inputKind: 'semantic',
+        inputHash: 'sha256:semantic-a',
+        projectionPolicyVersion: 'p2-vector-policy',
+      },
+    ]);
+    index.indexVector(source, [
+      {
+        chunkKey: 'same-point',
+        ordinal: 0,
+        level: 1,
+        content: 'OpenAI locator projection.',
+        startOffset: 0,
+        endOffset: 27,
+        embedding: [0, 1],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'locator',
+        inputHash: 'sha256:locator-b',
+        projectionPolicyVersion: 'p2-vector-policy',
+      },
+    ]);
+
+    const dashscope = index.search({
+      embedding: [1, 0],
+      provider: 'dashscope',
+      model: 'text-embedding-v4',
+      modelVersion: '2026-06',
+      inputKind: 'semantic',
+      projectionPolicyVersion: 'p2-vector-policy',
+    });
+    const openai = index.search({
+      embedding: [0, 1],
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      modelVersion: '2026-05',
+      inputKind: 'locator',
+      projectionPolicyVersion: 'p2-vector-policy',
+    });
+
+    expect(dashscope).toHaveLength(1);
+    expect(dashscope[0]).toMatchObject({
+      sourceKey: 'source-node:shared-vector',
+      retrievalPointKey: 'same-point',
+      provider: 'dashscope',
+      model: 'text-embedding-v4',
+      modelVersion: '2026-06',
+      inputKind: 'semantic',
+      inputHash: 'sha256:semantic-a',
+      projectionPolicyVersion: 'p2-vector-policy',
+      content: 'DashScope semantic projection.',
+    });
+    expect(openai).toHaveLength(1);
+    expect(openai[0]).toMatchObject({
+      sourceKey: 'source-node:shared-vector',
+      retrievalPointKey: 'same-point',
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      modelVersion: '2026-05',
+      inputKind: 'locator',
+      inputHash: 'sha256:locator-b',
+      projectionPolicyVersion: 'p2-vector-policy',
+      content: 'OpenAI locator projection.',
+    });
+    expect(index.stats()).toMatchObject({
+      sourceCount: 1,
+      chunkCount: 2,
+      componentCount: 4,
+    });
+  });
+
+  it('replaces only the affected provider/model/projection vector identity', () => {
+    const source = {
+      sourceKey: 'source-node:vector-invalidation',
+      source: 'https://pod.example/alice/docs/vector-invalidation.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/vector-invalidation.md',
+      contentType: 'text/markdown',
+    };
+
+    index.indexVector(source, [
+      {
+        chunkKey: 'same-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Old semantic projection.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [1, 0],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'semantic',
+        inputHash: 'sha256:old-semantic',
+        projectionPolicyVersion: 'p2-vector-policy',
+      },
+      {
+        chunkKey: 'same-point',
+        ordinal: 0,
+        level: 1,
+        content: 'Locator projection stays.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [0, 1],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'locator',
+        inputHash: 'sha256:locator',
+        projectionPolicyVersion: 'p2-vector-policy',
+      },
+    ]);
+    index.indexVector(source, [
+      {
+        chunkKey: 'same-point',
+        ordinal: 0,
+        level: 1,
+        content: 'New semantic projection.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [0.5, 0.5],
+        provider: 'openai',
+        model: 'text-embedding-3-small',
+        modelVersion: '2026-05',
+        inputKind: 'semantic',
+        inputHash: 'sha256:new-semantic',
+        projectionPolicyVersion: 'p2-vector-policy',
+      },
+    ]);
+
+    expect(index.search({
+      embedding: [1, 0],
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      modelVersion: '2026-05',
+      inputKind: 'semantic',
+      inputHash: 'sha256:old-semantic',
+      projectionPolicyVersion: 'p2-vector-policy',
+    })).toEqual([]);
+    expect(index.search({
+      embedding: [0.5, 0.5],
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      modelVersion: '2026-05',
+      inputKind: 'semantic',
+      inputHash: 'sha256:new-semantic',
+      projectionPolicyVersion: 'p2-vector-policy',
+    })).toMatchObject([
+      {
+        retrievalPointKey: 'same-point',
+        content: 'New semantic projection.',
+      },
+    ]);
+    expect(index.search({
+      embedding: [0, 1],
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      modelVersion: '2026-05',
+      inputKind: 'locator',
+      projectionPolicyVersion: 'p2-vector-policy',
+    })).toMatchObject([
+      {
+        retrievalPointKey: 'same-point',
+        inputHash: 'sha256:locator',
+        content: 'Locator projection stays.',
+      },
+    ]);
+    expect(index.stats()).toMatchObject({
+      sourceCount: 1,
+      chunkCount: 2,
+      componentCount: 4,
     });
   });
 
@@ -367,6 +731,95 @@ describe('RdfVectorIndex', () => {
         score: 1,
       },
     ]);
+  });
+
+  it('upgrades legacy chunk uniqueness before storing parallel provider vectors', () => {
+    index.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+    const dbPath = join(tempDir, 'legacy-unique.sqlite');
+    const db = createSqliteRuntime().openDatabase(dbPath);
+    db.exec(`
+      CREATE TABLE rdf_vector_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL UNIQUE,
+        workspace TEXT NOT NULL,
+        local_path TEXT,
+        content_type TEXT,
+        source_version TEXT,
+        source_hash TEXT,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+
+      CREATE TABLE rdf_vector_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        chunk_key TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        level INTEGER NOT NULL,
+        heading TEXT,
+        path TEXT,
+        content TEXT NOT NULL,
+        start_offset INTEGER NOT NULL,
+        end_offset INTEGER NOT NULL,
+        embedding_json TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        magnitude REAL NOT NULL,
+        model TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (source_id, chunk_key),
+        FOREIGN KEY (source_id) REFERENCES rdf_vector_sources(id)
+      );
+    `);
+    db.close();
+
+    index = new RdfVectorIndex({ path: dbPath });
+    index.open();
+    const source = {
+      sourceKey: 'source-node:legacy-parallel',
+      source: 'https://pod.example/alice/docs/legacy-parallel.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/legacy-parallel.md',
+      contentType: 'text/markdown',
+    };
+    index.indexVector(source, [
+      {
+        chunkKey: 'same-point',
+        ordinal: 0,
+        level: 1,
+        content: 'DashScope legacy upgrade.',
+        startOffset: 0,
+        endOffset: 25,
+        embedding: [1, 0],
+        provider: 'dashscope',
+        model: 'embed',
+      },
+    ]);
+    index.indexVector(source, [
+      {
+        chunkKey: 'same-point',
+        ordinal: 0,
+        level: 1,
+        content: 'OpenAI legacy upgrade.',
+        startOffset: 0,
+        endOffset: 22,
+        embedding: [0, 1],
+        provider: 'openai',
+        model: 'embed',
+      },
+    ]);
+
+    expect(index.search({ embedding: [1, 0], provider: 'dashscope', model: 'embed' })).toMatchObject([
+      { provider: 'dashscope', content: 'DashScope legacy upgrade.' },
+    ]);
+    expect(index.search({ embedding: [0, 1], provider: 'openai', model: 'embed' })).toMatchObject([
+      { provider: 'openai', content: 'OpenAI legacy upgrade.' },
+    ]);
+    expect(index.stats()).toMatchObject({
+      sourceCount: 1,
+      chunkCount: 2,
+      componentCount: 4,
+    });
   });
 
   it('uses explicit source-local ordering before applying the vector window', () => {

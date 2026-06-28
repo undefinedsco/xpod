@@ -37,6 +37,7 @@ export interface RdfBenchmarkReportSummary {
   scale?: string;
   caseProfile?: string;
   rdfAccelerationProfile?: string;
+  textSearchBackend?: string;
   seedQuadCount?: number;
   targetQuadCount?: number;
   fullScale?: boolean;
@@ -47,6 +48,21 @@ export interface RdfBenchmarkReportSummary {
   failedPlanCases: string[];
   concurrencyMatched?: boolean;
   failedConcurrencyCases: string[];
+  servingRegressionMatched?: boolean;
+  servingRegressionThresholdsConfigured?: boolean;
+  failedServingRegressionCases: string[];
+  fusionBenchmarkMatched?: boolean;
+  fusionBenchmarkThresholdsConfigured?: boolean;
+  failedFusionBenchmarkCases: string[];
+  fusionBaselineComparisonMatched?: boolean;
+  failedFusionBaselineComparisonCases: string[];
+  benchmarkGateConfigSourcesConfigured?: boolean;
+  fusionBaselineReportSourceConfigured?: boolean;
+  benchmarkGateConfigSourceShapeMismatches: string[];
+  fusionBaselineReportSourceBaselineProfileConfigured?: boolean;
+  fusionHardFiltersBeforeRankCaseCount?: number;
+  fusionBatchedBroadCandidateJoinCaseCount?: number;
+  nativeTextFtsCaseCount?: number;
   ingestDurationMs?: number;
   copyRows?: number;
   copyFallbacks?: number;
@@ -219,6 +235,14 @@ function summarizeBenchmarkReport(input: unknown, reportPath: string): RdfBenchm
   const firstQuery = recordValue(coldStart?.firstQueryAfterRefresh);
   const warmSteadyState = recordValue(coldStart?.warmSteadyState);
   const concurrencyGate = recordValue(report.concurrencyGate);
+  const servingRegressionGate = recordValue(report.servingRegressionGate);
+  const fusionBenchmarkGate = recordValue(report.fusionBenchmarkGate);
+  const failedFusionBaselineComparisonCases = failedBaselineComparisonCases(fusionBenchmarkGate);
+  const benchmarkGateConfigSources = recordArrayValue(seed?.benchmarkGateConfigSources);
+  const driver = stringValue(seed?.driver);
+  const scale = stringValue(report.scale) ?? stringValue(seed?.scale);
+  const caseProfile = stringValue(report.caseProfile) ?? stringValue(seed?.caseProfile);
+  const targetQuadCount = numberValue(seed?.targetQuadCount);
   const bulkLoad = recordValue(seed?.bulkLoad);
   const copyFromRows = recordValue(bulkLoad?.copyFromRows);
 
@@ -227,12 +251,13 @@ function summarizeBenchmarkReport(input: unknown, reportPath: string): RdfBenchm
     path: reportPath,
     generatedAt,
     engine,
-    driver: stringValue(seed?.driver),
-    scale: stringValue(report.scale) ?? stringValue(seed?.scale),
-    caseProfile: stringValue(report.caseProfile) ?? stringValue(seed?.caseProfile),
+    driver,
+    scale,
+    caseProfile,
     rdfAccelerationProfile: stringValue(seed?.rdfAccelerationProfile) ?? stringValue(pgAcceleration?.profile),
+    textSearchBackend: stringValue(seed?.textSearchBackend),
     seedQuadCount: numberValue(seed?.seedQuadCount),
-    targetQuadCount: numberValue(seed?.targetQuadCount),
+    targetQuadCount,
     fullScale: booleanValue(seed?.fullScale),
     iterations: numberValue(report.iterations) ?? numberValue(seed?.iterations),
     warmupIterations: numberValue(report.warmupIterations) ?? numberValue(seed?.warmupIterations),
@@ -241,6 +266,27 @@ function summarizeBenchmarkReport(input: unknown, reportPath: string): RdfBenchm
     failedPlanCases: stringArrayValue(report.failedPlanCases),
     concurrencyMatched: booleanValue(concurrencyGate?.matched),
     failedConcurrencyCases: stringArrayValue(concurrencyGate?.failedCases),
+    servingRegressionMatched: booleanValue(servingRegressionGate?.matched),
+    servingRegressionThresholdsConfigured: hasThresholds(servingRegressionGate),
+    failedServingRegressionCases: stringArrayValue(servingRegressionGate?.failedCases),
+    fusionBenchmarkMatched: booleanValue(fusionBenchmarkGate?.matched),
+    fusionBenchmarkThresholdsConfigured: hasThresholds(fusionBenchmarkGate),
+    failedFusionBenchmarkCases: stringArrayValue(fusionBenchmarkGate?.failedCases),
+    fusionBaselineComparisonMatched: baselineComparisonMatched(fusionBenchmarkGate, failedFusionBaselineComparisonCases),
+    failedFusionBaselineComparisonCases,
+    benchmarkGateConfigSourcesConfigured: benchmarkGateConfigSources.length > 0,
+    fusionBaselineReportSourceConfigured: hasFusionBaselineReportSource(benchmarkGateConfigSources),
+    benchmarkGateConfigSourceShapeMismatches: benchmarkGateConfigSourceShapeMismatches(benchmarkGateConfigSources, {
+      driver,
+      scale,
+      targetQuads: targetQuadCount,
+      caseProfile,
+      textSearchBackend: stringValue(seed?.textSearchBackend),
+    }),
+    fusionBaselineReportSourceBaselineProfileConfigured: hasFusionBaselineReportSourceBaselineProfile(benchmarkGateConfigSources),
+    fusionHardFiltersBeforeRankCaseCount: countFusionCases(fusionBenchmarkGate, 'hardFiltersBeforeRank'),
+    fusionBatchedBroadCandidateJoinCaseCount: countFusionCases(fusionBenchmarkGate, 'batchedBroadCandidateJoin'),
+    nativeTextFtsCaseCount: countQueryCasesWithPlan(report, 'PostgresNativeFts('),
     ingestDurationMs: numberValue(seed?.ingestDurationMs),
     copyRows: numberValue(copyFromRows?.rows),
     copyFallbacks: numberValue(copyFromRows?.fallbacks),
@@ -303,6 +349,109 @@ function booleanValue(value: unknown): boolean | undefined {
 
 function stringArrayValue(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function recordArrayValue(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function failedBaselineComparisonCases(fusionBenchmarkGate: Record<string, unknown> | undefined): string[] {
+  if (!fusionBenchmarkGate) {
+    return [];
+  }
+  const failedCases: string[] = [];
+  for (const item of recordArrayValue(fusionBenchmarkGate.cases)) {
+    const baselineComparison = recordValue(item.baselineComparison);
+    if (!baselineComparison) {
+      continue;
+    }
+    if (booleanValue(baselineComparison.matched) !== true) {
+      failedCases.push(stringValue(item.name) ?? 'unnamed fusion case');
+    }
+  }
+  return failedCases;
+}
+
+function hasFusionBaselineReportSource(sources: readonly Record<string, unknown>[]): boolean {
+  return sources.some((source) => source.kind === 'report-config' || source.kind === 'baseline-report');
+}
+
+function hasFusionBaselineReportSourceBaselineProfile(sources: readonly Record<string, unknown>[]): boolean {
+  return sources.some((source) => {
+    if (source.kind !== 'report-config' && source.kind !== 'baseline-report') {
+      return false;
+    }
+    return stringValue(recordValue(source.seed)?.rdfAccelerationProfile) === 'baseline';
+  });
+}
+
+function countFusionCases(gate: Record<string, unknown> | undefined, field: string): number {
+  return recordArrayValue(gate?.cases).filter((testCase) => booleanValue(testCase[field]) === true).length;
+}
+
+function countQueryCasesWithPlan(report: Record<string, unknown>, marker: string): number {
+  return recordArrayValue(report.queryCases).filter((testCase) => (
+    stringArrayValue(testCase.physicalPlan).some((entry) => entry.includes(marker))
+  )).length;
+}
+
+function benchmarkGateConfigSourceShapeMismatches(
+  sources: readonly Record<string, unknown>[],
+  expected: {
+    driver?: string;
+    scale?: string;
+    targetQuads?: number;
+    caseProfile?: string;
+    textSearchBackend?: string;
+  },
+): string[] {
+  const mismatches: string[] = [];
+  sources.forEach((source, index) => {
+    const seed = recordValue(source.seed);
+    if (!seed) {
+      if (source.kind === 'report-config' || source.kind === 'baseline-report') {
+        mismatches.push(`source[${index}].seed is missing`);
+      }
+      return;
+    }
+    const prefix = `source[${index}]`;
+    appendShapeMismatch(mismatches, `${prefix}.driver`, expected.driver, stringValue(seed.driver));
+    appendShapeMismatch(mismatches, `${prefix}.scale`, expected.scale, stringValue(seed.scale));
+    appendShapeMismatch(mismatches, `${prefix}.targetQuads`, expected.targetQuads, numberValue(seed.targetQuads));
+    appendShapeMismatch(mismatches, `${prefix}.caseProfile`, expected.caseProfile, stringValue(seed.caseProfile));
+    appendShapeMismatch(mismatches, `${prefix}.textSearchBackend`, expected.textSearchBackend, stringValue(seed.textSearchBackend));
+  });
+  return mismatches;
+}
+
+function appendShapeMismatch<T extends string | number>(
+  mismatches: string[],
+  label: string,
+  expected: T | undefined,
+  actual: T | undefined,
+): void {
+  if (expected !== undefined && actual !== undefined && expected !== actual) {
+    mismatches.push(`${label} expected ${expected}, got ${actual}`);
+  }
+}
+
+function hasThresholds(gate: Record<string, unknown> | undefined): boolean {
+  const thresholds = recordValue(gate?.thresholds);
+  return numberValue(thresholds?.maxScannedRows) !== undefined
+    || numberValue(thresholds?.maxP95DurationMs) !== undefined
+    || Object.keys(recordValue(thresholds?.cases) ?? {}).length > 0;
+}
+
+function baselineComparisonMatched(
+  fusionBenchmarkGate: Record<string, unknown> | undefined,
+  failedCases: string[],
+): boolean | undefined {
+  if (!fusionBenchmarkGate) {
+    return undefined;
+  }
+  const hasBaselineComparison = recordArrayValue(fusionBenchmarkGate.cases)
+    .some((item) => Boolean(recordValue(item.baselineComparison)));
+  return hasBaselineComparison ? failedCases.length === 0 : undefined;
 }
 
 function errorMessage(error: unknown): string {

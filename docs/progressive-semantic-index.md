@@ -10,18 +10,24 @@
 ```text
 L0 文件级摘要全量存在
   -> 当前话题/消息上下文选择候选文件
-  -> 对候选文件运行 parser
+  -> 对候选文件运行 reader
   -> 按目标文件的自然层级展开 L1..Ln
   -> 只对热节点/当前问题继续展开更细 span 或读取原文行范围
 ```
 
 其中：
 
-- `L0` 是文件级 retrieval point，不要求完整 parser；它可以由上下文推测，也可以由 Agent 选择读取轻量摘要/预览来生成。
-- `L1..Ln` 是 parser 输出的语义树层级，层数随文件结构自然展开。
-- Markdown 可映射为 `#` 到 `######`；代码、TTL、JSON/YAML、日志等由 parser 映射成等价的语义树。
+- `L0` 是文件级 retrieval point，不要求完整 reader；它可以由上下文推测，也可以由 Agent 选择读取轻量摘要/预览来生成。
+- `L1..Ln` 是 reader 输出的语义树层级，层数随文件结构自然展开。
+- Markdown 可映射为 `#` 到 `######`；代码、TTL、JSON/YAML、日志等由 reader 映射成等价的语义树。
 - 原文文件仍是权威；长期索引默认存摘要、结构、行范围和关系，不默认持久化全部原文 chunk。
 - AI 必须知道当前检索覆盖范围和展开深度，不能把局部/摘要检索误认为全局全文检索。
+
+本 spec 只定义 reader / retrieval point / index method 的生命周期。Reader 和 embedding 的执行边界由
+[Extension Runtime and Credential Resolution](extension-runtime-and-credential-resolution.md) 统一约束：
+Xpod / LinX host 先把具体 session 归一化成 `ExecutionContext`，从用户 Pod 读取 provider / model /
+`credentialId`，再通过 `CredentialResolver` just-in-time 解析原始密钥并调用 `@undefineds.co/extensions`。
+Reader config、cache、coverage、Run record 和 embedding index metadata 都不能保存原始 `apiKey`。
 
 ## 默认 Embedding Profile
 
@@ -51,25 +57,25 @@ maxTokensPerInput: 8192
 ```text
 File / Message Context
   -> L0 source retrieval point
-  -> Parser lifecycle
-      -> Parsed semantic tree L1..Ln
+  -> Reader lifecycle
+      -> Read semantic tree L1..Ln
           -> Retrieval-point lifecycle
               -> Index-method lifecycle
                   -> search / ranking / RDF join
 ```
 
-### Parser lifecycle
+### Reader lifecycle
 
-Parser 只负责把源文件投影成语义树：
+Reader 只负责把源文件投影成语义树：
 
 ```text
-file content -> ParsedDocumentTree
+file content -> ReadDocumentTree
 ```
 
 推荐统一输出：
 
 ```ts
-interface ParsedNode {
+interface ReadNode {
   source: string;              // source IRI / URI
   node: string;                // node IRI / URI
   parent?: string;
@@ -81,45 +87,45 @@ interface ParsedNode {
   summary?: string;
   entities?: string[];
   contentHash: string;
-  parser: string;
-  parserVersion: string;
-  parserOptionsHash?: string;
+  reader: string;
+  readerVersion: string;
+  readerOptionsHash?: string;
 }
 ```
 
-Parser state：
+Reader state：
 
 ```text
-missing -> parsing -> ready -> stale -> failed
+missing -> reading -> ready -> stale -> failed
 ```
 
-Parser cache key 至少包含：
+Reader cache key 至少包含：
 
 ```text
-source + contentHash + parser + parserVersion + parserOptionsHash
+source + contentHash + reader + readerVersion + readerOptionsHash
 ```
 
-触发 parser 失效的条件：
+触发 reader 失效的条件：
 
 - 文件 content hash 变化；
-- parser 版本变化；
-- parser options 变化；
+- reader 版本变化；
+- reader options 变化；
 - 用户或 Agent 要求展开到当前 cache 未覆盖的层级；
-- parser 依赖的外部 schema/grammar 版本变化。
+- reader 依赖的外部 schema/grammar 版本变化。
 
-### Free-quota-first parser provider policy
+### Free-quota-first reader provider policy
 
-外部 parser 的默认选择必须按“可持续免费量”而不是单纯能力排序。Xpod 不应默认消耗平台公共额度；
-parser 的 provider、model、credential 必须复用用户 Pod 里的标准 AI config（Provider / Model / Credential），
+外部 reader 的默认选择必须按“可持续免费量”而不是单纯能力排序。Xpod 不应默认消耗平台公共额度；
+reader 的 provider、model、credential 必须复用用户 Pod 里的标准 AI config（Provider / Model / Credential），
 和 chat / embedding 模型走同一套配置、密钥、代理和默认模型语义。系统只负责路由、缓存、失败降级和 coverage 报告。
 
 免费额度策略分四类：
 
 | Quota class | Meaning | Product use |
 | --- | --- | --- |
-| `daily-recurring` | 每天刷新，最适合作为默认外部 parser | 默认优先使用；耗尽后当天降级 |
+| `daily-recurring` | 每天刷新，最适合作为默认外部 reader | 默认优先使用；耗尽后当天降级 |
 | `monthly-recurring` | 每月刷新，可作为次优默认或 crawl/doc fallback | 需要 usage guard，避免一次任务打满 |
-| `rate-limited` | 无明确总量，但受 RPM/IP 限制 | 适合网页、轻量 parser；需要退避重试 |
+| `rate-limited` | 无明确总量，但受 RPM/IP 限制 | 适合网页、轻量 reader；需要退避重试 |
 | `one-time-trial` | 注册赠送或短期试用，额度用完不恢复 | 只用于 benchmark/onboarding，不作为长期默认 |
 
 按当前调研应采用以下 provider 路由（上线前需重新核对官方页面，因为免费额度会变化）：
@@ -128,8 +134,8 @@ parser 的 provider、model、credential 必须复用用户 Pod 里的标准 AI 
 | --- | --- | --- | --- |
 | Jina Reader | 单网页 / URL -> Markdown | rate-limited：无 key 约 20 RPM；免费 key 约 500 RPM | `web.singlePage.primary` |
 | Firecrawl | crawl / sitemap / 多页站点抓取 | monthly-recurring：免费计划约 1,000 credits/月 | `web.crawl.primary` |
-| PaddleOCR official API | 文档解析、OCR、MCP/Skills 场景 | daily-recurring：官方文档称免费 API 最高支持约 20,000 pages/day | `document.primary` |
-| PaddleOCR local plugin | 本地/自托管 OCR 与文档解析 | self-hosted/local：无外部额度，但依赖和模型较重 | `localPlugin` |
+| PaddleOCR official API | 文档读取、OCR、MCP/Skills 场景 | daily-recurring：官方文档称免费 API 最高支持约 20,000 pages/day | `document.primary` |
+| PaddleOCR local plugin | 本地/自托管 OCR 与文档读取 | self-hosted/local：无外部额度，但依赖和模型较重 | `localPlugin` |
 | MinerU precise API | PDF、Office、图片、中文论文、表格、公式、复杂版式 | daily-recurring：账号每天约 1,000 页最高优先级；单文件约 200MB/200页 | `document.qualityFallback` |
 | MinerU Agent light API | 小文件快速 Markdown | rate-limited：免 token，IP 限频；约 10MB/20页限制 | `document.quickFallback` |
 | LlamaParse | MinerU/PaddleOCR 失败后的 SaaS 兜底 | monthly-recurring：Free plan 约 10K credits/月；复杂模式消耗更快 | `document.fallback` |
@@ -142,7 +148,7 @@ parser 的 provider、model、credential 必须复用用户 Pod 里的标准 AI 
 默认路由：
 
 ```yaml
-parserRouter:
+readerRouter:
   web:
     singlePage:
       primary: jina-reader
@@ -173,10 +179,10 @@ parserRouter:
     - reducto
 ```
 
-### Canonical AI config storage for parser models
+### Canonical AI config storage for reader models
 
-Parser provider 不是一套新资源。PaddleOCR、MinerU、LlamaParse 这类 parser 都应建模为普通 `ai:Provider`；
-可调用的解析模型建模为 `ai:Model`，并用 `ai:modelType "parser"` 区分 chat / embedding / parser。
+Reader provider 不是一套新资源。PaddleOCR、MinerU、LlamaParse 这类 reader 都应建模为普通 `ai:Provider`；
+可调用的reader 模型建模为 `ai:Model`，并用 `ai:modelType "reader"` 区分 chat / embedding / reader。
 密钥仍放 `cred:Credential`，`cred:service "ai"`，通过 `cred:provider` 指向同一个 provider。
 
 ```turtle
@@ -193,7 +199,7 @@ Parser provider 不是一套新资源。PaddleOCR、MinerU、LlamaParse 这类 p
 </settings/providers/paddleocr.ttl#pp-ocrv6>
   a ai:Model ;
   ai:displayName "PP-OCRv6" ;
-  ai:modelType "parser" ;
+  ai:modelType "reader" ;
   ai:isProvidedBy </settings/providers/paddleocr.ttl> ;
   ai:status "active" .
 
@@ -210,32 +216,33 @@ Parser provider 不是一套新资源。PaddleOCR、MinerU、LlamaParse 这类 p
 
 规则：
 
-- 不新增 `ParserProvider` / `ParserCredential` / `ParserModel` 资源；parser 是 AI provider 的一种 model type。
+- 不新增 `ReaderProvider` / `ReaderCredential` / `ReaderModel` 资源；reader 是 AI provider 的一种 model type。
 - Credential 资源 id 使用随机 `cred_*`，不要编码 `paddleocr-default` 这类 provider/default 语义；展示名和默认选择分别用 `cred:label`、`cred:isDefault`。
 - API token、access token、key 在存储层统一叫 `apiKey`；adapter 内部再映射成 `PADDLEOCR_ACCESS_TOKEN` 或 `Authorization: Bearer`。
-- parser router 只能引用 provider/model 的 id 或 IRI，不能直接保存密钥。
-- shared `@undefineds.co/models` 需要让 AI config mutation/read 保留 `modelType: "parser"`，避免写入时退化成 `chat`。
+- reader router 只能引用 provider/model 的 id 或 IRI，不能直接保存密钥。
+- 初始化层只返回 provider / model / `credentialId`；原始 `apiKey` 只能在 `CredentialResolver.resolve(...)`
+  调用期间进入内存，并只传给当前 extension invocation。
+- shared `@undefineds.co/models` 需要让 AI config mutation/read 保留 `modelType: "reader"`，避免写入时退化成 `chat`。
 
 当外部免费额度到期、限频、不可达或用户未配置 key 时，必须退回 `local-lib`，而不是静默失败：
 
 ```text
-external parser unavailable
+external reader unavailable
   -> mark provider usage: exhausted | rate_limited | missing_key | unavailable
-  -> fallback to local-lib parser
-  -> mark parser coverage lower
-  -> tell Agent which parser was used and what fidelity was lost
+  -> fallback to local-lib reader
+  -> mark reader coverage lower
+  -> tell Agent which reader was used and what fidelity was lost
 ```
 
-`local-lib` 是一组本地/自托管 parser adapter，而不是单个库。重型本地 parser 不进入 xpod 主发布包，必须通过插件安装：
+`local-lib` 是一组本地/自托管 reader adapter，而不是单个库。重型本地 reader 不进入 xpod 主发布包，必须通过插件安装：
 
 ```text
-xpod core
-  -> ParserProvider interface
-  -> lightweight built-in parsers
-  -> optional parser plugins
-      - xpod-parser-paddleocr
-      - xpod-parser-docling
-      - xpod-parser-tesseract
+Xpod / LinX host
+  -> ExtensionRuntime
+  -> @undefineds.co/extensions capability registry
+      - paddleocr-api reader
+      - docling/local reader
+      - tesseract/local reader
 ```
 
 PaddleOCR 应作为插件优先集成，而不是主包依赖。原因：PaddleOCR 3.x 的能力很强，但 Python、PaddlePaddle/Transformers、模型文件、OpenVINO/GPU/Apple Silicon 等运行时差异会显著增加安装体积和兼容性风险。插件可以按需安装、单独升级、单独做健康检查，并允许 local/cloud 使用不同后端。
@@ -246,22 +253,22 @@ PaddleOCR 插件边界：
 | --- | --- | --- |
 | `paddleocr-api` | 调 PaddleOCR 官方 API，利用每日免费页数 | 轻量 TypeScript adapter，可进普通插件 |
 | `paddleocr-local` | 本地 OCR/PP-Structure/PaddleOCR-VL 推理 | Python sidecar/plugin，不进入 xpod core |
-| `paddleocr-container` | Cloud/self-hosted GPU/CPU 服务 | 独立镜像，通过 parser provider endpoint 接入 |
+| `paddleocr-container` | Cloud/self-hosted GPU/CPU 服务 | 独立镜像，通过 reader provider endpoint 接入 |
 
 插件失败时仍退回普通 `local-lib`，并在 coverage 中标记 `fallback-used`。
 
 | File class | Local fallback expectation |
 | --- | --- |
-| Markdown/text/code/json/yaml/ttl | built-in parser / tree-sitter / RDF parser；应可稳定产出 L1..Ln 或 line ranges |
+| Markdown/text/code/json/yaml/ttl | built-in reader / tree-sitter / RDF reader；应可稳定产出 L1..Ln 或 line ranges |
 | HTML | Readability/HTML-to-Markdown 类本地转换 |
 | PDF text layer | 本地 PDF text extractor，质量低于 MinerU/LlamaParse，但不消耗额度 |
 | Scanned PDF/image OCR | 本地 OCR 可选；没有 OCR runtime 时只返回低 coverage |
 | Office docs | 本地转换器可选；不可用时降级为 metadata/L0 |
 
-外部 parser 与 local-lib 的选择必须写入 coverage：
+外部 reader 与 local-lib 的选择必须写入 coverage：
 
 ```ts
-interface ParserProviderUsage {
+interface ReaderProviderUsage {
   provider: string;
   quotaClass: 'daily-recurring' | 'monthly-recurring' | 'rate-limited' | 'one-time-trial' | 'self-hosted' | 'local-lib';
   status: 'ready' | 'exhausted' | 'rate-limited' | 'missing-key' | 'unavailable' | 'fallback-used';
@@ -275,22 +282,22 @@ interface ParserProviderUsage {
 缓存必须先于额度消耗：
 
 ```text
-cache key = fileDigest + parserProvider + parserVersion + parserOptionsHash + pageRange
+cache key = fileDigest + readerProvider + readerVersion + readerOptionsHash + pageRange
 ```
 
-命中缓存时不调用外部 API。对页数型 provider，按 page range 渐进解析；系统给出激进的预算和默认建议，但具体页段由 Agent 决定，且不能上传即全文解析。
+命中缓存时不调用外部 API。对页数型 provider，按 page range 渐进读取；系统给出激进的预算和默认建议，但具体页段由 Agent 决定，且不能上传即全文读取。
 
 ### Agent-decided page-window policy
 
-PaddleOCR official API 的免费页数足够大时，系统不应该硬编码“每次固定解析多少页”。系统负责管理 provider/model/token、缓存、coverage 和硬性安全边界，并把当前预算、provider 状态、文件元信息、已有 coverage 暴露给 Agent；Agent 根据当前任务决定是否解析、解析哪几页、一次解析多少页。预算不是纯硬错误：Agent 预计超预算时应向用户说明收益和成本，并请求确认或降级。上传/同步文件时仍只建 L0，不自动全文解析；只有 Agent、用户或检索流程实际需要读文档内容时才消耗外部 parser 额度。
+PaddleOCR official API 的免费页数足够大时，系统不应该硬编码“每次固定读取多少页”。系统负责管理 provider/model/token、缓存、coverage 和硬性安全边界，并把当前预算、provider 状态、文件元信息、已有 coverage 暴露给 Agent；Agent 根据当前任务决定是否读取、读取哪几页、一次解析多少页。预算不是纯硬错误：Agent 预计超预算时应向用户说明收益和成本，并请求确认或降级。上传/同步文件时仍只建 L0，不自动全文读取；只有 Agent、用户或检索流程实际需要读文档内容时才消耗外部 reader 额度。
 
 ```yaml
-parserPolicy:
+readerPolicy:
   provider: paddleocr
   model: pp-ocrv6
 
   l0:
-    parseExternal: false
+    readExternal: false
     decisionOwner: agent
     allowContextInference: true
     allowLightweightPreview: true
@@ -314,7 +321,7 @@ parserPolicy:
     owner: system
     triggers:
       - user-open-detail
-      - user-scroll-near-unparsed-page
+      - user-scroll-near-unread-page
       - user-search-within-document
     lookAheadPages: 10
     maxLookAheadPages: 30
@@ -328,27 +335,27 @@ parserPolicy:
 
 行为：
 
-1. 文件入库只创建 L0 候选；Agent 可选择仅用上下文推测，也可读取轻量预览/摘要生成 L0，但不调用 PaddleOCR 做完整解析。
-2. Agent 看到 L0、用户问题、文件页数、剩余额度、已解析 coverage 后，决定是否调用 parser。
-3. 系统给默认建议：首次可解析 20 页，结构探测可到 50 页，后续窗口建议 50 页，单窗口不超过 100 页。
-4. Agent 可以选择更小窗口、更大窗口、指定页段或跳过解析，但必须给出 reason，并受 hard limits 约束。
-5. Agent 判断会超出建议预算但仍值得解析时，应向用户说明预计页数、收益、额度影响，并请求确认；用户拒绝或无响应时降级到已有 coverage / local preview / metadata-only。
-6. 用户打开文档详情并向下翻页、接近未解析页段或在文档内搜索时，由系统做提前解析/预取，不需要 Agent 决策；系统预取只为交互体验服务，仍记录 coverage 并遵守 hard limits。
-7. 自动解析单 Run 最多 500 页，单文件每天最多 1000 页。
+1. 文件入库只创建 L0 候选；Agent 可选择仅用上下文推测，也可读取轻量预览/摘要生成 L0，但不调用 PaddleOCR 做完整读取。
+2. Agent 看到 L0、用户问题、文件页数、剩余额度、已 reader coverage 后，决定是否调用 reader。
+3. 系统给默认建议：首次可读取 20 页，结构探测可到 50 页，后续窗口建议 50 页，单窗口不超过 100 页。
+4. Agent 可以选择更小窗口、更大窗口、指定页段或跳过读取，但必须给出 reason，并受 hard limits 约束。
+5. Agent 判断会超出建议预算但仍值得读取时，应向用户说明预计页数、收益、额度影响，并请求确认；用户拒绝或无响应时降级到已有 coverage / local preview / metadata-only。
+6. 用户打开文档详情并向下翻页、接近未读取页段或在文档内搜索时，由系统做提前解析/预取，不需要 Agent 决策；系统预取只为交互体验服务，仍记录 coverage 并遵守 hard limits。
+7. 自动reader 单 Run 最多 500 页，单文件每天最多 1000 页。
 8. 自动任务默认最多使用 provider 当日可用预算的 80%。以 20,000 pages/day 估算，自动预算约 16,000 页/天。
-9. 用户显式触发“全文解析/继续解析”可以突破单 Run 限制，但仍应受 daily provider budget 和账号级限额保护。
+9. 用户显式触发“全文读取/继续读取”可以突破单 Run 限制，但仍应受 daily provider budget 和账号级限额保护。
 
 ### System-driven prefetch
 
-不是所有解析都由 Agent 决策。用户正在 UI 中打开文档详情、翻页、滚动接近未解析页段、或在文档内搜索时，系统可以主动预取解析结果。这类解析属于交互式缓存预热，不需要 Agent 写 reason，但必须记录触发来源和 coverage。
+不是所有读取都由 Agent 决策。用户正在 UI 中打开文档详情、翻页、滚动接近未读取页段、或在文档内搜索时，系统可以主动预取解析结果。这类读取属于交互式缓存预热，不需要 Agent 写 reason，但必须记录触发来源和 coverage。
 
 ```ts
-interface SystemParserPrefetch {
+interface SystemReaderPrefetch {
   source: string;
   provider: 'paddleocr';
   model: 'pp-ocrv6';
   pageRange: string;
-  trigger: 'user-open-detail' | 'user-scroll-near-unparsed-page' | 'user-search-within-document';
+  trigger: 'user-open-detail' | 'user-scroll-near-unread-page' | 'user-search-within-document';
   visiblePage?: number;
   lookAheadPages: number;
   budgetBefore: {
@@ -362,13 +369,13 @@ interface SystemParserPrefetch {
 
 - 打开详情页：确保当前页和后续 10 页 ready；
 - 滚动接近未解析区域：提前 10 页，网络/额度充足时最多 30 页；
-- 文档内搜索：优先解析目录/已命中附近页段；
-- 预取不得突破 hard limits；达到软预算时停止并提示“继续解析需要确认”。
+- 文档内搜索：优先读取目录/已命中附近页段；
+- 预取不得突破 hard limits；达到软预算时停止并提示“继续读取需要确认”。
 
-Agent 发起 parser run 时必须显式记录决策：
+Agent 发起 reader run 时必须显式记录决策：
 
 ```ts
-interface ParserDecision {
+interface ReaderDecision {
   source: string;
   provider: 'paddleocr';
   model: 'pp-ocrv6';
@@ -383,7 +390,7 @@ interface ParserDecision {
 }
 ```
 
-每次 parser run 必须记录实际页段和 coverage，例如：
+每次 reader run 必须记录实际页段和 coverage，例如：
 
 ```ts
 {
@@ -417,7 +424,7 @@ Sources to re-check before implementation:
 Retrieval point 是 Agent 和搜索系统真正召回的语义入口。它可以来自：
 
 - L0 文件级摘要；
-- parser tree 的 L1..Ln 节点；
+- reader tree 的 L1..Ln 节点；
 - 当前 run/thread/task/message 上下文；
 - 热节点下临时展开的 span；
 - 用户显式指定的文件/行范围。
@@ -429,7 +436,7 @@ interface RetrievalPoint {
   point: string;               // point IRI / URI
   source: string;
   node?: string;
-  level: number;               // 0 for source summary, 1..N for parsed tree
+  level: number;               // 0 for source summary, 1..N for read tree
   kind: 'file-summary' | 'section' | 'symbol' | 'resource' | 'config-block' | 'hot-span' | string;
   title?: string;
   summary: string;
@@ -448,7 +455,7 @@ Retrieval point state：
 candidate -> indexed -> hot -> expired -> stale
 ```
 
-Retrieval point 生命周期可以比 parser 更短。例如 hot span 可以只服务当前 run，run 结束后降级或删除；L0 文件摘要则应该尽量全量、长期存在。
+Retrieval point 生命周期可以比 reader 更短。例如 hot span 可以只服务当前 run，run 结束后降级或删除；L0 文件摘要则应该尽量全量、长期存在。
 
 ### Index-method lifecycle
 
@@ -492,7 +499,7 @@ not-indexed -> building -> ready -> stale -> rebuilding -> ready
 
 ### L0：Source-level semantic summary
 
-L0 每个文件至少一条，要求全量覆盖。L0 不要求完整 parser，但 L0 的生成方式由 Agent 决定：有些文件可以只从上下文推测；有些文件需要读取轻量摘要、首屏、第一页或已有 preview 后再生成。
+L0 每个文件至少一条，要求全量覆盖。L0 不要求完整 reader，但 L0 的生成方式由 Agent 决定：有些文件可以只从上下文推测；有些文件需要读取轻量摘要、首屏、第一页或已有 preview 后再生成。
 
 L0 source 可以来自：
 
@@ -503,10 +510,10 @@ L0 source 可以来自：
 - 用户上传、拖拽、重命名、移动时给出的描述；
 - 相邻文件、README、目录名、同仓库约定；
 - 已知 tags/entities；
-- 旧 parser cache 摘要或旧 L0 摘要；
+- 旧 reader cache 摘要或旧 L0 摘要；
 - Agent 决定读取的轻量本地 preview，例如文本头部、PDF 首 1 页、Office 元数据/摘要页。
 
-L0 必须记录实际生成方式。`mode` 不是用户配置项，也不是预设策略；它是系统在生成 L0 后写入的结果记录，用来告诉 Agent 这条摘要到底来自上下文推测、轻量预览还是旧缓存。不能把上下文推测伪装成正文解析，也不能把轻量 preview 伪装成完整 parser-confirmed content：
+L0 必须记录实际生成方式。`mode` 不是用户配置项，也不是预设策略；它是系统在生成 L0 后写入的结果记录，用来告诉 Agent 这条摘要到底来自上下文推测、轻量预览还是旧缓存。不能把上下文推测伪装成正文读取，也不能把轻量 preview 伪装成完整 reader-confirmed content：
 
 ```ts
 interface L0SourceSummary {
@@ -520,7 +527,7 @@ interface L0SourceSummary {
     bytes?: number;
     lines?: string;
   };
-  parserConfirmed: false;
+  readerConfirmed: false;
 }
 ```
 
@@ -530,12 +537,12 @@ Agent 选择 L0 生成方式的建议如下。这里的 `mode` 是生成后的�
 | --- | --- |
 | 文件名/路径/上下文已经足够明确 | `mode = context-inferred` |
 | 用户问题依赖文档主题但不需要结构细节 | `mode = lightweight-preview` |
-| 文件曾解析过且 hash 未变或可降级复用 | `mode = old-cache` |
-| 用户需要表格/公式/版面/页级证据 | 不停留在 L0，进入 parser L1+ |
+| 文件曾读取过且 hash 未变或可降级复用 | `mode = old-cache` |
+| 用户需要表格/公式/版面/页级证据 | 不停留在 L0，进入 reader L1+ |
 
 ### Source usage context for Agent decisions
 
-为了让 Agent 判断 L0 是否足够、是否需要读取 preview 或启动 parser，系统必须提供文件在产品上下文里的使用痕迹。这个上下文不是 parser 结果，而是 source usage graph / activity index。
+为了让 Agent 判断 L0 是否足够、是否需要读取 preview 或启动 reader，系统必须提供文件在产品上下文里的使用痕迹。这个上下文不是 reader 结果，而是 source usage graph / activity index。
 
 推荐结构：
 
@@ -568,28 +575,28 @@ interface SourceUsageContext {
 Agent 决策时应看到：
 
 ```text
-source L0 summary + source usage context + current user question + parser coverage + budget
+source L0 summary + source usage context + current user question + reader coverage + budget
 ```
 
 例如：
 
 - 文件在某个 chat 里作为附件上传，并且用户说“这是合同初稿”；Agent 可以先用上下文生成 L0。
-- 文件路径叫 `scan001.pdf`，上下文缺失；Agent 应读取 lightweight preview 或请求 parser。
+- 文件路径叫 `scan001.pdf`，上下文缺失；Agent 应读取 lightweight preview 或请求 reader。
 - 文件在某个 run 的工具调用里被生成，且 run 说明是“导出的财务表”；Agent 可以把该 run context 作为 L0 evidence。
 
-系统应限制 context excerpt 长度，只提供判断 L0/解析策略所需的短上下文，避免把整段聊天重复塞入 retrieval。
+系统应限制 context excerpt 长度，只提供判断 L0/读取策略所需的短上下文，避免把整段聊天重复塞入 retrieval。
 
 L0 回答：
 
 ```text
 这个文件大概是什么？
 当前问题是否可能需要它？
-是否值得运行 parser 展开 L1..Ln？
+是否值得运行 reader 展开 L1..Ln？
 ```
 
-### L1..Ln：Parser semantic tree levels
+### L1..Ln：Reader semantic tree levels
 
-L1 开始必须来自 parser 或 parser-like 投影。
+L1 开始必须来自 reader 或 reader-like 投影。
 
 Markdown：
 
@@ -676,7 +683,7 @@ interface RetrievalCoverage {
   sourceCatalog: 'full' | 'partial';
   searchedLevel: number;
   maxAvailableLevel?: number;
-  parserStatus: 'ready' | 'stale' | 'missing' | 'failed' | 'partial';
+  readerStatus: 'ready' | 'stale' | 'missing' | 'failed' | 'partial';
   rawContent: 'not-read' | 'line-range-read' | 'cached-preview';
   indexMethodsUsed: string[];
   vectorCoverage?: 'none' | 'summary-only' | 'section-only' | 'hot-only' | 'full';
@@ -689,7 +696,7 @@ interface RetrievalCoverage {
 面向 Agent 的提示必须表达：
 
 ```text
-This retrieval searched full L0 source summaries and selected parsed levels only.
+This retrieval searched full L0 source summaries and selected read levels only.
 Raw file content is not globally chunk-indexed.
 If evidence is insufficient, expand the relevant node or read source line ranges.
 ```
@@ -703,7 +710,7 @@ user prompt + thread/run/task/message context
   -> build topic profile
   -> search/rank L0 source summaries
   -> choose candidate sources
-  -> parse candidate sources to L1..Ln as needed
+  -> read candidate sources to L1..Ln as needed
   -> create/update retrieval points
   -> index retrieval points through available methods
   -> retrieve/rerank points
@@ -729,9 +736,9 @@ RDF/DB: source/node/point metadata, permissions, content hash, lifecycle state
 实现该 spec 时至少验证：
 
 1. 每个文件都有 L0 retrieval point，AI 能看到全量/部分覆盖状态。
-2. Markdown parser 能把 H1-H6 映射为 L1-L6。
-3. 代码 parser 能把 top-level symbol 和 method 映射为 L1/L2。
-4. 文件 hash 变化会让 parser cache、retrieval point 和 index method state 正确 stale/rebuild。
+2. Markdown reader 能把 H1-H6 映射为 L1-L6。
+3. 代码 reader 能把 top-level symbol 和 method 映射为 L1/L2。
+4. 文件 hash 变化会让 reader cache、retrieval point 和 index method state 正确 stale/rebuild。
 5. 检索结果带 `RetrievalCoverage`，不会把 partial search 伪装成 global search。
 6. FTS/vector/entity 与 GSPO 能通过 retrieval point anchor join。
 7. 原文仍从 SolidFS/文件系统按 line range 读取，不依赖长期 chunk 副本作为事实源。
@@ -745,9 +752,9 @@ CodeGraph、Semble、tree-sitter/LSP based code indexer、ripgrep 这类实现�
 
 | Implementation class | Track for | Boundary in Xpod |
 | --- | --- | --- |
-| Semble / semantic code search | file/symbol retrieval、semantic ranking、local index UX、CLI baseline | 可作为 code-domain parser/search adapter 或 benchmark 对照，不进入事实源 |
-| CodeGraph-style systems | symbol graph、import/call/reference graph、incremental update | 可映射为 parser tree + GSPO relation，不能绑死整体架构 |
-| tree-sitter / LSP | multi-language parser、stable symbol id、incremental parse | parser backend candidate |
+| Semble / semantic code search | file/symbol retrieval、semantic ranking、local index UX、CLI baseline | 可作为 code-domain reader/search adapter 或 benchmark 对照，不进入事实源 |
+| CodeGraph-style systems | symbol graph、import/call/reference graph、incremental update | 可映射为 reader tree + GSPO relation，不能绑死整体架构 |
+| tree-sitter / LSP | multi-language reader、stable symbol id、incremental parse | reader backend candidate |
 | ripgrep / grep-like tools | raw lexical search、line evidence baseline、local filesystem truth | benchmark baseline 和 fallback tool，不作为 semantic index |
 | QLever-style SPARQL+Text | word/entity occurrence 与 RDF join 的设计经验 | 只吸收 text/entity/RDF join 思想，不暴露 QLever backend |
 | turbovec / vector engines | compressed ANN、allowlist filtering、local-first vector artifact | index-method backend candidate，metadata/authority 仍在 RDF/DB/SolidFS |
@@ -755,12 +762,12 @@ CodeGraph、Semble、tree-sitter/LSP based code indexer、ripgrep 这类实现�
 跟踪结论必须回到三条生命周期：
 
 ```text
-Parser lifecycle
+Reader lifecycle
 Retrieval-point lifecycle
 Index-method lifecycle
 ```
 
-外部产品如果只覆盖代码 parser 或搜索 ranking，只能作为对应生命周期的 adapter / baseline，
+外部产品如果只覆盖代码 reader 或搜索 ranking，只能作为对应生命周期的 adapter / baseline，
 不能把 Xpod 的 workspace、Pod、message、task、run、RDF 权限和 coverage 语义降级为 code-only search。
 
 ## Productized benchmark
@@ -786,8 +793,8 @@ Benchmark = retrieval quality evaluation + index health + agent context observab
 | --- | --- |
 | Retrieval report | 每次 Agent context retrieval 输出 source/node/evidence recall、coverage、成本和 explain |
 | Golden cases | 从真实历史问题沉淀的 workspace/thread/run 检索用例 |
-| Regression gate | parser/index/ranking 变更后自动跑 golden cases，防止召回和 coverage 退化 |
-| Admin / dashboard | 展示 index coverage、stale/failed parser cache、vector/text readiness、慢 retrieval |
+| Regression gate | reader/index/ranking 变更后自动跑 golden cases，防止召回和 coverage 退化 |
+| Admin / dashboard | 展示 index coverage、stale/failed reader cache、vector/text readiness、慢 retrieval |
 | Agent self-check | 当 coverage 不足时，让 Agent 知道该 expand node、read line range 或 request indexing |
 | External baseline comparison | rg、Semble/CodeGraph adapter、raw chunk embedding、L0-only、progressive/hybrid 的对照 |
 
@@ -822,8 +829,8 @@ interface RetrievalBenchmarkReport {
   nodeRecallAtK: Record<number, number>;
   evidenceRecallAtK: Record<number, number>;
   mrr: number;
-  parsedFiles: number;
-  parsedNodes: number;
+  readFiles: number;
+  readNodes: number;
   embeddedPoints: number;
   returnedTokens: number;
   latencyMs: number;
@@ -841,7 +848,7 @@ interface RetrievalBenchmarkReport {
 2. `external-code-search`：Semble / CodeGraph-style adapter，如可用；
 3. `raw-chunk-embedding`：全量 raw chunk RAG baseline；
 4. `l0-only`：只使用文件级摘要；
-5. `progressive`：L0 -> parser L1..Ln -> line range；
+5. `progressive`：L0 -> reader L1..Ln -> line range；
 6. `hybrid`：progressive + FTS/entity/vector/RDF join。
 
 ### Product metrics
@@ -855,10 +862,10 @@ evidence recall / cost
 必须同时记录：
 
 - `Source Recall@K`：正确文件是否进入前 K；
-- `Node Recall@K`：正确 parser node 是否进入前 K；
+- `Node Recall@K`：正确 reader node 是否进入前 K；
 - `Evidence Recall@K`：正确 line range 是否被找到；
 - `MRR`：第一个正确证据排第几；
-- `Parse Cost`：解析文件数、节点数、行数；
+- `Reader Cost`：读取文件数、节点数、行数；
 - `Embedding Cost`：embedding 点数、模型、token/调用数；
 - `Returned Token Cost`：交给 Agent 的上下文 token；
 - `Latency p50/p95`：检索耗时；
@@ -876,11 +883,11 @@ retrieval report -> dashboard/admin -> regression gate -> Agent self-check
 这样 benchmark 不是研发侧临时验证，而是产品里的 retrieval observability。用户或团队能看到：
 
 - 当前 workspace 哪些文件只有 L0；
-- 哪些 parser cache stale/failed；
+- 哪些 reader cache stale/failed；
 - 哪些 retrieval 经常需要 expand；
 - 哪些 query 依赖 raw line read；
 - 哪些外部 baseline 比当前 progressive strategy 更好；
-- 最近一次 ranking/index/parser 改动是否让 golden cases 退化。
+- 最近一次 ranking/index/reader 改动是否让 golden cases 退化。
 
 
 ## Space-efficient authority model
@@ -899,13 +906,13 @@ semantic index = location refs + retrieval points + optional projections + embed
 以下内容空间可控，可以全量或较全量存储：
 
 - L0 source summary / metadata；
-- `ParsedNode` tree；
+- `ReadNode` tree；
 - node title / kind / heading path / symbol name；
 - `startLine` / `endLine` / optional byte offsets；
 - `contentHash` / `nodeHash` / `anchorHash`；
 - retrieval point records；
 - entity mentions；
-- parser/index lifecycle state；
+- reader/index lifecycle state；
 - embedding vectors or compressed vector artifacts for L0/L1/L2 and selected hot nodes。
 
 ### What should not be stored by default
@@ -976,7 +983,7 @@ Embedding 可以较全量覆盖 retrieval points，但优先级应是：
 
 ```text
 L0 source summary
-  -> L1/L2 parser nodes
+  -> L1/L2 reader nodes
   -> selected deeper nodes
   -> hot raw spans on demand
 ```
@@ -998,6 +1005,90 @@ source file + location refs + semantic tree + optional projection + compressed e
 ```
 
 这会显著降低存储放大，并避免 chunk 原文与权威文件不一致。长期事实仍由 SolidFS/文件系统负责，索引层全部可删除、可重建、可按 hash/version 判定 stale。
+
+
+## Source tree, folder retrieval points, and path-derived indexes
+
+路径语义和路径结构必须分开处理。`path` 不应作为每个内容索引行里的长期事实；它应由
+inode-like `SourceNode` 树解析出来，full path / URI 只作为 locator cache、展示字段或 Solid URI
+投影。
+
+推荐 authority 边界：
+
+```ts
+interface SourceNode {
+  nodeId: string;
+  workspace: string;
+  parent?: string;
+  name: string;
+  kind: 'folder' | 'file';
+  depth: number;
+  contentIdentity?: string;   // file/content inode or object key
+}
+```
+
+`SourceNode` 负责硬结构语义：
+
+- exact open / path resolution：按 `(parent, name)` 逐段解析；
+- parent / child / subtree scope；
+- depth、basename、extension、workspace scope；
+- ACL/ACR 继承和 Finder/workspace 展示；
+- 文件夹移动、URI 映射和 alias/rewrite rule。
+
+Folder 本身是一等 retrieval point，而不是把 raw path 重复 embed 到所有子文件上：
+
+```text
+SourceNode(folder)
+  -> RetrievalPoint(kind = folder-summary)
+      title / summary / folder description
+      FTS / vector index
+
+SourceNode(file)
+  -> RetrievalPoint(kind = file-summary)
+  -> RetrievalPoint(kind = section | symbol | resource | hot-span)
+```
+
+因此路径相关检索收敛成两类：
+
+1. `PathScopeSource`：结构硬过滤，基于 `SourceNode` / closure / ltree-like 派生表执行，不能依赖 FTS
+   或 embedding 保证正确性。
+2. `FolderSemanticSource`：folder retrieval point 进入 FTS/VEC，表达路径所在信息架构的语义，例如
+   “RDF engine 相关目录”或“部署配置模块”。
+
+FTS 可以把 `basename`、folder title、folder summary、path segments 当作弱字段或 ranking boost；
+但 prefix scope、exact open、ACL 继承和移动正确性不能建立在 FTS token 上。Vector 可以检索 folder
+semantic point；但 raw path embedding 不替代 ltree 语义。`ltree` 语义是 ancestor / descendant /
+parent / child / depth / sibling，必须由结构索引表达；embedding 只消费 folder/topic/location 的自然语言投影。
+
+### Move cost boundary
+
+不要在以下长期索引里直接复制 full path 作为事实：
+
+```text
+retrieval point identity
+content FTS row authority
+semantic vector identity
+reader cache key
+entity mention identity
+```
+
+这些结构应通过 `sourceNodeId` / `pointId` join。文件夹移动时，correctness path 只需要更新被移动
+folder 的结构关系或写入 prefix rewrite rule：
+
+```text
+MoveNode(nodeId, oldParent, newParent, oldName, newName, version)
+```
+
+不需要重算子树的 content FTS、semantic vector、OCR/reader cache 或 chunk range。后台可以异步刷新派生层：
+
+- `source_node_closure` / ltree cache / current path cache；
+- URI / display path / breadcrumb projection；
+- FTS path weak fields；
+- graph/source prefix materialization；
+- old URI alias / redirect / rewrite compaction。
+
+如果 RDF 文件内容里显式写死旧 IRI，那是用户内容语义，不属于 locator move 的自动改写范围；只能通过
+move journal、alias、`sameAs` 或用户确认的迁移工具处理。
 
 
 ## Product-generated evaluation dataset
@@ -1098,8 +1189,8 @@ interface EvaluationResult {
   mrr: number;
   coverageHonest: boolean;
   cost: {
-    parsedFiles: number;
-    parsedNodes: number;
+    readFiles: number;
+    readNodes: number;
     embeddedPoints: number;
     returnedTokens: number;
     latencyMs: number;
@@ -1125,12 +1216,12 @@ Dataset 必须跟随 workspace / Pod / team 权限，不默认上传裸原文：
 该 dataset 反过来驱动：
 
 - L0 source summary 是否有效；
-- parser 层级是否足够；
+- reader 层级是否足够；
 - retrieval point selection 是否正确；
 - ranking 是否把正确文件/节点排前；
 - coverage 是否诚实；
 - 哪些 source/node 应长期 hot；
-- 哪些 parser/backend/adapter 值得优化；
+- 哪些 reader/backend/adapter 值得优化；
 - Semble/CodeGraph/rg/raw-chunk embedding 等 baseline 是否优于当前策略。
 
 建议主指标：
@@ -1157,9 +1248,9 @@ Product-generated dataset 应成为用户和团队可观察的产品能力：
 
 - dashboard 展示 failing needs、hard samples、recall trend、cost trend；
 - Agent run report 展示本次 retrieval 是否命中历史 golden samples；
-- regression gate 在 parser/index/ranking 变更后自动跑 team/workspace golden cases；
+- regression gate 在 reader/index/ranking 变更后自动跑 team/workspace golden cases；
 - 用户可 pin / unpin / correct evidence；
-- 系统可从失败样本建议扩展 parser、补摘要、提高 index level 或更换 retrieval strategy。
+- 系统可从失败样本建议扩展 reader、补摘要、提高 index level 或更换 retrieval strategy。
 
 
 ## Stable source identity and locator relations
@@ -1177,11 +1268,11 @@ docs/old/a.md#node-x
 ```text
 stable source identity:
   sourceId / source inode
-  parser nodes
+  reader nodes
   retrieval points
   embeddings
   entity mentions
-  parser cache
+  reader cache
 
 mutable locator relation:
   currentUri
@@ -1200,7 +1291,7 @@ mutable locator relation:
 full URI / prefix
   -> locator resolver
   -> sourceId set
-  -> join parser/retrieval/vector/entity indexes
+  -> join reader/retrieval/vector/entity indexes
 ```
 
 例如：
@@ -1222,7 +1313,7 @@ https://pod/alice/docs/new/
 Phase 1: lightweight locator update
   - update source currentUri/currentPath, or record prefix rewrite rule
   - keep sourceId stable
-  - keep parser nodes / retrieval points / embeddings unchanged
+  - keep reader nodes / retrieval points / embeddings unchanged
   - URI filters resolve through current locator graph immediately
 
 Phase 2: URI-derived catch-up
@@ -1259,4 +1350,4 @@ interface LocatorRewriteRule {
 locator move != RDF content IRI rewrite
 ```
 
-对于 Xpod-owned index graph，sourceId/retrieval point 可以保持稳定；但如果 `.ttl` 内容里的 subject/object IRI 本身包含旧路径，移动文件不会自动改变这些 RDF term 的语义。若 named graph URI 跟文件 locator 绑定，则 graph projection 需要在 Phase 2 做 old graph delete / new graph insert；parser/vector/search artifact 可以通过 `sourceId + contentHash` 复用。
+对于 Xpod-owned index graph，sourceId/retrieval point 可以保持稳定；但如果 `.ttl` 内容里的 subject/object IRI 本身包含旧路径，移动文件不会自动改变这些 RDF term 的语义。若 named graph URI 跟文件 locator 绑定，则 graph projection 需要在 Phase 2 做 old graph delete / new graph insert；reader/vector/search artifact 可以通过 `sourceId + contentHash` 复用。

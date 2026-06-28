@@ -93,6 +93,78 @@ describe('RdfRunContextRetriever', () => {
     });
   });
 
+  it('projects text-search provenance into untrusted Agent context metadata', async () => {
+    const provenance = [{
+      entity: 'https://pod.example/alice/.data/tasks/default.ttl#task_1',
+      predicate: 'https://schema.org/description',
+      value: 'Approve the runtime deployment before release.',
+      datatype: 'http://www.w3.org/2001/XMLSchema#string',
+      policyRole: 'searchableText',
+      occurrences: 1,
+    }];
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([
+      {
+        source: namedNode('https://pod.example/alice/.data/tasks/default.ttl'),
+        workspace: namedNode('https://pod.example/alice/.data/'),
+        localPath: literal('tasks/default.ttl'),
+        contentType: literal('text/turtle'),
+        textChunk: namedNode('https://pod.example/alice/.data/tasks/default.ttl#chunk-task_1'),
+        textContent: literal('Approve the runtime deployment before release.'),
+        textHeading: literal('Release task'),
+        textScore: literal('0.92'),
+        sourceKey: literal('source-node:tasks/default'),
+        retrievalPointKey: literal('entity-card:https://pod.example/alice/.data/tasks/default.ttl#task_1'),
+        retrievalKind: literal('entity-card'),
+        entityProvenance: literal(JSON.stringify(provenance)),
+      },
+    ]));
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+      limit: 5,
+      sourcePrefix: 'https://pod.example/alice/.data/',
+      accessScope: {
+        basePath: 'https://pod.example/alice/.data/',
+        mode: 'read',
+        principal: 'https://id.example/alice/profile/card#me',
+        version: 'acl-v2',
+      },
+    });
+
+    const result = await retriever.retrieve({
+      ...input,
+      config: {
+        ...input.config,
+        workspace: 'https://pod.example/alice/.data/',
+      },
+    });
+
+    const query = queryMock.mock.calls[0][0];
+    expect(query.textSearch?.[0]).toEqual(expect.objectContaining({
+      sourceKey: 'sourceKey',
+      retrievalPoint: 'retrievalPointKey',
+      retrievalKind: 'retrievalKind',
+      entityProvenance: 'entityProvenance',
+    }));
+    expect(query.select).toEqual(expect.arrayContaining([
+      'sourceKey',
+      'retrievalPointKey',
+      'retrievalKind',
+      'entityProvenance',
+    ]));
+    expect(result?.items[0]).toMatchObject({
+      kind: 'text_chunk',
+      source: 'https://pod.example/alice/.data/tasks/default.ttl',
+      text: 'Approve the runtime deployment before release.',
+      metadata: {
+        untrustedContext: true,
+        sourceKey: 'source-node:tasks/default',
+        retrievalPointKey: 'entity-card:https://pod.example/alice/.data/tasks/default.ttl#task_1',
+        retrievalKind: 'entity-card',
+        entityProvenance: provenance,
+      },
+    });
+  });
+
   it('adds vector search and fusion scoring when an embedding is available', async () => {
     const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([
       {
@@ -142,6 +214,22 @@ describe('RdfRunContextRetriever', () => {
     });
   });
 
+  it('fails closed for remote Pod Run context search without an RDF access scope', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+    });
+
+    await expect(retriever.retrieve({
+      ...input,
+      config: {
+        ...input.config,
+        workspace: 'https://pod.example/alice/.data/',
+      },
+    })).rejects.toThrow('RDF Run context retrieval requires an access scope for remote Pod workspaces');
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   it('applies RDF access scope to product Run context search candidates', async () => {
     const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
     const publicSource = 'https://pod.example/alice/.data/public/notes.md';
@@ -182,6 +270,29 @@ describe('RdfRunContextRetriever', () => {
       allowedGraphUrls: [publicSource],
       deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
     }));
+  });
+
+  it('fails closed for remote Pod Run context search when access scope lacks principal or permission version', async () => {
+    const queryMock = vi.fn(async (_query: RdfQuery) => queryResult([]));
+    const remoteInput = {
+      ...input,
+      config: {
+        ...input.config,
+        workspace: 'https://pod.example/alice/.data/',
+      },
+    };
+    const retriever = new RdfRunContextRetriever({
+      rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
+      accessScope: {
+        basePath: 'https://pod.example/alice/.data/',
+        mode: 'read',
+      },
+    });
+
+    await expect(retriever.retrieve(remoteInput)).rejects.toThrow(
+      'RDF Run context retrieval requires principal and permission version for remote Pod workspaces',
+    );
+    expect(queryMock).not.toHaveBeenCalled();
   });
 
   it('fails closed by default when the RDF context query is unavailable', async () => {

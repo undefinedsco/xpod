@@ -25,6 +25,7 @@ import {
   rdfModelsBenchmarkTargetSatisfied,
   rdfModelsBenchmarkScaleTargetQuads,
   rdfModelsBenchmarkSyntheticPodCount,
+  rdfModelsSearchFusionBroadSourceCountForScale,
   runRdfModelsBenchmark,
   runRdfModelsRdf3xShadowBenchmark,
   runRdfModelsShadowBenchmark,
@@ -2227,6 +2228,7 @@ describe('SolidRdfEngine', () => {
     ]);
     expect(rdfModelsSearchFusionQueryBenchmarkCaseNames()).toEqual([
       'agent context text vector fusion query',
+      'broad agent context text vector fusion query',
     ]);
     expect(rdfModelsBenchmarkCasesForProfile('default').map((testCase) => testCase.name)).toEqual(rdfModelsBenchmarkCaseNames());
     expect(rdfModelsQueryBenchmarkCasesForProfile('default').map((testCase) => testCase.name)).toEqual(rdfModelsQueryBenchmarkCaseNames());
@@ -2243,7 +2245,9 @@ describe('SolidRdfEngine', () => {
       rdfModelsBenchmarkCaseNames().length + rdfModelsExtremeBenchmarkCaseNames().length,
     );
     expect(rdfModelsQueryBenchmarkCasesForProfile('all')).toHaveLength(
-      rdfModelsQueryBenchmarkCaseNames().length + rdfModelsExtremeQueryBenchmarkCaseNames().length,
+      rdfModelsQueryBenchmarkCaseNames().length
+        + rdfModelsExtremeQueryBenchmarkCaseNames().length
+        + rdfModelsSearchFusionQueryBenchmarkCaseNames().length,
     );
   });
 
@@ -2263,10 +2267,35 @@ describe('SolidRdfEngine', () => {
     expect(targetSyntheticQuads).toBeLessThan(36_000 + RDF_MODELS_SYNTHETIC_MESSAGE_QUADS);
     expect(rdfModelsBenchmarkSyntheticPodCount('medium')).toBe(1);
     expect(rdfModelsBenchmarkSyntheticPodCount('large')).toBeGreaterThan(1);
+    expect(rdfModelsSearchFusionBroadSourceCountForScale('small')).toBe(32);
+    expect(rdfModelsSearchFusionBroadSourceCountForScale('medium')).toBeGreaterThan(rdfModelsSearchFusionBroadSourceCountForScale('small'));
+    expect(rdfModelsSearchFusionBroadSourceCountForScale('large')).toBeGreaterThan(rdfModelsSearchFusionBroadSourceCountForScale('medium'));
     expect(rdfModelsBenchmarkScaleSatisfied('large', 100_000)).toBe(false);
     expect(rdfModelsBenchmarkScaleSatisfied('large', 1_000_000)).toBe(true);
     expect(rdfModelsBenchmarkTargetSatisfied(36_000, 35_999)).toBe(false);
     expect(rdfModelsBenchmarkTargetSatisfied(36_000, 36_000)).toBe(true);
+  });
+
+  it('seeds complete primary-pod RDF facts for large fusion candidates', () => {
+    const broadSourceCount = rdfModelsSearchFusionBroadSourceCountForScale('large');
+    const quads = buildRdfModelsBenchmarkSeed({
+      syntheticMessages: broadSourceCount + 3,
+      syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('large'),
+      caseProfile: 'fusion',
+      searchFusionBroadSourceCount: broadSourceCount,
+    });
+
+    const primarySyntheticMessages = new Set(
+      quads
+        .filter((entry) => entry.predicate.equals(namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type')))
+        .map((entry) => entry.subject.value)
+        .filter((subject) => subject.startsWith('https://pod.example/alice/.data/chat/default/2026/05/'))
+        .filter((subject) => subject.includes('#synthetic_')),
+    );
+
+    expect(primarySyntheticMessages.size).toBeGreaterThanOrEqual(broadSourceCount + 3);
+    expect(primarySyntheticMessages.has('https://pod.example/alice/.data/chat/default/2026/05/11/messages.ttl#synthetic_4098'))
+      .toBe(true);
   });
 
   it('covers profile, access-control, and control-plane model cases in the benchmark seed', () => {
@@ -3228,7 +3257,7 @@ describe('SolidRdfEngine', () => {
         syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount('small'),
         caseProfile: 'fusion',
       }));
-      seedRdfModelsSearchFusionIndexes(fusionEngine);
+      await seedRdfModelsSearchFusionIndexes(fusionEngine);
 
       const directResult = fusionEngine.query(rdfModelsQueryBenchmarkCasesForProfile('fusion')[0].query);
       const report = runRdfModelsBenchmark(fusionEngine, {
@@ -3236,17 +3265,22 @@ describe('SolidRdfEngine', () => {
         iterations: 1,
         caseProfile: 'fusion',
       });
-      const fusion = report.queryCases[0];
-      const planText = fusion.physicalPlan.join('\n');
+      const fusion = report.queryCases.find((testCase) => testCase.name === 'agent context text vector fusion query');
+      const broadFusion = report.queryCases.find((testCase) => testCase.name === 'broad agent context text vector fusion query');
+      const planText = fusion?.physicalPlan.join('\n') ?? '';
 
       expect(report.cases).toEqual([]);
-      expect(report.queryCases).toHaveLength(1);
-      expect(fusion.name).toBe('agent context text vector fusion query');
-      expect(fusion.planMatched).toBe(true);
-      expect(fusion.missingPlan).toEqual([]);
-      expect(fusion.returnedRows).toBe(2);
-      expect(fusion.indexChoices).toContain('text-chunk');
-      expect(fusion.indexChoices).toContain('vector-chunk');
+      expect(report.queryCases.map((testCase) => testCase.name)).toEqual(rdfModelsSearchFusionQueryBenchmarkCaseNames());
+      expect(fusion).toBeDefined();
+      expect(broadFusion).toBeDefined();
+      expect(fusion?.planMatched).toBe(true);
+      expect(fusion?.missingPlan).toEqual([]);
+      expect(fusion?.returnedRows).toBe(2);
+      expect(fusion?.indexChoices).toContain('text-chunk');
+      expect(fusion?.indexChoices).toContain('vector-chunk');
+      expect(broadFusion?.planMatched).toBe(true);
+      expect(broadFusion?.missingPlan).toEqual([]);
+      expect(broadFusion?.returnedRows).toBeGreaterThan(0);
       expect(planText).toContain('TextSearch(');
       expect(planText).toContain('VectorSearch(');
       expect(planText).toContain('Bind(?fusionScore:=');

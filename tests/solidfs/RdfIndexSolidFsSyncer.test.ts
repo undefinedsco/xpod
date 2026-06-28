@@ -131,6 +131,244 @@ describe('RdfIndexSolidFsSyncer', () => {
     }
   });
 
+  it('rebuilds existing workspace entries into derived RDF and text indexes on demand', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-rebuild-text-'));
+    const source = path.join(root, 'workspace');
+    const textIndex = new RdfTextIndex({ path: ':memory:' });
+    textIndex.open();
+    await mkdir(path.join(source, 'docs'), { recursive: true });
+    await writeFile(path.join(source, 'docs', 'runbook.md'), '# Runbook\n\nManaged runtime notes.\n', 'utf8');
+    await writeFile(path.join(source, 'profile.ttl'), '<#me> <https://schema.org/name> "Alice Rebuild" .\n', 'utf8');
+    const rdfIndex = {
+      syncLocalRdfDocument: vi.fn().mockResolvedValue(undefined),
+      deleteLocalRdfIndex: vi.fn().mockResolvedValue(undefined),
+    };
+    const syncer = new RdfIndexSolidFsSyncer({
+      index: rdfIndex,
+      textIndex,
+    });
+
+    try {
+      textIndex.indexText({
+        source: 'https://pod.example/alice/projects/demo/stale.md',
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'stale.md',
+        contentType: 'text/markdown',
+      }, '# Stale\n\nObsolete derived text.\n');
+      const solidfs = new LocalSolidFS({ syncer });
+      const workspace = await solidfs.prepare({
+        workspace: 'https://pod.example/alice/projects/demo/',
+        sourcePath: source,
+        projection: 'direct',
+      });
+
+      expect(textIndex.search({ query: 'managed runtime' })).toEqual([]);
+      expect(rdfIndex.syncLocalRdfDocument).not.toHaveBeenCalled();
+
+      const dryRun = await syncer.rebuildWorkspace(workspace.manifest, { dryRun: true, resetDerivedIndexes: true });
+      expect(dryRun).toEqual({
+        scanned: 2,
+        indexedRdfDocuments: 1,
+        indexedTextSources: 2,
+        upToDateTextSources: 0,
+        indexedVectorSources: 0,
+        failed: 0,
+        errors: [],
+        skipped: 0,
+        dryRun: true,
+        resetDerivedIndexes: true,
+      });
+      expect(textIndex.search({ query: 'managed runtime' })).toEqual([]);
+      expect(textIndex.search({ query: 'obsolete derived' })).toHaveLength(1);
+      expect(rdfIndex.syncLocalRdfDocument).not.toHaveBeenCalled();
+
+      const result = await syncer.rebuildWorkspace(workspace.manifest, { resetDerivedIndexes: true });
+      expect(result).toEqual({
+        scanned: 2,
+        indexedRdfDocuments: 1,
+        indexedTextSources: 2,
+        upToDateTextSources: 0,
+        indexedVectorSources: 0,
+        failed: 0,
+        errors: [],
+        skipped: 0,
+        dryRun: false,
+        resetDerivedIndexes: true,
+      });
+      expect(rdfIndex.syncLocalRdfDocument).toHaveBeenCalledTimes(1);
+      expect(textIndex.search({ query: 'managed runtime' })).toMatchObject([
+        {
+          source: 'https://pod.example/alice/projects/demo/docs/runbook.md',
+          localPath: 'docs/runbook.md',
+          contentType: 'text/markdown',
+        },
+      ]);
+      expect(textIndex.search({ query: 'alice rebuild' })).toMatchObject([
+        {
+          source: 'https://pod.example/alice/projects/demo/profile.ttl',
+          localPath: 'profile.ttl',
+          contentType: 'text/turtle',
+        },
+      ]);
+      expect(textIndex.search({ query: 'schema.org' })).toEqual([]);
+      expect(textIndex.search({ query: 'obsolete derived' })).toEqual([]);
+    } finally {
+      textIndex.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips up-to-date text sources during incremental rebuild by source version', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-rebuild-skip-'));
+    const source = path.join(root, 'workspace');
+    const textIndex = new RdfTextIndex({ path: ':memory:' });
+    textIndex.open();
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, 'runbook.md'), '# Runbook\n\nManaged runtime notes.\n', 'utf8');
+    const syncer = new RdfIndexSolidFsSyncer({
+      index: {
+        syncLocalRdfDocument: vi.fn().mockResolvedValue(undefined),
+        deleteLocalRdfIndex: vi.fn().mockResolvedValue(undefined),
+      },
+      textIndex,
+    });
+
+    try {
+      const solidfs = new LocalSolidFS({ syncer });
+      const workspace = await solidfs.prepare({
+        workspace: 'https://pod.example/alice/projects/demo/',
+        sourcePath: source,
+        projection: 'direct',
+      });
+      const entry = workspace.manifest.entries[0];
+      textIndex.indexText({
+        source: entry.resource!,
+        workspace: workspace.manifest.workspace,
+        localPath: entry.path,
+        contentType: 'text/markdown',
+        sourceVersion: entry.sourceVersion,
+      }, '# Runbook\n\nManaged runtime notes.\n');
+      const indexText = vi.spyOn(textIndex, 'indexText');
+
+      const upToDate = await syncer.rebuildWorkspace(workspace.manifest);
+      expect(upToDate).toMatchObject({
+        scanned: 1,
+        indexedTextSources: 0,
+        upToDateTextSources: 1,
+        resetDerivedIndexes: false,
+      });
+      expect(indexText).not.toHaveBeenCalled();
+      expect(textIndex.rebuildStatus(entry.resource!)).toMatchObject({
+        source: entry.resource,
+        status: 'skipped',
+        reason: 'source-current',
+        sourceVersion: entry.sourceVersion,
+      });
+
+      const changed = await syncer.rebuildWorkspace({
+        ...workspace.manifest,
+        entries: [
+          {
+            ...entry,
+            sourceVersion: `${entry.sourceVersion}:changed`,
+          },
+        ],
+      });
+      expect(changed).toMatchObject({
+        scanned: 1,
+        indexedTextSources: 1,
+        upToDateTextSources: 0,
+      });
+      expect(indexText).toHaveBeenCalledTimes(1);
+      expect(textIndex.rebuildStatus(entry.resource!)).toMatchObject({
+        source: entry.resource,
+        status: 'indexed',
+        reason: 'rebuild',
+        sourceVersion: `${entry.sourceVersion}:changed`,
+      });
+    } finally {
+      textIndex.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports rebuild entry errors and continues indexing remaining sources', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-rebuild-errors-'));
+    const source = path.join(root, 'workspace');
+    const textIndex = new RdfTextIndex({ path: ':memory:' });
+    textIndex.open();
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, 'good.md'), '# Good\n\nManaged runtime survives.\n', 'utf8');
+    const syncer = new RdfIndexSolidFsSyncer({
+      index: {
+        syncLocalRdfDocument: vi.fn().mockResolvedValue(undefined),
+        deleteLocalRdfIndex: vi.fn().mockResolvedValue(undefined),
+      },
+      textIndex,
+    });
+    const manifest: SolidFsManifest = {
+      workspace: 'https://pod.example/alice/projects/demo/',
+      cwd: source,
+      projection: 'direct',
+      entries: [
+        {
+          path: 'missing.md',
+          resource: 'https://pod.example/alice/projects/demo/missing.md',
+          source: 'pod-http',
+          sourcePath: path.join(source, 'missing.md'),
+          contentType: 'text/markdown',
+          projection: 'direct',
+          state: 'clean',
+        },
+        {
+          path: 'good.md',
+          resource: 'https://pod.example/alice/projects/demo/good.md',
+          source: 'pod-http',
+          sourcePath: path.join(source, 'good.md'),
+          contentType: 'text/markdown',
+          projection: 'direct',
+          state: 'clean',
+        },
+      ],
+    };
+
+    try {
+      const result = await syncer.rebuildWorkspace(manifest);
+
+      expect(result).toMatchObject({
+        scanned: 2,
+        indexedTextSources: 1,
+        failed: 1,
+        errors: [
+          {
+            path: 'missing.md',
+            source: 'https://pod.example/alice/projects/demo/missing.md',
+          },
+        ],
+      });
+      expect(result.errors[0].message).toContain('missing.md');
+      expect(textIndex.rebuildStatus('https://pod.example/alice/projects/demo/missing.md')).toMatchObject({
+        source: 'https://pod.example/alice/projects/demo/missing.md',
+        status: 'error',
+        reason: 'rebuild',
+      });
+      expect(textIndex.rebuildStatus('https://pod.example/alice/projects/demo/missing.md')?.message).toContain('missing.md');
+      expect(textIndex.rebuildStatus('https://pod.example/alice/projects/demo/good.md')).toMatchObject({
+        source: 'https://pod.example/alice/projects/demo/good.md',
+        status: 'indexed',
+        reason: 'rebuild',
+      });
+      expect(textIndex.search({ query: 'managed runtime' })).toMatchObject([
+        {
+          source: 'https://pod.example/alice/projects/demo/good.md',
+        },
+      ]);
+    } finally {
+      textIndex.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('removes deleted Markdown sources from the derived text index', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-text-delete-'));
     const source = path.join(root, 'workspace');
@@ -172,7 +410,7 @@ describe('RdfIndexSolidFsSyncer', () => {
     }
   });
 
-  it('keeps Turtle files in both the RDF index and the text chunk index', async () => {
+  it('indexes Turtle files through RDF entity projection instead of raw syntax text', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-rdf-text-sync-'));
     const source = path.join(root, 'workspace');
     await mkdir(source, { recursive: true });
@@ -209,6 +447,8 @@ describe('RdfIndexSolidFsSyncer', () => {
           contentType: 'text/turtle',
         },
       ]);
+      expect(textIndex.search({ query: 'schema.org' })).toEqual([]);
+      expect(textIndex.search({ query: 'prefix' })).toEqual([]);
     } finally {
       textIndex.close();
       await rm(root, { recursive: true, force: true });
@@ -299,7 +539,7 @@ describe('RdfIndexSolidFsSyncer', () => {
     }
   });
 
-  it('refreshes the RDF index from RDF/XML without indexing it as by-line text', async () => {
+  it('indexes RDF/XML through RDF entity projection without indexing XML syntax', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-solidfs-rdfxml-sync-'));
     const source = path.join(root, 'workspace');
     const textIndex = new RdfTextIndex({ path: ':memory:' });
@@ -307,9 +547,9 @@ describe('RdfIndexSolidFsSyncer', () => {
     await mkdir(source, { recursive: true });
     await writeFile(path.join(source, 'ontology.owl'), `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-         xmlns:ex="http://example.test/">
+         xmlns:schema="https://schema.org/">
   <rdf:Description rdf:about="http://example.test/s">
-    <ex:p>before</ex:p>
+    <schema:name>before</schema:name>
   </rdf:Description>
 </rdf:RDF>
 `, 'utf8');
@@ -331,9 +571,9 @@ describe('RdfIndexSolidFsSyncer', () => {
 
       await writeFile(path.join(workspace.cwd, 'ontology.owl'), `<?xml version="1.0"?>
 <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-         xmlns:ex="http://example.test/">
+         xmlns:schema="https://schema.org/">
   <rdf:Description rdf:about="http://example.test/s">
-    <ex:p>after</ex:p>
+    <schema:name>after</schema:name>
   </rdf:Description>
 </rdf:RDF>
 `, 'utf8');
@@ -352,7 +592,14 @@ describe('RdfIndexSolidFsSyncer', () => {
         },
       );
       expect(rdfIndex.deleteLocalRdfIndex).not.toHaveBeenCalled();
-      expect(textIndex.search({ query: 'after' })).toEqual([]);
+      expect(textIndex.search({ query: 'after' })).toMatchObject([
+        {
+          source: 'https://pod.example/alice/projects/demo/ontology.owl',
+          localPath: 'ontology.owl',
+          contentType: 'application/rdf+xml',
+        },
+      ]);
+      expect(textIndex.search({ query: 'rdf description' })).toEqual([]);
     } finally {
       textIndex.close();
       await rm(root, { recursive: true, force: true });

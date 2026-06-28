@@ -725,8 +725,10 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         const score = typeof item.score === 'number' ? ` score=${item.score.toFixed(4)}` : '';
         const kind = item.kind ? ` kind=${item.kind}` : '';
         const heading = item.heading ? ` heading=${item.heading}` : '';
+        const metadata = this.retrievedContextMetadataTags(item.metadata);
+        const metadataText = metadata.length > 0 ? ` ${metadata.join(' ')}` : '';
         return [
-          `[${index + 1}]${kind}${score}${source}${heading}`,
+          `[${index + 1}]${kind}${score}${source}${heading}${metadataText}`,
           item.text.trim(),
         ].filter(Boolean).join('\n');
       }),
@@ -736,6 +738,30 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       content: [{ type: 'text', text: lines.join('\n') }],
       timestamp: Date.now(),
     };
+  }
+
+  private retrievedContextMetadataTags(metadata: Record<string, unknown> | undefined): string[] {
+    if (!metadata) {
+      return [];
+    }
+    const tags: string[] = [];
+    if (metadata.untrustedContext === true) {
+      tags.push('UNTRUSTED_CONTEXT');
+    }
+    pushMetadataTag(tags, 'sourceKey', metadata.sourceKey);
+    pushMetadataTag(tags, 'retrievalPoint', metadata.retrievalPointKey);
+    pushMetadataTag(tags, 'retrievalKind', metadata.retrievalKind);
+    const provenance = metadata.entityProvenance;
+    if (Array.isArray(provenance)) {
+      for (const mention of provenance.slice(0, 3)) {
+        if (!isRecord(mention)) {
+          continue;
+        }
+        pushMetadataTag(tags, 'entity', mention.entity);
+        pushMetadataTag(tags, 'predicate', mention.predicate);
+      }
+    }
+    return tags;
   }
 
   private async prepareWorkspace(input: RunExecutionInput): Promise<MaterializedWorkspace> {
@@ -931,6 +957,16 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     PiAgentRuntimeDriver.sdkPromise = nativeImport('@mariozechner/pi-coding-agent');
     return PiAgentRuntimeDriver.sdkPromise;
   }
+}
+
+function pushMetadataTag(tags: string[], key: string, value: unknown): void {
+  if (typeof value === 'string' && value.length > 0) {
+    tags.push(`${key}=${value}`);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export const PI_AGENT_WORKER_EVENT_PREFIX = 'XPOD_AGENT_EVENT ';

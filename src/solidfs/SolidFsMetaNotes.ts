@@ -1,5 +1,5 @@
 export type SolidFsMaterializationClass = 'byline-local' | 'placeholder-r2' | 'hydrated-r2';
-export type SolidFsParserCoverageStatus = 'none' | 'partial' | 'complete' | 'stale' | 'failed';
+export type SolidFsReaderCoverageStatus = 'none' | 'partial' | 'complete' | 'stale' | 'failed';
 
 export interface FileMetadataNoteInput {
   subject: string;
@@ -12,16 +12,16 @@ export interface FileMetadataNoteInput {
   materializationClass: SolidFsMaterializationClass;
 }
 
-export interface ParserCoverageNoteInput {
+export interface ReaderCoverageNoteInput {
   subject: string;
   about: string;
-  parserKind: string;
-  parserVersion: string;
+  readerKind: string;
+  readerVersion: string;
   coverageUnit: 'page' | 'line' | 'byte' | 'section' | 'symbol' | 'rdf-resource';
   coveredRange: string;
-  parsedUnits: number;
+  readUnits: number;
   totalUnits?: number;
-  status: SolidFsParserCoverageStatus;
+  status: SolidFsReaderCoverageStatus;
 }
 
 const PREFIXES = '@prefix dct: <http://purl.org/dc/terms/> .\n@prefix sioc: <http://rdfs.org/sioc/ns#> .\n@prefix udfs: <https://vocab.undefineds.co/udfs#> .\n\n';
@@ -52,18 +52,18 @@ export function buildFileMetadataNote(input: FileMetadataNoteInput): string {
   return `${PREFIXES}${lines.join('\n')}\n`;
 }
 
-export function buildParserCoverageNote(input: ParserCoverageNoteInput): string {
+export function buildReaderCoverageNote(input: ReaderCoverageNoteInput): string {
   const lines = [
     `${term(input.subject)} a udfs:Note ;`,
     `  sioc:about ${term(input.about)} ;`,
-    '  dct:title "Parser coverage" ;',
-    `  dct:description ${literal(`Parsed ${input.coveredRange}.`)} ;`,
-    '  udfs:noteKind "parser-coverage" ;',
-    `  udfs:parserKind ${literal(input.parserKind)} ;`,
-    `  udfs:parserVersion ${literal(input.parserVersion)} ;`,
+    '  dct:title "Reader coverage" ;',
+    `  dct:description ${literal(`Read ${input.coveredRange}.`)} ;`,
+    '  udfs:noteKind "reader-coverage" ;',
+    `  udfs:readerKind ${literal(input.readerKind)} ;`,
+    `  udfs:readerVersion ${literal(input.readerVersion)} ;`,
     `  udfs:coverageUnit ${literal(input.coverageUnit)} ;`,
     `  udfs:coveredRange ${literal(input.coveredRange)} ;`,
-    `  udfs:parsedUnits ${nonNegativeIntegerLiteral('parsedUnits', input.parsedUnits)} ;`,
+    `  udfs:readUnits ${nonNegativeIntegerLiteral('readUnits', input.readUnits)} ;`,
   ];
   if (input.totalUnits !== undefined) {
     lines.push(`  udfs:totalUnits ${nonNegativeIntegerLiteral('totalUnits', input.totalUnits)} ;`);

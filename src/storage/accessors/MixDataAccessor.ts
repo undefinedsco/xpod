@@ -40,6 +40,7 @@ import {
   isRdfDocumentPath,
   rdfContentTypeForPath,
 } from '../rdf/RdfContentTypes';
+import { createRdfEntityTextChunks } from '../rdf/RdfTextProjection';
 import { RdfQuadIndex } from '../rdf/RdfQuadIndex';
 import { serializeRdfXml } from '../rdf/RdfXmlSerializer';
 import { SolidRdfEngine } from '../rdf/SolidRdfEngine';
@@ -892,6 +893,8 @@ export class MixDataAccessor implements DataAccessor {
         await this.syncTextSearchIndex(
           patch.identifier,
           await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
+          {},
+          authorityQuads,
         );
       }
 
@@ -1006,6 +1009,8 @@ export class MixDataAccessor implements DataAccessor {
           await this.syncTextSearchIndex(
             patch.identifier,
             await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
+            {},
+            authorityQuads,
           );
         } else {
           await this.deleteRdfFileResourceIfPresent(patch.identifier);
@@ -1072,7 +1077,7 @@ export class MixDataAccessor implements DataAccessor {
     await this.syncTextSearchIndex(identifier, text, {
       ...options,
       contentType: localContentType,
-    });
+    }, quads);
     this.invalidateMetadataCache(identifier);
   }
 
@@ -1134,7 +1139,7 @@ export class MixDataAccessor implements DataAccessor {
 
     try {
       await this.writeStructuredRdfIndex(identifier, quads, structuredMetadata);
-      await this.syncTextSearchIndex(identifier, text);
+      await this.syncTextSearchIndex(identifier, text, {}, quads);
     } catch (error) {
       await this.deleteRdfFileResourceIfPresent(identifier);
       await this.deleteSearchIndexes(identifier);
@@ -1189,7 +1194,7 @@ export class MixDataAccessor implements DataAccessor {
       guardStream(Readable.from([ text ])),
       this.createLocalRdfMetadata(identifier, metadata),
     );
-    await this.syncTextSearchIndex(identifier, text);
+    await this.syncTextSearchIndex(identifier, text, {}, quads);
   }
 
   private async getLocalRdfMetadata(
@@ -1251,6 +1256,7 @@ export class MixDataAccessor implements DataAccessor {
     identifier: ResourceIdentifier,
     text: string,
     options: LocalRdfSyncOptions & { contentType?: string } = {},
+    quads?: Quad[],
   ): Promise<void> {
     if (!this.textSearchIndexingEnabled || !this.isByLineRdfIdentifier(identifier)) {
       return;
@@ -1259,7 +1265,12 @@ export class MixDataAccessor implements DataAccessor {
     if (!accessor?.indexTextSource) {
       return;
     }
-    await accessor.indexTextSource(this.rdfSourceInput(identifier, options), text);
+    const source = this.rdfSourceInput(identifier, options);
+    await accessor.indexTextSource(
+      source,
+      text,
+      quads ? createRdfEntityTextChunks(source, quads) : undefined,
+    );
   }
 
   private async deleteSearchIndexes(identifier: ResourceIdentifier): Promise<void> {

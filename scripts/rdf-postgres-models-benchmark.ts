@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Client } from 'pg';
 import {
   RDF_MODELS_BENCHMARK_POD,
@@ -11,6 +12,7 @@ import {
   rdfModelsBenchmarkTargetSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
+  rdfModelsSearchFusionBroadSourceCountForScale,
   rdfModelsBenchmarkProfileRequiresSearchFusion,
   runRdfModelsPostgresBenchmark,
   seedRdfModelsSearchFusionIndexes,
@@ -18,8 +20,28 @@ import {
   type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
+  type RdfModelPostgresBenchmarkGateBaseline,
+  type RdfModelPostgresBenchmarkGateCaseThresholds,
+  type RdfModelPostgresBenchmarkGateThresholds,
   type RdfPgAccelerationProfile,
+  type PostgresRdfTextSearchBackend,
 } from '../src/storage/rdf';
+
+interface BenchmarkGateConfigSource {
+  kind: 'config' | 'report-config' | 'baseline-report';
+  path: string;
+  calibratedLimits?: boolean;
+  seed?: BenchmarkGateReportShape;
+}
+
+interface BenchmarkGateReportShape {
+  driver?: 'pglite' | 'pg';
+  scale?: RdfBenchmarkScale;
+  targetQuads?: number;
+  caseProfile?: RdfBenchmarkCaseProfile;
+  rdfAccelerationProfile?: RdfPgAccelerationProfile;
+  textSearchBackend?: PostgresRdfTextSearchBackend;
+}
 
 interface CliOptions {
   outDir: string;
@@ -37,9 +59,15 @@ interface CliOptions {
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
   syntheticPodCount: number;
+  searchFusionBroadSourceCount: number;
   caseProfile: RdfBenchmarkCaseProfile;
   rdfAccelerationProfile: RdfPgAccelerationProfile;
+  textSearchBackend: PostgresRdfTextSearchBackend;
   deferPgCustomIndexBuild: boolean;
+  servingRegressionThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkBaselines?: Record<string, RdfModelPostgresBenchmarkGateBaseline>;
+  benchmarkGateConfigSources?: BenchmarkGateConfigSource[];
 }
 
 interface BenchmarkPaths {
@@ -58,13 +86,18 @@ async function main(): Promise<void> {
   try {
     await engine.open();
     await assertWritableBenchmarkTarget(engine, options);
-    const seedQuads = buildRdfModelsBenchmarkSeed(options);
+    const seedQuads = buildRdfModelsBenchmarkSeed({
+      ...options,
+      searchFusionBroadSourceCount: options.searchFusionBroadSourceCount,
+    });
     const seedStartedAt = Date.now();
     await engine.put(seedQuads);
     const seedIngestDurationMs = Date.now() - seedStartedAt;
     const seedStorage = await engine.storageStats();
     if (rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile)) {
-      seedRdfModelsSearchFusionIndexes(engine);
+      await seedRdfModelsSearchFusionIndexes(engine, {
+        broadSourceCount: options.searchFusionBroadSourceCount,
+      });
     }
     if (options.deferPgCustomIndexBuild) {
       await engine.ensurePgCustomIndexes();
@@ -77,6 +110,9 @@ async function main(): Promise<void> {
       refreshMutationSources: options.refreshMutationSources,
       refreshMutationQuadsPerSource: options.refreshMutationQuadsPerSource,
       caseProfile: options.caseProfile,
+      servingRegressionThresholds: options.servingRegressionThresholds,
+      fusionBenchmarkThresholds: options.fusionBenchmarkThresholds,
+      fusionBenchmarkBaselines: options.fusionBenchmarkBaselines,
     });
 
     await writeJson(paths.postgresReport, {
@@ -129,7 +165,7 @@ async function main(): Promise<void> {
   }
 }
 
-function parseArgs(args: string[]): CliOptions {
+export function parseArgs(args: string[]): CliOptions {
   let outDir = path.join(process.cwd(), '.test-data', 'rdf-engine');
   let driver: CliOptions['driver'] = 'pglite';
   let connectionString: string | undefined;
@@ -144,7 +180,12 @@ function parseArgs(args: string[]): CliOptions {
   let syntheticMessages: number | undefined;
   let caseProfile: RdfBenchmarkCaseProfile = 'default';
   let rdfAccelerationProfile: RdfPgAccelerationProfile = 'baseline';
+  let textSearchBackend: PostgresRdfTextSearchBackend = 'posting';
   let deferPgCustomIndexBuild: boolean | undefined;
+  let servingRegressionThresholds: RdfModelPostgresBenchmarkGateThresholds | undefined;
+  let fusionBenchmarkThresholds: RdfModelPostgresBenchmarkGateThresholds | undefined;
+  let fusionBenchmarkBaselines: Record<string, RdfModelPostgresBenchmarkGateBaseline> | undefined;
+  const benchmarkGateConfigSources: BenchmarkGateConfigSource[] = [];
 
   for (const arg of args) {
     if (arg.startsWith('--out=')) {
@@ -219,6 +260,48 @@ function parseArgs(args: string[]): CliOptions {
       rdfAccelerationProfile = value;
       continue;
     }
+    if (arg.startsWith('--textSearchBackend=')) {
+      const value = arg.slice('--textSearchBackend='.length);
+      if (!isPostgresRdfTextSearchBackend(value)) {
+        throw new Error(`Unsupported --textSearchBackend value: ${value}`);
+      }
+      textSearchBackend = value;
+      continue;
+    }
+    if (arg.startsWith('--benchmarkGateConfig=')) {
+      const configPath = path.resolve(arg.slice('--benchmarkGateConfig='.length));
+      const config = readBenchmarkGateConfig(configPath);
+      servingRegressionThresholds = config.servingRegressionThresholds;
+      fusionBenchmarkThresholds = config.fusionBenchmarkThresholds;
+      fusionBenchmarkBaselines = config.fusionBenchmarkBaselines;
+      benchmarkGateConfigSources.push({ kind: 'config', path: configPath });
+      continue;
+    }
+    if (arg.startsWith('--benchmarkGateConfigFromReport=')) {
+      const configPath = path.resolve(arg.slice('--benchmarkGateConfigFromReport='.length));
+      const config = readBenchmarkGateConfigFromReport(configPath);
+      servingRegressionThresholds = config.servingRegressionThresholds;
+      fusionBenchmarkThresholds = config.fusionBenchmarkThresholds;
+      fusionBenchmarkBaselines = config.fusionBenchmarkBaselines;
+      benchmarkGateConfigSources.push({
+        kind: 'report-config',
+        path: configPath,
+        calibratedLimits: true,
+        ...(config.seed ? { seed: config.seed } : {}),
+      });
+      continue;
+    }
+    if (arg.startsWith('--benchmarkGateBaselineReport=')) {
+      const configPath = path.resolve(arg.slice('--benchmarkGateBaselineReport='.length));
+      fusionBenchmarkBaselines = readBenchmarkGateBaselineReport(configPath);
+      const seed = readBenchmarkGateReportShape(configPath);
+      benchmarkGateConfigSources.push({
+        kind: 'baseline-report',
+        path: configPath,
+        ...(seed ? { seed } : {}),
+      });
+      continue;
+    }
     if (arg === '--deferPgCustomIndexBuild') {
       deferPgCustomIndexBuild = true;
       continue;
@@ -239,6 +322,15 @@ function parseArgs(args: string[]): CliOptions {
   }
 
   const resolvedTargetQuads = targetQuads ?? rdfModelsBenchmarkScaleTargetQuads(scale);
+  const searchFusionBroadSourceCount = rdfModelsSearchFusionBroadSourceCountForScale(scale);
+  validateBenchmarkGateConfigSources({
+    driver,
+    scale,
+    targetQuads: resolvedTargetQuads,
+    caseProfile,
+    textSearchBackend,
+    sources: benchmarkGateConfigSources,
+  });
   return {
     outDir,
     driver,
@@ -259,10 +351,276 @@ function parseArgs(args: string[]): CliOptions {
     ),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
+    searchFusionBroadSourceCount,
     caseProfile,
     rdfAccelerationProfile,
+    textSearchBackend,
     deferPgCustomIndexBuild: deferPgCustomIndexBuild ?? (driver === 'pg' && rdfAccelerationProfile === 'pg-custom-index'),
+    ...(servingRegressionThresholds ? { servingRegressionThresholds } : {}),
+    ...(fusionBenchmarkThresholds ? { fusionBenchmarkThresholds } : {}),
+    ...(fusionBenchmarkBaselines ? { fusionBenchmarkBaselines } : {}),
+    ...(benchmarkGateConfigSources.length > 0 ? { benchmarkGateConfigSources } : {}),
   };
+}
+
+function readBenchmarkGateConfig(filePath: string): {
+  servingRegressionThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkBaselines?: Record<string, RdfModelPostgresBenchmarkGateBaseline>;
+} {
+  const parsed = JSON.parse(readFileSync(path.resolve(filePath), 'utf-8')) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error('--benchmarkGateConfig must point to a JSON object');
+  }
+  return {
+    ...(parsed.servingRegressionThresholds !== undefined ? {
+      servingRegressionThresholds: benchmarkGateThresholds(parsed.servingRegressionThresholds, 'servingRegressionThresholds'),
+    } : {}),
+    ...(parsed.fusionBenchmarkThresholds !== undefined ? {
+      fusionBenchmarkThresholds: benchmarkGateThresholds(parsed.fusionBenchmarkThresholds, 'fusionBenchmarkThresholds'),
+    } : {}),
+    ...(parsed.fusionBenchmarkBaselines !== undefined ? {
+      fusionBenchmarkBaselines: benchmarkGateBaselines(parsed.fusionBenchmarkBaselines),
+    } : {}),
+  };
+}
+
+function readBenchmarkGateConfigFromReport(filePath: string): {
+  servingRegressionThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkThresholds?: RdfModelPostgresBenchmarkGateThresholds;
+  fusionBenchmarkBaselines?: Record<string, RdfModelPostgresBenchmarkGateBaseline>;
+  seed?: BenchmarkGateReportShape;
+} {
+  const resolvedPath = path.resolve(filePath);
+  const parsed = JSON.parse(readFileSync(resolvedPath, 'utf-8')) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error('--benchmarkGateConfigFromReport must point to a JSON object');
+  }
+  const report = isRecord(parsed.report) ? parsed.report : parsed;
+  if (!isRecord(report)) {
+    throw new Error('--benchmarkGateConfigFromReport must contain a report object');
+  }
+  if (!Array.isArray(report.queryCases)) {
+    throw new Error('--benchmarkGateConfigFromReport report.queryCases must be an array');
+  }
+  return {
+    servingRegressionThresholds: benchmarkGateThresholdsFromReportCases(report, 'servingRegressionGate'),
+    fusionBenchmarkThresholds: benchmarkGateThresholdsFromReportCases(report, 'fusionBenchmarkGate'),
+    fusionBenchmarkBaselines: readBenchmarkGateBaselineReport(resolvedPath, { calibratedLimits: true }),
+    seed: benchmarkGateReportShape(parsed),
+  };
+}
+
+function readBenchmarkGateReportShape(filePath: string): BenchmarkGateReportShape | undefined {
+  const parsed = JSON.parse(readFileSync(path.resolve(filePath), 'utf-8')) as unknown;
+  if (!isRecord(parsed)) {
+    return undefined;
+  }
+  return benchmarkGateReportShape(parsed);
+}
+
+function benchmarkGateThresholdsFromReportCases(
+  report: Record<string, unknown>,
+  gateName: 'servingRegressionGate' | 'fusionBenchmarkGate',
+): RdfModelPostgresBenchmarkGateThresholds | undefined {
+  const caseNames = benchmarkGateCaseNamesFromReport(report, gateName);
+  if (caseNames.size === 0) {
+    return undefined;
+  }
+  const cases: Record<string, RdfModelPostgresBenchmarkGateCaseThresholds> = {};
+  for (const rawCase of report.queryCases as unknown[]) {
+    if (!isRecord(rawCase) || typeof rawCase.name !== 'string' || !caseNames.has(rawCase.name)) {
+      continue;
+    }
+    cases[rawCase.name] = {
+      maxScannedRows: calibratedScannedRowsThreshold(rawCase.scannedRows, `queryCases.${rawCase.name}.scannedRows`),
+      maxP95DurationMs: calibratedP95DurationThreshold(rawCase.p95DurationMs, `queryCases.${rawCase.name}.p95DurationMs`),
+    };
+  }
+  return Object.keys(cases).length > 0 ? { cases } : undefined;
+}
+
+function benchmarkGateReportShape(parsed: Record<string, unknown>): BenchmarkGateReportShape | undefined {
+  const seed = isRecord(parsed.seed) ? parsed.seed : undefined;
+  if (!seed) {
+    return undefined;
+  }
+  const shape: BenchmarkGateReportShape = {
+    ...(seed.driver === 'pglite' || seed.driver === 'pg' ? { driver: seed.driver } : {}),
+    ...(seed.scale === 'small' || seed.scale === 'medium' || seed.scale === 'large' ? { scale: seed.scale } : {}),
+    ...(typeof seed.targetQuads === 'number' && Number.isFinite(seed.targetQuads) ? { targetQuads: seed.targetQuads } : {}),
+    ...(typeof seed.caseProfile === 'string' && isRdfBenchmarkCaseProfile(seed.caseProfile) ? { caseProfile: seed.caseProfile } : {}),
+    ...(typeof seed.rdfAccelerationProfile === 'string' && isRdfPgAccelerationProfile(seed.rdfAccelerationProfile) ? {
+      rdfAccelerationProfile: seed.rdfAccelerationProfile,
+    } : {}),
+    ...(typeof seed.textSearchBackend === 'string' && isPostgresRdfTextSearchBackend(seed.textSearchBackend) ? {
+      textSearchBackend: seed.textSearchBackend,
+    } : {}),
+  };
+  return Object.keys(shape).length > 0 ? shape : undefined;
+}
+
+function validateBenchmarkGateConfigSources(input: {
+  driver: 'pglite' | 'pg';
+  scale: RdfBenchmarkScale;
+  targetQuads: number;
+  caseProfile: RdfBenchmarkCaseProfile;
+  textSearchBackend: PostgresRdfTextSearchBackend;
+  sources: readonly BenchmarkGateConfigSource[];
+}): void {
+  for (const source of input.sources) {
+    if ((source.kind !== 'report-config' && source.kind !== 'baseline-report') || !source.seed) {
+      continue;
+    }
+    const mismatches: string[] = [];
+    if (source.seed.driver && source.seed.driver !== input.driver) {
+      mismatches.push(`driver expected ${input.driver}, got ${source.seed.driver}`);
+    }
+    if (source.seed.scale && source.seed.scale !== input.scale) {
+      mismatches.push(`scale expected ${input.scale}, got ${source.seed.scale}`);
+    }
+    if (source.seed.targetQuads !== undefined && source.seed.targetQuads !== input.targetQuads) {
+      mismatches.push(`targetQuads expected ${input.targetQuads}, got ${source.seed.targetQuads}`);
+    }
+    if (source.seed.caseProfile && source.seed.caseProfile !== input.caseProfile) {
+      mismatches.push(`caseProfile expected ${input.caseProfile}, got ${source.seed.caseProfile}`);
+    }
+    if (source.seed.textSearchBackend && source.seed.textSearchBackend !== input.textSearchBackend) {
+      mismatches.push(`textSearchBackend expected ${input.textSearchBackend}, got ${source.seed.textSearchBackend}`);
+    }
+    if (mismatches.length > 0) {
+      throw new Error(`benchmark gate report shape mismatch: ${mismatches.join('; ')}`);
+    }
+  }
+}
+
+function calibratedScannedRowsThreshold(value: unknown, name: string): number {
+  return Math.ceil(nonNegativeNumber(value, name) * 1.25);
+}
+
+function calibratedP95DurationThreshold(value: unknown, name: string): number {
+  const durationMs = nonNegativeNumber(value, name);
+  return Math.ceil(Math.max(durationMs * 1.25, durationMs + 25));
+}
+
+function readBenchmarkGateBaselineReport(
+  filePath: string,
+  options: { calibratedLimits?: boolean } = {},
+): Record<string, RdfModelPostgresBenchmarkGateBaseline> {
+  const resolvedPath = path.resolve(filePath);
+  const parsed = JSON.parse(readFileSync(resolvedPath, 'utf-8')) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error('--benchmarkGateBaselineReport must point to a JSON object');
+  }
+  const report = isRecord(parsed.report) ? parsed.report : parsed;
+  if (!isRecord(report)) {
+    throw new Error('--benchmarkGateBaselineReport must contain a report object');
+  }
+  if (!Array.isArray(report.queryCases)) {
+    throw new Error('--benchmarkGateBaselineReport report.queryCases must be an array');
+  }
+  const fusionCaseNames = fusionBenchmarkCaseNamesFromReport(report);
+  const baselines: Record<string, RdfModelPostgresBenchmarkGateBaseline> = {};
+  for (const rawCase of report.queryCases) {
+    if (!isRecord(rawCase) || typeof rawCase.name !== 'string') {
+      continue;
+    }
+    if (fusionCaseNames.size > 0 && !fusionCaseNames.has(rawCase.name)) {
+      continue;
+    }
+    const scannedRows = nonNegativeNumber(rawCase.scannedRows, `queryCases.${rawCase.name}.scannedRows`);
+    const p95DurationMs = nonNegativeNumber(rawCase.p95DurationMs, `queryCases.${rawCase.name}.p95DurationMs`);
+    baselines[rawCase.name] = {
+      label: `baseline-report:${path.basename(resolvedPath)}`,
+      scannedRows,
+      p95DurationMs,
+      ...(options.calibratedLimits ? {
+        maxScannedRows: calibratedScannedRowsThreshold(scannedRows, `queryCases.${rawCase.name}.scannedRows`),
+        maxP95DurationMs: calibratedP95DurationThreshold(p95DurationMs, `queryCases.${rawCase.name}.p95DurationMs`),
+      } : {}),
+    };
+  }
+  if (Object.keys(baselines).length === 0) {
+    throw new Error('--benchmarkGateBaselineReport did not contain any fusion query case baselines');
+  }
+  return baselines;
+}
+
+function fusionBenchmarkCaseNamesFromReport(report: Record<string, unknown>): Set<string> {
+  return benchmarkGateCaseNamesFromReport(report, 'fusionBenchmarkGate');
+}
+
+function benchmarkGateCaseNamesFromReport(
+  report: Record<string, unknown>,
+  gateName: 'servingRegressionGate' | 'fusionBenchmarkGate',
+): Set<string> {
+  const gate = report[gateName];
+  if (!isRecord(gate) || !Array.isArray(gate.cases)) {
+    return new Set();
+  }
+  return new Set(gate.cases
+    .filter(isRecord)
+    .map((entry) => entry.name)
+    .filter((name): name is string => typeof name === 'string'));
+}
+
+function benchmarkGateThresholds(value: unknown, label: string): RdfModelPostgresBenchmarkGateThresholds {
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  return {
+    ...(value.maxScannedRows !== undefined ? { maxScannedRows: nonNegativeNumber(value.maxScannedRows, `${label}.maxScannedRows`) } : {}),
+    ...(value.maxP95DurationMs !== undefined ? { maxP95DurationMs: nonNegativeNumber(value.maxP95DurationMs, `${label}.maxP95DurationMs`) } : {}),
+    ...(value.cases !== undefined ? { cases: benchmarkGateCaseThresholds(value.cases, `${label}.cases`) } : {}),
+  };
+}
+
+function benchmarkGateCaseThresholds(value: unknown, label: string): Record<string, RdfModelPostgresBenchmarkGateCaseThresholds> {
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+  const thresholds: Record<string, RdfModelPostgresBenchmarkGateCaseThresholds> = {};
+  for (const [caseName, rawThresholds] of Object.entries(value)) {
+    if (!isRecord(rawThresholds)) {
+      throw new Error(`${label}.${caseName} must be a JSON object`);
+    }
+    thresholds[caseName] = {
+      ...(rawThresholds.maxScannedRows !== undefined ? { maxScannedRows: nonNegativeNumber(rawThresholds.maxScannedRows, `${label}.${caseName}.maxScannedRows`) } : {}),
+      ...(rawThresholds.maxP95DurationMs !== undefined ? { maxP95DurationMs: nonNegativeNumber(rawThresholds.maxP95DurationMs, `${label}.${caseName}.maxP95DurationMs`) } : {}),
+    };
+  }
+  return thresholds;
+}
+
+function benchmarkGateBaselines(value: unknown): Record<string, RdfModelPostgresBenchmarkGateBaseline> {
+  if (!isRecord(value)) {
+    throw new Error('fusionBenchmarkBaselines must be a JSON object');
+  }
+  const baselines: Record<string, RdfModelPostgresBenchmarkGateBaseline> = {};
+  for (const [caseName, baseline] of Object.entries(value)) {
+    if (!isRecord(baseline)) {
+      throw new Error(`fusionBenchmarkBaselines.${caseName} must be a JSON object`);
+    }
+    baselines[caseName] = {
+      ...(typeof baseline.label === 'string' ? { label: baseline.label } : {}),
+      ...(baseline.scannedRows !== undefined ? { scannedRows: nonNegativeNumber(baseline.scannedRows, `fusionBenchmarkBaselines.${caseName}.scannedRows`) } : {}),
+      ...(baseline.p95DurationMs !== undefined ? { p95DurationMs: nonNegativeNumber(baseline.p95DurationMs, `fusionBenchmarkBaselines.${caseName}.p95DurationMs`) } : {}),
+      ...(baseline.maxScannedRows !== undefined ? { maxScannedRows: nonNegativeNumber(baseline.maxScannedRows, `fusionBenchmarkBaselines.${caseName}.maxScannedRows`) } : {}),
+      ...(baseline.maxP95DurationMs !== undefined ? { maxP95DurationMs: nonNegativeNumber(baseline.maxP95DurationMs, `fusionBenchmarkBaselines.${caseName}.maxP95DurationMs`) } : {}),
+    };
+  }
+  return baselines;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function nonNegativeNumber(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative number`);
+  }
+  return value;
 }
 
 function positiveInteger(raw: string, name: string): number {
@@ -286,6 +644,12 @@ function isRdfPgAccelerationProfile(value: string): value is RdfPgAccelerationPr
     || value === 'pg-result-cache'
     || value === 'pg-hot-operators'
     || value === 'pg-custom-index';
+}
+
+function isPostgresRdfTextSearchBackend(value: string): value is PostgresRdfTextSearchBackend {
+  return value === 'posting'
+    || value === 'pg-native-fts'
+    || value === 'auto';
 }
 
 function isRdfBenchmarkCaseProfile(value: string): value is RdfBenchmarkCaseProfile {
@@ -339,7 +703,13 @@ function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
 function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEngine {
   const searchIndexes = rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile)
     ? {
-        textIndex: { path: ':memory:' },
+        textIndex: options.textSearchBackend === 'posting'
+          ? { path: ':memory:' }
+          : {
+              driver: options.driver,
+              ...(options.driver === 'pglite' ? {} : { connectionString: options.connectionString }),
+              textSearchBackend: options.textSearchBackend,
+            },
         vectorIndex: { path: ':memory:' },
       }
     : {};
@@ -416,7 +786,9 @@ function seedSummary(
     syntheticPodCount: options.syntheticPodCount,
     caseProfile: options.caseProfile,
     rdfAccelerationProfile: options.rdfAccelerationProfile,
+    textSearchBackend: options.textSearchBackend,
     deferPgCustomIndexBuild: options.deferPgCustomIndexBuild,
+    ...(options.benchmarkGateConfigSources ? { benchmarkGateConfigSources: options.benchmarkGateConfigSources } : {}),
     seedQuadCount,
     targetQuadCount: options.targetQuads,
     fullScale: rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuadCount),
@@ -469,6 +841,9 @@ function printSummary(summary: {
   console.log(`  case profile: ${summary.options.caseProfile}`);
   console.log(`  requested pg acceleration profile: ${summary.options.rdfAccelerationProfile}`);
   console.log(`  defer pg custom index build: ${summary.options.deferPgCustomIndexBuild}`);
+  console.log(`  serving thresholds configured: ${summary.options.servingRegressionThresholds ? 'yes' : 'no'}`);
+  console.log(`  fusion thresholds configured: ${summary.options.fusionBenchmarkThresholds ? 'yes' : 'no'}`);
+  console.log(`  fusion baselines configured: ${summary.options.fusionBenchmarkBaselines ? Object.keys(summary.options.fusionBenchmarkBaselines).length : 0}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
   console.log(`  target quads: ${summary.targetQuadCount}`);
   console.log(`  seed ingest duration ms: ${summary.seedIngestDurationMs}`);
@@ -566,13 +941,21 @@ Options:
   --caseProfile=VALUE              default|extreme|fusion|all. Default: default
                                    fusion seeds in-process text/vector indexes for PG facts join
   --rdfAccelerationProfile=VALUE   baseline|pg-result-cache|pg-hot-operators|pg-custom-index. Default: baseline
+  --textSearchBackend=VALUE        posting|pg-native-fts|auto. Default: posting
   --deferPgCustomIndexBuild        Build pg-custom-index indexes after seeding. Default for --driver=pg + pg-custom-index
   --noDeferPgCustomIndexBuild      Keep old eager custom-index build behavior
+  --benchmarkGateConfig=PATH       JSON file with serving/fusion thresholds and fusion baselines
+  --benchmarkGateConfigFromReport=PATH
+                                   Derive per-case thresholds and fusion baselines from a report artifact
+  --benchmarkGateBaselineReport=PATH
+                                   Read fusion baselines from a prior benchmark report artifact
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);
 }
 
-void main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

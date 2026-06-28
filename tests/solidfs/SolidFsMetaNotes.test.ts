@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Parser } from 'n3';
-import { buildFileMetadataNote, buildParserCoverageNote } from '../../src/solidfs';
+import { buildFileMetadataNote, buildReaderCoverageNote } from '../../src/solidfs';
 
 function parseTurtle(ttl: string): void {
   new Parser().parse(ttl);
@@ -28,23 +28,23 @@ describe('SolidFS .meta notes', () => {
     expect(ttl).not.toContain('cachePath');
   });
 
-  it('builds parseable parser coverage note with partial page coverage', () => {
-    const ttl = buildParserCoverageNote({
-      subject: '#parser-pdf-v1',
+  it('builds parseable reader coverage note with partial page coverage', () => {
+    const ttl = buildReaderCoverageNote({
+      subject: '#reader-pdf-v1',
       about: './report.pdf',
-      parserKind: 'pdf',
-      parserVersion: 'pdf-v1',
+      readerKind: 'pdf',
+      readerVersion: 'pdf-v1',
       coverageUnit: 'page',
       coveredRange: '1-12',
-      parsedUnits: 12,
+      readUnits: 12,
       totalUnits: 240,
       status: 'partial',
     });
 
     parseTurtle(ttl);
-    expect(ttl).toContain('udfs:noteKind "parser-coverage"');
+    expect(ttl).toContain('udfs:noteKind "reader-coverage"');
     expect(ttl).toContain('udfs:coveredRange "1-12"');
-    expect(ttl).toContain('udfs:parsedUnits 12');
+    expect(ttl).toContain('udfs:readUnits 12');
     expect(ttl).toContain('udfs:totalUnits 240');
   });
 
@@ -122,23 +122,23 @@ describe('SolidFS .meta notes', () => {
   });
 
   it.each([
-    ['parsedUnits', Number.NaN],
-    ['parsedUnits', Number.POSITIVE_INFINITY],
-    ['parsedUnits', -1],
-    ['parsedUnits', 1.5],
+    ['readUnits', Number.NaN],
+    ['readUnits', Number.POSITIVE_INFINITY],
+    ['readUnits', -1],
+    ['readUnits', 1.5],
     ['totalUnits', Number.NaN],
     ['totalUnits', Number.POSITIVE_INFINITY],
     ['totalUnits', -1],
     ['totalUnits', 1.5],
-  ])('rejects invalid parser coverage numeric field %s=%s', (field, value) => {
-    expect(() => buildParserCoverageNote({
-      subject: '#parser-pdf-v1',
+  ])('rejects invalid reader coverage numeric field %s=%s', (field, value) => {
+    expect(() => buildReaderCoverageNote({
+      subject: '#reader-pdf-v1',
       about: './report.pdf',
-      parserKind: 'pdf',
-      parserVersion: 'pdf-v1',
+      readerKind: 'pdf',
+      readerVersion: 'pdf-v1',
       coverageUnit: 'page',
       coveredRange: '1-12',
-      parsedUnits: field === 'parsedUnits' ? value : 12,
+      readUnits: field === 'readUnits' ? value : 12,
       totalUnits: field === 'totalUnits' ? value : 240,
       status: 'partial',
     })).toThrow(RangeError);

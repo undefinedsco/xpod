@@ -11,6 +11,8 @@ import type {
   RdfVectorSearchOptions,
   RdfVectorSearchResult,
   RdfVectorSourceInput,
+  RdfVectorSummaryLifecycleEntry,
+  RdfVectorSummaryLifecycleOptions,
 } from './types';
 import { appendPgRdfSearchSourceFilters } from './RdfSearchSourceFilter';
 import {
@@ -25,10 +27,12 @@ import {
   normalizeEmbedding,
   parseEmbedding,
   parsePath,
+  parseSummaryMetadata,
   scoredVectorDistance,
   vectorDistanceSql,
   vectorMagnitude,
   vectorScore,
+  vectorScoreComponents,
   vectorScoreSql,
   vectorSquaredDistanceSql,
   vectorThresholdSql,
@@ -50,6 +54,7 @@ export interface PostgresRdfVectorIndexOptions {
 
 interface RdfVectorSourceRow {
   id: number | string;
+  source_key: string | null;
   source: string;
   workspace: string;
   local_path: string | null;
@@ -110,15 +115,59 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
     const executor = this.requireExecutor();
     await executor.transaction(async (tx) => {
       const sourceId = await this.upsertSource(tx, source);
-      await tx.exec(`
-        DELETE FROM rdf_vector_components
-        WHERE chunk_id IN (
-          SELECT id FROM rdf_vector_chunks WHERE source_id = $1
-        )
-      `, [sourceId]);
-      await tx.exec('DELETE FROM rdf_vector_chunks WHERE source_id = $1', [sourceId]);
+      if (chunks.length === 0) {
+        await tx.exec(`
+          DELETE FROM rdf_vector_components
+          WHERE chunk_id IN (
+            SELECT id FROM rdf_vector_chunks WHERE source_id = $1
+          )
+        `, [sourceId]);
+        await tx.exec('DELETE FROM rdf_vector_chunks WHERE source_id = $1', [sourceId]);
+        return;
+      }
 
+      const deletedIdentities = new Set<string>();
       for (const chunk of chunks) {
+        const identity = normalizeVectorIdentity(chunk);
+        const identityKey = vectorIdentityKey(identity);
+        if (!deletedIdentities.has(identityKey)) {
+          await tx.exec(`
+            DELETE FROM rdf_vector_components
+            WHERE chunk_id IN (
+              SELECT id FROM rdf_vector_chunks
+              WHERE source_id = $1
+                AND provider = $2
+                AND model = $3
+                AND model_version = $4
+                AND input_kind = $5
+                AND projection_policy_version = $6
+            )
+          `, [
+            sourceId,
+            identity.provider,
+            identity.model,
+            identity.modelVersion,
+            identity.inputKind,
+            identity.projectionPolicyVersion,
+          ]);
+          await tx.exec(`
+            DELETE FROM rdf_vector_chunks
+            WHERE source_id = $1
+              AND provider = $2
+              AND model = $3
+              AND model_version = $4
+              AND input_kind = $5
+              AND projection_policy_version = $6
+          `, [
+            sourceId,
+            identity.provider,
+            identity.model,
+            identity.modelVersion,
+            identity.inputKind,
+            identity.projectionPolicyVersion,
+          ]);
+          deletedIdentities.add(identityKey);
+        }
         const embedding = normalizeEmbedding(chunk.embedding);
         const rows = await tx.query<{ id: number | string }>(`
           INSERT INTO rdf_vector_chunks (
@@ -132,12 +181,18 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
             start_offset,
             end_offset,
             embedding_json,
+            summary_metadata,
             dimensions,
             magnitude,
+            provider,
             model,
+            model_version,
+            input_kind,
+            input_hash,
+            projection_policy_version,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
           RETURNING id
         `, [
           sourceId,
@@ -150,9 +205,15 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
           chunk.startOffset,
           chunk.endOffset,
           JSON.stringify(embedding),
+          chunk.summaryMetadata ? JSON.stringify(chunk.summaryMetadata) : null,
           embedding.length,
           vectorMagnitude(embedding),
-          chunk.model ?? '',
+          identity.provider,
+          identity.model,
+          identity.modelVersion,
+          identity.inputKind,
+          chunk.inputHash ?? '',
+          identity.projectionPolicyVersion,
         ]);
         const chunkId = Number(rows[0]?.id);
         if (!Number.isFinite(chunkId)) {
@@ -202,7 +263,60 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       const row = normalizeVectorScoredChunkRow(rawRow);
       const rowEmbedding = parseEmbedding(row.embedding_json);
       const distance = scoredVectorDistance(row, metric);
-      return toSearchResult(row, rowEmbedding, vectorScore(distance, metric), distance);
+      return toSearchResult(row, rowEmbedding, metric, vectorMagnitude(embedding), vectorScore(distance, metric), distance);
+    });
+  }
+
+  public async summaryLifecycle(options: RdfVectorSummaryLifecycleOptions = {}): Promise<RdfVectorSummaryLifecycleEntry[]> {
+    const params: unknown[] = [];
+    const conditions = ['chunk.summary_metadata IS NOT NULL'];
+    if (options.workspace) {
+      conditions.push(`source.workspace = ${addParam(params, options.workspace)}`);
+    }
+    appendPgRdfSearchSourceFilters(options, conditions, params);
+    appendPgVectorIdentityFilters(options, conditions, params);
+
+    const limitSql = options.limit === undefined ? '' : `LIMIT ${addParam(params, Math.max(0, options.limit), 'integer')}`;
+    const rows = await this.requireExecutor().query<RdfVectorChunkRow>(`
+      SELECT
+        chunk.id,
+        chunk.source_id,
+        source.source_key,
+        source.source,
+        source.workspace,
+        source.local_path,
+        source.content_type,
+        source.source_version,
+        source.source_hash,
+        chunk.chunk_key,
+        chunk.ordinal,
+        chunk.level,
+        chunk.heading,
+        chunk.path,
+        chunk.content,
+        chunk.start_offset,
+        chunk.end_offset,
+        chunk.embedding_json,
+        chunk.summary_metadata,
+        chunk.dimensions,
+        chunk.magnitude,
+        chunk.provider,
+        chunk.model,
+        chunk.model_version,
+        chunk.input_kind,
+        chunk.input_hash,
+        chunk.projection_policy_version,
+        chunk.updated_at
+      FROM rdf_vector_chunks chunk
+      JOIN rdf_vector_sources source ON source.id = chunk.source_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY source.source ASC, chunk.ordinal ASC, chunk.chunk_key ASC
+      ${limitSql}
+    `, params);
+
+    return rows.flatMap((rawRow) => {
+      const entry = toSummaryLifecycleEntry(normalizeVectorChunkRow(rawRow));
+      return entry ? [entry] : [];
     });
   }
 
@@ -241,9 +355,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       conditions.push(`source.workspace = ${addParam(params, options.workspace)}`);
     }
     appendPgRdfSearchSourceFilters(options, conditions, params);
-    if (options.model !== undefined) {
-      conditions.push(`chunk.model = ${addParam(params, options.model)}`);
-    }
+    appendPgVectorIdentityFilters(options, conditions, params);
 
     const rows = await this.requireExecutor().query<{ count: number | string }>(`
       SELECT COUNT(*) AS count
@@ -276,7 +388,11 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
 
   public async modelDistribution(): Promise<RdfVectorModelDistribution[]> {
     const rows = await this.requireExecutor().query<{
+      provider: string;
       model: string;
+      model_version: string;
+      input_kind: string;
+      projection_policy_version: string;
       dimensions: number | string;
       source_count: number | string;
       chunk_count: number | string;
@@ -285,7 +401,11 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       average_magnitude: number | string | null;
     }>(`
       SELECT
+        chunk.provider,
         chunk.model,
+        chunk.model_version,
+        chunk.input_kind,
+        chunk.projection_policy_version,
         chunk.dimensions,
         COUNT(DISTINCT chunk.source_id) AS source_count,
         COUNT(*) AS chunk_count,
@@ -293,12 +413,16 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         MAX(chunk.magnitude) AS max_magnitude,
         AVG(chunk.magnitude) AS average_magnitude
       FROM rdf_vector_chunks chunk
-      GROUP BY chunk.model, chunk.dimensions
-      ORDER BY chunk_count DESC, source_count DESC, chunk.model ASC, chunk.dimensions ASC
+      GROUP BY chunk.provider, chunk.model, chunk.model_version, chunk.input_kind, chunk.projection_policy_version, chunk.dimensions
+      ORDER BY chunk_count DESC, source_count DESC, chunk.provider ASC, chunk.model ASC, chunk.model_version ASC, chunk.input_kind ASC, chunk.projection_policy_version ASC, chunk.dimensions ASC
     `);
 
     return rows.map((row) => ({
+      provider: row.provider || undefined,
       model: row.model,
+      modelVersion: row.model_version || undefined,
+      inputKind: row.input_kind || undefined,
+      projectionPolicyVersion: row.projection_policy_version || undefined,
       dimensions: Number(row.dimensions),
       sourceCount: Number(row.source_count),
       chunkCount: Number(row.chunk_count),
@@ -334,6 +458,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
     await this.requireExecutor().exec(`
       CREATE TABLE IF NOT EXISTS rdf_vector_sources (
         id BIGSERIAL PRIMARY KEY,
+        source_key TEXT,
         source TEXT NOT NULL UNIQUE,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -355,11 +480,26 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         start_offset INTEGER NOT NULL,
         end_offset INTEGER NOT NULL,
         embedding_json TEXT NOT NULL,
+        summary_metadata TEXT,
         dimensions INTEGER NOT NULL,
         magnitude DOUBLE PRECISION NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL,
+        model_version TEXT NOT NULL DEFAULT '',
+        input_kind TEXT NOT NULL DEFAULT '',
+        input_hash TEXT NOT NULL DEFAULT '',
+        projection_policy_version TEXT NOT NULL DEFAULT '',
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        UNIQUE (source_id, chunk_key)
+        UNIQUE (
+          source_id,
+          chunk_key,
+          provider,
+          model,
+          model_version,
+          input_kind,
+          projection_policy_version,
+          input_hash
+        )
       );
 
       CREATE TABLE IF NOT EXISTS rdf_vector_components (
@@ -373,10 +513,79 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       CREATE INDEX IF NOT EXISTS rdf_vector_sources_workspace ON rdf_vector_sources(workspace);
       CREATE INDEX IF NOT EXISTS rdf_vector_sources_source ON rdf_vector_sources(source);
       CREATE INDEX IF NOT EXISTS rdf_vector_chunks_source ON rdf_vector_chunks(source_id, ordinal);
-      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_model_dimensions ON rdf_vector_chunks(model, dimensions);
       CREATE INDEX IF NOT EXISTS rdf_vector_components_dimension ON rdf_vector_components(dimension, chunk_id);
     `);
+    await this.ensureSourceKeyColumn();
+    await this.ensureVectorIdentityColumns();
     await this.backfillVectorComponents();
+  }
+
+  private async ensureSourceKeyColumn(): Promise<void> {
+    await this.requireExecutor().exec('ALTER TABLE rdf_vector_sources ADD COLUMN IF NOT EXISTS source_key TEXT');
+    await this.requireExecutor().exec('UPDATE rdf_vector_sources SET source_key = source WHERE source_key IS NULL OR source_key = \'\'');
+  }
+
+  private async ensureVectorIdentityColumns(): Promise<void> {
+    await this.requireExecutor().exec(`
+      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT '';
+      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS model_version TEXT NOT NULL DEFAULT '';
+      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS input_kind TEXT NOT NULL DEFAULT '';
+      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS input_hash TEXT NOT NULL DEFAULT '';
+      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS projection_policy_version TEXT NOT NULL DEFAULT '';
+      ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS summary_metadata TEXT;
+      UPDATE rdf_vector_chunks
+      SET
+        provider = COALESCE(provider, ''),
+        model_version = COALESCE(model_version, ''),
+        input_kind = COALESCE(input_kind, ''),
+        input_hash = COALESCE(input_hash, ''),
+        projection_policy_version = COALESCE(projection_policy_version, '');
+    `);
+    await this.ensureVectorChunkIdentityUniqueConstraint();
+    await this.requireExecutor().exec(`
+      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_model_dimensions
+      ON rdf_vector_chunks(provider, model, model_version, input_kind, projection_policy_version, dimensions);
+    `);
+  }
+
+  private async ensureVectorChunkIdentityUniqueConstraint(): Promise<void> {
+    const rows = await this.requireExecutor().query<{ conname: string; columns: string }>(`
+      SELECT
+        constraint_info.conname,
+        string_agg(attribute.attname, ',' ORDER BY constraint_key.ordinality) AS columns
+      FROM pg_constraint constraint_info
+      JOIN unnest(constraint_info.conkey) WITH ORDINALITY AS constraint_key(attnum, ordinality) ON TRUE
+      JOIN pg_attribute attribute
+        ON attribute.attrelid = constraint_info.conrelid
+       AND attribute.attnum = constraint_key.attnum
+      WHERE constraint_info.conrelid = 'rdf_vector_chunks'::regclass
+        AND constraint_info.contype = 'u'
+      GROUP BY constraint_info.conname
+    `);
+    let hasIdentityUnique = false;
+    for (const row of rows) {
+      if (row.columns === 'source_id,chunk_key') {
+        await this.requireExecutor().exec(`ALTER TABLE rdf_vector_chunks DROP CONSTRAINT ${quotePgIdentifier(row.conname)}`);
+      } else if (row.columns === 'source_id,chunk_key,provider,model,model_version,input_kind,projection_policy_version,input_hash') {
+        hasIdentityUnique = true;
+      }
+    }
+    if (hasIdentityUnique) {
+      return;
+    }
+    await this.requireExecutor().exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS rdf_vector_chunks_identity_unique
+      ON rdf_vector_chunks (
+        source_id,
+        chunk_key,
+        provider,
+        model,
+        model_version,
+        input_kind,
+        projection_policy_version,
+        input_hash
+      )
+    `);
   }
 
   private async backfillVectorComponents(): Promise<void> {
@@ -413,6 +622,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   private async upsertSource(tx: PostgresRdfSqlExecutor, source: RdfVectorSourceInput): Promise<number> {
     const rows = await tx.query<RdfVectorSourceRow>(`
       INSERT INTO rdf_vector_sources (
+        source_key,
         source,
         workspace,
         local_path,
@@ -421,9 +631,10 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         source_hash,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, now())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, now())
       ON CONFLICT (source)
       DO UPDATE SET
+        source_key = COALESCE(EXCLUDED.source_key, rdf_vector_sources.source_key, EXCLUDED.source),
         workspace = EXCLUDED.workspace,
         local_path = EXCLUDED.local_path,
         content_type = EXCLUDED.content_type,
@@ -432,6 +643,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
         updated_at = EXCLUDED.updated_at
       RETURNING id
     `, [
+      source.sourceKey ?? source.source,
       source.source,
       source.workspace,
       source.localPath ?? null,
@@ -464,6 +676,59 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       throw new Error('PostgresRdfVectorIndex is not open');
     }
     return this.executor;
+  }
+}
+
+interface NormalizedVectorIdentity {
+  provider: string;
+  model: string;
+  modelVersion: string;
+  inputKind: string;
+  projectionPolicyVersion: string;
+}
+
+function normalizeVectorIdentity(chunk: RdfVectorChunkInput): NormalizedVectorIdentity {
+  return {
+    provider: chunk.provider ?? '',
+    model: chunk.model ?? '',
+    modelVersion: chunk.modelVersion ?? '',
+    inputKind: chunk.inputKind ?? '',
+    projectionPolicyVersion: chunk.projectionPolicyVersion ?? '',
+  };
+}
+
+function vectorIdentityKey(identity: NormalizedVectorIdentity): string {
+  return [
+    identity.provider,
+    identity.model,
+    identity.modelVersion,
+    identity.inputKind,
+    identity.projectionPolicyVersion,
+  ].join('\u0000');
+}
+
+function appendPgVectorIdentityFilters(
+  options: RdfVectorSearchOptions | RdfVectorSummaryLifecycleOptions,
+  conditions: string[],
+  params: unknown[],
+): void {
+  if (options.provider !== undefined) {
+    conditions.push(`chunk.provider = ${addParam(params, options.provider)}`);
+  }
+  if (options.model !== undefined) {
+    conditions.push(`chunk.model = ${addParam(params, options.model)}`);
+  }
+  if (options.modelVersion !== undefined) {
+    conditions.push(`chunk.model_version = ${addParam(params, options.modelVersion)}`);
+  }
+  if (options.inputKind !== undefined) {
+    conditions.push(`chunk.input_kind = ${addParam(params, options.inputKind)}`);
+  }
+  if (options.inputHash !== undefined) {
+    conditions.push(`chunk.input_hash = ${addParam(params, options.inputHash)}`);
+  }
+  if (options.projectionPolicyVersion !== undefined) {
+    conditions.push(`chunk.projection_policy_version = ${addParam(params, options.projectionPolicyVersion)}`);
   }
 }
 
@@ -534,9 +799,7 @@ function buildPgVectorScoredBaseQuery(
     conditions.push(`source.workspace = ${addParam(params, options.workspace)}`);
   }
   appendPgRdfSearchSourceFilters(options, conditions, params);
-  if (options.model !== undefined) {
-    conditions.push(`chunk.model = ${addParam(params, options.model)}`);
-  }
+  appendPgVectorIdentityFilters(options, conditions, params);
 
   const thresholdWhere = options.threshold === undefined
     ? ''
@@ -551,6 +814,7 @@ function buildPgVectorScoredBaseQuery(
         SELECT
           chunk.id,
           chunk.source_id,
+          source.source_key,
           source.source,
           source.workspace,
           source.local_path,
@@ -566,9 +830,15 @@ function buildPgVectorScoredBaseQuery(
           chunk.start_offset,
           chunk.end_offset,
           chunk.embedding_json,
+          chunk.summary_metadata,
           chunk.dimensions,
           chunk.magnitude,
+          chunk.provider,
           chunk.model,
+          chunk.model_version,
+          chunk.input_kind,
+          chunk.input_hash,
+          chunk.projection_policy_version,
           chunk.updated_at,
           SUM(component.value * query_vector.value) AS dot_product
         FROM rdf_vector_chunks chunk
@@ -578,6 +848,7 @@ function buildPgVectorScoredBaseQuery(
         WHERE ${conditions.join(' AND ')}
         GROUP BY
           chunk.id,
+          source.source_key,
           source.source,
           source.workspace,
           source.local_path,
@@ -632,9 +903,15 @@ function addParam(params: unknown[], value: unknown, cast?: string): string {
   return `$${params.length}${cast ? `::${cast}` : ''}`;
 }
 
+function quotePgIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
 function toSearchResult(
-  row: RdfVectorChunkRow,
+  row: RdfVectorScoredChunkRow,
   embedding: number[],
+  metric: RdfVectorDistanceMetric,
+  queryMagnitude: number,
   score: number,
   distance: number,
 ): RdfVectorSearchResult {
@@ -645,7 +922,9 @@ function toSearchResult(
     contentType: row.content_type ?? undefined,
     sourceVersion: row.source_version ?? undefined,
     sourceHash: row.source_hash ?? undefined,
+    sourceKey: row.source_key || row.source,
     chunkKey: row.chunk_key,
+    retrievalPointKey: row.chunk_key,
     ordinal: row.ordinal,
     level: row.level,
     heading: row.heading ?? undefined,
@@ -654,13 +933,54 @@ function toSearchResult(
     startOffset: row.start_offset,
     endOffset: row.end_offset,
     embedding,
+    provider: row.provider || undefined,
     model: row.model || undefined,
+    modelVersion: row.model_version || undefined,
+    inputKind: row.input_kind || undefined,
+    inputHash: row.input_hash || undefined,
+    projectionPolicyVersion: row.projection_policy_version || undefined,
+    summaryMetadata: parseSummaryMetadata(row.summary_metadata),
+    scoreComponents: vectorScoreComponents(row, metric, queryMagnitude, score, distance),
     score,
     distance,
   };
 }
 
-function normalizeVectorScoredChunkRow(row: RdfVectorScoredChunkRow): RdfVectorScoredChunkRow {
+function toSummaryLifecycleEntry(row: RdfVectorChunkRow): RdfVectorSummaryLifecycleEntry | undefined {
+  const summaryMetadata = parseSummaryMetadata(row.summary_metadata);
+  if (!summaryMetadata) {
+    return undefined;
+  }
+
+  return {
+    source: row.source,
+    workspace: row.workspace,
+    localPath: row.local_path ?? undefined,
+    contentType: row.content_type ?? undefined,
+    sourceVersion: row.source_version ?? undefined,
+    sourceHash: row.source_hash ?? undefined,
+    sourceKey: row.source_key || row.source,
+    chunkKey: row.chunk_key,
+    retrievalPointKey: row.chunk_key,
+    ordinal: row.ordinal,
+    level: row.level,
+    heading: row.heading ?? undefined,
+    path: parsePath(row.path),
+    content: row.content,
+    startOffset: row.start_offset,
+    endOffset: row.end_offset,
+    provider: row.provider || undefined,
+    model: row.model || undefined,
+    modelVersion: row.model_version || undefined,
+    inputKind: row.input_kind || undefined,
+    inputHash: row.input_hash || undefined,
+    projectionPolicyVersion: row.projection_policy_version || undefined,
+    summaryMetadata,
+    updatedAt: formatPgTimestamp(row.updated_at),
+  };
+}
+
+function normalizeVectorChunkRow(row: RdfVectorChunkRow): RdfVectorChunkRow {
   return {
     ...row,
     id: Number(row.id),
@@ -671,9 +991,22 @@ function normalizeVectorScoredChunkRow(row: RdfVectorScoredChunkRow): RdfVectorS
     end_offset: Number(row.end_offset),
     dimensions: Number(row.dimensions),
     magnitude: Number(row.magnitude),
+  };
+}
+
+function normalizeVectorScoredChunkRow(row: RdfVectorScoredChunkRow): RdfVectorScoredChunkRow {
+  return {
+    ...normalizeVectorChunkRow(row),
     dot_product: Number(row.dot_product),
     vector_score: Number(row.vector_score),
     vector_distance: row.vector_distance === null ? null : Number(row.vector_distance),
     vector_distance_squared: row.vector_distance_squared === null ? null : Number(row.vector_distance_squared),
   };
+}
+
+function formatPgTimestamp(value: unknown): string {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return String(value);
 }

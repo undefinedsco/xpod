@@ -1,5 +1,15 @@
 # Vector API Server 集成指南
 
+> **状态：历史方案 / 非当前主线。** 本文保留早期 `/-/vector` 外部 API Server
+> 方案，便于理解演进背景。当前主线以
+> [RDF Engine Spec](rdf-engine-spec.md) 的 `RdfTextIndex` / `RdfVectorIndex`
+> 和 [Progressive Semantic Index](progressive-semantic-index.md) 为准：
+> Xpod 在 server-owned Pod 内维护 text/vector 派生索引，embedding provider /
+> model / credential 复用用户 Pod 的 AI config。原始密钥不写入索引、Run record
+> 或 reader/vector cache；执行时通过
+> [Extension Runtime and Credential Resolution](extension-runtime-and-credential-resolution.md)
+> 的 `CredentialResolver` just-in-time 解析。
+
 本文档说明外部 API Server 需要实现的功能，以配合 xpod server 的向量存储服务完成语义搜索能力。
 
 ## 为什么采用这种架构？

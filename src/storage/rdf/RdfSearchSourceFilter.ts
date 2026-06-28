@@ -1,6 +1,7 @@
 export interface RdfSearchSourceFilter {
   source?: string;
   sourcePrefix?: string;
+  localPathPrefix?: string;
   allowedSources?: string[];
   deniedSources?: string[];
   deniedSourcePrefixes?: string[];
@@ -11,6 +12,7 @@ export function appendRdfSearchSourceFilters(
   conditions: string[],
   params: unknown[],
   sourceColumn = 'source.source',
+  localPathColumn = 'source.local_path',
 ): void {
   if (filter.source) {
     conditions.push(`${sourceColumn} = ?`);
@@ -19,6 +21,10 @@ export function appendRdfSearchSourceFilters(
   if (filter.sourcePrefix) {
     conditions.push(`${sourceColumn} >= ? AND ${sourceColumn} < ?`);
     params.push(filter.sourcePrefix, `${filter.sourcePrefix}\uffff`);
+  }
+  if (filter.localPathPrefix) {
+    conditions.push(`${localPathColumn} >= ? AND ${localPathColumn} < ?`);
+    params.push(filter.localPathPrefix, `${filter.localPathPrefix}\uffff`);
   }
 
   const allowedSources = uniqueStrings(filter.allowedSources);
@@ -49,6 +55,7 @@ export function appendPgRdfSearchSourceFilters(
   conditions: string[],
   params: unknown[],
   sourceColumn = 'source.source',
+  localPathColumn = 'source.local_path',
 ): void {
   const placeholder = (value: unknown): string => {
     params.push(value);
@@ -60,6 +67,9 @@ export function appendPgRdfSearchSourceFilters(
   }
   if (filter.sourcePrefix) {
     conditions.push(`${sourceColumn} >= ${placeholder(filter.sourcePrefix)} AND ${sourceColumn} < ${placeholder(`${filter.sourcePrefix}\uffff`)}`);
+  }
+  if (filter.localPathPrefix) {
+    conditions.push(`${localPathColumn} >= ${placeholder(filter.localPathPrefix)} AND ${localPathColumn} < ${placeholder(`${filter.localPathPrefix}\uffff`)}`);
   }
 
   const allowedSources = uniqueStrings(filter.allowedSources);

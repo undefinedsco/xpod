@@ -488,6 +488,60 @@ export interface RdfCardinalityDistributions {
   subjectPredicates: RdfSubjectPredicateCardinality[];
 }
 
+export interface RdfSchemaExplorerOptions {
+  query?: string;
+  graphPrefix?: string;
+  limit?: number;
+}
+
+export interface RdfSchemaExplorerTermEntry {
+  term: RdfCardinalityTerm;
+  subjectQuadCount: number;
+  predicateQuadCount: number;
+  objectQuadCount: number;
+  graphQuadCount: number;
+}
+
+export interface RdfSchemaExplorerResult {
+  graphs: RdfGraphCardinality[];
+  predicates: RdfPredicateCardinality[];
+  classes: RdfPredicateObjectCardinality[];
+  terms: RdfSchemaExplorerTermEntry[];
+}
+
+export type RdfPathSearchDirection = 'out' | 'in' | 'both';
+export type RdfPathEdgeDirection = 'out' | 'in';
+
+export interface RdfBoundedPathSearchOptions {
+  start: Term;
+  target?: Term;
+  direction?: RdfPathSearchDirection;
+  predicates?: Term[];
+  graphPrefix?: string;
+  maxDepth?: number;
+  maxPaths?: number;
+}
+
+export interface RdfBoundedPathEdge {
+  graph: Term;
+  subject: Term;
+  predicate: Term;
+  object: Term;
+  direction: RdfPathEdgeDirection;
+}
+
+export interface RdfBoundedPath {
+  nodes: Term[];
+  edges: RdfBoundedPathEdge[];
+}
+
+export interface RdfBoundedPathSearchResult {
+  paths: RdfBoundedPath[];
+  truncated: boolean;
+  scannedEdges: number;
+  maxDepth: number;
+}
+
 export interface RdfQuadIndexScanResult {
   quads: Quad[];
   metrics: RdfIndexMetrics;
@@ -829,9 +883,65 @@ export interface RdfValuesBindingSource {
   rows: RdfBindingRow[];
 }
 
+export interface RdfMaterializedViewBindingSource {
+  key: string;
+  version?: string | number;
+  scope?: RdfQueryCacheScope;
+  variables?: string[];
+  limit?: number;
+  offset?: number;
+  required?: boolean;
+}
+
+export interface RdfMaterializedViewBuildInput {
+  key: string;
+  version?: string | number;
+  query: RdfQuery;
+  variables?: string[];
+  scope?: RdfQueryCacheScope;
+  activate?: boolean;
+  maxRows?: number;
+}
+
+export interface RdfMaterializedViewBuildResult {
+  key: string;
+  version: string;
+  scopeHash: string;
+  factsDataVersion: number;
+  variables: string[];
+  rowCount: number;
+  active: boolean;
+}
+
+export interface RdfMaterializedViewReadResult extends RdfValuesBindingSource {
+  key: string;
+  version: string;
+  scopeHash: string;
+  factsDataVersion: number;
+  rowCount: number;
+  active: boolean;
+  createdAt: string;
+  activatedAt?: string;
+}
+
+export interface RdfMaterializedViewActivationInput extends RdfMaterializedViewBindingSource {
+  factsDataVersion?: number;
+}
+
+export interface RdfMaterializedViewActivationResult {
+  key: string;
+  version: string;
+  scopeHash: string;
+  factsDataVersion: number;
+  activated: boolean;
+  previousFactsDataVersion?: number;
+}
+
 export interface RdfSearchScope {
   workspace?: string;
   sourcePrefix?: string;
+  localPathPrefix?: string;
+  accessBasePath?: string;
   allowedSources?: string[];
   deniedSources?: string[];
   deniedSourcePrefixes?: string[];
@@ -840,17 +950,24 @@ export interface RdfSearchScope {
 export interface RdfTextSearchPattern {
   query: string;
   scope?: RdfSearchScope;
+  entities?: string[];
   limit?: number;
   offset?: number;
+  perSourceLimit?: number;
   orderBy?: RdfTextSearchOrder[];
   source?: string;
   chunk?: string;
   content?: string;
   heading?: string;
   score?: string;
+  scoreComponents?: string;
   workspace?: string;
   localPath?: string;
   contentType?: string;
+  sourceKey?: string;
+  retrievalPoint?: string;
+  retrievalKind?: string;
+  entityProvenance?: string;
   ordinal?: string;
   level?: string;
   startOffset?: string;
@@ -876,7 +993,12 @@ export interface RdfVectorSearchOrder {
 export interface RdfVectorSearchPattern {
   embedding: number[];
   metric?: RdfVectorDistanceMetric;
+  vectorProvider?: string;
   vectorModel?: string;
+  vectorModelVersion?: string;
+  vectorInputKind?: string;
+  vectorInputHash?: string;
+  vectorProjectionPolicyVersion?: string;
   scope?: RdfSearchScope;
   limit?: number;
   offset?: number;
@@ -888,14 +1010,22 @@ export interface RdfVectorSearchPattern {
   heading?: string;
   score?: string;
   distance?: string;
+  scoreComponents?: string;
   workspace?: string;
   localPath?: string;
   contentType?: string;
+  sourceKey?: string;
+  retrievalPoint?: string;
   ordinal?: string;
   level?: string;
   startOffset?: string;
   endOffset?: string;
+  provider?: string;
   model?: string;
+  modelVersion?: string;
+  inputKind?: string;
+  inputHash?: string;
+  projectionPolicyVersion?: string;
 }
 
 export type RdfQueryCacheMode = 'default' | 'bypass' | 'refresh';
@@ -931,6 +1061,7 @@ export interface RdfQueryCacheOptions {
 export interface RdfQuery {
   patterns: RdfQueryPattern[];
   values?: RdfValuesBindingSource[];
+  materializedViews?: RdfMaterializedViewBindingSource[];
   textSearch?: RdfTextSearchPattern[];
   vectorSearch?: RdfVectorSearchPattern[];
   unions?: RdfUnionQueryGroup[];
@@ -1220,6 +1351,12 @@ export interface RdfEngineLike {
   scan(query: RdfPatternQuery): RdfQuadIndexScanResult | Promise<RdfQuadIndexScanResult>;
   query(query: RdfQuery): RdfQueryResult | Promise<RdfQueryResult>;
   rewriteTerms?(input: RdfTermRewriteInput): RdfTermRewriteResult | Promise<RdfTermRewriteResult>;
+  materializeView?(input: RdfMaterializedViewBuildInput): RdfMaterializedViewBuildResult | Promise<RdfMaterializedViewBuildResult>;
+  readMaterializedView?(source: RdfMaterializedViewBindingSource): RdfMaterializedViewReadResult | undefined | Promise<RdfMaterializedViewReadResult | undefined>;
+  activateMaterializedView?(source: RdfMaterializedViewActivationInput): RdfMaterializedViewActivationResult | Promise<RdfMaterializedViewActivationResult>;
+  deleteMaterializedView?(source: RdfMaterializedViewBindingSource): number | Promise<number>;
+  exploreSchema?(options?: RdfSchemaExplorerOptions): RdfSchemaExplorerResult | Promise<RdfSchemaExplorerResult>;
+  searchPaths?(options: RdfBoundedPathSearchOptions): RdfBoundedPathSearchResult | Promise<RdfBoundedPathSearchResult>;
   invalidateQueryResultCache?(scope?: RdfQueryCacheScope): number | Promise<number>;
   refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): RdfDerivedIndexRefreshResult | Promise<RdfDerivedIndexRefreshResult>;
   storageStats(options?: RdfStorageStatsOptions): RdfEngineStorageStats | Promise<RdfEngineStorageStats>;
@@ -1255,6 +1392,8 @@ export interface RdfShadowScanResult {
 
 export interface RdfTextIndexOptions {
   path: string;
+  maxSourceBytes?: number;
+  maxChunksPerSource?: number;
 }
 
 export type MaybePromise<T> = T | Promise<T>;
@@ -1263,7 +1402,12 @@ export interface RdfTextIndexLike {
   open(): MaybePromise<void>;
   close(): MaybePromise<void>;
   clear(): MaybePromise<void>;
+  schemaVersion(): MaybePromise<number>;
+  sourceMetadata(source: string): MaybePromise<RdfTextSourceMetadata | undefined>;
+  recordRebuildStatus(input: RdfTextRebuildStatusInput): MaybePromise<void>;
+  rebuildStatus(source: string): MaybePromise<RdfTextRebuildStatus | undefined>;
   indexText(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): MaybePromise<void>;
+  moveSource(oldSource: string, next: RdfTextSourceInput): MaybePromise<number>;
   deleteSource(source: string): MaybePromise<number>;
   search(options: RdfTextSearchOptions): MaybePromise<RdfTextSearchResult[]>;
   estimateSearchCardinality(options: RdfTextSearchOptions): MaybePromise<RdfSearchCardinalityEstimate>;
@@ -1276,6 +1420,7 @@ export interface RdfTextIndexSyncLike extends RdfTextIndexLike {
   close(): void;
   clear(): void;
   indexText(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): void;
+  moveSource(oldSource: string, next: RdfTextSourceInput): number;
   deleteSource(source: string): number;
   search(options: RdfTextSearchOptions): RdfTextSearchResult[];
   estimateSearchCardinality(options: RdfTextSearchOptions): RdfSearchCardinalityEstimate;
@@ -1284,6 +1429,7 @@ export interface RdfTextIndexSyncLike extends RdfTextIndexLike {
 }
 
 export interface RdfTextSourceInput {
+  sourceKey?: string;
   source: string;
   workspace: string;
   localPath?: string;
@@ -1292,8 +1438,27 @@ export interface RdfTextSourceInput {
   sourceHash?: string;
 }
 
+export interface RdfTextSourceMetadata extends RdfTextSourceInput {
+  updatedAt: string;
+}
+
+export type RdfTextRebuildStatusKind = 'indexed' | 'skipped' | 'capped' | 'error';
+
+export interface RdfTextRebuildStatusInput extends RdfTextSourceInput {
+  status: RdfTextRebuildStatusKind;
+  reason?: string;
+  message?: string;
+}
+
+export interface RdfTextRebuildStatus extends RdfTextRebuildStatusInput {
+  updatedAt: string;
+}
+
+export type RdfTextRetrievalKind = 'entity-card' | 'field-chunk' | 'file-chunk' | 'folder-card';
+
 export interface RdfTextChunkInput {
   chunkKey: string;
+  retrievalKind?: RdfTextRetrievalKind;
   ordinal: number;
   level: number;
   heading?: string;
@@ -1301,11 +1466,35 @@ export interface RdfTextChunkInput {
   content: string;
   startOffset: number;
   endOffset: number;
+  entities?: RdfTextEntityInput[];
+}
+
+export interface RdfTextEntityInput {
+  entity: string;
+  predicate?: string;
+  label?: string;
+  value?: string;
+  datatype?: string;
+  language?: string;
+  policyRole?: string;
+  occurrences?: number;
+}
+
+export interface RdfTextEntityMention {
+  entity: string;
+  predicate?: string;
+  label?: string;
+  value?: string;
+  datatype?: string;
+  language?: string;
+  policyRole?: string;
+  occurrences: number;
 }
 
 export interface RdfTextChunkRow {
   id: number;
   source_id: number;
+  source_key: string | null;
   source: string;
   workspace: string;
   local_path: string | null;
@@ -1313,6 +1502,7 @@ export interface RdfTextChunkRow {
   source_version: string | null;
   source_hash: string | null;
   chunk_key: string;
+  retrieval_kind: string | null;
   ordinal: number;
   level: number;
   heading: string | null;
@@ -1327,14 +1517,17 @@ export interface RdfTextChunkRow {
 
 export interface RdfTextSearchOptions {
   query: string;
+  entities?: string[];
   source?: string;
   workspace?: string;
   sourcePrefix?: string;
+  localPathPrefix?: string;
   allowedSources?: string[];
   deniedSources?: string[];
   deniedSourcePrefixes?: string[];
   limit?: number;
   offset?: number;
+  perSourceLimit?: number;
   orderBy?: RdfTextSearchOrder[];
 }
 
@@ -1345,7 +1538,10 @@ export interface RdfTextSearchResult {
   contentType?: string;
   sourceVersion?: string;
   sourceHash?: string;
+  sourceKey: string;
   chunkKey: string;
+  retrievalPointKey: string;
+  retrievalKind: RdfTextRetrievalKind;
   ordinal: number;
   level: number;
   heading?: string;
@@ -1353,18 +1549,31 @@ export interface RdfTextSearchResult {
   content: string;
   startOffset: number;
   endOffset: number;
+  scoreComponents?: RdfTextScoreComponents;
+  score: number;
+  entities: RdfTextEntityMention[];
+}
+
+export interface RdfTextScoreComponents {
+  sourceType: 'text';
+  algorithm: 'occurrence-heading-boost' | 'pg-ts-rank-cd';
+  normalizedQuery: string;
+  occurrenceScore: number;
+  headingBoost: number;
+  nativeRank?: number;
   score: number;
 }
 
 export interface RdfSearchCardinalityEstimate {
   rows: number;
-  source: 'text-normalized-scan' | 'text-term-posting' | 'vector-candidate-count' | 'vector-component-score';
+  source: 'text-normalized-scan' | 'text-term-posting' | 'pg-native-fts' | 'vector-candidate-count' | 'vector-component-score';
   indexChoice: string;
 }
 
 export interface RdfTextIndexStats {
   sourceCount: number;
   chunkCount: number;
+  entityMentionCount: number;
   databaseBytes: number;
   termDocumentFrequency: RdfTextTermDocumentFrequency[];
 }
@@ -1388,6 +1597,7 @@ export interface RdfVectorIndexLike {
   indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): MaybePromise<void>;
   deleteSource(source: string): MaybePromise<number>;
   search(options: RdfVectorSearchOptions): MaybePromise<RdfVectorSearchResult[]>;
+  summaryLifecycle(options?: RdfVectorSummaryLifecycleOptions): MaybePromise<RdfVectorSummaryLifecycleEntry[]>;
   estimateSearchCardinality(options: RdfVectorSearchOptions): MaybePromise<RdfSearchCardinalityEstimate>;
   stats(): MaybePromise<RdfVectorIndexStats>;
   modelDistribution(): MaybePromise<RdfVectorModelDistribution[]>;
@@ -1400,12 +1610,14 @@ export interface RdfVectorIndexSyncLike extends RdfVectorIndexLike {
   indexVector(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): void;
   deleteSource(source: string): number;
   search(options: RdfVectorSearchOptions): RdfVectorSearchResult[];
+  summaryLifecycle(options?: RdfVectorSummaryLifecycleOptions): RdfVectorSummaryLifecycleEntry[];
   estimateSearchCardinality(options: RdfVectorSearchOptions): RdfSearchCardinalityEstimate;
   stats(): RdfVectorIndexStats;
   modelDistribution(): RdfVectorModelDistribution[];
 }
 
 export interface RdfVectorSourceInput {
+  sourceKey?: string;
   source: string;
   workspace: string;
   localPath?: string;
@@ -1419,17 +1631,24 @@ export interface RdfVectorChunkInput {
   ordinal: number;
   level: number;
   embedding: number[];
+  provider?: string;
   model?: string;
+  modelVersion?: string;
+  inputKind?: string;
+  inputHash?: string;
+  projectionPolicyVersion?: string;
   heading?: string;
   path?: string[];
   content: string;
   startOffset: number;
   endOffset: number;
+  summaryMetadata?: RdfVectorSummaryMetadata;
 }
 
 export interface RdfVectorChunkRow {
   id: number;
   source_id: number;
+  source_key: string;
   source: string;
   workspace: string;
   local_path: string | null;
@@ -1445,19 +1664,31 @@ export interface RdfVectorChunkRow {
   start_offset: number;
   end_offset: number;
   embedding_json: string;
+  summary_metadata: string | null;
   dimensions: number;
   magnitude: number;
+  provider: string;
   model: string;
+  model_version: string;
+  input_kind: string;
+  input_hash: string;
+  projection_policy_version: string;
   updated_at: string;
 }
 
 export interface RdfVectorSearchOptions {
   embedding: number[];
   metric?: RdfVectorDistanceMetric;
+  provider?: string;
   model?: string;
+  modelVersion?: string;
+  inputKind?: string;
+  inputHash?: string;
+  projectionPolicyVersion?: string;
   source?: string;
   workspace?: string;
   sourcePrefix?: string;
+  localPathPrefix?: string;
   allowedSources?: string[];
   deniedSources?: string[];
   deniedSourcePrefixes?: string[];
@@ -1474,7 +1705,9 @@ export interface RdfVectorSearchResult {
   contentType?: string;
   sourceVersion?: string;
   sourceHash?: string;
+  sourceKey: string;
   chunkKey: string;
+  retrievalPointKey: string;
   ordinal: number;
   level: number;
   heading?: string;
@@ -1483,9 +1716,83 @@ export interface RdfVectorSearchResult {
   startOffset: number;
   endOffset: number;
   embedding: number[];
+  provider?: string;
   model?: string;
+  modelVersion?: string;
+  inputKind?: string;
+  inputHash?: string;
+  projectionPolicyVersion?: string;
+  summaryMetadata?: RdfVectorSummaryMetadata;
+  scoreComponents?: RdfVectorScoreComponents;
   score: number;
   distance: number;
+}
+
+export interface RdfVectorSummaryLifecycleOptions {
+  source?: string;
+  workspace?: string;
+  sourcePrefix?: string;
+  localPathPrefix?: string;
+  allowedSources?: string[];
+  deniedSources?: string[];
+  deniedSourcePrefixes?: string[];
+  provider?: string;
+  model?: string;
+  modelVersion?: string;
+  inputKind?: string;
+  inputHash?: string;
+  projectionPolicyVersion?: string;
+  limit?: number;
+}
+
+export interface RdfVectorSummaryLifecycleEntry {
+  source: string;
+  workspace: string;
+  localPath?: string;
+  contentType?: string;
+  sourceVersion?: string;
+  sourceHash?: string;
+  sourceKey: string;
+  chunkKey: string;
+  retrievalPointKey: string;
+  ordinal: number;
+  level: number;
+  heading?: string;
+  path: string[];
+  content: string;
+  startOffset: number;
+  endOffset: number;
+  provider?: string;
+  model?: string;
+  modelVersion?: string;
+  inputKind?: string;
+  inputHash?: string;
+  projectionPolicyVersion?: string;
+  summaryMetadata: RdfVectorSummaryMetadata;
+  updatedAt: string;
+}
+
+export interface RdfVectorScoreComponents {
+  sourceType: 'vector';
+  metric: RdfVectorDistanceMetric;
+  dimensions: number;
+  score: number;
+  distance: number;
+  dotProduct: number;
+  queryMagnitude: number;
+  candidateMagnitude: number;
+  distanceSquared?: number;
+}
+
+export interface RdfVectorSummaryMetadata {
+  status: 'summarized';
+  provider: string;
+  model: string;
+  promptVersion: string;
+  sourceHash?: string;
+  originalChars: number;
+  summaryChars: number;
+  rounds: number;
 }
 
 export interface RdfVectorIndexStats {
@@ -1497,7 +1804,11 @@ export interface RdfVectorIndexStats {
 }
 
 export interface RdfVectorModelDistribution {
+  provider?: string;
   model: string;
+  modelVersion?: string;
+  inputKind?: string;
+  projectionPolicyVersion?: string;
   dimensions: number;
   sourceCount: number;
   chunkCount: number;

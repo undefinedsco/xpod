@@ -83,7 +83,7 @@ async function main(): Promise<void> {
     });
     if (searchFusion) {
       engine.open();
-      seedRdfModelsSearchFusionIndexes(engine);
+      await seedRdfModelsSearchFusionIndexes(engine);
     }
     const baseline = runRdfModelsBenchmark(engine, {
       scale: options.scale,

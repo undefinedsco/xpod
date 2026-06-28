@@ -32,6 +32,29 @@ P0 是 cloud 默认可上线路径必须满足的能力；P1 是性能、运维�
 | P1 | PG text/vector persistent backend | Done | `PostgresRdfTextIndex` / `PostgresRdfVectorIndex` 已把 text source、chunk、posting、vector component 持久化到 PG/PGlite，并通过 `PostgresRdfEngine.options_textIndex/options_vectorIndex` 接入 cloud 配置；`MixDataAccessor`、SolidFS syncer、`RdfSearchIndexingService` 和 Run context retrieval 已接到同一产品边界。 |
 | P1 | Benchmark report ingest 到 dashboard | Done | `RdfBenchmarkReportCatalog` 会从受控 `.test-data/rdf-*` / `rdf-engine` report 目录读取 `models-*.json`，抽取 seed、profile、plan/concurrency gate、COPY ingest、refresh、cold/warm p50/p95 和 storage ratio 摘要；`RdfStorageStatsService.snapshot()` 将 `benchmarkReports` 带给 `/v1/rdf/stats` 与 `/api/admin/rdf/stats`，dashboard RDF 页展示最近 report 表，不再只能看 live `storageStats()`。 |
 
+
+## 2026-06 Product-grade acceleration slice
+
+本 slice 吸收的是 QLever/RDF database 的执行层经验，不新增公开 backend，也不把数据迁移到第二套事实源。
+现有 facts / RDF-3X baseline 仍是对比基线；新增能力全部按 derived/rebuildable 处理。
+
+| Item | Status | Storage / migration note | Verification gate |
+| --- | --- | --- | --- |
+| n-column materialized views | Implemented | 新增 `rdf_materialized_views` / `rdf_materialized_view_cells`；只存 query binding 派生行，按 `facts_data_version` 版本化，不需要业务数据迁移。 | `tests/storage/rdf/PostgresRdfEngine.test.ts` 的 materialized view case 覆盖 build、inactive rebuild、atomic activate、scope 隔离和 query join。 |
+| entity-aware text index | Implemented | `rdf_text_entities` 是 chunk -> RDF entity/predicate mention bridge；source re-index 会删除旧 mentions 后重写。SQLite/PG text index 都支持。 | `RdfTextIndex.test.ts` 与 `PostgresRdfTextIndex.test.ts` 覆盖 text+entity、entity-only、all-entities 和 stale mention 删除。 |
+| autocomplete/schema explorer | Implemented | 无新增 durable schema；直接从 facts / term dictionary / cardinality 统计读取。 | `PostgresRdfEngine.test.ts` schema explorer case 覆盖 query、graphPrefix、graphs/predicates/classes/terms。 |
+| versioned rebuild + atomic cutover | Implemented | Materialized view 可先 `activate:false` 构建新 facts version，确认后 `activateMaterializedView` 单事务切换 active build。旧 active 在 cutover 前继续服务。 | 同 materialized view case 验证 cutover 前后 query 结果。 |
+| bounded path search | Implemented | 无新增存储；BFS 直接读 facts，受 `maxDepth` / `maxPaths` / graphPrefix / predicate whitelist 限制。 | `PostgresRdfEngine.test.ts` bounded path case 覆盖 out/in、predicate、graph-prefix 和 depth limit。 |
+| W3C compliance/deviation gate | Implemented | `docs/rdf-sparql-compliance-gate.json` 作为机器可读 manifest；不是运行时事实。 | `RdfComplianceGate.test.ts` 校验 manifest 与 `sparqlCorrectionForCapability`，`bun run test:w3c` 作为目标子集 gate。 |
+| GeoSPARQL deferred policy | Implemented | 不建 spatial index，不扩展 facts schema。 | manifest 和 correction 均要求 `route_external_executor`，直到有具体产品 workload。 |
+
+迁移判断：
+
+- 这批改动不要求从业务数据迁移内容；新增 PG tables/indexes 都是 `CREATE TABLE/INDEX IF NOT EXISTS` 的派生结构。
+- 如果已有本地/测试索引状态不可信，可以直接删除 RDF index 派生库或执行现有 reset/rebuild 流程，从 SolidFS/RDF facts 重建。
+- materialized view 和 text/vector/search cache 都不得被当作事实源；schema/version 不兼容时可以清空重建。
+- 发布验证必须同时跑 targeted tests、`bun run build:ts --pretty false` 和 `bun run test:w3c`。若只跑窄 case，不能声明完整 W3C/deviation gate 已完成。
+
 ## Benchmark Evidence
 
 ### SQLite / File-backed RDF-3X
