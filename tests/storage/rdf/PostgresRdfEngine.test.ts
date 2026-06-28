@@ -7380,6 +7380,9 @@ describe('PostgresRdfEngine', () => {
       expect(textPlan).toBeGreaterThanOrEqual(0);
       expect(rdfPlan).toBeGreaterThanOrEqual(0);
       expect(textPlan).toBeLessThan(rdfPlan);
+      const firstChoice = result.metrics.plan.find((entry) => entry.startsWith('PostgresPlannerSourceChoice(')) ?? '';
+      expect(firstChoice).toMatch(/cpu:\d+/);
+      expect(firstChoice).toMatch(/io:\d+/);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

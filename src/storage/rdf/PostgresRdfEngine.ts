@@ -410,6 +410,8 @@ interface PgRequiredSourceChoice {
   estimateRows: number;
   outputRows: number;
   costRows: number;
+  cpuCostRows: number;
+  ioCostRows: number;
   futureCostRows: number;
   futureCostBounded: boolean;
   totalCostRows: number;
@@ -4457,6 +4459,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
         return 0;
       }
       const connected = !hasBoundVariables || pgRequiredSourceConnected(source, boundVariables);
+      const estimateRows = await this.estimatePgRequiredSourceRows(source, bindings);
+      const outputRows = connected ? estimateRows : estimateRows * inputRows;
+      const immediateCost = estimatePgPlannerImmediateCostRows(source, estimateRows, outputRows, inputRows);
       const choice: PgRequiredSourceChoice = {
         source,
         originalOrder: 0,
@@ -4464,12 +4469,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
         disconnectedPenalty: hasBoundVariables && !connected ? 1 : 0,
         priority: pgRequiredSourcePriority(source),
         inputRows,
-        estimateRows: inputRows,
-        outputRows: inputRows,
-        costRows: inputRows,
+        estimateRows,
+        outputRows,
+        costRows: immediateCost.costRows,
+        cpuCostRows: immediateCost.cpuCostRows,
+        ioCostRows: immediateCost.ioCostRows,
         futureCostRows: 0,
         futureCostBounded: false,
-        totalCostRows: inputRows,
+        totalCostRows: immediateCost.totalCostRows,
       };
       metrics.plan.push(describePgPlannerSourceChoice(choice, [choice]));
       return 0;
@@ -4478,6 +4485,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       const connected = !hasBoundVariables || pgRequiredSourceConnected(source, boundVariables);
       const estimateRows = await this.estimatePgRequiredSourceRows(source, bindings);
       const outputRows = connected ? estimateRows : estimateRows * inputRows;
+      const immediateCost = estimatePgPlannerImmediateCostRows(source, estimateRows, outputRows, inputRows);
       return {
         source,
         originalOrder,
@@ -4487,10 +4495,12 @@ export class PostgresRdfEngine implements RdfEngineLike {
         inputRows,
         estimateRows,
         outputRows,
-        costRows: outputRows,
+        costRows: immediateCost.costRows,
+        cpuCostRows: immediateCost.cpuCostRows,
+        ioCostRows: immediateCost.ioCostRows,
         futureCostRows: 0,
         futureCostBounded: false,
-        totalCostRows: outputRows,
+        totalCostRows: immediateCost.totalCostRows,
       };
     }));
     const ranked = rankedWithoutFuture.map((choice): PgRequiredSourceChoice => {
@@ -4499,7 +4509,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ...choice,
         futureCostRows: futureCost.costRows,
         futureCostBounded: futureCost.bounded,
-        totalCostRows: choice.costRows + futureCost.costRows,
+        totalCostRows: choice.costRows + choice.cpuCostRows + choice.ioCostRows + futureCost.costRows,
       };
     });
     const sorted = ranked
@@ -12893,6 +12903,7 @@ function estimatePgPlannerSuffixCostRows(
   for (const candidate of considered) {
     const connected = pgRequiredSourceConnected(candidate.source, boundVariables);
     const outputRows = estimatePgPlannerAbstractOutputRows(candidate.source, candidate.estimateRows, inputRows, connected);
+    const immediateCost = estimatePgPlannerImmediateCostRows(candidate.source, candidate.estimateRows, outputRows, inputRows);
     const nextBoundVariables = new Set(boundVariables);
     for (const variable of pgVariablesInRequiredSource(candidate.source)) {
       nextBoundVariables.add(variable);
@@ -12905,7 +12916,7 @@ function estimatePgPlannerSuffixCostRows(
       depthRemaining - 1,
     );
     bounded = bounded || suffixCost.bounded;
-    const cost = outputRows + suffixCost.costRows;
+    const cost = immediateCost.totalCostRows + suffixCost.costRows;
     bestCost = Math.min(bestCost, cost);
   }
   return {
@@ -12931,6 +12942,44 @@ function estimatePgPlannerAbstractOutputRows(
   return safeEstimateRows;
 }
 
+function estimatePgPlannerImmediateCostRows(
+  source: PgRequiredSource,
+  estimateRows: number,
+  outputRows: number,
+  inputRows: number,
+): { costRows: number; cpuCostRows: number; ioCostRows: number; totalCostRows: number } {
+  const safeEstimateRows = Math.max(0, estimateRows);
+  const safeOutputRows = Math.max(0, outputRows);
+  const safeInputRows = Math.max(1, inputRows);
+  const costRows = safeOutputRows;
+  let cpuCostRows = 0;
+  let ioCostRows = 0;
+  switch (source.kind) {
+    case 'values':
+      cpuCostRows = safeInputRows * safeEstimateRows;
+      ioCostRows = 0;
+      break;
+    case 'pattern':
+      cpuCostRows = safeOutputRows * 0.1;
+      ioCostRows = safeEstimateRows;
+      break;
+    case 'text':
+      cpuCostRows = safeEstimateRows * 0.75 + safeOutputRows * 0.25;
+      ioCostRows = safeEstimateRows > 0 ? Math.max(1, safeEstimateRows * 0.2) : 0;
+      break;
+    case 'vector':
+      cpuCostRows = safeEstimateRows * 1.25 + safeOutputRows * 0.25;
+      ioCostRows = safeEstimateRows > 0 ? Math.max(1, safeEstimateRows * 0.4) : 0;
+      break;
+  }
+  return {
+    costRows,
+    cpuCostRows,
+    ioCostRows,
+    totalCostRows: costRows + cpuCostRows + ioCostRows,
+  };
+}
+
 function estimatePgPlannerGreedySuffixCostRows(
   candidates: PgRequiredSourceChoice[],
   boundVariables: Set<string>,
@@ -12947,7 +12996,7 @@ function estimatePgPlannerGreedySuffixCostRows(
     }
     const connected = pgRequiredSourceConnected(candidate.source, currentBoundVariables);
     const outputRows = estimatePgPlannerAbstractOutputRows(candidate.source, candidate.estimateRows, currentInputRows, connected);
-    totalCostRows += outputRows;
+    totalCostRows += estimatePgPlannerImmediateCostRows(candidate.source, candidate.estimateRows, outputRows, currentInputRows).totalCostRows;
     currentInputRows = Math.max(1, outputRows);
     for (const variable of pgVariablesInRequiredSource(candidate.source)) {
       currentBoundVariables.add(variable);
@@ -12967,8 +13016,11 @@ function rankPgPlannerLookaheadCandidates(
     const rightConnected = pgRequiredSourceConnected(right.source, boundVariables);
     const leftOutputRows = estimatePgPlannerAbstractOutputRows(left.source, left.estimateRows, inputRows, leftConnected);
     const rightOutputRows = estimatePgPlannerAbstractOutputRows(right.source, right.estimateRows, inputRows, rightConnected);
+    const leftCost = estimatePgPlannerImmediateCostRows(left.source, left.estimateRows, leftOutputRows, inputRows);
+    const rightCost = estimatePgPlannerImmediateCostRows(right.source, right.estimateRows, rightOutputRows, inputRows);
     return left.priority - right.priority
       || Number(!leftConnected) - Number(!rightConnected)
+      || leftCost.totalCostRows - rightCost.totalCostRows
       || leftOutputRows - rightOutputRows
       || left.estimateRows - right.estimateRows
       || left.originalOrder - right.originalOrder;
@@ -13020,7 +13072,7 @@ function describePgPlannerSourceChoice(
   candidates: PgRequiredSourceChoice[],
 ): string {
   return `PostgresPlannerSourceChoice(selected:${describePgRequiredSourceName(selected.source)} candidates:${candidates.map((candidate) => (
-    `${describePgRequiredSourceName(candidate.source)}[priority:${candidate.priority},connected:${candidate.connected},input:${candidate.inputRows},rows:${Math.max(0, Math.ceil(candidate.estimateRows))},output:${Math.max(0, Math.ceil(candidate.outputRows))},cost:${Math.max(0, Math.ceil(candidate.costRows))},future:${Math.max(0, Math.ceil(candidate.futureCostRows))},lookahead:${candidate.futureCostBounded ? 'bounded' : 'full'},total:${Math.max(0, Math.ceil(candidate.totalCostRows))},penalty:${candidate.disconnectedPenalty}]`
+    `${describePgRequiredSourceName(candidate.source)}[priority:${candidate.priority},connected:${candidate.connected},input:${candidate.inputRows},rows:${Math.max(0, Math.ceil(candidate.estimateRows))},output:${Math.max(0, Math.ceil(candidate.outputRows))},cost:${Math.max(0, Math.ceil(candidate.costRows))},cpu:${Math.max(0, Math.ceil(candidate.cpuCostRows))},io:${Math.max(0, Math.ceil(candidate.ioCostRows))},future:${Math.max(0, Math.ceil(candidate.futureCostRows))},lookahead:${candidate.futureCostBounded ? 'bounded' : 'full'},total:${Math.max(0, Math.ceil(candidate.totalCostRows))},penalty:${candidate.disconnectedPenalty}]`
   )).join(',')})`;
 }
 

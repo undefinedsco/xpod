@@ -34,7 +34,7 @@ Observed results:
 - Product QLever-like native-search gate: matched true. This gate includes the
   product P3 requirements and additionally requires native PostgreSQL FTS/vector
   plan evidence.
-- Current QLever-like focused suite: 7 files passed, 145 tests passed.
+- Current QLever-like focused suite: 7 files passed, 145 tests passed, including planner-visible CPU/IO cost markers.
 - Integration suite: lite passed 17 files / 87 tests with 1 skipped; full passed 4 files / 40 tests.
 - TypeScript build: passed.
 - Whitespace diff check: passed.
@@ -126,12 +126,14 @@ Remaining boundary: summary lifecycle is currently derived from vector rows; the
 | Serving-query regressions are caught by benchmark gates. | `servingRegressionGate` is required by `--productQLeverLikePlannerGate`; current artifact matched 49 serving cases. | Covered. |
 | Storage overhead and index-build cost are reported through `performanceCosts`. | Current artifact includes `storageOverhead`, `indexBuild`, and `coldStart`. | Covered. |
 
-Remaining boundary: source ordering is now adaptive and marker-visible across RDF, text, vector, and VALUES sources with
-input/output/cost/future-fanout evidence, including a bounded multi-step
-suffix-cost model. The planner now emits `lookahead:full` or
+Remaining boundary: source ordering is now adaptive and marker-visible across
+RDF, text, vector, and VALUES sources with
+input/output/row-cost/CPU-cost/IO-cost/future-fanout evidence, including a
+bounded multi-step suffix-cost model. The planner now emits `lookahead:full` or
 `lookahead:bounded`; bounded suffixes use a greedy tail estimate instead of
 enumerating every source permutation. It is still not a native QLever engine:
-CPU cost, IO cost, and full statistics-driven join distribution modeling remain
+CPU/IO cost is now represented as a first-pass source-cost dimension, but full
+statistics-driven join distribution modeling and calibrated CPU/IO weights remain
 future work. The stricter native-search gate `--productQLeverLikePlannerGate`
 now passes and requires product P3 evidence plus
 `textSearchBackend=pg-native-fts`, native FTS plan evidence, and native vector
