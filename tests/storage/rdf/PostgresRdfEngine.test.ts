@@ -7727,6 +7727,60 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('orders selective PostgreSQL text search before broad VALUES sources by estimate', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-values-estimate-order-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const selected = namedNode('https://pod.example/alice/projects/demo/selected-values.md');
+
+    try {
+      await engine.open();
+      const docs = Array.from({ length: 50 }, (_value, index) => (
+        index === 0
+          ? selected
+          : namedNode(`https://pod.example/alice/projects/demo/values-doc-${index}.md`)
+      ));
+      await engine.indexTextSource({
+        source: selected.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'selected-values.md',
+        contentType: 'text/markdown',
+      }, '# Selected\n\nRare planner values marker.\n');
+
+      const result = await engine.query({
+        patterns: [],
+        values: [{
+          variables: ['source'],
+          rows: docs.map((source) => ({ source })),
+        }],
+        textSearch: [{
+          query: 'rare planner values marker',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings.map((binding) => binding.source.value)).toEqual([selected.value]);
+      const textPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('TextSearch('));
+      const valuesPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('PostgresFactsValues('));
+      expect(textPlan).toBeGreaterThanOrEqual(0);
+      expect(valuesPlan).toBeGreaterThanOrEqual(0);
+      expect(textPlan).toBeLessThan(valuesPlan);
+      const firstChoice = result.metrics.plan.find((entry) => entry.startsWith('PostgresPlannerSourceChoice(')) ?? '';
+      expect(firstChoice).toContain('selected:TextMatchSource#0');
+      expect(firstChoice).toContain('ValuesSource#0');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('prefers connected PostgreSQL text sources over disconnected RDF sources after bindings', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-adaptive-fusion-order-'));
     const engine = new PostgresRdfEngine({

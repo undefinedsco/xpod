@@ -396,6 +396,7 @@ interface PgFactsQueryOptions {
 
 type PgRequiredSource =
   | { kind: 'pattern'; pattern: RdfQueryPattern; originalIndex: number }
+  | { kind: 'values'; source: RdfValuesBindingSource; originalIndex: number }
   | { kind: 'text'; pattern: RdfTextSearchPattern; originalIndex: number }
   | { kind: 'vector'; pattern: RdfVectorSearchPattern; originalIndex: number };
 
@@ -4536,6 +4537,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
           ? Math.ceil(rows * (bindings.length / sample.length))
           : rows;
       }
+      case 'values': {
+        const sample = (bindings.length > 0 ? bindings : [{}]).slice(0, PG_PLANNER_SAMPLE_BINDINGS);
+        let rows = 0;
+        for (const binding of sample) {
+          for (const row of source.source.rows) {
+            if (mergeTupleValuesBinding(binding, source.source.variables, row)) {
+              rows++;
+            }
+          }
+        }
+        return bindings.length > sample.length && sample.length > 0
+          ? Math.ceil(rows * (bindings.length / sample.length))
+          : rows;
+      }
       case 'text': {
         const boundRows = await this.estimatePgSearchRowsByBoundSources(source, bindings);
         if (boundRows !== undefined) {
@@ -4591,15 +4606,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const aggregates = queryAggregates(query);
     let bindings: RdfBindingRow[] = [{}];
 
-    for (const values of query.values ?? []) {
-      bindings = joinValuesSource(bindings, values);
-      metrics.scannedRows += values.rows.length;
-      metrics.plan.push(`PostgresFactsValues(${values.variables.map((variableName) => `?${variableName}`).join(',')})`);
-      if (bindings.length === 0) {
-        break;
-      }
-    }
-
     if (bindings.length > 0) {
       const requiredSources = buildPgRequiredSources(requiredPatterns, query);
       while (requiredSources.length > 0) {
@@ -4652,6 +4658,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
             ));
             metrics.plan.push(...describePgSearchScopeSourceEstimates(source.pattern, source.originalIndex, scannedRows, scannedRows, connected));
             metrics.plan.push(...describeVectorSearchPlan(source.pattern));
+            break;
+          }
+          case 'values': {
+            const connected = pgRequiredSourceConnected(source, pgBoundVariables(bindings));
+            bindings = joinValuesSource(bindings, source.source);
+            metrics.scannedRows += source.source.rows.length;
+            metrics.plan.push(describePgSourceEstimate(
+              `ValuesSource#${source.originalIndex}`,
+              bindings.length,
+              source.source.rows.length,
+              'none',
+              connected,
+            ));
+            metrics.plan.push(`PostgresFactsValues(${source.source.variables.map((variableName) => `?${variableName}`).join(',')})`);
             break;
           }
         }
@@ -12791,6 +12811,11 @@ function buildPgRequiredSources(
   query: RdfQuery,
 ): PgRequiredSource[] {
   return [
+    ...(query.values ?? []).map((source, originalIndex): PgRequiredSource => ({
+      kind: 'values',
+      source,
+      originalIndex,
+    })),
     ...requiredPatterns.map((pattern, originalIndex): PgRequiredSource => ({
       kind: 'pattern',
       pattern,
@@ -12954,6 +12979,9 @@ function pgVariablesInRequiredSource(source: PgRequiredSource): string[] {
   if (source.kind === 'pattern') {
     return variablesInPattern(source.pattern);
   }
+  if (source.kind === 'values') {
+    return source.source.variables;
+  }
   return uniqueStrings([
     source.pattern.source,
     source.pattern.chunk,
@@ -13000,6 +13028,8 @@ function describePgRequiredSourceName(source: PgRequiredSource): string {
   switch (source.kind) {
     case 'pattern':
       return `RdfBgpSource#${source.originalIndex}`;
+    case 'values':
+      return `ValuesSource#${source.originalIndex}`;
     case 'text':
       return `TextMatchSource#${source.originalIndex}`;
     case 'vector':
@@ -13142,7 +13172,7 @@ function collectBindExpressionVariables(expression: RdfBindExpression, variables
 }
 
 function pgRequiredSourcePriority(source: PgRequiredSource): number {
-  if (source.kind !== 'pattern' && hasSearchWindow(source.pattern)) {
+  if ((source.kind === 'text' || source.kind === 'vector') && hasSearchWindow(source.pattern)) {
     return 0;
   }
   return 1;

@@ -34,7 +34,7 @@ Observed results:
 - Product QLever-like native-search gate: matched true. This gate includes the
   product P3 requirements and additionally requires native PostgreSQL FTS/vector
   plan evidence.
-- Current QLever-like focused suite: 7 files passed, 144 tests passed.
+- Current QLever-like focused suite: 7 files passed, 145 tests passed.
 - Integration suite: lite passed 17 files / 87 tests with 1 skipped; full passed 4 files / 40 tests.
 - TypeScript build: passed.
 - Whitespace diff check: passed.
@@ -121,12 +121,12 @@ Remaining boundary: summary lifecycle is currently derived from vector rows; the
 | Acceptance item | Evidence | Status |
 | --- | --- | --- |
 | Benchmarks show improvement or bounded non-regression over physical-source baseline for broad search + RDF/path/ACL + top-k. | Current native-search QLever-like artifact: broad fusion p95 1,974 ms vs native baseline 1,801 ms, scanned rows unchanged at 1,600, with native FTS/vector evidence. | Covered for the current synthetic product-scale gate. |
-| Planner metrics identify sources, source-choice rationale, pushed filters, and top-k. | `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `PathScopeSource`, `AclScopeSource`, `SourceEstimate`, `PostgresPlannerSourceChoice`, `TopKPushdown`, and report gates. | Covered. |
+| Planner metrics identify sources, source-choice rationale, pushed filters, and top-k. | `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `ValuesSource`, `PathScopeSource`, `AclScopeSource`, `SourceEstimate`, `PostgresPlannerSourceChoice`, `TopKPushdown`, and report gates. | Covered. |
 | No planner path bypasses authorization before final ranking. | Focused unauthorized-higher-score tests plus product gate hard-filter requirement. | Covered. |
 | Serving-query regressions are caught by benchmark gates. | `servingRegressionGate` is required by `--productQLeverLikePlannerGate`; current artifact matched 49 serving cases. | Covered. |
 | Storage overhead and index-build cost are reported through `performanceCosts`. | Current artifact includes `storageOverhead`, `indexBuild`, and `coldStart`. | Covered. |
 
-Remaining boundary: source ordering is now adaptive and marker-visible with
+Remaining boundary: source ordering is now adaptive and marker-visible across RDF, text, vector, and VALUES sources with
 input/output/cost/future-fanout evidence, including a bounded multi-step
 suffix-cost model. The planner now emits `lookahead:full` or
 `lookahead:bounded`; bounded suffixes use a greedy tail estimate instead of
