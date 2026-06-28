@@ -31,6 +31,7 @@ export interface RdfBenchmarkReportGateOptions {
   requireFusionHardFilterEvidence?: boolean;
   requireFusionBatchedBroadCandidateJoinEvidence?: boolean;
   requireNativeTextFtsEvidence?: boolean;
+  requireNativeVectorEvidence?: boolean;
 }
 
 export interface RdfBenchmarkReportGateResult {
@@ -79,6 +80,7 @@ export interface RequiredRdfBenchmarkReportGateOptions {
   requireFusionHardFilterEvidence: boolean;
   requireFusionBatchedBroadCandidateJoinEvidence: boolean;
   requireNativeTextFtsEvidence: boolean;
+  requireNativeVectorEvidence: boolean;
 }
 
 const DEFAULT_MIN_TARGET_QUADS = 1_000_000;
@@ -138,6 +140,7 @@ function normalizeGateOptions(options: RdfBenchmarkReportGateOptions): RequiredR
     requireFusionHardFilterEvidence: options.requireFusionHardFilterEvidence ?? false,
     requireFusionBatchedBroadCandidateJoinEvidence: options.requireFusionBatchedBroadCandidateJoinEvidence ?? false,
     requireNativeTextFtsEvidence: options.requireNativeTextFtsEvidence ?? false,
+    requireNativeVectorEvidence: options.requireNativeVectorEvidence ?? false,
   };
 }
 
@@ -230,6 +233,9 @@ function evaluateCandidate(
   }
   if (required.requireNativeTextFtsEvidence) {
     requirePositive(failedReasons, 'native text FTS evidence', report.nativeTextFtsCaseCount);
+  }
+  if (required.requireNativeVectorEvidence) {
+    requirePositive(failedReasons, 'native vector evidence', report.nativeVectorCaseCount);
   }
   if (required.requireCopyIngest) {
     requirePositive(failedReasons, 'copyRows', report.copyRows);

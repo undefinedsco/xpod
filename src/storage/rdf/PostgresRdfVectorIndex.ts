@@ -71,6 +71,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   private pgPool: any = null;
   private sharedPoolConfig: Omit<PostgresRdfVectorIndexOptions, 'driver' | 'pool' | 'autoOpen' | 'dataDir' | 'defaultMetric'> | null = null;
   private initializing: Promise<void> | null = null;
+  private readonly ensuredPgVectorIndexes = new Set<string>();
 
   public constructor(options: PostgresRdfVectorIndexOptions = {}) {
     this.options = {
@@ -169,6 +170,34 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
           deletedIdentities.add(identityKey);
         }
         const embedding = normalizeEmbedding(chunk.embedding);
+        const usePgVector = this.usesPgVectorBackend();
+        const embeddingJson = JSON.stringify(embedding);
+        const pgVectorColumnSql = usePgVector ? 'embedding_vector,' : '';
+        const pgVectorValueSql = usePgVector ? ', $20::vector' : '';
+        const insertParams: unknown[] = [
+          sourceId,
+          chunk.chunkKey,
+          chunk.ordinal,
+          chunk.level,
+          chunk.heading || null,
+          JSON.stringify(chunk.path ?? []),
+          chunk.content,
+          chunk.startOffset,
+          chunk.endOffset,
+          embeddingJson,
+          chunk.summaryMetadata ? JSON.stringify(chunk.summaryMetadata) : null,
+          embedding.length,
+          vectorMagnitude(embedding),
+          identity.provider,
+          identity.model,
+          identity.modelVersion,
+          identity.inputKind,
+          chunk.inputHash ?? '',
+          identity.projectionPolicyVersion,
+        ];
+        if (usePgVector) {
+          insertParams.push(formatPgVectorLiteral(embedding));
+        }
         const rows = await tx.query<{ id: number | string }>(`
           INSERT INTO rdf_vector_chunks (
             source_id,
@@ -190,36 +219,19 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
             input_kind,
             input_hash,
             projection_policy_version,
+            ${pgVectorColumnSql}
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19${pgVectorValueSql}, now())
           RETURNING id
-        `, [
-          sourceId,
-          chunk.chunkKey,
-          chunk.ordinal,
-          chunk.level,
-          chunk.heading || null,
-          JSON.stringify(chunk.path ?? []),
-          chunk.content,
-          chunk.startOffset,
-          chunk.endOffset,
-          JSON.stringify(embedding),
-          chunk.summaryMetadata ? JSON.stringify(chunk.summaryMetadata) : null,
-          embedding.length,
-          vectorMagnitude(embedding),
-          identity.provider,
-          identity.model,
-          identity.modelVersion,
-          identity.inputKind,
-          chunk.inputHash ?? '',
-          identity.projectionPolicyVersion,
-        ]);
+        `, insertParams);
         const chunkId = Number(rows[0]?.id);
         if (!Number.isFinite(chunkId)) {
           throw new Error(`Failed to insert RDF vector chunk for source: ${source.source}`);
         }
-        await insertVectorComponents(tx, chunkId, embedding);
+        if (!this.usesPgVectorBackend()) {
+          await insertVectorComponents(tx, chunkId, embedding);
+        }
       }
     });
   }
@@ -257,13 +269,17 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
       return [];
     }
 
-    const scoredQuery = buildPgVectorScoredRowsQuery(embedding, metric, options);
+    await this.ensurePgVectorSearchIndex(embedding.length, metric);
+    const scoredQuery = this.usesPgVectorBackend()
+      ? buildPgVectorNativeScoredRowsQuery(embedding, metric, options)
+      : buildPgVectorScoredRowsQuery(embedding, metric, options);
     const rows = await this.requireExecutor().query<RdfVectorScoredChunkRow>(scoredQuery.sql, scoredQuery.params);
+    const backend = this.usesPgVectorBackend() ? 'pg-vector' : 'component';
     return rows.map((rawRow) => {
       const row = normalizeVectorScoredChunkRow(rawRow);
       const rowEmbedding = parseEmbedding(row.embedding_json);
       const distance = scoredVectorDistance(row, metric);
-      return toSearchResult(row, rowEmbedding, metric, vectorMagnitude(embedding), vectorScore(distance, metric), distance);
+      return toSearchResult(row, rowEmbedding, metric, vectorMagnitude(embedding), vectorScore(distance, metric), distance, backend);
     });
   }
 
@@ -340,12 +356,15 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
     }
 
     if (options.threshold !== undefined) {
-      const countQuery = buildPgVectorScoredCountQuery(embedding, metric, options);
+      const usesPgVector = this.usesPgVectorBackend();
+      const countQuery = usesPgVector
+        ? buildPgVectorNativeScoredCountQuery(embedding, metric, options)
+        : buildPgVectorScoredCountQuery(embedding, metric, options);
       const rows = await this.requireExecutor().query<{ count: number | string }>(countQuery.sql, countQuery.params);
       return {
         rows: applyResultWindow(Number(rows[0]?.count ?? 0), options.offset, options.limit),
-        source: 'vector-component-score',
-        indexChoice: 'vector-component-score',
+        source: usesPgVector ? 'pg-vector-score' : 'vector-component-score',
+        indexChoice: usesPgVector ? 'pg-vector-score' : 'vector-component-score',
       };
     }
 
@@ -455,6 +474,9 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   }
 
   private async initializeSchema(): Promise<void> {
+    if (this.usesPgVectorBackend()) {
+      await this.requireExecutor().exec('CREATE EXTENSION IF NOT EXISTS vector');
+    }
     await this.requireExecutor().exec(`
       CREATE TABLE IF NOT EXISTS rdf_vector_sources (
         id BIGSERIAL PRIMARY KEY,
@@ -517,7 +539,41 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
     `);
     await this.ensureSourceKeyColumn();
     await this.ensureVectorIdentityColumns();
-    await this.backfillVectorComponents();
+    if (this.usesPgVectorBackend()) {
+      await this.ensurePgVectorColumn();
+    } else {
+      await this.backfillVectorComponents();
+    }
+  }
+
+  private async ensurePgVectorColumn(): Promise<void> {
+    await this.requireExecutor().exec('ALTER TABLE rdf_vector_chunks ADD COLUMN IF NOT EXISTS embedding_vector vector');
+    await this.requireExecutor().exec(`
+      UPDATE rdf_vector_chunks
+      SET embedding_vector = embedding_json::vector
+      WHERE embedding_vector IS NULL
+        AND embedding_json IS NOT NULL
+    `);
+  }
+
+  private async ensurePgVectorSearchIndex(dimensions: number, metric: RdfVectorDistanceMetric): Promise<void> {
+    if (!this.usesPgVectorBackend()) {
+      return;
+    }
+    const safeDimensions = pgVectorDimensions(dimensions);
+    const key = `${metric}:${safeDimensions}`;
+    if (this.ensuredPgVectorIndexes.has(key)) {
+      return;
+    }
+    const indexName = quotePgIdentifier(`rdf_vector_chunks_embedding_${metric}_${safeDimensions}_hnsw`);
+    await this.requireExecutor().exec(`
+      CREATE INDEX IF NOT EXISTS ${indexName}
+      ON rdf_vector_chunks
+      USING hnsw ((embedding_vector::vector(${safeDimensions})) ${pgVectorOperatorClass(metric)})
+      WHERE dimensions = ${safeDimensions}
+        AND embedding_vector IS NOT NULL
+    `);
+    this.ensuredPgVectorIndexes.add(key);
   }
 
   private async ensureSourceKeyColumn(): Promise<void> {
@@ -677,6 +733,10 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
     }
     return this.executor;
   }
+
+  private usesPgVectorBackend(): boolean {
+    return this.options.driver === 'pg';
+  }
 }
 
 interface NormalizedVectorIdentity {
@@ -730,6 +790,183 @@ function appendPgVectorIdentityFilters(
   if (options.projectionPolicyVersion !== undefined) {
     conditions.push(`chunk.projection_policy_version = ${addParam(params, options.projectionPolicyVersion)}`);
   }
+}
+
+function buildPgVectorNativeScoredRowsQuery(
+  embedding: number[],
+  metric: RdfVectorDistanceMetric,
+  options: RdfVectorSearchOptions,
+): { sql: string; params: unknown[] } {
+  if (canUsePgVectorAnnTopK(options)) {
+    return buildPgVectorNativeAnnScoredRowsQuery(embedding, metric, options);
+  }
+  const base = buildPgVectorNativeBaseQuery(embedding, metric, options);
+  const orderBy = buildPgVectorNativeOrderClause(options.orderBy, base.distanceExpression);
+  const window = buildPgVectorWindowClause(base.params, options.limit, options.offset);
+  return {
+    sql: `
+      SELECT
+        ${base.selectSql}
+      ${base.fromSql}
+      ORDER BY ${orderBy}
+      ${window}
+    `,
+    params: base.params,
+  };
+}
+
+function buildPgVectorNativeAnnScoredRowsQuery(
+  embedding: number[],
+  metric: RdfVectorDistanceMetric,
+  options: RdfVectorSearchOptions,
+): { sql: string; params: unknown[] } {
+  const base = buildPgVectorNativeBaseQuery(embedding, metric, options);
+  const limit = options.limit ?? 0;
+  const innerLimit = addParam(base.params, Math.max(0, limit), 'integer');
+  const orderBy = buildPgVectorNativeOrderClause(options.orderBy, 'candidate_chunks.native_distance');
+  return {
+    sql: `
+      WITH candidate_chunks AS (
+        SELECT
+          chunk.id,
+          ${base.distanceExpression} AS native_distance
+        ${base.fromSql}
+        ORDER BY ${base.distanceExpression} ASC, source.id ASC, chunk.ordinal ASC
+        LIMIT ${innerLimit}
+      )
+      SELECT
+        ${base.selectSql}
+      ${base.outerFromSql}
+      ORDER BY ${orderBy}
+    `,
+    params: base.params,
+  };
+}
+
+function buildPgVectorNativeScoredCountQuery(
+  embedding: number[],
+  metric: RdfVectorDistanceMetric,
+  options: RdfVectorSearchOptions,
+): { sql: string; params: unknown[] } {
+  const base = buildPgVectorNativeBaseQuery(embedding, metric, options);
+  return {
+    sql: `
+      SELECT COUNT(*) AS count
+      ${base.fromSql}
+    `,
+    params: base.params,
+  };
+}
+
+function buildPgVectorNativeBaseQuery(
+  embedding: number[],
+  metric: RdfVectorDistanceMetric,
+  options: RdfVectorSearchOptions,
+): {
+  selectSql: string;
+  fromSql: string;
+  outerFromSql: string;
+  params: unknown[];
+  distanceExpression: string;
+} {
+  const params: unknown[] = [];
+  const dimensions = pgVectorDimensions(embedding.length);
+  const vectorExpression = `(chunk.embedding_vector::vector(${dimensions}))`;
+  const queryVector = addParam(params, formatPgVectorLiteral(embedding), `vector(${dimensions})`);
+  const distanceExpression = pgVectorNativeDistanceExpression(metric, vectorExpression, queryVector);
+  const dotProductExpression = `-(${vectorExpression} <#> ${queryVector})`;
+  const nativeDistanceExpression = canUsePgVectorAnnTopK(options)
+    ? 'candidate_chunks.native_distance'
+    : distanceExpression;
+  const vectorScoreExpression = pgVectorNativeScoreExpression(metric, nativeDistanceExpression);
+  const vectorDistanceExpression = metric === 'euclidean' ? 'NULL' : nativeDistanceExpression;
+  const vectorDistanceSquaredExpression = metric === 'euclidean'
+    ? `(${nativeDistanceExpression} * ${nativeDistanceExpression})`
+    : `(chunk.magnitude * chunk.magnitude + ${vectorMagnitude(embedding) * vectorMagnitude(embedding)} - 2 * ${dotProductExpression})`;
+  const conditions = [
+    `chunk.dimensions = ${addParam(params, embedding.length, 'integer')}`,
+    'chunk.embedding_vector IS NOT NULL',
+  ];
+
+  if (metric === 'cosine') {
+    conditions.push('chunk.magnitude > 0');
+  }
+  if (options.workspace) {
+    conditions.push(`source.workspace = ${addParam(params, options.workspace)}`);
+  }
+  appendPgRdfSearchSourceFilters(options, conditions, params);
+  appendPgVectorIdentityFilters(options, conditions, params);
+  if (options.threshold !== undefined) {
+    conditions.push(pgVectorNativeThresholdExpression(metric, distanceExpression, options.threshold));
+  }
+
+  return {
+    selectSql: `
+      chunk.id,
+      chunk.source_id,
+      source.source_key,
+      source.source,
+      source.workspace,
+      source.local_path,
+      source.content_type,
+      source.source_version,
+      source.source_hash,
+      chunk.chunk_key,
+      chunk.ordinal,
+      chunk.level,
+      chunk.heading,
+      chunk.path,
+      chunk.content,
+      chunk.start_offset,
+      chunk.end_offset,
+      chunk.embedding_json,
+      chunk.summary_metadata,
+      chunk.dimensions,
+      chunk.magnitude,
+      chunk.provider,
+      chunk.model,
+      chunk.model_version,
+      chunk.input_kind,
+      chunk.input_hash,
+      chunk.projection_policy_version,
+      chunk.updated_at,
+      ${dotProductExpression} AS dot_product,
+      ${vectorScoreExpression} AS vector_score,
+      ${vectorDistanceExpression} AS vector_distance,
+      ${vectorDistanceSquaredExpression} AS vector_distance_squared,
+      ${nativeDistanceExpression} AS native_distance
+    `,
+    fromSql: `
+      FROM rdf_vector_chunks chunk
+      JOIN rdf_vector_sources source ON source.id = chunk.source_id
+      WHERE ${conditions.join(' AND ')}
+    `,
+    outerFromSql: `
+      FROM candidate_chunks
+      JOIN rdf_vector_chunks chunk ON chunk.id = candidate_chunks.id
+      JOIN rdf_vector_sources source ON source.id = chunk.source_id
+    `,
+    params,
+    distanceExpression,
+  };
+}
+
+function canUsePgVectorAnnTopK(options: RdfVectorSearchOptions): boolean {
+  if (options.limit === undefined || options.offset !== undefined) {
+    return false;
+  }
+  const order = options.orderBy?.length ? options.orderBy : [{ field: 'score' as const, direction: 'desc' as const }];
+  const first = order[0];
+  if (!first) {
+    return false;
+  }
+  if (first.field === 'score') {
+    return first.direction === 'desc';
+  }
+  if (first.field === 'distance') {
+    return first.direction !== 'desc';
+  }
+  return false;
 }
 
 function buildPgVectorScoredRowsQuery(
@@ -880,6 +1117,98 @@ function buildPgVectorWindowClause(params: unknown[], limit: number | undefined,
   return `OFFSET ${addParam(params, Math.max(0, offset ?? 0), 'integer')}`;
 }
 
+function pgVectorNativeDistanceExpression(metric: RdfVectorDistanceMetric, vectorExpression: string, queryVector: string): string {
+  switch (metric) {
+    case 'cosine':
+      return `${vectorExpression} <=> ${queryVector}`;
+    case 'euclidean':
+      return `${vectorExpression} <-> ${queryVector}`;
+    case 'dot':
+      return `${vectorExpression} <#> ${queryVector}`;
+    default: {
+      const exhaustive: never = metric;
+      throw new Error(`Unsupported RDF vector distance metric: ${exhaustive}`);
+    }
+  }
+}
+
+function pgVectorNativeScoreExpression(metric: RdfVectorDistanceMetric, distanceExpression: string): string {
+  switch (metric) {
+    case 'cosine':
+      return `1 - (${distanceExpression})`;
+    case 'euclidean':
+      return `-(${distanceExpression} * ${distanceExpression})`;
+    case 'dot':
+      return `-(${distanceExpression})`;
+    default: {
+      const exhaustive: never = metric;
+      throw new Error(`Unsupported RDF vector distance metric: ${exhaustive}`);
+    }
+  }
+}
+
+function pgVectorNativeThresholdExpression(
+  metric: RdfVectorDistanceMetric,
+  distanceExpression: string,
+  threshold: number,
+): string {
+  if (!Number.isFinite(threshold)) {
+    return threshold === Number.NEGATIVE_INFINITY ? '1 = 1' : '1 = 0';
+  }
+  switch (metric) {
+    case 'cosine':
+      return `${distanceExpression} <= ${1 - threshold}`;
+    case 'dot':
+      return `${distanceExpression} <= ${-threshold}`;
+    case 'euclidean':
+      return threshold <= 0 ? `${distanceExpression} <= ${Math.abs(threshold)}` : '1 = 0';
+    default: {
+      const exhaustive: never = metric;
+      throw new Error(`Unsupported RDF vector distance metric: ${exhaustive}`);
+    }
+  }
+}
+
+function buildPgVectorNativeOrderClause(orderBy: RdfVectorSearchOptions['orderBy'], distanceExpression: string): string {
+  const order = orderBy?.length ? orderBy : [{ field: 'score' as const, direction: 'desc' as const }];
+  const entries = order.map((entry) => {
+    if (entry.field === 'score') {
+      const direction = entry.direction === 'desc' ? 'ASC' : 'DESC';
+      return `${distanceExpression} ${direction}`;
+    }
+    if (entry.field === 'distance') {
+      return `${distanceExpression} ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`;
+    }
+    return `${pgVectorNativeOrderExpression(entry.field)} ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`;
+  });
+  return [...entries, 'source.id ASC', 'chunk.ordinal ASC'].join(', ');
+}
+
+function pgVectorNativeOrderExpression(
+  field: NonNullable<RdfVectorSearchOptions['orderBy']>[number]['field'],
+): string {
+  switch (field) {
+    case 'score':
+      return 'vector_score';
+    case 'distance':
+      return 'native_distance';
+    case 'source':
+      return 'source.source';
+    case 'localPath':
+      return "COALESCE(source.local_path, '')";
+    case 'ordinal':
+      return 'chunk.ordinal';
+    case 'startOffset':
+      return 'chunk.start_offset';
+    case 'endOffset':
+      return 'chunk.end_offset';
+    default: {
+      const exhaustive: never = field;
+      throw new Error(`Unsupported RDF vector search order field: ${exhaustive}`);
+    }
+  }
+}
+
 async function insertVectorComponents(
   executor: PostgresRdfSqlExecutor,
   chunkId: number,
@@ -903,6 +1232,37 @@ function addParam(params: unknown[], value: unknown, cast?: string): string {
   return `$${params.length}${cast ? `::${cast}` : ''}`;
 }
 
+function formatPgVectorLiteral(embedding: number[]): string {
+  return `[${embedding.map((value) => {
+    if (!Number.isFinite(value)) {
+      throw new Error(`Invalid RDF vector value: ${value}`);
+    }
+    return String(value);
+  }).join(',')}]`;
+}
+
+function pgVectorDimensions(dimensions: number): number {
+  if (!Number.isSafeInteger(dimensions) || dimensions <= 0) {
+    throw new Error(`Invalid RDF vector dimensions: ${dimensions}`);
+  }
+  return dimensions;
+}
+
+function pgVectorOperatorClass(metric: RdfVectorDistanceMetric): string {
+  switch (metric) {
+    case 'cosine':
+      return 'vector_cosine_ops';
+    case 'euclidean':
+      return 'vector_l2_ops';
+    case 'dot':
+      return 'vector_ip_ops';
+    default: {
+      const exhaustive: never = metric;
+      throw new Error(`Unsupported RDF vector distance metric: ${exhaustive}`);
+    }
+  }
+}
+
 function quotePgIdentifier(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -914,6 +1274,7 @@ function toSearchResult(
   queryMagnitude: number,
   score: number,
   distance: number,
+  backend?: 'component' | 'pg-vector',
 ): RdfVectorSearchResult {
   return {
     source: row.source,
@@ -940,7 +1301,7 @@ function toSearchResult(
     inputHash: row.input_hash || undefined,
     projectionPolicyVersion: row.projection_policy_version || undefined,
     summaryMetadata: parseSummaryMetadata(row.summary_metadata),
-    scoreComponents: vectorScoreComponents(row, metric, queryMagnitude, score, distance),
+    scoreComponents: vectorScoreComponents(row, metric, queryMagnitude, score, distance, backend),
     score,
     distance,
   };

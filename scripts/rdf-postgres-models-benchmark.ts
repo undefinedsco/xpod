@@ -19,6 +19,7 @@ import {
   syntheticMessagesForRdfModelsTargetQuads,
   type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
+  type PostgresRdfEngineOptions,
   type RdfEngineStorageStats,
   type RdfModelPostgresBenchmarkGateBaseline,
   type RdfModelPostgresBenchmarkGateCaseThresholds,
@@ -435,6 +436,10 @@ function benchmarkGateThresholdsFromReportCases(
     cases[rawCase.name] = {
       maxScannedRows: calibratedScannedRowsThreshold(rawCase.scannedRows, `queryCases.${rawCase.name}.scannedRows`),
       maxP95DurationMs: calibratedP95DurationThreshold(rawCase.p95DurationMs, `queryCases.${rawCase.name}.p95DurationMs`),
+      maxDurationMs: calibratedMaxDurationThreshold(
+        maxDurationFromReportCase(rawCase),
+        `queryCases.${rawCase.name}.durationsMs`,
+      ),
     };
   }
   return Object.keys(cases).length > 0 ? { cases } : undefined;
@@ -503,6 +508,17 @@ function calibratedP95DurationThreshold(value: unknown, name: string): number {
   return Math.ceil(Math.max(durationMs * 1.25, durationMs + 25));
 }
 
+function calibratedMaxDurationThreshold(value: unknown, name: string): number {
+  return Math.ceil(nonNegativeNumber(value, name) * 1.5);
+}
+
+function maxDurationFromReportCase(rawCase: Record<string, unknown>): number {
+  if (Array.isArray(rawCase.durationsMs) && rawCase.durationsMs.length > 0) {
+    return Math.max(...rawCase.durationsMs.map((value, index) => nonNegativeNumber(value, `queryCases.${rawCase.name}.durationsMs[${index}]`)));
+  }
+  return nonNegativeNumber(rawCase.p95DurationMs, `queryCases.${rawCase.name}.p95DurationMs`);
+}
+
 function readBenchmarkGateBaselineReport(
   filePath: string,
   options: { calibratedLimits?: boolean } = {},
@@ -537,6 +553,7 @@ function readBenchmarkGateBaselineReport(
       ...(options.calibratedLimits ? {
         maxScannedRows: calibratedScannedRowsThreshold(scannedRows, `queryCases.${rawCase.name}.scannedRows`),
         maxP95DurationMs: calibratedP95DurationThreshold(p95DurationMs, `queryCases.${rawCase.name}.p95DurationMs`),
+        maxDurationMs: calibratedMaxDurationThreshold(maxDurationFromReportCase(rawCase), `queryCases.${rawCase.name}.durationsMs`),
       } : {}),
     };
   }
@@ -607,6 +624,7 @@ function benchmarkGateBaselines(value: unknown): Record<string, RdfModelPostgres
       ...(baseline.p95DurationMs !== undefined ? { p95DurationMs: nonNegativeNumber(baseline.p95DurationMs, `fusionBenchmarkBaselines.${caseName}.p95DurationMs`) } : {}),
       ...(baseline.maxScannedRows !== undefined ? { maxScannedRows: nonNegativeNumber(baseline.maxScannedRows, `fusionBenchmarkBaselines.${caseName}.maxScannedRows`) } : {}),
       ...(baseline.maxP95DurationMs !== undefined ? { maxP95DurationMs: nonNegativeNumber(baseline.maxP95DurationMs, `fusionBenchmarkBaselines.${caseName}.maxP95DurationMs`) } : {}),
+      ...(baseline.maxDurationMs !== undefined ? { maxDurationMs: nonNegativeNumber(baseline.maxDurationMs, `fusionBenchmarkBaselines.${caseName}.maxDurationMs`) } : {}),
     };
   }
   return baselines;
@@ -701,18 +719,7 @@ function createBenchmarkPaths(options: CliOptions): BenchmarkPaths {
 }
 
 function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEngine {
-  const searchIndexes = rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile)
-    ? {
-        textIndex: options.textSearchBackend === 'posting'
-          ? { path: ':memory:' }
-          : {
-              driver: options.driver,
-              ...(options.driver === 'pglite' ? {} : { connectionString: options.connectionString }),
-              textSearchBackend: options.textSearchBackend,
-            },
-        vectorIndex: { path: ':memory:' },
-      }
-    : {};
+  const searchIndexes = benchmarkSearchIndexOptions(options);
   if (options.driver === 'pglite') {
     return new PostgresRdfEngine({
       driver: 'pglite',
@@ -731,6 +738,26 @@ function createEngine(options: CliOptions, paths: BenchmarkPaths): PostgresRdfEn
     deferPgCustomIndexInitialization: options.deferPgCustomIndexBuild,
     ...searchIndexes,
   });
+}
+
+export function benchmarkSearchIndexOptions(options: Pick<CliOptions,
+  'caseProfile' | 'connectionString' | 'driver' | 'textSearchBackend'
+>): Pick<PostgresRdfEngineOptions, 'textIndex' | 'vectorIndex'> {
+  if (!rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile)) {
+    return {};
+  }
+
+  const pgConnection = options.driver === 'pg'
+    ? { driver: 'pg' as const, connectionString: options.connectionString }
+    : undefined;
+  return {
+    textIndex: options.textSearchBackend === 'posting'
+      ? { path: ':memory:' }
+      : pgConnection
+        ? { ...pgConnection, textSearchBackend: options.textSearchBackend }
+        : { driver: 'pglite', textSearchBackend: options.textSearchBackend },
+    vectorIndex: pgConnection ?? { path: ':memory:' },
+  };
 }
 
 async function installPgCustomIndexExtensionForBenchmark(options: CliOptions): Promise<void> {

@@ -997,3 +997,159 @@ describe('PostgresRdfVectorIndex', () => {
     }
   });
 });
+
+describe('PostgresRdfVectorIndex pg backend', () => {
+  it('uses pgvector operators instead of component joins for vector search', async () => {
+    const pool = new RecordingPgPool();
+    const index = new PostgresRdfVectorIndex({ driver: 'pg', pool });
+
+    await index.open();
+    await index.search({
+      embedding: [1, 0],
+      workspace: 'https://pod.example/alice/',
+      model: 'test-embed',
+      limit: 10,
+    });
+    await index.close();
+
+    const searchSql = [...pool.statements].reverse().find((statement) => statement.includes('FROM rdf_vector_chunks chunk'));
+    expect(searchSql).toBeDefined();
+    expect(searchSql).toContain('WITH candidate_chunks AS');
+    expect(searchSql).toContain('embedding_vector::vector(2)');
+    expect(searchSql).toContain('<=>');
+    expect(searchSql).toContain('ORDER BY (chunk.embedding_vector::vector(2)) <=> $1::vector(2) ASC, source.id ASC, chunk.ordinal ASC');
+    expect(searchSql).not.toContain('rdf_vector_components');
+    expect(pool.statements.some((statement) => statement.includes('USING hnsw') && statement.includes('vector_cosine_ops'))).toBe(true);
+  });
+
+  it('does not use pgvector ANN nearest top-k for descending distance order', async () => {
+    const pool = new RecordingPgPool();
+    const index = new PostgresRdfVectorIndex({ driver: 'pg', pool });
+
+    await index.open();
+    await index.search({
+      embedding: [1, 0],
+      workspace: 'https://pod.example/alice/',
+      model: 'test-embed',
+      orderBy: [{ field: 'distance', direction: 'desc' }],
+      limit: 10,
+    });
+    await index.close();
+
+    const searchSql = [...pool.statements].reverse().find((statement) => statement.includes('FROM rdf_vector_chunks chunk'));
+    expect(searchSql).toBeDefined();
+    expect(searchSql).not.toContain('WITH candidate_chunks AS');
+    expect(searchSql).toContain('ORDER BY (chunk.embedding_vector::vector(2)) <=> $1::vector(2) DESC');
+  });
+
+  it('does not write vector component rows for pg backend chunks', async () => {
+    const pool = new RecordingPgPool();
+    const index = new PostgresRdfVectorIndex({ driver: 'pg', pool });
+
+    await index.open();
+    await index.indexVector({
+      source: 'https://pod.example/alice/docs/pg-vector.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/pg-vector.md',
+      contentType: 'text/markdown',
+    }, [
+      {
+        chunkKey: 'intro',
+        ordinal: 0,
+        level: 1,
+        content: 'PG vector chunk.',
+        startOffset: 0,
+        endOffset: 16,
+        embedding: [1, 0],
+        model: 'test-embed',
+      },
+    ]);
+    await index.close();
+
+    expect(pool.statements.some((statement) => statement.includes('INSERT INTO rdf_vector_components'))).toBe(false);
+  });
+
+  it('marks pgvector search results for planner evidence', async () => {
+    const pool = new RecordingPgPool([
+      {
+        id: 10,
+        source_id: 1,
+        source_key: 'source-node:pg-vector',
+        source: 'https://pod.example/alice/docs/pg-vector.md',
+        workspace: 'https://pod.example/alice/',
+        local_path: 'docs/pg-vector.md',
+        content_type: 'text/markdown',
+        source_version: null,
+        source_hash: null,
+        chunk_key: 'intro',
+        ordinal: 0,
+        level: 1,
+        heading: null,
+        path: '[]',
+        content: 'PG vector chunk.',
+        start_offset: 0,
+        end_offset: 16,
+        embedding_json: '[1,0]',
+        summary_metadata: null,
+        dimensions: 2,
+        magnitude: 1,
+        provider: '',
+        model: 'test-embed',
+        model_version: '',
+        input_kind: '',
+        input_hash: '',
+        projection_policy_version: '',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        dot_product: 1,
+        vector_score: 1,
+        vector_distance: 0,
+        vector_distance_squared: 0,
+      },
+    ]);
+    const index = new PostgresRdfVectorIndex({ driver: 'pg', pool });
+
+    await index.open();
+    const results = await index.search({
+      embedding: [1, 0],
+      workspace: 'https://pod.example/alice/',
+      model: 'test-embed',
+      limit: 10,
+    });
+    await index.close();
+
+    expect(results[0]?.scoreComponents?.backend).toBe('pg-vector');
+  });
+});
+
+class RecordingPgPool {
+  public readonly statements: string[] = [];
+
+  public constructor(private readonly searchRows: Record<string, unknown>[] = []) {}
+
+  public async query(sql: string, _params: unknown[] = []): Promise<{ rows: Record<string, unknown>[] }> {
+    this.statements.push(sql);
+    if (this.searchRows.length > 0 && sql.includes('FROM rdf_vector_chunks chunk') && sql.includes('vector_score')) {
+      return { rows: this.searchRows };
+    }
+    if (sql.includes('FROM pg_constraint')) {
+      return { rows: [] };
+    }
+    if (sql.includes('LEFT JOIN rdf_vector_components')) {
+      return { rows: [] };
+    }
+    if (sql.includes('INSERT INTO rdf_vector_sources') && sql.includes('RETURNING id')) {
+      return { rows: [{ id: 1 }] };
+    }
+    if (sql.includes('INSERT INTO rdf_vector_chunks') && sql.includes('RETURNING id')) {
+      return { rows: [{ id: 10 }] };
+    }
+    return { rows: [] };
+  }
+
+  public async connect(): Promise<{ query: RecordingPgPool['query']; release: () => void }> {
+    return {
+      query: this.query.bind(this),
+      release: () => undefined,
+    };
+  }
+}

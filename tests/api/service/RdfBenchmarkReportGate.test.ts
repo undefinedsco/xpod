@@ -181,6 +181,19 @@ describe('RdfBenchmarkReportGate', () => {
     expect(result.failedReasons).toContain('native text FTS evidence expected > 0, got 0');
   });
 
+  it('rejects QLever-like benchmark reports without native vector physical-plan evidence', () => {
+    const result = evaluateRdfBenchmarkReportGate(snapshotWithReport(fullLargeReport({
+      nativeVectorCaseCount: 0,
+    })), {
+      requiredTextSearchBackend: 'pg-native-fts',
+      requireNativeTextFtsEvidence: true,
+      requireNativeVectorEvidence: true,
+    });
+
+    expect(result.matched).toBe(false);
+    expect(result.failedReasons).toContain('native vector evidence expected > 0, got 0');
+  });
+
   it('rejects strict P3 release reports with too few timing iterations', () => {
     const result = evaluateRdfBenchmarkReportGate(snapshotWithReport(fullLargeReport({
       caseProfile: 'all',
@@ -325,6 +338,7 @@ function fullLargeReport(overrides: Partial<RdfBenchmarkReportSummary> = {}): Rd
     fusionHardFiltersBeforeRankCaseCount: 2,
     fusionBatchedBroadCandidateJoinCaseCount: 1,
     nativeTextFtsCaseCount: 2,
+    nativeVectorCaseCount: 2,
     ingestDurationMs: 12_345,
     copyRows: 1_024_990,
     copyFallbacks: 0,

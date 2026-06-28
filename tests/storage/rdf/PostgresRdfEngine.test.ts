@@ -20,6 +20,9 @@ import {
   type RdfPgAccelerationProfile,
   type RdfQuery,
   type RdfQueryResult,
+  type RdfVectorIndexLike,
+  type RdfVectorSearchOptions,
+  type RdfVectorSearchResult,
 } from '../../../src/storage/rdf';
 import { rdfTermValueHead } from '../../../src/storage/rdf/RdfTermDictionary';
 
@@ -6950,6 +6953,7 @@ describe('PostgresRdfEngine', () => {
         'AclScopeSource',
       ]));
       expect(fusionGate.sourceEstimateCount).toBeGreaterThanOrEqual(5);
+      expect(fusionGate.sourceChoiceCount).toBeGreaterThanOrEqual(3);
       expect(fusionGate.scannedRows).toBe(fusion.scannedRows);
       expect(fusionGate.p95DurationMs).toBe(fusion.p95DurationMs);
       const broadFusion = report.queryCases.find((testCase) => testCase.name === 'broad agent context text vector fusion query');
@@ -6979,7 +6983,12 @@ describe('PostgresRdfEngine', () => {
         'PathScopeSource',
         'AclScopeSource',
       ]));
+      expect(broadFusionGate?.sourceChoiceCount).toBeGreaterThanOrEqual(3);
       expect(broadFusionGate?.scannedRows).toBeGreaterThanOrEqual(10);
+      const performanceTotalBytes = report.performanceCosts.storageOverhead.totalBytes;
+      const storageTotalBytes = report.storage.totalBytes;
+      const performanceIndexBuildDurationMs = report.performanceCosts.indexBuild?.durationMs;
+      const refreshBenchmarkDurationMs = report.refreshBenchmark?.durationMs;
       expect(report.performanceCosts).toMatchObject({
         storageOverhead: {
           factsBytes: expect.any(Number),
@@ -6993,8 +7002,8 @@ describe('PostgresRdfEngine', () => {
           refreshed: true,
         },
       });
-      expect(report.performanceCosts.storageOverhead.totalBytes).toBe(report.storage.totalBytes);
-      expect(report.performanceCosts.indexBuild?.durationMs).toBe(report.refreshBenchmark?.durationMs);
+      expect(performanceTotalBytes).toBe(storageTotalBytes);
+      expect(performanceIndexBuildDurationMs).toBe(refreshBenchmarkDurationMs);
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -7377,6 +7386,160 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('pushes a conservative candidate budget into fused text/vector search when final query is top-k ranked', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-budget-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const first = namedNode('https://pod.example/alice/projects/demo/fusion-a.md');
+    const second = namedNode('https://pod.example/alice/projects/demo/fusion-b.md');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(first, rdfType, docType, first),
+        quad(second, rdfType, docType, second),
+      ]);
+      await engine.indexTextSource({
+        source: first.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'fusion-a.md',
+        contentType: 'text/markdown',
+      }, '# A\n\nManaged runtime candidate.\n');
+      await engine.indexTextSource({
+        source: second.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'fusion-b.md',
+        contentType: 'text/markdown',
+      }, '# B\n\nManaged runtime candidate candidate.\n');
+      await engine.indexVectorSource({
+        source: first.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'fusion-a.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'first',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime candidate.',
+        startOffset: 0,
+        endOffset: 26,
+        embedding: [1, 0],
+        model: 'test-embed',
+      }]);
+      await engine.indexVectorSource({
+        source: second.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'fusion-b.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'second',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime candidate candidate.',
+        startOffset: 0,
+        endOffset: 36,
+        embedding: [0.9, 0.1],
+        model: 'test-embed',
+      }]);
+
+      const result = await engine.query({
+        textSearch: [{
+          query: 'managed runtime candidate',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          score: 'textScore',
+        }],
+        vectorSearch: [{
+          embedding: [1, 0],
+          vectorModel: 'test-embed',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          score: 'vectorScore',
+        }],
+        patterns: [{
+          graph: { variable: 'source' },
+          subject: { variable: 'source' },
+          predicate: rdfType,
+          object: docType,
+        }],
+        binds: [{
+          variable: 'fusionScore',
+          expression: {
+            type: 'add',
+            expressions: [
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                  { type: 'term', term: literal('0.55', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+                  { type: 'term', term: literal('0.45', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+            ],
+          },
+        }],
+        select: ['source', 'fusionScore'],
+        orderBy: [{ variable: 'fusionScore', direction: 'desc' }],
+        limit: 1,
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.metrics.plan).toContain('CandidateBudget(TextSearch limit:256 from-query-limit:1)');
+      expect(result.metrics.plan).toContain('CandidateBudget(VectorSearch limit:256 from-query-limit:1)');
+      expect(result.metrics.plan).toContain('TopKPushdown(TextSearch limit:256)');
+      expect(result.metrics.plan).toContain('TopKPushdown(VectorSearch limit:256)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes native pgvector evidence in PostgreSQL fusion plans', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-native-vector-plan-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      vectorIndex: new NativeVectorEvidenceIndex(),
+    });
+
+    try {
+      await engine.open();
+      const result = await engine.query({
+        patterns: [],
+        vectorSearch: [{
+          embedding: [1, 0],
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'content',
+          score: 'vectorScore',
+        }],
+        select: ['source', 'content', 'vectorScore'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.metrics.plan).toContain('PostgresNativeVector(VectorSearch pgvector)');
+      expect(result.metrics.plan).toContain('PostgresNativeVectorHnsw(VectorSearch)');
+      expect(result.metrics.plan).toContain('PostgresNativeVectorRank(pgvector)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('filters unauthorized PostgreSQL candidates before final fusion ranking', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-fusion-acl-rank-'));
     const engine = new PostgresRdfEngine({
@@ -7558,6 +7721,214 @@ describe('PostgresRdfEngine', () => {
       expect(textPlan).toBeGreaterThanOrEqual(0);
       expect(rdfPlan).toBeGreaterThanOrEqual(0);
       expect(textPlan).toBeLessThan(rdfPlan);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers connected PostgreSQL text sources over disconnected RDF sources after bindings', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-adaptive-fusion-order-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const selectedPredicate = namedNode('https://schema.org/identifier');
+    const selected = namedNode('https://pod.example/alice/projects/demo/selected.md');
+
+    try {
+      await engine.open();
+      const docs = Array.from({ length: 40 }, (_value, index) => (
+        index === 0
+          ? selected
+          : namedNode(`https://pod.example/alice/projects/demo/broad-${index}.md`)
+      ));
+      await engine.put([
+        ...docs.map((source) => quad(source, rdfType, docType, source)),
+        quad(selected, selectedPredicate, literal('selected'), selected),
+      ]);
+      for (const source of docs) {
+        await engine.indexTextSource({
+          source: source.value,
+          workspace: 'https://pod.example/alice/projects/demo/',
+          localPath: source.value.slice(source.value.lastIndexOf('/') + 1),
+          contentType: 'text/markdown',
+        }, '# Note\n\nManaged runtime adaptive planner marker.\n');
+      }
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { variable: 'source' },
+            subject: { variable: 'source' },
+            predicate: selectedPredicate,
+            object: literal('selected'),
+          },
+          {
+            graph: { variable: 'other' },
+            subject: { variable: 'other' },
+            predicate: rdfType,
+            object: docType,
+          },
+        ],
+        textSearch: [{
+          query: 'managed runtime adaptive planner marker',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        select: ['source', 'snippet'],
+        distinct: true,
+      });
+
+      expect(result.bindings.map((binding) => binding.source.value)).toEqual([selected.value]);
+      const firstRdfPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('PostgresFactsScan('));
+      const textPlan = result.metrics.plan.findIndex((entry) => entry.startsWith('TextSearch('));
+      const secondRdfPlan = result.metrics.plan.findIndex((entry, index) => (
+        index > firstRdfPlan && entry.startsWith('PostgresFactsScan(')
+      ));
+      expect(firstRdfPlan).toBeGreaterThanOrEqual(0);
+      expect(textPlan).toBeGreaterThan(firstRdfPlan);
+      expect(secondRdfPlan).toBeGreaterThan(textPlan);
+      expect(result.metrics.scannedRows).toBeLessThan(docs.length + docs.length);
+      const sourceChoiceMarkers = result.metrics.plan.filter((entry) => entry.startsWith('PostgresPlannerSourceChoice('));
+      expect(sourceChoiceMarkers.some((entry) => (
+        entry.includes('selected:RdfBgpSource#0')
+          && entry.includes('TextMatchSource#0[priority:1,connected:true')
+      ))).toBe(true);
+      expect(sourceChoiceMarkers.some((entry) => (
+        entry.includes('selected:TextMatchSource#0')
+          && entry.includes('RdfBgpSource#1[priority:1,connected:false')
+          && entry.includes('input:1')
+          && entry.includes('output:40')
+          && entry.includes('cost:40')
+      ))).toBe(true);
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses multi-step PostgreSQL planner cost to avoid cheap disconnected prefixes', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-multistep-planner-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const rdfType = namedNode('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+    const otherPredicate = namedNode('https://schema.org/category');
+
+    try {
+      await engine.open();
+      const docs = Array.from({ length: 30 }, (_value, index) => (
+        namedNode(`https://pod.example/alice/projects/demo/doc-${index}.md`)
+      ));
+      const others = Array.from({ length: 20 }, (_value, index) => (
+        namedNode(`https://pod.example/alice/projects/demo/other-${index}`)
+      ));
+      await engine.put([
+        ...docs.map((source) => quad(source, rdfType, docType, source)),
+        ...others.map((source) => quad(source, otherPredicate, literal('other'), source)),
+      ]);
+      for (const source of docs) {
+        await engine.indexTextSource({
+          source: source.value,
+          workspace: 'https://pod.example/alice/projects/demo/',
+          localPath: source.value.slice(source.value.lastIndexOf('/') + 1),
+          contentType: 'text/markdown',
+        }, '# Note\n\nPlanner cascade marker.\n');
+      }
+
+      const result = await engine.query({
+        patterns: [
+          {
+            graph: { variable: 'otherGraph' },
+            subject: { variable: 'other' },
+            predicate: otherPredicate,
+            object: literal('other'),
+          },
+          {
+            graph: { variable: 'source' },
+            subject: { variable: 'source' },
+            predicate: rdfType,
+            object: docType,
+          },
+        ],
+        textSearch: [{
+          query: 'planner cascade marker',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        select: ['source'],
+        distinct: true,
+      });
+
+      expect(result.bindings.map((binding) => binding.source.value)).toHaveLength(docs.length);
+      const scanPlans = result.metrics.plan.filter((entry) => entry.startsWith('PostgresFactsScan('));
+      expect(scanPlans[0]).toContain(`predicate:${rdfType.value}`);
+      expect(scanPlans[1]).toContain(`predicate:${otherPredicate.value}`);
+      const firstChoice = result.metrics.plan.find((entry) => entry.startsWith('PostgresPlannerSourceChoice(')) ?? '';
+      expect(firstChoice).toContain('selected:RdfBgpSource#1');
+      expect(firstChoice).toContain('future:');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds PostgreSQL planner multi-step lookahead for many required sources', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-bounded-planner-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+      textIndex: { path: ':memory:' },
+    });
+    const graph = namedNode('https://pod.example/alice/projects/demo/bounded.ttl');
+    const subject = namedNode(`${graph.value}#item`);
+    const predicates = Array.from({ length: 8 }, (_value, index) => (
+      namedNode(`https://schema.org/boundedPredicate${index}`)
+    ));
+
+    try {
+      await engine.open();
+      await engine.put(predicates.map((predicate, index) => (
+        quad(subject, predicate, literal(`value-${index}`), graph)
+      )));
+      await engine.indexTextSource({
+        source: subject.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'bounded.ttl',
+        contentType: 'text/turtle',
+      }, '# Bounded planner marker\n');
+
+      const result = await engine.query({
+        textSearch: [{
+          query: 'bounded planner marker',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'item',
+          content: 'snippet',
+        }],
+        patterns: predicates.map((predicate, index) => ({
+          graph,
+          subject: { variable: 'item' },
+          predicate,
+          object: literal(`value-${index}`),
+        })),
+        select: ['item', 'snippet'],
+      });
+
+      expect(result.bindings.map((binding) => binding.item.value)).toEqual([subject.value]);
+      const firstChoice = result.metrics.plan.find((entry) => entry.startsWith('PostgresPlannerSourceChoice(')) ?? '';
+      expect(firstChoice).toContain('lookahead:bounded');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -8895,6 +9266,59 @@ const XPOD_RDF_EXTENSION_PROJECT_COLUMNS: Record<number, string> = {
   3: 'predicate_id',
   4: 'object_id',
 };
+
+class NativeVectorEvidenceIndex implements RdfVectorIndexLike {
+  public open(): void {}
+  public close(): void {}
+  public clear(): void {}
+  public indexVector(): void {}
+  public deleteSource(): number {
+    return 0;
+  }
+  public search(_options: RdfVectorSearchOptions): RdfVectorSearchResult[] {
+    return [{
+      source: 'https://pod.example/alice/docs/native-vector.md',
+      workspace: 'https://pod.example/alice/',
+      localPath: 'docs/native-vector.md',
+      contentType: 'text/markdown',
+      sourceKey: 'source-node:native-vector',
+      chunkKey: 'native-vector-0',
+      retrievalPointKey: 'native-vector-0',
+      ordinal: 0,
+      level: 1,
+      content: 'native vector content',
+      path: [],
+      startOffset: 0,
+      endOffset: 21,
+      embedding: [1, 0],
+      scoreComponents: {
+        sourceType: 'vector',
+        backend: 'pg-vector',
+        metric: 'cosine',
+        dimensions: 2,
+        score: 1,
+        distance: 0,
+        dotProduct: 1,
+        queryMagnitude: 1,
+        candidateMagnitude: 1,
+      },
+      score: 1,
+      distance: 0,
+    }];
+  }
+  public summaryLifecycle(): [] {
+    return [];
+  }
+  public estimateSearchCardinality(): { rows: number; source: 'pg-vector-score'; indexChoice: string } {
+    return { rows: 1, source: 'pg-vector-score', indexChoice: 'pg-vector-score' };
+  }
+  public stats(): { sourceCount: number; chunkCount: number; componentCount: number; databaseBytes: number; modelDistribution: [] } {
+    return { sourceCount: 1, chunkCount: 1, componentCount: 0, databaseBytes: 0, modelDistribution: [] };
+  }
+  public modelDistribution(): [] {
+    return [];
+  }
+}
 
 class StringIntegerPgPool {
   private readonly db: PGlite;

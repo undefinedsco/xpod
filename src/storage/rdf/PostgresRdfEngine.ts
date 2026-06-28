@@ -136,8 +136,12 @@ const RDF_MATERIALIZED_VIEW_TABLE = 'rdf_materialized_views';
 const RDF_MATERIALIZED_VIEW_CELL_TABLE = 'rdf_materialized_view_cells';
 const RDF_DIRTY_SOURCE_TABLE = 'rdf_dirty_sources';
 const RDF_MAINTENANCE_LEASE_TABLE = 'rdf_maintenance_leases';
+const PG_PLANNER_SAMPLE_BINDINGS = 16;
 const PG_BOUND_SOURCE_EXACT_SEARCH_MAX = 32;
 const PG_FACTS_BATCH_BOUND_TERM_MIN_ROWS = 32;
+const PG_SEARCH_CANDIDATE_BUDGET_MIN = 256;
+const PG_SEARCH_CANDIDATE_BUDGET_MAX = 4_096;
+const PG_SEARCH_CANDIDATE_BUDGET_MULTIPLIER = 32;
 const RDF_ACCESS_CONTROL_OVERRIDE_TABLE = 'rdf_access_control_overrides';
 const RDF_TERMS_TABLE = 'rdf_terms';
 const RDF_DERIVED_INDEX_MAINTENANCE_LEASE = 'rdf-derived-indexes';
@@ -394,6 +398,24 @@ type PgRequiredSource =
   | { kind: 'pattern'; pattern: RdfQueryPattern; originalIndex: number }
   | { kind: 'text'; pattern: RdfTextSearchPattern; originalIndex: number }
   | { kind: 'vector'; pattern: RdfVectorSearchPattern; originalIndex: number };
+
+interface PgRequiredSourceChoice {
+  source: PgRequiredSource;
+  originalOrder: number;
+  priority: number;
+  connected: boolean;
+  disconnectedPenalty: number;
+  inputRows: number;
+  estimateRows: number;
+  outputRows: number;
+  costRows: number;
+  futureCostRows: number;
+  futureCostBounded: boolean;
+  totalCostRows: number;
+}
+
+const PG_PLANNER_SUFFIX_LOOKAHEAD_WIDTH = 6;
+const PG_PLANNER_SUFFIX_LOOKAHEAD_DEPTH = 6;
 
 interface PgNumericAggregateFactsCutoverDecision {
   minSourceRows: number;
@@ -4420,43 +4442,142 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async orderPgRequiredSources(sources: PgRequiredSource[]): Promise<PgRequiredSource[]> {
-    const ranked = await Promise.all(sources.map(async (source, originalOrder) => ({
-      source,
-      originalOrder,
-      priority: pgRequiredSourcePriority(source),
-      estimateRows: await this.estimatePgRequiredSourceRows(source),
-    })));
-    return ranked
+  private async choosePgRequiredSourceIndex(
+    sources: PgRequiredSource[],
+    bindings: RdfBindingRow[],
+    metrics: RdfQueryMetrics,
+  ): Promise<number> {
+    const boundVariables = pgBoundVariables(bindings);
+    const hasBoundVariables = boundVariables.size > 0;
+    const inputRows = Math.max(1, bindings.length);
+    if (sources.length === 1) {
+      const source = sources[0];
+      if (!source) {
+        return 0;
+      }
+      const connected = !hasBoundVariables || pgRequiredSourceConnected(source, boundVariables);
+      const choice: PgRequiredSourceChoice = {
+        source,
+        originalOrder: 0,
+        connected,
+        disconnectedPenalty: hasBoundVariables && !connected ? 1 : 0,
+        priority: pgRequiredSourcePriority(source),
+        inputRows,
+        estimateRows: inputRows,
+        outputRows: inputRows,
+        costRows: inputRows,
+        futureCostRows: 0,
+        futureCostBounded: false,
+        totalCostRows: inputRows,
+      };
+      metrics.plan.push(describePgPlannerSourceChoice(choice, [choice]));
+      return 0;
+    }
+    const rankedWithoutFuture = await Promise.all(sources.map(async (source, originalOrder): Promise<PgRequiredSourceChoice> => {
+      const connected = !hasBoundVariables || pgRequiredSourceConnected(source, boundVariables);
+      const estimateRows = await this.estimatePgRequiredSourceRows(source, bindings);
+      const outputRows = connected ? estimateRows : estimateRows * inputRows;
+      return {
+        source,
+        originalOrder,
+        connected,
+        disconnectedPenalty: hasBoundVariables && !connected ? 1 : 0,
+        priority: pgRequiredSourcePriority(source),
+        inputRows,
+        estimateRows,
+        outputRows,
+        costRows: outputRows,
+        futureCostRows: 0,
+        futureCostBounded: false,
+        totalCostRows: outputRows,
+      };
+    }));
+    const ranked = rankedWithoutFuture.map((choice): PgRequiredSourceChoice => {
+      const futureCost = estimatePgPlannerFutureCostRows(choice, rankedWithoutFuture, boundVariables);
+      return {
+        ...choice,
+        futureCostRows: futureCost.costRows,
+        futureCostBounded: futureCost.bounded,
+        totalCostRows: choice.costRows + futureCost.costRows,
+      };
+    });
+    const sorted = ranked
       .sort((left, right) => (
         left.priority - right.priority
+          || left.disconnectedPenalty - right.disconnectedPenalty
+          || left.totalCostRows - right.totalCostRows
+          || left.costRows - right.costRows
           || left.estimateRows - right.estimateRows
           || left.originalOrder - right.originalOrder
-      ))
-      .map((entry) => entry.source);
+      ));
+    if (sorted.length > 0) {
+      metrics.plan.push(describePgPlannerSourceChoice(sorted[0], sorted));
+    }
+    return sorted[0]?.originalOrder ?? 0;
   }
 
-  private async estimatePgRequiredSourceRows(source: PgRequiredSource): Promise<number> {
+  private async estimatePgRequiredSourceRows(
+    source: PgRequiredSource,
+    bindings: RdfBindingRow[] = [{}],
+  ): Promise<number> {
     switch (source.kind) {
       case 'pattern': {
-        const compiled = compilePatternForBinding(source.pattern, {});
-        if (!compiled) {
-          return 0;
+        const sample = (bindings.length > 0 ? bindings : [{}]).slice(0, PG_PLANNER_SAMPLE_BINDINGS);
+        let rows = 0;
+        for (const binding of sample) {
+          const compiled = compilePatternForBinding(source.pattern, binding);
+          if (!compiled) {
+            continue;
+          }
+          const resolved = await this.resolvePattern(compiled);
+          rows += resolved.unresolved ? 0 : await this.estimateResolvedRows(resolved);
         }
-        const resolved = await this.resolvePattern(compiled);
-        return resolved.unresolved ? 0 : await this.estimateResolvedRows(resolved);
+        return bindings.length > sample.length && sample.length > 0
+          ? Math.ceil(rows * (bindings.length / sample.length))
+          : rows;
       }
-      case 'text':
+      case 'text': {
+        const boundRows = await this.estimatePgSearchRowsByBoundSources(source, bindings);
+        if (boundRows !== undefined) {
+          return boundRows;
+        }
         return (await this.requireTextIndex().estimateSearchCardinality(textSearchOptions(source.pattern))).rows;
-      case 'vector':
+      }
+      case 'vector': {
+        const boundRows = await this.estimatePgSearchRowsByBoundSources(source, bindings);
+        if (boundRows !== undefined) {
+          return boundRows;
+        }
         return (await this.requireVectorIndex().estimateSearchCardinality(vectorSearchOptions(source.pattern))).rows;
+      }
     }
   }
 
+  private async estimatePgSearchRowsByBoundSources(
+    source: Extract<PgRequiredSource, { kind: 'text' | 'vector' }>,
+    bindings: RdfBindingRow[],
+  ): Promise<number | undefined> {
+    const sourceVariable = source.pattern.source;
+    if (!sourceVariable || !canUseBoundSourceSearch(bindings, source.pattern, sourceVariable)) {
+      return undefined;
+    }
+
+    let rows = 0;
+    for (const exactSource of boundSearchSourceValues(bindings, sourceVariable)) {
+      rows += source.kind === 'text'
+        ? (await this.requireTextIndex().estimateSearchCardinality(textSearchOptions(source.pattern, exactSource))).rows
+        : (await this.requireVectorIndex().estimateSearchCardinality(vectorSearchOptions(source.pattern, exactSource))).rows;
+    }
+    return rows;
+  }
+
   private async queryFacts(query: RdfQuery, options?: PgFactsQueryOptions): Promise<RdfQueryResult> {
+    const budgeted = applyPgSearchCandidateBudget(query);
+    query = budgeted.query;
     const start = options?.start ?? Date.now();
     const metrics = this.localMetrics(start, 0, 0, 0, ['facts-post-filter'], [
       'PostgresFactsQuery',
+      ...budgeted.plan,
       ...(options?.planPrefix ?? []),
     ]);
     const hasNonPatternSource = (query.values?.length ?? 0) > 0
@@ -4480,8 +4601,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
 
     if (bindings.length > 0) {
-      const requiredSources = await this.orderPgRequiredSources(buildPgRequiredSources(requiredPatterns, query));
-      for (const source of requiredSources) {
+      const requiredSources = buildPgRequiredSources(requiredPatterns, query);
+      while (requiredSources.length > 0) {
+        const sourceIndex = await this.choosePgRequiredSourceIndex(requiredSources, bindings, metrics);
+        const [source] = requiredSources.splice(sourceIndex, 1);
+        if (!source) {
+          break;
+        }
         switch (source.kind) {
           case 'pattern': {
             const beforeScannedRows = metrics.scannedRows;
@@ -6570,12 +6696,14 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     if (sourceVariable && canUseGlobalSearchForBoundSources(input, pattern, sourceVariable)) {
       const results = await this.vectorSearchResults(pattern);
+      this.appendVectorSearchBackendPlan(metrics, results);
       metrics.scannedRows += results.length;
       metrics.plan.push(`PostgresFactsSearchBatchSource(VectorSearch ?${sourceVariable}:${boundSearchSourceCount(input, sourceVariable)})`);
       return bindVectorSearchResultsBySource(input, pattern, sourceVariable, results);
     }
 
     const results = await this.vectorSearchResults(pattern);
+    this.appendVectorSearchBackendPlan(metrics, results);
     metrics.scannedRows += results.length;
 
     const output: RdfBindingRow[] = [];
@@ -6656,6 +6784,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!term) {
         globalResults ??= await this.vectorSearchResults(pattern);
         results = globalResults;
+        this.appendVectorSearchBackendPlan(metrics, results);
         if (!countedGlobal) {
           metrics.scannedRows += results.length;
           countedGlobal = true;
@@ -6667,6 +6796,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           cache.set(term.value, await this.vectorSearchResults(pattern, term.value));
         }
         results = cache.get(term.value) ?? [];
+        this.appendVectorSearchBackendPlan(metrics, results);
         if (!countedSources.has(term.value)) {
           metrics.scannedRows += results.length;
           countedSources.add(term.value);
@@ -6695,6 +6825,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     pushUniquePlan(metrics.plan, 'PostgresNativeFts(TextSearch pg-ts-rank-cd)');
     pushUniquePlan(metrics.plan, 'PostgresNativeFtsGin(TextSearch)');
     pushUniquePlan(metrics.plan, 'PostgresNativeFtsRank(ts_rank_cd)');
+  }
+
+  private appendVectorSearchBackendPlan(metrics: RdfQueryMetrics, results: readonly RdfVectorSearchResult[]): void {
+    if (!results.some((result) => result.scoreComponents?.backend === 'pg-vector')) {
+      return;
+    }
+    pushUniquePlan(metrics.plan, 'PostgresNativeVector(VectorSearch pgvector)');
+    pushUniquePlan(metrics.plan, 'PostgresNativeVectorHnsw(VectorSearch)');
+    pushUniquePlan(metrics.plan, 'PostgresNativeVectorRank(pgvector)');
   }
 
   private async vectorSearchResults(pattern: RdfVectorSearchPattern, exactSource?: string): Promise<RdfVectorSearchResult[]> {
@@ -12670,6 +12809,338 @@ function buildPgRequiredSources(
   ];
 }
 
+function pgBoundVariables(bindings: RdfBindingRow[]): Set<string> {
+  const names = new Set<string>();
+  for (const binding of bindings.slice(0, PG_PLANNER_SAMPLE_BINDINGS)) {
+    for (const name of Object.keys(binding)) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+function pgRequiredSourceConnected(source: PgRequiredSource, boundVariables: Set<string>): boolean {
+  const sourceVariables = pgVariablesInRequiredSource(source);
+  return sourceVariables.length === 0 || sourceVariables.some((name) => boundVariables.has(name));
+}
+
+function estimatePgPlannerFutureCostRows(
+  selected: PgRequiredSourceChoice,
+  candidates: PgRequiredSourceChoice[],
+  boundVariables: Set<string>,
+): { costRows: number; bounded: boolean } {
+  const remaining = candidates.filter((candidate) => candidate.originalOrder !== selected.originalOrder);
+  if (remaining.length === 0) {
+    return { costRows: 0, bounded: false };
+  }
+  const nextBoundVariables = new Set(boundVariables);
+  for (const variable of pgVariablesInRequiredSource(selected.source)) {
+    nextBoundVariables.add(variable);
+  }
+  return estimatePgPlannerSuffixCostRows(
+    remaining,
+    nextBoundVariables,
+    Math.max(1, selected.outputRows),
+    PG_PLANNER_SUFFIX_LOOKAHEAD_DEPTH,
+  );
+}
+
+function estimatePgPlannerSuffixCostRows(
+  candidates: PgRequiredSourceChoice[],
+  boundVariables: Set<string>,
+  inputRows: number,
+  depthRemaining: number,
+): { costRows: number; bounded: boolean } {
+  if (candidates.length === 0) {
+    return { costRows: 0, bounded: false };
+  }
+  if (depthRemaining <= 0) {
+    return {
+      costRows: estimatePgPlannerGreedySuffixCostRows(candidates, boundVariables, inputRows),
+      bounded: true,
+    };
+  }
+
+  let bestCost = Number.POSITIVE_INFINITY;
+  let bounded = candidates.length > PG_PLANNER_SUFFIX_LOOKAHEAD_WIDTH;
+  const considered = rankPgPlannerLookaheadCandidates(candidates, boundVariables, inputRows)
+    .slice(0, PG_PLANNER_SUFFIX_LOOKAHEAD_WIDTH);
+  for (const candidate of considered) {
+    const connected = pgRequiredSourceConnected(candidate.source, boundVariables);
+    const outputRows = estimatePgPlannerAbstractOutputRows(candidate.source, candidate.estimateRows, inputRows, connected);
+    const nextBoundVariables = new Set(boundVariables);
+    for (const variable of pgVariablesInRequiredSource(candidate.source)) {
+      nextBoundVariables.add(variable);
+    }
+    const remaining = candidates.filter((entry) => entry.originalOrder !== candidate.originalOrder);
+    const suffixCost = estimatePgPlannerSuffixCostRows(
+      remaining,
+      nextBoundVariables,
+      Math.max(1, outputRows),
+      depthRemaining - 1,
+    );
+    bounded = bounded || suffixCost.bounded;
+    const cost = outputRows + suffixCost.costRows;
+    bestCost = Math.min(bestCost, cost);
+  }
+  return {
+    costRows: Number.isFinite(bestCost) ? bestCost : 0,
+    bounded,
+  };
+}
+
+function estimatePgPlannerAbstractOutputRows(
+  source: PgRequiredSource,
+  estimateRows: number,
+  inputRows: number,
+  connected: boolean,
+): number {
+  const safeEstimateRows = Math.max(0, estimateRows);
+  const safeInputRows = Math.max(1, inputRows);
+  if (!connected) {
+    return safeEstimateRows * safeInputRows;
+  }
+  if (pgVariablesInRequiredSource(source).length > 0) {
+    return Math.max(safeEstimateRows, safeInputRows);
+  }
+  return safeEstimateRows;
+}
+
+function estimatePgPlannerGreedySuffixCostRows(
+  candidates: PgRequiredSourceChoice[],
+  boundVariables: Set<string>,
+  inputRows: number,
+): number {
+  let remaining = [...candidates];
+  const currentBoundVariables = new Set(boundVariables);
+  let currentInputRows = inputRows;
+  let totalCostRows = 0;
+  while (remaining.length > 0) {
+    const [candidate] = rankPgPlannerLookaheadCandidates(remaining, currentBoundVariables, currentInputRows);
+    if (!candidate) {
+      break;
+    }
+    const connected = pgRequiredSourceConnected(candidate.source, currentBoundVariables);
+    const outputRows = estimatePgPlannerAbstractOutputRows(candidate.source, candidate.estimateRows, currentInputRows, connected);
+    totalCostRows += outputRows;
+    currentInputRows = Math.max(1, outputRows);
+    for (const variable of pgVariablesInRequiredSource(candidate.source)) {
+      currentBoundVariables.add(variable);
+    }
+    remaining = remaining.filter((entry) => entry.originalOrder !== candidate.originalOrder);
+  }
+  return totalCostRows;
+}
+
+function rankPgPlannerLookaheadCandidates(
+  candidates: PgRequiredSourceChoice[],
+  boundVariables: Set<string>,
+  inputRows: number,
+): PgRequiredSourceChoice[] {
+  return [...candidates].sort((left, right) => {
+    const leftConnected = pgRequiredSourceConnected(left.source, boundVariables);
+    const rightConnected = pgRequiredSourceConnected(right.source, boundVariables);
+    const leftOutputRows = estimatePgPlannerAbstractOutputRows(left.source, left.estimateRows, inputRows, leftConnected);
+    const rightOutputRows = estimatePgPlannerAbstractOutputRows(right.source, right.estimateRows, inputRows, rightConnected);
+    return left.priority - right.priority
+      || Number(!leftConnected) - Number(!rightConnected)
+      || leftOutputRows - rightOutputRows
+      || left.estimateRows - right.estimateRows
+      || left.originalOrder - right.originalOrder;
+  });
+}
+
+function pgVariablesInRequiredSource(source: PgRequiredSource): string[] {
+  if (source.kind === 'pattern') {
+    return variablesInPattern(source.pattern);
+  }
+  return uniqueStrings([
+    source.pattern.source,
+    source.pattern.chunk,
+    source.pattern.content,
+    source.pattern.heading,
+    source.pattern.score,
+    source.pattern.scoreComponents,
+    source.pattern.workspace,
+    source.pattern.localPath,
+    source.pattern.contentType,
+    source.pattern.sourceKey,
+    source.pattern.retrievalPoint,
+    source.pattern.ordinal,
+    source.pattern.level,
+    source.pattern.startOffset,
+    source.pattern.endOffset,
+    ...(source.kind === 'text'
+      ? [
+          source.pattern.retrievalKind,
+          source.pattern.entityProvenance,
+        ]
+      : [
+          source.pattern.distance,
+          source.pattern.provider,
+          source.pattern.model,
+          source.pattern.modelVersion,
+          source.pattern.inputKind,
+          source.pattern.inputHash,
+          source.pattern.projectionPolicyVersion,
+        ]),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0));
+}
+
+function describePgPlannerSourceChoice(
+  selected: PgRequiredSourceChoice,
+  candidates: PgRequiredSourceChoice[],
+): string {
+  return `PostgresPlannerSourceChoice(selected:${describePgRequiredSourceName(selected.source)} candidates:${candidates.map((candidate) => (
+    `${describePgRequiredSourceName(candidate.source)}[priority:${candidate.priority},connected:${candidate.connected},input:${candidate.inputRows},rows:${Math.max(0, Math.ceil(candidate.estimateRows))},output:${Math.max(0, Math.ceil(candidate.outputRows))},cost:${Math.max(0, Math.ceil(candidate.costRows))},future:${Math.max(0, Math.ceil(candidate.futureCostRows))},lookahead:${candidate.futureCostBounded ? 'bounded' : 'full'},total:${Math.max(0, Math.ceil(candidate.totalCostRows))},penalty:${candidate.disconnectedPenalty}]`
+  )).join(',')})`;
+}
+
+function describePgRequiredSourceName(source: PgRequiredSource): string {
+  switch (source.kind) {
+    case 'pattern':
+      return `RdfBgpSource#${source.originalIndex}`;
+    case 'text':
+      return `TextMatchSource#${source.originalIndex}`;
+    case 'vector':
+      return `VectorMatchSource#${source.originalIndex}`;
+  }
+}
+
+function applyPgSearchCandidateBudget(query: RdfQuery): { query: RdfQuery; plan: string[] } {
+  const budget = pgSearchCandidateBudget(query);
+  if (budget === undefined) {
+    return { query, plan: [] };
+  }
+  const rankedVariables = pgSearchRankInputVariables(query);
+  if (rankedVariables.size === 0) {
+    return { query, plan: [] };
+  }
+
+  const plan: string[] = [];
+  const textSearch = (query.textSearch ?? []).map((pattern) => {
+    if (!pattern.score || !rankedVariables.has(pattern.score) || hasSearchWindow(pattern)) {
+      return pattern;
+    }
+    plan.push(`CandidateBudget(TextSearch limit:${budget} from-query-limit:${Math.max(0, query.limit ?? 0)})`);
+    return { ...pattern, candidateLimit: budget };
+  });
+  const vectorSearch = (query.vectorSearch ?? []).map((pattern) => {
+    if (!pattern.score || !rankedVariables.has(pattern.score) || hasSearchWindow(pattern)) {
+      return pattern;
+    }
+    plan.push(`CandidateBudget(VectorSearch limit:${budget} from-query-limit:${Math.max(0, query.limit ?? 0)})`);
+    return { ...pattern, candidateLimit: budget };
+  });
+
+  if (plan.length === 0) {
+    return { query, plan: [] };
+  }
+
+  return {
+    query: {
+      ...query,
+      ...(textSearch.length > 0 ? { textSearch } : {}),
+      ...(vectorSearch.length > 0 ? { vectorSearch } : {}),
+    },
+    plan,
+  };
+}
+
+function pgSearchCandidateBudget(query: RdfQuery): number | undefined {
+  if (query.limit === undefined) {
+    return undefined;
+  }
+  if ((query.textSearch?.length ?? 0) === 0 && (query.vectorSearch?.length ?? 0) === 0) {
+    return undefined;
+  }
+  if (!query.orderBy?.some((entry) => (entry.direction ?? 'asc') === 'desc')) {
+    return undefined;
+  }
+  const requestedRows = Math.max(0, query.limit + (query.offset ?? 0));
+  if (requestedRows === 0) {
+    return 0;
+  }
+  return Math.min(
+    PG_SEARCH_CANDIDATE_BUDGET_MAX,
+    Math.max(PG_SEARCH_CANDIDATE_BUDGET_MIN, requestedRows * PG_SEARCH_CANDIDATE_BUDGET_MULTIPLIER),
+  );
+}
+
+function pgSearchRankInputVariables(query: RdfQuery): Set<string> {
+  const rankedVariables = new Set<string>();
+  for (const order of query.orderBy ?? []) {
+    if ((order.direction ?? 'asc') !== 'desc') {
+      continue;
+    }
+    const bind = query.binds?.find((entry) => entry.variable === order.variable);
+    if (!bind) {
+      continue;
+    }
+    for (const variable of bindExpressionVariables(bind.expression)) {
+      rankedVariables.add(variable);
+    }
+  }
+  return rankedVariables;
+}
+
+function bindExpressionVariables(expression: RdfBindExpression): Set<string> {
+  const variables = new Set<string>();
+  collectBindExpressionVariables(expression, variables);
+  return variables;
+}
+
+function collectBindExpressionVariables(expression: RdfBindExpression, variables: Set<string>): void {
+  switch (expression.type) {
+    case 'variable':
+      variables.add(expression.variable);
+      return;
+    case 'stringValue':
+    case 'stringLength':
+      variables.add(expression.variable);
+      return;
+    case 'term':
+      return;
+    case 'lowerCase':
+    case 'upperCase':
+    case 'numericValue':
+    case 'iri':
+      collectBindExpressionVariables(expression.expression, variables);
+      return;
+    case 'coalesce':
+    case 'add':
+    case 'multiply':
+    case 'concat':
+      for (const child of expression.expressions) {
+        collectBindExpressionVariables(child, variables);
+      }
+      return;
+    case 'if':
+      collectBindExpressionVariables(expression.then, variables);
+      collectBindExpressionVariables(expression.else, variables);
+      return;
+    case 'substring':
+      collectBindExpressionVariables(expression.expression, variables);
+      collectBindExpressionVariables(expression.start, variables);
+      if (expression.length) {
+        collectBindExpressionVariables(expression.length, variables);
+      }
+      return;
+    case 'strdt':
+      collectBindExpressionVariables(expression.lexical, variables);
+      collectBindExpressionVariables(expression.datatype, variables);
+      return;
+    case 'strlang':
+      collectBindExpressionVariables(expression.lexical, variables);
+      collectBindExpressionVariables(expression.language, variables);
+      return;
+    default: {
+      const exhaustive: never = expression;
+      throw new Error(`Unsupported RDF bind expression: ${JSON.stringify(exhaustive)}`);
+    }
+  }
+}
+
 function pgRequiredSourcePriority(source: PgRequiredSource): number {
   if (source.kind !== 'pattern' && hasSearchWindow(source.pattern)) {
     return 0;
@@ -12720,7 +13191,7 @@ function describeVectorSearchPlan(pattern: RdfVectorSearchPattern): string[] {
 }
 
 function describeVectorSearchTopKPushdown(pattern: RdfVectorSearchPattern): string | undefined {
-  const window = describeSearchWindow(pattern.limit, pattern.offset).trim();
+  const window = describeSearchWindow(pattern.limit ?? pattern.candidateLimit, pattern.offset).trim();
   if (!window) {
     return undefined;
   }
@@ -12729,7 +13200,7 @@ function describeVectorSearchTopKPushdown(pattern: RdfVectorSearchPattern): stri
 }
 
 function describeTextSearchTopKPushdown(pattern: RdfTextSearchPattern): string | undefined {
-  const window = describeSearchWindow(pattern.limit, pattern.offset).trim();
+  const window = describeSearchWindow(pattern.limit ?? pattern.candidateLimit, pattern.offset).trim();
   if (!window) {
     return undefined;
   }
@@ -12813,7 +13284,7 @@ function textSearchOptions(pattern: RdfTextSearchPattern, exactSource?: string):
     deniedSources: pattern.scope?.deniedSources,
     deniedSourcePrefixes: pattern.scope?.deniedSourcePrefixes,
     entities: pattern.entities,
-    limit: pattern.limit,
+    limit: pattern.limit ?? pattern.candidateLimit,
     offset: pattern.offset,
     perSourceLimit: pattern.perSourceLimit,
     orderBy: pattern.orderBy,
@@ -12837,7 +13308,7 @@ function vectorSearchOptions(pattern: RdfVectorSearchPattern, exactSource?: stri
     allowedSources: pattern.scope?.allowedSources,
     deniedSources: pattern.scope?.deniedSources,
     deniedSourcePrefixes: pattern.scope?.deniedSourcePrefixes,
-    limit: pattern.limit,
+    limit: pattern.limit ?? pattern.candidateLimit,
     offset: pattern.offset,
     threshold: pattern.threshold,
     orderBy: pattern.orderBy,
@@ -12906,6 +13377,10 @@ function canUseGlobalSearchForBoundSources(
 }
 
 function boundSearchSourceCount(input: RdfBindingRow[], sourceVariable: string): number {
+  return boundSearchSourceValues(input, sourceVariable).length;
+}
+
+function boundSearchSourceValues(input: RdfBindingRow[], sourceVariable: string): string[] {
   const sources = new Set<string>();
   for (const binding of input) {
     const term = binding[sourceVariable];
@@ -12913,7 +13388,7 @@ function boundSearchSourceCount(input: RdfBindingRow[], sourceVariable: string):
       sources.add(term.value);
     }
   }
-  return sources.size;
+  return [...sources];
 }
 
 function bindTextSearchResultsBySource(

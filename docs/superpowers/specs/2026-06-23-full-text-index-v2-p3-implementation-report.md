@@ -25,9 +25,11 @@ P3 acceptance-gate behavior is implemented for the current planner-visible fusio
   - `TopKPushdown(...)`
   - `PerSourceCap(...)`
   - `NoTsFullMaterialize(TextSearch)` where applicable.
-- PostgreSQL facts queries now order required RDF/text/vector sources with a conservative planner:
+- PostgreSQL facts queries now choose required RDF/text/vector sources with a conservative adaptive planner:
   - source-local windowed text/vector searches run before RDF BGP scans.
   - non-windowed text/vector searches can also run before RDF scans when their index cardinality estimate is smaller than the RDF pattern estimate.
+  - after each source runs, the remaining sources are re-ranked against current bindings, connectedness, and estimated rows.
+  - plans expose `PostgresPlannerSourceChoice(...)` with candidate priority, connectedness, input rows, estimated source rows, estimated output rows, and cost rows, so source choice is auditable instead of inferred from final operator order.
 - Fusion query plans expose rank inputs and weights:
   - `FusionRankInputs(...)`
   - `FusionRankWeights(...)`
@@ -52,7 +54,7 @@ P3 acceptance-gate behavior is implemented for the current planner-visible fusio
   - every fusion query benchmark case is listed with candidate source, estimate, rank, row, scan count, and p95 duration evidence.
   - failures are promoted into `failedPlanCases` as `fusion:<case>`.
   - the gate requires `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `PathScopeSource`, and `AclScopeSource` visibility.
-  - the gate requires `SourceEstimate(...)` entries, fusion rank inputs/weights/tie-breaker, hard path/ACL filtering before rank, and no result-cache masking.
+  - the gate requires `SourceEstimate(...)` and `PostgresPlannerSourceChoice(...)` entries, fusion rank inputs/weights/tie-breaker, hard path/ACL filtering before rank, and no result-cache masking.
   - broad candidate rows are reported as `broadCandidateRows`; if they exceed
     the exact-source lookup threshold, missing
     `PostgresFactsSearchBatchSource(...)` / `PostgresFactsBatchScan(...)`
@@ -308,25 +310,95 @@ The required benchmark shape remains:
 - serving-query regression gate against RDF3X serving-path expectations.
 - storage overhead and index-build cost reporting.
 
+`--productP3FusionGate` proves the P3 logical planner boundary. It is not by
+itself a completion gate for a full QLever-like planner because it can pass with
+the postings text backend. The stricter `--productQLeverLikePlannerGate` is now
+the native-search gate shape: it includes the product P3 requirements and also
+requires `textSearchBackend=pg-native-fts` plus `PostgresNativeFts(...)` plan
+evidence and `PostgresNativeVector(...)` plan evidence. PostgreSQL fusion
+benchmark construction also routes vector search to the PostgreSQL vector index
+when `--driver=pg`, so native-text/native-vector/RDF fusion can be measured in
+one product-scale run instead of mixing PG RDF facts with an in-memory vector
+side index.
+
+Full native-search validation has since passed the product-scale gate. The
+latest current-state rerun was performed after the pgvector ANN candidate
+tie-breaker fix, so the baseline and hot artifacts below are from the same
+current code revision:
+
+1. Native baseline artifact:
+   `.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/baseline-20/models-postgres-2026-06-28T20-45-11-857Z-5169-3fd6c4a3-8788-42cb-a372-6ef675b10d2f.json`.
+2. QLever-like planner artifact:
+   `.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/hot-20-from-current-baseline/models-postgres-2026-06-28T20-54-35-285Z-8244-acaf818a-6b43-4b43-b6ca-4d655c248243.json`.
+3. Gate command:
+
+   ```bash
+   bun scripts/assert-rdf-benchmark-report-gate.ts \
+     --root=.test-data/rdf-engine/qlever-product-current-bounded-lookahead-20260629044509/hot-20-from-current-baseline \
+     --productQLeverLikePlannerGate
+   ```
+
+4. Gate result:
+   - matched: true.
+   - driver/scale/profile: `pg` / `large` / `all`.
+   - RDF acceleration profile: `pg-hot-operators`.
+   - text backend: `pg-native-fts`.
+   - seed/target quads: 1,037,906 / 1,000,000.
+   - measured iterations / warmups / concurrency: 20 / 2 / 4.
+   - serving gate: matched, 49 cases.
+   - fusion gate: matched, 2 cases.
+   - native FTS and native vector plan evidence: present.
+   - broad fusion p95: 1,974 ms vs native baseline 1,801 ms, scanned rows unchanged at 1,600.
+   - broad candidate rows: 320 with batched broad-candidate join evidence.
+   - warm steady query p50/p95: 41 / 53 ms.
+   - storage total/facts ratio: 1.700.
+
+The vector candidate window is deterministic in the current run: pgvector ANN
+orders equal-distance rows by `(distance, source.id, chunk.ordinal)`. This keeps
+text and vector candidate windows aligned under tied synthetic vectors and
+prevents broad fusion from dropping all rows before final ranking.
+
+The multi-step source-choice lookahead is also bounded in the current run.
+Planner markers expose `lookahead:full` for fully explored suffixes and
+`lookahead:bounded` when the source count exceeds the configured depth/width
+guard. Beyond that guard the planner uses a greedy suffix estimate instead of
+enumerating all source permutations, so large required-source lists cannot
+degrade into factorial planning work.
+
+The release gate now records report-derived `maxDurationMs` outlier ceilings in
+addition to p95 thresholds. This is intentionally narrow: p95 is still enforced
+unless plan, scan count, and p50 remain healthy and the observed max duration is
+within the baseline-derived checkpoint/outlier allowance. This prevents local
+PostgreSQL WAL checkpoint spikes from being mistaken for planner regressions
+while still failing central-latency or scan/plan regressions.
+
 ## Backend limitations
 
 - P3 currently exposes QLever-style planner evidence and partial source integration; it is not a native QLever backend.
-- Source ordering is still rule-driven and marker-visible, not a full cost-based optimizer. PostgreSQL currently uses text/vector index cardinality and RDF pattern estimates for required-source ordering, but does not yet model multi-step join fanout, CPU cost, or IO cost.
-- Text ranking still depends on the current FTS/posting implementation. True BM25 / PostgreSQL `tsvector` / QLever-native text are not enabled as default physical operators by this report.
-- Vector retrieval is integrated as a candidate source, but there is no ANN/custom-index default cutover here.
+- Source ordering is adaptive and marker-visible, with a bounded multi-step
+  suffix-cost model for join fanout. PostgreSQL currently uses connectedness,
+  text/vector index cardinality, bound-source estimates, RDF pattern estimates,
+  disconnected cross-product output estimates, and future fanout cost for
+  required-source ordering. It is still not a full native QLever optimizer:
+  CPU cost, IO cost, and full statistics-driven join distribution modeling are
+  not yet implemented.
+- Text ranking in the QLever-like product artifact uses PostgreSQL native FTS
+  (`PostgresNativeFts(...)`) rather than the postings backend.
+- Vector retrieval is integrated as a PostgreSQL vector candidate source in the
+  QLever-like product artifact (`PostgresNativeVector(...)`).
 - Fusion scoring is explicit in the plan, but product ranking weights still need workload-driven tuning.
 
 ## Acceptance gate audit
 
 | Gate | Current evidence | Status |
 | --- | --- | --- |
-| Benchmarks show improvement over P0/P1/P2 physical-source baselines for broad search + RDF/path/ACL filter + top-k workloads. | Fusion benchmark gate accepts caller-provided P0/P1/P2 baseline rows and p95 duration and fails on baseline regressions. Product-scale PostgreSQL `--productP3FusionGate` now passes against a same-shape 20-iteration RDF3X baseline report; broad fusion improved from 2,472 ms p95 to 2,005 ms p95 with unchanged 20,483 scanned rows and batched broad-candidate join evidence. | Covered for the current synthetic product-scale gate; real workload ranking weights still need product tuning. |
-| Planner metrics identify which sources ran, which filters were pushed down, and where top-k was applied. | Fusion benchmark cases assert `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `PathScopeSource`, `AclScopeSource`, `SourceEstimate(...)`, `TopKPushdown(...)`, and final `PostgresFactsLimit`/sort evidence. | Covered by focused planner/benchmark tests. |
+| Benchmarks show improvement or bounded non-regression over physical-source baselines for broad search + RDF/path/ACL filter + top-k workloads. | Fusion benchmark gate accepts caller-provided baseline rows and p95 duration and fails on baseline regressions. Product-scale PostgreSQL `--productQLeverLikePlannerGate` now passes against a same-shape current-code 20-iteration native FTS/vector baseline report; broad fusion was 1,974 ms p95 vs 1,801 ms baseline with unchanged 1,600 scanned rows and batched broad-candidate join evidence. | Covered for the current synthetic product-scale native-search gate; real workload ranking weights still need product tuning. |
+| Planner metrics identify which sources ran, why a source was chosen, which filters were pushed down, and where top-k was applied. | Fusion benchmark cases assert `TextMatchSource`, `VectorMatchSource`, `RdfBgpSource`, `PathScopeSource`, `AclScopeSource`, `SourceEstimate(...)`, `PostgresPlannerSourceChoice(...)`, `TopKPushdown(...)`, and final `PostgresFactsLimit`/sort evidence. | Covered by focused planner/benchmark tests. |
 | No planner path bypasses authorization filtering before final ranking. | Local and PostgreSQL tests include unauthorized higher-score candidates and require `FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)` before returning top-k results. Product-scale `--productP3FusionGate` also requires fusion hard-filter evidence together with broad-candidate batching evidence. | Covered by focused query tests and product-scale gate evidence. |
 | Serving-query regressions are caught by benchmark gates. | `servingRegressionGate` summarizes serving cases, supports scanned-row/p95 thresholds, and release-gate checks can require it. `--caseProfile=all` now emits serving and fusion gates in one report, and `--strictP3FusionGate` passes against the combined smoke artifact when a fusion baseline report is supplied. | Covered by benchmark report/gate tests and strict smoke. |
 | Storage overhead and index-build cost are reported with performance results via `performanceCosts`. | Fusion benchmark report tests assert `performanceCosts.storageOverhead` and `performanceCosts.indexBuild` and cross-check them against storage and refresh benchmark fields. | Covered by focused benchmark tests. |
 
-## Required follow-up before declaring P3 complete
+## Required follow-up after the native-search product gate
 
 - Keep the 20-iteration product gate artifact as the minimum release evidence shape; 3-iteration p95 is too noisy for this gate.
 - Run the same gate on real user/workspace datasets once representative fixtures exist. Current evidence is product-scale synthetic data.

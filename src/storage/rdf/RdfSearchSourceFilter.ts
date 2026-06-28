@@ -66,10 +66,10 @@ export function appendPgRdfSearchSourceFilters(
     conditions.push(`${sourceColumn} = ${placeholder(filter.source)}`);
   }
   if (filter.sourcePrefix) {
-    conditions.push(`${sourceColumn} >= ${placeholder(filter.sourcePrefix)} AND ${sourceColumn} < ${placeholder(`${filter.sourcePrefix}\uffff`)}`);
+    appendPgPrefixFilter(conditions, placeholder, sourceColumn, filter.sourcePrefix);
   }
   if (filter.localPathPrefix) {
-    conditions.push(`${localPathColumn} >= ${placeholder(filter.localPathPrefix)} AND ${localPathColumn} < ${placeholder(`${filter.localPathPrefix}\uffff`)}`);
+    appendPgPrefixFilter(conditions, placeholder, localPathColumn, filter.localPathPrefix);
   }
 
   const allowedSources = uniqueStrings(filter.allowedSources);
@@ -88,8 +88,26 @@ export function appendPgRdfSearchSourceFilters(
 
   const deniedPrefixes = uniqueStrings(filter.deniedSourcePrefixes);
   for (const prefix of deniedPrefixes ?? []) {
-    conditions.push(`NOT (${sourceColumn} >= ${placeholder(prefix)} AND ${sourceColumn} < ${placeholder(`${prefix}\uffff`)})`);
+    conditions.push(`NOT (${pgPrefixCondition(sourceColumn, placeholder(prefix), placeholder(`${prefix}\uffff`), placeholder(prefix))})`);
   }
+}
+
+function appendPgPrefixFilter(
+  conditions: string[],
+  placeholder: (value: unknown) => string,
+  column: string,
+  prefix: string,
+): void {
+  conditions.push(pgPrefixCondition(
+    column,
+    placeholder(prefix),
+    placeholder(`${prefix}\uffff`),
+    placeholder(prefix),
+  ));
+}
+
+function pgPrefixCondition(column: string, lower: string, upper: string, exact: string): string {
+  return `(${column} COLLATE "C") >= (${lower} COLLATE "C") AND (${column} COLLATE "C") < (${upper} COLLATE "C") AND starts_with(${column}, ${exact})`;
 }
 
 function uniqueStrings(values: string[] | undefined): string[] | undefined {

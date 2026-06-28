@@ -783,10 +783,12 @@ export function vectorScoreComponents(
   queryMagnitude: number,
   score: number,
   distance: number,
+  backend?: 'component' | 'pg-vector',
 ): RdfVectorScoreComponents {
   const distanceSquared = row.vector_distance_squared ?? undefined;
   return {
     sourceType: 'vector',
+    ...(backend ? { backend } : {}),
     metric,
     dimensions: row.dimensions,
     score,

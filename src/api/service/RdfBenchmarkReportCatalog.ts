@@ -63,6 +63,7 @@ export interface RdfBenchmarkReportSummary {
   fusionHardFiltersBeforeRankCaseCount?: number;
   fusionBatchedBroadCandidateJoinCaseCount?: number;
   nativeTextFtsCaseCount?: number;
+  nativeVectorCaseCount?: number;
   ingestDurationMs?: number;
   copyRows?: number;
   copyFallbacks?: number;
@@ -287,6 +288,7 @@ function summarizeBenchmarkReport(input: unknown, reportPath: string): RdfBenchm
     fusionHardFiltersBeforeRankCaseCount: countFusionCases(fusionBenchmarkGate, 'hardFiltersBeforeRank'),
     fusionBatchedBroadCandidateJoinCaseCount: countFusionCases(fusionBenchmarkGate, 'batchedBroadCandidateJoin'),
     nativeTextFtsCaseCount: countQueryCasesWithPlan(report, 'PostgresNativeFts('),
+    nativeVectorCaseCount: countQueryCasesWithPlan(report, 'PostgresNativeVector('),
     ingestDurationMs: numberValue(seed?.ingestDurationMs),
     copyRows: numberValue(copyFromRows?.rows),
     copyFallbacks: numberValue(copyFromRows?.fallbacks),

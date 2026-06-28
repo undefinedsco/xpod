@@ -6,6 +6,7 @@
 
 services:
   postgres:
+    image: pgvector/pgvector:pg16
     environment:
       PGDATA: /var/lib/postgresql/tmpdata/pgdata
     tmpfs:

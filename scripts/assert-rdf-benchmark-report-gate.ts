@@ -143,12 +143,20 @@ export function parseArgs(args: string[]): CliOptions {
       options.requireNativeTextFtsEvidence = true;
       continue;
     }
+    if (arg === '--requireNativeVectorEvidence') {
+      options.requireNativeVectorEvidence = true;
+      continue;
+    }
     if (arg === '--strictP3FusionGate') {
       applyStrictP3FusionGate(options);
       continue;
     }
     if (arg === '--productP3FusionGate') {
       applyProductP3FusionGate(options);
+      continue;
+    }
+    if (arg === '--productQLeverLikePlannerGate') {
+      applyProductQLeverLikePlannerGate(options);
       continue;
     }
     throw new Error(`Unknown argument: ${arg}`);
@@ -183,6 +191,13 @@ function applyProductP3FusionGate(options: CliOptions): void {
   options.requireFusionBatchedBroadCandidateJoinEvidence = true;
 }
 
+function applyProductQLeverLikePlannerGate(options: CliOptions): void {
+  applyProductP3FusionGate(options);
+  options.requiredTextSearchBackend = 'pg-native-fts';
+  options.requireNativeTextFtsEvidence = true;
+  options.requireNativeVectorEvidence = true;
+}
+
 function printResult(result: ReturnType<typeof evaluateRdfBenchmarkReportGate>): void {
   console.log('[rdf-benchmark-report-gate]');
   console.log(`  matched: ${result.matched}`);
@@ -208,6 +223,7 @@ function printResult(result: ReturnType<typeof evaluateRdfBenchmarkReportGate>):
   console.log(`  require fusion hard-filter evidence: ${result.required.requireFusionHardFilterEvidence}`);
   console.log(`  require fusion batched broad candidate join evidence: ${result.required.requireFusionBatchedBroadCandidateJoinEvidence}`);
   console.log(`  require native text FTS evidence: ${result.required.requireNativeTextFtsEvidence}`);
+  console.log(`  require native vector evidence: ${result.required.requireNativeVectorEvidence}`);
   if (result.required.requiredRdfAccelerationProfile) {
     console.log(`  required acceleration: ${result.required.requiredRdfAccelerationProfile}`);
   }
@@ -275,8 +291,10 @@ Options:
   --requireFusionHardFilterEvidence Require fusion benchmark cases to include hard-filter-before-rank evidence
   --requireFusionBatchedBroadCandidateJoinEvidence Require broad fusion cases to include batched join evidence
   --requireNativeTextFtsEvidence   Require query plans to show PG-native FTS evidence
+  --requireNativeVectorEvidence    Require query plans to show PG-native vector evidence
   --strictP3FusionGate              Require all-profile serving, fusion, baseline, and stable timing gates
   --productP3FusionGate             Require large PG product-scale strict gate plus batched broad-candidate evidence
+  --productQLeverLikePlannerGate    Require product P3 gate plus PG-native text/vector evidence
 `);
 }
 

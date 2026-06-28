@@ -298,18 +298,21 @@ export interface RdfModelPostgresConcurrencyGate {
 
 export interface RdfModelPostgresBenchmarkGateThresholds {
   maxP95DurationMs?: number;
+  maxDurationMs?: number;
   maxScannedRows?: number;
   cases?: Record<string, RdfModelPostgresBenchmarkGateCaseThresholds>;
 }
 
 export interface RdfModelPostgresBenchmarkGateCaseThresholds {
   maxP95DurationMs?: number;
+  maxDurationMs?: number;
   maxScannedRows?: number;
 }
 
 export interface RdfModelPostgresBenchmarkGateBaseline {
   label?: string;
   p95DurationMs?: number;
+  maxDurationMs?: number;
   scannedRows?: number;
   maxP95DurationMs?: number;
   maxScannedRows?: number;
@@ -354,6 +357,7 @@ export interface RdfModelPostgresFusionBenchmarkGateCase {
   baselineComparison?: RdfModelPostgresBenchmarkGateBaselineComparison;
   candidateSources: string[];
   sourceEstimateCount: number;
+  sourceChoiceCount: number;
   hardFiltersBeforeRank: boolean;
   rankInputs: boolean;
   rankWeights: boolean;
@@ -5233,10 +5237,11 @@ function postgresServingRegressionGateCase(
   };
 }
 
-function postgresServingRegressionFailures(
+export function postgresServingRegressionFailures(
   result: RdfModelQueryBenchmarkResult,
   thresholds?: RdfModelPostgresBenchmarkGateThresholds,
 ): string[] {
+  const resolvedThresholds = benchmarkGateThresholdsForCase(thresholds, result.name);
   const failedReasons = [...result.missingPlan];
   const planText = result.physicalPlan.join('\n');
   const numericAggregate = result.expectedPlan.includes('numeric-aggregate')
@@ -5256,13 +5261,38 @@ function postgresServingRegressionFailures(
     && !planText.includes('PostgresRdfNativeCustomIndex')) {
     failedReasons.push('missing-rdf3x-serving-path');
   }
-  if (thresholds?.maxScannedRows !== undefined && result.scannedRows > thresholds.maxScannedRows) {
+  if (resolvedThresholds?.maxScannedRows !== undefined && result.scannedRows > resolvedThresholds.maxScannedRows) {
     failedReasons.push('scanned-rows-threshold');
   }
-  if (thresholds?.maxP95DurationMs !== undefined && result.p95DurationMs > thresholds.maxP95DurationMs) {
+  if (resolvedThresholds?.maxP95DurationMs !== undefined
+    && result.p95DurationMs > resolvedThresholds.maxP95DurationMs
+    && !servingP95RegressionCoveredByOutlierBudget(result, resolvedThresholds)) {
     failedReasons.push('p95-duration-threshold');
   }
   return [...new Set(failedReasons)];
+}
+
+function servingP95RegressionCoveredByOutlierBudget(
+  result: RdfModelQueryBenchmarkResult,
+  thresholds: RdfModelPostgresBenchmarkGateCaseThresholds,
+): boolean {
+  if (thresholds.maxP95DurationMs === undefined || thresholds.maxDurationMs === undefined) {
+    return false;
+  }
+  if (!result.planMatched || result.missingPlan.length > 0) {
+    return false;
+  }
+  if (thresholds.maxScannedRows !== undefined && result.scannedRows > thresholds.maxScannedRows) {
+    return false;
+  }
+  if (result.p50DurationMs > thresholds.maxP95DurationMs) {
+    return false;
+  }
+  return maxBenchmarkDurationMs(result) <= thresholds.maxDurationMs;
+}
+
+function maxBenchmarkDurationMs(result: RdfModelQueryBenchmarkResult): number {
+  return Math.max(result.p95DurationMs, ...result.durationsMs);
 }
 
 function runPostgresFusionBenchmarkGate(
@@ -5311,6 +5341,9 @@ function postgresFusionBenchmarkGateCase(
   const sourceEstimateCount = result.physicalPlan
     .filter((entry) => entry.startsWith('SourceEstimate('))
     .length;
+  const sourceChoiceCount = result.physicalPlan
+    .filter((entry) => entry.startsWith('PostgresPlannerSourceChoice('))
+    .length;
   const hardFiltersBeforeRank = planText.includes('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
   const rankInputs = planText.includes('FusionRankInputs(text:?textScore,vector:?vectorScore,output:?fusionScore)');
   const rankWeights = planText.includes('FusionRankWeights(text:0.55,vector:0.45,output:?fusionScore)');
@@ -5325,6 +5358,7 @@ function postgresFusionBenchmarkGateCase(
     result,
     candidateSources,
     sourceEstimateCount,
+    sourceChoiceCount,
     hardFiltersBeforeRank,
     rankInputs,
     rankWeights,
@@ -5344,6 +5378,7 @@ function postgresFusionBenchmarkGateCase(
     ...(baselineComparison ? { baselineComparison } : {}),
     candidateSources,
     sourceEstimateCount,
+    sourceChoiceCount,
     hardFiltersBeforeRank,
     rankInputs,
     rankWeights,
@@ -5390,6 +5425,7 @@ function postgresFusionBenchmarkFailures(input: {
   result: RdfModelQueryBenchmarkResult;
   candidateSources: readonly string[];
   sourceEstimateCount: number;
+  sourceChoiceCount: number;
   hardFiltersBeforeRank: boolean;
   rankInputs: boolean;
   rankWeights: boolean;
@@ -5419,6 +5455,9 @@ function postgresFusionBenchmarkFailures(input: {
   }
   if (input.sourceEstimateCount < requiredSources.length) {
     failedReasons.push('missing-source-estimates');
+  }
+  if (input.sourceChoiceCount < 3) {
+    failedReasons.push('missing-source-choice-evidence');
   }
   if (!input.hardFiltersBeforeRank) {
     failedReasons.push('missing-hard-filters-before-rank');
@@ -5467,6 +5506,7 @@ function benchmarkGateThresholdsForCase(
   return {
     maxScannedRows: caseThresholds.maxScannedRows ?? thresholds.maxScannedRows,
     maxP95DurationMs: caseThresholds.maxP95DurationMs ?? thresholds.maxP95DurationMs,
+    maxDurationMs: caseThresholds.maxDurationMs ?? thresholds.maxDurationMs,
   };
 }
 

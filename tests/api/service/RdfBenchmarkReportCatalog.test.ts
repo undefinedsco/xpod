@@ -127,6 +127,7 @@ describe('RdfBenchmarkReportCatalog', () => {
               physicalPlan: [
                 'TextSearch("runtime approvals"@workspace:file://macbook.local/Users/alice/project/)',
                 'PostgresNativeFts(TextSearch pg-ts-rank-cd)',
+                'PostgresNativeVector(VectorSearch pgvector)',
               ],
             },
           ],
@@ -167,6 +168,7 @@ describe('RdfBenchmarkReportCatalog', () => {
       fusionHardFiltersBeforeRankCaseCount: 1,
       fusionBatchedBroadCandidateJoinCaseCount: 1,
       nativeTextFtsCaseCount: 1,
+      nativeVectorCaseCount: 1,
       ingestDurationMs: 3734,
       copyRows: 65_166,
       copyFallbacks: 0,

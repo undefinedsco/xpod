@@ -952,6 +952,7 @@ export interface RdfTextSearchPattern {
   scope?: RdfSearchScope;
   entities?: string[];
   limit?: number;
+  candidateLimit?: number;
   offset?: number;
   perSourceLimit?: number;
   orderBy?: RdfTextSearchOrder[];
@@ -1001,6 +1002,7 @@ export interface RdfVectorSearchPattern {
   vectorProjectionPolicyVersion?: string;
   scope?: RdfSearchScope;
   limit?: number;
+  candidateLimit?: number;
   offset?: number;
   threshold?: number;
   orderBy?: RdfVectorSearchOrder[];
@@ -1566,7 +1568,7 @@ export interface RdfTextScoreComponents {
 
 export interface RdfSearchCardinalityEstimate {
   rows: number;
-  source: 'text-normalized-scan' | 'text-term-posting' | 'pg-native-fts' | 'vector-candidate-count' | 'vector-component-score';
+  source: 'text-normalized-scan' | 'text-term-posting' | 'pg-native-fts' | 'vector-candidate-count' | 'vector-component-score' | 'pg-vector-score';
   indexChoice: string;
 }
 
@@ -1774,6 +1776,7 @@ export interface RdfVectorSummaryLifecycleEntry {
 
 export interface RdfVectorScoreComponents {
   sourceType: 'vector';
+  backend?: 'component' | 'pg-vector';
   metric: RdfVectorDistanceMetric;
   dimensions: number;
   score: number;

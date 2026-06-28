@@ -147,11 +147,13 @@ describe('rdf postgres models benchmark script helpers', () => {
               name: 'modeled thread message page query',
               scannedRows: 80,
               p95DurationMs: 10,
+              durationsMs: [8, 9, 10, 200],
             },
             {
               name: 'broad agent context text vector fusion query',
               scannedRows: 160,
               p95DurationMs: 20,
+              durationsMs: [18, 19, 20, 400],
             },
           ],
           servingRegressionGate: {
@@ -181,6 +183,7 @@ describe('rdf postgres models benchmark script helpers', () => {
           'modeled thread message page query': {
             maxScannedRows: 100,
             maxP95DurationMs: 35,
+            maxDurationMs: 300,
           },
         },
       });
@@ -189,6 +192,7 @@ describe('rdf postgres models benchmark script helpers', () => {
           'broad agent context text vector fusion query': {
             maxScannedRows: 200,
             maxP95DurationMs: 45,
+            maxDurationMs: 600,
           },
         },
       });
@@ -199,6 +203,7 @@ describe('rdf postgres models benchmark script helpers', () => {
           p95DurationMs: 20,
           maxScannedRows: 200,
           maxP95DurationMs: 45,
+          maxDurationMs: 600,
         },
       });
       expect(options.benchmarkGateConfigSources).toEqual([
@@ -321,6 +326,30 @@ describe('rdf postgres models benchmark script helpers', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('uses PostgreSQL-native search indexes for PG fusion benchmark runs', async () => {
+    const { benchmarkSearchIndexOptions } = await import('../../scripts/rdf-postgres-models-benchmark');
+    const connectionString = 'postgres://benchmark:benchmark@localhost:5432/xpod_benchmark';
+
+    const options = benchmarkSearchIndexOptions({
+      driver: 'pg',
+      connectionString,
+      caseProfile: 'fusion',
+      textSearchBackend: 'pg-native-fts',
+    });
+
+    expect(options).toEqual({
+      textIndex: {
+        driver: 'pg',
+        connectionString,
+        textSearchBackend: 'pg-native-fts',
+      },
+      vectorIndex: {
+        driver: 'pg',
+        connectionString,
+      },
+    });
+  });
 });
 
 describe('rdf benchmark report gate script helpers', () => {
@@ -395,6 +424,40 @@ describe('rdf benchmark report gate script helpers', () => {
       requireFusionBaselineSourceBaselineProfile: true,
       requireFusionHardFilterEvidence: true,
       requireFusionBatchedBroadCandidateJoinEvidence: true,
+    });
+  });
+
+  it('parses product QLever-like planner gate as product P3 plus native search evidence', async () => {
+    const { parseArgs } = await import('../../scripts/assert-rdf-benchmark-report-gate');
+
+    const options = parseArgs([
+      '--productQLeverLikePlannerGate',
+    ]);
+
+    expect(options).toMatchObject({
+      requiredScale: 'large',
+      requiredDriver: 'pg',
+      requiredCaseProfile: 'all',
+      requiredTextSearchBackend: 'pg-native-fts',
+      minTargetQuadCount: 1_000_000,
+      minSeedQuadCount: 1_000_000,
+      minIterations: 3,
+      minWarmupIterations: 1,
+      minConcurrency: 4,
+      requireFullScale: true,
+      requireCopyIngest: true,
+      requireServingRegressionGate: true,
+      requireServingRegressionThresholds: true,
+      requireFusionBenchmarkThresholds: true,
+      requireFusionBenchmarkGate: true,
+      requireFusionBaselineComparison: true,
+      requireBenchmarkGateConfigSources: true,
+      requireFusionBaselineReportSource: true,
+      requireFusionBaselineSourceBaselineProfile: true,
+      requireFusionHardFilterEvidence: true,
+      requireFusionBatchedBroadCandidateJoinEvidence: true,
+      requireNativeTextFtsEvidence: true,
+      requireNativeVectorEvidence: true,
     });
   });
 });
