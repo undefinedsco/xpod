@@ -181,13 +181,13 @@ int main() {
 
   xpod::qlever::ScanRequestInput input = {};
   input.permutation = Permutation::Enum::OPS;
+  input.needed_slots = XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_SUBJECT;
 
   auto result = xpod::qlever::executeScanToQleverIdTable(physical, input);
   if (result.status != XPOD_RDF_STATUS_OK) return 1;
-  if (result.table.numColumns() != 3 || result.table.numRows() != 1) return 2;
-  if (result.table(0, 0).getBits() != 1030) return 3;
-  if (result.table(0, 1).getBits() != 1020) return 4;
-  if (result.table(0, 2).getBits() != 1010) return 5;
+  if (result.table.numColumns() != 2 || result.table.numRows() != 1) return 2;
+  if (result.table(0, 0).getBits() != 1020) return 3;
+  if (result.table(0, 1).getBits() != 1010) return 4;
   return 0;
 }
 `, 'utf8');

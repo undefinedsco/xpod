@@ -384,12 +384,14 @@ int main() {
 
   xpod::qlever::ScanRequestInput input = {};
   input.permutation = Permutation::Enum::PSO;
+  input.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
 
   xpod::qlever::QleverIdRowBuffer rows;
   xpod_rdf_status status = xpod::qlever::executeScanToQleverIds(physical, input, rows);
   if (status != XPOD_RDF_STATUS_OK) return 1;
-  if (rows.rows.size() != 3) return 2;
-  if (rows.rows[0] != 1020 || rows.rows[1] != 1010 || rows.rows[2] != 1030) return 3;
+  if (rows.width != 2) return 2;
+  if (rows.rows.size() != 2) return 3;
+  if (rows.rows[0] != 1010 || rows.rows[1] != 1030) return 4;
   return 0;
 }
 `, 'utf8');

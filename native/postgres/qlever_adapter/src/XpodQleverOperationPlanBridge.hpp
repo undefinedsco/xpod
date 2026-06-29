@@ -62,8 +62,16 @@ inline void initializeIndexScanOperationPlan(
     BridgeQueryPlan& plan,
     const IndexScan& scan) {
   plan.scan.permutation = scan.permutation().permutation();
-  plan.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
-                           XPOD_RDF_SLOT_OBJECT;
+  plan.scan.needed_slots = 0;
+  if (scan.subject().isVariable()) {
+    plan.scan.needed_slots |= XPOD_RDF_SLOT_SUBJECT;
+  }
+  if (scan.predicate().isVariable()) {
+    plan.scan.needed_slots |= XPOD_RDF_SLOT_PREDICATE;
+  }
+  if (scan.object().isVariable()) {
+    plan.scan.needed_slots |= XPOD_RDF_SLOT_OBJECT;
+  }
   plan.sorted_by = scan.getResultSortedOn();
   plan.result_width = scan.getResultWidth();
   plan.descriptor = scan.getDescriptor();

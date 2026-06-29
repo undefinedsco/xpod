@@ -291,7 +291,7 @@ int main() {
   if (plan->sorted_by.size() != 2 || plan->sorted_by[0] != 0 || plan->sorted_by[1] != 1) return 4;
   if (plan->scan.permutation != Permutation::Enum::POS) return 5;
   if (plan->scan.needed_slots !=
-      (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT)) return 6;
+      (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return 6;
   if (plan->term_bindings.size() != 1) return 7;
   if (plan->term_bindings[0].slot != XPOD_RDF_SLOT_PREDICATE) return 8;
   if (plan->term_bindings[0].kind != XPOD_RDF_TERM_IRI) return 9;

@@ -77,6 +77,7 @@ inline xpod_rdf_status executeScan(
 struct ScanToRowsState {
   ScanRowBuffer* rows;
   Permutation::Enum permutation;
+  uint32_t needed_slots;
 };
 
 inline xpod_rdf_status appendRowsCallback(
@@ -86,7 +87,8 @@ inline xpod_rdf_status appendRowsCallback(
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
   auto* state = static_cast<ScanToRowsState*>(callback_user_data);
-  appendBatch(*state->rows, state->permutation, *batch);
+  appendBatch(
+      *state->rows, state->permutation, state->needed_slots, *batch);
   return XPOD_RDF_STATUS_OK;
 }
 
@@ -94,7 +96,7 @@ inline xpod_rdf_status executeScanToRows(
     const xpod::rdf::PhysicalBackend& backend,
     const ScanRequestInput& input,
     ScanRowBuffer& rows) noexcept {
-  ScanToRowsState state{&rows, input.permutation};
+  ScanToRowsState state{&rows, input.permutation, input.needed_slots};
   return executeScan(backend, input, appendRowsCallback, &state);
 }
 
@@ -102,6 +104,7 @@ struct ScanToQleverIdsState {
   QleverIdRowBuffer* rows;
   const xpod::rdf::PhysicalBackend* backend;
   Permutation::Enum permutation;
+  uint32_t needed_slots;
 };
 
 inline xpod_rdf_status appendQleverIdsCallback(
@@ -112,14 +115,16 @@ inline xpod_rdf_status appendQleverIdsCallback(
   }
   auto* state = static_cast<ScanToQleverIdsState*>(callback_user_data);
   return appendEncodedBatch(
-      *state->rows, *state->backend, state->permutation, *batch);
+      *state->rows, *state->backend, state->permutation,
+      state->needed_slots, *batch);
 }
 
 inline xpod_rdf_status executeScanToQleverIds(
     const xpod::rdf::PhysicalBackend& backend,
     const ScanRequestInput& input,
     QleverIdRowBuffer& rows) noexcept {
-  ScanToQleverIdsState state{&rows, &backend, input.permutation};
+  ScanToQleverIdsState state{
+      &rows, &backend, input.permutation, input.needed_slots};
   return executeScan(backend, input, appendQleverIdsCallback, &state);
 }
 

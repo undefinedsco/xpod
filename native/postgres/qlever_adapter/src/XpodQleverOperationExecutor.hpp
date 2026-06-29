@@ -33,13 +33,21 @@ inline char slotToPermutationChar(uint32_t slot) noexcept {
 
 inline size_t columnForSlot(
     Permutation::Enum permutation,
+    uint32_t needed_slots,
     uint32_t slot) noexcept {
   char target = slotToPermutationChar(slot);
   const char* slots = permutationSlots(permutation);
+  uint32_t normalized_needed_slots = normalizeNeededSlots(needed_slots);
+  size_t output_column = 0;
   for (size_t column = 0; column < 3; ++column) {
-    if (slots[column] == target) {
-      return column;
+    uint32_t current_slot = slotMask(slots[column]);
+    if ((normalized_needed_slots & current_slot) == 0) {
+      continue;
     }
+    if (slots[column] == target) {
+      return output_column;
+    }
+    ++output_column;
   }
   return 0;
 }
@@ -198,7 +206,9 @@ inline QleverResultWithStatus executeBridgeHashJoin(
     std::unordered_set<xpod_rdf_term_key> filter_keys;
     xpod_rdf_status status = collectJoinKeys(
         backend, right.result.idTable(),
-        columnForSlot(right_scan.scan.permutation, plan.root.join_slot),
+        columnForSlot(
+            right_scan.scan.permutation, right_scan.scan.needed_slots,
+            plan.root.join_slot),
         filter_keys);
     if (status != XPOD_RDF_STATUS_OK) {
       return makeEmptyOperationResult(status, left_scan.result_width,
@@ -219,7 +229,9 @@ inline QleverResultWithStatus executeBridgeHashJoin(
   IdTable output(left.result.idTable().numColumns());
   xpod_rdf_status status = filterTableByJoinKeys(
       backend, left.result.idTable(),
-      columnForSlot(left_scan.scan.permutation, plan.root.join_slot),
+      columnForSlot(
+          left_scan.scan.permutation, left_scan.scan.needed_slots,
+          plan.root.join_slot),
       allowed_keys, output);
   if (status != XPOD_RDF_STATUS_OK) {
     return makeEmptyOperationResult(status, left_scan.result_width,
