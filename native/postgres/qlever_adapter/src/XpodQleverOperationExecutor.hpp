@@ -9,10 +9,12 @@
 #include "XpodQleverScanMaterializer.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstddef>
 #include <optional>
 #include <set>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
@@ -21,6 +23,32 @@
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 
 namespace xpod::qlever {
+
+template <typename T, typename = void>
+struct BridgeHasMakeUndefined : std::false_type {};
+
+template <typename T>
+struct BridgeHasMakeUndefined<
+    T,
+    std::void_t<decltype(T::makeUndefined())>> : std::true_type {};
+
+template <
+    typename T,
+    typename std::enable_if<BridgeHasMakeUndefined<T>::value, int>::type = 0>
+inline T bridgeUndefinedIdFor() {
+  return T::makeUndefined();
+}
+
+template <
+    typename T,
+    typename std::enable_if<!BridgeHasMakeUndefined<T>::value, int>::type = 0>
+inline T bridgeUndefinedIdFor() {
+  return T::fromBits(UINT64_MAX);
+}
+
+inline Id bridgeUndefinedId() {
+  return bridgeUndefinedIdFor<Id>();
+}
 
 inline char slotToPermutationChar(uint32_t slot) noexcept {
   switch (slot) {
@@ -77,6 +105,8 @@ inline xpod_rdf_profile_kind profileEventKind(
     case BridgeOperationKind::CartesianProductJoin:
       return XPOD_RDF_PROFILE_RDF_JOIN;
     case BridgeOperationKind::Minus:
+      return XPOD_RDF_PROFILE_RDF_JOIN;
+    case BridgeOperationKind::OptionalJoin:
       return XPOD_RDF_PROFILE_RDF_JOIN;
     case BridgeOperationKind::HashJoin:
       return XPOD_RDF_PROFILE_RDF_JOIN;
@@ -1252,6 +1282,99 @@ inline QleverResultWithStatus executeBridgeMinus(
                            root.sorted_by));
 }
 
+inline xpod_rdf_status appendBridgeOptionalRow(
+    const IdTable& left,
+    size_t left_row,
+    const IdTable* right,
+    size_t right_row,
+    const std::vector<size_t>& right_projection_columns,
+    IdTable& output) {
+  std::vector<Id> row;
+  row.reserve(left.numColumns() + right_projection_columns.size());
+  for (size_t column = 0; column < left.numColumns(); ++column) {
+    row.push_back(left(left_row, column));
+  }
+  if (right == nullptr) {
+    for (size_t i = 0; i < right_projection_columns.size(); ++i) {
+      row.push_back(bridgeUndefinedId());
+    }
+  } else {
+    for (size_t right_column : right_projection_columns) {
+      if (right_column >= right->numColumns()) {
+        return XPOD_RDF_STATUS_UNSUPPORTED;
+      }
+      row.push_back((*right)(right_row, right_column));
+    }
+  }
+  output.push_back(row);
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline QleverResultWithStatus executeBridgeOptionalJoin(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan,
+    const BridgeOperationPlan& root) {
+  if (root.children.size() != 2) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
+
+  emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_RUNNING);
+  QleverResultWithStatus left =
+      executeBridgeOperationRoot(backend, plan, root.children[0]);
+  if (left.status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+    return left;
+  }
+  QleverResultWithStatus right =
+      executeBridgeOperationRoot(backend, plan, root.children[1]);
+  if (right.status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+    return right;
+  }
+
+  const IdTable& left_table = left.result.idTable();
+  const IdTable& right_table = right.result.idTable();
+  IdTable output(left_table.numColumns() +
+                 root.right_projection_columns.size());
+  xpod_rdf_status status = XPOD_RDF_STATUS_OK;
+
+  for (size_t left_row = 0; left_row < left_table.numRows(); ++left_row) {
+    bool matched = false;
+    for (size_t right_row = 0; right_row < right_table.numRows();
+         ++right_row) {
+      if (!root.matched_columns.empty() &&
+          !bridgeMinusRowsMatch(
+              left_table, left_row, right_table, right_row,
+              root.matched_columns)) {
+        continue;
+      }
+      matched = true;
+      status = appendBridgeOptionalRow(
+          left_table, left_row, &right_table, right_row,
+          root.right_projection_columns, output);
+      if (status != XPOD_RDF_STATUS_OK) {
+        emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+        return makeEmptyOperationResult(status, output.numColumns());
+      }
+    }
+    if (!matched) {
+      status = appendBridgeOptionalRow(
+          left_table, left_row, nullptr, 0, root.right_projection_columns,
+          output);
+      if (status != XPOD_RDF_STATUS_OK) {
+        emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+        return makeEmptyOperationResult(status, output.numColumns());
+      }
+    }
+  }
+
+  emitOperationProfileEvent(
+      backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
+  return applyBridgeResultModifiers(
+      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+                           root.sorted_by));
+}
+
 inline QleverResultWithStatus executeBridgeOperationRoot(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan,
@@ -1290,6 +1413,9 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
   }
   if (root.kind == BridgeOperationKind::Minus) {
     return executeBridgeMinus(backend, plan, root);
+  }
+  if (root.kind == BridgeOperationKind::OptionalJoin) {
+    return executeBridgeOptionalJoin(backend, plan, root);
   }
   return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
 }

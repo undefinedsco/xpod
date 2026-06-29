@@ -73,6 +73,13 @@
 #define XPOD_QLEVER_HAS_MINUS 0
 #endif
 
+#if __has_include("engine/OptionalJoin.h")
+#include "engine/OptionalJoin.h"
+#define XPOD_QLEVER_HAS_OPTIONAL_JOIN 1
+#else
+#define XPOD_QLEVER_HAS_OPTIONAL_JOIN 0
+#endif
+
 #if __has_include("engine/Distinct.h")
 #include "engine/Distinct.h"
 #define XPOD_QLEVER_HAS_DISTINCT 1
@@ -287,6 +294,19 @@ inline std::vector<std::array<size_t, 2>> matchedOutputVariableColumns(
     }
   }
   return matched_columns;
+}
+
+inline std::vector<size_t> rightProjectionColumns(
+    const std::vector<std::string>& left_variables,
+    const std::vector<std::string>& right_variables) {
+  std::vector<size_t> projection_columns;
+  for (size_t right_column = 0; right_column < right_variables.size();
+       ++right_column) {
+    if (!containsOutputVariable(left_variables, right_variables[right_column])) {
+      projection_columns.push_back(right_column);
+    }
+  }
+  return projection_columns;
 }
 
 inline std::optional<ColumnIndex> outputColumnForVariable(
@@ -976,6 +996,48 @@ inline std::optional<BridgeQueryPlan> planMinusOperation(Minus& operation) {
 }
 #endif
 
+#if XPOD_QLEVER_HAS_OPTIONAL_JOIN
+inline std::optional<BridgeQueryPlan> planOptionalJoinOperation(
+    OptionalJoin& operation) {
+  std::vector<QueryExecutionTree*> children = operation.getChildren();
+  if (children.size() != 2 || children[0] == nullptr ||
+      children[1] == nullptr) {
+    return std::nullopt;
+  }
+
+  auto left_plan = planQleverExecutionTree(*children[0]);
+  auto right_plan = planQleverExecutionTree(*children[1]);
+  if (!left_plan.has_value() || !right_plan.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.descriptor = operation.getDescriptor();
+  plan.result_width = operation.getResultWidth();
+  plan.sorted_by = operation.getResultSortedOn();
+  plan.root.kind = BridgeOperationKind::OptionalJoin;
+  plan.root.sorted_by = plan.sorted_by;
+  plan.output_variables = left_plan->output_variables;
+  plan.root.matched_columns = matchedOutputVariableColumns(
+      left_plan->output_variables, right_plan->output_variables);
+  plan.root.right_projection_columns = rightProjectionColumns(
+      left_plan->output_variables, right_plan->output_variables);
+  for (size_t column : plan.root.right_projection_columns) {
+    if (column >= right_plan->output_variables.size()) {
+      return std::nullopt;
+    }
+    plan.output_variables.push_back(right_plan->output_variables[column]);
+  }
+  plan.child_plans.push_back(std::move(*left_plan));
+  plan.child_plans.push_back(std::move(*right_plan));
+
+  if (plan.output_variables.size() != plan.result_width) {
+    return std::nullopt;
+  }
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_NEUTRAL_ELEMENT
@@ -1002,6 +1064,13 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
   auto* minus = dynamic_cast<Minus*>(const_cast<Operation*>(&operation));
   if (minus != nullptr) {
     return planMinusOperation(*minus);
+  }
+#endif
+#if XPOD_QLEVER_HAS_OPTIONAL_JOIN
+  auto* optional_join =
+      dynamic_cast<OptionalJoin*>(const_cast<Operation*>(&operation));
+  if (optional_join != nullptr) {
+    return planOptionalJoinOperation(*optional_join);
   }
 #endif
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET

@@ -669,3 +669,42 @@ class Minus final : public Operation {
   std::shared_ptr<QueryExecutionTree> right_;
 };
 `;
+
+export const fakeOptionalJoinHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class QueryExecutionContext;
+class OptionalJoin final : public Operation {
+ public:
+  OptionalJoin(QueryExecutionContext*,
+               std::shared_ptr<QueryExecutionTree> left,
+               std::shared_ptr<QueryExecutionTree> right,
+               bool = true)
+      : left_(std::move(left)), right_(std::move(right)) {}
+  OptionalJoin(std::shared_ptr<QueryExecutionTree> left,
+               std::shared_ptr<QueryExecutionTree> right)
+      : left_(std::move(left)), right_(std::move(right)) {}
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {left_.get(), right_.get()};
+  }
+  std::string getDescriptor() const override { return "OptionalJoin"; }
+  size_t getResultWidth() const override {
+    if (left_ == nullptr || right_ == nullptr) return 0;
+    return left_->getRootOperation()->getResultWidth() +
+           right_->getRootOperation()->getResultWidth() - 1;
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return left_ == nullptr ? std::vector<ColumnIndex>{}
+                            : left_->getRootOperation()->getResultSortedOn();
+  }
+ private:
+  std::shared_ptr<QueryExecutionTree> left_;
+  std::shared_ptr<QueryExecutionTree> right_;
+};
+`;

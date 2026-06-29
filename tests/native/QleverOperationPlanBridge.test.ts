@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeNeutralElementOperationHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
+import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -172,7 +172,7 @@ int main() {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('builds a bridge query plan from a real QLever IndexScan operation shape', async () => {
     expect(hasCxx(), 'c++ compiler is required for native operation plan bridge check').toBe(true);
@@ -225,6 +225,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/CartesianProductJoin.h'), fakeCartesianProductJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Minus.h'), fakeMinusHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/OptionalJoin.h'), fakeOptionalJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
@@ -296,6 +297,7 @@ class IndexScan final : public Operation {
 #include "engine/Join.h"
 #include "engine/CartesianProductJoin.h"
 #include "engine/Minus.h"
+#include "engine/OptionalJoin.h"
 #include "engine/Distinct.h"
 #include "engine/OrderBy.h"
 #include "engine/Sort.h"
@@ -491,6 +493,46 @@ int main() {
   if (minus_physical.scans.size() != 2) return 239;
   if (minus_physical.root.children[0].scan_indexes[0] != 0) return 240;
   if (minus_physical.root.children[1].scan_indexes[0] != 1) return 241;
+
+  auto optional_left = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:name>"}},
+          TripleComponent{Variable{"?name"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity <urn:name> ?name",
+          2,
+          std::vector<ColumnIndex>{0}));
+  auto optional_right = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:nick>"}},
+          TripleComponent{Variable{"?nick"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity <urn:nick> ?nick",
+          2,
+          std::vector<ColumnIndex>{0}));
+  OptionalJoin optional_operation(nullptr, optional_left, optional_right);
+  auto optional_plan = xpod::qlever::planQleverOperation(optional_operation);
+  if (!optional_plan.has_value()) return 242;
+  if (optional_plan->root.kind != xpod::qlever::BridgeOperationKind::OptionalJoin) return 243;
+  if (optional_plan->child_plans.size() != 2) return 244;
+  if (optional_plan->result_width != 3) return 245;
+  if (optional_plan->output_variables.size() != 3) return 246;
+  if (optional_plan->output_variables[0] != "entity") return 247;
+  if (optional_plan->output_variables[1] != "name") return 248;
+  if (optional_plan->output_variables[2] != "nick") return 249;
+  if (optional_plan->root.matched_columns.size() != 1) return 250;
+  if (optional_plan->root.matched_columns[0][0] != 0 ||
+      optional_plan->root.matched_columns[0][1] != 0) return 251;
+  if (optional_plan->root.right_projection_columns.size() != 1) return 252;
+  if (optional_plan->root.right_projection_columns[0] != 1) return 253;
+  auto optional_physical = xpod::qlever::toBridgePhysicalPlan(*optional_plan);
+  if (optional_physical.root.kind != xpod::qlever::BridgeOperationKind::OptionalJoin) return 254;
+  if (optional_physical.root.children.size() != 2) return 255;
+  if (optional_physical.scans.size() != 2) return 256;
+  if (optional_physical.root.children[0].scan_indexes[0] != 0) return 257;
+  if (optional_physical.root.children[1].scan_indexes[0] != 1) return 258;
 
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;
@@ -821,7 +863,7 @@ int main() {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('can build a bridge plan from a QueryPlanner constructed with QueryExecutionContext', async () => {
     expect(hasCxx(), 'c++ compiler is required for native QEC planner bridge check').toBe(true);
@@ -948,5 +990,5 @@ int main() {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });

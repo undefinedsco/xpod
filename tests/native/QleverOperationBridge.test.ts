@@ -46,6 +46,7 @@ using ColumnIndex = uint64_t;
 class Id {
  public:
   static Id fromBits(uint64_t bits) { return Id(bits); }
+  static Id makeUndefined() { return Id(UINT64_MAX); }
   uint64_t getBits() const { return bits_; }
  private:
   explicit Id(uint64_t bits) : bits_(bits) {}
@@ -247,6 +248,15 @@ static xpod_rdf_status scan(
     if (request->pattern.predicate == 130 && !request->pattern.has_object) {
       xpod_rdf_quad_key rows[1] = {
         {10, 130, 131, 40},
+      };
+      xpod_rdf_quad_batch batch = {};
+      batch.rows = rows;
+      batch.row_count = 1;
+      return on_batch(callback_user_data, &batch);
+    }
+    if (request->pattern.predicate == 150 && !request->pattern.has_object) {
+      xpod_rdf_quad_key rows[1] = {
+        {10, 150, 151, 40},
       };
       xpod_rdf_quad_batch batch = {};
       batch.rows = rows;
@@ -875,6 +885,45 @@ int main() {
   if (minus_table.numColumns() != 2 || minus_table.numRows() != 1) return 143;
   if (minus_table(0, 0).getBits() != 1011 || minus_table(0, 1).getBits() != 1031) return 144;
   if (minus_result.result.sortedBy().size() != 1 || minus_result.result.sortedBy()[0] != 0) return 145;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan optional_plan;
+  xpod::qlever::BridgePhysicalScan optional_left;
+  optional_left.scan.permutation = Permutation::Enum::SPO;
+  optional_left.scan.pattern.has_predicate = true;
+  optional_left.scan.pattern.predicate = 20;
+  optional_left.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  optional_left.sorted_by = {0};
+  optional_left.result_width = 2;
+  optional_plan.scans.push_back(optional_left);
+  xpod::qlever::BridgePhysicalScan optional_right;
+  optional_right.scan.permutation = Permutation::Enum::SPO;
+  optional_right.scan.pattern.has_predicate = true;
+  optional_right.scan.pattern.predicate = 150;
+  optional_right.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  optional_right.result_width = 2;
+  optional_plan.scans.push_back(optional_right);
+  optional_plan.root.kind = xpod::qlever::BridgeOperationKind::OptionalJoin;
+  optional_plan.root.sorted_by = {0};
+  optional_plan.root.matched_columns = {{ {0, 0} }};
+  optional_plan.root.right_projection_columns = {1};
+  xpod::qlever::BridgeOperationPlan optional_left_root;
+  optional_left_root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  optional_left_root.scan_indexes = {0};
+  xpod::qlever::BridgeOperationPlan optional_right_root;
+  optional_right_root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  optional_right_root.scan_indexes = {1};
+  optional_plan.root.children = {optional_left_root, optional_right_root};
+  auto optional_result = xpod::qlever::executeBridgeOperationPlan(physical, optional_plan);
+  if (optional_result.status != XPOD_RDF_STATUS_OK) return 146;
+  if (state.calls != 2) return 147;
+  const IdTable& optional_table = optional_result.result.idTable();
+  if (optional_table.numColumns() != 3 || optional_table.numRows() != 2) return 148;
+  if (optional_table(0, 0).getBits() != 1010 || optional_table(0, 1).getBits() != 1030 ||
+      optional_table(0, 2).getBits() != 1151) return 149;
+  if (optional_table(1, 0).getBits() != 1011 || optional_table(1, 1).getBits() != 1031 ||
+      optional_table(1, 2).getBits() != Id::makeUndefined().getBits()) return 150;
+  if (optional_result.result.sortedBy().size() != 1 || optional_result.result.sortedBy()[0] != 0) return 151;
   return 0;
 }
 `, 'utf8');
@@ -896,5 +945,5 @@ int main() {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
