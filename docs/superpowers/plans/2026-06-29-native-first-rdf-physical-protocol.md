@@ -2714,3 +2714,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 61: Expose text and vector candidate sources on the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing candidate-source smoke**
+
+Add a native physical-index smoke so `XpodQleverPhysicalIndex::textSearch(...)` and `vectorSearch(...)` must return candidate-source objects whose `estimate()` and `execute()` delegate to backend text/vector callbacks while carrying the current query snapshot, graph scope, source scope, access scope, and cancellation pointer.
+
+Expected: FAIL because text/vector candidate sources existed as separate backed operation shells, but not on the QLever-facing physical index surface.
+
+- [x] **Step 2: Add minimal candidate-source factories**
+
+Add `textSearch(...)` and `vectorSearch(...)` methods that copy the request, apply `PlannerRequestContext`, and return `XpodBackedTextSearch` / `XpodBackedVectorSearch`. This keeps FTS/vector as lower data sources and does not add fusion, ranking, or join planning policy.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

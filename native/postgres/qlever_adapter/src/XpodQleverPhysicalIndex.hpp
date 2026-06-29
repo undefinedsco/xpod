@@ -2,11 +2,14 @@
 #define XPOD_QLEVER_PHYSICAL_INDEX_HPP
 
 #include "XpodBackedIndexScan.hpp"
+#include "XpodBackedTextSearch.hpp"
+#include "XpodBackedVectorSearch.hpp"
 #include "XpodQleverPlannerScanInput.hpp"
 
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
@@ -319,6 +322,20 @@ class XpodQleverPhysicalIndex {
     return result;
   }
 
+  XpodBackedTextSearch textSearch(
+      xpod_rdf_text_search_request request,
+      std::string descriptor = "XpodQleverPhysicalTextSearch") const {
+    applyCandidateContext(request);
+    return {context_.backend, request, std::move(descriptor)};
+  }
+
+  XpodBackedVectorSearch vectorSearch(
+      xpod_rdf_vector_search_request request,
+      std::string descriptor = "XpodQleverPhysicalVectorSearch") const {
+    applyCandidateContext(request);
+    return {context_.backend, request, std::move(descriptor)};
+  }
+
   const PlannerRequestContext& context() const noexcept { return context_; }
 
   xpod_rdf_status capabilitiesStatus() const noexcept {
@@ -334,6 +351,28 @@ class XpodQleverPhysicalIndex {
     return context_.request == nullptr
                ? xpod_rdf_snapshot{}
                : context_.request->snapshot;
+  }
+
+  void applyCandidateContext(xpod_rdf_text_search_request& request) const
+      noexcept {
+    request.snapshot = snapshot();
+    request.cancellation = context_.cancellation;
+    if (context_.request != nullptr) {
+      request.graph_scope = context_.request->graph_scope;
+      request.source_scope = context_.request->source_scope;
+      request.access_scope = context_.request->access_scope;
+    }
+  }
+
+  void applyCandidateContext(xpod_rdf_vector_search_request& request) const
+      noexcept {
+    request.snapshot = snapshot();
+    request.cancellation = context_.cancellation;
+    if (context_.request != nullptr) {
+      request.graph_scope = context_.request->graph_scope;
+      request.source_scope = context_.request->source_scope;
+      request.access_scope = context_.request->access_scope;
+    }
   }
 
   PlannerRequestContext context_;

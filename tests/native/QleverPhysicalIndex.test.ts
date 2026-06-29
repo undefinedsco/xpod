@@ -573,6 +573,196 @@ int main() {
     }
   });
 
+  it('exposes text and vector candidate sources through the physical index', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index candidate source check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-candidates-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_candidates_smoke.cpp');
+      const binary = path.join(root, 'physical_index_candidates_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int estimate_text_calls;
+  int text_calls;
+  int estimate_vector_calls;
+  int vector_calls;
+};
+
+static bool bytes_equal(xpod_rdf_bytes value, const char* expected, size_t size) {
+  if (value.size != size) return false;
+  for (size_t i = 0; i < size; ++i) {
+    if (value.data[i] != expected[i]) return false;
+  }
+  return true;
+}
+
+static bool has_context(const xpod_rdf_text_search_request* request) {
+  return bytes_equal(request->snapshot.facts_version, "facts", 5) &&
+         request->graph_scope.kind == XPOD_RDF_GRAPH_SCOPE_EXACT &&
+         request->graph_scope.exact_graph == 99 &&
+         request->source_scope.has_source_node == 1 &&
+         request->source_scope.source_node == 55 &&
+         request->access_scope != nullptr &&
+         request->access_scope->mode == XPOD_RDF_ACCESS_READ;
+}
+
+static bool has_context(const xpod_rdf_vector_search_request* request) {
+  return bytes_equal(request->snapshot.facts_version, "facts", 5) &&
+         request->graph_scope.kind == XPOD_RDF_GRAPH_SCOPE_EXACT &&
+         request->graph_scope.exact_graph == 99 &&
+         request->source_scope.has_source_node == 1 &&
+         request->source_scope.source_node == 55 &&
+         request->access_scope != nullptr &&
+         request->access_scope->mode == XPOD_RDF_ACCESS_READ;
+}
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->features =
+      XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH |
+      XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_text_search(
+    void* user_data,
+    const xpod_rdf_text_search_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_text_calls;
+  if (!has_context(request)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!bytes_equal(request->query, "hello", 5)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status text_search(
+    void* user_data,
+    const xpod_rdf_text_search_request* request,
+    xpod_rdf_candidate_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->text_calls;
+  if (!has_context(request)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  xpod_rdf_candidate row = {};
+  row.resource_term = 101;
+  row.has_resource_term = 1;
+  row.score = 0.75;
+  xpod_rdf_candidate_batch batch = {&row, 1, 1, {"text", 4}};
+  return on_batch(callback_user_data, &batch);
+}
+
+static xpod_rdf_status estimate_vector_search(
+    void* user_data,
+    const xpod_rdf_vector_search_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_vector_calls;
+  if (!has_context(request)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->dimensions != 2) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 2;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status vector_search(
+    void* user_data,
+    const xpod_rdf_vector_search_request* request,
+    xpod_rdf_candidate_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->vector_calls;
+  if (!has_context(request)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  xpod_rdf_candidate row = {};
+  row.resource_term = 202;
+  row.has_resource_term = 1;
+  row.score = 0.5;
+  xpod_rdf_candidate_batch batch = {&row, 1, 1, {"vector", 6}};
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.estimate_text_search = estimate_text_search;
+  raw_backend.text_search = text_search;
+  raw_backend.estimate_vector_search = estimate_vector_search;
+  raw_backend.vector_search = vector_search;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_rdf_access_scope access = {};
+  access.mode = XPOD_RDF_ACCESS_READ;
+  xpod_qlever_query_request request = {};
+  request.snapshot.facts_version = {"facts", 5};
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  request.graph_scope.exact_graph = 99;
+  request.source_scope.has_source_node = 1;
+  request.source_scope.source_node = 55;
+  request.access_scope = &access;
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  xpod_rdf_text_search_request text_request = {};
+  text_request.query = {"hello", 5};
+  auto text = index.textSearch(text_request);
+  auto text_estimate = text.estimate();
+  if (text_estimate.status != XPOD_RDF_STATUS_OK) return 1;
+  if (text_estimate.estimate.rows != 1) return 2;
+  auto text_result = text.execute();
+  if (text_result.status != XPOD_RDF_STATUS_OK) return 3;
+  if (text_result.candidates.rows.size() != 1) return 4;
+  if (text_result.candidates.rows[0].resource_term != 101) return 5;
+
+  double query_vector[2] = {0.1, 0.2};
+  xpod_rdf_vector_search_request vector_request = {};
+  vector_request.vector = query_vector;
+  vector_request.dimensions = 2;
+  auto vector = index.vectorSearch(vector_request);
+  auto vector_estimate = vector.estimate();
+  if (vector_estimate.status != XPOD_RDF_STATUS_OK) return 6;
+  if (vector_estimate.estimate.rows != 2) return 7;
+  auto vector_result = vector.execute();
+  if (vector_result.status != XPOD_RDF_STATUS_OK) return 8;
+  if (vector_result.candidates.rows.size() != 1) return 9;
+  if (vector_result.candidates.rows[0].resource_term != 202) return 10;
+
+  if (state.estimate_text_calls != 1) return 11;
+  if (state.text_calls != 1) return 12;
+  if (state.estimate_vector_calls != 1) return 13;
+  if (state.vector_calls != 1) return 14;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes batch term dictionary lookup and resolution through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index batch dictionary check').toBe(true);
 
