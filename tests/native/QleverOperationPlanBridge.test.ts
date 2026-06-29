@@ -427,6 +427,43 @@ int main() {
   if (variable_entity_physical.text_sources.size() != 1) return 78;
   if (variable_entity_physical.text_sources[0].output_columns.size() != 2) return 79;
 
+  auto text_entity_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<TextIndexScanForEntity>("native-first"));
+  auto entity_scan_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:label>"}},
+          TripleComponent{Variable{"?label"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity <urn:label> ?label",
+          2,
+          std::vector<ColumnIndex>{0}));
+  Join text_rdf_join(text_entity_tree, entity_scan_tree);
+  auto text_rdf_join_plan = xpod::qlever::planQleverOperation(text_rdf_join);
+  if (!text_rdf_join_plan.has_value()) return 87;
+  if (text_rdf_join_plan->root.kind != xpod::qlever::BridgeOperationKind::HashJoin) return 88;
+  if (!text_rdf_join_plan->root.use_candidate_join) return 89;
+  if (text_rdf_join_plan->root.candidate_index != 0) return 90;
+  if (text_rdf_join_plan->root.candidate_join_column !=
+      xpod::qlever::BridgeCandidateColumnKind::ResourceTerm) return 91;
+  if (text_rdf_join_plan->root.scan_indexes.size() != 1) return 92;
+  if (text_rdf_join_plan->root.scan_indexes[0] != 0) return 93;
+  if (text_rdf_join_plan->root.join_slots.size() != 1) return 94;
+  if (text_rdf_join_plan->root.join_slots[0] != XPOD_RDF_SLOT_SUBJECT) return 95;
+  if (text_rdf_join_plan->text_sources.size() != 1) return 96;
+  if (text_rdf_join_plan->filter_scans.size() != 0) return 97;
+  if (text_rdf_join_plan->output_variables.size() != 2) return 98;
+  if (text_rdf_join_plan->output_variables[0] != "entity") return 99;
+  if (text_rdf_join_plan->output_variables[1] != "label") return 100;
+  auto text_rdf_physical = xpod::qlever::toBridgePhysicalPlan(*text_rdf_join_plan);
+  if (text_rdf_physical.root.profile_node != 1) return 101;
+  if (text_rdf_physical.text_sources.size() != 1) return 102;
+  if (text_rdf_physical.text_sources[0].profile_node != 2) return 103;
+  if (text_rdf_physical.text_sources[0].parent_profile_node != 1) return 104;
+  if (text_rdf_physical.scans.size() != 1) return 105;
+  if (text_rdf_physical.scans[0].profile_node != 3) return 106;
+  if (text_rdf_physical.scans[0].parent_profile_node != 1) return 107;
+
   auto word_tree = std::make_shared<QueryExecutionTree>(
       std::make_shared<TextIndexScanForWord>("native-first"));
   auto fixed_entity_tree = std::make_shared<QueryExecutionTree>(

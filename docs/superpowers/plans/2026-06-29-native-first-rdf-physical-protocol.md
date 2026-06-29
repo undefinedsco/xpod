@@ -383,3 +383,74 @@ bun test tests/native/QleverPlanBridge.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 10: Text candidate to RDF scan join
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing planner-output join test**
+
+Add a native operation-plan smoke where a QLever-shaped
+`Join(TextIndexScanForEntity("native-first"), IndexScan(?entity <urn:label> ?label))`
+must produce a native `HashJoin` plan instead of returning unsupported.
+
+Expected shape:
+- `root.kind == BridgeOperationKind::HashJoin`
+- `root.use_candidate_join == true`
+- `root.candidate_join_column == BridgeCandidateColumnKind::ResourceTerm`
+- `root.scan_indexes == [0]`
+- `root.join_slots == [XPOD_RDF_SLOT_SUBJECT]`
+- one text candidate source and one RDF scan
+- profile tree root node 1, text node 2, scan node 3
+
+Expected: FAIL because `BridgeOperationPlan` has no candidate join fields and `planTextJoinOperation(...)` only handles text-word plus fixed-entity joins.
+
+- [x] **Step 2: Implement the planner mapping**
+
+Add an opt-in candidate join shape to `BridgeOperationPlan`:
+
+```cpp
+bool use_candidate_join;
+BridgeCandidateColumnKind candidate_join_column;
+```
+
+Then map the constrained text/RDF join only when the text side is a variable-entity `TextIndexScanForEntity` and the RDF `IndexScan` contains that entity variable in subject/predicate/object. The result remains an RDF scan projection filtered by candidate `ResourceTerm`; it is not yet a full QLever join projection that appends text columns.
+
+- [x] **Step 3: Attach profile nodes for mixed candidate/RDF joins**
+
+Update `toBridgePhysicalPlan(...)` so mixed candidate/RDF `HashJoin` roots attach the text source and scan under the same join root:
+
+```text
+HashJoin node 1
+  TextSearch node 2
+  PermutationScan node 3
+```
+
+- [x] **Step 4: Execute candidate-filtered RDF scan**
+
+Extend native `HashJoin` execution with the opt-in candidate join path:
+- execute the text candidate source;
+- collect `ResourceTerm` keys from candidate rows;
+- execute the RDF scan;
+- filter scan rows by the configured scan slot;
+- emit root `RDF_JOIN` profile events around the text and scan child nodes.
+
+Unsupported candidate channels still fail closed.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts --run
+bun test tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

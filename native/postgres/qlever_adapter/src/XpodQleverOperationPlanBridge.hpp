@@ -261,6 +261,45 @@ inline std::optional<BridgeQueryPlan> planTextWordEntityJoinPair(
   return plan;
 }
 
+inline std::optional<uint32_t> indexScanSlotForVariable(
+    const IndexScan& scan,
+    std::string_view variable);
+
+inline std::optional<BridgeQueryPlan> planTextEntityRdfJoinPair(
+    const TextIndexScanForEntity& entity_scan,
+    const IndexScan& index_scan,
+    const std::string& descriptor) {
+  if (entity_scan.hasFixedEntity()) {
+    return std::nullopt;
+  }
+  std::optional<uint32_t> join_slot = indexScanSlotForVariable(
+      index_scan, bridgeVariableName(entity_scan.entityVariable()));
+  if (!join_slot.has_value()) {
+    return std::nullopt;
+  }
+
+  auto text_plan = planTextIndexScanForEntityOperation(entity_scan);
+  auto index_plan = planIndexScanOperation(index_scan);
+  if (!text_plan.has_value() || !index_plan.has_value()) {
+    return std::nullopt;
+  }
+
+  index_plan->text_sources = std::move(text_plan->text_sources);
+  index_plan->text_required_entities =
+      std::move(text_plan->text_required_entities);
+  index_plan->descriptor = descriptor;
+  index_plan->filter_scans.clear();
+  index_plan->root.kind = BridgeOperationKind::HashJoin;
+  index_plan->root.use_candidate_join = true;
+  index_plan->root.candidate_index = 0;
+  index_plan->root.candidate_join_column =
+      BridgeCandidateColumnKind::ResourceTerm;
+  index_plan->root.scan_indexes = {0};
+  index_plan->root.join_slot = *join_slot;
+  index_plan->root.join_slots = {*join_slot};
+  return index_plan;
+}
+
 inline std::optional<BridgeQueryPlan> planTextJoinOperation(
     const Join& join) {
   std::vector<const QueryExecutionTree*> children = join.getChildren();
@@ -281,6 +320,8 @@ inline std::optional<BridgeQueryPlan> planTextJoinOperation(
       dynamic_cast<const TextIndexScanForEntity*>(left.get());
   const auto* right_entity =
       dynamic_cast<const TextIndexScanForEntity*>(right.get());
+  const auto* left_index = dynamic_cast<const IndexScan*>(left.get());
+  const auto* right_index = dynamic_cast<const IndexScan*>(right.get());
   if (left_word != nullptr && right_entity != nullptr) {
     return planTextWordEntityJoinPair(
         *left_word, *right_entity, join.getDescriptor(),
@@ -290,6 +331,14 @@ inline std::optional<BridgeQueryPlan> planTextJoinOperation(
     return planTextWordEntityJoinPair(
         *right_word, *left_entity, join.getDescriptor(),
         join.getResultWidth());
+  }
+  if (left_entity != nullptr && right_index != nullptr) {
+    return planTextEntityRdfJoinPair(
+        *left_entity, *right_index, join.getDescriptor());
+  }
+  if (right_entity != nullptr && left_index != nullptr) {
+    return planTextEntityRdfJoinPair(
+        *right_entity, *left_index, join.getDescriptor());
   }
   return std::nullopt;
 }

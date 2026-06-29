@@ -118,24 +118,62 @@ struct ScanState { int calls = 0; };
 
 struct ProfileState {
   int calls = 0;
-  xpod_rdf_profile_kind kinds[8] = {};
-  xpod_rdf_profile_status statuses[8] = {};
-  xpod_rdf_profile_node_key nodes[8] = {};
-  xpod_rdf_profile_node_key parents[8] = {};
-  uint8_t has_parents[8] = {};
-  uint64_t output_rows[8] = {};
+  xpod_rdf_profile_kind kinds[16] = {};
+  xpod_rdf_profile_status statuses[16] = {};
+  xpod_rdf_profile_node_key nodes[16] = {};
+  xpod_rdf_profile_node_key parents[16] = {};
+  uint8_t has_parents[16] = {};
+  uint64_t output_rows[16] = {};
 };
 
 static void on_profile(void* user_data, const xpod_rdf_profile_event* event) {
   auto* state = static_cast<ProfileState*>(user_data);
   int index = state->calls++;
-  if (index >= 8) return;
+  if (index >= 16) return;
   state->kinds[index] = event->kind;
   state->statuses[index] = event->status;
   state->nodes[index] = event->node;
   state->parents[index] = event->parent;
   state->has_parents[index] = event->has_parent;
   state->output_rows[index] = event->output_rows;
+}
+
+static bool bytes_equal(xpod_rdf_bytes actual, const char* expected) {
+  size_t index = 0;
+  for (; expected[index] != '\\0'; ++index) {
+    if (index >= actual.size || actual.data[index] != expected[index]) {
+      return false;
+    }
+  }
+  return index == actual.size;
+}
+
+static xpod_rdf_status estimate_text_search(
+    void*,
+    const xpod_rdf_text_search_request*,
+    xpod_rdf_estimate* out_estimate) {
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status text_search(
+    void*,
+    const xpod_rdf_text_search_request* request,
+    xpod_rdf_candidate_batch_callback on_batch,
+    void* callback_user_data) {
+  if (!bytes_equal(request->query, "native-first")) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_candidate row = {};
+  row.has_resource_term = 1;
+  row.resource_term = 11;
+  row.score = 0.9;
+  xpod_rdf_candidate_batch batch = {};
+  batch.rows = &row;
+  batch.row_count = 1;
+  batch.scanned_rows = 3;
+  return on_batch(callback_user_data, &batch);
 }
 
 static xpod_rdf_status scan(
@@ -182,6 +220,8 @@ int main() {
   backend.encode_qlever_id = encode;
   backend.decode_qlever_id = decode;
   backend.scan_permutation = scan;
+  backend.estimate_text_search = estimate_text_search;
+  backend.text_search = text_search;
   xpod::rdf::PhysicalBackend physical(&backend);
 
   xpod::qlever::BridgePhysicalPlan plan;
@@ -311,6 +351,62 @@ int main() {
   if (profile.kinds[5] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 27;
   if (profile.nodes[5] != 100 || profile.has_parents[5]) return 28;
   if (profile.output_rows[5] != 1) return 29;
+
+  state.calls = 0;
+  profile = {};
+  xpod::qlever::BridgePhysicalPlan candidate_join_plan;
+  xpod::qlever::BridgeTextCandidateSource text_source;
+  text_source.setQuery("native-first");
+  text_source.output_columns.push_back({
+      "entity",
+      xpod::qlever::BridgeCandidateColumnKind::ResourceTerm,
+  });
+  text_source.profile_node = 202;
+  text_source.parent_profile_node = 200;
+  candidate_join_plan.text_sources.push_back(text_source);
+
+  xpod::qlever::BridgePhysicalScan candidate_primary;
+  candidate_primary.scan.permutation = Permutation::Enum::SPO;
+  candidate_primary.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  candidate_primary.sorted_by = {0};
+  candidate_primary.result_width = 3;
+  candidate_primary.descriptor = "candidate join primary scan";
+  candidate_primary.profile_node = 203;
+  candidate_primary.parent_profile_node = 200;
+  candidate_join_plan.scans.push_back(candidate_primary);
+
+  candidate_join_plan.root.kind = xpod::qlever::BridgeOperationKind::HashJoin;
+  candidate_join_plan.root.use_candidate_join = true;
+  candidate_join_plan.root.candidate_index = 0;
+  candidate_join_plan.root.candidate_join_column =
+      xpod::qlever::BridgeCandidateColumnKind::ResourceTerm;
+  candidate_join_plan.root.scan_indexes = {0};
+  candidate_join_plan.root.join_slot = XPOD_RDF_SLOT_SUBJECT;
+  candidate_join_plan.root.join_slots = {XPOD_RDF_SLOT_SUBJECT};
+  candidate_join_plan.root.profile_node = 200;
+
+  auto candidate_join_result = xpod::qlever::executeBridgeOperationPlan(physical, candidate_join_plan);
+  if (candidate_join_result.status != XPOD_RDF_STATUS_OK) return 30;
+  if (state.calls != 1) return 31;
+  const IdTable& candidate_join_table = candidate_join_result.result.idTable();
+  if (candidate_join_table.numColumns() != 3 || candidate_join_table.numRows() != 1) return 32;
+  if (candidate_join_table(0, 0).getBits() != 1011) return 33;
+  if (candidate_join_table(0, 1).getBits() != 1020) return 34;
+  if (candidate_join_table(0, 2).getBits() != 1031) return 35;
+  if (profile.calls != 6) return 36;
+  if (profile.kinds[0] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[0] != XPOD_RDF_PROFILE_RUNNING) return 37;
+  if (profile.nodes[0] != 200 || profile.has_parents[0]) return 38;
+  if (profile.kinds[1] != XPOD_RDF_PROFILE_TEXT_SEARCH || profile.statuses[1] != XPOD_RDF_PROFILE_RUNNING) return 39;
+  if (profile.nodes[1] != 202 || !profile.has_parents[1] || profile.parents[1] != 200) return 40;
+  if (profile.kinds[2] != XPOD_RDF_PROFILE_TEXT_SEARCH || profile.statuses[2] != XPOD_RDF_PROFILE_COMPLETED) return 41;
+  if (profile.nodes[2] != 202 || !profile.has_parents[2] || profile.parents[2] != 200) return 42;
+  if (profile.kinds[3] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[3] != XPOD_RDF_PROFILE_RUNNING) return 43;
+  if (profile.nodes[3] != 203 || !profile.has_parents[3] || profile.parents[3] != 200) return 44;
+  if (profile.kinds[4] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[4] != XPOD_RDF_PROFILE_COMPLETED) return 45;
+  if (profile.nodes[4] != 203 || !profile.has_parents[4] || profile.parents[4] != 200) return 46;
+  if (profile.kinds[5] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 47;
+  if (profile.nodes[5] != 200 || profile.has_parents[5]) return 48;
+  if (profile.output_rows[5] != 1) return 49;
   return 0;
 }
 `, 'utf8');

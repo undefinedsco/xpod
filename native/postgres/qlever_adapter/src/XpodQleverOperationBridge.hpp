@@ -36,6 +36,9 @@ struct BridgeOperationPlan {
   BridgeOperationKind kind = BridgeOperationKind::PermutationScan;
   std::vector<size_t> scan_indexes;
   size_t candidate_index = 0;
+  bool use_candidate_join = false;
+  BridgeCandidateColumnKind candidate_join_column =
+      BridgeCandidateColumnKind::ResourceTerm;
   uint32_t join_slot = XPOD_RDF_SLOT_SUBJECT;
   std::vector<uint32_t> join_slots;
   xpod_rdf_profile_node_key profile_node = 0;

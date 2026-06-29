@@ -421,6 +421,7 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
 inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
   BridgePhysicalPlan physical;
   physical.root = plan.root;
+  bool copied_text_sources = false;
   if (plan.root.kind == BridgeOperationKind::PermutationScan ||
       plan.root.kind == BridgeOperationKind::HashJoin) {
     xpod_rdf_profile_node_key profile_node = 1;
@@ -428,6 +429,16 @@ inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
     if (plan.root.kind == BridgeOperationKind::HashJoin) {
       physical.root.profile_node = profile_node++;
       parent_profile_node = physical.root.profile_node;
+      if (plan.root.use_candidate_join) {
+        physical.text_sources = plan.text_sources;
+        if (plan.root.candidate_index < physical.text_sources.size()) {
+          physical.text_sources[plan.root.candidate_index].profile_node =
+              profile_node++;
+          physical.text_sources[plan.root.candidate_index]
+              .parent_profile_node = parent_profile_node;
+        }
+        copied_text_sources = true;
+      }
     }
 
     BridgePhysicalScan primary;
@@ -451,7 +462,9 @@ inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
     }
   }
 
-  physical.text_sources = plan.text_sources;
+  if (!copied_text_sources) {
+    physical.text_sources = plan.text_sources;
+  }
   physical.vector_sources = plan.vector_sources;
   return physical;
 }
