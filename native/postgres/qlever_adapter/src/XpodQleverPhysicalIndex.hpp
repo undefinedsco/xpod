@@ -7,10 +7,29 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 
 namespace xpod::qlever {
+
+struct XpodQleverPrefixRangeResult {
+  xpod_rdf_status status;
+  std::vector<xpod_rdf_term_range> ranges;
+  xpod_rdf_term_collation collation = XPOD_RDF_TERM_COLLATION_UNKNOWN;
+};
+
+inline xpod_rdf_status collectPrefixRangeBatch(
+    void* callback_user_data,
+    const xpod_rdf_term_range_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* ranges =
+      static_cast<std::vector<xpod_rdf_term_range>*>(callback_user_data);
+  ranges->insert(ranges->end(), batch->ranges, batch->ranges + batch->range_count);
+  return XPOD_RDF_STATUS_OK;
+}
 
 inline std::string_view qleverPermutationName(
     Permutation::Enum permutation) noexcept {
@@ -121,6 +140,23 @@ class XpodQleverPhysicalIndex {
       xpod_rdf_term_key key,
       xpod_rdf_term& out_term) const noexcept {
     return context_.backend.resolveTerm(key, snapshot(), out_term);
+  }
+
+  XpodQleverPrefixRangeResult prefixRanges(
+      xpod_rdf_bytes prefix,
+      xpod_rdf_term_kind kind,
+      bool has_kind = true) const {
+    xpod_rdf_prefix_range_request request = {};
+    request.snapshot = snapshot();
+    request.cancellation = context_.cancellation;
+    request.prefix = prefix;
+    request.kind = kind;
+    request.has_kind = has_kind ? 1 : 0;
+
+    XpodQleverPrefixRangeResult result = {};
+    result.status = context_.backend.prefixRange(
+        request, collectPrefixRangeBatch, &result.ranges, result.collation);
+    return result;
   }
 
   const PlannerRequestContext& context() const noexcept { return context_; }

@@ -2548,3 +2548,30 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 55: Add term prefix-range access to the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing prefix-range smoke**
+
+Extend the physical index native smoke so `XpodQleverPhysicalIndex::prefixRanges(...)` must call the backend `prefix_range` callback with the current query snapshot and requested term kind.
+
+Expected: FAIL because the physical index seam exposed lookup/resolve and permutation scan, but not term prefix ranges.
+
+- [x] **Step 2: Add the minimal prefix-range result seam**
+
+Add `XpodQleverPrefixRangeResult` plus `XpodQleverPhysicalIndex::prefixRanges(...)`. The method only materializes backend term ranges and collation; it does not translate them into planner filters or apply any SPARQL policy.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.

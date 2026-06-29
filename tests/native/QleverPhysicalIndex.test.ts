@@ -292,4 +292,94 @@ int main() {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('exposes prefix range lookup through the physical index', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index prefix range check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-prefix-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_prefix_smoke.cpp');
+      const binary = path.join(root, 'physical_index_prefix_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int prefix_calls;
+};
+
+static xpod_rdf_status prefix_range(
+    void* user_data,
+    const xpod_rdf_prefix_range_request* request,
+    xpod_rdf_term_range_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->prefix_calls;
+  if (request->snapshot.facts_version.size != 8) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->prefix.size != 4) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->has_kind != 1 || request->kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+
+  xpod_rdf_term_range rows[2] = {};
+  rows[0].lower = 10;
+  rows[0].upper = 20;
+  rows[0].has_lower = 1;
+  rows[0].has_upper = 1;
+  rows[0].lower_inclusive = 1;
+  rows[0].upper_exclusive = 1;
+  rows[1].lower = 30;
+  rows[1].upper = 40;
+  rows[1].has_lower = 1;
+  rows[1].has_upper = 1;
+  rows[1].lower_inclusive = 1;
+  rows[1].upper_exclusive = 1;
+  xpod_rdf_term_range_batch batch = {rows, 2, XPOD_RDF_TERM_COLLATION_BYTEWISE};
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.prefix_range = prefix_range;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  static const char facts_version[] = "facts-v1";
+  static const char prefix[] = "urn:";
+  xpod_qlever_query_request request = {};
+  request.snapshot.facts_version = {facts_version, 8};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  auto ranges = index.prefixRanges({prefix, 4}, XPOD_RDF_TERM_IRI);
+  if (ranges.status != XPOD_RDF_STATUS_OK) return 1;
+  if (ranges.collation != XPOD_RDF_TERM_COLLATION_BYTEWISE) return 2;
+  if (ranges.ranges.size() != 2) return 3;
+  if (ranges.ranges[0].lower != 10 || ranges.ranges[0].upper != 20) return 4;
+  if (ranges.ranges[1].lower != 30 || ranges.ranges[1].upper != 40) return 5;
+  if (state.prefix_calls != 1) return 6;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
