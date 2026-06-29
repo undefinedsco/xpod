@@ -144,6 +144,8 @@ int main() {
   query.snapshot = snapshot;
   query.access_scope = &access_scope;
   query.source_scope.local_path_prefix = {path_prefix, 16};
+  query.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  query.graph_scope.exact_graph = 88;
 
   xpod_rdf_backend_v1 raw_backend = {};
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -168,6 +170,8 @@ int main() {
   if (request.needed_slots != XPOD_RDF_SLOT_PREDICATE) return 6;
   if (request.source_scope.local_path_prefix.data != path_prefix) return 7;
   if (request.source_scope.local_path_prefix.size != 16) return 8;
+  if (request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 9;
+  if (request.graph_scope.exact_graph != 88) return 10;
   return 0;
 }
 `, 'utf8');

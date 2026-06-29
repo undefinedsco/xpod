@@ -2011,3 +2011,38 @@ bun test tests/native/QleverScanBridge.test.ts --run -t "builds an Xpod physical
 ```
 
 Expected: PASS.
+
+### Task 40: Carry request-level graph scope into planner scan input
+
+**Files:**
+- Modify: `tests/native/QleverScanBridge.test.ts`
+- Modify: `tests/native/QleverAdapterFacade.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/qlever_adapter/include/xpod_qlever_adapter.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerScanInput.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing request-context propagation test**
+
+Extend the planner scan input smoke so `xpod_qlever_query_request` can carry an
+exact graph scope and `makeScanRequestInput(...)` propagates it into
+`makeScanRequest(...)`.
+
+Expected: FAIL because `xpod_qlever_query_request` had no graph-scope field.
+
+- [x] **Step 2: Add graph scope to the query request ABI**
+
+Add `xpod_rdf_graph_scope graph_scope` to the adapter query request, include it
+in the header/ABI checks, and copy it from `PlannerRequestContext` into
+`ScanRequestInput`. Zero-initialized requests still default to
+`XPOD_RDF_GRAPH_SCOPE_ALL`, preserving existing callers.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverScanBridge.test.ts --run -t "builds scan input from the native planner request context"
+```
+
+Expected: PASS.

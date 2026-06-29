@@ -30,6 +30,7 @@ describe('native QLever adapter facade', () => {
     expect(header).toContain('extern "C"');
     expect(header).toContain('typedef struct xpod_qlever_adapter_config');
     expect(header).toContain('typedef struct xpod_qlever_query_request');
+    expect(header).toContain('xpod_rdf_graph_scope graph_scope');
     expect(header).toContain('xpod_rdf_source_scope source_scope');
     expect(header).toContain('xpod_qlever_adapter_query_request');
     expect(header).toContain('xpod_qlever_adapter_create');

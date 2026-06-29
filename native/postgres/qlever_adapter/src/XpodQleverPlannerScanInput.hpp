@@ -18,6 +18,9 @@ inline ScanRequestInput makeScanRequestInput(
       context.request == nullptr ? nullptr : &context.request->snapshot;
   input.permutation = permutation;
   input.pattern = pattern;
+  if (context.request != nullptr) {
+    input.graph_scope = context.request->graph_scope;
+  }
   input.source_scope =
       context.request == nullptr ? nullptr : &context.request->source_scope;
   input.access_scope =
