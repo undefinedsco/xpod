@@ -96,11 +96,13 @@ Reasoning:
 
 The first native-first protocol artifacts are:
 
-- C ABI header: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
+- Physical backend C ABI header: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
+- QLever adapter C ABI facade: [`native/postgres/qlever_adapter/include/xpod_qlever_adapter.h`](../../../native/postgres/qlever_adapter/include/xpod_qlever_adapter.h)
+- QLever adapter C++ implementation shell: [`native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp`](../../../native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp)
 - ABI validator: [`scripts/check-rdf-physical-protocol-abi.cjs`](../../../scripts/check-rdf-physical-protocol-abi.cjs)
-- Focused test: [`tests/native/RdfPhysicalBackendProtocolHeader.test.ts`](../../../tests/native/RdfPhysicalBackendProtocolHeader.test.ts)
+- Focused tests: [`tests/native/RdfPhysicalBackendProtocolHeader.test.ts`](../../../tests/native/RdfPhysicalBackendProtocolHeader.test.ts), [`tests/native/QleverAdapterFacade.test.ts`](../../../tests/native/QleverAdapterFacade.test.ts)
 
-The header is the execution-boundary artifact. TypeScript only validates, normalizes, and reports this contract; it is not the hot-path protocol for the PostgreSQL extension path.
+The physical backend header is the data execution-boundary artifact. The adapter facade is the C ABI entry point that will hide QLever-specific C++ types behind a stable native boundary. TypeScript only validates, normalizes, and reports this contract; it is not the hot-path protocol for the PostgreSQL extension path.
 
 ## Core concepts
 
@@ -527,6 +529,8 @@ A backend implements this protocol only when it passes these tests:
 - Use it to diagnose broad fusion before changing the planner.
 
 ### P2 — QLever compatibility spike
+
+Current state: `xpod_qlever_adapter` exists as a C ABI / C++ facade shell. `xpod_qlever_adapter_query(...)` intentionally returns `XPOD_RDF_STATUS_UNSUPPORTED` until the real QLever parser/planner/executor is wired behind the facade.
 
 - Build a read-only spike that maps a small QLever-like operator subset to this protocol:
   - term lookup;

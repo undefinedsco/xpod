@@ -6,6 +6,8 @@ const { execFileSync } = require('node:child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
 const headerPath = path.join(repoRoot, 'native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h');
+const adapterHeaderPath = path.join(repoRoot, 'native/postgres/qlever_adapter/include/xpod_qlever_adapter.h');
+const adapterSourcePath = path.join(repoRoot, 'native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp');
 
 const requiredSymbols = [
   '#define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1',
@@ -20,7 +22,7 @@ const requiredSymbols = [
   'xpod_rdf_profile_event_callback',
 ];
 
-const forbiddenPatterns = [
+const forbiddenHeaderPatterns = [
   /std::/,
   /namespace\s+/,
   /template\s*</,
@@ -28,6 +30,24 @@ const forbiddenPatterns = [
   /PermutationPtr/,
   /RuntimeInformation/,
   /QLever/,
+];
+
+const requiredAdapterHeaderSymbols = [
+  '#include "xpod_rdf_physical_backend.h"',
+  'extern "C"',
+  'typedef struct xpod_qlever_adapter_config',
+  'xpod_qlever_adapter_create',
+  'xpod_qlever_adapter_destroy',
+  'xpod_qlever_adapter_abi_version',
+];
+
+const forbiddenAdapterHeaderPatterns = [
+  /std::/,
+  /namespace\s+/,
+  /template\s*</,
+  /IndexImpl/,
+  /PermutationPtr/,
+  /RuntimeInformation/,
 ];
 
 function fail(message, error) {
@@ -58,9 +78,28 @@ for (const symbol of requiredSymbols) {
   }
 }
 
-for (const pattern of forbiddenPatterns) {
+for (const pattern of forbiddenHeaderPatterns) {
   if (pattern.test(header)) {
     fail(`header leaks forbidden native-boundary token: ${pattern}`);
+  }
+}
+
+if (!fs.existsSync(adapterHeaderPath)) {
+  fail(`missing adapter header: ${path.relative(repoRoot, adapterHeaderPath)}`);
+}
+if (!fs.existsSync(adapterSourcePath)) {
+  fail(`missing adapter source: ${path.relative(repoRoot, adapterSourcePath)}`);
+}
+
+const adapterHeader = fs.readFileSync(adapterHeaderPath, 'utf8');
+for (const symbol of requiredAdapterHeaderSymbols) {
+  if (!adapterHeader.includes(symbol)) {
+    fail(`adapter header is missing required symbol: ${symbol}`);
+  }
+}
+for (const pattern of forbiddenAdapterHeaderPatterns) {
+  if (pattern.test(adapterHeader)) {
+    fail(`adapter header leaks forbidden native-boundary token: ${pattern}`);
   }
 }
 
@@ -81,6 +120,17 @@ try {
 
   if (commandExists('c++')) {
     execFileSync('c++', ['-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', repoRoot, '-fsyntax-only', cppFile], { stdio: 'pipe' });
+    execFileSync('c++', [
+      '-std=c++17',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+      '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+      '-I', repoRoot,
+      '-fsyntax-only',
+      adapterSourcePath,
+    ], { stdio: 'pipe' });
   } else {
     console.warn('[rdf-protocol-abi] warning: c++ not found, skipped C++ syntax check');
   }
@@ -91,3 +141,4 @@ try {
 }
 
 console.log('[rdf-protocol-abi] OK: native RDF physical backend C ABI header is valid.');
+console.log('[rdf-protocol-abi] OK: QLever adapter facade is valid.');
