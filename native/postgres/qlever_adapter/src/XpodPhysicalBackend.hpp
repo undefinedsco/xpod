@@ -242,6 +242,18 @@ class PhysicalBackend {
         backend_->backend_user_data, &request, on_batch, callback_user_data);
   }
 
+  xpod_rdf_status estimateDistinct(
+      const xpod_rdf_distinct_request& request,
+      xpod_rdf_estimate& out_estimate) const noexcept {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, estimate_distinct),
+                     backend_->estimate_distinct)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return backend_->estimate_distinct(
+        backend_->backend_user_data, &request, &out_estimate);
+  }
+
   xpod_rdf_status estimateScan(
       const xpod_rdf_scan_request& request,
       xpod_rdf_estimate& out_estimate) const noexcept {

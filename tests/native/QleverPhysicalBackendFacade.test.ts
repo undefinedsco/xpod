@@ -138,6 +138,22 @@ static xpod_rdf_status scan(
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status estimate_distinct(
+    void* backend_user_data,
+    const xpod_rdf_distinct_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 100000000;
+  if (request->distinct_slots != XPOD_RDF_SLOT_SUBJECT ||
+      request->scan.source_scope.local_path_prefix.size != 6) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  out_estimate->rows = 3;
+  out_estimate->distinct_subjects = 3;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status estimate_source_scope(
     void* backend_user_data,
     const xpod_rdf_source_scope* source_scope,
@@ -219,6 +235,7 @@ int main() {
   backend.resolve_terms = resolve_terms;
   backend.prefix_range = prefix_range;
   backend.scan_permutation = scan;
+  backend.estimate_distinct = estimate_distinct;
   backend.estimate_source_scope = estimate_source_scope;
   backend.resolve_source_scope = resolve_source_scope;
   backend.histogram_hints = histogram_hints;
@@ -272,6 +289,14 @@ int main() {
   cancelled = 0;
   xpod_rdf_source_scope source_scope = {};
   source_scope.local_path_prefix = {"/docs/", 6};
+  xpod_rdf_distinct_request distinct_request = {};
+  distinct_request.scan.source_scope = source_scope;
+  distinct_request.distinct_slots = XPOD_RDF_SLOT_SUBJECT;
+  xpod_rdf_estimate distinct_estimate = {};
+  if (physical.estimateDistinct(distinct_request, distinct_estimate) != XPOD_RDF_STATUS_OK) return 32;
+  if (distinct_estimate.rows != 3 ||
+      distinct_estimate.distinct_subjects != 3 ||
+      distinct_estimate.confidence != XPOD_RDF_ESTIMATE_FRESH) return 33;
   xpod_rdf_estimate source_estimate = {};
   if (physical.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_OK) return 8;
   if (source_estimate.rows != 12 || source_estimate.confidence != XPOD_RDF_ESTIMATE_FRESH) return 15;
@@ -306,7 +331,7 @@ int main() {
   if (histogram_row_count != 1) return 24;
   if (histogram_rows[0].rows != 7 || histogram_rows[0].distinct_terms != 3) return 25;
   if (histogram_stats_version.size != 8) return 26;
-  if (calls != 11110111) return 16;
+  if (calls != 111110111) return 16;
 
   xpod_rdf_backend_v1 truncated = {};
   truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -317,7 +342,7 @@ int main() {
   xpod_rdf_term_key lookup_key = 0;
   if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
   if (lookup_key != 0) return 13;
-  if (calls != 11110111) return 14;
+  if (calls != 111110111) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -326,6 +351,7 @@ int main() {
   if (unsupported.lookupTerms(terms, 2, snapshot, keys, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 9;
   if (unsupported.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 10;
   if (unsupported.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
+  if (unsupported.estimateDistinct(distinct_request, distinct_estimate) != XPOD_RDF_STATUS_UNSUPPORTED) return 34;
   if (unsupported.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_UNSUPPORTED) return 17;
   if (unsupported.resolveSourceScope(source_scope, snapshot, resolved_source_scope) != XPOD_RDF_STATUS_UNSUPPORTED) return 31;
   if (unsupported.prefixRange(prefix_request, on_prefix_ranges, &prefix_state, prefix_collation) != XPOD_RDF_STATUS_UNSUPPORTED) return 22;

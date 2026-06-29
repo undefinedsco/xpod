@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 11
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 12
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -513,6 +513,11 @@ typedef xpod_rdf_status (*xpod_rdf_estimate_scan_fn)(
     const xpod_rdf_scan_request* request,
     xpod_rdf_estimate* out_estimate);
 
+typedef xpod_rdf_status (*xpod_rdf_estimate_distinct_fn)(
+    void* backend_user_data,
+    const xpod_rdf_distinct_request* request,
+    xpod_rdf_estimate* out_estimate);
+
 typedef xpod_rdf_status (*xpod_rdf_estimate_join_fanout_fn)(
     void* backend_user_data,
     const xpod_rdf_join_fanout_request* request,
@@ -617,6 +622,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_prefix_range_fn prefix_range;
   xpod_rdf_histogram_hints_fn histogram_hints;
   xpod_rdf_resolve_source_scope_fn resolve_source_scope;
+  xpod_rdf_estimate_distinct_fn estimate_distinct;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus

@@ -2343,3 +2343,40 @@ bun run check:rdf-protocol-abi
 ```
 
 Expected: PASS.
+
+### Task 49: Expose distinct cardinality estimates in the physical protocol
+
+**Files:**
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `tests/native/QleverPhysicalBackendFacade.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing distinct-estimate tests**
+
+Extend the protocol/header smoke and physical backend facade smoke so
+`CardinalityStats.estimateDistinct(...)` is represented in the C ABI and surfaced
+through the C++ facade. The test uses a real `xpod_rdf_distinct_request` and
+requires missing callback tables to fail closed with `UNSUPPORTED`.
+
+Expected: FAIL because the protocol exposed `distinct_scan` but not a distinct
+cardinality estimate callback.
+
+- [x] **Step 2: Add the additive native callback and facade method**
+
+Add `xpod_rdf_estimate_distinct_fn` and append `estimate_distinct` to
+`xpod_rdf_backend_v1` as a struct-size-gated field. Surface it as
+`PhysicalBackend::estimateDistinct(...)`.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/QleverPhysicalBackendFacade.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.
