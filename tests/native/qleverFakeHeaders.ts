@@ -13,11 +13,24 @@ class Variable {
 };
 class TripleComponent {
  public:
-  explicit TripleComponent(Variable variable) : variable_(std::move(variable)) {}
-  bool isVariable() const { return true; }
+  class Iri {
+   public:
+    explicit Iri(std::string value) : value_(std::move(value)) {}
+    const std::string& toStringRepresentation() const { return value_; }
+   private:
+    std::string value_;
+  };
+  explicit TripleComponent(Variable variable) : kind_(Kind::Variable), variable_(std::move(variable)) {}
+  explicit TripleComponent(Iri iri) : kind_(Kind::Iri), iri_(std::move(iri)) {}
+  bool isVariable() const { return kind_ == Kind::Variable; }
   const Variable& getVariable() const { return variable_; }
+  bool isIri() const { return kind_ == Kind::Iri; }
+  const Iri& getIri() const { return iri_; }
  private:
-  Variable variable_;
+  enum class Kind { Variable, Iri };
+  Kind kind_ = Kind::Variable;
+  Variable variable_{""};
+  Iri iri_{""};
 };
 class SparqlTripleSimple {
  public:
@@ -61,6 +74,16 @@ class ParsedQuery {
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
     return query;
   }
+  static ParsedQuery predicateIriSelect() {
+    ParsedQuery query;
+    parsedQuery::BasicGraphPattern basic;
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{TripleComponent::Iri{"<urn:p>"}},
+        TripleComponent{Variable{"?o"}});
+    query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
+    return query;
+  }
   bool hasSelectClause() const { return select_; }
   const std::vector<parsedQuery::GraphPatternOperation>& children() const {
     return _rootGraphPattern._graphPatterns;
@@ -72,6 +95,6 @@ class ParsedQuery {
 
 export const fakeSparqlTripleHeader = '#pragma once\n#include "parser/ParsedQuery.h"\n';
 
-export const fakePermissiveSparqlParserHeader = '#pragma once\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { (void)query; return ParsedQuery::minimalSelect(); } };\n';
+export const fakePermissiveSparqlParserHeader = '#pragma once\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); return ParsedQuery::minimalSelect(); } };\n';
 
-export const fakeThrowingSparqlParserHeader = '#pragma once\n#include <stdexcept>\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("BROKEN") != std::string::npos) throw std::runtime_error("synthetic parse failure"); if (query.find("SELECT") != std::string::npos) return ParsedQuery::minimalSelect(); ParsedQuery parsed; parsed.select_ = false; return parsed; } };\n';
+export const fakeThrowingSparqlParserHeader = '#pragma once\n#include <stdexcept>\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("BROKEN") != std::string::npos) throw std::runtime_error("synthetic parse failure"); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); if (query.find("SELECT") != std::string::npos) return ParsedQuery::minimalSelect(); ParsedQuery parsed; parsed.select_ = false; return parsed; } };\n';

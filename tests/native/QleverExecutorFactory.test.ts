@@ -117,6 +117,21 @@ static xpod_rdf_status decode(void*, uint64_t bits, xpod_rdf_term_key* out_term)
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status lookup_terms(
+    void*,
+    const xpod_rdf_term* terms,
+    size_t term_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_keys,
+    xpod_rdf_status* out_statuses) {
+  if (term_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:p") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_keys[0] = 20;
+  out_statuses[0] = XPOD_RDF_STATUS_OK;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status resolve_terms(
     void*,
     const xpod_rdf_term_key* keys,
@@ -167,6 +182,7 @@ static xpod_rdf_status scan(
     void* callback_user_data) {
   auto* state = static_cast<ScanState*>(backend_user_data);
   if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!request->pattern.has_predicate || request->pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->snapshot.snapshot_token.size != 7) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (std::string_view(request->snapshot.snapshot_token.data, request->snapshot.snapshot_token.size) != "snap-v1") return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->access_scope == nullptr) return XPOD_RDF_STATUS_PERMISSION_DENIED;
@@ -187,6 +203,7 @@ int main() {
   backend.backend_user_data = &scan_state;
   backend.encode_qlever_id = encode;
   backend.decode_qlever_id = decode;
+  backend.lookup_terms = lookup_terms;
   backend.resolve_terms = resolve_terms;
   backend.estimate_scan = estimate_scan;
   backend.scan_permutation = scan;
@@ -198,7 +215,7 @@ int main() {
   if (xpod_qlever_adapter_create(&config, &adapter) != XPOD_RDF_STATUS_OK) return 1;
 
   xpod_qlever_query_result result = {};
-  xpod_rdf_bytes query = {"SELECT ?s ?p ?o WHERE { ?s ?p ?o }", 36};
+  xpod_rdf_bytes query = {"SELECT ?s ?p ?o WHERE { ?s <urn:p> ?o }", 39};
   xpod_rdf_access_scope access = {};
   access.principal = {"urn:alice", 9};
   xpod_qlever_query_request request = {};

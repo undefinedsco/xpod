@@ -105,6 +105,7 @@ void writeJsonString(std::ostringstream& out, std::string_view value) {
 xpod_rdf_status resolveIdTableTerms(
     xpod::rdf::PhysicalBackend backend,
     const IdTable& table,
+    const xpod_rdf_snapshot& snapshot,
     std::vector<xpod_rdf_term>& out_terms,
     std::string& error_storage) {
   std::vector<xpod_rdf_term_key> keys;
@@ -124,7 +125,6 @@ xpod_rdf_status resolveIdTableTerms(
 
   out_terms.resize(keys.size());
   std::vector<xpod_rdf_status> statuses(keys.size());
-  xpod_rdf_snapshot snapshot = {};
   xpod_rdf_status status = backend.resolveTerms(
       keys.data(), keys.size(), snapshot, out_terms.data(), statuses.data());
   if (status != XPOD_RDF_STATUS_OK) {
@@ -160,6 +160,10 @@ void writeTermBinding(std::ostringstream& out, const xpod_rdf_term& term) {
     }
   }
   out << '}';
+}
+
+void writeEmptySparqlJson(std::ostringstream& out) {
+  out << "{\"engine\":\"xpod-qlever-bridge\",\"head\":{\"vars\":[\"s\",\"p\",\"o\"]},\"results\":{\"bindings\":[]}}";
 }
 
 void writeSparqlJson(std::ostringstream& out, const IdTable& table,
@@ -215,6 +219,24 @@ xpod_rdf_status executeBridgeQuery(
   }
   plan.scan.snapshot = &request.snapshot;
   plan.scan.access_scope = request.access_scope;
+  xpod_rdf_status bind_status = bindPlanTerms(
+      backend, request.snapshot, plan, error_storage);
+  if (bind_status != XPOD_RDF_STATUS_OK) {
+    setResult(out_result, bind_status, result_storage, profile_storage,
+              error_storage);
+    return bind_status;
+  }
+  if (plan.known_empty) {
+    std::ostringstream json;
+    writeEmptySparqlJson(json);
+    result_storage = json.str();
+    std::ostringstream profile;
+    writeScanProfileJson(profile, plan.descriptor, 0);
+    profile_storage = profile.str();
+    setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
+              error_storage);
+    return XPOD_RDF_STATUS_OK;
+  }
 
   XpodBackedIndexScan scan(
       backend, plan.scan, plan.sorted_by, plan.result_width, plan.descriptor,
@@ -229,7 +251,7 @@ xpod_rdf_status executeBridgeQuery(
 
   std::vector<xpod_rdf_term> terms;
   xpod_rdf_status resolve_status = resolveIdTableTerms(
-      backend, result.result.idTable(), terms, error_storage);
+      backend, result.result.idTable(), request.snapshot, terms, error_storage);
   if (resolve_status != XPOD_RDF_STATUS_OK) {
     setResult(out_result, resolve_status, result_storage, profile_storage,
               error_storage);
