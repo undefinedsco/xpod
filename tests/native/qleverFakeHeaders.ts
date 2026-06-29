@@ -471,3 +471,50 @@ class TextIndexScanForEntity final : public Operation {
   Variable entity_var_{"?entity"};
 };
 `;
+
+export const fakeTextLimitHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+class QueryExecutionContext;
+class TextLimit final : public Operation {
+ public:
+  TextLimit(QueryExecutionContext*,
+            size_t limit,
+            std::shared_ptr<QueryExecutionTree> child,
+            ColumnIndex text_record_column,
+            std::vector<ColumnIndex> entity_columns,
+            std::vector<ColumnIndex> score_columns)
+      : limit_(limit),
+        child_(std::move(child)),
+        entity_columns_(std::move(entity_columns)),
+        score_columns_(std::move(score_columns)) {
+    (void)text_record_column;
+  }
+  TextLimit(size_t limit, std::shared_ptr<QueryExecutionTree> child)
+      : limit_(limit), child_(std::move(child)) {}
+  std::string getDescriptor() const override { return "TextLimit"; }
+  size_t getResultWidth() const override {
+    return child_ == nullptr ? 0 : child_->getRootOperation()->getResultWidth();
+  }
+  size_t getTextLimit() const { return limit_; }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return child_ == nullptr ? std::vector<ColumnIndex>{}
+                             : child_->getRootOperation()->getResultSortedOn();
+  }
+ private:
+  size_t limit_;
+  std::shared_ptr<QueryExecutionTree> child_;
+  std::vector<ColumnIndex> entity_columns_;
+  std::vector<ColumnIndex> score_columns_;
+};
+`;

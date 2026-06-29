@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
+import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -229,6 +229,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/LimitOffset.h'), fakeLimitOffsetHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForEntity.h'), fakeTextIndexScanForEntityHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/TextLimit.h'), fakeTextLimitHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), `
 #pragma once
 #include <string>
@@ -295,6 +296,7 @@ class IndexScan final : public Operation {
 #include "engine/LimitOffset.h"
 #include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
+#include "engine/TextLimit.h"
 #include "XpodQleverOperationPlanBridge.hpp"
 
 static xpod_rdf_status lookup_terms(
@@ -385,6 +387,18 @@ int main() {
   if (!physical.scans.empty()) return 43;
   if (physical.text_sources.size() != 1) return 44;
   if (std::string(physical.text_sources[0].request.query.data, physical.text_sources[0].request.query.size) != "native-first") return 45;
+
+  auto limited_text_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<TextIndexScanForWord>("native-first"));
+  TextLimit text_limit(5, limited_text_tree);
+  auto text_limit_plan = xpod::qlever::planQleverOperation(text_limit);
+  if (!text_limit_plan.has_value()) return 193;
+  if (text_limit_plan->root.kind != xpod::qlever::BridgeOperationKind::TextSearch) return 194;
+  if (text_limit_plan->text_sources.size() != 1) return 195;
+  if (text_limit_plan->text_sources[0].request.limit != 5) return 196;
+  auto text_limit_physical = xpod::qlever::toBridgePhysicalPlan(*text_limit_plan);
+  if (text_limit_physical.text_sources.size() != 1) return 197;
+  if (text_limit_physical.text_sources[0].request.limit != 5) return 198;
 
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;

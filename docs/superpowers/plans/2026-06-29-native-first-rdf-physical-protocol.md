@@ -954,3 +954,53 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 19: TextLimit pushdown for text candidate roots
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever `TextLimit.h` as the source of truth.
+
+`TextLimit` exposes:
+- a text limit through public `getTextLimit()`;
+- one child through the normal `Operation::getChildren()` virtual seam.
+
+The first bridge increment only supports `TextLimit` above a native text
+candidate root. More complex `TextLimit` shapes that require per-entity
+combination limiting fail closed instead of pretending to be supported.
+
+- [x] **Step 2: Write the failing planner TextLimit test**
+
+Extend the operation-plan smoke with
+`TextLimit(TextIndexScanForWord("native-first"), limit=5)`.
+
+Expected native plan shape:
+- child root stays `BridgeOperationKind::TextSearch`;
+- the child text candidate source remains the only text source;
+- `text_sources[0].request.limit == 5`;
+- the physical plan preserves the same text request limit.
+
+Expected: FAIL because the bridge previously did not plan `TextLimit`.
+
+- [x] **Step 3: Plan TextLimit as text-search request limit**
+
+When the embedded QLever build exposes `engine/TextLimit.h`, map
+`TextLimit(child)` to the child's `BridgeQueryPlan` only if the child root is a
+native `TextSearch` candidate root. Set the selected text candidate source's
+request limit from `getTextLimit()`.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts --run
+```
+
+Expected: PASS.

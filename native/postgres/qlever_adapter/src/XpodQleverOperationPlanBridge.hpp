@@ -31,6 +31,13 @@
 #define XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY 0
 #endif
 
+#if __has_include("engine/TextLimit.h")
+#include "engine/TextLimit.h"
+#define XPOD_QLEVER_HAS_TEXT_LIMIT 1
+#else
+#define XPOD_QLEVER_HAS_TEXT_LIMIT 0
+#endif
+
 #if __has_include("engine/LimitOffset.h")
 #include "engine/LimitOffset.h"
 #define XPOD_QLEVER_HAS_LIMIT_OFFSET 1
@@ -780,12 +787,38 @@ inline std::optional<BridgeQueryPlan> planSortOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_TEXT_LIMIT
+inline std::optional<BridgeQueryPlan> planTextLimitOperation(
+    const TextLimit& operation) {
+  std::vector<QueryExecutionTree*> children =
+      const_cast<Operation&>(static_cast<const Operation&>(operation))
+          .getChildren();
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(*children[0]);
+  if (!plan.has_value() || plan->root.kind != BridgeOperationKind::TextSearch ||
+      plan->root.candidate_index >= plan->text_sources.size()) {
+    return std::nullopt;
+  }
+  plan->text_sources[plan->root.candidate_index].request.limit =
+      operation.getTextLimit();
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET
   const auto* limit_offset = dynamic_cast<const LimitOffset*>(&operation);
   if (limit_offset != nullptr) {
     return planLimitOffsetOperation(*limit_offset);
+  }
+#endif
+#if XPOD_QLEVER_HAS_TEXT_LIMIT
+  const auto* text_limit = dynamic_cast<const TextLimit*>(&operation);
+  if (text_limit != nullptr) {
+    return planTextLimitOperation(*text_limit);
   }
 #endif
 #if XPOD_QLEVER_HAS_SORT
