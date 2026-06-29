@@ -242,9 +242,11 @@ export const fakeTextIndexScanForWordHeader = `
 #include <utility>
 #include <vector>
 #include "engine/Operation.h"
+#include "parser/ParsedQuery.h"
 class TextIndexScanForWord final : public Operation {
  public:
   explicit TextIndexScanForWord(std::string word) : word_(std::move(word)) {}
+  const Variable& textRecordVar() const { return text_record_var_; }
   const std::string& word() const { return word_; }
   std::string getDescriptor() const override { return "TextIndexScanForWord " + word_; }
   size_t getResultWidth() const override { return 1; }
@@ -252,6 +254,7 @@ class TextIndexScanForWord final : public Operation {
   std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
  private:
   std::string word_;
+  Variable text_record_var_{"?text"};
 };
 `;
 
@@ -261,6 +264,7 @@ export const fakeTextIndexScanForEntityHeader = `
 #include <utility>
 #include <vector>
 #include "engine/Operation.h"
+#include "parser/ParsedQuery.h"
 class TextIndexScanForEntity final : public Operation {
  public:
   TextIndexScanForEntity(std::string word, std::string fixed_entity)
@@ -269,6 +273,7 @@ class TextIndexScanForEntity final : public Operation {
       : word_(std::move(word)), has_fixed_entity_(false) {}
   bool hasFixedEntity() const { return has_fixed_entity_; }
   const std::string& fixedEntity() const { return fixed_entity_; }
+  const Variable& textRecordVar() const { return text_record_var_; }
   const std::string& word() const { return word_; }
   std::string getDescriptor() const override { return "TextIndexScanForEntity " + word_; }
   size_t getResultWidth() const override { return has_fixed_entity_ ? 1 : 2; }
@@ -278,5 +283,6 @@ class TextIndexScanForEntity final : public Operation {
   std::string word_;
   std::string fixed_entity_;
   bool has_fixed_entity_;
+  Variable text_record_var_{"?text"};
 };
 `;

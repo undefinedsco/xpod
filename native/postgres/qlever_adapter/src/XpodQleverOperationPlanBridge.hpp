@@ -142,6 +142,78 @@ inline std::optional<BridgeQueryPlan> planTextIndexScanForEntityOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD && \
+    XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY
+inline std::optional<BridgeQueryPlan> planTextWordEntityJoinPair(
+    const TextIndexScanForWord& word_scan,
+    const TextIndexScanForEntity& entity_scan,
+    const std::string& descriptor,
+    size_t result_width) {
+  if (!entity_scan.hasFixedEntity()) {
+    return std::nullopt;
+  }
+  if (word_scan.word() != entity_scan.word()) {
+    return std::nullopt;
+  }
+  if (word_scan.textRecordVar().name() !=
+      entity_scan.textRecordVar().name()) {
+    return std::nullopt;
+  }
+  auto entity = textEntityBindingFromString(entity_scan.fixedEntity());
+  if (!entity.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  BridgeTextCandidateSource source;
+  source.setQuery(word_scan.word());
+  source.descriptor = descriptor;
+  plan.text_sources.push_back(std::move(source));
+  BridgeTextRequiredEntityBinding required_entity;
+  required_entity.text_source_index = 0;
+  required_entity.term = std::move(*entity);
+  plan.text_required_entities.push_back(std::move(required_entity));
+  plan.descriptor = descriptor;
+  plan.result_width = result_width;
+  plan.root.kind = BridgeOperationKind::TextSearch;
+  plan.root.candidate_index = 0;
+  return plan;
+}
+
+inline std::optional<BridgeQueryPlan> planTextJoinOperation(
+    const Join& join) {
+  std::vector<const QueryExecutionTree*> children = join.getChildren();
+  if (children.size() != 2 || children[0] == nullptr ||
+      children[1] == nullptr) {
+    return std::nullopt;
+  }
+  auto left = children[0]->getRootOperation();
+  auto right = children[1]->getRootOperation();
+  if (left == nullptr || right == nullptr) {
+    return std::nullopt;
+  }
+
+  const auto* left_word = dynamic_cast<const TextIndexScanForWord*>(left.get());
+  const auto* right_word =
+      dynamic_cast<const TextIndexScanForWord*>(right.get());
+  const auto* left_entity =
+      dynamic_cast<const TextIndexScanForEntity*>(left.get());
+  const auto* right_entity =
+      dynamic_cast<const TextIndexScanForEntity*>(right.get());
+  if (left_word != nullptr && right_entity != nullptr) {
+    return planTextWordEntityJoinPair(
+        *left_word, *right_entity, join.getDescriptor(),
+        join.getResultWidth());
+  }
+  if (right_word != nullptr && left_entity != nullptr) {
+    return planTextWordEntityJoinPair(
+        *right_word, *left_entity, join.getDescriptor(),
+        join.getResultWidth());
+  }
+  return std::nullopt;
+}
+#endif
+
 inline const TripleComponent& indexScanComponentForSlot(
     const IndexScan& scan,
     uint32_t slot) {
@@ -214,6 +286,13 @@ inline std::optional<uint32_t> inferCommonVariableJoinSlot(
 }
 
 inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
+#if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD && \
+    XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY
+  auto text_plan = planTextJoinOperation(join);
+  if (text_plan.has_value()) {
+    return text_plan;
+  }
+#endif
   std::vector<const QueryExecutionTree*> children = join.getChildren();
   if (children.size() != 2) {
     return std::nullopt;

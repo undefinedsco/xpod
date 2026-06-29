@@ -228,6 +228,19 @@ int main() {
   TextIndexScanForEntity variable_entity_scan("native-first");
   const Operation& variable_entity_operation = variable_entity_scan;
   if (xpod::qlever::planQleverOperation(variable_entity_operation).has_value()) return 59;
+
+  auto word_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<TextIndexScanForWord>("native-first"));
+  auto fixed_entity_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<TextIndexScanForEntity>("native-first", "<urn:entity>"));
+  Join text_join(word_tree, fixed_entity_tree);
+  auto text_join_plan = xpod::qlever::planQleverOperation(text_join);
+  if (!text_join_plan.has_value()) return 60;
+  if (text_join_plan->root.kind != xpod::qlever::BridgeOperationKind::TextSearch) return 61;
+  if (text_join_plan->text_sources.size() != 1) return 62;
+  if (std::string(text_join_plan->text_sources[0].request.query.data, text_join_plan->text_sources[0].request.query.size) != "native-first") return 63;
+  if (text_join_plan->text_required_entities.size() != 1) return 64;
+  if (text_join_plan->text_required_entities[0].term.value != "urn:entity") return 65;
   return 0;
 }
 `, 'utf8');
