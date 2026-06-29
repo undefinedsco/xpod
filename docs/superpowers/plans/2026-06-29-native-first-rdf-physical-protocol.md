@@ -672,3 +672,67 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 15: Limit/Offset result modifier
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing planner Limit/Offset test**
+
+Extend the QLever operation-plan smoke with a QLever-shaped `LimitOffset`
+operation above an `IndexScan`.
+
+Expected native plan shape:
+- child root stays `BridgeOperationKind::PermutationScan`;
+- `root.has_limit == true`;
+- `root.limit` and `root.offset` preserve the modifier values;
+- output variables still come from the child operation.
+
+Expected: FAIL because the bridge previously had no modifier slot on the
+physical root.
+
+- [x] **Step 2: Write the failing native execution Limit/Offset test**
+
+Extend the native operation executor smoke with a hand-built permutation scan
+that returns multiple rows and a root-level limit/offset modifier.
+
+Expected output:
+- executor still runs the scan once;
+- result rows are sliced after the supported scan root;
+- sorted columns are preserved.
+
+Expected: FAIL because scan/join execution previously returned the full table.
+
+- [x] **Step 3: Add a root-level result modifier**
+
+Add `BridgeOperationPlan::has_limit`, `limit`, and `offset`.
+
+This is deliberately an internal physical-plan modifier, not a new public C ABI
+operation. It composes over already-supported RDF roots and keeps the hot
+protocol stable.
+
+- [x] **Step 4: Plan and execute the modifier**
+
+When the embedded QLever build exposes `engine/LimitOffset.h`, map
+`LimitOffset(child, limit, offset)` to the child's `BridgeQueryPlan` and attach
+the modifier to the child root.
+
+After executing supported RDF roots (`PermutationScan` / `HashJoin`), slice the
+`IdTable` by offset and limit before returning the QLever `Result`.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

@@ -224,6 +224,16 @@ static xpod_rdf_status scan(
   state->calls += 1;
   if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->pattern.has_predicate) {
+    if (request->pattern.predicate == 20 && !request->pattern.has_object) {
+      xpod_rdf_quad_key rows[2] = {
+        {10, 20, 30, 40},
+        {11, 20, 31, 40},
+      };
+      xpod_rdf_quad_batch batch = {};
+      batch.rows = rows;
+      batch.row_count = 2;
+      return on_batch(callback_user_data, &batch);
+    }
     if (request->pattern.predicate == 110 && !request->pattern.has_object) {
       xpod_rdf_quad_key rows[2] = {
         {11, 110, 111, 40},
@@ -250,13 +260,15 @@ static xpod_rdf_status scan(
     batch.row_count = 1;
     return on_batch(callback_user_data, &batch);
   }
-  xpod_rdf_quad_key rows[2] = {
+  xpod_rdf_quad_key rows[4] = {
     {10, 20, 30, 40},
     {11, 20, 31, 40},
+    {12, 20, 32, 40},
+    {13, 20, 33, 40},
   };
   xpod_rdf_quad_batch batch = {};
   batch.rows = rows;
-  batch.row_count = 2;
+  batch.row_count = 4;
   return on_batch(callback_user_data, &batch);
 }
 
@@ -585,6 +597,8 @@ int main() {
 
   xpod::qlever::BridgePhysicalScan multi_key_filter;
   multi_key_filter.scan.permutation = Permutation::Enum::SPO;
+  multi_key_filter.scan.pattern.has_predicate = true;
+  multi_key_filter.scan.pattern.predicate = 20;
   multi_key_filter.scan.needed_slots =
       XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
   multi_key_filter.sorted_by = {0, 1};
@@ -621,6 +635,34 @@ int main() {
   if (multi_key_table(1, 1).getBits() != 1020) return 87;
   if (multi_key_table(1, 2).getBits() != 1031) return 88;
   if (multi_key_table(1, 3).getBits() != 1031) return 89;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan limit_plan;
+  xpod::qlever::BridgePhysicalScan limit_scan;
+  limit_scan.scan.permutation = Permutation::Enum::SPO;
+  limit_scan.scan.needed_slots =
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  limit_scan.sorted_by = {0};
+  limit_scan.result_width = 3;
+  limit_scan.descriptor = "limit primary scan";
+  limit_plan.scans.push_back(limit_scan);
+  limit_plan.root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  limit_plan.root.scan_indexes = {0};
+  limit_plan.root.has_limit = true;
+  limit_plan.root.offset = 1;
+  limit_plan.root.limit = 2;
+
+  auto limit_result = xpod::qlever::executeBridgeOperationPlan(physical, limit_plan);
+  if (limit_result.status != XPOD_RDF_STATUS_OK) return 90;
+  if (state.calls != 1) return 91;
+  const IdTable& limit_table = limit_result.result.idTable();
+  if (limit_table.numColumns() != 3 || limit_table.numRows() != 2) return 92;
+  if (limit_table(0, 0).getBits() != 1011) return 93;
+  if (limit_table(0, 1).getBits() != 1020) return 94;
+  if (limit_table(0, 2).getBits() != 1031) return 95;
+  if (limit_table(1, 0).getBits() != 1012) return 96;
+  if (limit_table(1, 1).getBits() != 1020) return 97;
+  if (limit_table(1, 2).getBits() != 1032) return 98;
   return 0;
 }
 `, 'utf8');

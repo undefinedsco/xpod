@@ -50,6 +50,9 @@ struct BridgeOperationPlan {
   std::vector<uint32_t> join_slots;
   std::vector<std::vector<uint32_t>> join_key_slots;
   std::vector<std::vector<uint32_t>> scan_project_slots;
+  bool has_limit = false;
+  size_t limit = 0;
+  size_t offset = 0;
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
 };

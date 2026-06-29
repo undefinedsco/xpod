@@ -821,9 +821,41 @@ inline QleverResultWithStatus executeBridgeHashJoin(
                         left_scan.sorted_by);
 }
 
+inline QleverResultWithStatus applyBridgeLimitOffset(
+    const BridgeOperationPlan& root,
+    QleverResultWithStatus result) {
+  if (!root.has_limit || result.status != XPOD_RDF_STATUS_OK) {
+    return result;
+  }
+
+  const IdTable& input = result.result.idTable();
+  IdTable output(input.numColumns());
+  const size_t row_count = input.numRows();
+  const size_t start = root.offset < row_count ? root.offset : row_count;
+  size_t end = start + root.limit;
+  if (end < start || end > row_count) {
+    end = row_count;
+  }
+
+  std::vector<Id> row;
+  row.reserve(input.numColumns());
+  for (size_t input_row = start; input_row < end; ++input_row) {
+    row.clear();
+    for (size_t column = 0; column < input.numColumns(); ++column) {
+      row.push_back(input(input_row, column));
+    }
+    output.push_back(row);
+  }
+
+  return toQleverResult(
+      {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
+}
+
 inline QleverResultWithStatus executeBridgeOperationPlan(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
+  QleverResultWithStatus result =
+      makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
   if (plan.root.kind == BridgeOperationKind::PermutationScan) {
     if (plan.root.scan_indexes.size() != 1) {
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
@@ -832,10 +864,12 @@ inline QleverResultWithStatus executeBridgeOperationPlan(
     if (scan_index >= plan.scans.size()) {
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
     }
-    return executeBridgePhysicalScan(backend, plan.scans[scan_index]);
+    result = executeBridgePhysicalScan(backend, plan.scans[scan_index]);
+    return applyBridgeLimitOffset(plan.root, std::move(result));
   }
   if (plan.root.kind == BridgeOperationKind::HashJoin) {
-    return executeBridgeHashJoin(backend, plan);
+    result = executeBridgeHashJoin(backend, plan);
+    return applyBridgeLimitOffset(plan.root, std::move(result));
   }
   return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
 }

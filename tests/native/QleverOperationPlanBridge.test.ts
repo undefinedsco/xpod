@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
+import { fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -223,6 +223,7 @@ class Operation {
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/LimitOffset.h'), fakeLimitOffsetHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForEntity.h'), fakeTextIndexScanForEntityHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), `
@@ -285,6 +286,7 @@ class IndexScan final : public Operation {
 #include <string>
 #include <string_view>
 #include "engine/Join.h"
+#include "engine/LimitOffset.h"
 #include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
 #include "XpodQleverOperationPlanBridge.hpp"
@@ -581,6 +583,27 @@ int main() {
   if (multi_key_plan->root.scan_project_slots[0].size() != 3) return 139;
   if (multi_key_plan->root.scan_project_slots[1].size() != 1) return 140;
   if (multi_key_plan->root.scan_project_slots[1][0] != XPOD_RDF_SLOT_OBJECT) return 141;
+
+  auto limited_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?s"}},
+          TripleComponent{Variable{"?p"}},
+          TripleComponent{Variable{"?o"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?s ?p ?o",
+          3,
+          std::vector<ColumnIndex>{0}));
+  LimitOffset limit_operation(limited_tree, 1, 2);
+  auto limit_plan = xpod::qlever::planQleverOperation(limit_operation);
+  if (!limit_plan.has_value()) return 142;
+  if (limit_plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 143;
+  if (!limit_plan->root.has_limit) return 144;
+  if (limit_plan->root.limit != 1) return 145;
+  if (limit_plan->root.offset != 2) return 146;
+  if (limit_plan->output_variables.size() != 3) return 147;
+  if (limit_plan->output_variables[0] != "s") return 148;
+  if (limit_plan->output_variables[1] != "p") return 149;
+  if (limit_plan->output_variables[2] != "o") return 150;
   return 0;
 }
 `, 'utf8');

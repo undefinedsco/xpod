@@ -31,6 +31,13 @@
 #define XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY 0
 #endif
 
+#if __has_include("engine/LimitOffset.h")
+#include "engine/LimitOffset.h"
+#define XPOD_QLEVER_HAS_LIMIT_OFFSET 1
+#else
+#define XPOD_QLEVER_HAS_LIMIT_OFFSET 0
+#endif
+
 #if __has_include("engine/QueryExecutionContext.h")
 #include "engine/QueryExecutionContext.h"
 #define XPOD_QLEVER_HAS_QUERY_EXECUTION_CONTEXT 1
@@ -48,6 +55,12 @@ class QueryExecutionContext;
 #endif
 
 namespace xpod::qlever {
+
+inline std::optional<BridgeQueryPlan> planQleverOperation(
+    const Operation& operation);
+
+inline std::optional<BridgeQueryPlan> planQleverExecutionTree(
+    const QueryExecutionTree& tree);
 
 inline bool bindIndexScanComponent(
     const TripleComponent& component,
@@ -626,8 +639,32 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
   return left_plan;
 }
 
+#if XPOD_QLEVER_HAS_LIMIT_OFFSET
+inline std::optional<BridgeQueryPlan> planLimitOffsetOperation(
+    const LimitOffset& operation) {
+  std::vector<const QueryExecutionTree*> children = operation.getChildren();
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(*children[0]);
+  if (!plan.has_value()) {
+    return std::nullopt;
+  }
+  plan->root.has_limit = true;
+  plan->root.limit = operation.limit();
+  plan->root.offset = operation.offset();
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
+#if XPOD_QLEVER_HAS_LIMIT_OFFSET
+  const auto* limit_offset = dynamic_cast<const LimitOffset*>(&operation);
+  if (limit_offset != nullptr) {
+    return planLimitOffsetOperation(*limit_offset);
+  }
+#endif
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD
   const auto* text_scan = dynamic_cast<const TextIndexScanForWord*>(&operation);
   if (text_scan != nullptr) {

@@ -202,6 +202,43 @@ class Join final : public Operation {
 };
 `;
 
+export const fakeLimitOffsetHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class LimitOffset final : public Operation {
+ public:
+  LimitOffset(std::shared_ptr<QueryExecutionTree> child,
+              size_t limit,
+              size_t offset)
+      : child_(std::move(child)), limit_(limit), offset_(offset) {}
+  std::string getDescriptor() const override { return "LimitOffset"; }
+  size_t getResultWidth() const override {
+    return child_ == nullptr ? 0 : child_->getRootOperation()->getResultWidth();
+  }
+  size_t limit() const { return limit_; }
+  size_t offset() const { return offset_; }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {child_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return child_ == nullptr ? std::vector<ColumnIndex>{}
+                             : child_->getRootOperation()->getResultSortedOn();
+  }
+ private:
+  std::shared_ptr<QueryExecutionTree> child_;
+  size_t limit_;
+  size_t offset_;
+};
+`;
+
 export const fakeIndexScanHeader = `
 #pragma once
 #include <string>
