@@ -194,6 +194,105 @@ int main() {
     }
   });
 
+  it('exposes exact count and distinct scans through the physical permutation seam', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical permutation stats check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-stats-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_stats_smoke.cpp');
+      const binary = path.join(root, 'physical_index_stats_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int count_calls;
+  int distinct_calls;
+};
+
+static xpod_rdf_status count_scan(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_count_result* out_result) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->count_calls;
+  if (request->permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 1 || request->pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_result->count = 7;
+  out_result->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status distinct_scan(
+    void* user_data,
+    const xpod_rdf_distinct_request* request,
+    xpod_rdf_term_tuple_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->distinct_calls;
+  if (request->scan.permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->scan.pattern.has_predicate != 1 || request->scan.pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->distinct_slots != XPOD_RDF_SLOT_OBJECT) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  xpod_rdf_term_key rows[2] = {33, 44};
+  xpod_rdf_term_tuple_batch batch = {rows, 2, 1};
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.count_scan = count_scan;
+  raw_backend.distinct_scan = distinct_scan;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+  xpod::qlever::TripleKeyPattern pattern = {};
+  pattern.has_predicate = true;
+  pattern.predicate = 22;
+
+  auto permutation = index.permutation(Permutation::Enum::POS);
+  auto count = permutation.count(pattern);
+  if (count.status != XPOD_RDF_STATUS_OK) return 1;
+  if (count.result.count != 7) return 2;
+
+  auto distinct = permutation.distinct(pattern, XPOD_RDF_SLOT_OBJECT);
+  if (distinct.status != XPOD_RDF_STATUS_OK) return 3;
+  if (distinct.tuple_width != 1) return 4;
+  if (distinct.row_count != 2) return 5;
+  if (distinct.terms.size() != 2) return 6;
+  if (distinct.terms[0] != 33 || distinct.terms[1] != 44) return 7;
+  if (state.count_calls != 1) return 8;
+  if (state.distinct_calls != 1) return 9;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes term dictionary lookup and resolution through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index dictionary check').toBe(true);
 

@@ -2602,3 +2602,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 57: Add exact count and distinct access to the physical permutation seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing count/distinct smoke**
+
+Extend the physical index native smoke so `XpodQleverPhysicalPermutation::count(...)` calls the backend `count_scan` callback, and `distinct(...)` calls the backend `distinct_scan` callback for the same permutation, scan pattern, and requested distinct slot.
+
+Expected: FAIL because the physical permutation seam exposed estimate and scan, but not exact count or distinct tuple access.
+
+- [x] **Step 2: Add the minimal count/distinct result seam**
+
+Add `XpodQleverCountResult`, `XpodQleverDistinctTermsResult`, `XpodQleverPhysicalPermutation::count(...)`, and `distinct(...)`. Both methods build native scan requests from `PlannerRequestContext` and delegate to the RDF physical backend. Distinct materializes term-key tuples only; it does not add join planning, grouping policy, or SPARQL modifier behavior.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

@@ -31,6 +31,18 @@ struct XpodQleverResolveTermsResult {
   std::vector<xpod_rdf_status> statuses;
 };
 
+struct XpodQleverCountResult {
+  xpod_rdf_status status;
+  xpod_rdf_count_result result;
+};
+
+struct XpodQleverDistinctTermsResult {
+  xpod_rdf_status status;
+  std::vector<xpod_rdf_term_key> terms;
+  size_t row_count = 0;
+  uint32_t tuple_width = 0;
+};
+
 inline xpod_rdf_status collectPrefixRangeBatch(
     void* callback_user_data,
     const xpod_rdf_term_range_batch* batch) {
@@ -40,6 +52,27 @@ inline xpod_rdf_status collectPrefixRangeBatch(
   auto* ranges =
       static_cast<std::vector<xpod_rdf_term_range>*>(callback_user_data);
   ranges->insert(ranges->end(), batch->ranges, batch->ranges + batch->range_count);
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status collectDistinctTermsBatch(
+    void* callback_user_data,
+    const xpod_rdf_term_tuple_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* result =
+      static_cast<XpodQleverDistinctTermsResult*>(callback_user_data);
+  if (result->tuple_width == 0) {
+    result->tuple_width = batch->tuple_width;
+  } else if (result->tuple_width != batch->tuple_width) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  result->row_count += batch->row_count;
+  result->terms.insert(
+      result->terms.end(),
+      batch->terms,
+      batch->terms + batch->row_count * batch->tuple_width);
   return XPOD_RDF_STATUS_OK;
 }
 
@@ -94,13 +127,48 @@ class XpodQleverPhysicalPermutation {
     return makeBackedScan(pattern, needed_slots).execute();
   }
 
+  XpodQleverCountResult count(
+      TripleKeyPattern pattern = {},
+      uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                              XPOD_RDF_SLOT_PREDICATE |
+                              XPOD_RDF_SLOT_OBJECT) const {
+    XpodQleverCountResult result = {};
+    const ScanRequestInput input = makeScanInput(pattern, needed_slots);
+    const xpod_rdf_scan_request request = makeScanRequest(input);
+    result.status = context_.backend.countScan(request, result.result);
+    return result;
+  }
+
+  XpodQleverDistinctTermsResult distinct(
+      TripleKeyPattern pattern,
+      uint32_t distinct_slots,
+      uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                              XPOD_RDF_SLOT_PREDICATE |
+                              XPOD_RDF_SLOT_OBJECT) const {
+    XpodQleverDistinctTermsResult result = {};
+    const ScanRequestInput input = makeScanInput(pattern, needed_slots);
+    xpod_rdf_distinct_request request = {};
+    request.scan = makeScanRequest(input);
+    request.distinct_slots = distinct_slots;
+    result.status = context_.backend.distinctScan(
+        request, collectDistinctTermsBatch, &result);
+    return result;
+  }
+
  private:
-  XpodBackedIndexScan makeBackedScan(
+  ScanRequestInput makeScanInput(
       TripleKeyPattern pattern,
       uint32_t needed_slots) const {
     ScanRequestInput input =
         makeScanRequestInput(context_, permutation_, pattern);
     input.needed_slots = needed_slots;
+    return input;
+  }
+
+  XpodBackedIndexScan makeBackedScan(
+      TripleKeyPattern pattern,
+      uint32_t needed_slots) const {
+    ScanRequestInput input = makeScanInput(pattern, needed_slots);
     return XpodBackedIndexScan(
         context_.backend,
         input,
