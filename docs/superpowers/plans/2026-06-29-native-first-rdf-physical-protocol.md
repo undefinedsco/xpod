@@ -2798,3 +2798,32 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+
+### Task 64: Expose histogram hints on the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing histogram smoke**
+
+Add a native physical-index smoke so `XpodQleverPhysicalIndex::histogramHints(...)` must call the backend `histogram_hints` callback with the current query snapshot, graph scope, source scope, access scope, cancellation pointer, RDF slot pattern, requested slots, and max bucket count.
+
+Expected: FAIL because histogram hints existed on the lower `PhysicalBackend`, but not on the QLever-facing physical index surface.
+
+- [x] **Step 2: Add the minimal histogram result seam**
+
+Add `XpodQleverHistogramHintsResult`, a histogram batch collector, and `XpodQleverPhysicalIndex::histogramHints(...)`. The method only builds a native histogram request and materializes backend hints plus stats version; it does not add planning policy or a cost model in Xpod.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

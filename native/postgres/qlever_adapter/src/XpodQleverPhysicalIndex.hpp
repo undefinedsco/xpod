@@ -52,6 +52,12 @@ struct XpodQleverDistinctEstimateResult {
   xpod_rdf_estimate estimate;
 };
 
+struct XpodQleverHistogramHintsResult {
+  xpod_rdf_status status;
+  std::vector<xpod_rdf_histogram_hint> hints;
+  xpod_rdf_bytes stats_version;
+};
+
 inline xpod_rdf_status collectPrefixRangeBatch(
     void* callback_user_data,
     const xpod_rdf_term_range_batch* batch) {
@@ -61,6 +67,20 @@ inline xpod_rdf_status collectPrefixRangeBatch(
   auto* ranges =
       static_cast<std::vector<xpod_rdf_term_range>*>(callback_user_data);
   ranges->insert(ranges->end(), batch->ranges, batch->ranges + batch->range_count);
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status collectHistogramHintsBatch(
+    void* callback_user_data,
+    const xpod_rdf_histogram_hint_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* result =
+      static_cast<XpodQleverHistogramHintsResult*>(callback_user_data);
+  result->stats_version = batch->stats_version;
+  result->hints.insert(
+      result->hints.end(), batch->rows, batch->rows + batch->row_count);
   return XPOD_RDF_STATUS_OK;
 }
 
@@ -427,6 +447,28 @@ class XpodQleverPhysicalIndex {
     XpodQleverPrefixRangeResult result = {};
     result.status = context_.backend.prefixRange(
         request, collectPrefixRangeBatch, &result.ranges, result.collation);
+    return result;
+  }
+
+  XpodQleverHistogramHintsResult histogramHints(
+      TripleKeyPattern pattern,
+      uint32_t slots,
+      uint32_t max_buckets) const {
+    xpod_rdf_histogram_request request = {};
+    request.snapshot = snapshot();
+    request.cancellation = context_.cancellation;
+    request.pattern = toXpodQuadPattern(pattern);
+    if (context_.request != nullptr) {
+      request.graph_scope = context_.request->graph_scope;
+      request.source_scope = context_.request->source_scope;
+      request.access_scope = context_.request->access_scope;
+    }
+    request.slots = slots;
+    request.max_buckets = max_buckets;
+
+    XpodQleverHistogramHintsResult result = {};
+    result.status = context_.backend.histogramHints(
+        request, collectHistogramHintsBatch, &result, result.stats_version);
     return result;
   }
 

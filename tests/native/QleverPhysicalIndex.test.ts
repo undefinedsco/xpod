@@ -573,6 +573,120 @@ int main() {
     }
   });
 
+  it('exposes histogram hints through the physical index seam', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index histogram check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-histogram-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_histogram_smoke.cpp');
+      const binary = path.join(root, 'physical_index_histogram_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int histogram_calls;
+};
+
+static bool bytes_equal(xpod_rdf_bytes actual, const char* expected, size_t size) {
+  if (actual.size != size) return false;
+  for (size_t i = 0; i < size; ++i) {
+    if (actual.data[i] != expected[i]) return false;
+  }
+  return true;
+}
+
+static xpod_rdf_status histogram_hints(
+    void* user_data,
+    const xpod_rdf_histogram_request* request,
+    xpod_rdf_histogram_hint_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->histogram_calls;
+  if (!bytes_equal(request->snapshot.facts_version, "facts", 5)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->cancellation == nullptr) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT || request->graph_scope.exact_graph != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->source_scope.has_source_node != 1 || request->source_scope.source_node != 55) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->access_scope == nullptr || request->access_scope->mode != XPOD_RDF_ACCESS_READ) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 1 || request->pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->slots != XPOD_RDF_SLOT_OBJECT) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->max_buckets != 8) return XPOD_RDF_STATUS_BACKEND_ERROR;
+
+  xpod_rdf_histogram_hint hint = {};
+  hint.slots = XPOD_RDF_SLOT_OBJECT;
+  hint.range.lower = 10;
+  hint.range.upper = 20;
+  hint.range.has_lower = 1;
+  hint.range.has_upper = 1;
+  hint.rows = 7;
+  hint.distinct_terms = 3;
+  hint.selectivity = 0.25;
+  hint.confidence = XPOD_RDF_ESTIMATE_FRESH;
+  xpod_rdf_histogram_hint_batch batch = {};
+  batch.rows = &hint;
+  batch.row_count = 1;
+  batch.stats_version = {"stats-v1", 8};
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.histogram_hints = histogram_hints;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_rdf_access_scope access = {};
+  access.mode = XPOD_RDF_ACCESS_READ;
+  xpod_qlever_query_request request = {};
+  request.snapshot.facts_version = {"facts", 5};
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  request.graph_scope.exact_graph = 99;
+  request.source_scope.has_source_node = 1;
+  request.source_scope.source_node = 55;
+  request.access_scope = &access;
+  xpod_rdf_cancellation cancellation = {};
+  request.cancellation = &cancellation;
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  xpod::qlever::TripleKeyPattern pattern = {};
+  pattern.has_predicate = true;
+  pattern.predicate = 22;
+
+  auto result = index.histogramHints(pattern, XPOD_RDF_SLOT_OBJECT, 8);
+  if (result.status != XPOD_RDF_STATUS_OK) return 1;
+  if (result.hints.size() != 1) return 2;
+  if (result.hints[0].rows != 7 || result.hints[0].distinct_terms != 3) return 3;
+  if (result.hints[0].range.lower != 10 || result.hints[0].range.upper != 20) return 4;
+  if (result.stats_version.size != 8) return 5;
+  if (state.histogram_calls != 1) return 6;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes text and vector candidate sources through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index candidate source check').toBe(true);
 
