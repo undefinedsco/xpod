@@ -244,6 +244,49 @@ class Distinct final : public Operation {
 };
 `;
 
+
+export const fakeOrderByHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+class QueryExecutionContext;
+class OrderBy final : public Operation {
+ public:
+  using SortIndices = std::vector<std::pair<ColumnIndex, bool>>;
+  enum class AscOrDesc { Asc, Desc };
+  using SortedVariables = std::vector<std::pair<Variable, AscOrDesc>>;
+  OrderBy(QueryExecutionContext*,
+          std::shared_ptr<QueryExecutionTree> child,
+          SortIndices sort_indices)
+      : child_(std::move(child)), sort_indices_(std::move(sort_indices)) {}
+  OrderBy(std::shared_ptr<QueryExecutionTree> child,
+          SortedVariables sorted_variables)
+      : child_(std::move(child)), sorted_variables_(std::move(sorted_variables)) {}
+  std::string getDescriptor() const override { return "OrderBy"; }
+  size_t getResultWidth() const override {
+    return child_ == nullptr ? 0 : child_->getRootOperation()->getResultWidth();
+  }
+  SortedVariables getSortedVariables() const { return sorted_variables_; }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {child_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
+ private:
+  std::shared_ptr<QueryExecutionTree> child_;
+  SortIndices sort_indices_;
+  SortedVariables sorted_variables_;
+};
+`;
+
 export const fakeLimitOffsetHeader = `
 #pragma once
 #include <memory>

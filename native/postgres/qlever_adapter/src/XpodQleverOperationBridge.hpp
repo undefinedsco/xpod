@@ -35,6 +35,7 @@ enum class BridgeCandidateSourceKind {
 enum class BridgeResultModifierKind {
   LimitOffset,
   Distinct,
+  OrderBy,
 };
 
 struct BridgeCandidateOutputColumn {
@@ -47,6 +48,7 @@ struct BridgeResultModifier {
   size_t limit = 0;
   size_t offset = 0;
   std::vector<ColumnIndex> columns;
+  std::vector<bool> descending;
 };
 
 struct BridgeOperationPlan {

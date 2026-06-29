@@ -8,6 +8,7 @@
 #include "XpodQleverResultBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <set>
@@ -893,6 +894,58 @@ inline QleverResultWithStatus applyBridgeDistinct(
       {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
 }
 
+inline QleverResultWithStatus applyBridgeOrderBy(
+    const BridgeResultModifier& modifier,
+    QleverResultWithStatus result) {
+  if (result.status != XPOD_RDF_STATUS_OK) {
+    return result;
+  }
+  if (modifier.columns.size() != modifier.descending.size()) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
+
+  const IdTable& input = result.result.idTable();
+  for (ColumnIndex column : modifier.columns) {
+    if (column >= input.numColumns()) {
+      return makeEmptyOperationResult(
+          XPOD_RDF_STATUS_UNSUPPORTED, input.numColumns(), {});
+    }
+  }
+  std::vector<size_t> row_order;
+  row_order.reserve(input.numRows());
+  for (size_t row = 0; row < input.numRows(); ++row) {
+    row_order.push_back(row);
+  }
+  std::stable_sort(
+      row_order.begin(), row_order.end(),
+      [&input, &modifier](size_t left, size_t right) {
+        for (size_t index = 0; index < modifier.columns.size(); ++index) {
+          ColumnIndex column = modifier.columns[index];
+          uint64_t left_bits = input(left, column).getBits();
+          uint64_t right_bits = input(right, column).getBits();
+          if (left_bits == right_bits) {
+            continue;
+          }
+          return modifier.descending[index] ? left_bits > right_bits
+                                            : left_bits < right_bits;
+        }
+        return false;
+      });
+
+  IdTable output(input.numColumns());
+  std::vector<Id> row;
+  row.reserve(input.numColumns());
+  for (size_t input_row : row_order) {
+    row.clear();
+    for (size_t column = 0; column < input.numColumns(); ++column) {
+      row.push_back(input(input_row, column));
+    }
+    output.push_back(row);
+  }
+
+  return toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {});
+}
+
 inline QleverResultWithStatus applyBridgeResultModifier(
     const BridgeResultModifier& modifier,
     QleverResultWithStatus result) {
@@ -905,6 +958,9 @@ inline QleverResultWithStatus applyBridgeResultModifier(
   }
   if (modifier.kind == BridgeResultModifierKind::Distinct) {
     return applyBridgeDistinct(modifier, std::move(result));
+  }
+  if (modifier.kind == BridgeResultModifierKind::OrderBy) {
+    return applyBridgeOrderBy(modifier, std::move(result));
   }
   return result;
 }

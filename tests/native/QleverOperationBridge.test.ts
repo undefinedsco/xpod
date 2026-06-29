@@ -687,6 +687,39 @@ int main() {
   if (distinct_table(0, 0).getBits() != 1010) return 102;
   if (distinct_table(0, 1).getBits() != 1020) return 103;
   if (distinct_table(0, 2).getBits() != 1030) return 104;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan order_plan;
+  xpod::qlever::BridgePhysicalScan order_scan;
+  order_scan.scan.permutation = Permutation::Enum::SPO;
+  order_scan.scan.needed_slots =
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  order_scan.sorted_by = {0};
+  order_scan.result_width = 3;
+  order_scan.descriptor = "order primary scan";
+  order_plan.scans.push_back(order_scan);
+  order_plan.root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  order_plan.root.scan_indexes = {0};
+  xpod::qlever::BridgeResultModifier order_modifier;
+  order_modifier.kind = xpod::qlever::BridgeResultModifierKind::OrderBy;
+  order_modifier.columns = {2, 0};
+  order_modifier.descending = {true, false};
+  order_plan.root.result_modifiers.push_back(order_modifier);
+
+  auto order_result = xpod::qlever::executeBridgeOperationPlan(physical, order_plan);
+  if (order_result.status != XPOD_RDF_STATUS_OK) return 105;
+  if (state.calls != 1) return 106;
+  const IdTable& order_table = order_result.result.idTable();
+  if (order_table.numColumns() != 3 || order_table.numRows() != 4) return 107;
+  if (!order_result.result.sortedBy().empty()) return 108;
+  if (order_table(0, 0).getBits() != 1013) return 109;
+  if (order_table(0, 2).getBits() != 1033) return 110;
+  if (order_table(1, 0).getBits() != 1012) return 111;
+  if (order_table(1, 2).getBits() != 1032) return 112;
+  if (order_table(2, 0).getBits() != 1011) return 113;
+  if (order_table(2, 2).getBits() != 1031) return 114;
+  if (order_table(3, 0).getBits() != 1010) return 115;
+  if (order_table(3, 2).getBits() != 1030) return 116;
   return 0;
 }
 `, 'utf8');

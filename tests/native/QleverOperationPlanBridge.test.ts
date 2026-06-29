@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
+import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -224,6 +224,7 @@ class Operation {
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/LimitOffset.h'), fakeLimitOffsetHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForEntity.h'), fakeTextIndexScanForEntityHeader, 'utf8');
@@ -288,6 +289,7 @@ class IndexScan final : public Operation {
 #include <string_view>
 #include "engine/Join.h"
 #include "engine/Distinct.h"
+#include "engine/OrderBy.h"
 #include "engine/LimitOffset.h"
 #include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
@@ -632,6 +634,37 @@ int main() {
   if (distinct_plan->output_variables[0] != "s") return 161;
   if (distinct_plan->output_variables[1] != "p") return 162;
   if (distinct_plan->output_variables[2] != "o") return 163;
+
+  auto order_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?s"}},
+          TripleComponent{Variable{"?p"}},
+          TripleComponent{Variable{"?o"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?s ?p ?o",
+          3,
+          std::vector<ColumnIndex>{0}));
+  OrderBy order_operation(order_tree, OrderBy::SortedVariables{
+      {Variable{"?o"}, OrderBy::AscOrDesc::Desc},
+      {Variable{"?s"}, OrderBy::AscOrDesc::Asc},
+  });
+  auto order_plan = xpod::qlever::planQleverOperation(order_operation);
+  if (!order_plan.has_value()) return 164;
+  if (order_plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 165;
+  if (order_plan->root.result_modifiers.size() != 1) return 166;
+  if (order_plan->root.result_modifiers[0].kind !=
+      xpod::qlever::BridgeResultModifierKind::OrderBy) return 167;
+  if (order_plan->root.result_modifiers[0].columns.size() != 2) return 168;
+  if (order_plan->root.result_modifiers[0].columns[0] != 2) return 169;
+  if (order_plan->root.result_modifiers[0].columns[1] != 0) return 170;
+  if (order_plan->root.result_modifiers[0].descending.size() != 2) return 171;
+  if (!order_plan->root.result_modifiers[0].descending[0]) return 172;
+  if (order_plan->root.result_modifiers[0].descending[1]) return 173;
+  if (!order_plan->sorted_by.empty()) return 174;
+  if (order_plan->output_variables.size() != 3) return 175;
+  if (order_plan->output_variables[0] != "s") return 176;
+  if (order_plan->output_variables[1] != "p") return 177;
+  if (order_plan->output_variables[2] != "o") return 178;
   return 0;
 }
 `, 'utf8');

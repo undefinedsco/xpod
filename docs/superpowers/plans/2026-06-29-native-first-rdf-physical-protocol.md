@@ -809,3 +809,82 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 17: OrderBy result modifier
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever headers as the source of truth.
+
+`OrderBy.h` exposes:
+- `OrderBy` as an `Operation`;
+- one child through `getChildren()`;
+- public `getSortedVariables()` returning `(Variable, Asc|Desc)`;
+- `resultSortedOn() == {}` because semantic user-facing ordering is not the
+  same as internal ID sortedness.
+
+`Sort.h` has no public sort-column getter, so do not implement it by parsing
+descriptors or reaching into private fields.
+
+- [x] **Step 2: Write the failing planner OrderBy test**
+
+Extend the operation-plan smoke with
+`OrderBy(IndexScan(...), [(?o, Desc), (?s, Asc)])`.
+
+Expected native plan shape:
+- child root stays `BridgeOperationKind::PermutationScan`;
+- `root.result_modifiers` records one `OrderBy` modifier;
+- modifier columns map variables to output columns `[2, 0]`;
+- modifier descending flags are `[true, false]`;
+- child output variables are preserved;
+- `sorted_by` is cleared.
+
+Expected: FAIL because the bridge previously had no OrderBy modifier.
+
+- [x] **Step 3: Write the failing native execution OrderBy test**
+
+Extend the operation executor smoke with a scan returning multiple rows and an
+ordered modifier over `(object DESC, subject ASC)`.
+
+Expected output:
+- executor still runs the scan once;
+- rows are stably sorted by the configured columns;
+- returned internal `sortedBy` is empty, matching QLever `OrderBy` semantics.
+
+Expected: FAIL because execution previously had no ordered sort modifier.
+
+- [x] **Step 4: Add OrderBy modifier state**
+
+Add `BridgeResultModifierKind::OrderBy` and per-key `descending` flags on
+`BridgeResultModifier`.
+
+- [x] **Step 5: Plan and execute OrderBy**
+
+When the embedded QLever build exposes `engine/OrderBy.h`, map
+`OrderBy(child, sorted variables)` to the child's `BridgeQueryPlan`, resolve
+variables against `output_variables`, append an `OrderBy` result modifier, and
+clear `sorted_by`.
+
+Execution applies a stable native sort over the produced `IdTable` using the
+configured column order and direction. This is a native bridge step toward
+QLever composition; full SPARQL semantic term comparison remains a later
+dictionary / ValueId comparator integration.
+
+- [x] **Step 6: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

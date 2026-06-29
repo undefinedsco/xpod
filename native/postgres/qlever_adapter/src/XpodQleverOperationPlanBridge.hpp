@@ -45,6 +45,13 @@
 #define XPOD_QLEVER_HAS_DISTINCT 0
 #endif
 
+#if __has_include("engine/OrderBy.h")
+#include "engine/OrderBy.h"
+#define XPOD_QLEVER_HAS_ORDER_BY 1
+#else
+#define XPOD_QLEVER_HAS_ORDER_BY 0
+#endif
+
 #if __has_include("engine/QueryExecutionContext.h")
 #include "engine/QueryExecutionContext.h"
 #define XPOD_QLEVER_HAS_QUERY_EXECUTION_CONTEXT 1
@@ -221,6 +228,17 @@ inline bool containsOutputVariable(
     }
   }
   return false;
+}
+
+inline std::optional<ColumnIndex> outputColumnForVariable(
+    const std::vector<std::string>& variables,
+    const std::string& variable) {
+  for (size_t column = 0; column < variables.size(); ++column) {
+    if (variables[column] == variable) {
+      return static_cast<ColumnIndex>(column);
+    }
+  }
+  return std::nullopt;
 }
 
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD
@@ -665,6 +683,7 @@ inline std::optional<BridgeQueryPlan> planLimitOffsetOperation(
       operation.limit(),
       operation.offset(),
       {},
+      {},
   });
   return plan;
 }
@@ -697,12 +716,53 @@ inline std::optional<BridgeQueryPlan> planDistinctOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_ORDER_BY
+inline std::optional<BridgeQueryPlan> planOrderByOperation(
+    const OrderBy& operation) {
+  std::vector<QueryExecutionTree*> children =
+      const_cast<OrderBy&>(operation).getChildren();
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(*children[0]);
+  if (!plan.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeResultModifier modifier;
+  modifier.kind = BridgeResultModifierKind::OrderBy;
+  auto sorted_variables = operation.getSortedVariables();
+  modifier.columns.reserve(sorted_variables.size());
+  modifier.descending.reserve(sorted_variables.size());
+  for (const auto& sorted_variable : sorted_variables) {
+    auto column = outputColumnForVariable(
+        plan->output_variables,
+        bridgeVariableName(sorted_variable.first));
+    if (!column.has_value()) {
+      return std::nullopt;
+    }
+    modifier.columns.push_back(*column);
+    modifier.descending.push_back(
+        sorted_variable.second == OrderBy::AscOrDesc::Desc);
+  }
+  plan->sorted_by.clear();
+  plan->root.result_modifiers.push_back(std::move(modifier));
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET
   const auto* limit_offset = dynamic_cast<const LimitOffset*>(&operation);
   if (limit_offset != nullptr) {
     return planLimitOffsetOperation(*limit_offset);
+  }
+#endif
+#if XPOD_QLEVER_HAS_ORDER_BY
+  const auto* order_by = dynamic_cast<const OrderBy*>(&operation);
+  if (order_by != nullptr) {
+    return planOrderByOperation(*order_by);
   }
 #endif
 #if XPOD_QLEVER_HAS_DISTINCT
