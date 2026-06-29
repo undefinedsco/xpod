@@ -1,6 +1,7 @@
 #ifndef XPOD_QLEVER_SCAN_MATERIALIZER_HPP
 #define XPOD_QLEVER_SCAN_MATERIALIZER_HPP
 
+#include "XpodPhysicalBackend.hpp"
 #include "xpod_rdf_physical_backend.h"
 
 #include <vector>
@@ -13,6 +14,11 @@ namespace xpod::qlever {
 struct ScanRowBuffer {
   uint32_t width = 3;
   std::vector<xpod_rdf_term_key> rows;
+};
+
+struct QleverIdRowBuffer {
+  uint32_t width = 3;
+  std::vector<uint64_t> rows;
 };
 
 inline xpod_rdf_term_key slotValue(
@@ -61,6 +67,40 @@ inline void appendBatch(
     buffer.rows.push_back(slotValue(row, slots[1]));
     buffer.rows.push_back(slotValue(row, slots[2]));
   }
+}
+
+inline xpod_rdf_status appendEncodedValue(
+    QleverIdRowBuffer& buffer,
+    const xpod::rdf::PhysicalBackend& backend,
+    xpod_rdf_term_key term) {
+  uint64_t bits = 0;
+  xpod_rdf_status status = backend.encodeQleverId(term, bits);
+  if (status != XPOD_RDF_STATUS_OK) {
+    return status;
+  }
+  buffer.rows.push_back(bits);
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status appendEncodedBatch(
+    QleverIdRowBuffer& buffer,
+    const xpod::rdf::PhysicalBackend& backend,
+    Permutation::Enum permutation,
+    const xpod_rdf_quad_batch& batch) {
+  const char* slots = permutationSlots(permutation);
+  buffer.width = 3;
+  buffer.rows.reserve(buffer.rows.size() + batch.row_count * buffer.width);
+  for (size_t i = 0; i < batch.row_count; ++i) {
+    const xpod_rdf_quad_key& row = batch.rows[i];
+    for (uint32_t column = 0; column < buffer.width; ++column) {
+      xpod_rdf_status status =
+          appendEncodedValue(buffer, backend, slotValue(row, slots[column]));
+      if (status != XPOD_RDF_STATUS_OK) {
+        return status;
+      }
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
 }
 
 }  // namespace xpod::qlever

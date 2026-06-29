@@ -94,6 +94,31 @@ inline xpod_rdf_status executeScanToRows(
   return executeScan(backend, input, appendRowsCallback, &state);
 }
 
+struct ScanToQleverIdsState {
+  QleverIdRowBuffer* rows;
+  const xpod::rdf::PhysicalBackend* backend;
+  Permutation::Enum permutation;
+};
+
+inline xpod_rdf_status appendQleverIdsCallback(
+    void* callback_user_data,
+    const xpod_rdf_quad_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* state = static_cast<ScanToQleverIdsState*>(callback_user_data);
+  return appendEncodedBatch(
+      *state->rows, *state->backend, state->permutation, *batch);
+}
+
+inline xpod_rdf_status executeScanToQleverIds(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input,
+    QleverIdRowBuffer& rows) noexcept {
+  ScanToQleverIdsState state{&rows, &backend, input.permutation};
+  return executeScan(backend, input, appendQleverIdsCallback, &state);
+}
+
 }  // namespace xpod::qlever
 
 #endif

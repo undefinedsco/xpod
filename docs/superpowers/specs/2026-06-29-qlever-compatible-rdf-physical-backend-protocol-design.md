@@ -113,6 +113,8 @@ The first native-first protocol artifacts are:
 
 The physical backend header is the data execution-boundary artifact. The adapter facade is the C ABI entry point that will hide QLever-specific C++ types behind a stable native boundary. TypeScript only validates, normalizes, and reports this contract; it is not the hot-path protocol for the PostgreSQL extension path.
 
+The scan materializer has two explicit result shapes: a raw `TermKey` row buffer for protocol tests, and a QLever-id-bits row buffer that must go through `PhysicalBackend::encodeQleverId`.
+
 The adapter target is intentionally source-provider based:
 
 - `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=OFF` is the default and builds the stub facade without requiring upstream QLever sources.
