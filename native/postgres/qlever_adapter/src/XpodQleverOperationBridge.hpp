@@ -16,6 +16,8 @@
 
 namespace xpod::qlever {
 
+inline constexpr size_t BRIDGE_NO_COLUMN = static_cast<size_t>(-1);
+
 enum class BridgeOperationKind {
   PermutationScan,
   HashJoin,

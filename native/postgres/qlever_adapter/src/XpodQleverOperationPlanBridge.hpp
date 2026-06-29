@@ -904,24 +904,44 @@ inline std::optional<BridgeQueryPlan> planUnionOperation(
   plan.child_plans.push_back(std::move(*left_plan));
   plan.child_plans.push_back(std::move(*right_plan));
 
-  if (plan.result_width == 0 ||
-      plan.child_plans[0].output_variables.size() != plan.result_width ||
-      plan.child_plans[1].output_variables.size() != plan.result_width) {
+  if (plan.result_width == 0) {
     return std::nullopt;
   }
 
-  plan.output_variables = plan.child_plans[0].output_variables;
   for (size_t column = 0; column < plan.result_width; ++column) {
-    if (plan.child_plans[1].output_variables[column] !=
-        plan.output_variables[column]) {
-      return std::nullopt;
-    }
     auto left_column = operation.getOriginalColumn(true, column);
     auto right_column = operation.getOriginalColumn(false, column);
-    if (!left_column.has_value() || !right_column.has_value()) {
+    if (!left_column.has_value() && !right_column.has_value()) {
       return std::nullopt;
     }
-    plan.root.column_origins.push_back({*left_column, *right_column});
+
+    std::optional<std::string> output_variable;
+    if (left_column.has_value()) {
+      if (*left_column >= plan.child_plans[0].output_variables.size()) {
+        return std::nullopt;
+      }
+      output_variable = plan.child_plans[0].output_variables[*left_column];
+    }
+    if (right_column.has_value()) {
+      if (*right_column >= plan.child_plans[1].output_variables.size()) {
+        return std::nullopt;
+      }
+      const std::string& right_variable =
+          plan.child_plans[1].output_variables[*right_column];
+      if (output_variable.has_value() && *output_variable != right_variable) {
+        return std::nullopt;
+      }
+      output_variable = right_variable;
+    }
+    if (!output_variable.has_value()) {
+      return std::nullopt;
+    }
+
+    plan.output_variables.push_back(*output_variable);
+    plan.root.column_origins.push_back({
+        left_column.has_value() ? *left_column : BRIDGE_NO_COLUMN,
+        right_column.has_value() ? *right_column : BRIDGE_NO_COLUMN,
+    });
   }
   return plan;
 }

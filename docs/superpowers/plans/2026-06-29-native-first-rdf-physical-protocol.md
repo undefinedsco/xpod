@@ -1121,8 +1121,9 @@ can run before physical flattening. Flatten child physical plans into shared
 scan/candidate storage and offset child indexes during `toBridgePhysicalPlan`.
 
 When the embedded QLever build exposes `engine/Union.h`, map `Union` to a native
-root if both child plans have complete output-column mappings. Missing columns /
-UNDEF padding are not implemented yet and fail closed.
+root if both child plans have complete output-column mappings. The first version
+only accepted complete mappings; Task 25 adds missing-column / `UNDEF` padding
+without changing the child-plan boundary.
 
 Execution recursively evaluates the two child roots and appends rows according
 to `column_origins`.
@@ -1329,6 +1330,67 @@ operation to a native tree root and reuse the existing child-plan boundary.
 Execution recursively evaluates both children and materializes a left outer join
 over `matched_columns`, appending `Id::makeUndefined()` for missing optional
 right-side values.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.
+
+### Task 25: Union missing-column UNDEF padding
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing planner and executor tests**
+
+Extend the operation-plan smoke with a `Union` whose result has three variables:
+`?entity`, `?name`, and `?nick`. The left child contributes `?entity ?name` and
+has no `?nick`; the right child contributes `?entity ?nick` and has no `?name`.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::Union`;
+- `result_width == 3`;
+- output variables are inferred from whichever child has a column for that union
+  output slot;
+- missing child columns are recorded as `BRIDGE_NO_COLUMN` instead of rejecting
+  the operation.
+
+Extend the operation executor smoke with a hand-built sparse-column Union root.
+
+Expected execution:
+- both child scans execute once;
+- rows from the left child append `UNDEF` for the missing right-only variable;
+- rows from the right child append `UNDEF` for the missing left-only variable;
+- sortedness remains the Union root sortedness.
+
+Expected: FAIL because the bridge previously treated missing union columns as an
+unsupported shape.
+
+- [x] **Step 2: Add a native missing-column sentinel**
+
+Add `BRIDGE_NO_COLUMN` to the native operation bridge metadata. Keep the value as
+`static_cast<size_t>(-1)` so it is cheap to store in the existing
+`column_origins` pair without widening the ABI-facing internal plan shape.
+
+- [x] **Step 3: Plan and execute sparse Union columns**
+
+`planUnionOperation(...)` accepts any union column with at least one child origin.
+If both children provide an origin, their output variable names must match. If
+only one child provides an origin, the planner uses that child's variable name
+and records `BRIDGE_NO_COLUMN` for the missing side.
+
+`appendBridgeUnionRows(...)` materializes `BRIDGE_NO_COLUMN` as
+`bridgeUndefinedId()` and otherwise keeps the existing column-bounds check.
 
 - [x] **Step 4: Run target verification**
 

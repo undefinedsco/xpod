@@ -441,6 +441,53 @@ int main() {
   if (union_physical.root.children[1].scan_indexes.size() != 1 ||
       union_physical.root.children[1].scan_indexes[0] != 1) return 217;
 
+  auto sparse_union_left = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:name>"}},
+          TripleComponent{Variable{"?name"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity <urn:name> ?name",
+          2,
+          std::vector<ColumnIndex>{0}));
+  auto sparse_union_right = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:nick>"}},
+          TripleComponent{Variable{"?nick"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity <urn:nick> ?nick",
+          2,
+          std::vector<ColumnIndex>{0}));
+  Union sparse_union_operation(
+      sparse_union_left,
+      sparse_union_right,
+      std::vector<std::array<size_t, 2>>{
+          {0, 0},
+          {1, Union::NO_COLUMN},
+          {Union::NO_COLUMN, 1},
+      },
+      std::vector<ColumnIndex>{0});
+  auto sparse_union_plan = xpod::qlever::planQleverOperation(sparse_union_operation);
+  if (!sparse_union_plan.has_value()) return 259;
+  if (sparse_union_plan->root.kind != xpod::qlever::BridgeOperationKind::Union) return 260;
+  if (sparse_union_plan->result_width != 3) return 261;
+  if (sparse_union_plan->output_variables.size() != 3) return 262;
+  if (sparse_union_plan->output_variables[0] != "entity") return 263;
+  if (sparse_union_plan->output_variables[1] != "name") return 264;
+  if (sparse_union_plan->output_variables[2] != "nick") return 265;
+  if (sparse_union_plan->root.column_origins.size() != 3) return 266;
+  if (sparse_union_plan->root.column_origins[0][0] != 0 ||
+      sparse_union_plan->root.column_origins[0][1] != 0) return 267;
+  if (sparse_union_plan->root.column_origins[1][0] != 1 ||
+      sparse_union_plan->root.column_origins[1][1] != xpod::qlever::BRIDGE_NO_COLUMN) return 268;
+  if (sparse_union_plan->root.column_origins[2][0] != xpod::qlever::BRIDGE_NO_COLUMN ||
+      sparse_union_plan->root.column_origins[2][1] != 1) return 269;
+  auto sparse_union_physical = xpod::qlever::toBridgePhysicalPlan(*sparse_union_plan);
+  if (sparse_union_physical.root.kind != xpod::qlever::BridgeOperationKind::Union) return 270;
+  if (sparse_union_physical.root.children.size() != 2) return 271;
+  if (sparse_union_physical.scans.size() != 2) return 272;
+
   CartesianProductJoin cartesian_operation(nullptr, {
       std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>()),
       std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>())});

@@ -817,6 +817,50 @@ int main() {
   if (union_result.result.sortedBy().size() != 1 || union_result.result.sortedBy()[0] != 0) return 134;
 
   state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan sparse_union_plan;
+  xpod::qlever::BridgePhysicalScan sparse_union_left;
+  sparse_union_left.scan.permutation = Permutation::Enum::SPO;
+  sparse_union_left.scan.pattern.has_predicate = true;
+  sparse_union_left.scan.pattern.predicate = 20;
+  sparse_union_left.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  sparse_union_left.result_width = 2;
+  sparse_union_plan.scans.push_back(sparse_union_left);
+  xpod::qlever::BridgePhysicalScan sparse_union_right;
+  sparse_union_right.scan.permutation = Permutation::Enum::SPO;
+  sparse_union_right.scan.pattern.has_predicate = true;
+  sparse_union_right.scan.pattern.predicate = 150;
+  sparse_union_right.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  sparse_union_right.result_width = 2;
+  sparse_union_plan.scans.push_back(sparse_union_right);
+  sparse_union_plan.root.kind = xpod::qlever::BridgeOperationKind::Union;
+  sparse_union_plan.root.sorted_by = {0};
+  sparse_union_plan.root.column_origins = {{
+      {0, 0},
+      {1, xpod::qlever::BRIDGE_NO_COLUMN},
+      {xpod::qlever::BRIDGE_NO_COLUMN, 1},
+  }};
+  xpod::qlever::BridgeOperationPlan sparse_union_left_root;
+  sparse_union_left_root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  sparse_union_left_root.scan_indexes = {0};
+  xpod::qlever::BridgeOperationPlan sparse_union_right_root;
+  sparse_union_right_root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  sparse_union_right_root.scan_indexes = {1};
+  sparse_union_plan.root.children = {sparse_union_left_root, sparse_union_right_root};
+  auto sparse_union_result = xpod::qlever::executeBridgeOperationPlan(physical, sparse_union_plan);
+  if (sparse_union_result.status != XPOD_RDF_STATUS_OK) return 152;
+  if (state.calls != 2) return 153;
+  const IdTable& sparse_union_table = sparse_union_result.result.idTable();
+  if (sparse_union_table.numColumns() != 3 || sparse_union_table.numRows() != 3) return 154;
+  if (sparse_union_table(0, 0).getBits() != 1010 || sparse_union_table(0, 1).getBits() != 1030 ||
+      sparse_union_table(0, 2).getBits() != Id::makeUndefined().getBits()) return 155;
+  if (sparse_union_table(1, 0).getBits() != 1011 || sparse_union_table(1, 1).getBits() != 1031 ||
+      sparse_union_table(1, 2).getBits() != Id::makeUndefined().getBits()) return 156;
+  if (sparse_union_table(2, 0).getBits() != 1010 ||
+      sparse_union_table(2, 1).getBits() != Id::makeUndefined().getBits() ||
+      sparse_union_table(2, 2).getBits() != 1151) return 157;
+  if (sparse_union_result.result.sortedBy().size() != 1 || sparse_union_result.result.sortedBy()[0] != 0) return 158;
+
+  state.calls = 0;
   xpod::qlever::BridgePhysicalPlan cartesian_plan;
   xpod::qlever::BridgePhysicalScan cartesian_left;
   cartesian_left.scan.permutation = Permutation::Enum::SPO;

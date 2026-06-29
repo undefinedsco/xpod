@@ -1091,6 +1091,10 @@ inline xpod_rdf_status appendBridgeUnionRows(
     row.clear();
     for (const auto& origin : column_origins) {
       size_t input_column = origin[child_index];
+      if (input_column == BRIDGE_NO_COLUMN) {
+        row.push_back(bridgeUndefinedId());
+        continue;
+      }
       if (input_column >= input.numColumns()) {
         return XPOD_RDF_STATUS_UNSUPPORTED;
       }
