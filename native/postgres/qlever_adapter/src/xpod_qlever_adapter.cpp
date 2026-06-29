@@ -1,10 +1,15 @@
 #include "xpod_qlever_adapter.h"
 
+#include "XpodPhysicalBackend.hpp"
+
 #include <new>
 #include <string>
 
 struct xpod_qlever_adapter {
-  xpod_rdf_backend_v1* backend;
+  explicit xpod_qlever_adapter(xpod_rdf_backend_v1* raw_backend)
+      : backend(raw_backend) {}
+
+  xpod::rdf::PhysicalBackend backend;
   uint64_t memory_limit_bytes;
   bool enable_runtime_profile;
   std::string result_storage;
@@ -31,8 +36,7 @@ extern "C" xpod_rdf_status xpod_qlever_adapter_create(
   }
 
   try {
-    xpod_qlever_adapter* adapter = new xpod_qlever_adapter();
-    adapter->backend = config->backend;
+    xpod_qlever_adapter* adapter = new xpod_qlever_adapter(config->backend);
     adapter->memory_limit_bytes = config->memory_limit_bytes;
     adapter->enable_runtime_profile = config->enable_runtime_profile != 0;
     *out_adapter = adapter;
