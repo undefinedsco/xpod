@@ -124,11 +124,21 @@ static xpod_rdf_status lookup_terms(
     const xpod_rdf_snapshot*,
     xpod_rdf_term_key* out_keys,
     xpod_rdf_status* out_statuses) {
-  if (term_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:p") return XPOD_RDF_STATUS_BACKEND_ERROR;
-  out_keys[0] = 20;
+  if (term_count == 1) {
+    if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+    if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:p") return XPOD_RDF_STATUS_BACKEND_ERROR;
+    out_keys[0] = 20;
+    out_statuses[0] = XPOD_RDF_STATUS_OK;
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (term_count != 2) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (terms[0].kind != XPOD_RDF_TERM_IRI || terms[1].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:type") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(terms[1].value.data, terms[1].value.size) != "urn:Thing") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_keys[0] = 50;
   out_statuses[0] = XPOD_RDF_STATUS_OK;
+  out_keys[1] = 60;
+  out_statuses[1] = XPOD_RDF_STATUS_OK;
   return XPOD_RDF_STATUS_OK;
 }
 
@@ -140,20 +150,29 @@ static xpod_rdf_status resolve_terms(
     xpod_rdf_term* out_terms,
     xpod_rdf_status* out_statuses) {
   static const char s[] = "urn:s";
+  static const char other[] = "urn:other";
   static const char p[] = "urn:p";
   static const char o[] = "value";
+  static const char filtered[] = "filtered";
   static const char datatype[] = "http://www.w3.org/2001/XMLSchema#string";
   for (size_t i = 0; i < key_count; ++i) {
     out_statuses[i] = XPOD_RDF_STATUS_OK;
     if (keys[i] == 10) {
       out_terms[i].kind = XPOD_RDF_TERM_IRI;
       out_terms[i].value = {s, 5};
+    } else if (keys[i] == 11) {
+      out_terms[i].kind = XPOD_RDF_TERM_IRI;
+      out_terms[i].value = {other, 9};
     } else if (keys[i] == 20) {
       out_terms[i].kind = XPOD_RDF_TERM_IRI;
       out_terms[i].value = {p, 5};
     } else if (keys[i] == 30) {
       out_terms[i].kind = XPOD_RDF_TERM_LITERAL;
       out_terms[i].value = {o, 5};
+      out_terms[i].datatype_iri = {datatype, 40};
+    } else if (keys[i] == 31) {
+      out_terms[i].kind = XPOD_RDF_TERM_LITERAL;
+      out_terms[i].value = {filtered, 8};
       out_terms[i].datatype_iri = {datatype, 40};
     } else {
       out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
@@ -173,6 +192,7 @@ static xpod_rdf_status estimate_scan(
 
 struct ScanState {
   bool saw_context = false;
+  int calls = 0;
 };
 
 static xpod_rdf_status scan(
@@ -181,17 +201,29 @@ static xpod_rdf_status scan(
     xpod_rdf_quad_batch_callback on_batch,
     void* callback_user_data) {
   auto* state = static_cast<ScanState*>(backend_user_data);
+  state->calls += 1;
   if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (!request->pattern.has_predicate || request->pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->snapshot.snapshot_token.size != 7) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (std::string_view(request->snapshot.snapshot_token.data, request->snapshot.snapshot_token.size) != "snap-v1") return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->access_scope == nullptr) return XPOD_RDF_STATUS_PERMISSION_DENIED;
   if (std::string_view(request->access_scope->principal.data, request->access_scope->principal.size) != "urn:alice") return XPOD_RDF_STATUS_PERMISSION_DENIED;
   state->saw_context = true;
-  xpod_rdf_quad_key rows[1] = {{10, 20, 30, 40}};
+  if (request->pattern.has_predicate) {
+    if (request->pattern.predicate != 50) return XPOD_RDF_STATUS_BACKEND_ERROR;
+    if (!request->pattern.has_object || request->pattern.object != 60) return XPOD_RDF_STATUS_BACKEND_ERROR;
+    xpod_rdf_quad_key rows[1] = {{10, 50, 60, 40}};
+    xpod_rdf_quad_batch batch = {};
+    batch.rows = rows;
+    batch.row_count = 1;
+    return on_batch(callback_user_data, &batch);
+  }
+  xpod_rdf_quad_key rows[2] = {
+    {10, 20, 30, 40},
+    {11, 20, 31, 40},
+  };
   xpod_rdf_quad_batch batch = {};
   batch.rows = rows;
-  batch.row_count = 1;
+  batch.row_count = 2;
   return on_batch(callback_user_data, &batch);
 }
 
@@ -215,7 +247,7 @@ int main() {
   if (xpod_qlever_adapter_create(&config, &adapter) != XPOD_RDF_STATUS_OK) return 1;
 
   xpod_qlever_query_result result = {};
-  xpod_rdf_bytes query = {"SELECT ?s ?p ?o WHERE { ?s <urn:p> ?o }", 39};
+  xpod_rdf_bytes query = {"SELECT ?s ?p ?o WHERE { ?s ?p ?o . ?s <urn:type> <urn:Thing> }", 62};
   xpod_rdf_access_scope access = {};
   access.principal = {"urn:alice", 9};
   xpod_qlever_query_request request = {};
@@ -230,10 +262,11 @@ int main() {
   if (body.find("\\"head\\":{\\"vars\\":[\\"s\\",\\"p\\",\\"o\\"]}") == std::string_view::npos) return 4;
   if (body.find("\\"s\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s\\"}") == std::string_view::npos) return 5;
   if (body.find("\\"o\\":{\\"type\\":\\"literal\\",\\"value\\":\\"value\\"") == std::string_view::npos) return 8;
-  if (body.find("1010") != std::string_view::npos) return 9;
-  if (profile.find("\\"kind\\":\\"PermutationScan\\"") == std::string_view::npos) return 10;
+  if (body.find("urn:other") != std::string_view::npos) return 9;
+  if (scan_state.calls != 2) return 16;
+  if (profile.find("\\"kind\\":\\"HashJoin\\"") == std::string_view::npos) return 10;
   if (profile.find("\\"outputRows\\":1") == std::string_view::npos) return 11;
-  if (profile.find("\\"descriptor\\":\\"xpod scan ?s ?p ?o\\"") == std::string_view::npos) return 12;
+  if (profile.find("\\"descriptor\\":\\"xpod scan ?s ?p ?o with subject filter\\"") == std::string_view::npos) return 12;
 
   xpod_qlever_adapter_release_result(adapter, &result);
 

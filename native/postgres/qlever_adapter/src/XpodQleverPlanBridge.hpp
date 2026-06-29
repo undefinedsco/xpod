@@ -25,12 +25,21 @@ struct BridgeTermBinding {
   std::string language;
 };
 
+struct BridgeFilterScan {
+  ScanRequestInput scan;
+  std::vector<BridgeTermBinding> term_bindings;
+  uint32_t join_slot = XPOD_RDF_SLOT_SUBJECT;
+  std::string descriptor;
+  bool known_empty = false;
+};
+
 struct BridgeQueryPlan {
   ScanRequestInput scan;
   std::vector<ColumnIndex> sorted_by;
   size_t result_width = 0;
   std::string descriptor;
   std::vector<BridgeTermBinding> term_bindings;
+  std::vector<BridgeFilterScan> filter_scans;
   bool known_empty = false;
 };
 
@@ -139,18 +148,20 @@ inline void bindPatternSlot(
   }
 }
 
-inline xpod_rdf_status bindPlanTerms(
+inline xpod_rdf_status bindTermBindings(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod_rdf_snapshot& snapshot,
-    BridgeQueryPlan& plan,
+    const std::vector<BridgeTermBinding>& bindings,
+    TripleKeyPattern& pattern,
+    bool& known_empty,
     std::string& error_storage) {
-  if (plan.term_bindings.empty()) {
+  if (bindings.empty()) {
     return XPOD_RDF_STATUS_OK;
   }
 
   std::vector<xpod_rdf_term> terms;
-  terms.reserve(plan.term_bindings.size());
-  for (const BridgeTermBinding& binding : plan.term_bindings) {
+  terms.reserve(bindings.size());
+  for (const BridgeTermBinding& binding : bindings) {
     terms.push_back(toNativeTerm(binding));
   }
 
@@ -165,16 +176,88 @@ inline xpod_rdf_status bindPlanTerms(
 
   for (size_t i = 0; i < statuses.size(); ++i) {
     if (statuses[i] == XPOD_RDF_STATUS_NOT_FOUND) {
-      plan.known_empty = true;
+      known_empty = true;
       return XPOD_RDF_STATUS_OK;
     }
     if (statuses[i] != XPOD_RDF_STATUS_OK) {
       error_storage = "failed to lookup one or more QLever bridge constants";
       return statuses[i];
     }
-    bindPatternSlot(plan.scan.pattern, plan.term_bindings[i].slot, keys[i]);
+    bindPatternSlot(pattern, bindings[i].slot, keys[i]);
   }
   return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status bindPlanTerms(
+    const xpod::rdf::PhysicalBackend& backend,
+    const xpod_rdf_snapshot& snapshot,
+    BridgeQueryPlan& plan,
+    std::string& error_storage) {
+  xpod_rdf_status status = bindTermBindings(
+      backend, snapshot, plan.term_bindings, plan.scan.pattern,
+      plan.known_empty, error_storage);
+  if (status != XPOD_RDF_STATUS_OK || plan.known_empty) {
+    return status;
+  }
+  for (BridgeFilterScan& filter : plan.filter_scans) {
+    status = bindTermBindings(
+        backend, snapshot, filter.term_bindings, filter.scan.pattern,
+        filter.known_empty, error_storage);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    if (filter.known_empty) {
+      plan.known_empty = true;
+      return XPOD_RDF_STATUS_OK;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline void initializeScanPlan(BridgeQueryPlan& plan) {
+  plan.scan.permutation = Permutation::Enum::SPO;
+  plan.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+                           XPOD_RDF_SLOT_OBJECT;
+  plan.sorted_by = {0};
+  plan.result_width = 3;
+  plan.descriptor = "xpod scan ?s ?p ?o";
+}
+
+inline void initializeFilterScan(BridgeFilterScan& filter) {
+  filter.scan.permutation = Permutation::Enum::SPO;
+  filter.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+                             XPOD_RDF_SLOT_OBJECT;
+  filter.join_slot = XPOD_RDF_SLOT_SUBJECT;
+  filter.descriptor = "xpod subject filter scan";
+}
+
+inline std::optional<BridgeQueryPlan> planSingleTriple(
+    const SparqlTripleSimple& triple) {
+  BridgeQueryPlan plan;
+  if (!bindableComponent(triple.s_, "?s", XPOD_RDF_SLOT_SUBJECT, plan) ||
+      !bindableComponent(triple.p_, "?p", XPOD_RDF_SLOT_PREDICATE, plan) ||
+      !bindableComponent(triple.o_, "?o", XPOD_RDF_SLOT_OBJECT, plan)) {
+    return std::nullopt;
+  }
+  initializeScanPlan(plan);
+  return plan;
+}
+
+inline bool planSubjectFilterTriple(
+    const SparqlTripleSimple& triple,
+    BridgeFilterScan& filter) {
+  BridgeQueryPlan scratch;
+  if (!bindableComponent(triple.s_, "?s", XPOD_RDF_SLOT_SUBJECT, scratch) ||
+      !bindableComponent(triple.p_, "?p", XPOD_RDF_SLOT_PREDICATE, scratch) ||
+      !bindableComponent(triple.o_, "?o", XPOD_RDF_SLOT_OBJECT, scratch)) {
+    return false;
+  }
+  if (scratch.term_bindings.empty()) {
+    return false;
+  }
+  initializeFilterScan(filter);
+  filter.term_bindings = std::move(scratch.term_bindings);
+  return true;
 }
 
 inline std::optional<BridgeQueryPlan> planParsedQuery(
@@ -189,24 +272,25 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
   const auto& operation = children.front();
   const auto* basic = std::get_if<parsedQuery::BasicGraphPattern>(
       &static_cast<const parsedQuery::GraphPatternOperationVariant&>(operation));
-  if (basic == nullptr || basic->_triples.size() != 1) {
+  if (basic == nullptr || basic->_triples.empty() || basic->_triples.size() > 2) {
     return std::nullopt;
   }
 
   try {
-    SparqlTripleSimple triple = basic->_triples.front().getSimple();
-    BridgeQueryPlan plan;
-    if (!bindableComponent(triple.s_, "?s", XPOD_RDF_SLOT_SUBJECT, plan) ||
-        !bindableComponent(triple.p_, "?p", XPOD_RDF_SLOT_PREDICATE, plan) ||
-        !bindableComponent(triple.o_, "?o", XPOD_RDF_SLOT_OBJECT, plan)) {
+    SparqlTripleSimple first = basic->_triples.front().getSimple();
+    auto plan = planSingleTriple(first);
+    if (!plan.has_value()) {
       return std::nullopt;
     }
-    plan.scan.permutation = Permutation::Enum::SPO;
-    plan.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
-                             XPOD_RDF_SLOT_OBJECT;
-    plan.sorted_by = {0};
-    plan.result_width = 3;
-    plan.descriptor = "xpod scan ?s ?p ?o";
+    if (basic->_triples.size() == 2) {
+      SparqlTripleSimple second = basic->_triples[1].getSimple();
+      BridgeFilterScan filter;
+      if (!planSubjectFilterTriple(second, filter)) {
+        return std::nullopt;
+      }
+      plan->filter_scans.push_back(std::move(filter));
+      plan->descriptor = "xpod scan ?s ?p ?o with subject filter";
+    }
     return plan;
   } catch (...) {
     return std::nullopt;

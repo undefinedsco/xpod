@@ -25,6 +25,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace xpod::qlever {
@@ -189,11 +190,71 @@ void writeSparqlJson(std::ostringstream& out, const IdTable& table,
 }
 
 
-void writeScanProfileJson(std::ostringstream& out, std::string_view descriptor,
-                          uint64_t output_rows) {
-  out << "{\"engine\":\"xpod-qlever-bridge\",\"root\":{\"kind\":\"PermutationScan\",\"descriptor\":";
+void writeScanProfileJson(
+    std::ostringstream& out,
+    std::string_view kind,
+    std::string_view descriptor,
+    uint64_t output_rows) {
+  out << "{\"engine\":\"xpod-qlever-bridge\",\"root\":{\"kind\":";
+  writeJsonString(out, kind);
+  out << ",\"descriptor\":";
   writeJsonString(out, descriptor);
   out << ",\"outputRows\":" << output_rows << "}}";
+}
+
+
+xpod_rdf_status collectFilterSubjectKeys(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgeFilterScan& filter,
+    std::unordered_set<xpod_rdf_term_key>& allowed_subjects,
+    std::string& error_storage) {
+  XpodBackedIndexScan scan(
+      backend, filter.scan, {0}, 3, filter.descriptor, 2, 0);
+  QleverResultWithStatus result = scan.computeResult(false);
+  if (result.status != XPOD_RDF_STATUS_OK) {
+    error_storage = "Xpod-backed QLever filter scan failed";
+    return result.status;
+  }
+  const IdTable& table = result.result.idTable();
+  for (size_t row = 0; row < table.numRows(); ++row) {
+    xpod_rdf_term_key subject = 0;
+    xpod_rdf_status status = backend.decodeQleverId(
+        table(row, 0).getBits(), subject);
+    if (status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to decode QLever filter subject id";
+      return status;
+    }
+    allowed_subjects.insert(subject);
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+xpod_rdf_status filterResultBySubject(
+    xpod::rdf::PhysicalBackend backend,
+    const IdTable& input,
+    const std::unordered_set<xpod_rdf_term_key>& allowed_subjects,
+    IdTable& output,
+    std::string& error_storage) {
+  std::vector<Id> row;
+  row.reserve(input.numColumns());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    xpod_rdf_term_key subject = 0;
+    xpod_rdf_status status = backend.decodeQleverId(
+        input(input_row, 0).getBits(), subject);
+    if (status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to decode QLever result subject id";
+      return status;
+    }
+    if (allowed_subjects.find(subject) == allowed_subjects.end()) {
+      continue;
+    }
+    row.clear();
+    for (size_t column = 0; column < input.numColumns(); ++column) {
+      row.push_back(input(input_row, column));
+    }
+    output.push_back(row);
+  }
+  return XPOD_RDF_STATUS_OK;
 }
 
 }  // namespace
@@ -219,6 +280,10 @@ xpod_rdf_status executeBridgeQuery(
   }
   plan.scan.snapshot = &request.snapshot;
   plan.scan.access_scope = request.access_scope;
+  for (BridgeFilterScan& filter : plan.filter_scans) {
+    filter.scan.snapshot = &request.snapshot;
+    filter.scan.access_scope = request.access_scope;
+  }
   xpod_rdf_status bind_status = bindPlanTerms(
       backend, request.snapshot, plan, error_storage);
   if (bind_status != XPOD_RDF_STATUS_OK) {
@@ -231,11 +296,22 @@ xpod_rdf_status executeBridgeQuery(
     writeEmptySparqlJson(json);
     result_storage = json.str();
     std::ostringstream profile;
-    writeScanProfileJson(profile, plan.descriptor, 0);
+    writeScanProfileJson(profile, "PermutationScan", plan.descriptor, 0);
     profile_storage = profile.str();
     setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
               error_storage);
     return XPOD_RDF_STATUS_OK;
+  }
+
+  std::unordered_set<xpod_rdf_term_key> allowed_subjects;
+  for (const BridgeFilterScan& filter : plan.filter_scans) {
+    xpod_rdf_status filter_status = collectFilterSubjectKeys(
+        backend, filter, allowed_subjects, error_storage);
+    if (filter_status != XPOD_RDF_STATUS_OK) {
+      setResult(out_result, filter_status, result_storage, profile_storage,
+                error_storage);
+      return filter_status;
+    }
   }
 
   XpodBackedIndexScan scan(
@@ -249,9 +325,23 @@ xpod_rdf_status executeBridgeQuery(
     return result.status;
   }
 
+  IdTable filtered_table(result.result.idTable().numColumns());
+  const IdTable* output_table = &result.result.idTable();
+  if (!plan.filter_scans.empty()) {
+    xpod_rdf_status filter_status = filterResultBySubject(
+        backend, result.result.idTable(), allowed_subjects, filtered_table,
+        error_storage);
+    if (filter_status != XPOD_RDF_STATUS_OK) {
+      setResult(out_result, filter_status, result_storage, profile_storage,
+                error_storage);
+      return filter_status;
+    }
+    output_table = &filtered_table;
+  }
+
   std::vector<xpod_rdf_term> terms;
   xpod_rdf_status resolve_status = resolveIdTableTerms(
-      backend, result.result.idTable(), request.snapshot, terms, error_storage);
+      backend, *output_table, request.snapshot, terms, error_storage);
   if (resolve_status != XPOD_RDF_STATUS_OK) {
     setResult(out_result, resolve_status, result_storage, profile_storage,
               error_storage);
@@ -259,11 +349,12 @@ xpod_rdf_status executeBridgeQuery(
   }
 
   std::ostringstream json;
-  writeSparqlJson(json, result.result.idTable(), terms);
+  writeSparqlJson(json, *output_table, terms);
   result_storage = json.str();
   std::ostringstream profile;
-  writeScanProfileJson(profile, plan.descriptor,
-                       result.result.idTable().numRows());
+  writeScanProfileJson(
+      profile, plan.filter_scans.empty() ? "PermutationScan" : "HashJoin",
+      plan.descriptor, output_table->numRows());
   profile_storage = profile.str();
   setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
             error_storage);
