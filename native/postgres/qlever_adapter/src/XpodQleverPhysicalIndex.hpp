@@ -321,6 +321,14 @@ class XpodQleverPhysicalIndex {
 
   const PlannerRequestContext& context() const noexcept { return context_; }
 
+  xpod_rdf_status capabilitiesStatus() const noexcept {
+    return context_.capabilities_status;
+  }
+
+  const xpod_rdf_backend_capabilities& capabilities() const noexcept {
+    return context_.capabilities;
+  }
+
  private:
   xpod_rdf_snapshot snapshot() const noexcept {
     return context_.request == nullptr

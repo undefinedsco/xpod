@@ -2686,3 +2686,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 60: Expose backend capability snapshot on the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing capability snapshot smoke**
+
+Add a native physical-index smoke so `XpodQleverPhysicalIndex::capabilitiesStatus()` and `capabilities()` must return the `PlannerRequestContext` capability snapshot.
+
+Expected: FAIL because callers could inspect `context()` directly, but the QLever-facing physical index did not expose a dedicated planner-visible capability surface.
+
+- [x] **Step 2: Add read-only capability accessors**
+
+Add direct read-only accessors for capability status and capabilities. Do not probe backend callbacks or infer support in the physical index; capability negotiation remains owned by `PlannerRequestContext`.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

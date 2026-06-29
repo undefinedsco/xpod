@@ -517,6 +517,62 @@ int main() {
     }
   });
 
+  it('exposes backend capability snapshot through the physical index', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index capabilities check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-capabilities-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_capabilities_smoke.cpp');
+      const binary = path.join(root, 'physical_index_capabilities_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  context.capabilities_status = XPOD_RDF_STATUS_OK;
+  context.capabilities.supported_permutations = XPOD_RDF_PERM_CAP_SPOG | XPOD_RDF_PERM_CAP_POSG;
+  context.capabilities.features = XPOD_RDF_BACKEND_FEATURE_SLOT_RANGES | XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH;
+  context.capabilities.max_batch_size = 512;
+
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+  if (index.capabilitiesStatus() != XPOD_RDF_STATUS_OK) return 1;
+  const auto& capabilities = index.capabilities();
+  if ((capabilities.supported_permutations & XPOD_RDF_PERM_CAP_SPOG) == 0) return 2;
+  if ((capabilities.supported_permutations & XPOD_RDF_PERM_CAP_POSG) == 0) return 3;
+  if ((capabilities.features & XPOD_RDF_BACKEND_FEATURE_SLOT_RANGES) == 0) return 4;
+  if ((capabilities.features & XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH) == 0) return 5;
+  if (capabilities.max_batch_size != 512) return 6;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes batch term dictionary lookup and resolution through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index batch dictionary check').toBe(true);
 
