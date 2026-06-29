@@ -1691,3 +1691,41 @@ bun test tests/storage/rdf/PostgresRdfEngine.test.ts --run -t "slot term-key ran
 ```
 
 Expected: PASS.
+
+### Task 32: Bind prefix constraints into scan slot ranges
+
+**Files:**
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing prefix-binding bridge test**
+
+Add a native C++ smoke that constructs a `BridgeTermBinding` marked as a prefix
+constraint, provides a physical backend `prefix_range` callback, calls
+`bindPlanTerms(...)`, and expects the returned dictionary ranges to appear in
+`plan.scan.slot_ranges` instead of exact scan pattern slots.
+
+Expected: FAIL because `prefixRange` and `slot_ranges` existed independently,
+but `bindPlanTerms(...)` had no prefix-binding path.
+
+- [x] **Step 2: Add prefix binding semantics**
+
+Add `BridgeTermBinding::is_prefix`. Exact bindings still use batch
+`lookupTerms(...)`; prefix bindings use `PhysicalBackend::prefixRange(...)` and
+append returned ranges as `xpod_rdf_slot_term_range` values for the binding slot.
+
+- [x] **Step 3: Fail empty prefixes closed**
+
+If a prefix resolves to zero ranges, mark the plan/filter scan as known-empty so
+upper operators do not scan the whole permutation by mistake.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts --run -t "prefix term constraints"
+```
+
+Expected: PASS.

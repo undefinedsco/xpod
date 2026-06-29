@@ -387,4 +387,105 @@ int main() {
     }
   });
 
+
+  it('binds prefix term constraints through prefixRange into scan slot ranges', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native prefix range plan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-plan-prefix-range-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/parser'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), '#pragma once\n#include <cstdint>\nusing ColumnIndex = uint64_t;\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'plan_bridge_prefix_range_smoke.cpp');
+      const binary = path.join(root, 'plan_bridge_prefix_range_smoke');
+      await writeFile(smoke, `
+#include <string_view>
+#include "XpodQleverPlanBridge.hpp"
+
+static xpod_rdf_status prefix_range(
+    void*,
+    const xpod_rdf_prefix_range_request* request,
+    xpod_rdf_term_range_batch_callback on_batch,
+    void* callback_user_data) {
+  if (!request->has_kind || request->kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(request->prefix.data, request->prefix.size) != "urn:doc/") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  xpod_rdf_term_range ranges[2] = {};
+  ranges[0].lower = 100;
+  ranges[0].upper = 200;
+  ranges[0].has_lower = 1;
+  ranges[0].has_upper = 1;
+  ranges[0].lower_inclusive = 1;
+  ranges[0].upper_exclusive = 1;
+  ranges[1].lower = 300;
+  ranges[1].upper = 400;
+  ranges[1].has_lower = 1;
+  ranges[1].has_upper = 1;
+  ranges[1].lower_inclusive = 1;
+  ranges[1].upper_exclusive = 1;
+  xpod_rdf_term_range_batch batch = {};
+  batch.ranges = ranges;
+  batch.range_count = 2;
+  batch.collation = XPOD_RDF_TERM_COLLATION_BYTEWISE;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  xpod::qlever::BridgeQueryPlan plan;
+  xpod::qlever::BridgeTermBinding binding;
+  binding.slot = XPOD_RDF_SLOT_SUBJECT;
+  binding.kind = XPOD_RDF_TERM_IRI;
+  binding.value = "urn:doc/";
+  binding.is_prefix = true;
+  plan.term_bindings.push_back(binding);
+
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.prefix_range = prefix_range;
+  xpod::rdf::PhysicalBackend physical(&backend);
+  xpod_rdf_snapshot snapshot = {};
+  std::string error;
+  xpod_rdf_status status = xpod::qlever::bindPlanTerms(physical, snapshot, plan, error);
+  if (status != XPOD_RDF_STATUS_OK) return 1;
+  if (plan.known_empty) return 2;
+  if (plan.scan.pattern.has_subject) return 3;
+  if (plan.scan.slot_ranges.size() != 2) return 4;
+  if (plan.scan.slot_ranges[0].slot != XPOD_RDF_SLOT_SUBJECT) return 5;
+  if (plan.scan.slot_ranges[0].range.lower != 100 || plan.scan.slot_ranges[1].range.upper != 400) return 6;
+  if (plan.scan.slot_ranges[0].collation != XPOD_RDF_TERM_COLLATION_BYTEWISE) return 7;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(planHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
 });

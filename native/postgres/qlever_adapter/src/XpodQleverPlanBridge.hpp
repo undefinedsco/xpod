@@ -25,6 +25,7 @@ struct BridgeTermBinding {
   std::string value;
   std::string datatype_iri;
   std::string language;
+  bool is_prefix = false;
 };
 
 struct BridgeTextRequiredEntityBinding {
@@ -161,11 +162,62 @@ inline void bindPatternSlot(
   }
 }
 
+struct BridgePrefixRangeState {
+  std::vector<xpod_rdf_slot_term_range>* slot_ranges = nullptr;
+  uint32_t slot = 0;
+};
+
+inline xpod_rdf_status appendBridgePrefixRanges(
+    void* callback_user_data,
+    const xpod_rdf_term_range_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  BridgePrefixRangeState* state =
+      static_cast<BridgePrefixRangeState*>(callback_user_data);
+  for (size_t i = 0; i < batch->range_count; ++i) {
+    xpod_rdf_slot_term_range slot_range = {};
+    slot_range.slot = state->slot;
+    slot_range.range = batch->ranges[i];
+    slot_range.collation = batch->collation;
+    state->slot_ranges->push_back(slot_range);
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status bindPrefixTermBinding(
+    const xpod::rdf::PhysicalBackend& backend,
+    const xpod_rdf_snapshot& snapshot,
+    const BridgeTermBinding& binding,
+    std::vector<xpod_rdf_slot_term_range>& slot_ranges,
+    bool& known_empty,
+    std::string& error_storage) {
+  xpod_rdf_prefix_range_request request = {};
+  request.snapshot = snapshot;
+  request.prefix = {binding.value.data(), binding.value.size()};
+  request.kind = binding.kind;
+  request.has_kind = 1;
+  BridgePrefixRangeState state{&slot_ranges, binding.slot};
+  const size_t before = slot_ranges.size();
+  xpod_rdf_term_collation collation = XPOD_RDF_TERM_COLLATION_UNKNOWN;
+  xpod_rdf_status status = backend.prefixRange(
+      request, appendBridgePrefixRanges, &state, collation);
+  if (status != XPOD_RDF_STATUS_OK) {
+    error_storage = "failed to resolve QLever bridge prefix range";
+    return status;
+  }
+  if (slot_ranges.size() == before) {
+    known_empty = true;
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 inline xpod_rdf_status bindTermBindings(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod_rdf_snapshot& snapshot,
     const std::vector<BridgeTermBinding>& bindings,
     TripleKeyPattern& pattern,
+    std::vector<xpod_rdf_slot_term_range>& slot_ranges,
     bool& known_empty,
     std::string& error_storage) {
   if (bindings.empty()) {
@@ -173,30 +225,49 @@ inline xpod_rdf_status bindTermBindings(
   }
 
   std::vector<xpod_rdf_term> terms;
+  std::vector<const BridgeTermBinding*> exact_bindings;
   terms.reserve(bindings.size());
+  exact_bindings.reserve(bindings.size());
   for (const BridgeTermBinding& binding : bindings) {
+    if (binding.is_prefix) {
+      continue;
+    }
     terms.push_back(toNativeTerm(binding));
+    exact_bindings.push_back(&binding);
   }
 
-  std::vector<xpod_rdf_term_key> keys(terms.size());
-  std::vector<xpod_rdf_status> statuses(terms.size());
-  xpod_rdf_status status = backend.lookupTerms(
-      terms.data(), terms.size(), snapshot, keys.data(), statuses.data());
-  if (status != XPOD_RDF_STATUS_OK) {
-    error_storage = "failed to lookup QLever bridge constants";
-    return status;
+  if (!terms.empty()) {
+    std::vector<xpod_rdf_term_key> keys(terms.size());
+    std::vector<xpod_rdf_status> statuses(terms.size());
+    xpod_rdf_status status = backend.lookupTerms(
+        terms.data(), terms.size(), snapshot, keys.data(), statuses.data());
+    if (status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to lookup QLever bridge constants";
+      return status;
+    }
+
+    for (size_t i = 0; i < statuses.size(); ++i) {
+      if (statuses[i] == XPOD_RDF_STATUS_NOT_FOUND) {
+        known_empty = true;
+        return XPOD_RDF_STATUS_OK;
+      }
+      if (statuses[i] != XPOD_RDF_STATUS_OK) {
+        error_storage = "failed to lookup one or more QLever bridge constants";
+        return statuses[i];
+      }
+      bindPatternSlot(pattern, exact_bindings[i]->slot, keys[i]);
+    }
   }
 
-  for (size_t i = 0; i < statuses.size(); ++i) {
-    if (statuses[i] == XPOD_RDF_STATUS_NOT_FOUND) {
-      known_empty = true;
-      return XPOD_RDF_STATUS_OK;
+  for (const BridgeTermBinding& binding : bindings) {
+    if (!binding.is_prefix) {
+      continue;
     }
-    if (statuses[i] != XPOD_RDF_STATUS_OK) {
-      error_storage = "failed to lookup one or more QLever bridge constants";
-      return statuses[i];
+    xpod_rdf_status status = bindPrefixTermBinding(
+        backend, snapshot, binding, slot_ranges, known_empty, error_storage);
+    if (status != XPOD_RDF_STATUS_OK || known_empty) {
+      return status;
     }
-    bindPatternSlot(pattern, bindings[i].slot, keys[i]);
   }
   return XPOD_RDF_STATUS_OK;
 }
@@ -278,14 +349,14 @@ inline xpod_rdf_status bindPlanTerms(
     std::string& error_storage) {
   xpod_rdf_status status = bindTermBindings(
       backend, snapshot, plan.term_bindings, plan.scan.pattern,
-      plan.known_empty, error_storage);
+      plan.scan.slot_ranges, plan.known_empty, error_storage);
   if (status != XPOD_RDF_STATUS_OK || plan.known_empty) {
     return status;
   }
   for (BridgeFilterScan& filter : plan.filter_scans) {
     status = bindTermBindings(
         backend, snapshot, filter.term_bindings, filter.scan.pattern,
-        filter.known_empty, error_storage);
+        filter.scan.slot_ranges, filter.known_empty, error_storage);
     if (status != XPOD_RDF_STATUS_OK) {
       return status;
     }
