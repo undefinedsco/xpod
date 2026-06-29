@@ -166,6 +166,8 @@ static xpod_rdf_status text_search(
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
   xpod_rdf_candidate row = {};
+  row.has_retrieval_point = 1;
+  row.retrieval_point = 101;
   row.has_resource_term = 1;
   row.resource_term = 11;
   row.score = 0.9;
@@ -397,6 +399,10 @@ int main() {
   xpod::qlever::BridgeTextCandidateSource text_source;
   text_source.setQuery("native-first");
   text_source.output_columns.push_back({
+      "text",
+      xpod::qlever::BridgeCandidateColumnKind::RetrievalPoint,
+  });
+  text_source.output_columns.push_back({
       "entity",
       xpod::qlever::BridgeCandidateColumnKind::ResourceTerm,
   });
@@ -419,6 +425,10 @@ int main() {
   candidate_join_plan.root.candidate_index = 0;
   candidate_join_plan.root.candidate_join_column =
       xpod::qlever::BridgeCandidateColumnKind::ResourceTerm;
+  candidate_join_plan.root.candidate_project_columns.push_back({
+      "text",
+      xpod::qlever::BridgeCandidateColumnKind::RetrievalPoint,
+  });
   candidate_join_plan.root.scan_indexes = {0};
   candidate_join_plan.root.join_slot = XPOD_RDF_SLOT_SUBJECT;
   candidate_join_plan.root.join_slots = {XPOD_RDF_SLOT_SUBJECT};
@@ -428,24 +438,25 @@ int main() {
   if (candidate_join_result.status != XPOD_RDF_STATUS_OK) return 30;
   if (state.calls != 1) return 31;
   const IdTable& candidate_join_table = candidate_join_result.result.idTable();
-  if (candidate_join_table.numColumns() != 3 || candidate_join_table.numRows() != 1) return 32;
-  if (candidate_join_table(0, 0).getBits() != 1011) return 33;
-  if (candidate_join_table(0, 1).getBits() != 1020) return 34;
-  if (candidate_join_table(0, 2).getBits() != 1031) return 35;
-  if (profile.calls != 6) return 36;
-  if (profile.kinds[0] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[0] != XPOD_RDF_PROFILE_RUNNING) return 37;
-  if (profile.nodes[0] != 200 || profile.has_parents[0]) return 38;
-  if (profile.kinds[1] != XPOD_RDF_PROFILE_TEXT_SEARCH || profile.statuses[1] != XPOD_RDF_PROFILE_RUNNING) return 39;
-  if (profile.nodes[1] != 202 || !profile.has_parents[1] || profile.parents[1] != 200) return 40;
-  if (profile.kinds[2] != XPOD_RDF_PROFILE_TEXT_SEARCH || profile.statuses[2] != XPOD_RDF_PROFILE_COMPLETED) return 41;
-  if (profile.nodes[2] != 202 || !profile.has_parents[2] || profile.parents[2] != 200) return 42;
-  if (profile.kinds[3] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[3] != XPOD_RDF_PROFILE_RUNNING) return 43;
-  if (profile.nodes[3] != 203 || !profile.has_parents[3] || profile.parents[3] != 200) return 44;
-  if (profile.kinds[4] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[4] != XPOD_RDF_PROFILE_COMPLETED) return 45;
-  if (profile.nodes[4] != 203 || !profile.has_parents[4] || profile.parents[4] != 200) return 46;
-  if (profile.kinds[5] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 47;
-  if (profile.nodes[5] != 200 || profile.has_parents[5]) return 48;
-  if (profile.output_rows[5] != 1) return 49;
+  if (candidate_join_table.numColumns() != 4 || candidate_join_table.numRows() != 1) return 32;
+  if (candidate_join_table(0, 0).getBits() != 1101) return 33;
+  if (candidate_join_table(0, 1).getBits() != 1011) return 34;
+  if (candidate_join_table(0, 2).getBits() != 1020) return 35;
+  if (candidate_join_table(0, 3).getBits() != 1031) return 36;
+  if (profile.calls != 6) return 37;
+  if (profile.kinds[0] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[0] != XPOD_RDF_PROFILE_RUNNING) return 38;
+  if (profile.nodes[0] != 200 || profile.has_parents[0]) return 39;
+  if (profile.kinds[1] != XPOD_RDF_PROFILE_TEXT_SEARCH || profile.statuses[1] != XPOD_RDF_PROFILE_RUNNING) return 40;
+  if (profile.nodes[1] != 202 || !profile.has_parents[1] || profile.parents[1] != 200) return 41;
+  if (profile.kinds[2] != XPOD_RDF_PROFILE_TEXT_SEARCH || profile.statuses[2] != XPOD_RDF_PROFILE_COMPLETED) return 42;
+  if (profile.nodes[2] != 202 || !profile.has_parents[2] || profile.parents[2] != 200) return 43;
+  if (profile.kinds[3] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[3] != XPOD_RDF_PROFILE_RUNNING) return 44;
+  if (profile.nodes[3] != 203 || !profile.has_parents[3] || profile.parents[3] != 200) return 45;
+  if (profile.kinds[4] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[4] != XPOD_RDF_PROFILE_COMPLETED) return 46;
+  if (profile.nodes[4] != 203 || !profile.has_parents[4] || profile.parents[4] != 200) return 47;
+  if (profile.kinds[5] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 48;
+  if (profile.nodes[5] != 200 || profile.has_parents[5]) return 49;
+  if (profile.output_rows[5] != 1) return 50;
 
   state.calls = 0;
   profile = {};

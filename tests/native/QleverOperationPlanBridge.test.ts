@@ -452,9 +452,14 @@ int main() {
   if (text_rdf_join_plan->root.join_slots[0] != XPOD_RDF_SLOT_SUBJECT) return 95;
   if (text_rdf_join_plan->text_sources.size() != 1) return 96;
   if (text_rdf_join_plan->filter_scans.size() != 0) return 97;
-  if (text_rdf_join_plan->output_variables.size() != 2) return 98;
-  if (text_rdf_join_plan->output_variables[0] != "entity") return 99;
-  if (text_rdf_join_plan->output_variables[1] != "label") return 100;
+  if (text_rdf_join_plan->root.candidate_project_columns.size() != 1) return 98;
+  if (text_rdf_join_plan->root.candidate_project_columns[0].variable != "text") return 99;
+  if (text_rdf_join_plan->root.candidate_project_columns[0].kind !=
+      xpod::qlever::BridgeCandidateColumnKind::RetrievalPoint) return 100;
+  if (text_rdf_join_plan->output_variables.size() != 3) return 108;
+  if (text_rdf_join_plan->output_variables[0] != "text") return 109;
+  if (text_rdf_join_plan->output_variables[1] != "entity") return 110;
+  if (text_rdf_join_plan->output_variables[2] != "label") return 111;
   auto text_rdf_physical = xpod::qlever::toBridgePhysicalPlan(*text_rdf_join_plan);
   if (text_rdf_physical.root.profile_node != 1) return 101;
   if (text_rdf_physical.text_sources.size() != 1) return 102;

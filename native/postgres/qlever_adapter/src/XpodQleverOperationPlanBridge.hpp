@@ -152,6 +152,17 @@ inline void appendTextCandidateOutput(
   source.output_columns.push_back(std::move(column));
 }
 
+inline bool containsOutputVariable(
+    const std::vector<std::string>& variables,
+    const std::string& variable) {
+  for (const std::string& existing : variables) {
+    if (existing == variable) {
+      return true;
+    }
+  }
+  return false;
+}
+
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD
 inline std::optional<BridgeQueryPlan> planTextIndexScanForWordOperation(
     const TextIndexScanForWord& scan) {
@@ -284,16 +295,33 @@ inline std::optional<BridgeQueryPlan> planTextEntityRdfJoinPair(
     return std::nullopt;
   }
 
+  std::vector<BridgeCandidateOutputColumn> candidate_project_columns;
+  std::vector<std::string> output_variables;
+  for (const BridgeCandidateOutputColumn& column :
+       text_plan->text_sources[0].output_columns) {
+    if (!containsOutputVariable(index_plan->output_variables, column.variable)) {
+      candidate_project_columns.push_back(column);
+      output_variables.push_back(column.variable);
+    }
+  }
+  for (const std::string& variable : index_plan->output_variables) {
+    output_variables.push_back(variable);
+  }
+
   index_plan->text_sources = std::move(text_plan->text_sources);
   index_plan->text_required_entities =
       std::move(text_plan->text_required_entities);
   index_plan->descriptor = descriptor;
+  index_plan->output_variables = std::move(output_variables);
+  index_plan->result_width = index_plan->output_variables.size();
   index_plan->filter_scans.clear();
   index_plan->root.kind = BridgeOperationKind::HashJoin;
   index_plan->root.use_candidate_join = true;
   index_plan->root.candidate_index = 0;
   index_plan->root.candidate_join_column =
       BridgeCandidateColumnKind::ResourceTerm;
+  index_plan->root.candidate_project_columns =
+      std::move(candidate_project_columns);
   index_plan->root.scan_indexes = {0};
   index_plan->root.join_slot = *join_slot;
   index_plan->root.join_slots = {*join_slot};

@@ -45,6 +45,7 @@ struct BridgeOperationPlan {
   bool use_candidate_join = false;
   BridgeCandidateColumnKind candidate_join_column =
       BridgeCandidateColumnKind::ResourceTerm;
+  std::vector<BridgeCandidateOutputColumn> candidate_project_columns;
   uint32_t join_slot = XPOD_RDF_SLOT_SUBJECT;
   std::vector<uint32_t> join_slots;
   xpod_rdf_profile_node_key profile_node = 0;

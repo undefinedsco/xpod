@@ -12,6 +12,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -233,27 +234,52 @@ inline xpod_rdf_status collectJoinKeys(
   return XPOD_RDF_STATUS_OK;
 }
 
-inline xpod_rdf_status collectCandidateJoinKeys(
-    const xpod::rdf::CandidateBuffer& candidates,
+inline bool candidateRowValue(
+    const xpod::rdf::CandidateRow& row,
     BridgeCandidateColumnKind column,
-    std::unordered_set<xpod_rdf_term_key>& keys) {
+    xpod_rdf_term_key& out_key) noexcept {
+  switch (column) {
+    case BridgeCandidateColumnKind::ResourceTerm:
+      if (!row.has_resource_term) {
+        return false;
+      }
+      out_key = row.resource_term;
+      return true;
+    case BridgeCandidateColumnKind::RetrievalPoint:
+      if (!row.has_retrieval_point) {
+        return false;
+      }
+      out_key = static_cast<xpod_rdf_term_key>(row.retrieval_point);
+      return true;
+  }
+  return false;
+}
+
+inline xpod_rdf_status collectCandidateJoinRows(
+    const xpod::rdf::CandidateBuffer& candidates,
+    BridgeCandidateColumnKind join_column,
+    std::unordered_map<
+        xpod_rdf_term_key,
+        std::vector<const xpod::rdf::CandidateRow*>>& rows_by_key) {
   for (const xpod::rdf::CandidateRow& row : candidates.rows) {
-    switch (column) {
-      case BridgeCandidateColumnKind::ResourceTerm:
-        if (!row.has_resource_term) {
-          return XPOD_RDF_STATUS_UNSUPPORTED;
-        }
-        keys.insert(row.resource_term);
-        break;
-      case BridgeCandidateColumnKind::RetrievalPoint:
-        if (!row.has_retrieval_point) {
-          return XPOD_RDF_STATUS_UNSUPPORTED;
-        }
-        keys.insert(row.retrieval_point);
-        break;
+    xpod_rdf_term_key key = 0;
+    if (!candidateRowValue(row, join_column, key)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
     }
+    rows_by_key[key].push_back(&row);
   }
   return XPOD_RDF_STATUS_OK;
+}
+
+inline std::vector<ColumnIndex> shiftSortedBy(
+    const std::vector<ColumnIndex>& sorted_by,
+    size_t offset) {
+  std::vector<ColumnIndex> shifted;
+  shifted.reserve(sorted_by.size());
+  for (ColumnIndex column : sorted_by) {
+    shifted.push_back(column + offset);
+  }
+  return shifted;
 }
 
 inline xpod_rdf_status filterTableByJoinKeys(
@@ -279,6 +305,64 @@ inline xpod_rdf_status filterTableByJoinKeys(
       row.push_back(input(input_row, column));
     }
     output.push_back(row);
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status appendCandidateProjection(
+    const xpod::rdf::PhysicalBackend& backend,
+    const xpod::rdf::CandidateRow& candidate,
+    const std::vector<BridgeCandidateOutputColumn>& columns,
+    std::vector<Id>& row) {
+  for (const BridgeCandidateOutputColumn& column : columns) {
+    xpod_rdf_term_key key = 0;
+    if (!candidateRowValue(candidate, column.kind, key)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    uint64_t bits = 0;
+    xpod_rdf_status status = backend.encodeQleverId(key, bits);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    row.push_back(Id::fromBits(bits));
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status joinTableWithCandidateRows(
+    xpod::rdf::PhysicalBackend backend,
+    const IdTable& input,
+    size_t join_column,
+    const std::unordered_map<
+        xpod_rdf_term_key,
+        std::vector<const xpod::rdf::CandidateRow*>>& rows_by_key,
+    const std::vector<BridgeCandidateOutputColumn>& project_columns,
+    IdTable& output) {
+  std::vector<Id> row;
+  row.reserve(input.numColumns() + project_columns.size());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    xpod_rdf_term_key key = 0;
+    xpod_rdf_status status = backend.decodeQleverId(
+        input(input_row, join_column).getBits(), key);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    auto candidates = rows_by_key.find(key);
+    if (candidates == rows_by_key.end()) {
+      continue;
+    }
+    for (const xpod::rdf::CandidateRow* candidate : candidates->second) {
+      row.clear();
+      status = appendCandidateProjection(
+          backend, *candidate, project_columns, row);
+      if (status != XPOD_RDF_STATUS_OK) {
+        return status;
+      }
+      for (size_t column = 0; column < input.numColumns(); ++column) {
+        row.push_back(input(input_row, column));
+      }
+      output.push_back(row);
+    }
   }
   return XPOD_RDF_STATUS_OK;
 }
@@ -328,9 +412,12 @@ inline QleverResultWithStatus executeBridgeCandidateHashJoin(
                                     scan.sorted_by);
   }
 
-  std::unordered_set<xpod_rdf_term_key> allowed_keys;
-  xpod_rdf_status status = collectCandidateJoinKeys(
-      candidates.candidates, plan.root.candidate_join_column, allowed_keys);
+  std::unordered_map<
+      xpod_rdf_term_key,
+      std::vector<const xpod::rdf::CandidateRow*>> candidate_rows_by_key;
+  xpod_rdf_status status = collectCandidateJoinRows(
+      candidates.candidates, plan.root.candidate_join_column,
+      candidate_rows_by_key);
   if (status != XPOD_RDF_STATUS_OK) {
     emitOperationProfileEvent(
         backend, plan.root, XPOD_RDF_PROFILE_FAILED);
@@ -345,13 +432,14 @@ inline QleverResultWithStatus executeBridgeCandidateHashJoin(
     return scan_result;
   }
 
-  IdTable output(scan_result.result.idTable().numColumns());
-  status = filterTableByJoinKeys(
+  const size_t projected_columns = plan.root.candidate_project_columns.size();
+  IdTable output(scan_result.result.idTable().numColumns() + projected_columns);
+  status = joinTableWithCandidateRows(
       backend, scan_result.result.idTable(),
       columnForSlot(
           scan.scan.permutation, scan.scan.needed_slots,
           joinSlotForScan(plan.root, 0)),
-      allowed_keys, output);
+      candidate_rows_by_key, plan.root.candidate_project_columns, output);
   if (status != XPOD_RDF_STATUS_OK) {
     emitOperationProfileEvent(
         backend, plan.root, XPOD_RDF_PROFILE_FAILED);
@@ -361,7 +449,7 @@ inline QleverResultWithStatus executeBridgeCandidateHashJoin(
   emitOperationProfileEvent(
       backend, plan.root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
-                        scan.sorted_by);
+                        shiftSortedBy(scan.sorted_by, projected_columns));
 }
 
 inline QleverResultWithStatus executeBridgeHashJoin(

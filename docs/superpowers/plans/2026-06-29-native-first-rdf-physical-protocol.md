@@ -491,3 +491,54 @@ bun test tests/native/QleverOperationBridge.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 12: Candidate/RDF projection merge
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing planner projection test**
+
+Extend the QLever operation-plan smoke for `Join(TextIndexScanForEntity(variable), IndexScan(... ?entity ...))` so the bridge must preserve the candidate-side `text` variable and deduplicate the shared `entity` variable.
+
+Expected output variables:
+- `text` from the candidate retrieval point column;
+- `entity`, `label` from the RDF scan columns.
+
+Expected: FAIL because mixed candidate/RDF join previously returned only RDF scan variables.
+
+- [x] **Step 2: Write the failing native execution projection test**
+
+Extend the native candidate HashJoin smoke so a text candidate with `RetrievalPoint` + `ResourceTerm` projects the configured retrieval-point column before the RDF scan columns.
+
+Expected: FAIL because candidate HashJoin previously used candidate rows only as a filter set and discarded candidate columns.
+
+- [x] **Step 3: Add explicit candidate projection columns**
+
+Add `BridgeOperationPlan::candidate_project_columns`. Planner-generated mixed joins populate it with candidate variables not already present in the RDF scan output, keeping common join variables deduplicated.
+
+- [x] **Step 4: Merge candidate rows with scan rows during native execution**
+
+Change candidate HashJoin execution from set-based filtering to keyed candidate rows:
+- build candidate rows by join key;
+- execute the RDF scan;
+- for each matching scan row, prepend encoded candidate projection values;
+- append the RDF scan row;
+- shift scan sorted columns by the candidate projection width.
+
+Projection values are encoded through the backend `encode_qlever_id`; projected candidate keys must be RDF-compatible keys for SPARQL serialization.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.
