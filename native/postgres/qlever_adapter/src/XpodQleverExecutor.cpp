@@ -66,7 +66,7 @@ class BridgedQleverExecutor final : public QueryExecutor {
     QueryExecutionContext* planner_context =
         planner_context_provider_ == nullptr
             ? nullptr
-            : planner_context_provider_->current();
+            : planner_context_provider_->current(request);
     return executeBridgeQueryWithPlannerContext(
         backend_, planner_context, request, out_result, result_storage,
         profile_storage, error_storage);

@@ -40,9 +40,16 @@ describe('QLever executor planner context provider', () => {
       await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), '#pragma once\nnamespace ad_utility { struct SharedCancellationHandle {}; }\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
 #pragma once
+#include <string_view>
+#include "xpod_qlever_adapter.h"
 class QueryExecutionContext {
  public:
-  bool ready = true;
+  bool ready = false;
+  void setXpodRequestContext(const xpod_qlever_query_request& request) {
+    ready = request.access_scope != nullptr &&
+            std::string_view(request.snapshot.facts_version.data,
+                             request.snapshot.facts_version.size) == "facts-v1";
+  }
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
@@ -263,9 +270,14 @@ int main() {
   xpod_qlever_adapter* adapter = nullptr;
   if (xpod_qlever_adapter_create(&config, &adapter) != XPOD_RDF_STATUS_OK) return 1;
 
-  xpod_rdf_bytes query = {"SELECT * WHERE { ?s ?p ?o }", 27};
+  static const char facts_version[] = "facts-v1";
+  xpod_rdf_access_scope access_scope = {};
+  xpod_qlever_query_request request = {};
+  request.sparql = {"SELECT * WHERE { ?s ?p ?o }", 27};
+  request.snapshot.facts_version = {facts_version, 8};
+  request.access_scope = &access_scope;
   xpod_qlever_query_result result = {};
-  xpod_rdf_status status = xpod_qlever_adapter_query(adapter, query, &result);
+  xpod_rdf_status status = xpod_qlever_adapter_query_request(adapter, &request, &result);
   std::string_view profile(result.profile_json.data, result.profile_json.size);
   if (status != XPOD_RDF_STATUS_OK) return 2;
   if (profile.find("\\"descriptor\\":\\"executor QEC planner scan\\"") == std::string_view::npos) return 3;
