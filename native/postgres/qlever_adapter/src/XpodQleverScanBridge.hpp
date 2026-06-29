@@ -3,6 +3,7 @@
 
 #include "XpodPhysicalBackend.hpp"
 #include "XpodQleverPermutationMap.hpp"
+#include "XpodQleverScanMaterializer.hpp"
 #include "xpod_rdf_physical_backend.h"
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
@@ -67,6 +68,30 @@ inline xpod_rdf_status executeScan(
     void* callback_user_data) noexcept {
   xpod_rdf_scan_request request = makeScanRequest(input);
   return backend.scanPermutation(request, on_batch, callback_user_data);
+}
+
+struct ScanToRowsState {
+  ScanRowBuffer* rows;
+  Permutation::Enum permutation;
+};
+
+inline xpod_rdf_status appendRowsCallback(
+    void* callback_user_data,
+    const xpod_rdf_quad_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* state = static_cast<ScanToRowsState*>(callback_user_data);
+  appendBatch(*state->rows, state->permutation, *batch);
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status executeScanToRows(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input,
+    ScanRowBuffer& rows) noexcept {
+  ScanToRowsState state{&rows, input.permutation};
+  return executeScan(backend, input, appendRowsCallback, &state);
 }
 
 }  // namespace xpod::qlever
