@@ -62,20 +62,29 @@ extern "C" void xpod_qlever_adapter_destroy(xpod_qlever_adapter* adapter) {
   delete adapter;
 }
 
-extern "C" xpod_rdf_status xpod_qlever_adapter_query(
+extern "C" xpod_rdf_status xpod_qlever_adapter_query_request(
     xpod_qlever_adapter* adapter,
-    xpod_rdf_bytes sparql,
+    const xpod_qlever_query_request* request,
     xpod_qlever_query_result* out_result) {
-  if (adapter == nullptr || out_result == nullptr) {
+  if (adapter == nullptr || request == nullptr || out_result == nullptr) {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
 
   return adapter->executor->execute(
-      sparql,
+      *request,
       *out_result,
       adapter->result_storage,
       adapter->profile_storage,
       adapter->error_storage);
+}
+
+extern "C" xpod_rdf_status xpod_qlever_adapter_query(
+    xpod_qlever_adapter* adapter,
+    xpod_rdf_bytes sparql,
+    xpod_qlever_query_result* out_result) {
+  xpod_qlever_query_request request = {};
+  request.sparql = sparql;
+  return xpod_qlever_adapter_query_request(adapter, &request, out_result);
 }
 
 extern "C" void xpod_qlever_adapter_release_result(

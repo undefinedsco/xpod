@@ -196,7 +196,7 @@ void writeScanProfileJson(std::ostringstream& out, std::string_view descriptor,
 
 xpod_rdf_status executeBridgeQuery(
     xpod::rdf::PhysicalBackend backend,
-    xpod_rdf_bytes sparql,
+    const xpod_qlever_query_request& request,
     xpod_qlever_query_result& out_result,
     std::string& result_storage,
     std::string& profile_storage,
@@ -205,7 +205,7 @@ xpod_rdf_status executeBridgeQuery(
   profile_storage.clear();
   error_storage.clear();
 
-  std::string_view query = bytesView(sparql);
+  std::string_view query = bytesView(request.sparql);
   BridgeQueryPlan plan;
   xpod_rdf_status parse_status = parseBridgeQuery(query, error_storage, plan);
   if (parse_status != XPOD_RDF_STATUS_OK) {
@@ -213,7 +213,8 @@ xpod_rdf_status executeBridgeQuery(
               error_storage);
     return parse_status;
   }
-  (void)plan;
+  plan.scan.snapshot = &request.snapshot;
+  plan.scan.access_scope = request.access_scope;
 
   XpodBackedIndexScan scan(
       backend, plan.scan, plan.sorted_by, plan.result_width, plan.descriptor,

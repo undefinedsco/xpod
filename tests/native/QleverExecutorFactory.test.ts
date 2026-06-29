@@ -156,12 +156,22 @@ static xpod_rdf_status estimate_scan(
   return XPOD_RDF_STATUS_OK;
 }
 
+struct ScanState {
+  bool saw_context = false;
+};
+
 static xpod_rdf_status scan(
-    void*,
+    void* backend_user_data,
     const xpod_rdf_scan_request* request,
     xpod_rdf_quad_batch_callback on_batch,
     void* callback_user_data) {
+  auto* state = static_cast<ScanState*>(backend_user_data);
   if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->snapshot.snapshot_token.size != 7) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(request->snapshot.snapshot_token.data, request->snapshot.snapshot_token.size) != "snap-v1") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->access_scope == nullptr) return XPOD_RDF_STATUS_PERMISSION_DENIED;
+  if (std::string_view(request->access_scope->principal.data, request->access_scope->principal.size) != "urn:alice") return XPOD_RDF_STATUS_PERMISSION_DENIED;
+  state->saw_context = true;
   xpod_rdf_quad_key rows[1] = {{10, 20, 30, 40}};
   xpod_rdf_quad_batch batch = {};
   batch.rows = rows;
@@ -170,9 +180,11 @@ static xpod_rdf_status scan(
 }
 
 int main() {
+  ScanState scan_state;
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.backend_user_data = &scan_state;
   backend.encode_qlever_id = encode;
   backend.decode_qlever_id = decode;
   backend.resolve_terms = resolve_terms;
@@ -187,7 +199,13 @@ int main() {
 
   xpod_qlever_query_result result = {};
   xpod_rdf_bytes query = {"SELECT ?s ?p ?o WHERE { ?s ?p ?o }", 36};
-  xpod_rdf_status status = xpod_qlever_adapter_query(adapter, query, &result);
+  xpod_rdf_access_scope access = {};
+  access.principal = {"urn:alice", 9};
+  xpod_qlever_query_request request = {};
+  request.sparql = query;
+  request.snapshot.snapshot_token = {"snap-v1", 7};
+  request.access_scope = &access;
+  xpod_rdf_status status = xpod_qlever_adapter_query_request(adapter, &request, &result);
   std::string_view body(result.result_json.data, result.result_json.size);
   std::string_view profile(result.profile_json.data, result.profile_json.size);
   if (status != XPOD_RDF_STATUS_OK) return 2;

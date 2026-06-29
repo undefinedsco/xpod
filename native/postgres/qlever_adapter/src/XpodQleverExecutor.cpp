@@ -16,7 +16,7 @@ class StubQueryExecutor final : public QueryExecutor {
       : backend_(backend), options_(options) {}
 
   xpod_rdf_status execute(
-      xpod_rdf_bytes sparql,
+      const xpod_qlever_query_request& request,
       xpod_qlever_query_result& out_result,
       std::string& result_storage,
       std::string& profile_storage,
@@ -31,7 +31,7 @@ class StubQueryExecutor final : public QueryExecutor {
     out_result.profile_json = {profile_storage.data(), profile_storage.size()};
     out_result.error_message = {error_storage.data(), error_storage.size()};
 
-    (void)sparql;
+    (void)request;
     (void)backend_;
     (void)options_;
     return XPOD_RDF_STATUS_UNSUPPORTED;
@@ -51,7 +51,7 @@ class BridgedQleverExecutor final : public QueryExecutor {
       : backend_(backend), options_(options) {}
 
   xpod_rdf_status execute(
-      xpod_rdf_bytes sparql,
+      const xpod_qlever_query_request& request,
       xpod_qlever_query_result& out_result,
       std::string& result_storage,
       std::string& profile_storage,
@@ -61,7 +61,7 @@ class BridgedQleverExecutor final : public QueryExecutor {
     (void)options_;
     (void)bridgeCompiledWithQlever();
     return executeBridgeQuery(
-        backend_, sparql, out_result, result_storage, profile_storage,
+        backend_, request, out_result, result_storage, profile_storage,
         error_storage);
   }
 

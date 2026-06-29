@@ -18,6 +18,12 @@ typedef struct xpod_qlever_adapter_config {
   uint8_t enable_runtime_profile;
 } xpod_qlever_adapter_config;
 
+typedef struct xpod_qlever_query_request {
+  xpod_rdf_bytes sparql;
+  xpod_rdf_snapshot snapshot;
+  const xpod_rdf_access_scope* access_scope;
+} xpod_qlever_query_request;
+
 typedef struct xpod_qlever_query_result {
   xpod_rdf_status status;
   xpod_rdf_bytes result_json;
@@ -32,6 +38,11 @@ xpod_rdf_status xpod_qlever_adapter_create(
     xpod_qlever_adapter** out_adapter);
 
 void xpod_qlever_adapter_destroy(xpod_qlever_adapter* adapter);
+
+xpod_rdf_status xpod_qlever_adapter_query_request(
+    xpod_qlever_adapter* adapter,
+    const xpod_qlever_query_request* request,
+    xpod_qlever_query_result* out_result);
 
 xpod_rdf_status xpod_qlever_adapter_query(
     xpod_qlever_adapter* adapter,

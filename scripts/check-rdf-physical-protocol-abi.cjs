@@ -42,6 +42,8 @@ const requiredAdapterHeaderSymbols = [
   '#include "xpod_rdf_physical_backend.h"',
   'extern "C"',
   'typedef struct xpod_qlever_adapter_config',
+  'typedef struct xpod_qlever_query_request',
+  'xpod_qlever_adapter_query_request',
   'xpod_qlever_adapter_create',
   'xpod_qlever_adapter_destroy',
   'xpod_qlever_adapter_abi_version',

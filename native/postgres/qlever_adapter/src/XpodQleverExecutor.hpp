@@ -19,7 +19,7 @@ class QueryExecutor {
   virtual ~QueryExecutor() = default;
 
   virtual xpod_rdf_status execute(
-      xpod_rdf_bytes sparql,
+      const xpod_qlever_query_request& request,
       xpod_qlever_query_result& out_result,
       std::string& result_storage,
       std::string& profile_storage,

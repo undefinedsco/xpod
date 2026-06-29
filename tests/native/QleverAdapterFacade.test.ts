@@ -29,6 +29,8 @@ describe('native QLever adapter facade', () => {
     expect(header).toContain('#include "xpod_rdf_physical_backend.h"');
     expect(header).toContain('extern "C"');
     expect(header).toContain('typedef struct xpod_qlever_adapter_config');
+    expect(header).toContain('typedef struct xpod_qlever_query_request');
+    expect(header).toContain('xpod_qlever_adapter_query_request');
     expect(header).toContain('xpod_qlever_adapter_create');
     expect(header).toContain('xpod_qlever_adapter_destroy');
     expect(header).toContain('xpod_qlever_adapter_abi_version');
