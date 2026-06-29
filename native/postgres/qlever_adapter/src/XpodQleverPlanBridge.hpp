@@ -407,6 +407,10 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
       plan->root.kind = BridgeOperationKind::HashJoin;
       plan->root.scan_indexes = {0, 1};
       plan->root.join_slot = XPOD_RDF_SLOT_SUBJECT;
+      plan->root.join_slots = {
+          XPOD_RDF_SLOT_SUBJECT,
+          XPOD_RDF_SLOT_SUBJECT,
+      };
     }
     return plan;
   } catch (...) {

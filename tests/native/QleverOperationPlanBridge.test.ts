@@ -228,6 +228,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), `
 #pragma once
 #include <string>
+#include <utility>
 #include <vector>
 #include "engine/Operation.h"
 #include "index/Permutation.h"
@@ -238,20 +239,41 @@ class IndexScan final : public Operation {
       : subject_(Variable{"?s"}),
         predicate_(TripleComponent::Iri{"<urn:p>"}),
         object_(Variable{"?o"}),
-        permutation_(Permutation::Enum::POS) {}
+        permutation_(Permutation::Enum::POS),
+        descriptor_("IndexScan POS ?s <urn:p> ?o"),
+        result_width_(2),
+        sorted_({0, 1}) {}
+  IndexScan(
+      TripleComponent subject,
+      TripleComponent predicate,
+      TripleComponent object,
+      Permutation::Enum permutation,
+      std::string descriptor,
+      size_t result_width,
+      std::vector<ColumnIndex> sorted)
+      : subject_(std::move(subject)),
+        predicate_(std::move(predicate)),
+        object_(std::move(object)),
+        permutation_(permutation),
+        descriptor_(std::move(descriptor)),
+        result_width_(result_width),
+        sorted_(std::move(sorted)) {}
   const TripleComponent& subject() const { return subject_; }
   const TripleComponent& predicate() const { return predicate_; }
   const TripleComponent& object() const { return object_; }
   const Permutation& permutation() const { return permutation_; }
-  std::string getDescriptor() const override { return "IndexScan POS ?s <urn:p> ?o"; }
-  size_t getResultWidth() const override { return 2; }
+  std::string getDescriptor() const override { return descriptor_; }
+  size_t getResultWidth() const override { return result_width_; }
  protected:
-  std::vector<ColumnIndex> resultSortedOn() const override { return {0, 1}; }
+  std::vector<ColumnIndex> resultSortedOn() const override { return sorted_; }
  private:
   TripleComponent subject_;
   TripleComponent predicate_;
   TripleComponent object_;
   Permutation permutation_;
+  std::string descriptor_;
+  size_t result_width_;
+  std::vector<ColumnIndex> sorted_;
 };
 `, 'utf8');
 
@@ -417,6 +439,34 @@ int main() {
   if (std::string(text_join_plan->text_sources[0].request.query.data, text_join_plan->text_sources[0].request.query.size) != "native-first") return 63;
   if (text_join_plan->text_required_entities.size() != 1) return 64;
   if (text_join_plan->text_required_entities[0].term.value != "urn:entity") return 65;
+
+  auto cross_left = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?s"}},
+          TripleComponent{Variable{"?p"}},
+          TripleComponent{Variable{"?mid"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?s ?p ?mid",
+          3,
+          std::vector<ColumnIndex>{0}));
+  auto cross_right = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?mid"}},
+          TripleComponent{TripleComponent::Iri{"<urn:type>"}},
+          TripleComponent{TripleComponent::Iri{"<urn:Thing>"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?mid <urn:type> <urn:Thing>",
+          1,
+          std::vector<ColumnIndex>{0}));
+  Join cross_slot_join(cross_left, cross_right);
+  auto cross_slot_plan = xpod::qlever::planQleverOperation(cross_slot_join);
+  if (!cross_slot_plan.has_value()) return 80;
+  if (cross_slot_plan->root.kind != xpod::qlever::BridgeOperationKind::HashJoin) return 81;
+  if (cross_slot_plan->root.scan_indexes.size() != 2) return 82;
+  if (cross_slot_plan->root.join_slots.size() != 2) return 83;
+  if (cross_slot_plan->root.join_slots[0] != XPOD_RDF_SLOT_OBJECT) return 84;
+  if (cross_slot_plan->root.join_slots[1] != XPOD_RDF_SLOT_SUBJECT) return 85;
+  if (cross_slot_plan->root.join_slot != XPOD_RDF_SLOT_OBJECT) return 86;
   return 0;
 }
 `, 'utf8');

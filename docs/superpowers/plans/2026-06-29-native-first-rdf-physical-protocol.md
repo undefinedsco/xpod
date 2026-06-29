@@ -264,3 +264,66 @@ Then make `executeBridgeTextCandidateSource(...)` validate rows after text candi
 Run: `bun test tests/native/QleverCandidateOperationBridge.test.ts --run`
 
 Expected: PASS.
+
+### Task 8: Cross-slot native HashJoin
+
+**Files:**
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing native execution test**
+
+Add a `BridgePhysicalPlan` hash join where the left scan joins on object and the right scan joins on subject:
+
+```sparql
+{ ?s ?p ?mid . ?mid <urn:type> <urn:Thing> }
+```
+
+Expected: FAIL because `BridgeOperationPlan` only has one `join_slot` and cannot express a per-scan join column.
+
+- [x] **Step 2: Write the failing operation-plan test**
+
+Extend the fake QLever `IndexScan` shape so a smoke test can construct two `IndexScan` leaves with the common variable in different RDF slots.
+
+Expected shape:
+- `root.kind == BridgeOperationKind::HashJoin`
+- `root.scan_indexes == [0, 1]`
+- `root.join_slots == [XPOD_RDF_SLOT_OBJECT, XPOD_RDF_SLOT_SUBJECT]`
+- legacy `root.join_slot == XPOD_RDF_SLOT_OBJECT`
+
+Expected: FAIL because `BridgeOperationPlan` has no `join_slots`.
+
+- [x] **Step 3: Implement per-scan join slots**
+
+Add `BridgeOperationPlan::join_slots` as the native physical expression of the join key per scan. Keep `join_slot` as a compatibility fallback for existing hand-built plans.
+
+Update operation planning so constrained `Join` trees flatten only when every leaf is an `IndexScan` and one common variable appears in every leaf. The planner records each scan's RDF slot for that variable.
+
+Update native `HashJoin` execution so the right-side filter scans collect keys from their own join slot, while the primary scan filters on its own join slot.
+
+- [x] **Step 4: Preserve parsed-BGP compatibility**
+
+For parsed two-triple subject-filter fallback plans, set:
+
+```cpp
+root.join_slots = {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_SUBJECT};
+```
+
+This keeps fallback parsed plans explicit without changing their semantics.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationBridge.test.ts --run
+bun test tests/native/QleverOperationPlanBridge.test.ts --run
+```
+
+Expected: PASS.

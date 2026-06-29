@@ -37,6 +37,7 @@ struct BridgeOperationPlan {
   std::vector<size_t> scan_indexes;
   size_t candidate_index = 0;
   uint32_t join_slot = XPOD_RDF_SLOT_SUBJECT;
+  std::vector<uint32_t> join_slots;
 };
 
 struct BridgePhysicalScan {

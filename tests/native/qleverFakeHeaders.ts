@@ -205,6 +205,7 @@ class Join final : public Operation {
 export const fakeIndexScanHeader = `
 #pragma once
 #include <string>
+#include <utility>
 #include <vector>
 #include "engine/Operation.h"
 #include "index/Permutation.h"
@@ -215,20 +216,41 @@ class IndexScan final : public Operation {
       : subject_(Variable{"?s"}),
         predicate_(Variable{"?p"}),
         object_(Variable{"?o"}),
-        permutation_(Permutation::Enum::SPO) {}
+        permutation_(Permutation::Enum::SPO),
+        descriptor_("IndexScan SPO ?s ?p ?o"),
+        result_width_(3),
+        sorted_({0}) {}
+  IndexScan(
+      TripleComponent subject,
+      TripleComponent predicate,
+      TripleComponent object,
+      Permutation::Enum permutation,
+      std::string descriptor,
+      size_t result_width,
+      std::vector<ColumnIndex> sorted)
+      : subject_(std::move(subject)),
+        predicate_(std::move(predicate)),
+        object_(std::move(object)),
+        permutation_(permutation),
+        descriptor_(std::move(descriptor)),
+        result_width_(result_width),
+        sorted_(std::move(sorted)) {}
   const TripleComponent& subject() const { return subject_; }
   const TripleComponent& predicate() const { return predicate_; }
   const TripleComponent& object() const { return object_; }
   const Permutation& permutation() const { return permutation_; }
-  std::string getDescriptor() const override { return "IndexScan SPO ?s ?p ?o"; }
-  size_t getResultWidth() const override { return 3; }
+  std::string getDescriptor() const override { return descriptor_; }
+  size_t getResultWidth() const override { return result_width_; }
  protected:
-  std::vector<ColumnIndex> resultSortedOn() const override { return {0}; }
+  std::vector<ColumnIndex> resultSortedOn() const override { return sorted_; }
  private:
   TripleComponent subject_;
   TripleComponent predicate_;
   TripleComponent object_;
   Permutation permutation_;
+  std::string descriptor_;
+  size_t result_width_;
+  std::vector<ColumnIndex> sorted_;
 };
 `;
 

@@ -131,6 +131,8 @@ static xpod_rdf_status scan(
       rows[0] = {10, 50, 60, 40};
     } else if (request->pattern.predicate == 70 && request->pattern.object == 80) {
       rows[0] = {10, 70, 80, 40};
+    } else if (request->pattern.predicate == 90 && request->pattern.object == 100) {
+      rows[0] = {30, 90, 100, 40};
     } else {
       return XPOD_RDF_STATUS_BACKEND_ERROR;
     }
@@ -202,6 +204,41 @@ int main() {
   if (table(0, 1).getBits() != 1020) return 5;
   if (table(0, 2).getBits() != 1030) return 6;
   if (result.result.sortedBy().size() != 1 || result.result.sortedBy()[0] != 0) return 7;
+  if (state.calls != 3) return 8;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan cross_slot_plan;
+  xpod::qlever::BridgePhysicalScan cross_primary;
+  cross_primary.scan.permutation = Permutation::Enum::SPO;
+  cross_primary.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  cross_primary.sorted_by = {0};
+  cross_primary.result_width = 3;
+  cross_primary.descriptor = "cross-slot primary scan";
+  cross_slot_plan.scans.push_back(cross_primary);
+
+  xpod::qlever::BridgePhysicalScan cross_filter;
+  cross_filter.scan.permutation = Permutation::Enum::SPO;
+  cross_filter.scan.pattern.has_predicate = true;
+  cross_filter.scan.pattern.predicate = 90;
+  cross_filter.scan.pattern.has_object = true;
+  cross_filter.scan.pattern.object = 100;
+  cross_filter.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT;
+  cross_filter.descriptor = "cross-slot subject filter scan";
+  cross_slot_plan.scans.push_back(cross_filter);
+
+  cross_slot_plan.root.kind = xpod::qlever::BridgeOperationKind::HashJoin;
+  cross_slot_plan.root.scan_indexes = {0, 1};
+  cross_slot_plan.root.join_slot = XPOD_RDF_SLOT_OBJECT;
+  cross_slot_plan.root.join_slots = {XPOD_RDF_SLOT_OBJECT, XPOD_RDF_SLOT_SUBJECT};
+
+  auto cross_result = xpod::qlever::executeBridgeOperationPlan(physical, cross_slot_plan);
+  if (cross_result.status != XPOD_RDF_STATUS_OK) return 9;
+  if (state.calls != 2) return 10;
+  const IdTable& cross_table = cross_result.result.idTable();
+  if (cross_table.numColumns() != 3 || cross_table.numRows() != 1) return 11;
+  if (cross_table(0, 0).getBits() != 1010) return 12;
+  if (cross_table(0, 1).getBits() != 1020) return 13;
+  if (cross_table(0, 2).getBits() != 1030) return 14;
   return 0;
 }
 `, 'utf8');

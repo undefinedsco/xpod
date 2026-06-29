@@ -216,6 +216,16 @@ inline void intersectJoinKeys(
   }
 }
 
+inline uint32_t joinSlotForScan(
+    const BridgeOperationPlan& root,
+    size_t scan_position) noexcept {
+  if (root.join_slots.size() == root.scan_indexes.size() &&
+      scan_position < root.join_slots.size()) {
+    return root.join_slots[scan_position];
+  }
+  return root.join_slot;
+}
+
 inline QleverResultWithStatus executeBridgeHashJoin(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
@@ -244,7 +254,7 @@ inline QleverResultWithStatus executeBridgeHashJoin(
         backend, right.result.idTable(),
         columnForSlot(
             right_scan.scan.permutation, right_scan.scan.needed_slots,
-            plan.root.join_slot),
+            joinSlotForScan(plan.root, i)),
         filter_keys);
     if (status != XPOD_RDF_STATUS_OK) {
       return makeEmptyOperationResult(status, left_scan.result_width,
@@ -267,7 +277,7 @@ inline QleverResultWithStatus executeBridgeHashJoin(
       backend, left.result.idTable(),
       columnForSlot(
           left_scan.scan.permutation, left_scan.scan.needed_slots,
-          plan.root.join_slot),
+          joinSlotForScan(plan.root, 0)),
       allowed_keys, output);
   if (status != XPOD_RDF_STATUS_OK) {
     return makeEmptyOperationResult(status, left_scan.result_width,

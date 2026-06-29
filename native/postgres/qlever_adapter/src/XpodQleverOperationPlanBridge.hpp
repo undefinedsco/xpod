@@ -334,7 +334,24 @@ inline bool collectIndexScanLeaves(
          collectIndexScanLeaves(children[1], scans);
 }
 
-inline std::optional<uint32_t> inferCommonVariableJoinSlot(
+inline std::optional<uint32_t> indexScanSlotForVariable(
+    const IndexScan& scan,
+    std::string_view variable) {
+  for (uint32_t slot : {
+           XPOD_RDF_SLOT_SUBJECT,
+           XPOD_RDF_SLOT_PREDICATE,
+           XPOD_RDF_SLOT_OBJECT,
+       }) {
+    const TripleComponent& component = indexScanComponentForSlot(scan, slot);
+    if (component.isVariable() &&
+        bridgeComponentVariableName(component) == variable) {
+      return slot;
+    }
+  }
+  return std::nullopt;
+}
+
+inline std::optional<std::vector<uint32_t>> inferCommonVariableJoinSlots(
     const std::vector<const IndexScan*>& scans) {
   if (scans.size() < 2) {
     return std::nullopt;
@@ -349,18 +366,21 @@ inline std::optional<uint32_t> inferCommonVariableJoinSlot(
     if (!first_component.isVariable()) {
       continue;
     }
-    const std::string& variable = first_component.getVariable().name();
-    bool all_match = true;
-    for (const IndexScan* scan : scans) {
-      const TripleComponent& component = indexScanComponentForSlot(*scan, slot);
-      if (!component.isVariable() ||
-          component.getVariable().name() != variable) {
-        all_match = false;
+    std::string variable = bridgeComponentVariableName(first_component);
+    std::vector<uint32_t> join_slots;
+    join_slots.reserve(scans.size());
+    join_slots.push_back(slot);
+    for (size_t i = 1; i < scans.size(); ++i) {
+      std::optional<uint32_t> join_slot =
+          indexScanSlotForVariable(*scans[i], variable);
+      if (!join_slot.has_value()) {
+        join_slots.clear();
         break;
       }
+      join_slots.push_back(*join_slot);
     }
-    if (all_match) {
-      return slot;
+    if (join_slots.size() == scans.size()) {
+      return join_slots;
     }
   }
   return std::nullopt;
@@ -383,8 +403,8 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
       !collectIndexScanLeaves(children[1], scans)) {
     return std::nullopt;
   }
-  auto join_slot = inferCommonVariableJoinSlot(scans);
-  if (!join_slot.has_value()) {
+  auto join_slots = inferCommonVariableJoinSlots(scans);
+  if (!join_slots.has_value()) {
     return std::nullopt;
   }
 
@@ -403,14 +423,15 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
     BridgeFilterScan filter;
     filter.scan = right_plan->scan;
     filter.term_bindings = std::move(right_plan->term_bindings);
-    filter.join_slot = *join_slot;
+    filter.join_slot = (*join_slots)[i];
     filter.descriptor = right_plan->descriptor;
     left_plan->filter_scans.push_back(std::move(filter));
     left_plan->root.scan_indexes.push_back(i);
   }
   left_plan->descriptor = join.getDescriptor();
   left_plan->root.kind = BridgeOperationKind::HashJoin;
-  left_plan->root.join_slot = *join_slot;
+  left_plan->root.join_slot = join_slots->front();
+  left_plan->root.join_slots = *join_slots;
   return left_plan;
 }
 
