@@ -254,3 +254,29 @@ class TextIndexScanForWord final : public Operation {
   std::string word_;
 };
 `;
+
+export const fakeTextIndexScanForEntityHeader = `
+#pragma once
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+class TextIndexScanForEntity final : public Operation {
+ public:
+  TextIndexScanForEntity(std::string word, std::string fixed_entity)
+      : word_(std::move(word)), fixed_entity_(std::move(fixed_entity)), has_fixed_entity_(true) {}
+  explicit TextIndexScanForEntity(std::string word)
+      : word_(std::move(word)), has_fixed_entity_(false) {}
+  bool hasFixedEntity() const { return has_fixed_entity_; }
+  const std::string& fixedEntity() const { return fixed_entity_; }
+  const std::string& word() const { return word_; }
+  std::string getDescriptor() const override { return "TextIndexScanForEntity " + word_; }
+  size_t getResultWidth() const override { return has_fixed_entity_ ? 1 : 2; }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
+ private:
+  std::string word_;
+  std::string fixed_entity_;
+  bool has_fixed_entity_;
+};
+`;

@@ -22,6 +22,13 @@
 #define XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD 0
 #endif
 
+#if __has_include("engine/TextIndexScanForEntity.h")
+#include "engine/TextIndexScanForEntity.h"
+#define XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY 1
+#else
+#define XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY 0
+#endif
+
 #if __has_include("engine/QueryExecutionContext.h")
 #include "engine/QueryExecutionContext.h"
 #define XPOD_QLEVER_HAS_QUERY_EXECUTION_CONTEXT 1
@@ -84,6 +91,49 @@ inline std::optional<BridgeQueryPlan> planTextIndexScanForWordOperation(
   source.setQuery(scan.word());
   source.descriptor = scan.getDescriptor();
   plan.text_sources.push_back(std::move(source));
+  plan.descriptor = scan.getDescriptor();
+  plan.result_width = scan.getResultWidth();
+  plan.root.kind = BridgeOperationKind::TextSearch;
+  plan.root.candidate_index = 0;
+  return plan;
+}
+#endif
+
+inline std::optional<BridgeTermBinding> textEntityBindingFromString(
+    std::string_view entity) {
+  if (entity.empty()) {
+    return std::nullopt;
+  }
+  BridgeTermBinding binding;
+  binding.kind = XPOD_RDF_TERM_IRI;
+  if (entity.size() >= 2 && entity.front() == '<' && entity.back() == '>') {
+    binding.value = std::string(entity.substr(1, entity.size() - 2));
+  } else {
+    binding.value = std::string(entity);
+  }
+  return binding;
+}
+
+#if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY
+inline std::optional<BridgeQueryPlan> planTextIndexScanForEntityOperation(
+    const TextIndexScanForEntity& scan) {
+  if (!scan.hasFixedEntity()) {
+    return std::nullopt;
+  }
+  auto entity = textEntityBindingFromString(scan.fixedEntity());
+  if (!entity.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  BridgeTextCandidateSource source;
+  source.setQuery(scan.word());
+  source.descriptor = scan.getDescriptor();
+  plan.text_sources.push_back(std::move(source));
+  BridgeTextRequiredEntityBinding required_entity;
+  required_entity.text_source_index = 0;
+  required_entity.term = std::move(*entity);
+  plan.text_required_entities.push_back(std::move(required_entity));
   plan.descriptor = scan.getDescriptor();
   plan.result_width = scan.getResultWidth();
   plan.root.kind = BridgeOperationKind::TextSearch;
@@ -210,6 +260,13 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
   const auto* text_scan = dynamic_cast<const TextIndexScanForWord*>(&operation);
   if (text_scan != nullptr) {
     return planTextIndexScanForWordOperation(*text_scan);
+  }
+#endif
+#if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY
+  const auto* entity_scan =
+      dynamic_cast<const TextIndexScanForEntity*>(&operation);
+  if (entity_scan != nullptr) {
+    return planTextIndexScanForEntityOperation(*entity_scan);
   }
 #endif
   const auto* scan = dynamic_cast<const IndexScan*>(&operation);

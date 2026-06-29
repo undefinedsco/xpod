@@ -26,6 +26,11 @@ struct BridgeTermBinding {
   std::string language;
 };
 
+struct BridgeTextRequiredEntityBinding {
+  size_t text_source_index = 0;
+  BridgeTermBinding term;
+};
+
 struct BridgeFilterScan {
   ScanRequestInput scan;
   std::vector<BridgeTermBinding> term_bindings;
@@ -43,6 +48,7 @@ struct BridgeQueryPlan {
   std::vector<BridgeFilterScan> filter_scans;
   std::vector<BridgeTextCandidateSource> text_sources;
   std::vector<BridgeVectorCandidateSource> vector_sources;
+  std::vector<BridgeTextRequiredEntityBinding> text_required_entities;
   BridgeOperationPlan root;
   bool known_empty = false;
 };
@@ -192,6 +198,52 @@ inline xpod_rdf_status bindTermBindings(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline xpod_rdf_status bindTextRequiredEntities(
+    const xpod::rdf::PhysicalBackend& backend,
+    const xpod_rdf_snapshot& snapshot,
+    BridgeQueryPlan& plan,
+    std::string& error_storage) {
+  if (plan.text_required_entities.empty()) {
+    return XPOD_RDF_STATUS_OK;
+  }
+
+  std::vector<std::vector<xpod_rdf_term_key>> keys_by_source(
+      plan.text_sources.size());
+  for (const BridgeTextRequiredEntityBinding& binding :
+       plan.text_required_entities) {
+    if (binding.text_source_index >= plan.text_sources.size()) {
+      error_storage = "text required entity binding references missing source";
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+
+    xpod_rdf_term term = toNativeTerm(binding.term);
+    xpod_rdf_term_key key = 0;
+    xpod_rdf_status term_status = XPOD_RDF_STATUS_OK;
+    xpod_rdf_status status = backend.lookupTerms(
+        &term, 1, snapshot, &key, &term_status);
+    if (status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to lookup QLever text required entity";
+      return status;
+    }
+    if (term_status == XPOD_RDF_STATUS_NOT_FOUND) {
+      plan.known_empty = true;
+      return XPOD_RDF_STATUS_OK;
+    }
+    if (term_status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to lookup QLever text required entity";
+      return term_status;
+    }
+    keys_by_source[binding.text_source_index].push_back(key);
+  }
+
+  for (size_t i = 0; i < keys_by_source.size(); ++i) {
+    if (!keys_by_source[i].empty()) {
+      plan.text_sources[i].setRequiredEntities(std::move(keys_by_source[i]));
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 inline xpod_rdf_status bindPlanTerms(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod_rdf_snapshot& snapshot,
@@ -215,7 +267,7 @@ inline xpod_rdf_status bindPlanTerms(
       return XPOD_RDF_STATUS_OK;
     }
   }
-  return XPOD_RDF_STATUS_OK;
+  return bindTextRequiredEntities(backend, snapshot, plan, error_storage);
 }
 
 inline void initializeScanPlan(BridgeQueryPlan& plan) {

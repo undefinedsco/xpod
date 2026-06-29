@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader } from './qleverFakeHeaders';
+import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -68,6 +68,7 @@ class Operation {
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForEntity.h'), fakeTextIndexScanForEntityHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), `
 #pragma once
 #include <string>
@@ -104,9 +105,26 @@ class IndexScan final : public Operation {
 #include <cstring>
 #include <memory>
 #include <string>
+#include <string_view>
 #include "engine/Join.h"
+#include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
 #include "XpodQleverOperationPlanBridge.hpp"
+
+static xpod_rdf_status lookup_terms(
+    void*,
+    const xpod_rdf_term* terms,
+    size_t term_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_keys,
+    xpod_rdf_status* out_statuses) {
+  if (term_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:entity") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_keys[0] = 77;
+  out_statuses[0] = XPOD_RDF_STATUS_OK;
+  return XPOD_RDF_STATUS_OK;
+}
 
 int main() {
   IndexScan scan;
@@ -179,6 +197,37 @@ int main() {
   if (!physical.scans.empty()) return 43;
   if (physical.text_sources.size() != 1) return 44;
   if (std::string(physical.text_sources[0].request.query.data, physical.text_sources[0].request.query.size) != "native-first") return 45;
+
+  TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
+  const Operation& fixed_entity_operation = fixed_entity_scan;
+  auto entity_plan = xpod::qlever::planQleverOperation(fixed_entity_operation);
+  if (!entity_plan.has_value()) return 46;
+  if (entity_plan->root.kind != xpod::qlever::BridgeOperationKind::TextSearch) return 47;
+  if (entity_plan->text_sources.size() != 1) return 48;
+  if (entity_plan->text_required_entities.size() != 1) return 49;
+  if (entity_plan->text_required_entities[0].text_source_index != 0) return 50;
+  if (entity_plan->text_required_entities[0].term.kind != XPOD_RDF_TERM_IRI) return 51;
+  if (entity_plan->text_required_entities[0].term.value != "urn:entity") return 52;
+
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.lookup_terms = lookup_terms;
+  xpod::rdf::PhysicalBackend physical_backend(&backend);
+  xpod_rdf_snapshot snapshot = {};
+  std::string error;
+  xpod_rdf_status bind_status = xpod::qlever::bindPlanTerms(physical_backend, snapshot, *entity_plan, error);
+  if (bind_status != XPOD_RDF_STATUS_OK) return 53;
+  if (entity_plan->text_sources[0].request.required_entities_size != 1) return 54;
+  if (entity_plan->text_sources[0].request.required_entities[0] != 77) return 55;
+  auto entity_physical = xpod::qlever::toBridgePhysicalPlan(*entity_plan);
+  if (entity_physical.text_sources.size() != 1) return 56;
+  if (entity_physical.text_sources[0].request.required_entities_size != 1) return 57;
+  if (entity_physical.text_sources[0].request.required_entities[0] != 77) return 58;
+
+  TextIndexScanForEntity variable_entity_scan("native-first");
+  const Operation& variable_entity_operation = variable_entity_scan;
+  if (xpod::qlever::planQleverOperation(variable_entity_operation).has_value()) return 59;
   return 0;
 }
 `, 'utf8');

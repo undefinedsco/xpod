@@ -41,7 +41,9 @@ struct BridgePhysicalScan {
 struct BridgeTextCandidateSource {
   xpod_rdf_text_search_request request = {};
   bool owns_query = false;
+  bool owns_required_entities = false;
   std::string query_storage;
+  std::vector<xpod_rdf_term_key> required_entities_storage;
   std::string descriptor = "XpodBackedTextSearch";
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
@@ -51,7 +53,9 @@ struct BridgeTextCandidateSource {
   BridgeTextCandidateSource(const BridgeTextCandidateSource& other)
       : request(other.request),
         owns_query(other.owns_query),
+        owns_required_entities(other.owns_required_entities),
         query_storage(other.query_storage),
+        required_entities_storage(other.required_entities_storage),
         descriptor(other.descriptor),
         profile_node(other.profile_node),
         parent_profile_node(other.parent_profile_node) {
@@ -65,7 +69,9 @@ struct BridgeTextCandidateSource {
     }
     request = other.request;
     owns_query = other.owns_query;
+    owns_required_entities = other.owns_required_entities;
     query_storage = other.query_storage;
+    required_entities_storage = other.required_entities_storage;
     descriptor = other.descriptor;
     profile_node = other.profile_node;
     parent_profile_node = other.parent_profile_node;
@@ -76,7 +82,9 @@ struct BridgeTextCandidateSource {
   BridgeTextCandidateSource(BridgeTextCandidateSource&& other) noexcept
       : request(other.request),
         owns_query(other.owns_query),
+        owns_required_entities(other.owns_required_entities),
         query_storage(std::move(other.query_storage)),
+        required_entities_storage(std::move(other.required_entities_storage)),
         descriptor(std::move(other.descriptor)),
         profile_node(other.profile_node),
         parent_profile_node(other.parent_profile_node) {
@@ -90,7 +98,9 @@ struct BridgeTextCandidateSource {
     }
     request = other.request;
     owns_query = other.owns_query;
+    owns_required_entities = other.owns_required_entities;
     query_storage = std::move(other.query_storage);
+    required_entities_storage = std::move(other.required_entities_storage);
     descriptor = std::move(other.descriptor);
     profile_node = other.profile_node;
     parent_profile_node = other.parent_profile_node;
@@ -104,9 +114,19 @@ struct BridgeTextCandidateSource {
     refreshViews();
   }
 
+  void setRequiredEntities(std::vector<xpod_rdf_term_key> keys) {
+    required_entities_storage = std::move(keys);
+    owns_required_entities = true;
+    refreshViews();
+  }
+
   void refreshViews() noexcept {
     if (owns_query) {
       request.query = {query_storage.data(), query_storage.size()};
+    }
+    if (owns_required_entities) {
+      request.required_entities = required_entities_storage.data();
+      request.required_entities_size = required_entities_storage.size();
     }
   }
 };
