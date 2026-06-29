@@ -38,6 +38,13 @@
 #define XPOD_QLEVER_HAS_LIMIT_OFFSET 0
 #endif
 
+#if __has_include("engine/Distinct.h")
+#include "engine/Distinct.h"
+#define XPOD_QLEVER_HAS_DISTINCT 1
+#else
+#define XPOD_QLEVER_HAS_DISTINCT 0
+#endif
+
 #if __has_include("engine/QueryExecutionContext.h")
 #include "engine/QueryExecutionContext.h"
 #define XPOD_QLEVER_HAS_QUERY_EXECUTION_CONTEXT 1
@@ -653,6 +660,39 @@ inline std::optional<BridgeQueryPlan> planLimitOffsetOperation(
   plan->root.has_limit = true;
   plan->root.limit = operation.limit();
   plan->root.offset = operation.offset();
+  plan->root.result_modifiers.push_back({
+      BridgeResultModifierKind::LimitOffset,
+      operation.limit(),
+      operation.offset(),
+      {},
+  });
+  return plan;
+}
+#endif
+
+#if XPOD_QLEVER_HAS_DISTINCT
+inline std::optional<BridgeQueryPlan> planDistinctOperation(
+    const Distinct& operation) {
+  std::vector<QueryExecutionTree*> mutable_children =
+      const_cast<Distinct&>(operation).getChildren();
+  std::vector<const QueryExecutionTree*> children;
+  children.reserve(mutable_children.size());
+  for (QueryExecutionTree* child : mutable_children) {
+    children.push_back(child);
+  }
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(*children[0]);
+  if (!plan.has_value()) {
+    return std::nullopt;
+  }
+  plan->root.has_distinct = true;
+  plan->root.distinct_columns = operation.getDistinctColumns();
+  BridgeResultModifier modifier;
+  modifier.kind = BridgeResultModifierKind::Distinct;
+  modifier.columns = operation.getDistinctColumns();
+  plan->root.result_modifiers.push_back(std::move(modifier));
   return plan;
 }
 #endif
@@ -663,6 +703,12 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
   const auto* limit_offset = dynamic_cast<const LimitOffset*>(&operation);
   if (limit_offset != nullptr) {
     return planLimitOffsetOperation(*limit_offset);
+  }
+#endif
+#if XPOD_QLEVER_HAS_DISTINCT
+  const auto* distinct = dynamic_cast<const Distinct*>(&operation);
+  if (distinct != nullptr) {
+    return planDistinctOperation(*distinct);
   }
 #endif
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD

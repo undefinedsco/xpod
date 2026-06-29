@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <utility>
 #include <unordered_map>
@@ -851,6 +852,84 @@ inline QleverResultWithStatus applyBridgeLimitOffset(
       {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
 }
 
+inline QleverResultWithStatus applyBridgeDistinct(
+    const BridgeResultModifier& modifier,
+    QleverResultWithStatus result) {
+  if (result.status != XPOD_RDF_STATUS_OK) {
+    return result;
+  }
+
+  const IdTable& input = result.result.idTable();
+  for (ColumnIndex column : modifier.columns) {
+    if (column >= input.numColumns()) {
+      return makeEmptyOperationResult(
+          XPOD_RDF_STATUS_UNSUPPORTED, input.numColumns(),
+          result.result.sortedBy());
+    }
+  }
+
+  IdTable output(input.numColumns());
+  std::set<std::vector<uint64_t>> seen;
+  std::vector<uint64_t> key;
+  std::vector<Id> row;
+  key.reserve(modifier.columns.size());
+  row.reserve(input.numColumns());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    key.clear();
+    for (ColumnIndex column : modifier.columns) {
+      key.push_back(input(input_row, column).getBits());
+    }
+    if (!seen.insert(key).second) {
+      continue;
+    }
+    row.clear();
+    for (size_t column = 0; column < input.numColumns(); ++column) {
+      row.push_back(input(input_row, column));
+    }
+    output.push_back(row);
+  }
+
+  return toQleverResult(
+      {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
+}
+
+inline QleverResultWithStatus applyBridgeResultModifier(
+    const BridgeResultModifier& modifier,
+    QleverResultWithStatus result) {
+  if (modifier.kind == BridgeResultModifierKind::LimitOffset) {
+    BridgeOperationPlan limit_root;
+    limit_root.has_limit = true;
+    limit_root.limit = modifier.limit;
+    limit_root.offset = modifier.offset;
+    return applyBridgeLimitOffset(limit_root, std::move(result));
+  }
+  if (modifier.kind == BridgeResultModifierKind::Distinct) {
+    return applyBridgeDistinct(modifier, std::move(result));
+  }
+  return result;
+}
+
+inline QleverResultWithStatus applyBridgeResultModifiers(
+    const BridgeOperationPlan& root,
+    QleverResultWithStatus result) {
+  if (!root.result_modifiers.empty()) {
+    for (const BridgeResultModifier& modifier : root.result_modifiers) {
+      result = applyBridgeResultModifier(modifier, std::move(result));
+      if (result.status != XPOD_RDF_STATUS_OK) {
+        return result;
+      }
+    }
+    return result;
+  }
+  if (root.has_distinct) {
+    BridgeResultModifier modifier;
+    modifier.kind = BridgeResultModifierKind::Distinct;
+    modifier.columns = root.distinct_columns;
+    result = applyBridgeDistinct(modifier, std::move(result));
+  }
+  return applyBridgeLimitOffset(root, std::move(result));
+}
+
 inline QleverResultWithStatus executeBridgeOperationPlan(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
@@ -865,11 +944,11 @@ inline QleverResultWithStatus executeBridgeOperationPlan(
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
     }
     result = executeBridgePhysicalScan(backend, plan.scans[scan_index]);
-    return applyBridgeLimitOffset(plan.root, std::move(result));
+    return applyBridgeResultModifiers(plan.root, std::move(result));
   }
   if (plan.root.kind == BridgeOperationKind::HashJoin) {
     result = executeBridgeHashJoin(backend, plan);
-    return applyBridgeLimitOffset(plan.root, std::move(result));
+    return applyBridgeResultModifiers(plan.root, std::move(result));
   }
   return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
 }

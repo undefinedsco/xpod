@@ -663,6 +663,30 @@ int main() {
   if (limit_table(1, 0).getBits() != 1012) return 96;
   if (limit_table(1, 1).getBits() != 1020) return 97;
   if (limit_table(1, 2).getBits() != 1032) return 98;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan distinct_plan;
+  xpod::qlever::BridgePhysicalScan distinct_scan;
+  distinct_scan.scan.permutation = Permutation::Enum::SPO;
+  distinct_scan.scan.needed_slots =
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  distinct_scan.sorted_by = {0};
+  distinct_scan.result_width = 3;
+  distinct_scan.descriptor = "distinct primary scan";
+  distinct_plan.scans.push_back(distinct_scan);
+  distinct_plan.root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  distinct_plan.root.scan_indexes = {0};
+  distinct_plan.root.has_distinct = true;
+  distinct_plan.root.distinct_columns = {1};
+
+  auto distinct_result = xpod::qlever::executeBridgeOperationPlan(physical, distinct_plan);
+  if (distinct_result.status != XPOD_RDF_STATUS_OK) return 99;
+  if (state.calls != 1) return 100;
+  const IdTable& distinct_table = distinct_result.result.idTable();
+  if (distinct_table.numColumns() != 3 || distinct_table.numRows() != 1) return 101;
+  if (distinct_table(0, 0).getBits() != 1010) return 102;
+  if (distinct_table(0, 1).getBits() != 1020) return 103;
+  if (distinct_table(0, 2).getBits() != 1030) return 104;
   return 0;
 }
 `, 'utf8');

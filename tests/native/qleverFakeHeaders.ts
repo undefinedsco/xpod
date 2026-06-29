@@ -202,6 +202,48 @@ class Join final : public Operation {
 };
 `;
 
+
+export const fakeDistinctHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class QueryExecutionContext;
+class Distinct final : public Operation {
+ public:
+  Distinct(QueryExecutionContext*,
+           std::shared_ptr<QueryExecutionTree> child,
+           const std::vector<ColumnIndex>& distinct_columns)
+      : child_(std::move(child)), distinct_columns_(distinct_columns) {}
+  Distinct(std::shared_ptr<QueryExecutionTree> child,
+           std::vector<ColumnIndex> distinct_columns)
+      : child_(std::move(child)), distinct_columns_(std::move(distinct_columns)) {}
+  std::string getDescriptor() const override { return "Distinct"; }
+  size_t getResultWidth() const override {
+    return child_ == nullptr ? 0 : child_->getRootOperation()->getResultWidth();
+  }
+  const std::vector<ColumnIndex>& getDistinctColumns() const {
+    return distinct_columns_;
+  }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {child_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return child_ == nullptr ? std::vector<ColumnIndex>{}
+                             : child_->getRootOperation()->getResultSortedOn();
+  }
+ private:
+  std::shared_ptr<QueryExecutionTree> child_;
+  std::vector<ColumnIndex> distinct_columns_;
+};
+`;
+
 export const fakeLimitOffsetHeader = `
 #pragma once
 #include <memory>

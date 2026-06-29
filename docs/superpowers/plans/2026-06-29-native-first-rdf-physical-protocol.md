@@ -736,3 +736,76 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 16: Distinct result modifier
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever headers as the source of truth.
+
+`Distinct.h` exposes:
+- `Distinct` as an `Operation`;
+- one child through `getChildren()`;
+- distinct key columns through `getDistinctColumns()`;
+- sortedness inherited from the child.
+
+- [x] **Step 2: Write the failing planner Distinct test**
+
+Extend the operation-plan smoke with `Distinct(IndexScan(...), {0, 2})`.
+
+Expected native plan shape:
+- child root stays `BridgeOperationKind::PermutationScan`;
+- `root.has_distinct == true`;
+- `root.distinct_columns == [0, 2]`;
+- `root.result_modifiers` records one `Distinct` modifier;
+- child output variables are preserved.
+
+Expected: FAIL because the bridge previously had no distinct modifier.
+
+- [x] **Step 3: Write the failing native execution Distinct test**
+
+Extend the operation executor smoke with a scan returning multiple rows that
+share one projected column and a distinct modifier over that column.
+
+Expected output:
+- executor still runs the scan once;
+- duplicate keys are removed while keeping the first matching row;
+- sorted columns are preserved.
+
+Expected: FAIL because execution previously returned all scan rows.
+
+- [x] **Step 4: Add ordered result modifiers**
+
+Add internal `BridgeResultModifier` records so QLever result modifiers can be
+preserved in tree order. Keep the existing `has_limit` hand-built fields as
+compatibility shims for tests and older internal callers, but let
+planner-generated `LimitOffset` and `Distinct` append ordered modifiers.
+
+- [x] **Step 5: Plan and execute Distinct**
+
+When the embedded QLever build exposes `engine/Distinct.h`, map
+`Distinct(child, columns)` to the child's `BridgeQueryPlan` and append a
+`Distinct` result modifier.
+
+Execution applies ordered modifiers after supported RDF roots. Distinct fails
+closed on invalid column indexes and otherwise keeps the first row for each
+distinct key tuple.
+
+- [x] **Step 6: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

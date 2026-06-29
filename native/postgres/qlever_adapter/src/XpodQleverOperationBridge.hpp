@@ -32,9 +32,21 @@ enum class BridgeCandidateSourceKind {
   Vector,
 };
 
+enum class BridgeResultModifierKind {
+  LimitOffset,
+  Distinct,
+};
+
 struct BridgeCandidateOutputColumn {
   std::string variable;
   BridgeCandidateColumnKind kind = BridgeCandidateColumnKind::RetrievalPoint;
+};
+
+struct BridgeResultModifier {
+  BridgeResultModifierKind kind = BridgeResultModifierKind::LimitOffset;
+  size_t limit = 0;
+  size_t offset = 0;
+  std::vector<ColumnIndex> columns;
 };
 
 struct BridgeOperationPlan {
@@ -53,6 +65,9 @@ struct BridgeOperationPlan {
   bool has_limit = false;
   size_t limit = 0;
   size_t offset = 0;
+  bool has_distinct = false;
+  std::vector<ColumnIndex> distinct_columns;
+  std::vector<BridgeResultModifier> result_modifiers;
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
 };
