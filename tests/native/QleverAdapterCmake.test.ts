@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeIndexScanHeader, fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterRoot = path.join(repoRoot, 'native/postgres/qlever_adapter');
@@ -140,7 +140,7 @@ class Operation {
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), fakeIndexScanHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
@@ -200,6 +200,10 @@ class Result {
 class Permutation {
  public:
   enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+  explicit Permutation(Enum value = Enum::SPO) : value_(value) {}
+  Enum permutation() const { return value_; }
+ private:
+  Enum value_;
 };
 `, 'utf8');
 

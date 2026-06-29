@@ -5,6 +5,7 @@
 #include "XpodQleverPlanBridge.hpp"
 #include "XpodQleverOperationExecutor.hpp"
 #include "XpodQleverOperationIntrospection.hpp"
+#include "XpodQleverOperationPlanBridge.hpp"
 #include "XpodQleverResultBridge.hpp"
 #include "XpodQleverScanBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"

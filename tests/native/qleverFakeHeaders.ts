@@ -130,6 +130,36 @@ class ParsedQuery {
 
 export const fakeSparqlTripleHeader = '#pragma once\n#include "parser/ParsedQuery.h"\n';
 
+export const fakeIndexScanHeader = `
+#pragma once
+#include <string>
+#include <vector>
+#include "engine/Operation.h"
+#include "index/Permutation.h"
+#include "parser/SparqlTriple.h"
+class IndexScan final : public Operation {
+ public:
+  IndexScan()
+      : subject_(Variable{"?s"}),
+        predicate_(Variable{"?p"}),
+        object_(Variable{"?o"}),
+        permutation_(Permutation::Enum::SPO) {}
+  const TripleComponent& subject() const { return subject_; }
+  const TripleComponent& predicate() const { return predicate_; }
+  const TripleComponent& object() const { return object_; }
+  const Permutation& permutation() const { return permutation_; }
+  std::string getDescriptor() const override { return "IndexScan SPO ?s ?p ?o"; }
+  size_t getResultWidth() const override { return 3; }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {0}; }
+ private:
+  TripleComponent subject_;
+  TripleComponent predicate_;
+  TripleComponent object_;
+  Permutation permutation_;
+};
+`;
+
 export const fakePermissiveSparqlParserHeader = '#pragma once\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("<urn:type>") != std::string::npos) return ParsedQuery::subjectFilterSelect(); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); return ParsedQuery::minimalSelect(); } };\n';
 
 export const fakeThrowingSparqlParserHeader = '#pragma once\n#include <stdexcept>\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("BROKEN") != std::string::npos) throw std::runtime_error("synthetic parse failure"); if (query.find("<urn:type>") != std::string::npos) return ParsedQuery::subjectFilterSelect(); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); if (query.find("SELECT") != std::string::npos) return ParsedQuery::minimalSelect(); ParsedQuery parsed; parsed.select_ = false; return parsed; } };\n';
