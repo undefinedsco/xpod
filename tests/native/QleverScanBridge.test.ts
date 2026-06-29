@@ -143,6 +143,7 @@ int main() {
   ScanState state;
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
   backend.backend_user_data = &state;
   backend.scan_permutation = scan;
   xpod::rdf::PhysicalBackend physical(&backend);
@@ -219,6 +220,7 @@ static xpod_rdf_status scan(
 int main() {
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
   backend.scan_permutation = scan;
   xpod::rdf::PhysicalBackend physical(&backend);
 

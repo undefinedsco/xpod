@@ -29,6 +29,17 @@ describe('QLever adapter physical backend facade', () => {
       await writeFile(source, `
 #include "XpodPhysicalBackend.hpp"
 
+static xpod_rdf_status lookup_one(
+    void* backend_user_data,
+    const xpod_rdf_term*,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_key) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 1000;
+  *out_key = 42;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status lookup_terms(
     void* backend_user_data,
     const xpod_rdf_term* terms,
@@ -107,6 +118,17 @@ int main() {
   xpod_rdf_scan_request request = {};
   if (physical.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_OK) return 7;
   if (calls != 111) return 8;
+
+  xpod_rdf_backend_v1 truncated = {};
+  truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  truncated.struct_size = offsetof(xpod_rdf_backend_v1, lookup_term);
+  truncated.backend_user_data = &calls;
+  truncated.lookup_term = lookup_one;
+  xpod::rdf::PhysicalBackend truncated_physical(&truncated);
+  xpod_rdf_term_key lookup_key = 0;
+  if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
+  if (lookup_key != 0) return 13;
+  if (calls != 111) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;

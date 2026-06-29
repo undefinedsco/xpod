@@ -23,6 +23,11 @@ class PhysicalBackend {
     return valid() && backend_->struct_size >= offset + size;
   }
 
+  template <typename Callback>
+  bool hasCallback(size_t offset, Callback callback) const noexcept {
+    return hasField(offset, sizeof(callback)) && callback != nullptr;
+  }
+
   xpod_rdf_status encodeQleverId(
       xpod_rdf_term_key term,
       uint64_t& out_qlever_id_bits) const noexcept {
@@ -71,7 +76,9 @@ class PhysicalBackend {
       const xpod_rdf_term& term,
       const xpod_rdf_snapshot& snapshot,
       xpod_rdf_term_key& out_key) const noexcept {
-    if (!valid() || backend_->lookup_term == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, lookup_term),
+                     backend_->lookup_term)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->lookup_term(
@@ -82,7 +89,9 @@ class PhysicalBackend {
       xpod_rdf_term_key key,
       const xpod_rdf_snapshot& snapshot,
       xpod_rdf_term& out_term) const noexcept {
-    if (!valid() || backend_->resolve_term == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, resolve_term),
+                     backend_->resolve_term)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->resolve_term(
@@ -127,7 +136,9 @@ class PhysicalBackend {
       const xpod_rdf_scan_request& request,
       xpod_rdf_quad_batch_callback on_batch,
       void* callback_user_data) const noexcept {
-    if (!valid() || backend_->scan_permutation == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, scan_permutation),
+                     backend_->scan_permutation)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->scan_permutation(
@@ -137,7 +148,9 @@ class PhysicalBackend {
   xpod_rdf_status countScan(
       const xpod_rdf_scan_request& request,
       xpod_rdf_count_result& out_result) const noexcept {
-    if (!valid() || backend_->count_scan == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, count_scan),
+                     backend_->count_scan)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->count_scan(
@@ -148,7 +161,9 @@ class PhysicalBackend {
       const xpod_rdf_distinct_request& request,
       xpod_rdf_term_tuple_batch_callback on_batch,
       void* callback_user_data) const noexcept {
-    if (!valid() || backend_->distinct_scan == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, distinct_scan),
+                     backend_->distinct_scan)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->distinct_scan(
@@ -158,7 +173,9 @@ class PhysicalBackend {
   xpod_rdf_status estimateScan(
       const xpod_rdf_scan_request& request,
       xpod_rdf_estimate& out_estimate) const noexcept {
-    if (!valid() || backend_->estimate_scan == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, estimate_scan),
+                     backend_->estimate_scan)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->estimate_scan(
@@ -168,7 +185,9 @@ class PhysicalBackend {
   xpod_rdf_status estimateJoinFanout(
       const xpod_rdf_join_fanout_request& request,
       xpod_rdf_estimate& out_estimate) const noexcept {
-    if (!valid() || backend_->estimate_join_fanout == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, estimate_join_fanout),
+                     backend_->estimate_join_fanout)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->estimate_join_fanout(
@@ -179,7 +198,9 @@ class PhysicalBackend {
       const xpod_rdf_text_search_request& request,
       xpod_rdf_candidate_batch_callback on_batch,
       void* callback_user_data) const noexcept {
-    if (!valid() || backend_->text_search == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, text_search),
+                     backend_->text_search)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->text_search(
@@ -189,7 +210,9 @@ class PhysicalBackend {
   xpod_rdf_status estimateTextSearch(
       const xpod_rdf_text_search_request& request,
       xpod_rdf_estimate& out_estimate) const noexcept {
-    if (!valid() || backend_->estimate_text_search == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, estimate_text_search),
+                     backend_->estimate_text_search)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->estimate_text_search(
@@ -200,7 +223,9 @@ class PhysicalBackend {
       const xpod_rdf_vector_search_request& request,
       xpod_rdf_candidate_batch_callback on_batch,
       void* callback_user_data) const noexcept {
-    if (!valid() || backend_->vector_search == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, vector_search),
+                     backend_->vector_search)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->vector_search(
@@ -210,7 +235,9 @@ class PhysicalBackend {
   xpod_rdf_status estimateVectorSearch(
       const xpod_rdf_vector_search_request& request,
       xpod_rdf_estimate& out_estimate) const noexcept {
-    if (!valid() || backend_->estimate_vector_search == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, estimate_vector_search),
+                     backend_->estimate_vector_search)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->estimate_vector_search(
@@ -222,7 +249,9 @@ class PhysicalBackend {
       xpod_rdf_access_mode mode,
       const xpod_rdf_snapshot& snapshot,
       xpod_rdf_access_scope& out_scope) const noexcept {
-    if (!valid() || backend_->resolve_access_scope == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, resolve_access_scope),
+                     backend_->resolve_access_scope)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->resolve_access_scope(
@@ -233,7 +262,9 @@ class PhysicalBackend {
       const xpod_rdf_access_scope& access_scope,
       const xpod_rdf_source_scope& source_scope,
       xpod_rdf_estimate& out_estimate) const noexcept {
-    if (!valid() || backend_->estimate_access_scope == nullptr) {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, estimate_access_scope),
+                     backend_->estimate_access_scope)) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->estimate_access_scope(
@@ -242,7 +273,9 @@ class PhysicalBackend {
   }
 
   void emitProfileEvent(const xpod_rdf_profile_event& event) const noexcept {
-    if (valid() && backend_->on_profile_event != nullptr) {
+    if (valid() &&
+        hasCallback(offsetof(xpod_rdf_backend_v1, on_profile_event),
+                    backend_->on_profile_event)) {
       backend_->on_profile_event(backend_->profile_user_data, &event);
     }
   }
