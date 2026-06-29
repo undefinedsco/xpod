@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeIndexScanHeader, fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeIndexScanHeader, fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterRoot = path.join(repoRoot, 'native/postgres/qlever_adapter');
@@ -103,20 +103,7 @@ describe('native QLever adapter CMake target', () => {
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakePermissiveSparqlParserHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), `
-#pragma once
-#include <string>
-#include <vector>
-#include "global/Id.h"
-class QueryExecutionTree {
- public:
-  const std::string& getDescriptor() const { return descriptor_; }
-  size_t getResultWidth() const { return 0; }
-  std::vector<ColumnIndex> resultSortedOn() const { return {}; }
- private:
-  std::string descriptor_;
-};
-`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
 #pragma once
 #include <string>

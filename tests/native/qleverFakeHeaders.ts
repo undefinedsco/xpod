@@ -130,6 +130,29 @@ class ParsedQuery {
 
 export const fakeSparqlTripleHeader = '#pragma once\n#include "parser/ParsedQuery.h"\n';
 
+export const fakeQueryExecutionTreeHeader = `
+#pragma once
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <vector>
+#include "global/Id.h"
+class Operation;
+class QueryExecutionTree {
+ public:
+  QueryExecutionTree() = default;
+  explicit QueryExecutionTree(std::shared_ptr<Operation> root) : root_(root) {}
+  bool isEmpty() const { return root_ == nullptr; }
+  std::shared_ptr<Operation> getRootOperation() const { return root_; }
+  const std::string& getDescriptor() const { return descriptor_; }
+  size_t getResultWidth() const { return 0; }
+  std::vector<ColumnIndex> resultSortedOn() const { return {}; }
+ private:
+  std::shared_ptr<Operation> root_;
+  std::string descriptor_;
+};
+`;
+
 export const fakeIndexScanHeader = `
 #pragma once
 #include <string>

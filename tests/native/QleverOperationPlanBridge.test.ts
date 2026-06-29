@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeParsedQueryHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -42,10 +42,7 @@ class Permutation {
   Enum value_;
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), `
-#pragma once
-class QueryExecutionTree {};
-`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
 #pragma once
 #include <string>
@@ -101,6 +98,7 @@ class IndexScan final : public Operation {
       const smoke = path.join(root, 'operation_plan_bridge_smoke.cpp');
       const binary = path.join(root, 'operation_plan_bridge_smoke');
       await writeFile(smoke, `
+#include <memory>
 #include "XpodQleverOperationPlanBridge.hpp"
 
 int main() {
@@ -124,6 +122,13 @@ int main() {
   if (!generic_plan.has_value()) return 13;
   if (generic_plan->descriptor != plan->descriptor) return 14;
   if (generic_plan->term_bindings.size() != 1) return 15;
+  QueryExecutionTree tree(std::make_shared<IndexScan>());
+  auto tree_plan = xpod::qlever::planQleverExecutionTree(tree);
+  if (!tree_plan.has_value()) return 16;
+  if (tree_plan->descriptor != plan->descriptor) return 17;
+  if (tree_plan->term_bindings.size() != 1) return 18;
+  QueryExecutionTree empty_tree;
+  if (xpod::qlever::planQleverExecutionTree(empty_tree).has_value()) return 19;
   return 0;
 }
 `, 'utf8');

@@ -9,6 +9,7 @@
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 #include "engine/IndexScan.h"
 #include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
 
 namespace xpod::qlever {
 
@@ -55,6 +56,18 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
     return planIndexScanOperation(*scan);
   }
   return std::nullopt;
+}
+
+inline std::optional<BridgeQueryPlan> planQleverExecutionTree(
+    const QueryExecutionTree& tree) {
+  if (tree.isEmpty()) {
+    return std::nullopt;
+  }
+  auto operation = tree.getRootOperation();
+  if (operation == nullptr) {
+    return std::nullopt;
+  }
+  return planQleverOperation(*operation);
 }
 
 }  // namespace xpod::qlever
