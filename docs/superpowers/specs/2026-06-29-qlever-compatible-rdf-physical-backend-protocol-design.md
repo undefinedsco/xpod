@@ -107,6 +107,7 @@ The first native-first protocol artifacts are:
 - QLever ValueId bridge: [`native/postgres/qlever_adapter/src/XpodQleverValueIdBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverValueIdBridge.hpp)
 - QLever term-order contract: `xpod_rdf_qlever_term_ordering` in [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h), consumed by [`native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp`](../../../native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp)
 - QLever id comparator: `xpod_rdf_compare_qlever_ids_fn` in [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h), surfaced through [`native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`](../../../native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp) and used by native `OrderBy` / internal sort modifiers.
+- Path/source scope resolution ABI: `xpod_rdf_resolved_source_scope` / `xpod_rdf_resolve_source_scope_fn` in [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h), surfaced through [`native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`](../../../native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp)
 - QLever IdTable bridge: [`native/postgres/qlever_adapter/src/XpodQleverIdTableBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverIdTableBridge.hpp)
 - QLever Result bridge: [`native/postgres/qlever_adapter/src/XpodQleverResultBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverResultBridge.hpp)
 - Native candidate source bridge: [`native/postgres/qlever_adapter/src/XpodCandidateBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodCandidateBridge.hpp)
@@ -135,7 +136,7 @@ The first native-first protocol artifacts are:
 The physical backend header is the data execution-boundary artifact. The adapter facade is the C ABI entry point that will hide QLever-specific C++ types behind a stable native boundary. Query execution uses `xpod_qlever_query_request` so snapshot, cancellation, graph scope, source/path scope, and access scope enter the native scan path with the SPARQL bytes instead of being inferred in TypeScript. TypeScript only validates, normalizes, and reports this contract; it is not the hot-path protocol for the PostgreSQL extension path.
 
 The C ABI includes batch term lookup/resolve callbacks. The C++ facade gates every callback field through `struct_size`, so older or partially initialized callback tables fail closed with `UNSUPPORTED` instead of reading past the struct. Broad QLever-style planning must use this batch seam rather than row-by-row dictionary calls.
-Path/source scope now has a native estimate callback as well as request propagation. This gives the planner a CBO-visible subtree cardinality signal before it chooses between RDF scans, text/vector candidate sources, and joins.
+Path/source scope now has native resolve and estimate callbacks as well as request propagation. Resolve returns backend-owned source-node and graph-scope constraints that a QLever-compatible planner can treat as hard execution boundaries; estimate gives the planner a CBO-visible subtree cardinality signal before it chooses between RDF scans, text/vector candidate sources, and joins.
 Join fanout estimates also carry graph and source scope, so QLever cost estimates do not accidentally use global fanout statistics for a scoped Solid request.
 
 The scan materializer has two explicit result shapes: a raw `TermKey` row buffer for protocol tests, and a QLever-id-bits row buffer that must go through `PhysicalBackend::encodeQleverId`.
@@ -472,6 +473,7 @@ interface PathScopeSource {
 Required behavior:
 
 - Path scope is structural. FTS/path tokens and folder embeddings are weak ranking signals only.
+- Native `resolveScope` returns non-owning backend views of source-node and graph constraints. Callers must not retain returned pointers beyond the backend-defined request lifetime.
 - Folder retrieval points may participate in text/vector search, but raw full path embedding cannot replace structural prefix/subtree checks.
 - Moving a folder should primarily update source/path projection rows and graph-prefix projection, not rewrite content vectors or text postings for unchanged content.
 

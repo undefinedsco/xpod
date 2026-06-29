@@ -2305,3 +2305,41 @@ bun test tests/native/QleverExecutorPlannerContextProvider.test.ts tests/native/
 ```
 
 Expected: PASS.
+
+### Task 48: Expose native source-scope resolution in the physical protocol
+
+**Files:**
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `tests/native/QleverPhysicalBackendFacade.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing native protocol tests**
+
+Extend the C ABI/header smoke and the QLever physical backend facade smoke so
+source/path scope must support a real resolve callback, not only cardinality
+estimation. The facade test requires a backend callback to return backend-owned
+source-node and graph-scope constraints, and requires missing/truncated callback
+tables to fail closed with `UNSUPPORTED`.
+
+Expected: FAIL because the protocol only exposed `estimate_source_scope`.
+
+- [x] **Step 2: Add the minimal C ABI and C++ facade seam**
+
+Add `xpod_rdf_resolved_source_scope` and
+`xpod_rdf_resolve_source_scope_fn` to the native physical backend header. Add the
+callback to `xpod_rdf_backend_v1` as an additive struct-size-gated field and
+surface it as `PhysicalBackend::resolveSourceScope(...)`.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/QleverPhysicalBackendFacade.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.

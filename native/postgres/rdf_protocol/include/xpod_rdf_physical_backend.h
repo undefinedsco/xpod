@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 10
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 11
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -164,6 +164,13 @@ typedef struct xpod_rdf_source_scope {
   uint8_t include_folders;
   uint8_t include_files;
 } xpod_rdf_source_scope;
+
+typedef struct xpod_rdf_resolved_source_scope {
+  const xpod_rdf_source_node_key* source_nodes;
+  size_t source_nodes_size;
+  xpod_rdf_graph_scope graph_scope;
+  xpod_rdf_bytes scope_version;
+} xpod_rdf_resolved_source_scope;
 
 typedef enum xpod_rdf_scan_order_kind {
   XPOD_RDF_SCAN_ORDER_NATIVE = 0,
@@ -558,6 +565,12 @@ typedef xpod_rdf_status (*xpod_rdf_estimate_source_scope_fn)(
     const xpod_rdf_snapshot* snapshot,
     xpod_rdf_estimate* out_estimate);
 
+typedef xpod_rdf_status (*xpod_rdf_resolve_source_scope_fn)(
+    void* backend_user_data,
+    const xpod_rdf_source_scope* source_scope,
+    const xpod_rdf_snapshot* snapshot,
+    xpod_rdf_resolved_source_scope* out_scope);
+
 typedef xpod_rdf_status (*xpod_rdf_encode_qlever_id_fn)(
     void* backend_user_data,
     xpod_rdf_term_key term,
@@ -603,6 +616,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_qlever_term_ordering qlever_term_ordering;
   xpod_rdf_prefix_range_fn prefix_range;
   xpod_rdf_histogram_hints_fn histogram_hints;
+  xpod_rdf_resolve_source_scope_fn resolve_source_scope;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus

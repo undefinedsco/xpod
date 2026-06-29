@@ -153,6 +153,27 @@ static xpod_rdf_status estimate_source_scope(
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status resolve_source_scope(
+    void* backend_user_data,
+    const xpod_rdf_source_scope* source_scope,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_resolved_source_scope* out_scope) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 10000000;
+  if (source_scope->local_path_prefix.size != 6) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  static xpod_rdf_source_node_key source_nodes[2] = {101, 102};
+  static xpod_rdf_term_key graphs[2] = {201, 202};
+  out_scope->source_nodes = source_nodes;
+  out_scope->source_nodes_size = 2;
+  out_scope->graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_SET;
+  out_scope->graph_scope.graph_set = graphs;
+  out_scope->graph_scope.graph_set_size = 2;
+  out_scope->scope_version = {"scope-v1", 8};
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status histogram_hints(
     void* backend_user_data,
     const xpod_rdf_histogram_request* request,
@@ -199,6 +220,7 @@ int main() {
   backend.prefix_range = prefix_range;
   backend.scan_permutation = scan;
   backend.estimate_source_scope = estimate_source_scope;
+  backend.resolve_source_scope = resolve_source_scope;
   backend.histogram_hints = histogram_hints;
 
   xpod::rdf::PhysicalBackend physical(&backend);
@@ -253,6 +275,13 @@ int main() {
   xpod_rdf_estimate source_estimate = {};
   if (physical.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_OK) return 8;
   if (source_estimate.rows != 12 || source_estimate.confidence != XPOD_RDF_ESTIMATE_FRESH) return 15;
+  xpod_rdf_resolved_source_scope resolved_source_scope = {};
+  if (physical.resolveSourceScope(source_scope, snapshot, resolved_source_scope) != XPOD_RDF_STATUS_OK) return 29;
+  if (resolved_source_scope.source_nodes_size != 2 ||
+      resolved_source_scope.source_nodes[0] != 101 ||
+      resolved_source_scope.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET ||
+      resolved_source_scope.graph_scope.graph_set_size != 2 ||
+      resolved_source_scope.scope_version.size != 8) return 30;
 
   xpod_rdf_histogram_request histogram_request = {};
   histogram_request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
@@ -277,7 +306,7 @@ int main() {
   if (histogram_row_count != 1) return 24;
   if (histogram_rows[0].rows != 7 || histogram_rows[0].distinct_terms != 3) return 25;
   if (histogram_stats_version.size != 8) return 26;
-  if (calls != 1110111) return 16;
+  if (calls != 11110111) return 16;
 
   xpod_rdf_backend_v1 truncated = {};
   truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -288,7 +317,7 @@ int main() {
   xpod_rdf_term_key lookup_key = 0;
   if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
   if (lookup_key != 0) return 13;
-  if (calls != 1110111) return 14;
+  if (calls != 11110111) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -298,6 +327,7 @@ int main() {
   if (unsupported.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 10;
   if (unsupported.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
   if (unsupported.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_UNSUPPORTED) return 17;
+  if (unsupported.resolveSourceScope(source_scope, snapshot, resolved_source_scope) != XPOD_RDF_STATUS_UNSUPPORTED) return 31;
   if (unsupported.prefixRange(prefix_request, on_prefix_ranges, &prefix_state, prefix_collation) != XPOD_RDF_STATUS_UNSUPPORTED) return 22;
   if (unsupported.histogramHints(histogram_request, on_histogram_hints, &histogram_state, histogram_stats_version) != XPOD_RDF_STATUS_UNSUPPORTED) return 27;
 
