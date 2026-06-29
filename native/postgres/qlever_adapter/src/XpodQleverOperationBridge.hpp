@@ -17,11 +17,14 @@ namespace xpod::qlever {
 enum class BridgeOperationKind {
   PermutationScan,
   HashJoin,
+  TextSearch,
+  VectorSearch,
 };
 
 struct BridgeOperationPlan {
   BridgeOperationKind kind = BridgeOperationKind::PermutationScan;
   std::vector<size_t> scan_indexes;
+  size_t candidate_index = 0;
   uint32_t join_slot = XPOD_RDF_SLOT_SUBJECT;
 };
 
@@ -34,8 +37,24 @@ struct BridgePhysicalScan {
   xpod_rdf_profile_node_key parent_profile_node = 0;
 };
 
+struct BridgeTextCandidateSource {
+  xpod_rdf_text_search_request request = {};
+  std::string descriptor = "XpodBackedTextSearch";
+  xpod_rdf_profile_node_key profile_node = 0;
+  xpod_rdf_profile_node_key parent_profile_node = 0;
+};
+
+struct BridgeVectorCandidateSource {
+  xpod_rdf_vector_search_request request = {};
+  std::string descriptor = "XpodBackedVectorSearch";
+  xpod_rdf_profile_node_key profile_node = 0;
+  xpod_rdf_profile_node_key parent_profile_node = 0;
+};
+
 struct BridgePhysicalPlan {
   std::vector<BridgePhysicalScan> scans;
+  std::vector<BridgeTextCandidateSource> text_sources;
+  std::vector<BridgeVectorCandidateSource> vector_sources;
   BridgeOperationPlan root;
 };
 
@@ -43,6 +62,10 @@ inline std::string_view profileKind(BridgeOperationKind kind) noexcept {
   switch (kind) {
     case BridgeOperationKind::HashJoin:
       return "HashJoin";
+    case BridgeOperationKind::TextSearch:
+      return "TextSearch";
+    case BridgeOperationKind::VectorSearch:
+      return "VectorSearch";
     case BridgeOperationKind::PermutationScan:
     default:
       return "PermutationScan";

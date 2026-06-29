@@ -2,6 +2,8 @@
 #define XPOD_QLEVER_OPERATION_EXECUTOR_HPP
 
 #include "XpodBackedIndexScan.hpp"
+#include "XpodBackedTextSearch.hpp"
+#include "XpodBackedVectorSearch.hpp"
 #include "XpodQleverOperationBridge.hpp"
 #include "XpodQleverResultBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"
@@ -46,6 +48,50 @@ inline QleverResultWithStatus makeEmptyOperationResult(
     size_t width = 0,
     std::vector<ColumnIndex> sorted_by = {}) {
   return toQleverResult({status, IdTable(width)}, std::move(sorted_by));
+}
+
+
+inline XpodBackedCandidateResult makeEmptyCandidateOperationResult(
+    xpod_rdf_status status) {
+  return {status, {}};
+}
+
+inline XpodBackedCandidateResult executeBridgeTextCandidateSource(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgeTextCandidateSource& source) {
+  XpodBackedTextSearch adapter(
+      backend, source.request, source.descriptor, source.profile_node,
+      source.parent_profile_node);
+  return adapter.computeResult(false);
+}
+
+inline XpodBackedCandidateResult executeBridgeVectorCandidateSource(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgeVectorCandidateSource& source) {
+  XpodBackedVectorSearch adapter(
+      backend, source.request, source.descriptor, source.profile_node,
+      source.parent_profile_node);
+  return adapter.computeResult(false);
+}
+
+inline XpodBackedCandidateResult executeBridgeCandidateOperationPlan(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan) {
+  if (plan.root.kind == BridgeOperationKind::TextSearch) {
+    if (plan.root.candidate_index >= plan.text_sources.size()) {
+      return makeEmptyCandidateOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+    }
+    return executeBridgeTextCandidateSource(
+        backend, plan.text_sources[plan.root.candidate_index]);
+  }
+  if (plan.root.kind == BridgeOperationKind::VectorSearch) {
+    if (plan.root.candidate_index >= plan.vector_sources.size()) {
+      return makeEmptyCandidateOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+    }
+    return executeBridgeVectorCandidateSource(
+        backend, plan.vector_sources[plan.root.candidate_index]);
+  }
+  return makeEmptyCandidateOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
 }
 
 inline QleverResultWithStatus executeBridgePhysicalScan(
