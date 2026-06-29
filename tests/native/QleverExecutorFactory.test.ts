@@ -234,6 +234,8 @@ static xpod_rdf_status scan(
   if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->snapshot.snapshot_token.size != 7) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (std::string_view(request->snapshot.snapshot_token.data, request->snapshot.snapshot_token.size) != "snap-v1") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->source_scope.local_path_prefix.size != 16) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(request->source_scope.local_path_prefix.data, request->source_scope.local_path_prefix.size) != "/workspace/docs/") return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->access_scope == nullptr) return XPOD_RDF_STATUS_PERMISSION_DENIED;
   if (std::string_view(request->access_scope->principal.data, request->access_scope->principal.size) != "urn:alice") return XPOD_RDF_STATUS_PERMISSION_DENIED;
   state->saw_context = true;
@@ -282,6 +284,7 @@ int main() {
   xpod_qlever_query_request request = {};
   request.sparql = query;
   request.snapshot.snapshot_token = {"snap-v1", 7};
+  request.source_scope.local_path_prefix = {"/workspace/docs/", 16};
   request.access_scope = &access;
   xpod_rdf_status status = xpod_qlever_adapter_query_request(adapter, &request, &result);
   std::string_view body(result.result_json.data, result.result_json.size);

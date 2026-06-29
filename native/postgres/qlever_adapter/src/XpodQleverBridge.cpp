@@ -244,9 +244,11 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
     return parse_status;
   }
   plan.scan.snapshot = &request.snapshot;
+  plan.scan.source_scope = &request.source_scope;
   plan.scan.access_scope = request.access_scope;
   for (BridgeFilterScan& filter : plan.filter_scans) {
     filter.scan.snapshot = &request.snapshot;
+    filter.scan.source_scope = &request.source_scope;
     filter.scan.access_scope = request.access_scope;
   }
   xpod_rdf_status bind_status = bindPlanTerms(
