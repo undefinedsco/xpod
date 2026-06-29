@@ -92,6 +92,26 @@ class Result {
       await writeFile(smoke, `
 #include "XpodBackedIndexScan.hpp"
 
+struct ProfileState {
+  int calls;
+  xpod_rdf_profile_status statuses[2];
+  xpod_rdf_profile_node_key nodes[2];
+  xpod_rdf_profile_node_key parents[2];
+  uint8_t has_parents[2];
+  uint64_t output_rows[2];
+};
+
+static void on_profile(void* user_data, const xpod_rdf_profile_event* event) {
+  ProfileState* state = static_cast<ProfileState*>(user_data);
+  int index = state->calls++;
+  if (index >= 2) return;
+  state->statuses[index] = event->status;
+  state->nodes[index] = event->node;
+  state->parents[index] = event->parent;
+  state->has_parents[index] = event->has_parent;
+  state->output_rows[index] = event->output_rows;
+}
+
 static xpod_rdf_status encode(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
   *out_bits = term + 1000;
   return XPOD_RDF_STATUS_OK;
@@ -125,9 +145,12 @@ static xpod_rdf_status scan(
 }
 
 int main() {
+  ProfileState profile = {};
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.on_profile_event = on_profile;
+  backend.profile_user_data = &profile;
   backend.encode_qlever_id = encode;
   backend.estimate_scan = estimate_scan;
   backend.scan_permutation = scan;
@@ -136,7 +159,7 @@ int main() {
   xpod::qlever::ScanRequestInput input = {};
   input.permutation = Permutation::Enum::SPO;
 
-  xpod::qlever::XpodBackedIndexScan scanAdapter(physical, input, {0}, 3, "xpod scan ?s ?p ?o");
+  xpod::qlever::XpodBackedIndexScan scanAdapter(physical, input, {0}, 3, "xpod scan ?s ?p ?o", 77, 55);
   if (scanAdapter.getResultWidth() != 3) return 10;
   if (scanAdapter.getDescriptor() != "xpod scan ?s ?p ?o") return 11;
   if (scanAdapter.resultSortedOn().size() != 1 || scanAdapter.resultSortedOn()[0] != 0) return 12;
@@ -164,6 +187,12 @@ int main() {
   if (operationResult.status != XPOD_RDF_STATUS_OK) return 13;
   if (operationResult.result.idTable().numRows() != 1) return 14;
   if (operationResult.result.sortedBy().size() != 1 || operationResult.result.sortedBy()[0] != 0) return 15;
+  if (profile.calls != 2) return 21;
+  if (profile.statuses[0] != XPOD_RDF_PROFILE_RUNNING) return 22;
+  if (profile.statuses[1] != XPOD_RDF_PROFILE_COMPLETED) return 23;
+  if (profile.nodes[0] != 77 || profile.nodes[1] != 77) return 24;
+  if (!profile.has_parents[0] || profile.parents[0] != 55) return 25;
+  if (profile.output_rows[1] != 1) return 26;
   return 0;
 }
 `, 'utf8');

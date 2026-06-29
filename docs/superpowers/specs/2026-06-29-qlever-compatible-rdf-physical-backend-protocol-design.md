@@ -126,6 +126,7 @@ The IdTable bridge then converts the QLever-id-bits row buffer into upstream `Id
 The backed IndexScan adapter shell can expose the same scan as upstream `Result`, making the next step a replacement of QLever `IndexScan::computeResult()` rather than another data-shape bridge.
 The same shell now exposes operation-shaped metadata (`descriptor`, result width, sorted columns) and a `computeResult(false)` seam. It deliberately does not inherit upstream `Operation` yet, because upstream `Operation` brings the whole `QueryExecutionContext`/cache/runtime tree; the next patch can move this seam either into an upstream `IndexScan::computeResult()` patch or into a planner-generated Xpod-backed operation.
 The shell also asks the native backend for scan estimates, giving the future operation boundary size, cost, and known-empty decisions without consulting QLever permutation files.
+When `computeResult(false)` runs, the shell emits native profile events for the permutation scan boundary. This is the first executable bridge toward QLever-style `RuntimeInformation` without yet importing the full upstream operation tree.
 Text and vector candidate callbacks are materialized by a separate native C++ bridge into stable candidate rows. This keeps FTS/VEC candidate sources as protocol inputs to the future planner rather than TypeScript post-filters.
 
 The adapter target is intentionally source-provider based:

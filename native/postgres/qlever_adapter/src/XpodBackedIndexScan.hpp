@@ -25,12 +25,17 @@ class XpodBackedIndexScan {
       ScanRequestInput input,
       std::vector<ColumnIndex> sorted_by = {},
       size_t result_width = 3,
-      std::string descriptor = "XpodBackedIndexScan") noexcept
+      std::string descriptor = "XpodBackedIndexScan",
+      xpod_rdf_profile_node_key profile_node = 0,
+      xpod_rdf_profile_node_key parent_profile_node = 0) noexcept
       : backend_(backend),
         input_(input),
         sorted_by_(std::move(sorted_by)),
         result_width_(result_width),
-        descriptor_(std::move(descriptor)) {}
+        descriptor_(std::move(descriptor)),
+        profile_node_(profile_node),
+        parent_profile_node_(parent_profile_node),
+        has_parent_profile_node_(parent_profile_node != 0) {}
 
   const std::string& getDescriptor() const noexcept { return descriptor_; }
 
@@ -89,15 +94,47 @@ class XpodBackedIndexScan {
 
   QleverResultWithStatus computeResult(bool request_laziness) const {
     (void)request_laziness;
-    return executeResult();
+    XpodBackedScanEstimate estimate_result = estimate();
+    emitProfileEvent(XPOD_RDF_PROFILE_RUNNING, estimate_result, 0);
+
+    QleverResultWithStatus result = executeResult();
+    uint64_t output_rows = result.status == XPOD_RDF_STATUS_OK
+                               ? result.result.idTable().numRows()
+                               : 0;
+    emitProfileEvent(
+        result.status == XPOD_RDF_STATUS_OK ? XPOD_RDF_PROFILE_COMPLETED
+                                            : XPOD_RDF_PROFILE_FAILED,
+        estimate_result, output_rows);
+    return result;
   }
 
  private:
+  void emitProfileEvent(
+      xpod_rdf_profile_status status,
+      const XpodBackedScanEstimate& estimate_result,
+      uint64_t output_rows) const noexcept {
+    xpod_rdf_profile_event event = {};
+    event.node = profile_node_;
+    event.parent = parent_profile_node_;
+    event.has_parent = has_parent_profile_node_ ? 1 : 0;
+    event.kind = XPOD_RDF_PROFILE_PERMUTATION_SCAN;
+    event.status = status;
+    event.descriptor = {descriptor_.data(), descriptor_.size()};
+    if (estimate_result.status == XPOD_RDF_STATUS_OK) {
+      event.estimate = estimate_result.estimate;
+    }
+    event.output_rows = output_rows;
+    backend_.emitProfileEvent(event);
+  }
+
   xpod::rdf::PhysicalBackend backend_;
   ScanRequestInput input_;
   std::vector<ColumnIndex> sorted_by_;
   size_t result_width_;
   std::string descriptor_;
+  xpod_rdf_profile_node_key profile_node_;
+  xpod_rdf_profile_node_key parent_profile_node_;
+  bool has_parent_profile_node_;
 };
 
 }  // namespace xpod::qlever
