@@ -21,6 +21,8 @@ const requiredSymbols = [
   'xpod_rdf_text_search_fn',
   'xpod_rdf_vector_search_fn',
   'xpod_rdf_resolve_access_scope_fn',
+  'xpod_rdf_encode_qlever_id_fn',
+  'XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS',
   'xpod_rdf_profile_event_callback',
 ];
 

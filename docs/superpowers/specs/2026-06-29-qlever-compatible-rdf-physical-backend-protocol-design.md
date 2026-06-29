@@ -100,6 +100,7 @@ The first native-first protocol artifacts are:
 - Physical backend C ABI header: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
 - QLever adapter C ABI facade: [`native/postgres/qlever_adapter/include/xpod_qlever_adapter.h`](../../../native/postgres/qlever_adapter/include/xpod_qlever_adapter.h)
 - QLever adapter internal C++ backend facade: [`native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`](../../../native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp)
+- QLever id codec ABI: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
 - QLever adapter upstream include bridge: [`native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`](../../../native/postgres/qlever_adapter/src/XpodQleverBridge.cpp)
 - QLever adapter internal executor seam: [`native/postgres/qlever_adapter/src/XpodQleverExecutor.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverExecutor.hpp)
 - QLever permutation mapping shim: [`native/postgres/qlever_adapter/src/XpodQleverPermutationMap.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverPermutationMap.hpp)
@@ -108,7 +109,7 @@ The first native-first protocol artifacts are:
 - QLever adapter C++ implementation shell: [`native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp`](../../../native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp)
 - QLever adapter CMake target: [`native/postgres/qlever_adapter/CMakeLists.txt`](../../../native/postgres/qlever_adapter/CMakeLists.txt)
 - ABI validator: [`scripts/check-rdf-physical-protocol-abi.cjs`](../../../scripts/check-rdf-physical-protocol-abi.cjs)
-- Focused tests: [`tests/native/RdfPhysicalBackendProtocolHeader.test.ts`](../../../tests/native/RdfPhysicalBackendProtocolHeader.test.ts), [`tests/native/QleverAdapterFacade.test.ts`](../../../tests/native/QleverAdapterFacade.test.ts), [`tests/native/QleverPhysicalBackendFacade.test.ts`](../../../tests/native/QleverPhysicalBackendFacade.test.ts), [`tests/native/QleverExecutorFactory.test.ts`](../../../tests/native/QleverExecutorFactory.test.ts), [`tests/native/QleverPermutationMap.test.ts`](../../../tests/native/QleverPermutationMap.test.ts), [`tests/native/QleverScanBridge.test.ts`](../../../tests/native/QleverScanBridge.test.ts), [`tests/native/QleverScanMaterializer.test.ts`](../../../tests/native/QleverScanMaterializer.test.ts)
+- Focused tests: [`tests/native/RdfPhysicalBackendProtocolHeader.test.ts`](../../../tests/native/RdfPhysicalBackendProtocolHeader.test.ts), [`tests/native/QleverAdapterFacade.test.ts`](../../../tests/native/QleverAdapterFacade.test.ts), [`tests/native/QleverPhysicalBackendFacade.test.ts`](../../../tests/native/QleverPhysicalBackendFacade.test.ts), [`tests/native/QleverExecutorFactory.test.ts`](../../../tests/native/QleverExecutorFactory.test.ts), [`tests/native/QleverPermutationMap.test.ts`](../../../tests/native/QleverPermutationMap.test.ts), [`tests/native/QleverScanBridge.test.ts`](../../../tests/native/QleverScanBridge.test.ts), [`tests/native/QleverScanMaterializer.test.ts`](../../../tests/native/QleverScanMaterializer.test.ts), [`tests/native/QleverIdCodec.test.ts`](../../../tests/native/QleverIdCodec.test.ts)
 
 The physical backend header is the data execution-boundary artifact. The adapter facade is the C ABI entry point that will hide QLever-specific C++ types behind a stable native boundary. TypeScript only validates, normalizes, and reports this contract; it is not the hot-path protocol for the PostgreSQL extension path.
 
@@ -136,6 +137,7 @@ Rules:
 
 - `TermKey` is a backend-local stable dictionary key for the current facts snapshot.
 - `TermKey` is not a Pod resource id, not a fragment id, and not an application-facing identifier.
+- QLever `ValueId` bits are not implicitly identical to `TermKey`. The native backend must either expose encode/decode callbacks for QLever id bits or explicitly declare `XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS`.
 - Literal identity includes lexical value, datatype, and language.
 - Numeric literal metadata may be exposed for filters and estimates, but it must not collapse distinct RDF lexical terms.
 - Long literals may use digest/text split internally; exact equality must still preserve RDF term identity.

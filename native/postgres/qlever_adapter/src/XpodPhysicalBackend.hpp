@@ -3,6 +3,8 @@
 
 #include "xpod_rdf_physical_backend.h"
 
+#include <cstddef>
+
 namespace xpod::rdf {
 
 class PhysicalBackend {
@@ -16,6 +18,54 @@ class PhysicalBackend {
   }
 
   xpod_rdf_backend_v1* raw() const noexcept { return backend_; }
+
+  bool hasField(size_t offset, size_t size) const noexcept {
+    return valid() && backend_->struct_size >= offset + size;
+  }
+
+  xpod_rdf_status encodeQleverId(
+      xpod_rdf_term_key term,
+      uint64_t& out_qlever_id_bits) const noexcept {
+    if (!valid()) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    if (hasField(offsetof(xpod_rdf_backend_v1, encode_qlever_id),
+                 sizeof(backend_->encode_qlever_id)) &&
+        backend_->encode_qlever_id != nullptr) {
+      return backend_->encode_qlever_id(
+          backend_->backend_user_data, term, &out_qlever_id_bits);
+    }
+    if (hasField(offsetof(xpod_rdf_backend_v1, term_key_encoding),
+                 sizeof(backend_->term_key_encoding)) &&
+        backend_->term_key_encoding ==
+            XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS) {
+      out_qlever_id_bits = term;
+      return XPOD_RDF_STATUS_OK;
+    }
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
+  xpod_rdf_status decodeQleverId(
+      uint64_t qlever_id_bits,
+      xpod_rdf_term_key& out_term) const noexcept {
+    if (!valid()) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    if (hasField(offsetof(xpod_rdf_backend_v1, decode_qlever_id),
+                 sizeof(backend_->decode_qlever_id)) &&
+        backend_->decode_qlever_id != nullptr) {
+      return backend_->decode_qlever_id(
+          backend_->backend_user_data, qlever_id_bits, &out_term);
+    }
+    if (hasField(offsetof(xpod_rdf_backend_v1, term_key_encoding),
+                 sizeof(backend_->term_key_encoding)) &&
+        backend_->term_key_encoding ==
+            XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS) {
+      out_term = qlever_id_bits;
+      return XPOD_RDF_STATUS_OK;
+    }
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
 
   xpod_rdf_status lookupTerm(
       const xpod_rdf_term& term,

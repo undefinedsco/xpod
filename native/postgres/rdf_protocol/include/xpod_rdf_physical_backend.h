@@ -18,6 +18,11 @@ typedef uint64_t xpod_rdf_source_node_key;
 typedef uint64_t xpod_rdf_retrieval_point_key;
 typedef uint64_t xpod_rdf_profile_node_key;
 
+typedef enum xpod_rdf_term_key_encoding {
+  XPOD_RDF_TERM_KEY_ENCODING_OPAQUE = 0,
+  XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS = 1
+} xpod_rdf_term_key_encoding;
+
 typedef struct xpod_rdf_bytes {
   const char* data;
   size_t size;
@@ -424,6 +429,16 @@ typedef xpod_rdf_status (*xpod_rdf_estimate_access_scope_fn)(
     const xpod_rdf_source_scope* source_scope,
     xpod_rdf_estimate* out_estimate);
 
+typedef xpod_rdf_status (*xpod_rdf_encode_qlever_id_fn)(
+    void* backend_user_data,
+    xpod_rdf_term_key term,
+    uint64_t* out_qlever_id_bits);
+
+typedef xpod_rdf_status (*xpod_rdf_decode_qlever_id_fn)(
+    void* backend_user_data,
+    uint64_t qlever_id_bits,
+    xpod_rdf_term_key* out_term);
+
 typedef struct xpod_rdf_backend_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -443,6 +458,9 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_estimate_vector_search_fn estimate_vector_search;
   xpod_rdf_resolve_access_scope_fn resolve_access_scope;
   xpod_rdf_estimate_access_scope_fn estimate_access_scope;
+  xpod_rdf_term_key_encoding term_key_encoding;
+  xpod_rdf_encode_qlever_id_fn encode_qlever_id;
+  xpod_rdf_decode_qlever_id_fn decode_qlever_id;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus
