@@ -1778,3 +1778,36 @@ bun test tests/native/QleverOperationBridge.test.ts --run -t "orders QLever ids"
 ```
 
 Expected: PASS.
+
+### Task 34: Planner-generated modifiers must not reuse legacy shims
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+
+- [x] **Step 1: Write failing planner-shape regression**
+
+Update the QLever operation-plan smoke so planner-generated `LimitOffset` and
+`Distinct` operations must emit only ordered `result_modifiers`. The legacy
+`root.has_limit` / `root.has_distinct` shims must remain unset because the
+executor still applies those fields for hand-built compatibility plans.
+
+Expected: FAIL because the planner path populated both the new modifier list
+and the legacy root shims, which would make execution apply limit/distinct
+twice.
+
+- [x] **Step 2: Remove legacy shim writes from planner-generated operations**
+
+Keep `LimitOffset` and `Distinct` represented in `root.result_modifiers` only.
+Do not set `root.has_limit`, `root.limit`, `root.offset`,
+`root.has_distinct`, or `root.distinct_columns` from the planner path.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts --run -t "builds a bridge query plan"
+```
+
+Expected: PASS.

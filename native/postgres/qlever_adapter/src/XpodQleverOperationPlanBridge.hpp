@@ -768,9 +768,6 @@ inline std::optional<BridgeQueryPlan> planLimitOffsetOperation(
   if (!plan.has_value()) {
     return std::nullopt;
   }
-  plan->root.has_limit = true;
-  plan->root.limit = operation.limit();
-  plan->root.offset = operation.offset();
   plan->root.result_modifiers.push_back({
       BridgeResultModifierKind::LimitOffset,
       operation.limit(),
@@ -799,8 +796,6 @@ inline std::optional<BridgeQueryPlan> planDistinctOperation(
   if (!plan.has_value()) {
     return std::nullopt;
   }
-  plan->root.has_distinct = true;
-  plan->root.distinct_columns = operation.getDistinctColumns();
   BridgeResultModifier modifier;
   modifier.kind = BridgeResultModifierKind::Distinct;
   modifier.columns = operation.getDistinctColumns();

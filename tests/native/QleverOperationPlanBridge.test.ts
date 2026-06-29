@@ -868,9 +868,12 @@ int main() {
   auto limit_plan = xpod::qlever::planQleverOperation(limit_operation);
   if (!limit_plan.has_value()) return 142;
   if (limit_plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 143;
-  if (!limit_plan->root.has_limit) return 144;
-  if (limit_plan->root.limit != 1) return 145;
-  if (limit_plan->root.offset != 2) return 146;
+  if (limit_plan->root.has_limit) return 144;
+  if (limit_plan->root.result_modifiers.size() != 1) return 145;
+  if (limit_plan->root.result_modifiers[0].kind !=
+      xpod::qlever::BridgeResultModifierKind::LimitOffset) return 146;
+  if (limit_plan->root.result_modifiers[0].limit != 1) return 299;
+  if (limit_plan->root.result_modifiers[0].offset != 2) return 300;
   if (limit_plan->output_variables.size() != 3) return 147;
   if (limit_plan->output_variables[0] != "s") return 148;
   if (limit_plan->output_variables[1] != "p") return 149;
@@ -889,10 +892,8 @@ int main() {
   auto distinct_plan = xpod::qlever::planQleverOperation(distinct_operation);
   if (!distinct_plan.has_value()) return 151;
   if (distinct_plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 152;
-  if (!distinct_plan->root.has_distinct) return 153;
-  if (distinct_plan->root.distinct_columns.size() != 2) return 154;
-  if (distinct_plan->root.distinct_columns[0] != 0) return 155;
-  if (distinct_plan->root.distinct_columns[1] != 2) return 156;
+  if (distinct_plan->root.has_distinct) return 153;
+  if (!distinct_plan->root.distinct_columns.empty()) return 154;
   if (distinct_plan->root.result_modifiers.size() != 1) return 157;
   if (distinct_plan->root.result_modifiers[0].kind !=
       xpod::qlever::BridgeResultModifierKind::Distinct) return 158;
