@@ -1,6 +1,7 @@
 #ifndef XPOD_QLEVER_SCAN_BRIDGE_HPP
 #define XPOD_QLEVER_SCAN_BRIDGE_HPP
 
+#include "XpodPhysicalBackend.hpp"
 #include "XpodQleverPermutationMap.hpp"
 #include "xpod_rdf_physical_backend.h"
 
@@ -57,6 +58,15 @@ inline xpod_rdf_scan_request makeScanRequest(
   request.batch_size = input.batch_size;
   request.needed_slots = input.needed_slots;
   return request;
+}
+
+inline xpod_rdf_status executeScan(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) noexcept {
+  xpod_rdf_scan_request request = makeScanRequest(input);
+  return backend.scanPermutation(request, on_batch, callback_user_data);
 }
 
 }  // namespace xpod::qlever

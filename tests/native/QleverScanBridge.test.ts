@@ -88,4 +88,95 @@ int main() {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('executes an Xpod physical scan through PhysicalBackend and forwards result batches', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native scan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-scan-execute-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'scan_execute_smoke.cpp');
+      const binary = path.join(root, 'scan_execute_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverScanBridge.hpp"
+
+struct ScanState {
+  int calls = 0;
+  xpod_rdf_permutation permutation = XPOD_RDF_PERM_SPOG;
+};
+
+static xpod_rdf_status onBatch(void* callback_user_data, const xpod_rdf_quad_batch* batch) {
+  auto* total = static_cast<uint64_t*>(callback_user_data);
+  *total += batch->row_count;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan(
+    void* backend_user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<ScanState*>(backend_user_data);
+  state->calls += 1;
+  state->permutation = request->permutation;
+  xpod_rdf_quad_key rows[2] = {
+    {1, 2, 3, 4},
+    {5, 6, 7, 8},
+  };
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 2;
+  batch.scanned_rows = 9;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  ScanState state;
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.backend_user_data = &state;
+  backend.scan_permutation = scan;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::ScanRequestInput input = {};
+  input.permutation = Permutation::Enum::POS;
+  input.needed_slots = XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+
+  uint64_t total = 0;
+  xpod_rdf_status status = xpod::qlever::executeScan(physical, input, onBatch, &total);
+  if (status != XPOD_RDF_STATUS_OK) return 1;
+  if (state.calls != 1) return 2;
+  if (state.permutation != XPOD_RDF_PERM_POSG) return 3;
+  if (total != 2) return 4;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
