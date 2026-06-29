@@ -66,6 +66,13 @@
 #define XPOD_QLEVER_HAS_CARTESIAN_PRODUCT_JOIN 0
 #endif
 
+#if __has_include("engine/Minus.h")
+#include "engine/Minus.h"
+#define XPOD_QLEVER_HAS_MINUS 1
+#else
+#define XPOD_QLEVER_HAS_MINUS 0
+#endif
+
 #if __has_include("engine/Distinct.h")
 #include "engine/Distinct.h"
 #define XPOD_QLEVER_HAS_DISTINCT 1
@@ -263,6 +270,23 @@ inline bool containsOutputVariable(
     }
   }
   return false;
+}
+
+inline std::vector<std::array<size_t, 2>> matchedOutputVariableColumns(
+    const std::vector<std::string>& left_variables,
+    const std::vector<std::string>& right_variables) {
+  std::vector<std::array<size_t, 2>> matched_columns;
+  for (size_t left_column = 0; left_column < left_variables.size();
+       ++left_column) {
+    for (size_t right_column = 0; right_column < right_variables.size();
+         ++right_column) {
+      if (left_variables[left_column] == right_variables[right_column]) {
+        matched_columns.push_back({left_column, right_column});
+        break;
+      }
+    }
+  }
+  return matched_columns;
 }
 
 inline std::optional<ColumnIndex> outputColumnForVariable(
@@ -919,6 +943,39 @@ inline std::optional<BridgeQueryPlan> planCartesianProductJoinOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_MINUS
+inline std::optional<BridgeQueryPlan> planMinusOperation(Minus& operation) {
+  std::vector<QueryExecutionTree*> children = operation.getChildren();
+  if (children.size() != 2 || children[0] == nullptr ||
+      children[1] == nullptr) {
+    return std::nullopt;
+  }
+
+  auto left_plan = planQleverExecutionTree(*children[0]);
+  auto right_plan = planQleverExecutionTree(*children[1]);
+  if (!left_plan.has_value() || !right_plan.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.descriptor = operation.getDescriptor();
+  plan.result_width = operation.getResultWidth();
+  plan.sorted_by = operation.getResultSortedOn();
+  plan.root.kind = BridgeOperationKind::Minus;
+  plan.root.sorted_by = plan.sorted_by;
+  plan.output_variables = left_plan->output_variables;
+  plan.root.matched_columns = matchedOutputVariableColumns(
+      left_plan->output_variables, right_plan->output_variables);
+  plan.child_plans.push_back(std::move(*left_plan));
+  plan.child_plans.push_back(std::move(*right_plan));
+
+  if (plan.output_variables.size() != plan.result_width) {
+    return std::nullopt;
+  }
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_NEUTRAL_ELEMENT
@@ -939,6 +996,12 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
       const_cast<Operation*>(&operation));
   if (cartesian != nullptr) {
     return planCartesianProductJoinOperation(*cartesian);
+  }
+#endif
+#if XPOD_QLEVER_HAS_MINUS
+  auto* minus = dynamic_cast<Minus*>(const_cast<Operation*>(&operation));
+  if (minus != nullptr) {
+    return planMinusOperation(*minus);
   }
 #endif
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET

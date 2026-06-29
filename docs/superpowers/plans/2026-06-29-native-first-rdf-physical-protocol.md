@@ -106,6 +106,77 @@ Run: `bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts --run`
 
 Expected: PASS.
 
+### Task 23: Minus over supported child plans
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever `Minus.h` as the source of truth.
+
+`Minus` exposes:
+- child access through `getChildren()`;
+- left-result width and descriptor through public `Operation` methods;
+- result sortedness through `getResultSortedOn()`;
+- no public accessor for the internal `_matchedColumns` vector.
+
+The bridge therefore derives matched columns from the two child plans'
+`output_variables` instead of reaching into QLever private state.
+
+- [x] **Step 2: Write failing planner and executor tests**
+
+Extend the operation-plan smoke with a two-child `Minus` where the left and
+right child share `?entity`.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::Minus`;
+- query-plan children are kept as pre-binding child plans;
+- result variables and width come from the left child;
+- `root.matched_columns` records the shared variable column pair;
+- physical-plan children are flattened into shared scan storage with adjusted
+  child scan indexes.
+
+Extend the operation executor smoke with a hand-built Minus root over two scan
+children.
+
+Expected execution:
+- both child scans execute once;
+- rows from the left side that have a right-side match on all matched columns
+  are removed;
+- rows without a match are preserved with their original left-side columns;
+- if no variables are shared, MINUS preserves the left side.
+
+Expected: FAIL because the bridge previously had no Minus root or matched
+column expression.
+
+- [x] **Step 3: Plan and execute Minus**
+
+When the embedded QLever build exposes `engine/Minus.h`, map the operation to a
+native tree root and reuse the existing child-plan boundary. Execution
+recursively evaluates the two children and performs an exact-id anti-join over
+`matched_columns`.
+
+This first implementation compares encoded QLever id bits. Full SPARQL value
+comparison semantics, if needed for non-dictionary local values, belong to the
+later ValueId comparator integration.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.
+
 ### Task 3: ABI check script and package command
 
 **Files:**

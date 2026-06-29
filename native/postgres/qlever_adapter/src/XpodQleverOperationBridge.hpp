@@ -24,6 +24,7 @@ enum class BridgeOperationKind {
   NeutralElement,
   Union,
   CartesianProductJoin,
+  Minus,
 };
 
 enum class BridgeCandidateColumnKind {
@@ -76,6 +77,7 @@ struct BridgeOperationPlan {
   std::vector<ColumnIndex> distinct_columns;
   std::vector<ColumnIndex> sorted_by;
   std::vector<std::array<size_t, 2>> column_origins;
+  std::vector<std::array<size_t, 2>> matched_columns;
   std::vector<BridgeOperationPlan> children;
   std::vector<BridgeResultModifier> result_modifiers;
   xpod_rdf_profile_node_key profile_node = 0;
@@ -209,6 +211,8 @@ inline std::string_view profileKind(BridgeOperationKind kind) noexcept {
       return "Union";
     case BridgeOperationKind::CartesianProductJoin:
       return "CartesianProductJoin";
+    case BridgeOperationKind::Minus:
+      return "Minus";
     case BridgeOperationKind::HashJoin:
       return "HashJoin";
     case BridgeOperationKind::TextSearch:

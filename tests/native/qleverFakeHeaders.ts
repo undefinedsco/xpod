@@ -633,3 +633,39 @@ class CartesianProductJoin final : public Operation {
   Children children_;
 };
 `;
+
+export const fakeMinusHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class QueryExecutionContext;
+class Minus final : public Operation {
+ public:
+  Minus(QueryExecutionContext*,
+        std::shared_ptr<QueryExecutionTree> left,
+        std::shared_ptr<QueryExecutionTree> right)
+      : left_(std::move(left)), right_(std::move(right)) {}
+  Minus(std::shared_ptr<QueryExecutionTree> left,
+        std::shared_ptr<QueryExecutionTree> right)
+      : left_(std::move(left)), right_(std::move(right)) {}
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {left_.get(), right_.get()};
+  }
+  std::string getDescriptor() const override { return "Minus"; }
+  size_t getResultWidth() const override {
+    return left_ == nullptr ? 0 : left_->getRootOperation()->getResultWidth();
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return left_ == nullptr ? std::vector<ColumnIndex>{}
+                            : left_->getRootOperation()->getResultSortedOn();
+  }
+ private:
+  std::shared_ptr<QueryExecutionTree> left_;
+  std::shared_ptr<QueryExecutionTree> right_;
+};
+`;
