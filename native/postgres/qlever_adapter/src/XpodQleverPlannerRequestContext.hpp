@@ -2,13 +2,20 @@
 #define XPOD_QLEVER_PLANNER_REQUEST_CONTEXT_HPP
 
 #include "XpodPhysicalBackend.hpp"
-#include "xpod_qlever_adapter.h"
+
+class QueryExecutionContext;
+struct xpod_qlever_query_request;
 
 namespace xpod::qlever {
 
 struct PlannerRequestContext {
   xpod::rdf::PhysicalBackend backend;
   const xpod_qlever_query_request* request;
+};
+
+struct PlannerContextHandle {
+  QueryExecutionContext* qec = nullptr;
+  const PlannerRequestContext* native = nullptr;
 };
 
 }  // namespace xpod::qlever

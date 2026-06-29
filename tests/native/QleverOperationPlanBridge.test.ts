@@ -18,6 +18,162 @@ function hasCxx(): boolean {
 }
 
 describe('QLever operation plan bridge', () => {
+  it('plans with a native request context when QLever exposes a native planner constructor', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native operation plan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-native-context-plan-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/parser'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), '#pragma once\n#include <cstdint>\nusing ColumnIndex = uint64_t;\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+  explicit Permutation(Enum value = Enum::SPO) : value_(value) {}
+  Enum permutation() const { return value_; }
+ private:
+  Enum value_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), '#pragma once\nnamespace ad_utility { struct SharedCancellationHandle {}; }\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\nclass QueryExecutionContext {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
+#pragma once
+#include <string>
+#include <vector>
+#include "engine/QueryExecutionTree.h"
+#include "global/Id.h"
+class Operation {
+ public:
+  virtual ~Operation() = default;
+  virtual std::string getDescriptor() const = 0;
+  virtual size_t getResultWidth() const = 0;
+  const std::vector<ColumnIndex>& getResultSortedOn() const {
+    sorted_cache_ = resultSortedOn();
+    return sorted_cache_;
+  }
+  virtual std::vector<QueryExecutionTree*> getChildren() { return {}; }
+ protected:
+  virtual std::vector<ColumnIndex> resultSortedOn() const = 0;
+ private:
+  mutable std::vector<ColumnIndex> sorted_cache_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), `
+#pragma once
+#include <string>
+#include <vector>
+#include "engine/Operation.h"
+#include "index/Permutation.h"
+#include "parser/SparqlTriple.h"
+class IndexScan final : public Operation {
+ public:
+  IndexScan()
+      : subject_(Variable{"?s"}),
+        predicate_(Variable{"?p"}),
+        object_(Variable{"?o"}),
+        permutation_(Permutation::Enum::SPO) {}
+  const TripleComponent& subject() const { return subject_; }
+  const TripleComponent& predicate() const { return predicate_; }
+  const TripleComponent& object() const { return object_; }
+  const Permutation& permutation() const { return permutation_; }
+  std::string getDescriptor() const override { return "native request context planner scan"; }
+  size_t getResultWidth() const override { return 3; }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {0}; }
+ private:
+  TripleComponent subject_;
+  TripleComponent predicate_;
+  TripleComponent object_;
+  Permutation permutation_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), `
+#pragma once
+#include <memory>
+#include <string_view>
+#include "xpod_qlever_adapter.h"
+#include "XpodQleverPlannerRequestContext.hpp"
+#include "engine/IndexScan.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+#include "util/CancellationHandle.h"
+class QueryPlanner {
+ public:
+  QueryPlanner(const xpod::qlever::PlannerRequestContext* context,
+               ad_utility::SharedCancellationHandle)
+      : context_(context) {}
+  QueryExecutionTree createExecutionTree(ParsedQuery&, bool = false) {
+    if (context_ == nullptr || !context_->backend.valid() ||
+        context_->request == nullptr ||
+        std::string_view(context_->request->snapshot.facts_version.data,
+                         context_->request->snapshot.facts_version.size) != "facts-v1") {
+      return QueryExecutionTree();
+    }
+    return QueryExecutionTree(std::make_shared<IndexScan>());
+  }
+ private:
+  const xpod::qlever::PlannerRequestContext* context_;
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'native_context_operation_plan_smoke.cpp');
+      const binary = path.join(root, 'native_context_operation_plan_smoke');
+      await writeFile(smoke, `
+#include <string_view>
+#include "XpodQleverOperationPlanBridge.hpp"
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  static const char facts_version[] = "facts-v1";
+  xpod_qlever_query_request request = {};
+  request.snapshot.facts_version = {facts_version, 8};
+  xpod::qlever::PlannerRequestContext native_context{physical, &request};
+  xpod::qlever::PlannerContextHandle handle{nullptr, &native_context};
+
+  ParsedQuery parsed = ParsedQuery::minimalSelect();
+  auto plan = xpod::qlever::planQleverParsedQueryWithAvailablePlanner(handle, parsed);
+  if (!plan.has_value()) return 1;
+  if (plan->descriptor != "native request context planner scan") return 2;
+  if (plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 3;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(operationPlanHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('builds a bridge query plan from a real QLever IndexScan operation shape', async () => {
     expect(hasCxx(), 'c++ compiler is required for native operation plan bridge check').toBe(true);
 

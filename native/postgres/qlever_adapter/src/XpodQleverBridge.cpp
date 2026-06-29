@@ -44,7 +44,7 @@ std::string_view bytesView(xpod_rdf_bytes bytes) noexcept {
 
 xpod_rdf_status parseBridgeQuery(
     std::string_view query,
-    QueryExecutionContext* planner_context,
+    PlannerContextHandle planner_context,
     std::string& error_storage,
     BridgeQueryPlan& out_plan) {
   try {
@@ -218,13 +218,13 @@ xpod_rdf_status executeBridgeQuery(
     std::string& profile_storage,
     std::string& error_storage) {
   return executeBridgeQueryWithPlannerContext(
-      backend, nullptr, request, out_result, result_storage, profile_storage,
+      backend, {}, request, out_result, result_storage, profile_storage,
       error_storage);
 }
 
 xpod_rdf_status executeBridgeQueryWithPlannerContext(
     xpod::rdf::PhysicalBackend backend,
-    QueryExecutionContext* planner_context,
+    PlannerContextHandle planner_context,
     const xpod_qlever_query_request& request,
     xpod_qlever_query_result& out_result,
     std::string& result_storage,
@@ -303,6 +303,19 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
   setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
             error_storage);
   return XPOD_RDF_STATUS_OK;
+}
+
+xpod_rdf_status executeBridgeQueryWithPlannerContext(
+    xpod::rdf::PhysicalBackend backend,
+    QueryExecutionContext* planner_context,
+    const xpod_qlever_query_request& request,
+    xpod_qlever_query_result& out_result,
+    std::string& result_storage,
+    std::string& profile_storage,
+    std::string& error_storage) {
+  return executeBridgeQueryWithPlannerContext(
+      backend, {planner_context, nullptr}, request, out_result, result_storage,
+      profile_storage, error_storage);
 }
 
 }  // namespace xpod::qlever

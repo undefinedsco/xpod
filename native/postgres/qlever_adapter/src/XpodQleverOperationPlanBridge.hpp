@@ -2,6 +2,7 @@
 #define XPOD_QLEVER_OPERATION_PLAN_BRIDGE_HPP
 
 #include "XpodQleverPlanBridge.hpp"
+#include "XpodQleverPlannerRequestContext.hpp"
 
 #include <optional>
 #include <string_view>
@@ -381,6 +382,34 @@ inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithPlanner(
 namespace detail {
 
 #if XPOD_QLEVER_HAS_CANCELLATION_HANDLE
+template <typename Planner, bool IsNativeContextConstructible =
+                                std::is_constructible<
+                                    Planner,
+                                    const PlannerRequestContext*,
+                                    ad_utility::SharedCancellationHandle>::value>
+struct NativeContextQueryPlannerBridge {
+  static std::optional<BridgeQueryPlan> plan(
+      const PlannerRequestContext* context,
+      ParsedQuery& parsed) {
+    (void)context;
+    (void)parsed;
+    return std::nullopt;
+  }
+};
+
+template <typename Planner>
+struct NativeContextQueryPlannerBridge<Planner, true> {
+  static std::optional<BridgeQueryPlan> plan(
+      const PlannerRequestContext* context,
+      ParsedQuery& parsed) {
+    if (context == nullptr) {
+      return std::nullopt;
+    }
+    Planner planner(context, ad_utility::SharedCancellationHandle{});
+    return planQleverParsedQueryWithPlanner(planner, parsed);
+  }
+};
+
 template <typename Planner, bool IsContextConstructible =
                                 std::is_constructible<
                                     Planner,
@@ -445,15 +474,31 @@ inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithContext(
 }
 
 inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithAvailablePlanner(
-    QueryExecutionContext* qec,
+    PlannerContextHandle context,
     ParsedQuery& parsed) {
   if (!parsed.hasSelectClause()) {
     return std::nullopt;
   }
-  if (qec != nullptr) {
-    return planQleverParsedQueryWithContext(qec, parsed);
+#if XPOD_QLEVER_HAS_CANCELLATION_HANDLE
+  if (context.native != nullptr) {
+    auto native_plan =
+        detail::NativeContextQueryPlannerBridge<QueryPlanner>::plan(
+            context.native, parsed);
+    if (native_plan.has_value()) {
+      return native_plan;
+    }
+  }
+#endif
+  if (context.qec != nullptr) {
+    return planQleverParsedQueryWithContext(context.qec, parsed);
   }
   return detail::DefaultQueryPlannerBridge<QueryPlanner>::plan(parsed);
+}
+
+inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithAvailablePlanner(
+    QueryExecutionContext* qec,
+    ParsedQuery& parsed) {
+  return planQleverParsedQueryWithAvailablePlanner({qec, nullptr}, parsed);
 }
 
 }  // namespace xpod::qlever

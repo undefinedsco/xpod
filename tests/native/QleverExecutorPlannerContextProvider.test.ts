@@ -20,7 +20,7 @@ function hasCxx(): boolean {
 }
 
 describe('QLever executor planner context provider', () => {
-  it('does not expose a planner context when the upstream context cannot receive the Xpod request', async () => {
+  it('keeps a native planner request context when the upstream context cannot receive the Xpod request', async () => {
     expect(hasCxx(), 'c++ compiler is required for native planner context provider check').toBe(true);
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-qec-provider-no-setter-'));
@@ -35,6 +35,7 @@ class QueryExecutionContext {};
       const smoke = path.join(root, 'planner_context_provider_no_setter_smoke.cpp');
       const binary = path.join(root, 'planner_context_provider_no_setter_smoke');
       await writeFile(smoke, `
+#include "xpod_qlever_adapter.h"
 #include "XpodQleverPlannerContextProvider.hpp"
 
 int main() {
@@ -44,7 +45,11 @@ int main() {
   xpod::rdf::PhysicalBackend physical(&raw_backend);
   auto provider = xpod::qlever::createQueryPlannerContextProvider(physical);
   xpod_qlever_query_request request = {};
-  if (provider->current(request) != nullptr) return 1;
+  auto context = provider->current(request);
+  if (context.qec != nullptr) return 1;
+  if (context.native == nullptr) return 2;
+  if (context.native->request != &request) return 3;
+  if (!context.native->backend.valid()) return 4;
   return 0;
 }
 `, 'utf8');
@@ -90,6 +95,7 @@ int main() {
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
 #pragma once
 #include <string_view>
+#include "xpod_qlever_adapter.h"
 #include "XpodQleverPlannerRequestContext.hpp"
 class QueryExecutionContext {
  public:

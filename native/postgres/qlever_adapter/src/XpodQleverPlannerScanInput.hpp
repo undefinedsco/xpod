@@ -3,6 +3,7 @@
 
 #include "XpodQleverPlannerRequestContext.hpp"
 #include "XpodQleverScanBridge.hpp"
+#include "xpod_qlever_adapter.h"
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 

@@ -15,7 +15,7 @@ namespace xpod::qlever {
 class QueryPlannerContextProvider {
  public:
   virtual ~QueryPlannerContextProvider() = default;
-  virtual QueryExecutionContext* current(
+  virtual PlannerContextHandle current(
       const xpod_qlever_query_request& request) = 0;
 };
 
@@ -66,15 +66,17 @@ template <typename Context, bool IsComplete, bool IsDefaultConstructible>
 class DefaultPlannerContextProvider final : public QueryPlannerContextProvider {
  public:
   explicit DefaultPlannerContextProvider(
-      xpod::rdf::PhysicalBackend backend) noexcept {
-    (void)backend;
+      xpod::rdf::PhysicalBackend backend) noexcept
+      : planner_context_{backend, nullptr} {}
+
+  PlannerContextHandle current(
+      const xpod_qlever_query_request& request) override {
+    planner_context_.request = &request;
+    return {nullptr, &planner_context_};
   }
 
-  QueryExecutionContext* current(
-      const xpod_qlever_query_request& request) override {
-    (void)request;
-    return nullptr;
-  }
+ private:
+  PlannerRequestContext planner_context_;
 };
 
 template <typename Context>
@@ -83,24 +85,23 @@ class DefaultPlannerContextProvider<Context, true, true> final
  public:
   explicit DefaultPlannerContextProvider(
       xpod::rdf::PhysicalBackend backend) noexcept
-      : backend_(backend) {}
+      : planner_context_{backend, nullptr} {}
 
-  QueryExecutionContext* current(
+  PlannerContextHandle current(
       const xpod_qlever_query_request& request) override {
+    planner_context_.request = &request;
     if constexpr (!HasXpodPlannerRequestContextSetter<Context>::value) {
-      (void)request;
-      return nullptr;
+      return {nullptr, &planner_context_};
     }
-    PlannerRequestContext planner_context{backend_, &request};
     XpodPlannerRequestContextApplier<
         Context,
         HasXpodPlannerRequestContextSetter<Context>::value>::apply(
-            context_, planner_context);
-    return &context_;
+            context_, planner_context_);
+    return {&context_, &planner_context_};
   }
 
  private:
-  xpod::rdf::PhysicalBackend backend_;
+  PlannerRequestContext planner_context_;
   Context context_;
 };
 

@@ -63,9 +63,9 @@ class BridgedQleverExecutor final : public QueryExecutor {
     profile_storage.clear();
     (void)options_;
     (void)bridgeCompiledWithQlever();
-    QueryExecutionContext* planner_context =
+    PlannerContextHandle planner_context =
         planner_context_provider_ == nullptr
-            ? nullptr
+            ? PlannerContextHandle{}
             : planner_context_provider_->current(request);
     return executeBridgeQueryWithPlannerContext(
         backend_, planner_context, request, out_result, result_storage,
