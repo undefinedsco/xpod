@@ -105,6 +105,12 @@ The first native-first protocol artifacts are:
 
 The physical backend header is the data execution-boundary artifact. The adapter facade is the C ABI entry point that will hide QLever-specific C++ types behind a stable native boundary. TypeScript only validates, normalizes, and reports this contract; it is not the hot-path protocol for the PostgreSQL extension path.
 
+The adapter target is intentionally source-provider based:
+
+- `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=OFF` is the default and builds the stub facade without requiring upstream QLever sources.
+- `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON` requires `XPOD_QLEVER_SOURCE_DIR` and validates the key upstream headers before configuration succeeds.
+- Xpod must not vendor a second RDF fact store behind this target. The next integration steps wire QLever planner/executor code to the Xpod physical backend ABI.
+
 ## Core concepts
 
 ### Terms
@@ -572,4 +578,3 @@ The protocol design is accepted when:
 - each surface states correctness constraints and fallback behavior;
 - there are explicit compliance tests for future implementation;
 - no section requires a second RDF fact store or query-time dynamic index creation.
-
