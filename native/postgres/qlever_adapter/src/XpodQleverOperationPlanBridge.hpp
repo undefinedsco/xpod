@@ -5,6 +5,7 @@
 #include "XpodQleverPlannerRequestContext.hpp"
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -1279,6 +1280,49 @@ inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithPlanner(
 namespace detail {
 
 #if XPOD_QLEVER_HAS_CANCELLATION_HANDLE
+inline bool isXpodCancellationRequested(
+    const xpod_rdf_cancellation* cancellation) noexcept {
+  return cancellation != nullptr && cancellation->is_cancelled != nullptr &&
+         cancellation->is_cancelled(cancellation->cancellation_user_data) != 0;
+}
+
+template <typename Handle>
+auto cancelQleverHandle(Handle& handle, int)
+    -> decltype(handle->cancel(), void()) {
+  if (handle != nullptr) {
+    handle->cancel();
+  }
+}
+
+template <typename Handle>
+void cancelQleverHandle(Handle&, long) {}
+
+template <typename Handle, typename = void>
+struct QleverCancellationHandleFactory {
+  static Handle make(const xpod_rdf_cancellation*) {
+    return Handle{};
+  }
+};
+
+template <typename Handle>
+struct QleverCancellationHandleFactory<
+    Handle,
+    std::void_t<typename Handle::element_type>> {
+  static Handle make(const xpod_rdf_cancellation* cancellation) {
+    auto handle = std::make_shared<typename Handle::element_type>();
+    if (isXpodCancellationRequested(cancellation)) {
+      cancelQleverHandle(handle, 0);
+    }
+    return handle;
+  }
+};
+
+inline ad_utility::SharedCancellationHandle makeQleverCancellationHandle(
+    const xpod_rdf_cancellation* cancellation) {
+  return QleverCancellationHandleFactory<
+      ad_utility::SharedCancellationHandle>::make(cancellation);
+}
+
 template <typename Planner, bool IsNativeContextConstructible =
                                 std::is_constructible<
                                     Planner,
@@ -1302,7 +1346,9 @@ struct NativeContextQueryPlannerBridge<Planner, true> {
     if (context == nullptr) {
       return std::nullopt;
     }
-    Planner planner(context, ad_utility::SharedCancellationHandle{});
+    Planner planner(
+        context, makeQleverCancellationHandle(
+                     context->cancellation));
     return planQleverParsedQueryWithPlanner(planner, parsed);
   }
 };
@@ -1327,7 +1373,7 @@ struct ContextQueryPlannerBridge<Planner, true> {
   static std::optional<BridgeQueryPlan> plan(
       QueryExecutionContext* qec,
       ParsedQuery& parsed) {
-    Planner planner(qec, ad_utility::SharedCancellationHandle{});
+    Planner planner(qec, makeQleverCancellationHandle(nullptr));
     return planQleverParsedQueryWithPlanner(planner, parsed);
   }
 };

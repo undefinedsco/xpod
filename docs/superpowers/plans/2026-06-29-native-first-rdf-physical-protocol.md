@@ -2260,3 +2260,48 @@ bun run check:rdf-protocol-abi
 ```
 
 Expected: PASS.
+
+### Task 47: Map Xpod cancellation into QLever planner cancellation handles
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverExecutorPlannerContextProvider.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerRequestContext.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerContextProvider.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerScanInput.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing planner-cancellation tests**
+
+Extend the native-context planner smoke so fake QLever only returns a plan when
+its constructor receives a non-null `SharedCancellationHandle` that reflects the
+Xpod request cancellation state. Extend the planner-context provider smoke so
+`request.cancellation` is part of the native planner request context.
+
+Expected: FAIL because the previous bridge passed `SharedCancellationHandle{}`
+to QLever planner constructors and only carried cancellation into lower physical
+requests.
+
+- [x] **Step 2: Make cancellation part of native planner request context**
+
+Add `PlannerRequestContext::cancellation`, populate it from
+`xpod_qlever_query_request`, and let scan input reuse the context field instead
+of re-reading the request struct.
+
+- [x] **Step 3: Create QLever cancellation handles at the native planner seam**
+
+Create a QLever `SharedCancellationHandle` when the handle type is shared-pointer
+like, and pre-cancel it when the Xpod cancellation callback is already set. Keep
+non-shared fake or older handle shapes on the previous default-construction
+fallback.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverExecutorPlannerContextProvider.test.ts tests/native/QleverOperationPlanBridge.test.ts --run
+```
+
+Expected: PASS.

@@ -2,6 +2,7 @@
 #define XPOD_QLEVER_PLANNER_CONTEXT_PROVIDER_HPP
 
 #include "XpodQleverPlannerRequestContext.hpp"
+#include "xpod_qlever_adapter.h"
 
 #include <memory>
 #include <type_traits>
@@ -67,11 +68,12 @@ class DefaultPlannerContextProvider final : public QueryPlannerContextProvider {
  public:
   explicit DefaultPlannerContextProvider(
       xpod::rdf::PhysicalBackend backend) noexcept
-      : planner_context_{backend, nullptr} {}
+      : planner_context_{backend, nullptr, nullptr} {}
 
   PlannerContextHandle current(
       const xpod_qlever_query_request& request) override {
     planner_context_.request = &request;
+    planner_context_.cancellation = request.cancellation;
     return {nullptr, &planner_context_};
   }
 
@@ -85,11 +87,12 @@ class DefaultPlannerContextProvider<Context, true, true> final
  public:
   explicit DefaultPlannerContextProvider(
       xpod::rdf::PhysicalBackend backend) noexcept
-      : planner_context_{backend, nullptr} {}
+      : planner_context_{backend, nullptr, nullptr} {}
 
   PlannerContextHandle current(
       const xpod_qlever_query_request& request) override {
     planner_context_.request = &request;
+    planner_context_.cancellation = request.cancellation;
     if constexpr (!HasXpodPlannerRequestContextSetter<Context>::value) {
       return {nullptr, &planner_context_};
     }

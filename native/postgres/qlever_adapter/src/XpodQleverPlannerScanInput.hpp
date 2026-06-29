@@ -16,8 +16,7 @@ inline ScanRequestInput makeScanRequestInput(
   ScanRequestInput input = {};
   input.snapshot =
       context.request == nullptr ? nullptr : &context.request->snapshot;
-  input.cancellation =
-      context.request == nullptr ? nullptr : context.request->cancellation;
+  input.cancellation = context.cancellation;
   input.permutation = permutation;
   input.pattern = pattern;
   if (context.request != nullptr) {

@@ -38,18 +38,24 @@ class QueryExecutionContext {};
 #include "xpod_qlever_adapter.h"
 #include "XpodQleverPlannerContextProvider.hpp"
 
+uint8_t always_cancelled(void*) { return 1; }
+
 int main() {
   xpod_rdf_backend_v1 raw_backend = {};
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
   xpod::rdf::PhysicalBackend physical(&raw_backend);
   auto provider = xpod::qlever::createQueryPlannerContextProvider(physical);
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.is_cancelled = always_cancelled;
   xpod_qlever_query_request request = {};
+  request.cancellation = &cancellation;
   auto context = provider->current(request);
   if (context.qec != nullptr) return 1;
   if (context.native == nullptr) return 2;
   if (context.native->request != &request) return 3;
   if (!context.native->backend.valid()) return 4;
+  if (context.native->cancellation != &cancellation) return 5;
   return 0;
 }
 `, 'utf8');

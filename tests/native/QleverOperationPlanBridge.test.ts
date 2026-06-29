@@ -43,7 +43,21 @@ class Permutation {
   Enum value_;
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), '#pragma once\nnamespace ad_utility { struct SharedCancellationHandle {}; }\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), `
+#pragma once
+#include <memory>
+namespace ad_utility {
+enum class CancellationState { MANUAL };
+class CancellationHandle {
+ public:
+  void cancel(CancellationState = CancellationState::MANUAL) { cancelled_ = true; }
+  bool isCancelled() const { return cancelled_; }
+ private:
+  bool cancelled_ = false;
+};
+using SharedCancellationHandle = std::shared_ptr<CancellationHandle>;
+}
+`, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\nclass QueryExecutionContext {};\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
@@ -111,11 +125,12 @@ class IndexScan final : public Operation {
 class QueryPlanner {
  public:
   QueryPlanner(const xpod::qlever::PlannerRequestContext* context,
-               ad_utility::SharedCancellationHandle)
-      : context_(context) {}
+               ad_utility::SharedCancellationHandle cancellation)
+      : context_(context), cancellation_(std::move(cancellation)) {}
   QueryExecutionTree createExecutionTree(ParsedQuery&, bool = false) {
     if (context_ == nullptr || !context_->backend.valid() ||
-        context_->request == nullptr ||
+        context_->request == nullptr || cancellation_ == nullptr ||
+        !cancellation_->isCancelled() ||
         std::string_view(context_->request->snapshot.facts_version.data,
                          context_->request->snapshot.facts_version.size) != "facts-v1") {
       return QueryExecutionTree();
@@ -124,6 +139,7 @@ class QueryPlanner {
   }
  private:
   const xpod::qlever::PlannerRequestContext* context_;
+  ad_utility::SharedCancellationHandle cancellation_;
 };
 `, 'utf8');
 
@@ -133,6 +149,8 @@ class QueryPlanner {
 #include <string_view>
 #include "XpodQleverOperationPlanBridge.hpp"
 
+uint8_t always_cancelled(void*) { return 1; }
+
 int main() {
   xpod_rdf_backend_v1 raw_backend = {};
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -140,9 +158,12 @@ int main() {
   xpod::rdf::PhysicalBackend physical(&raw_backend);
 
   static const char facts_version[] = "facts-v1";
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.is_cancelled = always_cancelled;
   xpod_qlever_query_request request = {};
   request.snapshot.facts_version = {facts_version, 8};
-  xpod::qlever::PlannerRequestContext native_context{physical, &request};
+  request.cancellation = &cancellation;
+  xpod::qlever::PlannerRequestContext native_context{physical, &request, request.cancellation};
   xpod::qlever::PlannerContextHandle handle{nullptr, &native_context};
 
   ParsedQuery parsed = ParsedQuery::minimalSelect();

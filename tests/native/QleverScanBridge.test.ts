@@ -160,7 +160,7 @@ int main() {
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
   xpod::rdf::PhysicalBackend physical(&raw_backend);
-  xpod::qlever::PlannerRequestContext context{physical, &query};
+  xpod::qlever::PlannerRequestContext context{physical, &query, query.cancellation};
 
   xpod::qlever::TripleKeyPattern pattern = {};
   pattern.has_predicate = true;
