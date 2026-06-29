@@ -131,7 +131,8 @@
     "publish:release": "node scripts/publish-release.cjs",
     "publish:release:dry": "node scripts/publish-release.cjs --dry-run",
     "test:setup": "dotenv -e .env.local -- bun scripts/setup-test-credentials.ts",
-    "version": "node scripts/sync-platform-package-version.cjs --stage"
+    "version": "node scripts/sync-platform-package-version.cjs --stage",
+    "check:rdf-protocol-abi": "node scripts/check-rdf-physical-protocol-abi.cjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

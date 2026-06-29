@@ -92,6 +92,16 @@ Reasoning:
 - QLever is C++, but PostgreSQL extension boundaries should not expose unstable C++ ABI. A narrow C ABI is the stable contract; C++ implements it internally.
 - TypeScript remains useful for tests, current fallback engine, and observability ingestion, but it must be a client/binding of the native protocol, not the source of truth.
 
+## Implementation artifacts
+
+The first native-first protocol artifacts are:
+
+- C ABI header: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
+- ABI validator: [`scripts/check-rdf-physical-protocol-abi.cjs`](../../../scripts/check-rdf-physical-protocol-abi.cjs)
+- Focused test: [`tests/native/RdfPhysicalBackendProtocolHeader.test.ts`](../../../tests/native/RdfPhysicalBackendProtocolHeader.test.ts)
+
+The header is the execution-boundary artifact. TypeScript only validates, normalizes, and reports this contract; it is not the hot-path protocol for the PostgreSQL extension path.
+
 ## Core concepts
 
 ### Terms
