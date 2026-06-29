@@ -33,7 +33,7 @@ describe('QLever executor factory', () => {
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), '#pragma once\nclass ParsedQuery {};\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), '#pragma once\n#include <string>\n#include \"parser/ParsedQuery.h\"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { (void)query; return {}; } };\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), '#pragma once\n#include <stdexcept>\n#include <string>\n#include \"parser/ParsedQuery.h\"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find(\"BROKEN\") != std::string::npos) throw std::runtime_error(\"synthetic parse failure\"); return {}; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
@@ -184,7 +184,7 @@ int main() {
   if (xpod_qlever_adapter_create(&config, &adapter) != XPOD_RDF_STATUS_OK) return 1;
 
   xpod_qlever_query_result result = {};
-  xpod_rdf_bytes query = {"SELECT * WHERE { ?s ?p ?o }", 27};
+  xpod_rdf_bytes query = {"SELECT  *  WHERE {\\n  ?s   ?p   ?o\\n}", 35};
   xpod_rdf_status status = xpod_qlever_adapter_query(adapter, query, &result);
   std::string_view body(result.result_json.data, result.result_json.size);
   std::string_view profile(result.profile_json.data, result.profile_json.size);
@@ -205,6 +205,14 @@ int main() {
   std::string_view error(result.error_message.data, result.error_message.size);
   if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 6;
   if (error.find("unsupported QLever bridge query") == std::string_view::npos) return 7;
+
+  xpod_qlever_adapter_release_result(adapter, &result);
+
+  xpod_rdf_bytes broken_query = {"BROKEN { ?s ?p ?o }", 20};
+  status = xpod_qlever_adapter_query(adapter, broken_query, &result);
+  error = std::string_view(result.error_message.data, result.error_message.size);
+  if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 13;
+  if (error.find("failed to parse QLever bridge query") == std::string_view::npos) return 14;
 
   xpod_qlever_adapter_destroy(adapter);
   return 0;

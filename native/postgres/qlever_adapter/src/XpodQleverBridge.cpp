@@ -20,7 +20,10 @@
 #include "libqlever/Qlever.h"
 #include "parser/SparqlParser.h"
 
+#include <cctype>
+#include <exception>
 #include <sstream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -35,6 +38,48 @@ std::string_view bytesView(xpod_rdf_bytes bytes) noexcept {
     return {};
   }
   return {bytes.data, bytes.size};
+}
+
+
+std::string collapseWhitespace(std::string_view input) {
+  std::string out;
+  out.reserve(input.size());
+  bool previous_was_space = false;
+  for (unsigned char c : input) {
+    if (std::isspace(c)) {
+      if (!previous_was_space && !out.empty()) {
+        out.push_back(' ');
+      }
+      previous_was_space = true;
+      continue;
+    }
+    out.push_back(static_cast<char>(c));
+    previous_was_space = false;
+  }
+  if (!out.empty() && out.back() == ' ') {
+    out.pop_back();
+  }
+  return out;
+}
+
+bool isSupportedMinimalScanQuery(std::string_view query) {
+  return collapseWhitespace(query) == "SELECT * WHERE { ?s ?p ?o }";
+}
+
+xpod_rdf_status parseBridgeQuery(std::string_view query,
+                                 std::string& error_storage) {
+  try {
+    auto parsed = SparqlParser::parseQuery(nullptr, std::string(query));
+    (void)parsed;
+    return XPOD_RDF_STATUS_OK;
+  } catch (const std::exception& error) {
+    error_storage = "failed to parse QLever bridge query: ";
+    error_storage += error.what();
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  } catch (...) {
+    error_storage = "failed to parse QLever bridge query";
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
 }
 
 void setResult(
@@ -179,7 +224,15 @@ xpod_rdf_status executeBridgeQuery(
   profile_storage.clear();
   error_storage.clear();
 
-  if (bytesView(sparql) != "SELECT * WHERE { ?s ?p ?o }") {
+  std::string_view query = bytesView(sparql);
+  xpod_rdf_status parse_status = parseBridgeQuery(query, error_storage);
+  if (parse_status != XPOD_RDF_STATUS_OK) {
+    setResult(out_result, parse_status, result_storage, profile_storage,
+              error_storage);
+    return parse_status;
+  }
+
+  if (!isSupportedMinimalScanQuery(query)) {
     error_storage = "unsupported QLever bridge query";
     setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
               profile_storage, error_storage);
