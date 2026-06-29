@@ -417,11 +417,13 @@ inline void applyBridgeRequestContext(
   }
   for (BridgeTextCandidateSource& source : plan.text_sources) {
     source.request.snapshot = snapshot;
+    source.request.graph_scope = graph_scope;
     source.request.source_scope = source_scope;
     source.request.access_scope = access_scope;
   }
   for (BridgeVectorCandidateSource& source : plan.vector_sources) {
     source.request.snapshot = snapshot;
+    source.request.graph_scope = graph_scope;
     source.request.source_scope = source_scope;
     source.request.access_scope = access_scope;
   }

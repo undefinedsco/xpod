@@ -2081,3 +2081,37 @@ bun test tests/native/QleverPlanRequestContext.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 42: Carry request graph scope into candidate-source protocol
+
+**Files:**
+- Modify: `tests/native/QleverPlanRequestContext.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing candidate-source graph-scope test**
+
+Extend the plan request-context smoke so text and vector candidate-source
+requests must carry the same exact graph scope as RDF scans.
+
+Expected: FAIL because `xpod_rdf_text_search_request` and
+`xpod_rdf_vector_search_request` had no `graph_scope` field.
+
+- [x] **Step 2: Add graph scope to text/vector candidate requests**
+
+Add `xpod_rdf_graph_scope graph_scope` to both candidate-source request structs
+and copy the request-level graph scope in `applyBridgeRequestContext(...)`.
+This keeps FTS/vector candidates on the same Solid graph-scope boundary as RDF
+permutation scans before QLever planner/executor performs fusion joins.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanRequestContext.test.ts --run
+```
+
+Expected: PASS.

@@ -89,9 +89,13 @@ int main() {
   if (!bytes_equal(plan.text_sources[0].request.snapshot.facts_version, "facts-v1")) return 7;
   if (!bytes_equal(plan.text_sources[0].request.source_scope.local_path_prefix, "/workspace/docs/")) return 8;
   if (plan.text_sources[0].request.access_scope != &access_scope) return 9;
+  if (plan.text_sources[0].request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 91;
+  if (plan.text_sources[0].request.graph_scope.exact_graph != 99) return 92;
   if (!bytes_equal(plan.vector_sources[0].request.snapshot.facts_version, "facts-v1")) return 10;
   if (!bytes_equal(plan.vector_sources[0].request.source_scope.local_path_prefix, "/workspace/docs/")) return 11;
   if (plan.vector_sources[0].request.access_scope != &access_scope) return 12;
+  if (plan.vector_sources[0].request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 121;
+  if (plan.vector_sources[0].request.graph_scope.exact_graph != 99) return 122;
   if (plan.text_sources[0].request.limit != 3) return 13;
   if (plan.vector_sources[0].request.vector != values) return 14;
   return 0;

@@ -288,6 +288,7 @@ typedef struct xpod_rdf_join_fanout_request {
 typedef struct xpod_rdf_text_search_request {
   xpod_rdf_snapshot snapshot;
   xpod_rdf_bytes query;
+  xpod_rdf_graph_scope graph_scope;
   xpod_rdf_source_scope source_scope;
   const xpod_rdf_access_scope* access_scope;
   uint64_t limit;
@@ -308,6 +309,7 @@ typedef struct xpod_rdf_vector_search_request {
   size_t dimensions;
   xpod_rdf_bytes model;
   xpod_rdf_vector_metric metric;
+  xpod_rdf_graph_scope graph_scope;
   xpod_rdf_source_scope source_scope;
   const xpod_rdf_access_scope* access_scope;
   uint64_t limit;
