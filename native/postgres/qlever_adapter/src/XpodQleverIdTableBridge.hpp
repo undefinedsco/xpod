@@ -1,6 +1,7 @@
 #ifndef XPOD_QLEVER_ID_TABLE_BRIDGE_HPP
 #define XPOD_QLEVER_ID_TABLE_BRIDGE_HPP
 
+#include "XpodQleverScanBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"
 #include "XpodQleverValueIdBridge.hpp"
 
@@ -10,6 +11,11 @@
 #include "engine/idTable/IdTable.h"
 
 namespace xpod::qlever {
+
+struct QleverIdTableResult {
+  xpod_rdf_status status;
+  IdTable table;
+};
 
 inline IdTable toQleverIdTable(const QleverIdRowBuffer& buffer) {
   IdTable table(buffer.width);
@@ -24,6 +30,18 @@ inline IdTable toQleverIdTable(const QleverIdRowBuffer& buffer) {
     table.push_back(row);
   }
   return table;
+}
+
+inline QleverIdTableResult executeScanToQleverIdTable(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input) {
+  QleverIdRowBuffer rows;
+  rows.width = 3;
+  xpod_rdf_status status = executeScanToQleverIds(backend, input, rows);
+  if (status != XPOD_RDF_STATUS_OK) {
+    return {status, IdTable(rows.width)};
+  }
+  return {XPOD_RDF_STATUS_OK, toQleverIdTable(rows)};
 }
 
 }  // namespace xpod::qlever
