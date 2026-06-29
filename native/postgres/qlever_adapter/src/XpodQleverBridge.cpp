@@ -263,6 +263,13 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
               error_storage);
     return XPOD_RDF_STATUS_OK;
   }
+  if (isBridgeCandidateRoot(plan.root.kind)) {
+    error_storage =
+        "QLever bridge query produced candidate rows, not SPARQL RDF rows";
+    setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
+              profile_storage, error_storage);
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
 
   BridgePhysicalPlan physical_plan = toBridgePhysicalPlan(plan);
   QleverResultWithStatus result = executeBridgeOperationPlan(

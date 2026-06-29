@@ -23,6 +23,8 @@ describe('QLever native physical operation bridge', () => {
     const source = readFileSync(bridgeSource, 'utf8');
 
     expect(source).toContain('executeBridgeOperationPlan');
+    expect(source).toContain('isBridgeCandidateRoot(plan.root.kind)');
+    expect(source).toContain('QLever bridge query produced candidate rows');
     expect(source).not.toContain('collectFilterSubjectKeys');
     expect(source).not.toContain('filterResultBySubject');
   });
