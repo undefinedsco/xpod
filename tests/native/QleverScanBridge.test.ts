@@ -392,6 +392,14 @@ int main() {
   if (rows.width != 2) return 2;
   if (rows.rows.size() != 2) return 3;
   if (rows.rows[0] != 1010 || rows.rows[1] != 1030) return 4;
+
+  input.needed_slots = 0;
+  xpod::qlever::QleverIdRowBuffer zero_width_rows;
+  status = xpod::qlever::executeScanToQleverIds(physical, input, zero_width_rows);
+  if (status != XPOD_RDF_STATUS_OK) return 5;
+  if (zero_width_rows.width != 0) return 6;
+  if (zero_width_rows.row_count != 1) return 7;
+  if (!zero_width_rows.rows.empty()) return 8;
   return 0;
 }
 `, 'utf8');

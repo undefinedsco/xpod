@@ -28,7 +28,8 @@ struct ScanRequestInput {
   uint64_t limit = 0;
   uint64_t offset = 0;
   uint32_t batch_size = 0;
-  uint32_t needed_slots = 0;
+  uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+                          XPOD_RDF_SLOT_OBJECT;
 };
 
 inline xpod_rdf_quad_pattern toXpodQuadPattern(

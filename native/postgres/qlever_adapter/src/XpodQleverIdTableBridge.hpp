@@ -21,6 +21,12 @@ inline IdTable toQleverIdTable(const QleverIdRowBuffer& buffer) {
   IdTable table(buffer.width);
   std::vector<Id> row;
   row.reserve(buffer.width);
+  if (buffer.width == 0) {
+    for (size_t i = 0; i < buffer.row_count; ++i) {
+      table.push_back(row);
+    }
+    return table;
+  }
   for (size_t offset = 0; offset < buffer.rows.size();
        offset += buffer.width) {
     row.clear();

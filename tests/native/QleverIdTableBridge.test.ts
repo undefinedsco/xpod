@@ -188,6 +188,11 @@ int main() {
   if (result.table.numColumns() != 2 || result.table.numRows() != 1) return 2;
   if (result.table(0, 0).getBits() != 1020) return 3;
   if (result.table(0, 1).getBits() != 1010) return 4;
+
+  input.needed_slots = 0;
+  auto zero_width = xpod::qlever::executeScanToQleverIdTable(physical, input);
+  if (zero_width.status != XPOD_RDF_STATUS_OK) return 5;
+  if (zero_width.table.numColumns() != 0 || zero_width.table.numRows() != 1) return 6;
   return 0;
 }
 `, 'utf8');

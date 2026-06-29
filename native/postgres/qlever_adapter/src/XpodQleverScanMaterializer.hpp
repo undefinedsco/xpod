@@ -13,11 +13,13 @@ namespace xpod::qlever {
 
 struct ScanRowBuffer {
   uint32_t width = 3;
+  size_t row_count = 0;
   std::vector<xpod_rdf_term_key> rows;
 };
 
 struct QleverIdRowBuffer {
   uint32_t width = 3;
+  size_t row_count = 0;
   std::vector<uint64_t> rows;
 };
 
@@ -68,11 +70,7 @@ inline uint32_t slotMask(char slot) noexcept {
 }
 
 inline uint32_t normalizeNeededSlots(uint32_t needed_slots) noexcept {
-  if (needed_slots != 0) {
-    return needed_slots;
-  }
-  return XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
-         XPOD_RDF_SLOT_OBJECT;
+  return needed_slots;
 }
 
 inline uint32_t countNeededSlots(uint32_t needed_slots) noexcept {
@@ -98,6 +96,7 @@ inline void appendBatch(
   const char* slots = permutationSlots(permutation);
   uint32_t normalized_needed_slots = normalizeNeededSlots(needed_slots);
   buffer.width = countNeededSlots(normalized_needed_slots);
+  buffer.row_count += batch.row_count;
   buffer.rows.reserve(buffer.rows.size() + batch.row_count * buffer.width);
   for (size_t i = 0; i < batch.row_count; ++i) {
     const xpod_rdf_quad_key& row = batch.rows[i];
@@ -114,7 +113,11 @@ inline void appendBatch(
     ScanRowBuffer& buffer,
     Permutation::Enum permutation,
     const xpod_rdf_quad_batch& batch) {
-  appendBatch(buffer, permutation, 0, batch);
+  appendBatch(
+      buffer, permutation,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+          XPOD_RDF_SLOT_OBJECT,
+      batch);
 }
 
 inline xpod_rdf_status appendEncodedValue(
@@ -139,6 +142,7 @@ inline xpod_rdf_status appendEncodedBatch(
   const char* slots = permutationSlots(permutation);
   uint32_t normalized_needed_slots = normalizeNeededSlots(needed_slots);
   buffer.width = countNeededSlots(normalized_needed_slots);
+  buffer.row_count += batch.row_count;
   buffer.rows.reserve(buffer.rows.size() + batch.row_count * buffer.width);
   for (size_t i = 0; i < batch.row_count; ++i) {
     const xpod_rdf_quad_key& row = batch.rows[i];
@@ -161,7 +165,11 @@ inline xpod_rdf_status appendEncodedBatch(
     const xpod::rdf::PhysicalBackend& backend,
     Permutation::Enum permutation,
     const xpod_rdf_quad_batch& batch) {
-  return appendEncodedBatch(buffer, backend, permutation, 0, batch);
+  return appendEncodedBatch(
+      buffer, backend, permutation,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
+          XPOD_RDF_SLOT_OBJECT,
+      batch);
 }
 
 }  // namespace xpod::qlever
