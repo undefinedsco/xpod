@@ -40,10 +40,23 @@ class QueryExecutionContext {};
 
 uint8_t always_cancelled(void*) { return 1; }
 
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations =
+      XPOD_RDF_PERM_CAP_SPOG | XPOD_RDF_PERM_CAP_POSG;
+  out_capabilities->features =
+      XPOD_RDF_BACKEND_FEATURE_SLOT_RANGES |
+      XPOD_RDF_BACKEND_FEATURE_ACCESS_SCOPE;
+  out_capabilities->max_batch_size = 2048;
+  return XPOD_RDF_STATUS_OK;
+}
+
 int main() {
   xpod_rdf_backend_v1 raw_backend = {};
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.get_capabilities = get_capabilities;
   xpod::rdf::PhysicalBackend physical(&raw_backend);
   auto provider = xpod::qlever::createQueryPlannerContextProvider(physical);
   xpod_rdf_cancellation cancellation = {};
@@ -56,6 +69,10 @@ int main() {
   if (context.native->request != &request) return 3;
   if (!context.native->backend.valid()) return 4;
   if (context.native->cancellation != &cancellation) return 5;
+  if (context.native->capabilities_status != XPOD_RDF_STATUS_OK) return 6;
+  if ((context.native->capabilities.supported_permutations & XPOD_RDF_PERM_CAP_POSG) == 0) return 7;
+  if ((context.native->capabilities.features & XPOD_RDF_BACKEND_FEATURE_SLOT_RANGES) == 0) return 8;
+  if (context.native->capabilities.max_batch_size != 2048) return 9;
   return 0;
 }
 `, 'utf8');

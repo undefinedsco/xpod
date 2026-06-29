@@ -2414,3 +2414,33 @@ bun run check:rdf-protocol-abi
 ```
 
 Expected: PASS.
+
+### Task 51: Carry backend capabilities into planner request context
+
+**Files:**
+- Modify: `tests/native/QleverExecutorPlannerContextProvider.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerRequestContext.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerContextProvider.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing native planner-context test**
+
+Extend the planner context provider smoke so `provider->current(request)` must expose a per-query snapshot of `xpod_rdf_backend_capabilities` and the status returned by `PhysicalBackend::getCapabilities(...)`.
+
+Expected: FAIL because `PlannerRequestContext` only carried backend, request, and cancellation pointers.
+
+- [x] **Step 2: Add capability snapshot fields to the native planner context**
+
+Add `PlannerRequestContext::capabilities` and `PlannerRequestContext::capabilities_status`. Refresh them when the provider binds a new `xpod_qlever_query_request`.
+
+This is a lower physical-protocol handoff to QLever planner construction. It does not add planner policy or duplicate QLever operators in Xpod.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverExecutorPlannerContextProvider.test.ts --run
+```
+
+Expected: PASS.

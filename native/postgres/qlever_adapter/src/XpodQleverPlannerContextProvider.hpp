@@ -22,6 +22,16 @@ class QueryPlannerContextProvider {
 
 namespace detail {
 
+inline void refreshPlannerRequestContext(
+    PlannerRequestContext& context,
+    const xpod_qlever_query_request& request) noexcept {
+  context.request = &request;
+  context.cancellation = request.cancellation;
+  context.capabilities = {};
+  context.capabilities_status =
+      context.backend.getCapabilities(context.capabilities);
+}
+
 template <typename T, typename = void>
 struct IsComplete : std::false_type {};
 
@@ -72,8 +82,7 @@ class DefaultPlannerContextProvider final : public QueryPlannerContextProvider {
 
   PlannerContextHandle current(
       const xpod_qlever_query_request& request) override {
-    planner_context_.request = &request;
-    planner_context_.cancellation = request.cancellation;
+    refreshPlannerRequestContext(planner_context_, request);
     return {nullptr, &planner_context_};
   }
 
@@ -91,8 +100,7 @@ class DefaultPlannerContextProvider<Context, true, true> final
 
   PlannerContextHandle current(
       const xpod_qlever_query_request& request) override {
-    planner_context_.request = &request;
-    planner_context_.cancellation = request.cancellation;
+    refreshPlannerRequestContext(planner_context_, request);
     if constexpr (!HasXpodPlannerRequestContextSetter<Context>::value) {
       return {nullptr, &planner_context_};
     }

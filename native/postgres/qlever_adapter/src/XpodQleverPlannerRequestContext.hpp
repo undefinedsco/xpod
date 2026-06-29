@@ -13,6 +13,8 @@ struct PlannerRequestContext {
   xpod::rdf::PhysicalBackend backend;
   const xpod_qlever_query_request* request = nullptr;
   const xpod_rdf_cancellation* cancellation = nullptr;
+  xpod_rdf_backend_capabilities capabilities = {};
+  xpod_rdf_status capabilities_status = XPOD_RDF_STATUS_UNSUPPORTED;
 };
 
 struct PlannerContextHandle {
