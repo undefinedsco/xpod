@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 5
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 6
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -236,6 +236,39 @@ typedef xpod_rdf_status (*xpod_rdf_term_tuple_batch_callback)(
     void* callback_user_data,
     const xpod_rdf_term_tuple_batch* batch);
 
+typedef enum xpod_rdf_term_collation {
+  XPOD_RDF_TERM_COLLATION_UNKNOWN = 0,
+  XPOD_RDF_TERM_COLLATION_BYTEWISE = 1,
+  XPOD_RDF_TERM_COLLATION_DATABASE = 2,
+  XPOD_RDF_TERM_COLLATION_LOCALE = 3
+} xpod_rdf_term_collation;
+
+typedef struct xpod_rdf_term_range {
+  xpod_rdf_term_key lower;
+  xpod_rdf_term_key upper;
+  uint8_t has_lower;
+  uint8_t has_upper;
+  uint8_t lower_inclusive;
+  uint8_t upper_exclusive;
+} xpod_rdf_term_range;
+
+typedef struct xpod_rdf_term_range_batch {
+  const xpod_rdf_term_range* ranges;
+  size_t range_count;
+  xpod_rdf_term_collation collation;
+} xpod_rdf_term_range_batch;
+
+typedef xpod_rdf_status (*xpod_rdf_term_range_batch_callback)(
+    void* callback_user_data,
+    const xpod_rdf_term_range_batch* batch);
+
+typedef struct xpod_rdf_prefix_range_request {
+  xpod_rdf_snapshot snapshot;
+  xpod_rdf_bytes prefix;
+  xpod_rdf_term_kind kind;
+  uint8_t has_kind;
+} xpod_rdf_prefix_range_request;
+
 typedef struct xpod_rdf_join_fanout_request {
   xpod_rdf_snapshot snapshot;
   const xpod_rdf_quad_pattern* patterns;
@@ -389,6 +422,12 @@ typedef xpod_rdf_status (*xpod_rdf_resolve_terms_fn)(
     xpod_rdf_term* out_terms,
     xpod_rdf_status* out_statuses);
 
+typedef xpod_rdf_status (*xpod_rdf_prefix_range_fn)(
+    void* backend_user_data,
+    const xpod_rdf_prefix_range_request* request,
+    xpod_rdf_term_range_batch_callback on_batch,
+    void* callback_user_data);
+
 typedef xpod_rdf_status (*xpod_rdf_scan_permutation_fn)(
     void* backend_user_data,
     const xpod_rdf_scan_request* request,
@@ -493,6 +532,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_resolve_terms_fn resolve_terms;
   xpod_rdf_estimate_source_scope_fn estimate_source_scope;
   xpod_rdf_qlever_term_ordering qlever_term_ordering;
+  xpod_rdf_prefix_range_fn prefix_range;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus

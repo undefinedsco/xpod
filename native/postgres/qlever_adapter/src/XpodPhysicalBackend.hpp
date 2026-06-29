@@ -148,6 +148,43 @@ class PhysicalBackend {
         out_statuses);
   }
 
+  xpod_rdf_status prefixRange(
+      const xpod_rdf_prefix_range_request& request,
+      xpod_rdf_term_range_batch_callback on_batch,
+      void* callback_user_data,
+      xpod_rdf_term_collation& out_collation) const noexcept {
+    if (!valid() ||
+        !hasField(offsetof(xpod_rdf_backend_v1, prefix_range),
+                  sizeof(backend_->prefix_range)) ||
+        backend_->prefix_range == nullptr) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    out_collation = XPOD_RDF_TERM_COLLATION_UNKNOWN;
+
+    struct CallbackState {
+      xpod_rdf_term_range_batch_callback downstream;
+      void* downstream_user_data;
+      xpod_rdf_term_collation* collation;
+    };
+
+    CallbackState state{on_batch, callback_user_data, &out_collation};
+    auto forwarding_callback = [](
+        void* user_data,
+        const xpod_rdf_term_range_batch* batch) -> xpod_rdf_status {
+      CallbackState* state = static_cast<CallbackState*>(user_data);
+      if (batch != nullptr && state->collation != nullptr) {
+        *state->collation = batch->collation;
+      }
+      if (state->downstream == nullptr) {
+        return XPOD_RDF_STATUS_OK;
+      }
+      return state->downstream(state->downstream_user_data, batch);
+    };
+
+    return backend_->prefix_range(
+        backend_->backend_user_data, &request, forwarding_callback, &state);
+  }
+
   xpod_rdf_status scanPermutation(
       const xpod_rdf_scan_request& request,
       xpod_rdf_quad_batch_callback on_batch,

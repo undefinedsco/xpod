@@ -28,6 +28,7 @@ describe('QLever adapter physical backend facade', () => {
       const binary = path.join(root, 'check');
       await writeFile(source, `
 #include "XpodPhysicalBackend.hpp"
+#include <utility>
 
 static xpod_rdf_status lookup_one(
     void* backend_user_data,
@@ -73,6 +74,37 @@ static xpod_rdf_status resolve_terms(
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status prefix_range(
+    void* backend_user_data,
+    const xpod_rdf_prefix_range_request* request,
+    xpod_rdf_term_range_batch_callback on_batch,
+    void* callback_user_data) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 100000;
+  if (request->prefix.size != 5 || !request->has_kind ||
+      request->kind != XPOD_RDF_TERM_IRI) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_term_range ranges[2] = {};
+  ranges[0].lower = 10;
+  ranges[0].upper = 20;
+  ranges[0].has_lower = 1;
+  ranges[0].has_upper = 1;
+  ranges[0].lower_inclusive = 1;
+  ranges[0].upper_exclusive = 1;
+  ranges[1].lower = 30;
+  ranges[1].upper = 40;
+  ranges[1].has_lower = 1;
+  ranges[1].has_upper = 1;
+  ranges[1].lower_inclusive = 1;
+  ranges[1].upper_exclusive = 1;
+  xpod_rdf_term_range_batch batch = {};
+  batch.ranges = ranges;
+  batch.range_count = 2;
+  batch.collation = XPOD_RDF_TERM_COLLATION_BYTEWISE;
+  return on_batch(callback_user_data, &batch);
+}
+
 static xpod_rdf_status scan(
     void* backend_user_data,
     const xpod_rdf_scan_request* request,
@@ -109,6 +141,7 @@ int main() {
   backend.backend_user_data = &calls;
   backend.lookup_terms = lookup_terms;
   backend.resolve_terms = resolve_terms;
+  backend.prefix_range = prefix_range;
   backend.scan_permutation = scan;
   backend.estimate_source_scope = estimate_source_scope;
 
@@ -131,6 +164,27 @@ int main() {
   if (physical.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_OK) return 5;
   if (resolved[0].value.size != 4 || resolved[1].value.size != 2) return 6;
 
+  xpod_rdf_prefix_range_request prefix_request = {};
+  prefix_request.prefix = {"urn:x", 5};
+  prefix_request.has_kind = 1;
+  prefix_request.kind = XPOD_RDF_TERM_IRI;
+  xpod_rdf_term_range prefix_ranges[4] = {};
+  size_t prefix_range_count = 0;
+  xpod_rdf_term_collation prefix_collation = XPOD_RDF_TERM_COLLATION_UNKNOWN;
+  auto on_prefix_ranges = [](void* user_data, const xpod_rdf_term_range_batch* batch) -> xpod_rdf_status {
+    auto* state = static_cast<std::pair<xpod_rdf_term_range*, size_t*>*>(user_data);
+    for (size_t i = 0; i < batch->range_count; ++i) {
+      state->first[*state->second + i] = batch->ranges[i];
+    }
+    *state->second += batch->range_count;
+    return XPOD_RDF_STATUS_OK;
+  };
+  std::pair<xpod_rdf_term_range*, size_t*> prefix_state{prefix_ranges, &prefix_range_count};
+  if (physical.prefixRange(prefix_request, on_prefix_ranges, &prefix_state, prefix_collation) != XPOD_RDF_STATUS_OK) return 18;
+  if (prefix_range_count != 2) return 19;
+  if (prefix_ranges[0].lower != 10 || prefix_ranges[1].upper != 40) return 20;
+  if (prefix_collation != XPOD_RDF_TERM_COLLATION_BYTEWISE) return 21;
+
   xpod_rdf_scan_request request = {};
   if (physical.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_OK) return 7;
   xpod_rdf_source_scope source_scope = {};
@@ -138,7 +192,7 @@ int main() {
   xpod_rdf_estimate source_estimate = {};
   if (physical.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_OK) return 8;
   if (source_estimate.rows != 12 || source_estimate.confidence != XPOD_RDF_ESTIMATE_FRESH) return 15;
-  if (calls != 10111) return 16;
+  if (calls != 110111) return 16;
 
   xpod_rdf_backend_v1 truncated = {};
   truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -149,7 +203,7 @@ int main() {
   xpod_rdf_term_key lookup_key = 0;
   if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
   if (lookup_key != 0) return 13;
-  if (calls != 10111) return 14;
+  if (calls != 110111) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -159,6 +213,7 @@ int main() {
   if (unsupported.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 10;
   if (unsupported.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
   if (unsupported.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_UNSUPPORTED) return 17;
+  if (unsupported.prefixRange(prefix_request, on_prefix_ranges, &prefix_state, prefix_collation) != XPOD_RDF_STATUS_UNSUPPORTED) return 22;
 
   return 0;
 }

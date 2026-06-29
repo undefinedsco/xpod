@@ -102,6 +102,7 @@ The first native-first protocol artifacts are:
 - QLever adapter internal C++ backend facade: [`native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`](../../../native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp)
 - QLever id codec ABI: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
 - Batch TermDictionary lookup/resolve ABI: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
+- TermDictionary prefix range ABI: `xpod_rdf_prefix_range_request` / `xpod_rdf_prefix_range_fn` in [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h), surfaced through [`native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`](../../../native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp)
 - QLever adapter upstream include bridge: [`native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`](../../../native/postgres/qlever_adapter/src/XpodQleverBridge.cpp)
 - QLever ValueId bridge: [`native/postgres/qlever_adapter/src/XpodQleverValueIdBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverValueIdBridge.hpp)
 - QLever term-order contract: `xpod_rdf_qlever_term_ordering` in [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h), consumed by [`native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp`](../../../native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp)
@@ -237,6 +238,7 @@ Required behavior:
 
 - Batch lookup/resolve is mandatory. Per-row dictionary calls are not acceptable for broad joins.
 - `prefixRange` is for vocabulary/IRI/literal lexical range planning. It is not a substitute for structural path scope.
+- The native ABI returns zero or more `TermRange` batches and a collation marker. Multiple ranges are allowed because long-literal/digest storage, kind partitions, or database-specific dictionaries may not make every prefix a single contiguous term-key interval.
 - The backend must expose whether term collation is bytewise, locale-aware, or database-default. Graph-prefix and path-prefix filters must not depend on unsafe collation.
 
 ### 2. PermutationAccess

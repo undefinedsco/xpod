@@ -1565,3 +1565,46 @@ bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/Qlev
 ```
 
 Expected: PASS.
+
+### Task 29: TermDictionary prefix range native ABI
+
+**Files:**
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `tests/native/QleverPhysicalBackendFacade.test.ts`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing protocol and facade tests**
+
+Add protocol-header expectations for `xpod_rdf_prefix_range_request` and
+`xpod_rdf_prefix_range_fn`. Extend the physical-backend facade smoke with a
+prefix request for IRI terms, a two-range callback response, and an unsupported
+backend check.
+
+Expected: FAIL because the public ABI has no prefix range surface and the C++
+facade has no wrapper.
+
+- [x] **Step 2: Add native prefix range structs and callback**
+
+Add `xpod_rdf_term_range`, `xpod_rdf_term_range_batch`,
+`xpod_rdf_prefix_range_request`, `xpod_rdf_term_collation`, and
+`xpod_rdf_prefix_range_fn` to the physical backend ABI. The result is callback
+based because a lexical prefix may map to multiple term-key ranges.
+
+- [x] **Step 3: Expose prefix range through `PhysicalBackend`**
+
+Add `PhysicalBackend::prefixRange(...)` that checks the optional ABI field,
+forwards range batches, and captures the backend collation marker. Missing
+callbacks fail closed as `XPOD_RDF_STATUS_UNSUPPORTED`.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/QleverPhysicalBackendFacade.test.ts --run
+```
+
+Expected: PASS.
