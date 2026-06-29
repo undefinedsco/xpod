@@ -16,9 +16,11 @@ struct TripleKeyPattern {
   bool has_subject = false;
   bool has_predicate = false;
   bool has_object = false;
+  bool has_graph = false;
   xpod_rdf_term_key subject = 0;
   xpod_rdf_term_key predicate = 0;
   xpod_rdf_term_key object = 0;
+  xpod_rdf_term_key graph = 0;
 };
 
 struct ScanRequestInput {
@@ -41,10 +43,11 @@ inline xpod_rdf_quad_pattern toXpodQuadPattern(
   out.has_subject = pattern.has_subject ? 1 : 0;
   out.has_predicate = pattern.has_predicate ? 1 : 0;
   out.has_object = pattern.has_object ? 1 : 0;
-  out.has_graph = 0;
+  out.has_graph = pattern.has_graph ? 1 : 0;
   out.subject = pattern.subject;
   out.predicate = pattern.predicate;
   out.object = pattern.object;
+  out.graph = pattern.graph;
   return out;
 }
 

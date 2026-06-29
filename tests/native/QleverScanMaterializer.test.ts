@@ -57,6 +57,17 @@ int main() {
   xpod::qlever::ScanRowBuffer ops;
   xpod::qlever::appendBatch(ops, Permutation::Enum::OPS, batch);
   if (ops.rows[0] != 30 || ops.rows[1] != 20 || ops.rows[2] != 10) return 5;
+
+  xpod::qlever::ScanRowBuffer with_graph;
+  xpod::qlever::appendBatch(
+      with_graph,
+      Permutation::Enum::SPO,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH,
+      batch);
+  if (with_graph.width != 2) return 6;
+  if (with_graph.rows.size() != 4) return 7;
+  if (with_graph.rows[0] != 10 || with_graph.rows[1] != 40) return 8;
+  if (with_graph.rows[2] != 11 || with_graph.rows[3] != 41) return 9;
   return 0;
 }
 `, 'utf8');
@@ -126,6 +137,18 @@ int main() {
   if (buffer.width != 3) return 2;
   if (buffer.rows.size() != 3) return 3;
   if (buffer.rows[0] != 1010 || buffer.rows[1] != 1030 || buffer.rows[2] != 1020) return 4;
+
+  xpod::qlever::QleverIdRowBuffer graph_buffer;
+  status = xpod::qlever::appendEncodedBatch(
+      graph_buffer,
+      physical,
+      Permutation::Enum::SPO,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH,
+      batch);
+  if (status != XPOD_RDF_STATUS_OK) return 5;
+  if (graph_buffer.width != 2) return 6;
+  if (graph_buffer.rows.size() != 2) return 7;
+  if (graph_buffer.rows[0] != 1010 || graph_buffer.rows[1] != 1040) return 8;
   return 0;
 }
 `, 'utf8');

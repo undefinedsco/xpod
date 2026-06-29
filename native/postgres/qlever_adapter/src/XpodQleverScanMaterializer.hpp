@@ -33,6 +33,8 @@ inline xpod_rdf_term_key slotValue(
       return row.predicate;
     case 'O':
       return row.object;
+    case 'G':
+      return row.graph;
     default:
       return 0;
   }
@@ -41,19 +43,19 @@ inline xpod_rdf_term_key slotValue(
 inline const char* permutationSlots(Permutation::Enum permutation) noexcept {
   switch (permutation) {
     case Permutation::Enum::PSO:
-      return "PSO";
+      return "PSOG";
     case Permutation::Enum::POS:
-      return "POS";
+      return "POSG";
     case Permutation::Enum::SPO:
-      return "SPO";
+      return "SPOG";
     case Permutation::Enum::SOP:
-      return "SOP";
+      return "SOPG";
     case Permutation::Enum::OPS:
-      return "OPS";
+      return "OPSG";
     case Permutation::Enum::OSP:
-      return "OSP";
+      return "OSPG";
   }
-  return "SPO";
+  return "SPOG";
 }
 
 inline uint32_t slotMask(char slot) noexcept {
@@ -64,6 +66,8 @@ inline uint32_t slotMask(char slot) noexcept {
       return XPOD_RDF_SLOT_PREDICATE;
     case 'O':
       return XPOD_RDF_SLOT_OBJECT;
+    case 'G':
+      return XPOD_RDF_SLOT_GRAPH;
     default:
       return 0;
   }
@@ -80,6 +84,7 @@ inline uint32_t countNeededSlots(uint32_t needed_slots) noexcept {
            XPOD_RDF_SLOT_SUBJECT,
            XPOD_RDF_SLOT_PREDICATE,
            XPOD_RDF_SLOT_OBJECT,
+           XPOD_RDF_SLOT_GRAPH,
        }) {
     if ((normalized & slot) != 0) {
       ++count;
@@ -100,11 +105,11 @@ inline void appendBatch(
   buffer.rows.reserve(buffer.rows.size() + batch.row_count * buffer.width);
   for (size_t i = 0; i < batch.row_count; ++i) {
     const xpod_rdf_quad_key& row = batch.rows[i];
-    for (uint32_t column = 0; column < 3; ++column) {
-      if ((normalized_needed_slots & slotMask(slots[column])) == 0) {
+    for (const char* slot = slots; *slot != '\0'; ++slot) {
+      if ((normalized_needed_slots & slotMask(*slot)) == 0) {
         continue;
       }
-      buffer.rows.push_back(slotValue(row, slots[column]));
+      buffer.rows.push_back(slotValue(row, *slot));
     }
   }
 }
@@ -146,12 +151,12 @@ inline xpod_rdf_status appendEncodedBatch(
   buffer.rows.reserve(buffer.rows.size() + batch.row_count * buffer.width);
   for (size_t i = 0; i < batch.row_count; ++i) {
     const xpod_rdf_quad_key& row = batch.rows[i];
-    for (uint32_t column = 0; column < 3; ++column) {
-      if ((normalized_needed_slots & slotMask(slots[column])) == 0) {
+    for (const char* slot = slots; *slot != '\0'; ++slot) {
+      if ((normalized_needed_slots & slotMask(*slot)) == 0) {
         continue;
       }
       xpod_rdf_status status =
-          appendEncodedValue(buffer, backend, slotValue(row, slots[column]));
+          appendEncodedValue(buffer, backend, slotValue(row, *slot));
       if (status != XPOD_RDF_STATUS_OK) {
         return status;
       }

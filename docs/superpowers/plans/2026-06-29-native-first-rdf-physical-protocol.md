@@ -1811,3 +1811,47 @@ bun test tests/native/QleverOperationPlanBridge.test.ts --run -t "builds a bridg
 ```
 
 Expected: PASS.
+
+### Task 35: Carry graph slots through the physical scan primitive
+
+**Files:**
+- Modify: `tests/native/QleverScanBridge.test.ts`
+- Modify: `tests/native/QleverScanMaterializer.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverScanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverScanMaterializer.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing scan-bridge and materializer tests**
+
+Extend the scan bridge smoke so `TripleKeyPattern` can carry an exact graph
+term key and `XPOD_RDF_SLOT_GRAPH` in `needed_slots`.
+
+Extend the scan materializer smoke so a quad batch can materialize graph as a
+requested fourth slot, both as raw term keys and encoded QLever id bits.
+
+Expected: FAIL because the bridge only carried S/P/O and the materializer
+iterated three-slot QLever permutation strings.
+
+- [x] **Step 2: Add graph to the scan request primitive**
+
+Add `has_graph` / `graph` to `TripleKeyPattern` and copy them into
+`xpod_rdf_quad_pattern`. This keeps graph filtering at the physical scan
+boundary instead of requiring graph-aware operator glue.
+
+- [x] **Step 3: Materialize graph as part of the native permutation row**
+
+Treat QLever triple permutations as Xpod quad permutations with graph appended
+(`SPOG`, `POSG`, etc.). `XPOD_RDF_SLOT_GRAPH` is emitted only when requested by
+`needed_slots`, so existing triple-shaped scans keep their three-column result.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverScanBridge.test.ts --run -t "builds an Xpod physical scan request"
+bun test tests/native/QleverScanMaterializer.test.ts --run -t "materializes Xpod quad batches"
+bun test tests/native/QleverScanMaterializer.test.ts --run -t "materializes scan rows as QLever id bits"
+```
+
+Expected: PASS.

@@ -44,6 +44,8 @@ int main() {
   pattern.subject = 11;
   pattern.has_object = true;
   pattern.object = 33;
+  pattern.has_graph = true;
+  pattern.graph = 44;
 
   xpod::qlever::ScanRequestInput input = {};
   input.snapshot = &snapshot;
@@ -52,7 +54,7 @@ int main() {
   input.limit = 100;
   input.offset = 7;
   input.batch_size = 64;
-  input.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  input.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT | XPOD_RDF_SLOT_GRAPH;
   xpod_rdf_slot_term_range subject_range = {};
   subject_range.slot = XPOD_RDF_SLOT_SUBJECT;
   subject_range.range.lower = 1000;
@@ -70,12 +72,12 @@ int main() {
   if (!request.pattern.has_subject || request.pattern.subject != 11) return 3;
   if (request.pattern.has_predicate) return 4;
   if (!request.pattern.has_object || request.pattern.object != 33) return 5;
-  if (request.pattern.has_graph) return 6;
+  if (!request.pattern.has_graph || request.pattern.graph != 44) return 6;
   if (request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_ALL) return 7;
   if (request.order.kind != XPOD_RDF_SCAN_ORDER_NATIVE) return 8;
   if (request.limit != 100 || request.offset != 7) return 9;
   if (request.batch_size != 64) return 10;
-  if (request.needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return 11;
+  if (request.needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT | XPOD_RDF_SLOT_GRAPH)) return 11;
   if (request.slot_range_count != 1) return 12;
   if (request.slot_ranges == nullptr) return 13;
   if (request.slot_ranges[0].slot != XPOD_RDF_SLOT_SUBJECT) return 14;
