@@ -53,6 +53,16 @@ int main() {
   input.offset = 7;
   input.batch_size = 64;
   input.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  xpod_rdf_slot_term_range subject_range = {};
+  subject_range.slot = XPOD_RDF_SLOT_SUBJECT;
+  subject_range.range.lower = 1000;
+  subject_range.range.upper = 2000;
+  subject_range.range.has_lower = 1;
+  subject_range.range.has_upper = 1;
+  subject_range.range.lower_inclusive = 1;
+  subject_range.range.upper_exclusive = 1;
+  subject_range.collation = XPOD_RDF_TERM_COLLATION_BYTEWISE;
+  input.slot_ranges.push_back(subject_range);
 
   xpod_rdf_scan_request request = xpod::qlever::makeScanRequest(input);
   if (request.snapshot.snapshot_token.data != snapshot.snapshot_token.data) return 1;
@@ -66,6 +76,12 @@ int main() {
   if (request.limit != 100 || request.offset != 7) return 9;
   if (request.batch_size != 64) return 10;
   if (request.needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return 11;
+  if (request.slot_range_count != 1) return 12;
+  if (request.slot_ranges == nullptr) return 13;
+  if (request.slot_ranges[0].slot != XPOD_RDF_SLOT_SUBJECT) return 14;
+  if (request.slot_ranges[0].range.lower != 1000 ||
+      request.slot_ranges[0].range.upper != 2000) return 15;
+  if (request.slot_ranges[0].collation != XPOD_RDF_TERM_COLLATION_BYTEWISE) return 16;
   return 0;
 }
 `, 'utf8');

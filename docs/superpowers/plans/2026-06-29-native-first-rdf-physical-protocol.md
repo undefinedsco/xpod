@@ -1608,3 +1608,47 @@ bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/Qlev
 ```
 
 Expected: PASS.
+
+### Task 30: Slot term-range constraints in native scan requests
+
+**Files:**
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `tests/native/QleverScanBridge.test.ts`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverScanBridge.hpp`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing protocol and scan bridge tests**
+
+Extend the protocol-header test with `xpod_rdf_slot_term_range` and the scan
+request `slot_ranges` pointer. Extend the scan bridge smoke so a subject slot
+range is added to `ScanRequestInput` and must be visible in the generated
+`xpod_rdf_scan_request`.
+
+Expected: FAIL because `prefixRange` could produce dictionary ranges, but the
+permutation scan request had no slot-range constraint surface.
+
+- [x] **Step 2: Add flat slot-range constraints to scan requests**
+
+Add `xpod_rdf_slot_term_range` to the C ABI as `{slot, range, collation}` and
+add `slot_ranges` / `slot_range_count` to `xpod_rdf_scan_request`. Keep this as
+a flat array instead of nested per-slot arrays so ownership stays simple across
+the C ABI and `ScanRequestInput` can safely own the vector.
+
+- [x] **Step 3: Forward scan slot ranges through the QLever scan bridge**
+
+Add `ScanRequestInput::slot_ranges` and copy its data pointer/count into
+`makeScanRequest(...)`. This lets future QLever prefix/vocabulary planning feed
+TermDictionary prefix ranges directly into `PermutationAccess` without adding an
+operation-specific bridge.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/QleverScanBridge.test.ts --run
+```
+
+Expected: PASS.

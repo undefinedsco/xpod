@@ -29,6 +29,8 @@ describe('native RDF physical backend protocol header', () => {
     expect(header).toContain('xpod_rdf_resolve_terms_fn');
     expect(header).toContain('typedef struct xpod_rdf_prefix_range_request');
     expect(header).toContain('xpod_rdf_prefix_range_fn');
+    expect(header).toContain('typedef struct xpod_rdf_slot_term_range');
+    expect(header).toContain('const xpod_rdf_slot_term_range* slot_ranges');
     expect(header).toContain('xpod_rdf_scan_permutation_fn');
     expect(header).toContain('xpod_rdf_source_scope source_scope');
     expect(header).toContain('xpod_rdf_estimate_source_scope_fn');

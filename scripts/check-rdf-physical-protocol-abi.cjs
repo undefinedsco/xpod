@@ -20,6 +20,8 @@ const requiredSymbols = [
   'xpod_rdf_resolve_terms_fn',
   'xpod_rdf_prefix_range_fn',
   'typedef struct xpod_rdf_prefix_range_request',
+  'typedef struct xpod_rdf_slot_term_range',
+  'const xpod_rdf_slot_term_range* slot_ranges',
   'xpod_rdf_scan_permutation_fn',
   'xpod_rdf_source_scope source_scope',
   'xpod_rdf_estimate_source_scope_fn',

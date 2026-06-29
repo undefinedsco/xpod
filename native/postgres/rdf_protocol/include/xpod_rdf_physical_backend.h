@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 6
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 7
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -168,6 +168,28 @@ typedef struct xpod_rdf_scan_order {
   xpod_rdf_scan_order_kind kind;
 } xpod_rdf_scan_order;
 
+typedef enum xpod_rdf_term_collation {
+  XPOD_RDF_TERM_COLLATION_UNKNOWN = 0,
+  XPOD_RDF_TERM_COLLATION_BYTEWISE = 1,
+  XPOD_RDF_TERM_COLLATION_DATABASE = 2,
+  XPOD_RDF_TERM_COLLATION_LOCALE = 3
+} xpod_rdf_term_collation;
+
+typedef struct xpod_rdf_term_range {
+  xpod_rdf_term_key lower;
+  xpod_rdf_term_key upper;
+  uint8_t has_lower;
+  uint8_t has_upper;
+  uint8_t lower_inclusive;
+  uint8_t upper_exclusive;
+} xpod_rdf_term_range;
+
+typedef struct xpod_rdf_slot_term_range {
+  uint32_t slot;
+  xpod_rdf_term_range range;
+  xpod_rdf_term_collation collation;
+} xpod_rdf_slot_term_range;
+
 typedef struct xpod_rdf_scan_request {
   xpod_rdf_snapshot snapshot;
   xpod_rdf_permutation permutation;
@@ -176,6 +198,8 @@ typedef struct xpod_rdf_scan_request {
   xpod_rdf_source_scope source_scope;
   const xpod_rdf_access_scope* access_scope;
   xpod_rdf_scan_order order;
+  const xpod_rdf_slot_term_range* slot_ranges;
+  size_t slot_range_count;
   uint64_t limit;
   uint64_t offset;
   uint32_t batch_size;
@@ -235,22 +259,6 @@ typedef struct xpod_rdf_term_tuple_batch {
 typedef xpod_rdf_status (*xpod_rdf_term_tuple_batch_callback)(
     void* callback_user_data,
     const xpod_rdf_term_tuple_batch* batch);
-
-typedef enum xpod_rdf_term_collation {
-  XPOD_RDF_TERM_COLLATION_UNKNOWN = 0,
-  XPOD_RDF_TERM_COLLATION_BYTEWISE = 1,
-  XPOD_RDF_TERM_COLLATION_DATABASE = 2,
-  XPOD_RDF_TERM_COLLATION_LOCALE = 3
-} xpod_rdf_term_collation;
-
-typedef struct xpod_rdf_term_range {
-  xpod_rdf_term_key lower;
-  xpod_rdf_term_key upper;
-  uint8_t has_lower;
-  uint8_t has_upper;
-  uint8_t lower_inclusive;
-  uint8_t upper_exclusive;
-} xpod_rdf_term_range;
 
 typedef struct xpod_rdf_term_range_batch {
   const xpod_rdf_term_range* ranges;
