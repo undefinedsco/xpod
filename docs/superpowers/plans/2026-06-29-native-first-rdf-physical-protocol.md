@@ -2513,3 +2513,38 @@ bun test tests/native/QleverBackedTextSearch.test.ts tests/native/QleverBackedVe
 ```
 
 Expected: PASS.
+
+### Task 54: Add a QLever-shaped physical index seam over the native backend
+
+**Files:**
+- Create: `tests/native/QleverPhysicalIndex.test.ts`
+- Create: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing physical index smoke**
+
+Add a native smoke that includes `XpodQleverPhysicalIndex.hpp`, constructs it from `PlannerRequestContext`, asks for a `Permutation::Enum::SPO` access object, and executes estimate plus scan through the physical backend.
+
+Expected: FAIL because the QLever-facing lower access surface did not exist.
+
+- [x] **Step 2: Add the minimal native index/permutation seam**
+
+Add a header-only `XpodQleverPhysicalIndex` and `XpodQleverPhysicalPermutation` pair. The seam exposes QLever-shaped `permutation(...).estimate(...)` and `permutation(...).scan(...)` entry points over the existing native backend, query snapshot, source scope, graph scope, access scope, and capability-guarded scan adapter.
+
+This is not another planner or operator bridge. It is the lower access surface that a patched or embedded QLever planner/executor can call instead of reading QLever's own on-disk permutations.
+
+- [x] **Step 3: Add dictionary access to the same seam**
+
+Add a native smoke for `lookupTerm(...)` and `resolveTerm(...)`, and implement both on `XpodQleverPhysicalIndex` using the query snapshot from `PlannerRequestContext`.
+
+Expected: PASS.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
