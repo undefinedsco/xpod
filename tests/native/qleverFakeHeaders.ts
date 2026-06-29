@@ -62,16 +62,37 @@ class SparqlTriple {
   TripleComponent o_;
 };
 namespace parsedQuery {
+struct GraphPatternOperation;
+struct GraphPattern {
+  GraphPattern();
+  GraphPattern(const GraphPattern&);
+  GraphPattern(GraphPattern&&) noexcept;
+  GraphPattern& operator=(const GraphPattern&);
+  GraphPattern& operator=(GraphPattern&&) noexcept;
+  ~GraphPattern();
+  std::vector<GraphPatternOperation> _graphPatterns;
+};
 struct BasicGraphPattern {
   std::vector<SparqlTriple> _triples;
 };
-using GraphPatternOperationVariant = std::variant<BasicGraphPattern>;
+struct GroupGraphPattern {
+  GraphPattern _child;
+  using GraphSpec = std::variant<std::monostate, TripleComponent::Iri>;
+  GraphSpec graphSpec_ = std::monostate{};
+  explicit GroupGraphPattern(GraphPattern child) : _child{std::move(child)} {}
+  GroupGraphPattern(GraphPattern child, TripleComponent::Iri graphIri)
+      : _child{std::move(child)}, graphSpec_{std::move(graphIri)} {}
+};
+using GraphPatternOperationVariant = std::variant<BasicGraphPattern, GroupGraphPattern>;
 struct GraphPatternOperation : public GraphPatternOperationVariant {
   using GraphPatternOperationVariant::GraphPatternOperationVariant;
 };
-struct GraphPattern {
-  std::vector<GraphPatternOperation> _graphPatterns;
-};
+inline GraphPattern::GraphPattern() = default;
+inline GraphPattern::GraphPattern(const GraphPattern&) = default;
+inline GraphPattern::GraphPattern(GraphPattern&&) noexcept = default;
+inline GraphPattern& GraphPattern::operator=(const GraphPattern&) = default;
+inline GraphPattern& GraphPattern::operator=(GraphPattern&&) noexcept = default;
+inline GraphPattern::~GraphPattern() = default;
 }
 class ParsedQuery {
  public:
@@ -83,6 +104,21 @@ class ParsedQuery {
         TripleComponent{Variable{"?p"}},
         TripleComponent{Variable{"?o"}});
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
+    return query;
+  }
+  static ParsedQuery graphIriSelect() {
+    ParsedQuery query;
+    parsedQuery::BasicGraphPattern basic;
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{Variable{"?p"}},
+        TripleComponent{Variable{"?o"}});
+    parsedQuery::GraphPattern child;
+    child._graphPatterns.emplace_back(std::move(basic));
+    query._rootGraphPattern._graphPatterns.emplace_back(
+        parsedQuery::GroupGraphPattern{
+            std::move(child),
+            TripleComponent::Iri{"<urn:g>"}});
     return query;
   }
   static ParsedQuery predicateIriSelect() {

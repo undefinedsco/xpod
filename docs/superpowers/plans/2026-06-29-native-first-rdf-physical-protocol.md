@@ -1855,3 +1855,48 @@ bun test tests/native/QleverScanMaterializer.test.ts --run -t "materializes scan
 ```
 
 Expected: PASS.
+
+### Task 36: Map parsed GRAPH IRI clauses to graph scan constraints
+
+**Files:**
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing parsed GRAPH test**
+
+Extend the fake parsed-query headers with QLever-shaped
+`parsedQuery::GroupGraphPattern` and a `ParsedQuery::graphIriSelect()` helper.
+Add a native smoke that expects `GRAPH <urn:g> { ?s ?p ?o }` to produce a
+`XPOD_RDF_SLOT_GRAPH` term binding and, after `bindPlanTerms(...)`, an exact
+`scan.pattern.graph` constraint.
+
+Expected: FAIL because the parsed fallback only accepted root
+`BasicGraphPattern` operations.
+
+- [x] **Step 2: Extract fixed-IRI graph scope from `GroupGraphPattern`**
+
+Detect a root `parsedQuery::GroupGraphPattern` whose `graphSpec_` is a fixed
+`TripleComponent::Iri` and whose child contains exactly one `BasicGraphPattern`.
+Variable graph scopes still fail closed; the physical protocol can carry exact
+graph keys, but result projection for graph variables is a separate planner
+shape.
+
+- [x] **Step 3: Bind graph scope through existing term dictionary path**
+
+Represent the graph IRI as a normal `BridgeTermBinding` on
+`XPOD_RDF_SLOT_GRAPH`. `bindPatternSlot(...)` now writes graph keys into
+`TripleKeyPattern`, so scan request creation and execution reuse the same
+physical primitive as S/P/O constants.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts --run -t "binds parsed GRAPH IRIs"
+bun test tests/native/QleverPlanBridge.test.ts --run
+```
+
+Expected: PASS.
