@@ -9,6 +9,7 @@
 #include "XpodQleverScanMaterializer.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <utility>
 #include <unordered_set>
 #include <vector>
@@ -55,6 +56,18 @@ inline XpodBackedCandidateResult makeEmptyCandidateOperationResult(
     xpod_rdf_status status) {
   return {status, {}};
 }
+
+enum class BridgePhysicalResultKind {
+  RdfRows,
+  CandidateRows,
+};
+
+struct BridgePhysicalResult {
+  xpod_rdf_status status = XPOD_RDF_STATUS_UNSUPPORTED;
+  BridgePhysicalResultKind kind = BridgePhysicalResultKind::RdfRows;
+  std::optional<QleverResultWithStatus> rdf_rows;
+  std::optional<XpodBackedCandidateResult> candidates;
+};
 
 inline XpodBackedCandidateResult executeBridgeTextCandidateSource(
     xpod::rdf::PhysicalBackend backend,
@@ -233,6 +246,24 @@ inline QleverResultWithStatus executeBridgeOperationPlan(
     return executeBridgeHashJoin(backend, plan);
   }
   return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+}
+
+inline BridgePhysicalResult executeBridgePhysicalPlan(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan) {
+  BridgePhysicalResult result;
+  if (plan.root.kind == BridgeOperationKind::TextSearch ||
+      plan.root.kind == BridgeOperationKind::VectorSearch) {
+    result.kind = BridgePhysicalResultKind::CandidateRows;
+    result.candidates = executeBridgeCandidateOperationPlan(backend, plan);
+    result.status = result.candidates->status;
+    return result;
+  }
+
+  result.kind = BridgePhysicalResultKind::RdfRows;
+  result.rdf_rows = executeBridgeOperationPlan(backend, plan);
+  result.status = result.rdf_rows->status;
+  return result;
 }
 
 }  // namespace xpod::qlever

@@ -108,14 +108,14 @@ struct State {
   int text_calls;
   int vector_calls;
   int profile_calls;
-  xpod_rdf_profile_kind profile_kinds[4];
-  xpod_rdf_profile_status profile_statuses[4];
+  xpod_rdf_profile_kind profile_kinds[8];
+  xpod_rdf_profile_status profile_statuses[8];
 };
 
 static void on_profile(void* user_data, const xpod_rdf_profile_event* event) {
   State* state = static_cast<State*>(user_data);
   int index = state->profile_calls++;
-  if (index >= 4) return;
+  if (index >= 8) return;
   state->profile_kinds[index] = event->kind;
   state->profile_statuses[index] = event->status;
 }
@@ -215,6 +215,11 @@ int main() {
   if (text_result.candidates.rows.size() != 1) return 2;
   if (!text_result.candidates.rows[0].has_retrieval_point || text_result.candidates.rows[0].retrieval_point != 101) return 3;
   if (text_result.candidates.scanned_rows != 9) return 4;
+  auto typed_text_result = xpod::qlever::executeBridgePhysicalPlan(physical, text_plan);
+  if (typed_text_result.kind != xpod::qlever::BridgePhysicalResultKind::CandidateRows) return 18;
+  if (!typed_text_result.candidates.has_value()) return 19;
+  if (typed_text_result.candidates->status != XPOD_RDF_STATUS_OK) return 20;
+  if (typed_text_result.candidates->candidates.rows.size() != 1) return 21;
 
   double vector_values[2] = {0.1, 0.2};
   xpod::qlever::BridgePhysicalPlan vector_plan;
@@ -235,17 +240,28 @@ int main() {
   if (vector_result.candidates.rows.size() != 1) return 6;
   if (!vector_result.candidates.rows[0].has_source_node || vector_result.candidates.rows[0].source_node != 202) return 7;
   if (vector_result.candidates.scanned_rows != 11) return 8;
+  auto typed_vector_result = xpod::qlever::executeBridgePhysicalPlan(physical, vector_plan);
+  if (typed_vector_result.kind != xpod::qlever::BridgePhysicalResultKind::CandidateRows) return 22;
+  if (!typed_vector_result.candidates.has_value()) return 23;
+  if (typed_vector_result.candidates->status != XPOD_RDF_STATUS_OK) return 24;
+  if (typed_vector_result.candidates->candidates.rows.size() != 1) return 25;
 
   auto qlever_result = xpod::qlever::executeBridgeOperationPlan(physical, text_plan);
   if (qlever_result.status != XPOD_RDF_STATUS_UNSUPPORTED) return 9;
-  if (state.text_calls != 1 || state.vector_calls != 1) return 10;
-  if (state.profile_calls != 4) return 11;
+  if (state.text_calls != 2 || state.vector_calls != 2) return 10;
+  if (state.profile_calls != 8) return 11;
   if (state.profile_kinds[0] != XPOD_RDF_PROFILE_TEXT_SEARCH) return 12;
   if (state.profile_statuses[0] != XPOD_RDF_PROFILE_RUNNING) return 13;
   if (state.profile_statuses[1] != XPOD_RDF_PROFILE_COMPLETED) return 14;
-  if (state.profile_kinds[2] != XPOD_RDF_PROFILE_VECTOR_SEARCH) return 15;
+  if (state.profile_kinds[2] != XPOD_RDF_PROFILE_TEXT_SEARCH) return 15;
   if (state.profile_statuses[2] != XPOD_RDF_PROFILE_RUNNING) return 16;
   if (state.profile_statuses[3] != XPOD_RDF_PROFILE_COMPLETED) return 17;
+  if (state.profile_kinds[4] != XPOD_RDF_PROFILE_VECTOR_SEARCH) return 26;
+  if (state.profile_statuses[4] != XPOD_RDF_PROFILE_RUNNING) return 27;
+  if (state.profile_statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 28;
+  if (state.profile_kinds[6] != XPOD_RDF_PROFILE_VECTOR_SEARCH) return 29;
+  if (state.profile_statuses[6] != XPOD_RDF_PROFILE_RUNNING) return 30;
+  if (state.profile_statuses[7] != XPOD_RDF_PROFILE_COMPLETED) return 31;
   return 0;
 }
 `, 'utf8');
