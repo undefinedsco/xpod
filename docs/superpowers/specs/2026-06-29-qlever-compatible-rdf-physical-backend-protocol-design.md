@@ -655,7 +655,7 @@ The Xpod-backed scan adapter uses the same capability contract as a lower-protoc
 
 Text and vector candidate operation shells use the same rule for feature bits: an OK capability response without `TEXT_SEARCH` or `VECTOR_SEARCH` fails closed before estimate/search callbacks. This keeps FTS/vector availability in the native data contract that QLever-facing code can plan against.
 
-`XpodQleverPhysicalIndex` is the first native QLever-shaped lower access surface over this protocol. It exposes dictionary lookup/resolution, term prefix ranges, and `permutation(...).estimate(...)` / `permutation(...).scan(...)` using `PlannerRequestContext`; scan calls preserve the request snapshot, graph scope, source scope, access scope, cancellation, and backend capability guards. This is the seam that a patched or embedded QLever `Index`/`Permutation` path should call. It must not grow SPARQL planning, join planning, modifiers, or fusion policy.
+`XpodQleverPhysicalIndex` is the first native QLever-shaped lower access surface over this protocol. It exposes single and batch dictionary lookup/resolution, term prefix ranges, and `permutation(...).estimate(...)` / `permutation(...).scan(...)` using `PlannerRequestContext`; scan calls preserve the request snapshot, graph scope, source scope, access scope, cancellation, and backend capability guards. This is the seam that a patched or embedded QLever `Index`/`Permutation` path should call. It must not grow SPARQL planning, join planning, modifiers, or fusion policy.
 
 - Build a read-only spike that maps a small QLever-like operator subset to this protocol:
   - term lookup;

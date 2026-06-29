@@ -2575,3 +2575,30 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 56: Add batch dictionary access to the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing batch dictionary smoke**
+
+Extend the physical index native smoke so `XpodQleverPhysicalIndex::lookupTerms(...)` and `resolveTerms(...)` must call the backend batch dictionary callbacks with the current query snapshot and return parallel key/term plus per-item status vectors.
+
+Expected: FAIL because the physical index seam only exposed single-term lookup and resolution.
+
+- [x] **Step 2: Add the minimal batch dictionary result seam**
+
+Add `XpodQleverLookupTermsResult`, `XpodQleverResolveTermsResult`, and corresponding methods on `XpodQleverPhysicalIndex`. Empty batches return OK locally; non-empty batches delegate to the native backend. Do not add fallback loops or planner policy here.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.

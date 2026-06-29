@@ -19,6 +19,18 @@ struct XpodQleverPrefixRangeResult {
   xpod_rdf_term_collation collation = XPOD_RDF_TERM_COLLATION_UNKNOWN;
 };
 
+struct XpodQleverLookupTermsResult {
+  xpod_rdf_status status;
+  std::vector<xpod_rdf_term_key> keys;
+  std::vector<xpod_rdf_status> statuses;
+};
+
+struct XpodQleverResolveTermsResult {
+  xpod_rdf_status status;
+  std::vector<xpod_rdf_term> terms;
+  std::vector<xpod_rdf_status> statuses;
+};
+
 inline xpod_rdf_status collectPrefixRangeBatch(
     void* callback_user_data,
     const xpod_rdf_term_range_batch* batch) {
@@ -140,6 +152,38 @@ class XpodQleverPhysicalIndex {
       xpod_rdf_term_key key,
       xpod_rdf_term& out_term) const noexcept {
     return context_.backend.resolveTerm(key, snapshot(), out_term);
+  }
+
+  XpodQleverLookupTermsResult lookupTerms(
+      const xpod_rdf_term* terms,
+      size_t term_count) const {
+    XpodQleverLookupTermsResult result = {};
+    result.keys.resize(term_count);
+    result.statuses.resize(term_count);
+    if (term_count == 0) {
+      result.status = XPOD_RDF_STATUS_OK;
+      return result;
+    }
+    result.status = context_.backend.lookupTerms(
+        terms, term_count, snapshot(), result.keys.data(),
+        result.statuses.data());
+    return result;
+  }
+
+  XpodQleverResolveTermsResult resolveTerms(
+      const xpod_rdf_term_key* keys,
+      size_t key_count) const {
+    XpodQleverResolveTermsResult result = {};
+    result.terms.resize(key_count);
+    result.statuses.resize(key_count);
+    if (key_count == 0) {
+      result.status = XPOD_RDF_STATUS_OK;
+      return result;
+    }
+    result.status = context_.backend.resolveTerms(
+        keys, key_count, snapshot(), result.terms.data(),
+        result.statuses.data());
+    return result;
   }
 
   XpodQleverPrefixRangeResult prefixRanges(
