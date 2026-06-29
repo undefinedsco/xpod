@@ -1,0 +1,66 @@
+#ifndef XPOD_QLEVER_SCAN_BRIDGE_HPP
+#define XPOD_QLEVER_SCAN_BRIDGE_HPP
+
+#include "XpodQleverPermutationMap.hpp"
+#include "xpod_rdf_physical_backend.h"
+
+#if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
+
+namespace xpod::qlever {
+
+struct TripleKeyPattern {
+  bool has_subject = false;
+  bool has_predicate = false;
+  bool has_object = false;
+  xpod_rdf_term_key subject = 0;
+  xpod_rdf_term_key predicate = 0;
+  xpod_rdf_term_key object = 0;
+};
+
+struct ScanRequestInput {
+  const xpod_rdf_snapshot* snapshot = nullptr;
+  Permutation::Enum permutation = Permutation::Enum::SPO;
+  TripleKeyPattern pattern;
+  const xpod_rdf_access_scope* access_scope = nullptr;
+  uint64_t limit = 0;
+  uint64_t offset = 0;
+  uint32_t batch_size = 0;
+  uint32_t needed_slots = 0;
+};
+
+inline xpod_rdf_quad_pattern toXpodQuadPattern(
+    const TripleKeyPattern& pattern) noexcept {
+  xpod_rdf_quad_pattern out = {};
+  out.has_subject = pattern.has_subject ? 1 : 0;
+  out.has_predicate = pattern.has_predicate ? 1 : 0;
+  out.has_object = pattern.has_object ? 1 : 0;
+  out.has_graph = 0;
+  out.subject = pattern.subject;
+  out.predicate = pattern.predicate;
+  out.object = pattern.object;
+  return out;
+}
+
+inline xpod_rdf_scan_request makeScanRequest(
+    const ScanRequestInput& input) noexcept {
+  xpod_rdf_scan_request request = {};
+  if (input.snapshot != nullptr) {
+    request.snapshot = *input.snapshot;
+  }
+  request.permutation = toXpodPermutation(input.permutation);
+  request.pattern = toXpodQuadPattern(input.pattern);
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_ALL;
+  request.access_scope = input.access_scope;
+  request.order.kind = XPOD_RDF_SCAN_ORDER_NATIVE;
+  request.limit = input.limit;
+  request.offset = input.offset;
+  request.batch_size = input.batch_size;
+  request.needed_slots = input.needed_slots;
+  return request;
+}
+
+}  // namespace xpod::qlever
+
+#endif
+
+#endif
