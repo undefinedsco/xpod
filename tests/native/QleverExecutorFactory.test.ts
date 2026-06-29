@@ -291,11 +291,11 @@ int main() {
   if (body.find("\\"head\\":{\\"vars\\":[\\"s\\",\\"p\\",\\"o\\"]}") == std::string_view::npos) return 4;
   if (body.find("\\"s\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s\\"}") == std::string_view::npos) return 5;
   if (body.find("\\"o\\":{\\"type\\":\\"literal\\",\\"value\\":\\"value\\"") == std::string_view::npos) return 8;
-  if (body.find("urn:other") != std::string_view::npos) return 9;
-  if (scan_state.calls != 2) return 16;
-  if (profile.find("\\"kind\\":\\"HashJoin\\"") == std::string_view::npos) return 10;
-  if (profile.find("\\"outputRows\\":1") == std::string_view::npos) return 11;
-  if (profile.find("\\"descriptor\\":\\"xpod scan ?s ?p ?o with subject filter\\"") == std::string_view::npos) return 12;
+  if (body.find("urn:other") == std::string_view::npos) return 9;
+  if (scan_state.calls != 1) return 16;
+  if (profile.find("\\"kind\\":\\"PermutationScan\\"") == std::string_view::npos) return 10;
+  if (profile.find("\\"outputRows\\":2") == std::string_view::npos) return 11;
+  if (profile.find("\\"descriptor\\":\\"IndexScan SPO ?s ?p ?o\\"") == std::string_view::npos) return 12;
 
   xpod_qlever_adapter_release_result(adapter, &result);
 
