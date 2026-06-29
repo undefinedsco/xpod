@@ -4,6 +4,7 @@
 #include "XpodQleverPlanBridge.hpp"
 #include "XpodQleverPlannerRequestContext.hpp"
 
+#include <array>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -58,6 +59,60 @@ inline bool bindIndexScanComponent(
   return bindableComponent(component, std::string_view{}, slot, plan);
 }
 
+inline std::string bridgeVariableName(const TripleComponent& component) {
+  std::string name = component.getVariable().name();
+  if (!name.empty() && name.front() == '?') {
+    name.erase(name.begin());
+  }
+  return name;
+}
+
+inline void appendIndexScanOutputVariable(
+    std::vector<std::string>& output_variables,
+    char slot,
+    const IndexScan& scan) {
+  const TripleComponent* component = nullptr;
+  if (slot == 'S') {
+    component = &scan.subject();
+  } else if (slot == 'P') {
+    component = &scan.predicate();
+  } else if (slot == 'O') {
+    component = &scan.object();
+  }
+  if (component != nullptr && component->isVariable()) {
+    output_variables.push_back(bridgeVariableName(*component));
+  }
+}
+
+inline std::array<char, 3> indexScanPermutationSlots(
+    Permutation::Enum permutation) noexcept {
+  switch (permutation) {
+    case Permutation::Enum::PSO:
+      return {'P', 'S', 'O'};
+    case Permutation::Enum::POS:
+      return {'P', 'O', 'S'};
+    case Permutation::Enum::SPO:
+      return {'S', 'P', 'O'};
+    case Permutation::Enum::SOP:
+      return {'S', 'O', 'P'};
+    case Permutation::Enum::OPS:
+      return {'O', 'P', 'S'};
+    case Permutation::Enum::OSP:
+      return {'O', 'S', 'P'};
+  }
+  return {'S', 'P', 'O'};
+}
+
+inline std::vector<std::string> indexScanOutputVariables(
+    const IndexScan& scan) {
+  std::vector<std::string> output_variables;
+  output_variables.reserve(scan.getResultWidth());
+  for (char slot : indexScanPermutationSlots(scan.permutation().permutation())) {
+    appendIndexScanOutputVariable(output_variables, slot, scan);
+  }
+  return output_variables;
+}
+
 inline void initializeIndexScanOperationPlan(
     BridgeQueryPlan& plan,
     const IndexScan& scan) {
@@ -74,6 +129,7 @@ inline void initializeIndexScanOperationPlan(
   }
   plan.sorted_by = scan.getResultSortedOn();
   plan.result_width = scan.getResultWidth();
+  plan.output_variables = indexScanOutputVariables(scan);
   plan.descriptor = scan.getDescriptor();
   plan.root.kind = BridgeOperationKind::PermutationScan;
   plan.root.scan_indexes = {0};

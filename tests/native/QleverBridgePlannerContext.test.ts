@@ -78,17 +78,17 @@ class IndexScan final : public Operation {
  public:
   IndexScan()
       : subject_(Variable{"?s"}),
-        predicate_(Variable{"?p"}),
+        predicate_(TripleComponent::Iri{"<urn:p>"}),
         object_(Variable{"?o"}),
-        permutation_(Permutation::Enum::SPO) {}
+        permutation_(Permutation::Enum::POS) {}
   const TripleComponent& subject() const { return subject_; }
   const TripleComponent& predicate() const { return predicate_; }
   const TripleComponent& object() const { return object_; }
   const Permutation& permutation() const { return permutation_; }
-  std::string getDescriptor() const override { return "QEC planner scan"; }
-  size_t getResultWidth() const override { return 3; }
+  std::string getDescriptor() const override { return "QEC planner POS ?s <urn:p> ?o"; }
+  size_t getResultWidth() const override { return 2; }
  protected:
-  std::vector<ColumnIndex> resultSortedOn() const override { return {0}; }
+  std::vector<ColumnIndex> resultSortedOn() const override { return {0, 1}; }
  private:
   TripleComponent subject_;
   TripleComponent predicate_;
@@ -198,6 +198,21 @@ static xpod_rdf_status decode(void*, uint64_t bits, xpod_rdf_term_key* out_term)
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status lookup_terms(
+    void*,
+    const xpod_rdf_term* terms,
+    size_t term_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_keys,
+    xpod_rdf_status* out_statuses) {
+  if (term_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:p") return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_keys[0] = 20;
+  out_statuses[0] = XPOD_RDF_STATUS_OK;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status resolve_terms(
     void*,
     const xpod_rdf_term_key* keys,
@@ -238,7 +253,11 @@ static xpod_rdf_status scan(
     const xpod_rdf_scan_request* request,
     xpod_rdf_quad_batch_callback on_batch,
     void* callback_user_data) {
-  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->permutation == XPOD_RDF_PERM_POSG) {
+    if (!request->pattern.has_predicate || request->pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  } else if (request->permutation != XPOD_RDF_PERM_SPOG) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
   xpod_rdf_quad_key rows[1] = {{10, 20, 30, 40}};
   xpod_rdf_quad_batch batch = {};
   batch.rows = rows;
@@ -252,6 +271,7 @@ int main() {
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
   raw_backend.encode_qlever_id = encode;
   raw_backend.decode_qlever_id = decode;
+  raw_backend.lookup_terms = lookup_terms;
   raw_backend.resolve_terms = resolve_terms;
   raw_backend.estimate_scan = estimate_scan;
   raw_backend.scan_permutation = scan;
@@ -269,8 +289,12 @@ int main() {
       backend, &qec, request, result, result_storage, profile_storage, error_storage);
   std::string_view profile(result.profile_json.data, result.profile_json.size);
   if (status != XPOD_RDF_STATUS_OK) return 1;
-  if (profile.find("\\"descriptor\\":\\"QEC planner scan\\"") == std::string_view::npos) return 2;
-  if (std::string_view(result.result_json.data, result.result_json.size).find("urn:s") == std::string_view::npos) return 3;
+  if (profile.find("\\"descriptor\\":\\"QEC planner POS ?s <urn:p> ?o\\"") == std::string_view::npos) return 2;
+  std::string_view body(result.result_json.data, result.result_json.size);
+  if (body.find("\\"head\\":{\\"vars\\":[\\"o\\",\\"s\\"]}") == std::string_view::npos) return 3;
+  if (body.find("\\"o\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:o\\"}") == std::string_view::npos) return 6;
+  if (body.find("\\"s\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s\\"}") == std::string_view::npos) return 7;
+  if (body.find("\\"p\\":") != std::string_view::npos) return 8;
 
   qec.ready = false;
   status = xpod::qlever::executeBridgeQueryWithPlannerContext(

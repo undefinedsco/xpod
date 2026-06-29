@@ -169,14 +169,32 @@ void writeTermBinding(std::ostringstream& out, const xpod_rdf_term& term) {
   out << '}';
 }
 
-void writeEmptySparqlJson(std::ostringstream& out) {
-  out << "{\"engine\":\"xpod-qlever-bridge\",\"head\":{\"vars\":[\"s\",\"p\",\"o\"]},\"results\":{\"bindings\":[]}}";
+void writeSparqlHead(std::ostringstream& out,
+                     const std::vector<std::string>& variables) {
+  out << "{\"engine\":\"xpod-qlever-bridge\",\"head\":{\"vars\":[";
+  for (size_t i = 0; i < variables.size(); ++i) {
+    if (i != 0) {
+      out << ',';
+    }
+    writeJsonString(out, variables[i]);
+  }
+  out << "]},\"results\":{\"bindings\":";
 }
 
-void writeSparqlJson(std::ostringstream& out, const IdTable& table,
-                     const std::vector<xpod_rdf_term>& terms) {
-  static constexpr const char* variables[3] = {"s", "p", "o"};
-  out << "{\"engine\":\"xpod-qlever-bridge\",\"head\":{\"vars\":[\"s\",\"p\",\"o\"]},\"results\":{\"bindings\":[";
+void writeEmptySparqlJson(
+    std::ostringstream& out,
+    const std::vector<std::string>& variables) {
+  writeSparqlHead(out, variables);
+  out << "[]}}";
+}
+
+void writeSparqlJson(
+    std::ostringstream& out,
+    const IdTable& table,
+    const std::vector<xpod_rdf_term>& terms,
+    const std::vector<std::string>& variables) {
+  writeSparqlHead(out, variables);
+  out << '[';
   size_t term_index = 0;
   for (size_t row = 0; row < table.numRows(); ++row) {
     if (row != 0) {
@@ -254,7 +272,7 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
   }
   if (plan.known_empty) {
     std::ostringstream json;
-    writeEmptySparqlJson(json);
+    writeEmptySparqlJson(json, plan.output_variables);
     result_storage = json.str();
     std::ostringstream profile;
     writeScanProfileJson(profile, profileKind(plan.root.kind), plan.descriptor, 0);
@@ -292,8 +310,15 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
     return resolve_status;
   }
 
+  if (plan.output_variables.size() != output_table->numColumns()) {
+    error_storage = "QLever bridge result columns do not match output variables";
+    setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
+              profile_storage, error_storage);
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
   std::ostringstream json;
-  writeSparqlJson(json, *output_table, terms);
+  writeSparqlJson(json, *output_table, terms, plan.output_variables);
   result_storage = json.str();
   std::ostringstream profile;
   writeScanProfileJson(

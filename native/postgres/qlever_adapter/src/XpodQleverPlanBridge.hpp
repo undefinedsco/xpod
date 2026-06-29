@@ -49,6 +49,7 @@ struct BridgeQueryPlan {
   std::vector<BridgeTextCandidateSource> text_sources;
   std::vector<BridgeVectorCandidateSource> vector_sources;
   std::vector<BridgeTextRequiredEntityBinding> text_required_entities;
+  std::vector<std::string> output_variables;
   BridgeOperationPlan root;
   bool known_empty = false;
 };
@@ -301,6 +302,7 @@ inline void initializeScanPlan(BridgeQueryPlan& plan) {
                            XPOD_RDF_SLOT_OBJECT;
   plan.sorted_by = {0};
   plan.result_width = 3;
+  plan.output_variables = {"s", "p", "o"};
   plan.descriptor = "xpod scan ?s ?p ?o";
   plan.root.kind = BridgeOperationKind::PermutationScan;
   plan.root.scan_indexes = {0};
