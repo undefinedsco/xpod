@@ -2046,3 +2046,38 @@ bun test tests/native/QleverScanBridge.test.ts --run -t "builds scan input from 
 ```
 
 Expected: PASS.
+
+### Task 41: Apply request graph scope to all bridge scan plans
+
+**Files:**
+- Modify: `tests/native/QleverPlanRequestContext.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing request-context plan test**
+
+Extend the plan request-context smoke so `applyBridgeRequestContext(...)` must
+apply an exact graph scope to the primary scan and filter scan, alongside
+snapshot/source/access scope.
+
+Expected: FAIL because `applyBridgeRequestContext(...)` accepted only snapshot,
+source scope, and access scope.
+
+- [x] **Step 2: Propagate graph scope through bridge plans**
+
+Thread `xpod_rdf_graph_scope` through `applyBridgeRequestContext(...)`, copy it
+onto the primary scan, every filter scan, and child plans, and pass
+`request.graph_scope` from the adapter query execution path. Candidate source
+requests do not yet expose graph scope, so this task deliberately limits the
+change to RDF scan plans.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanRequestContext.test.ts --run
+```
+
+Expected: PASS.

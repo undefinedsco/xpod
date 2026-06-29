@@ -18,7 +18,7 @@ function hasCxx(): boolean {
 }
 
 describe('QLever bridge plan request context', () => {
-  it('applies snapshot, source scope, and access scope to scan and candidate sources', async () => {
+  it('applies snapshot, graph scope, source scope, and access scope to scan and candidate sources', async () => {
     expect(hasCxx(), 'c++ compiler is required for native plan request context check').toBe(true);
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-plan-context-'));
@@ -67,18 +67,25 @@ int main() {
   snapshot.facts_version = {"facts-v1", 8};
   xpod_rdf_source_scope source_scope = {};
   source_scope.local_path_prefix = {"/workspace/docs/", 16};
+  xpod_rdf_graph_scope graph_scope = {};
+  graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  graph_scope.exact_graph = 99;
   xpod_rdf_access_scope access_scope = {};
   access_scope.permission_version = {"perm-v1", 7};
 
   xpod::qlever::applyBridgeRequestContext(
-      plan, snapshot, source_scope, &access_scope);
+      plan, snapshot, graph_scope, source_scope, &access_scope);
 
   if (plan.scan.snapshot != &snapshot) return 1;
   if (plan.scan.source_scope != &source_scope) return 2;
   if (plan.scan.access_scope != &access_scope) return 3;
+  if (plan.scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 31;
+  if (plan.scan.graph_scope.exact_graph != 99) return 32;
   if (plan.filter_scans[0].scan.snapshot != &snapshot) return 4;
   if (plan.filter_scans[0].scan.source_scope != &source_scope) return 5;
   if (plan.filter_scans[0].scan.access_scope != &access_scope) return 6;
+  if (plan.filter_scans[0].scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 61;
+  if (plan.filter_scans[0].scan.graph_scope.exact_graph != 99) return 62;
   if (!bytes_equal(plan.text_sources[0].request.snapshot.facts_version, "facts-v1")) return 7;
   if (!bytes_equal(plan.text_sources[0].request.source_scope.local_path_prefix, "/workspace/docs/")) return 8;
   if (plan.text_sources[0].request.access_scope != &access_scope) return 9;

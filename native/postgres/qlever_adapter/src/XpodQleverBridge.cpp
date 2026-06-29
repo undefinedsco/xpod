@@ -262,7 +262,8 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
     return parse_status;
   }
   applyBridgeRequestContext(
-      plan, request.snapshot, request.source_scope, request.access_scope);
+      plan, request.snapshot, request.graph_scope, request.source_scope,
+      request.access_scope);
   xpod_rdf_status bind_status = bindPlanTerms(
       backend, request.snapshot, plan, error_storage);
   if (bind_status != XPOD_RDF_STATUS_OK) {
