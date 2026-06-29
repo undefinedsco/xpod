@@ -1,5 +1,5 @@
-#ifndef XPOD_BACKED_TEXT_SEARCH_HPP
-#define XPOD_BACKED_TEXT_SEARCH_HPP
+#ifndef XPOD_BACKED_VECTOR_SEARCH_HPP
+#define XPOD_BACKED_VECTOR_SEARCH_HPP
 
 #include "XpodBackedCandidateOperation.hpp"
 
@@ -8,12 +8,12 @@
 
 namespace xpod::qlever {
 
-class XpodBackedTextSearch {
+class XpodBackedVectorSearch {
  public:
-  XpodBackedTextSearch(
+  XpodBackedVectorSearch(
       xpod::rdf::PhysicalBackend backend,
-      xpod_rdf_text_search_request request,
-      std::string descriptor = "XpodBackedTextSearch",
+      xpod_rdf_vector_search_request request,
+      std::string descriptor = "XpodBackedVectorSearch",
       xpod_rdf_profile_node_key profile_node = 0,
       xpod_rdf_profile_node_key parent_profile_node = 0) noexcept
       : backend_(backend),
@@ -27,7 +27,7 @@ class XpodBackedTextSearch {
 
   XpodBackedCandidateEstimate estimate() const {
     xpod_rdf_estimate estimate = {};
-    return {backend_.estimateTextSearch(request_, estimate), estimate};
+    return {backend_.estimateVectorSearch(request_, estimate), estimate};
   }
 
   size_t getSizeEstimate() const {
@@ -53,8 +53,8 @@ class XpodBackedTextSearch {
 
   XpodBackedCandidateResult execute() const {
     xpod::rdf::CandidateBuffer candidates;
-    xpod_rdf_status status =
-        xpod::rdf::executeTextSearchToCandidates(backend_, request_, candidates);
+    xpod_rdf_status status = xpod::rdf::executeVectorSearchToCandidates(
+        backend_, request_, candidates);
     return {status, std::move(candidates)};
   }
 
@@ -87,7 +87,7 @@ class XpodBackedTextSearch {
     event.node = profile_node_;
     event.parent = parent_profile_node_;
     event.has_parent = has_parent_profile_node_ ? 1 : 0;
-    event.kind = XPOD_RDF_PROFILE_TEXT_SEARCH;
+    event.kind = XPOD_RDF_PROFILE_VECTOR_SEARCH;
     event.status = status;
     event.descriptor = {descriptor_.data(), descriptor_.size()};
     if (estimate_result.status == XPOD_RDF_STATUS_OK) {
@@ -99,7 +99,7 @@ class XpodBackedTextSearch {
   }
 
   xpod::rdf::PhysicalBackend backend_;
-  xpod_rdf_text_search_request request_;
+  xpod_rdf_vector_search_request request_;
   std::string descriptor_;
   xpod_rdf_profile_node_key profile_node_;
   xpod_rdf_profile_node_key parent_profile_node_;
