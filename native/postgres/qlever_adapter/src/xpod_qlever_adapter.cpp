@@ -1,17 +1,28 @@
 #include "xpod_qlever_adapter.h"
 
 #include "XpodPhysicalBackend.hpp"
+#include "XpodQleverExecutor.hpp"
 
+#include <memory>
 #include <new>
 #include <string>
 
 struct xpod_qlever_adapter {
-  explicit xpod_qlever_adapter(xpod_rdf_backend_v1* raw_backend)
-      : backend(raw_backend) {}
+  xpod_qlever_adapter(
+      xpod_rdf_backend_v1* raw_backend,
+      uint64_t memory_limit,
+      bool runtime_profile)
+      : backend(raw_backend),
+        memory_limit_bytes(memory_limit),
+        enable_runtime_profile(runtime_profile),
+        executor(xpod::qlever::createQueryExecutor(
+            backend,
+            {memory_limit_bytes, enable_runtime_profile})) {}
 
   xpod::rdf::PhysicalBackend backend;
   uint64_t memory_limit_bytes;
   bool enable_runtime_profile;
+  std::unique_ptr<xpod::qlever::QueryExecutor> executor;
   std::string result_storage;
   std::string profile_storage;
   std::string error_storage;
@@ -36,9 +47,10 @@ extern "C" xpod_rdf_status xpod_qlever_adapter_create(
   }
 
   try {
-    xpod_qlever_adapter* adapter = new xpod_qlever_adapter(config->backend);
-    adapter->memory_limit_bytes = config->memory_limit_bytes;
-    adapter->enable_runtime_profile = config->enable_runtime_profile != 0;
+    xpod_qlever_adapter* adapter = new xpod_qlever_adapter(
+        config->backend,
+        config->memory_limit_bytes,
+        config->enable_runtime_profile != 0);
     *out_adapter = adapter;
     return XPOD_RDF_STATUS_OK;
   } catch (const std::bad_alloc&) {
@@ -58,21 +70,12 @@ extern "C" xpod_rdf_status xpod_qlever_adapter_query(
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
 
-  adapter->result_storage.clear();
-  adapter->profile_storage.clear();
-  adapter->error_storage =
-      "xpod_qlever_adapter_query is not wired to QLever executor yet";
-
-  out_result->status = XPOD_RDF_STATUS_UNSUPPORTED;
-  out_result->result_json = {adapter->result_storage.data(),
-                             adapter->result_storage.size()};
-  out_result->profile_json = {adapter->profile_storage.data(),
-                              adapter->profile_storage.size()};
-  out_result->error_message = {adapter->error_storage.data(),
-                               adapter->error_storage.size()};
-
-  (void)sparql;
-  return XPOD_RDF_STATUS_UNSUPPORTED;
+  return adapter->executor->execute(
+      sparql,
+      *out_result,
+      adapter->result_storage,
+      adapter->profile_storage,
+      adapter->error_storage);
 }
 
 extern "C" void xpod_qlever_adapter_release_result(

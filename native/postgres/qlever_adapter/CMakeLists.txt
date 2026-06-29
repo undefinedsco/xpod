@@ -14,6 +14,7 @@ endif()
 
 set(XPOD_QLEVER_ADAPTER_SOURCES
   src/xpod_qlever_adapter.cpp
+  src/XpodQleverExecutor.cpp
 )
 
 if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
