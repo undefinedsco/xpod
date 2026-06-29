@@ -96,6 +96,8 @@ import type {
   RdfMinusQueryGroup,
   RdfExistsQueryGroup,
   RdfQuadIndexScanResult,
+  RdfQuadScanOptions,
+  RdfSlotTermKeyRange,
   RdfSourceInput,
   RdfVectorChunkInput,
   RdfVectorIndexLike,
@@ -4181,7 +4183,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  private async scanNative(pattern: QuintPattern, options?: QueryOptions): Promise<RdfQuadIndexScanResult> {
+  private async scanNative(pattern: QuintPattern, options?: RdfQuadScanOptions): Promise<RdfQuadIndexScanResult> {
     const start = Date.now();
     const resolved = await this.resolvePattern(pattern);
     if (resolved.unresolved) {
@@ -4210,7 +4212,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private async tryScanPgCustomIndexAny(
     pattern: QuintPattern,
     resolved: PgResolvedPattern,
-    options: QueryOptions | undefined,
+    options: RdfQuadScanOptions | undefined,
     start: number,
   ): Promise<RdfQuadIndexScanResult | undefined> {
     const baseCapability = 'index.xpod_rdf_perm.scan_any';
@@ -4251,6 +4253,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const queryPlan: string[] = [];
     const alias = 'q';
     this.appendResolvedPatternConditions(customResolved, alias, conditions, joins, builder, queryPlan, false);
+    this.appendSlotTermRangeConditions(options?.slotTermRanges, alias, conditions, builder, queryPlan);
     const order = this.buildOrderClause(options, alias);
     const pagination = this.buildPagination(options, builder);
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
@@ -4268,7 +4271,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ${order || ` ORDER BY ${permutation.columns.map((column) => `${alias}.${column}`).join(', ')}`}
       ${pagination.sql}
     `;
-    const count = await this.pgCustomIndexCountAny(customResolved, permutation);
+    const count = options?.slotTermRanges?.length ? undefined : await this.pgCustomIndexCountAny(customResolved, permutation);
     const fallbackCount = count === undefined ? this.compileScanSql(customResolved, options) : undefined;
     const matchedRows = count ?? await this.scalarCount(fallbackCount!.countSql, fallbackCount!.countParams);
     const rows = await this.requireExecutor().query<PgQuadIdRow>(sql, builder.snapshot());
@@ -4291,14 +4294,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return options?.limit !== undefined && (!options.order || options.order.length === 0);
   }
 
-  private async scanPostFilter(pattern: QuintPattern, options?: QueryOptions): Promise<RdfQuadIndexScanResult> {
+  private async scanPostFilter(pattern: QuintPattern, options?: RdfQuadScanOptions): Promise<RdfQuadIndexScanResult> {
     const start = Date.now();
     const rows = await this.requireExecutor().query<PgQuadIdRow>(`
       SELECT graph_id, subject_id, predicate_id, object_id
       FROM ${RDF_FACTS_TABLE}
       ORDER BY graph_id, subject_id, predicate_id, object_id
     `);
-    const quads = await this.rowsToQuads(rows);
+    const rangedRows = this.filterRowsBySlotTermRanges(rows, options?.slotTermRanges);
+    const quads = await this.rowsToQuads(rangedRows);
     const matched = quads.filter((value) => matchesQuadPattern(value, pattern));
     const ordered = orderQuads(matched, options);
     const startOffset = Math.max(0, options?.offset ?? 0);
@@ -4311,6 +4315,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       metrics: this.indexMetrics('facts-post-filter', matched.length, page.length, start, [
         'PostgresFactsScan',
         'PostgresFactsPostFilter',
+        ...this.slotTermRangePlanMarkers(options?.slotTermRanges),
         ...(options?.order?.length ? [`PostgresFactsScanOrder(${describeScanOrder(options)})`] : []),
         ...(options?.limit !== undefined || options?.offset !== undefined ? ['PostgresFactsScanLimit'] : []),
       ]),
@@ -9158,7 +9163,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     return this.requireDictionary().find(value as Term);
   }
 
-  private compileScanSql(resolved: PgResolvedPattern, options?: QueryOptions): PgCompiledScan {
+  private compileScanSql(resolved: PgResolvedPattern, options?: RdfQuadScanOptions): PgCompiledScan {
     const builder = new PgSqlBuilder();
     const conditions: string[] = [];
     const joins: string[] = [];
@@ -9167,6 +9172,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const permutation = this.choosePermutation(resolved);
     const alias = 'q';
     this.appendResolvedPatternConditions(resolved, alias, conditions, joins, builder, queryPlan, false);
+    this.appendSlotTermRangeConditions(options?.slotTermRanges, alias, conditions, builder, queryPlan);
     const order = this.buildOrderClause(options, alias);
     const pagination = this.buildPagination(options, builder);
     const from = `${RDF_FACTS_TABLE} ${alias}`;
@@ -9337,6 +9343,50 @@ export class PostgresRdfEngine implements RdfEngineLike {
       variableAliases,
       sourceEstimates,
     };
+  }
+
+  private slotTermRangePlanMarkers(ranges: RdfSlotTermKeyRange[] | undefined): string[] {
+    if (!ranges?.length) return [];
+    return ranges
+      .filter((range) => range.lower !== undefined || range.upper !== undefined)
+      .map((range) => `TermKeyRange(${range.slot})`);
+  }
+
+  private appendSlotTermRangeConditions(
+    ranges: RdfSlotTermKeyRange[] | undefined,
+    alias: string,
+    conditions: string[],
+    builder: PgSqlBuilder,
+    queryPlan: string[],
+  ): void {
+    for (const range of ranges ?? []) {
+      if (range.lower === undefined && range.upper === undefined) continue;
+      const column = `${alias}.${TERM_COLUMN[range.slot]}`;
+      if (range.lower !== undefined) {
+        conditions.push(`${column} ${range.lowerInclusive === false ? '>' : '>='} ${builder.add(range.lower)}`);
+      }
+      if (range.upper !== undefined) {
+        conditions.push(`${column} ${range.upperExclusive === false ? '<=' : '<'} ${builder.add(range.upper)}`);
+      }
+      queryPlan.push(`TermKeyRange(${range.slot})`);
+    }
+  }
+
+  private filterRowsBySlotTermRanges(
+    rows: PgQuadIdRow[],
+    ranges: RdfSlotTermKeyRange[] | undefined,
+  ): PgQuadIdRow[] {
+    if (!ranges?.length) return rows;
+    return rows.filter((row) => ranges.every((range) => {
+      const value = row[TERM_COLUMN[range.slot]];
+      if (range.lower !== undefined) {
+        if (range.lowerInclusive === false ? value <= range.lower : value < range.lower) return false;
+      }
+      if (range.upper !== undefined) {
+        if (range.upperExclusive === false ? value > range.upper : value >= range.upper) return false;
+      }
+      return true;
+    }));
   }
 
   private appendResolvedPatternConditions(

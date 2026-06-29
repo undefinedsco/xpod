@@ -1652,3 +1652,42 @@ bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/Qlev
 ```
 
 Expected: PASS.
+
+### Task 31: Execute slot term-key ranges in PostgresRdfEngine scans
+
+**Files:**
+- Modify: `tests/storage/rdf/PostgresRdfEngine.test.ts`
+- Modify: `src/storage/rdf/types.ts`
+- Modify: `src/storage/rdf/PostgresRdfEngine.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing engine test**
+
+Add a PostgreSQL RDF scan test with three matching subjects and a subject
+term-key range that should select only the middle subject.
+
+Expected: FAIL because the native protocol could carry `slot_ranges`, but the
+actual Postgres RDF scan path ignored slot term-key ranges.
+
+- [x] **Step 2: Add internal scan option shape**
+
+Add `RdfSlotTermKeyRange` and allow `RdfQuadScanOptions.slotTermRanges`. This is
+an internal physical scan option, not a Pod model field or user-facing RDF
+pattern operator.
+
+- [x] **Step 3: Push ranges into SQL and fallback scans**
+
+Compile `slotTermRanges` into `rdf_quads` term-id column predicates for SQL
+scans and custom-index fallback counts. Also apply the same range predicate to
+post-filter scans so unsupported patterns do not silently ignore the physical
+constraint.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/storage/rdf/PostgresRdfEngine.test.ts --run -t "slot term-key ranges"
+```
+
+Expected: PASS.

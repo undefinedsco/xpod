@@ -156,6 +156,60 @@ describe('PostgresRdfEngine', () => {
     );
   });
 
+  it('pushes slot term-key ranges into PostgreSQL RDF scans', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-slot-range-'));
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+    });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message1 = namedNode(`${graph.value}#msg_1`);
+    const message2 = namedNode(`${graph.value}#msg_2`);
+    const message3 = namedNode(`${graph.value}#msg_3`);
+
+    try {
+      await engine.open();
+      await engine.replaceSource([
+        quad(message1, namedNode(STATUS), literal('open'), graph),
+        quad(message2, namedNode(STATUS), literal('open'), graph),
+        quad(message3, namedNode(STATUS), literal('open'), graph),
+      ], {
+        source: graph.value,
+        workspace: 'https://pod.example/alice/.data/chat/default/',
+        localPath: '.data/chat/default/2026/05/18/messages.ttl',
+        contentType: 'text/turtle',
+        sourceVersion: 'v1',
+      });
+
+      const dictionary = (engine as unknown as { requireDictionary(): { find(term: unknown): Promise<number | undefined> } }).requireDictionary();
+      const message2Id = await dictionary.find(message2);
+      expect(message2Id).toBeTypeOf('number');
+
+      const result = await engine.scan({
+        pattern: {
+          graph,
+          predicate: namedNode(STATUS),
+          object: literal('open'),
+        },
+        options: {
+          slotTermRanges: [{
+            slot: 'subject',
+            lower: message2Id!,
+            upper: message2Id! + 1,
+            lowerInclusive: true,
+            upperExclusive: true,
+          }],
+        },
+      });
+
+      expect(result.quads.map((entry) => entry.subject.value)).toEqual([message2.value]);
+      expect(result.metrics.queryPlan?.join('\n')).toContain('TermKeyRange(subject)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-'));
     const engine = new PostgresRdfEngine({

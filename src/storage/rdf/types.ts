@@ -738,8 +738,17 @@ export interface RdfQuadJoinOrder {
   direction?: 'asc' | 'desc';
 }
 
+export interface RdfSlotTermKeyRange {
+  slot: RdfQueryPatternKey;
+  lower?: number;
+  upper?: number;
+  lowerInclusive?: boolean;
+  upperExclusive?: boolean;
+}
+
 export interface RdfQuadScanOptions extends QueryOptions {
   orderDirections?: Array<'asc' | 'desc'>;
+  slotTermRanges?: RdfSlotTermKeyRange[];
 }
 
 export interface RdfQuadJoinOptions {
@@ -767,7 +776,7 @@ export type RdfQuadJoinGroupCountHaving = RdfQuadJoinGroupAggregateHaving;
 
 export interface RdfPatternQuery {
   pattern: QuintPattern;
-  options?: QueryOptions;
+  options?: RdfQuadScanOptions;
 }
 
 export interface RdfQueryVariable {
