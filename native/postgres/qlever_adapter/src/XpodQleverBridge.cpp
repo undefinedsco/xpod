@@ -24,11 +24,9 @@
 #include "parser/SparqlParser.h"
 
 #include <exception>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <vector>
 
 namespace xpod::qlever {
@@ -50,19 +48,10 @@ xpod_rdf_status parseBridgeQuery(
     BridgeQueryPlan& out_plan) {
   try {
     auto parsed = SparqlParser::parseQuery(nullptr, std::string(query));
-    auto plan = [&parsed]() -> std::optional<BridgeQueryPlan> {
-      if (!parsed.hasSelectClause()) {
-        return std::nullopt;
-      }
-      if constexpr (std::is_default_constructible<QueryPlanner>::value) {
-        QueryPlanner planner;
-        auto planner_plan = planQleverParsedQueryWithPlanner(planner, parsed);
-        if (planner_plan.has_value()) {
-          return planner_plan;
-        }
-      }
-      return planParsedQuery(parsed);
-    }();
+    auto plan = planQleverParsedQueryWithAvailablePlanner(nullptr, parsed);
+    if (!plan.has_value()) {
+      plan = planParsedQuery(parsed);
+    }
     if (!plan.has_value()) {
       error_storage = "unsupported QLever bridge query";
       return XPOD_RDF_STATUS_UNSUPPORTED;

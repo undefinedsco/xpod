@@ -89,6 +89,7 @@ describe('native QLever adapter CMake target', () => {
     expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/Join.h');
     expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/Operation.h');
     expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/QueryExecutionTree.h');
+    expect(readFileSync(cmakeLists, 'utf8')).toContain('util/CancellationHandle.h');
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-source-present-'));
     try {
@@ -99,10 +100,12 @@ describe('native QLever adapter CMake target', () => {
       await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakePermissiveSparqlParserHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), '#pragma once\nnamespace ad_utility { struct SharedCancellationHandle {}; }\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
@@ -254,6 +257,7 @@ class Permutation {
       expect(output).toContain('global/Id.h');
       expect(output).toContain('index/Index.h');
       expect(output).toContain('index/LocalVocab.h');
+      expect(output).toContain('util/CancellationHandle.h');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

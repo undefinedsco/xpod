@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -157,6 +157,133 @@ int main() {
   if (nested_join_plan->filter_scans.size() != 2) return 30;
   if (nested_join_plan->root.scan_indexes.size() != 3) return 31;
   if (nested_join_plan->root.join_slot != XPOD_RDF_SLOT_SUBJECT) return 32;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(operationPlanHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('can build a bridge plan from a QueryPlanner constructed with QueryExecutionContext', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native QEC planner bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-qec-plan-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/parser'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), '#pragma once\n#include <cstdint>\nusing ColumnIndex = uint64_t;\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+  explicit Permutation(Enum value = Enum::SPO) : value_(value) {}
+  Enum permutation() const { return value_; }
+ private:
+  Enum value_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), `
+#pragma once
+namespace ad_utility {
+struct SharedCancellationHandle {};
+}
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
+#pragma once
+class QueryExecutionContext {
+ public:
+  bool ready = true;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
+#pragma once
+#include <string>
+#include <vector>
+#include "engine/QueryExecutionTree.h"
+#include "global/Id.h"
+class Operation {
+ public:
+  virtual ~Operation() = default;
+  virtual std::string getDescriptor() const = 0;
+  virtual size_t getResultWidth() const = 0;
+  const std::vector<ColumnIndex>& getResultSortedOn() const {
+    sorted_cache_ = resultSortedOn();
+    return sorted_cache_;
+  }
+  virtual std::vector<QueryExecutionTree*> getChildren() { return {}; }
+ protected:
+  virtual std::vector<ColumnIndex> resultSortedOn() const = 0;
+ private:
+  mutable std::vector<ColumnIndex> sorted_cache_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), fakeIndexScanHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), `
+#pragma once
+#include <memory>
+#include "engine/IndexScan.h"
+#include "engine/QueryExecutionContext.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+#include "util/CancellationHandle.h"
+class QueryPlanner {
+ public:
+  QueryPlanner(QueryExecutionContext* qec, ad_utility::SharedCancellationHandle)
+      : qec_(qec) {}
+  QueryExecutionTree createExecutionTree(ParsedQuery&, bool = false) {
+    if (qec_ == nullptr || !qec_->ready) {
+      return QueryExecutionTree();
+    }
+    return QueryExecutionTree(std::make_shared<IndexScan>());
+  }
+ private:
+  QueryExecutionContext* qec_;
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'qec_operation_plan_bridge_smoke.cpp');
+      const binary = path.join(root, 'qec_operation_plan_bridge_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverOperationPlanBridge.hpp"
+
+int main() {
+  ParsedQuery parsed = ParsedQuery::minimalSelect();
+  QueryExecutionContext qec;
+  auto plan = xpod::qlever::planQleverParsedQueryWithContext(&qec, parsed);
+  if (!plan.has_value()) return 1;
+  if (plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 2;
+  if (plan->descriptor != "IndexScan SPO ?s ?p ?o") return 3;
+  auto selected_plan = xpod::qlever::planQleverParsedQueryWithAvailablePlanner(&qec, parsed);
+  if (!selected_plan.has_value()) return 6;
+  if (selected_plan->descriptor != plan->descriptor) return 7;
+  qec.ready = false;
+  if (xpod::qlever::planQleverParsedQueryWithContext(&qec, parsed).has_value()) return 4;
+  if (xpod::qlever::planQleverParsedQueryWithContext(nullptr, parsed).has_value()) return 5;
   return 0;
 }
 `, 'utf8');

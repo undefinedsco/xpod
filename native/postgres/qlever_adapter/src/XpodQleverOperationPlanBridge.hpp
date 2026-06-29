@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string_view>
+#include <type_traits>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 #include "engine/IndexScan.h"
@@ -12,6 +13,22 @@
 #include "engine/Operation.h"
 #include "engine/QueryExecutionTree.h"
 #include "engine/QueryPlanner.h"
+
+#if __has_include("engine/QueryExecutionContext.h")
+#include "engine/QueryExecutionContext.h"
+#define XPOD_QLEVER_HAS_QUERY_EXECUTION_CONTEXT 1
+#else
+#define XPOD_QLEVER_HAS_QUERY_EXECUTION_CONTEXT 0
+#endif
+
+class QueryExecutionContext;
+
+#if __has_include("util/CancellationHandle.h")
+#include "util/CancellationHandle.h"
+#define XPOD_QLEVER_HAS_CANCELLATION_HANDLE 1
+#else
+#define XPOD_QLEVER_HAS_CANCELLATION_HANDLE 0
+#endif
 
 namespace xpod::qlever {
 
@@ -193,6 +210,84 @@ inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithPlanner(
     ParsedQuery& parsed) {
   QueryExecutionTree tree = planner.createExecutionTree(parsed);
   return planQleverExecutionTree(tree);
+}
+
+namespace detail {
+
+#if XPOD_QLEVER_HAS_CANCELLATION_HANDLE
+template <typename Planner, bool IsContextConstructible =
+                                std::is_constructible<
+                                    Planner,
+                                    QueryExecutionContext*,
+                                    ad_utility::SharedCancellationHandle>::value>
+struct ContextQueryPlannerBridge {
+  static std::optional<BridgeQueryPlan> plan(
+      QueryExecutionContext* qec,
+      ParsedQuery& parsed) {
+    (void)qec;
+    (void)parsed;
+    return std::nullopt;
+  }
+};
+
+template <typename Planner>
+struct ContextQueryPlannerBridge<Planner, true> {
+  static std::optional<BridgeQueryPlan> plan(
+      QueryExecutionContext* qec,
+      ParsedQuery& parsed) {
+    Planner planner(qec, ad_utility::SharedCancellationHandle{});
+    return planQleverParsedQueryWithPlanner(planner, parsed);
+  }
+};
+#endif
+
+template <typename Planner, bool IsDefaultConstructible =
+                                std::is_default_constructible<Planner>::value>
+struct DefaultQueryPlannerBridge {
+  static std::optional<BridgeQueryPlan> plan(ParsedQuery& parsed) {
+    (void)parsed;
+    return std::nullopt;
+  }
+};
+
+template <typename Planner>
+struct DefaultQueryPlannerBridge<Planner, true> {
+  static std::optional<BridgeQueryPlan> plan(ParsedQuery& parsed) {
+    Planner planner;
+    return planQleverParsedQueryWithPlanner(planner, parsed);
+  }
+};
+
+}  // namespace detail
+
+inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithContext(
+    QueryExecutionContext* qec,
+    ParsedQuery& parsed) {
+  if (!parsed.hasSelectClause()) {
+    return std::nullopt;
+  }
+  if (qec == nullptr) {
+    return std::nullopt;
+  }
+#if XPOD_QLEVER_HAS_CANCELLATION_HANDLE
+  return detail::ContextQueryPlannerBridge<QueryPlanner>::plan(qec, parsed);
+#else
+  (void)qec;
+  (void)parsed;
+  return std::nullopt;
+#endif
+}
+
+inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithAvailablePlanner(
+    QueryExecutionContext* qec,
+    ParsedQuery& parsed) {
+  if (!parsed.hasSelectClause()) {
+    return std::nullopt;
+  }
+  if (qec != nullptr) {
+    return planQleverParsedQueryWithContext(qec, parsed);
+  }
+  return detail::DefaultQueryPlannerBridge<QueryPlanner>::plan(parsed);
 }
 
 }  // namespace xpod::qlever
