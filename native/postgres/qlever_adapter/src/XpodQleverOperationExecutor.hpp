@@ -167,6 +167,26 @@ inline XpodBackedCandidateResult executeBridgeVectorCandidateSource(
   return adapter.computeResult(false);
 }
 
+inline XpodBackedCandidateResult executeBridgeCandidateSource(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan) {
+  if (plan.root.candidate_source == BridgeCandidateSourceKind::Text) {
+    if (plan.root.candidate_index >= plan.text_sources.size()) {
+      return makeEmptyCandidateOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+    }
+    return executeBridgeTextCandidateSource(
+        backend, plan.text_sources[plan.root.candidate_index]);
+  }
+  if (plan.root.candidate_source == BridgeCandidateSourceKind::Vector) {
+    if (plan.root.candidate_index >= plan.vector_sources.size()) {
+      return makeEmptyCandidateOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+    }
+    return executeBridgeVectorCandidateSource(
+        backend, plan.vector_sources[plan.root.candidate_index]);
+  }
+  return makeEmptyCandidateOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+}
+
 inline XpodBackedCandidateResult executeBridgeCandidateOperationPlan(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
@@ -288,8 +308,7 @@ inline uint32_t joinSlotForScan(
 inline QleverResultWithStatus executeBridgeCandidateHashJoin(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
-  if (plan.root.scan_indexes.size() != 1 ||
-      plan.root.candidate_index >= plan.text_sources.size()) {
+  if (plan.root.scan_indexes.size() != 1) {
     return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
   }
   size_t scan_index = plan.root.scan_indexes.front();
@@ -300,8 +319,8 @@ inline QleverResultWithStatus executeBridgeCandidateHashJoin(
   const BridgePhysicalScan& scan = plan.scans[scan_index];
   emitOperationProfileEvent(
       backend, plan.root, XPOD_RDF_PROFILE_RUNNING);
-  XpodBackedCandidateResult candidates = executeBridgeTextCandidateSource(
-      backend, plan.text_sources[plan.root.candidate_index]);
+  XpodBackedCandidateResult candidates = executeBridgeCandidateSource(
+      backend, plan);
   if (candidates.status != XPOD_RDF_STATUS_OK) {
     emitOperationProfileEvent(
         backend, plan.root, XPOD_RDF_PROFILE_FAILED);

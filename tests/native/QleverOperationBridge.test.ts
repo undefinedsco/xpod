@@ -176,6 +176,43 @@ static xpod_rdf_status text_search(
   return on_batch(callback_user_data, &batch);
 }
 
+static xpod_rdf_status estimate_vector_search(
+    void*,
+    const xpod_rdf_vector_search_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  if (request->dimensions != 2) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  if (!bytes_equal(request->model, "embed-v1")) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status vector_search(
+    void*,
+    const xpod_rdf_vector_search_request* request,
+    xpod_rdf_candidate_batch_callback on_batch,
+    void* callback_user_data) {
+  if (request->dimensions != 2) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  if (!bytes_equal(request->model, "embed-v1")) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_candidate row = {};
+  row.has_resource_term = 1;
+  row.resource_term = 11;
+  row.score = 0.91;
+  xpod_rdf_candidate_batch batch = {};
+  batch.rows = &row;
+  batch.row_count = 1;
+  batch.scanned_rows = 4;
+  return on_batch(callback_user_data, &batch);
+}
+
 static xpod_rdf_status scan(
     void* user_data,
     const xpod_rdf_scan_request* request,
@@ -222,6 +259,8 @@ int main() {
   backend.scan_permutation = scan;
   backend.estimate_text_search = estimate_text_search;
   backend.text_search = text_search;
+  backend.estimate_vector_search = estimate_vector_search;
+  backend.vector_search = vector_search;
   xpod::rdf::PhysicalBackend physical(&backend);
 
   xpod::qlever::BridgePhysicalPlan plan;
@@ -407,6 +446,66 @@ int main() {
   if (profile.kinds[5] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 47;
   if (profile.nodes[5] != 200 || profile.has_parents[5]) return 48;
   if (profile.output_rows[5] != 1) return 49;
+
+  state.calls = 0;
+  profile = {};
+  double vector_values[2] = {0.1, 0.2};
+  xpod::qlever::BridgePhysicalPlan vector_join_plan;
+  xpod::qlever::BridgeVectorCandidateSource vector_source;
+  vector_source.request.vector = vector_values;
+  vector_source.request.dimensions = 2;
+  vector_source.request.model = {"embed-v1", 8};
+  vector_source.request.metric = XPOD_RDF_VECTOR_COSINE;
+  vector_source.request.limit = 2;
+  vector_source.descriptor = "vector resource candidate";
+  vector_source.profile_node = 302;
+  vector_source.parent_profile_node = 300;
+  vector_join_plan.vector_sources.push_back(vector_source);
+
+  xpod::qlever::BridgePhysicalScan vector_primary;
+  vector_primary.scan.permutation = Permutation::Enum::SPO;
+  vector_primary.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  vector_primary.sorted_by = {0};
+  vector_primary.result_width = 3;
+  vector_primary.descriptor = "vector candidate join primary scan";
+  vector_primary.profile_node = 303;
+  vector_primary.parent_profile_node = 300;
+  vector_join_plan.scans.push_back(vector_primary);
+
+  vector_join_plan.root.kind = xpod::qlever::BridgeOperationKind::HashJoin;
+  vector_join_plan.root.use_candidate_join = true;
+  vector_join_plan.root.candidate_source =
+      xpod::qlever::BridgeCandidateSourceKind::Vector;
+  vector_join_plan.root.candidate_index = 0;
+  vector_join_plan.root.candidate_join_column =
+      xpod::qlever::BridgeCandidateColumnKind::ResourceTerm;
+  vector_join_plan.root.scan_indexes = {0};
+  vector_join_plan.root.join_slot = XPOD_RDF_SLOT_SUBJECT;
+  vector_join_plan.root.join_slots = {XPOD_RDF_SLOT_SUBJECT};
+  vector_join_plan.root.profile_node = 300;
+
+  auto vector_join_result = xpod::qlever::executeBridgeOperationPlan(physical, vector_join_plan);
+  if (vector_join_result.status != XPOD_RDF_STATUS_OK) return 50;
+  if (state.calls != 1) return 51;
+  const IdTable& vector_join_table = vector_join_result.result.idTable();
+  if (vector_join_table.numColumns() != 3 || vector_join_table.numRows() != 1) return 52;
+  if (vector_join_table(0, 0).getBits() != 1011) return 53;
+  if (vector_join_table(0, 1).getBits() != 1020) return 54;
+  if (vector_join_table(0, 2).getBits() != 1031) return 55;
+  if (profile.calls != 6) return 56;
+  if (profile.kinds[0] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[0] != XPOD_RDF_PROFILE_RUNNING) return 57;
+  if (profile.nodes[0] != 300 || profile.has_parents[0]) return 58;
+  if (profile.kinds[1] != XPOD_RDF_PROFILE_VECTOR_SEARCH || profile.statuses[1] != XPOD_RDF_PROFILE_RUNNING) return 59;
+  if (profile.nodes[1] != 302 || !profile.has_parents[1] || profile.parents[1] != 300) return 60;
+  if (profile.kinds[2] != XPOD_RDF_PROFILE_VECTOR_SEARCH || profile.statuses[2] != XPOD_RDF_PROFILE_COMPLETED) return 61;
+  if (profile.nodes[2] != 302 || !profile.has_parents[2] || profile.parents[2] != 300) return 62;
+  if (profile.kinds[3] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[3] != XPOD_RDF_PROFILE_RUNNING) return 63;
+  if (profile.nodes[3] != 303 || !profile.has_parents[3] || profile.parents[3] != 300) return 64;
+  if (profile.kinds[4] != XPOD_RDF_PROFILE_PERMUTATION_SCAN || profile.statuses[4] != XPOD_RDF_PROFILE_COMPLETED) return 65;
+  if (profile.nodes[4] != 303 || !profile.has_parents[4] || profile.parents[4] != 300) return 66;
+  if (profile.kinds[5] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 67;
+  if (profile.nodes[5] != 300 || profile.has_parents[5]) return 68;
+  if (profile.output_rows[5] != 1) return 69;
   return 0;
 }
 `, 'utf8');

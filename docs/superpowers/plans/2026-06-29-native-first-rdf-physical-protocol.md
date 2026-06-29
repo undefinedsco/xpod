@@ -454,3 +454,40 @@ bun test tests/native/QleverOperationBridge.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 11: Typed candidate source joins
+
+**Files:**
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing native execution test**
+
+Extend the candidate/RDF HashJoin smoke so a vector candidate source that emits a `ResourceTerm` can filter one RDF `IndexScan` by subject.
+
+Expected: FAIL because candidate HashJoin dispatch assumes the candidate source is always `text_sources[candidate_index]`.
+
+- [x] **Step 2: Add typed candidate source selection**
+
+Add `BridgeCandidateSourceKind::{Text, Vector}` and `BridgeOperationPlan::candidate_source`, defaulting to `Text` for compatibility with existing QLever text plans.
+
+- [x] **Step 3: Dispatch candidate HashJoin through the selected source**
+
+Route candidate HashJoin execution through a small typed dispatcher:
+- `Text` -> `executeBridgeTextCandidateSource(...)`;
+- `Vector` -> `executeBridgeVectorCandidateSource(...)`;
+- invalid source/index -> fail closed with `XPOD_RDF_STATUS_UNSUPPORTED`.
+
+The join filtering semantics stay the same: collect candidate keys from the configured candidate column, execute one RDF scan, and filter by the configured RDF slot.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

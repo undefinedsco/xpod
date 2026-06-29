@@ -27,6 +27,11 @@ enum class BridgeCandidateColumnKind {
   ResourceTerm,
 };
 
+enum class BridgeCandidateSourceKind {
+  Text,
+  Vector,
+};
+
 struct BridgeCandidateOutputColumn {
   std::string variable;
   BridgeCandidateColumnKind kind = BridgeCandidateColumnKind::RetrievalPoint;
@@ -36,6 +41,7 @@ struct BridgeOperationPlan {
   BridgeOperationKind kind = BridgeOperationKind::PermutationScan;
   std::vector<size_t> scan_indexes;
   size_t candidate_index = 0;
+  BridgeCandidateSourceKind candidate_source = BridgeCandidateSourceKind::Text;
   bool use_candidate_join = false;
   BridgeCandidateColumnKind candidate_join_column =
       BridgeCandidateColumnKind::ResourceTerm;
