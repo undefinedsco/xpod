@@ -919,6 +919,12 @@ Query / Search Request
 filter、fusion score、top-k 和 fallback。FTS / vector 返回的候选必须尽早变成可 join 的 `pointId` /
 `sourceNodeId` source，而不是先 materialize 成大数组再由应用层过滤。
 
+QLever-compatible 数据层边界单独定义在
+[`QLever-compatible RDF Physical Backend Protocol`](superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md)：
+先约束 term dictionary、permutation scan、cardinality stats、text/vector candidate、path scope、ACL/ACR
+和 execution profile，再决定是否把 QLever executor 或 PG native extension 接入。这里不允许先引入第二套
+SPO 事实源。
+
 路径处理分两层：
 
 1. **Path structural index**：结构硬约束，负责 exact path、prefix/subtree、parent-child、depth、workspace、
