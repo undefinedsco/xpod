@@ -2,6 +2,7 @@
 #include "XpodBackedIndexScan.hpp"
 #include "XpodQleverIdTableBridge.hpp"
 #include "XpodQleverPermutationMap.hpp"
+#include "XpodQleverResultBridge.hpp"
 #include "XpodQleverScanBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"
 #include "XpodQleverValueIdBridge.hpp"

@@ -52,9 +52,11 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/idTable/IdTable.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryExecutionContext.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryPlanner.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/engine/Result.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/RuntimeInformation.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/global/Id.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/index/Index.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/index/LocalVocab.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/index/Permutation.h"
   )
 

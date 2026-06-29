@@ -118,12 +118,35 @@ class IdTable {
       await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
 #pragma once
 #include <cstdint>
+using ColumnIndex = uint64_t;
 class Id {
  public:
   static Id fromBits(uint64_t bits) { return Id(bits); }
   uint64_t bits_;
  private:
   explicit Id(uint64_t bits) : bits_(bits) {}
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), `
+#pragma once
+class LocalVocab {};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
+#pragma once
+#include <utility>
+#include <vector>
+#include "engine/idTable/IdTable.h"
+#include "global/Id.h"
+#include "index/LocalVocab.h"
+class Result {
+ public:
+  Result(IdTable table, std::vector<ColumnIndex> sortedBy, LocalVocab&&)
+      : table_(std::move(table)), sortedBy_(std::move(sortedBy)) {}
+  const IdTable& idTable() const { return table_; }
+  const std::vector<ColumnIndex>& sortedBy() const { return sortedBy_; }
+ private:
+  IdTable table_;
+  std::vector<ColumnIndex> sortedBy_;
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Index.h'), '#pragma once\n', 'utf8');
@@ -181,9 +204,11 @@ class Permutation {
         output = cmakeFailureOutput(error);
       }
       expect(output).toContain('engine/QueryPlanner.h');
+      expect(output).toContain('engine/Result.h');
       expect(output).toContain('engine/idTable/IdTable.h');
       expect(output).toContain('global/Id.h');
       expect(output).toContain('index/Index.h');
+      expect(output).toContain('index/LocalVocab.h');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
