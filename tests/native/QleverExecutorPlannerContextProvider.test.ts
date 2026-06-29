@@ -20,6 +20,55 @@ function hasCxx(): boolean {
 }
 
 describe('QLever executor planner context provider', () => {
+  it('does not expose a planner context when the upstream context cannot receive the Xpod request', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native planner context provider check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-qec-provider-no-setter-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
+#pragma once
+class QueryExecutionContext {};
+`, 'utf8');
+
+      const smoke = path.join(root, 'planner_context_provider_no_setter_smoke.cpp');
+      const binary = path.join(root, 'planner_context_provider_no_setter_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPlannerContextProvider.hpp"
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  auto provider = xpod::qlever::createQueryPlannerContextProvider(physical);
+  xpod_qlever_query_request request = {};
+  if (provider->current(request) != nullptr) return 1;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/src'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('feeds an internal planner context into public adapter query execution', async () => {
     expect(hasCxx(), 'c++ compiler is required for native planner context provider check').toBe(true);
 

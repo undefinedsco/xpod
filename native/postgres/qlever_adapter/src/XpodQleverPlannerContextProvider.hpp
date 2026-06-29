@@ -87,6 +87,10 @@ class DefaultPlannerContextProvider<Context, true, true> final
 
   QueryExecutionContext* current(
       const xpod_qlever_query_request& request) override {
+    if constexpr (!HasXpodPlannerRequestContextSetter<Context>::value) {
+      (void)request;
+      return nullptr;
+    }
     PlannerRequestContext planner_context{backend_, &request};
     XpodPlannerRequestContextApplier<
         Context,
