@@ -19,6 +19,22 @@ class PhysicalBackend {
 
   xpod_rdf_backend_v1* raw() const noexcept { return backend_; }
 
+  bool preservesQleverTermOrder() const noexcept {
+    if (!valid()) {
+      return false;
+    }
+    if (hasField(offsetof(xpod_rdf_backend_v1, qlever_term_ordering),
+                 sizeof(backend_->qlever_term_ordering)) &&
+        backend_->qlever_term_ordering ==
+            XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED) {
+      return true;
+    }
+    return hasField(offsetof(xpod_rdf_backend_v1, term_key_encoding),
+                    sizeof(backend_->term_key_encoding)) &&
+           backend_->term_key_encoding ==
+               XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  }
+
   bool hasField(size_t offset, size_t size) const noexcept {
     return valid() && backend_->struct_size >= offset + size;
   }

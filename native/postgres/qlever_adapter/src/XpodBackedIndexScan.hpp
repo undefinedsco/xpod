@@ -42,7 +42,7 @@ class XpodBackedIndexScan {
   size_t getResultWidth() const noexcept { return result_width_; }
 
   const std::vector<ColumnIndex>& resultSortedOn() const noexcept {
-    return sorted_by_;
+    return effectiveSortedBy();
   }
 
   XpodBackedScanEstimate estimate() const {
@@ -84,11 +84,14 @@ class XpodBackedIndexScan {
   }
 
   QleverResultWithStatus executeResult() const {
-    return toQleverResult(execute(), sorted_by_);
+    return toQleverResult(execute(), effectiveSortedBy());
   }
 
   QleverResultWithStatus executeResult(
       std::vector<ColumnIndex> sorted_by) const {
+    if (!backend_.preservesQleverTermOrder()) {
+      sorted_by.clear();
+    }
     return toQleverResult(execute(), std::move(sorted_by));
   }
 
@@ -109,6 +112,14 @@ class XpodBackedIndexScan {
   }
 
  private:
+  const std::vector<ColumnIndex>& effectiveSortedBy() const noexcept {
+    if (backend_.preservesQleverTermOrder()) {
+      return sorted_by_;
+    }
+    static const std::vector<ColumnIndex> empty;
+    return empty;
+  }
+
   void emitProfileEvent(
       xpod_rdf_profile_status status,
       const XpodBackedScanEstimate& estimate_result,

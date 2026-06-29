@@ -104,6 +104,7 @@ The first native-first protocol artifacts are:
 - Batch TermDictionary lookup/resolve ABI: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
 - QLever adapter upstream include bridge: [`native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`](../../../native/postgres/qlever_adapter/src/XpodQleverBridge.cpp)
 - QLever ValueId bridge: [`native/postgres/qlever_adapter/src/XpodQleverValueIdBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverValueIdBridge.hpp)
+- QLever term-order contract: `xpod_rdf_qlever_term_ordering` in [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h), consumed by [`native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp`](../../../native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp)
 - QLever IdTable bridge: [`native/postgres/qlever_adapter/src/XpodQleverIdTableBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverIdTableBridge.hpp)
 - QLever Result bridge: [`native/postgres/qlever_adapter/src/XpodQleverResultBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverResultBridge.hpp)
 - Native candidate source bridge: [`native/postgres/qlever_adapter/src/XpodCandidateBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodCandidateBridge.hpp)
@@ -177,6 +178,7 @@ Rules:
 - `TermKey` is a backend-local stable dictionary key for the current facts snapshot.
 - `TermKey` is not a Pod resource id, not a fragment id, and not an application-facing identifier.
 - QLever `ValueId` bits are not implicitly identical to `TermKey`. The native backend must either expose encode/decode callbacks for QLever id bits or explicitly declare `XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS`.
+- QLever sortedness is a separate contract from id encoding. A backend may expose `XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED` only when native permutation order remains sorted after converting term keys to QLever id bits; otherwise the adapter must clear QLever `sorted_by` metadata instead of letting upper operators rely on false sortedness.
 - Literal identity includes lexical value, datatype, and language.
 - Numeric literal metadata may be exposed for filters and estimates, but it must not collapse distinct RDF lexical terms.
 - Long literals may use digest/text split internally; exact equality must still preserve RDF term identity.
@@ -286,7 +288,7 @@ interface PermutationAccess {
 Required behavior:
 
 - `scan` returns dictionary keys, not strings.
-- The backend must state the output sort order of each batch.
+- The backend must state the output sort order of each batch. That order is planner-visible only when the backend also declares that QLever term order is preserved.
 - `limit` is valid only when the backend can apply it before any non-pushed filter that might change correctness.
 - Graph-prefix scan must use actual graph terms or a collation-safe prefix method; it must not accidentally include subject/object IRIs with the same prefix.
 - Access scope must be applied before rows are exposed to the executor when the scope can deny rows.

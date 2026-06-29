@@ -1519,3 +1519,49 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 28: QLever term-order contract for native scans
+
+**Files:**
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `tests/native/QleverBackedIndexScan.test.ts`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing protocol and adapter tests**
+
+Add protocol-header expectations for `xpod_rdf_qlever_term_ordering` and
+`XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED`. Extend the Xpod-backed IndexScan smoke
+with an opaque custom encoder that reverses term order.
+
+Expected: FAIL because the public ABI has no term-order contract and the scan
+adapter currently preserves QLever `sorted_by` metadata even when encoded id
+order may differ from native term-key order.
+
+- [x] **Step 2: Add the native term-order contract**
+
+Extend `xpod_rdf_backend_v1` with optional `qlever_term_ordering`. Backends can
+set `XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED` when their permutation output remains
+sorted after term keys are converted to QLever id bits. Direct
+`XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS` remains order-preserving by
+construction.
+
+- [x] **Step 3: Fail safe on opaque order**
+
+`XpodBackedIndexScan` now reports and returns sorted columns only when the
+physical backend declares QLever term order is preserved. Opaque/custom encoders
+without that contract still execute correctly, but they do not expose false
+sortedness to QLever upper operators.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/QleverBackedIndexScan.test.ts --run
+```
+
+Expected: PASS.

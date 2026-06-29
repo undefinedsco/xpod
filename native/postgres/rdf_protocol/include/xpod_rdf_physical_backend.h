@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 4
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 5
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -22,6 +22,11 @@ typedef enum xpod_rdf_term_key_encoding {
   XPOD_RDF_TERM_KEY_ENCODING_OPAQUE = 0,
   XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS = 1
 } xpod_rdf_term_key_encoding;
+
+typedef enum xpod_rdf_qlever_term_ordering {
+  XPOD_RDF_QLEVER_TERM_ORDER_UNKNOWN = 0,
+  XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED = 1
+} xpod_rdf_qlever_term_ordering;
 
 typedef struct xpod_rdf_bytes {
   const char* data;
@@ -487,6 +492,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_lookup_terms_fn lookup_terms;
   xpod_rdf_resolve_terms_fn resolve_terms;
   xpod_rdf_estimate_source_scope_fn estimate_source_scope;
+  xpod_rdf_qlever_term_ordering qlever_term_ordering;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus

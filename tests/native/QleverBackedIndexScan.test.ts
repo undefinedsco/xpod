@@ -152,6 +152,7 @@ int main() {
   backend.on_profile_event = on_profile;
   backend.profile_user_data = &profile;
   backend.encode_qlever_id = encode;
+  backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;
   backend.estimate_scan = estimate_scan;
   backend.scan_permutation = scan;
   xpod::rdf::PhysicalBackend physical(&backend);
@@ -211,6 +212,80 @@ int main() {
         binary,
       ], { stdio: 'pipe' });
       execFileSync(binary, [], { stdio: 'pipe' });
+
+      const opaqueOrderSmoke = path.join(root, 'backed_index_scan_opaque_order_smoke.cpp');
+      const opaqueOrderBinary = path.join(root, 'backed_index_scan_opaque_order_smoke');
+      await writeFile(opaqueOrderSmoke, `
+#include "XpodBackedIndexScan.hpp"
+
+static xpod_rdf_status encode(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
+  *out_bits = 1000 - term;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_scan(
+    void*,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_estimate* out_estimate) {
+  out_estimate->rows = 2;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan(
+    void*,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  xpod_rdf_quad_key rows[2] = {
+    {10, 20, 30, 40},
+    {11, 20, 31, 40},
+  };
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 2;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.encode_qlever_id = encode;
+  backend.estimate_scan = estimate_scan;
+  backend.scan_permutation = scan;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::ScanRequestInput input = {};
+  input.permutation = Permutation::Enum::SPO;
+
+  xpod::qlever::XpodBackedIndexScan scanAdapter(physical, input, {0}, 3, "opaque-order scan");
+  if (!scanAdapter.resultSortedOn().empty()) return 1;
+  auto result = scanAdapter.executeResult();
+  if (result.status != XPOD_RDF_STATUS_OK) return 2;
+  if (!result.result.sortedBy().empty()) return 3;
+  auto explicitSorted = scanAdapter.executeResult({0});
+  if (explicitSorted.status != XPOD_RDF_STATUS_OK) return 4;
+  if (!explicitSorted.result.sortedBy().empty()) return 5;
+  if (result.result.idTable().numRows() != 2) return 6;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(scanHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        opaqueOrderSmoke,
+        '-o',
+        opaqueOrderBinary,
+      ], { stdio: 'pipe' });
+      execFileSync(opaqueOrderBinary, [], { stdio: 'pipe' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
