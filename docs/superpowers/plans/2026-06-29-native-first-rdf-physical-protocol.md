@@ -229,3 +229,38 @@ Update `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp` so
 Run: `bun test tests/native/QleverOperationPlanBridge.test.ts --run`
 
 Expected: PASS.
+
+### Task 7: Candidate output column execution guard
+
+**Files:**
+- Modify: `tests/native/QleverCandidateOperationBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing native execution test**
+
+Add a native smoke test where a text candidate source declares two output columns:
+- `text` → `BridgeCandidateColumnKind::RetrievalPoint`
+- `entity` → `BridgeCandidateColumnKind::ResourceTerm`
+
+The backend returns a candidate row with `has_retrieval_point = 1` but without `has_resource_term`.
+
+- [x] **Step 2: Run test to verify it fails**
+
+Run: `bun test tests/native/QleverCandidateOperationBridge.test.ts --run`
+
+Expected: FAIL because the current executor returns `XPOD_RDF_STATUS_OK` even though the declared entity/resource output is missing.
+
+- [x] **Step 3: Implement native candidate output validation**
+
+Add to `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`:
+- `candidateRowHasOutputColumn(...)`
+- `validateCandidateOutputColumns(...)`
+
+Then make `executeBridgeTextCandidateSource(...)` validate rows after text candidate execution. It preserves returned candidate rows for diagnostics but changes status to `XPOD_RDF_STATUS_UNSUPPORTED` when a declared output channel is missing.
+
+- [x] **Step 4: Run target verification**
+
+Run: `bun test tests/native/QleverCandidateOperationBridge.test.ts --run`
+
+Expected: PASS.

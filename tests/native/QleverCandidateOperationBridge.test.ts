@@ -287,4 +287,99 @@ int main() {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('fails closed when declared candidate output columns are missing', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native candidate operation bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-candidate-columns-'));
+    try {
+      const qleverSource = await writeFakeQleverHeaders(root);
+      const smoke = path.join(root, 'candidate_columns_smoke.cpp');
+      const binary = path.join(root, 'candidate_columns_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverOperationExecutor.hpp"
+
+#include <string>
+
+static bool bytes_equal(xpod_rdf_bytes actual, const char* expected) {
+  return std::string(actual.data, actual.size) == expected;
+}
+
+static xpod_rdf_status estimate_text_search(
+    void*,
+    const xpod_rdf_text_search_request*,
+    xpod_rdf_estimate* out_estimate) {
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status text_search(
+    void*,
+    const xpod_rdf_text_search_request* request,
+    xpod_rdf_candidate_batch_callback on_batch,
+    void* callback_user_data) {
+  if (!bytes_equal(request->query, "entity-topic")) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_candidate row = {};
+  row.has_retrieval_point = 1;
+  row.retrieval_point = 101;
+  row.score = 0.8;
+  xpod_rdf_candidate_batch batch = {};
+  batch.rows = &row;
+  batch.row_count = 1;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.estimate_text_search = estimate_text_search;
+  backend.text_search = text_search;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::BridgePhysicalPlan plan;
+  xpod::qlever::BridgeTextCandidateSource source;
+  source.request.query = {"entity-topic", 12};
+  source.output_columns.push_back({
+      "text",
+      xpod::qlever::BridgeCandidateColumnKind::RetrievalPoint,
+  });
+  source.output_columns.push_back({
+      "entity",
+      xpod::qlever::BridgeCandidateColumnKind::ResourceTerm,
+  });
+  plan.text_sources.push_back(source);
+  plan.root.kind = xpod::qlever::BridgeOperationKind::TextSearch;
+  plan.root.candidate_index = 0;
+
+  auto result = xpod::qlever::executeBridgeCandidateOperationPlan(physical, plan);
+  if (result.status != XPOD_RDF_STATUS_UNSUPPORTED) return 1;
+  if (result.candidates.rows.size() != 1) return 2;
+  if (!result.candidates.rows[0].has_retrieval_point) return 3;
+  if (result.candidates.rows[0].has_resource_term) return 4;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(operationHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

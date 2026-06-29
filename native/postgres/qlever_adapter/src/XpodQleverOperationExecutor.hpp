@@ -65,6 +65,34 @@ inline XpodBackedCandidateResult makeEmptyCandidateOperationResult(
   return {status, {}};
 }
 
+inline bool candidateRowHasOutputColumn(
+    const xpod::rdf::CandidateRow& row,
+    BridgeCandidateColumnKind kind) noexcept {
+  switch (kind) {
+    case BridgeCandidateColumnKind::RetrievalPoint:
+      return row.has_retrieval_point;
+    case BridgeCandidateColumnKind::ResourceTerm:
+      return row.has_resource_term;
+  }
+  return false;
+}
+
+inline xpod_rdf_status validateCandidateOutputColumns(
+    const xpod::rdf::CandidateBuffer& candidates,
+    const std::vector<BridgeCandidateOutputColumn>& columns) noexcept {
+  if (columns.empty()) {
+    return XPOD_RDF_STATUS_OK;
+  }
+  for (const xpod::rdf::CandidateRow& row : candidates.rows) {
+    for (const BridgeCandidateOutputColumn& column : columns) {
+      if (!candidateRowHasOutputColumn(row, column.kind)) {
+        return XPOD_RDF_STATUS_UNSUPPORTED;
+      }
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 enum class BridgePhysicalResultKind {
   RdfRows,
   CandidateRows,
@@ -83,7 +111,15 @@ inline XpodBackedCandidateResult executeBridgeTextCandidateSource(
   XpodBackedTextSearch adapter(
       backend, source.request, source.descriptor, source.profile_node,
       source.parent_profile_node);
-  return adapter.computeResult(false);
+  XpodBackedCandidateResult result = adapter.computeResult(false);
+  if (result.status == XPOD_RDF_STATUS_OK) {
+    xpod_rdf_status validation_status = validateCandidateOutputColumns(
+        result.candidates, source.output_columns);
+    if (validation_status != XPOD_RDF_STATUS_OK) {
+      result.status = validation_status;
+    }
+  }
+  return result;
 }
 
 inline XpodBackedCandidateResult executeBridgeVectorCandidateSource(
