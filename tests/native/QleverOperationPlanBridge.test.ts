@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader } from './qleverFakeHeaders';
+import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeNeutralElementOperationHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -227,6 +227,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/LimitOffset.h'), fakeLimitOffsetHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/NeutralElementOperation.h'), fakeNeutralElementOperationHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForEntity.h'), fakeTextIndexScanForEntityHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextLimit.h'), fakeTextLimitHeader, 'utf8');
@@ -294,6 +295,7 @@ class IndexScan final : public Operation {
 #include "engine/OrderBy.h"
 #include "engine/Sort.h"
 #include "engine/LimitOffset.h"
+#include "engine/NeutralElementOperation.h"
 #include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
 #include "engine/TextLimit.h"
@@ -399,6 +401,16 @@ int main() {
   auto text_limit_physical = xpod::qlever::toBridgePhysicalPlan(*text_limit_plan);
   if (text_limit_physical.text_sources.size() != 1) return 197;
   if (text_limit_physical.text_sources[0].request.limit != 5) return 198;
+
+  NeutralElementOperation neutral_operation;
+  auto neutral_plan = xpod::qlever::planQleverOperation(neutral_operation);
+  if (!neutral_plan.has_value()) return 199;
+  if (neutral_plan->root.kind != xpod::qlever::BridgeOperationKind::NeutralElement) return 200;
+  if (neutral_plan->result_width != 0) return 201;
+  if (!neutral_plan->output_variables.empty()) return 202;
+  auto neutral_physical = xpod::qlever::toBridgePhysicalPlan(*neutral_plan);
+  if (neutral_physical.root.kind != xpod::qlever::BridgeOperationKind::NeutralElement) return 203;
+  if (!neutral_physical.scans.empty()) return 204;
 
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;

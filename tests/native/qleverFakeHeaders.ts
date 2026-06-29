@@ -518,3 +518,18 @@ class TextLimit final : public Operation {
   std::vector<ColumnIndex> score_columns_;
 };
 `;
+
+export const fakeNeutralElementOperationHeader = `
+#pragma once
+#include <string>
+#include <vector>
+#include "engine/Operation.h"
+class NeutralElementOperation final : public Operation {
+ public:
+  std::vector<QueryExecutionTree*> getChildren() override { return {}; }
+  std::string getDescriptor() const override { return "Neutral element"; }
+  size_t getResultWidth() const override { return 0; }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
+};
+`;

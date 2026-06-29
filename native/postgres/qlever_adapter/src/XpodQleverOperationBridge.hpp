@@ -20,6 +20,7 @@ enum class BridgeOperationKind {
   HashJoin,
   TextSearch,
   VectorSearch,
+  NeutralElement,
 };
 
 enum class BridgeCandidateColumnKind {

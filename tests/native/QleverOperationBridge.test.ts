@@ -749,6 +749,16 @@ int main() {
       sort_result.result.sortedBy()[0] != 0) return 120;
   if (sort_table(0, 0).getBits() != 1010) return 121;
   if (sort_table(1, 0).getBits() != 1011) return 122;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan neutral_plan;
+  neutral_plan.root.kind = xpod::qlever::BridgeOperationKind::NeutralElement;
+  auto neutral_result = xpod::qlever::executeBridgeOperationPlan(physical, neutral_plan);
+  if (neutral_result.status != XPOD_RDF_STATUS_OK) return 123;
+  if (state.calls != 0) return 124;
+  const IdTable& neutral_table = neutral_result.result.idTable();
+  if (neutral_table.numColumns() != 0 || neutral_table.numRows() != 1) return 125;
+  if (!neutral_result.result.sortedBy().empty()) return 126;
   return 0;
 }
 `, 'utf8');

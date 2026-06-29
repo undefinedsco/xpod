@@ -45,6 +45,13 @@
 #define XPOD_QLEVER_HAS_LIMIT_OFFSET 0
 #endif
 
+#if __has_include("engine/NeutralElementOperation.h")
+#include "engine/NeutralElementOperation.h"
+#define XPOD_QLEVER_HAS_NEUTRAL_ELEMENT 1
+#else
+#define XPOD_QLEVER_HAS_NEUTRAL_ELEMENT 0
+#endif
+
 #if __has_include("engine/Distinct.h")
 #include "engine/Distinct.h"
 #define XPOD_QLEVER_HAS_DISTINCT 1
@@ -807,8 +814,26 @@ inline std::optional<BridgeQueryPlan> planTextLimitOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_NEUTRAL_ELEMENT
+inline std::optional<BridgeQueryPlan> planNeutralElementOperation(
+    const NeutralElementOperation& operation) {
+  BridgeQueryPlan plan;
+  plan.root.kind = BridgeOperationKind::NeutralElement;
+  plan.result_width = 0;
+  plan.descriptor = operation.getDescriptor();
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
+#if XPOD_QLEVER_HAS_NEUTRAL_ELEMENT
+  const auto* neutral =
+      dynamic_cast<const NeutralElementOperation*>(&operation);
+  if (neutral != nullptr) {
+    return planNeutralElementOperation(*neutral);
+  }
+#endif
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET
   const auto* limit_offset = dynamic_cast<const LimitOffset*>(&operation);
   if (limit_offset != nullptr) {

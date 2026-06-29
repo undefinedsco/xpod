@@ -1004,3 +1004,62 @@ bun test tests/native/QleverOperationPlanBridge.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 20: NeutralElementOperation leaf
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever `NeutralElementOperation.h` as the source of truth.
+
+`NeutralElementOperation` exposes:
+- no children through `getChildren()`;
+- `getResultWidth() == 0`;
+- empty `resultSortedOn()`;
+- an execution result containing one zero-width row.
+
+- [x] **Step 2: Write the failing planner and executor tests**
+
+Extend the operation-plan smoke with a `NeutralElementOperation` leaf.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::NeutralElement`;
+- result width is `0`;
+- output variables are empty;
+- the physical plan has no scans.
+
+Extend the operation executor smoke with a hand-built neutral root.
+
+Expected execution:
+- no backend scan is invoked;
+- result status is OK;
+- result table has width `0` and one row;
+- sorted columns are empty.
+
+Expected: FAIL because the bridge previously had no neutral-element root.
+
+- [x] **Step 3: Plan and execute NeutralElementOperation**
+
+When the embedded QLever build exposes `engine/NeutralElementOperation.h`, map
+the operation to a `NeutralElement` root and use the upstream descriptor.
+
+Execution materializes an empty-width `IdTable` with one row and no sorted
+columns.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

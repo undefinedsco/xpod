@@ -1044,6 +1044,12 @@ inline QleverResultWithStatus executeBridgeOperationPlan(
     const BridgePhysicalPlan& plan) {
   QleverResultWithStatus result =
       makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  if (plan.root.kind == BridgeOperationKind::NeutralElement) {
+    IdTable output(0);
+    std::vector<Id> row;
+    output.push_back(row);
+    return toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {});
+  }
   if (plan.root.kind == BridgeOperationKind::PermutationScan) {
     if (plan.root.scan_indexes.size() != 1) {
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
