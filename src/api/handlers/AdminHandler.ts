@@ -32,6 +32,139 @@ interface EnvConfig {
   [key: string]: string;
 }
 
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  source: string;
+  message: string;
+}
+
+export interface SanitizedEnvRead {
+  env: EnvConfig;
+  secrets: Record<string, { configured: boolean }>;
+}
+
+export const ALLOWED_ADMIN_CONFIG_KEYS = [
+  'XPOD_DEPLOY_MODE',
+  'CSS_ROOT_FILE_PATH',
+  'CSS_BASE_URL',
+  'XPOD_TUNNEL_PROVIDER',
+  'XPOD_TUNNEL_PUBLIC_URL',
+  'CLOUDFLARE_TUNNEL_TOKEN',
+  'SAKURA_TUNNEL_TOKEN',
+  'NGROK_AUTHTOKEN',
+  'NGROK_URL',
+  'FRP_TUNNEL_TOKEN',
+  'FRP_TUNNEL_URL',
+  'XPOD_HTTPS_MODE',
+  'XPOD_HTTPS_CERT_PATH',
+  'XPOD_HTTPS_KEY_PATH',
+  'XPOD_CLOUD_API_ENDPOINT',
+  'XPOD_NODE_ID',
+  'XPOD_SP_DOMAIN',
+  'XPOD_NODE_TOKEN',
+  'XPOD_SERVICE_TOKEN',
+  'CSS_PORT',
+  'CSS_SPARQL_ENDPOINT',
+  'CSS_IDENTITY_DB_URL',
+  'CSS_LOGGING_LEVEL',
+  'CSS_SHOW_STACK_TRACE',
+] as const;
+
+const ALLOWED_ADMIN_CONFIG_KEY_SET = new Set<string>(ALLOWED_ADMIN_CONFIG_KEYS);
+
+export function isAdminSecretEnvKey(key: string): boolean {
+  const normalized = key.toUpperCase();
+  if (normalized.endsWith('_KEY_PATH') || normalized.endsWith('_CERT_PATH')) {
+    return false;
+  }
+  return (
+    normalized.includes('AUTHTOKEN') ||
+    normalized.endsWith('_TOKEN') ||
+    normalized.endsWith('_SECRET') ||
+    normalized.endsWith('_API_KEY') ||
+    normalized.includes('PASSWORD') ||
+    normalized.includes('CLIENT_SECRET') ||
+    normalized.endsWith('_DB_URL') ||
+    normalized.includes('DATABASE_URL')
+  );
+}
+
+export function sanitizeEnvForRead(env: EnvConfig): SanitizedEnvRead {
+  const sanitized: EnvConfig = {};
+  const secrets: Record<string, { configured: boolean }> = {};
+
+  for (const [key, value] of Object.entries(env)) {
+    if (isAdminSecretEnvKey(key)) {
+      secrets[key] = { configured: Boolean(value) };
+      continue;
+    }
+    sanitized[key] = value;
+  }
+
+  return { env: sanitized, secrets };
+}
+
+export function createAllowedAdminConfigPatch(input: EnvConfig): EnvConfig {
+  const patch: EnvConfig = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (!ALLOWED_ADMIN_CONFIG_KEY_SET.has(key)) {
+      continue;
+    }
+    if (isAdminSecretEnvKey(key) && !value) {
+      continue;
+    }
+    patch[key] = value;
+  }
+  return patch;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function sanitizeLogMessage(message: string, env: EnvConfig): string {
+  let sanitized = message;
+  const secretEntries = Object.entries(env)
+    .filter(([key, value]) => isAdminSecretEnvKey(key) && value.length >= 6)
+    .sort((a, b) => b[1].length - a[1].length);
+
+  for (const [key, value] of secretEntries) {
+    sanitized = sanitized.replace(new RegExp(escapeRegExp(value), 'g'), `[redacted:${key}]`);
+  }
+  return sanitized;
+}
+
+function sanitizeLogEntry(entry: LogEntry, env: EnvConfig): LogEntry {
+  return {
+    ...entry,
+    message: sanitizeLogMessage(entry.message, env),
+  };
+}
+
+function isLocalAdminHost(req: AuthenticatedRequest): boolean {
+  const configuredToken = process.env.XPOD_ADMIN_TOKEN;
+  const providedToken = req.headers['x-xpod-admin-token'] ??
+    req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (configuredToken && providedToken === configuredToken) {
+    return true;
+  }
+
+  const host = String(req.headers.host ?? '').split(':')[0].toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+}
+
+function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerResponse): boolean {
+  if (isLocalAdminHost(req)) {
+    return true;
+  }
+  sendJson(res, 403, {
+    error: 'Forbidden',
+    detail: 'Runtime config writes and restart are allowed only from loopback or with XPOD_ADMIN_TOKEN.',
+  });
+  return false;
+}
+
 /**
  * Read .env.local file and parse it
  */
@@ -206,7 +339,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       const envFilePath = getEnvFilePath();
       const env = readEnvFile(envFilePath);
       sendJson(res, 200, {
-        env,
+        ...sanitizeEnvForRead(env),
         configFiles: listConfigFiles(),
       });
     } catch (error) {
@@ -221,6 +354,9 @@ export function registerAdminRoutes(server: ApiServer): void {
     res: ServerResponse,
   ) => {
     try {
+      if (!assertAdminMutationAllowed(req, res)) {
+        return;
+      }
       // Parse body from raw request
       const body = await parseJsonBody(req);
 
@@ -228,7 +364,8 @@ export function registerAdminRoutes(server: ApiServer): void {
         // Merge with existing config
         const envFilePath = getEnvFilePath();
         const currentEnv = readEnvFile(envFilePath);
-        const newEnv = { ...currentEnv, ...body.env };
+        const patch = createAllowedAdminConfigPatch(body.env);
+        const newEnv = { ...currentEnv, ...patch };
 
         // Remove keys set to null or empty string
         for (const [key, value] of Object.entries(newEnv)) {
@@ -253,10 +390,13 @@ export function registerAdminRoutes(server: ApiServer): void {
 
   // POST /api/admin/restart - Trigger xpod restart
   const restartHandler: RouteHandler = async (
-    _req: AuthenticatedRequest,
+    req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
     try {
+      if (!assertAdminMutationAllowed(req, res)) {
+        return;
+      }
       const ppid = process.ppid;
 
       if (!ppid) {
@@ -287,12 +427,7 @@ export function registerAdminRoutes(server: ApiServer): void {
   };
 
   // Log buffer for recent logs (in-memory)
-  const logBuffer: Array<{
-    timestamp: string;
-    level: string;
-    source: string;
-    message: string;
-  }> = [];
+  const logBuffer: LogEntry[] = [];
   const MAX_LOG_BUFFER = 1000;
 
   // Capture stdout/stderr logs
@@ -336,6 +471,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       const limit = parseInt(url.searchParams.get('limit') || '100', 10);
       const level = url.searchParams.get('level');
       const source = url.searchParams.get('source');
+      const env = readEnvFile(getEnvFilePath());
 
       let logs = [...logBuffer];
 
@@ -348,7 +484,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       }
 
       // Return last N logs
-      logs = logs.slice(-limit);
+      logs = logs.slice(-limit).map((log) => sanitizeLogEntry(log, env));
 
       sendJson(res, 200, { logs });
     } catch (error) {
@@ -370,13 +506,15 @@ export function registerAdminRoutes(server: ApiServer): void {
 
     // Send initial logs
     const lastIndex = logBuffer.length;
-    res.write(`data: ${JSON.stringify({ type: 'init', logs: logBuffer.slice(-100) })}\n\n`);
+    let env = readEnvFile(getEnvFilePath());
+    res.write(`data: ${JSON.stringify({ type: 'init', logs: logBuffer.slice(-100).map((log) => sanitizeLogEntry(log, env)) })}\n\n`);
 
     // Send new logs every second
     let currentIndex = lastIndex;
     const interval = setInterval(() => {
       if (logBuffer.length > currentIndex) {
-        const newLogs = logBuffer.slice(currentIndex);
+        env = readEnvFile(getEnvFilePath());
+        const newLogs = logBuffer.slice(currentIndex).map((log) => sanitizeLogEntry(log, env));
         res.write(`data: ${JSON.stringify({ type: 'update', logs: newLogs })}\n\n`);
         currentIndex = logBuffer.length;
       }
@@ -396,6 +534,7 @@ export function registerAdminRoutes(server: ApiServer): void {
     try {
       const url = new URL(req.url || '', `http://${req.headers.host}`);
       const lines = parseInt(url.searchParams.get('lines') || '100', 10);
+      const env = readEnvFile(getEnvFilePath());
 
       // Try common log file locations
       const logPaths = [
@@ -434,7 +573,7 @@ export function registerAdminRoutes(server: ApiServer): void {
       const lastLines = fileLogs.slice(-lines);
       sendJson(res, 200, {
         file: logPath,
-        lines: lastLines,
+        lines: lastLines.map((line) => sanitizeLogMessage(line, env)),
       });
     } catch (error) {
       logger.error('[Admin] Get log file error:', error);

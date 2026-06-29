@@ -1,8 +1,9 @@
 /**
- * Settings 页面 - 面向产品配置层（LinX 侧 5 项主配置）
+ * Settings page - advanced local runtime configuration
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input, Label } from '@/components/ui/Input';
@@ -13,6 +14,8 @@ import {
   SelectContent,
   SelectItem,
 } from '@/components/ui/Select';
+import { PendingChangesPanel } from '@/components/admin/PendingChangesPanel';
+import { SecretField } from '@/components/admin/SecretField';
 import {
   getAdminConfig,
   getPublicIpCheck,
@@ -25,23 +28,37 @@ import {
 import { clsx } from 'clsx';
 
 type DeployMode = 'local' | 'standalone';
-type TunnelProvider = 'none' | 'cloudflare' | 'sakura_frp';
+type TunnelProvider = 'none' | 'ngrok' | 'cloudflare' | 'sakura_frp' | 'frp';
 type HttpsMode = 'none' | 'acme' | 'manual';
 type PublicIpCheckStatus = 'pass' | 'fail' | 'unknown';
+type TunnelProviderFieldSpec = {
+  publicEndpointKey: string;
+  publicEndpointLabel: string;
+  publicEndpointPlaceholder: string;
+  credentialKey: string;
+  credentialLabel: string;
+};
 
 const ALLOWED_KEYS = [
-  // 5 params
   'XPOD_DEPLOY_MODE',
   'CSS_ROOT_FILE_PATH',
   'CSS_BASE_URL',
   'XPOD_TUNNEL_PROVIDER',
+  'XPOD_TUNNEL_PUBLIC_URL',
   'CLOUDFLARE_TUNNEL_TOKEN',
   'SAKURA_TUNNEL_TOKEN',
+  'NGROK_AUTHTOKEN',
+  'NGROK_URL',
+  'FRP_TUNNEL_TOKEN',
+  'FRP_TUNNEL_URL',
   'XPOD_HTTPS_MODE',
   'XPOD_HTTPS_CERT_PATH',
   'XPOD_HTTPS_KEY_PATH',
-
-  // Advanced
+  'XPOD_CLOUD_API_ENDPOINT',
+  'XPOD_NODE_ID',
+  'XPOD_SP_DOMAIN',
+  'XPOD_NODE_TOKEN',
+  'XPOD_SERVICE_TOKEN',
   'CSS_PORT',
   'CSS_SPARQL_ENDPOINT',
   'CSS_IDENTITY_DB_URL',
@@ -49,8 +66,89 @@ const ALLOWED_KEYS = [
   'CSS_SHOW_STACK_TRACE',
 ] as const;
 
+const SECRET_KEYS = new Set<string>([
+  'CLOUDFLARE_TUNNEL_TOKEN',
+  'SAKURA_TUNNEL_TOKEN',
+  'NGROK_AUTHTOKEN',
+  'FRP_TUNNEL_TOKEN',
+  'XPOD_NODE_TOKEN',
+  'XPOD_SERVICE_TOKEN',
+  'CSS_IDENTITY_DB_URL',
+]);
+
+const TUNNEL_PROVIDER_FIELDS: Record<Exclude<TunnelProvider, 'none'>, TunnelProviderFieldSpec> = {
+  ngrok: {
+    publicEndpointKey: 'NGROK_URL',
+    publicEndpointLabel: 'ngrok 固定入口 URL',
+    publicEndpointPlaceholder: 'https://example.ngrok-free.dev',
+    credentialKey: 'NGROK_AUTHTOKEN',
+    credentialLabel: 'ngrok authtoken',
+  },
+  cloudflare: {
+    publicEndpointKey: 'XPOD_TUNNEL_PUBLIC_URL',
+    publicEndpointLabel: 'Cloudflare Tunnel 公开入口',
+    publicEndpointPlaceholder: 'https://example.trycloudflare.com',
+    credentialKey: 'CLOUDFLARE_TUNNEL_TOKEN',
+    credentialLabel: 'Cloudflare Tunnel Token',
+  },
+  sakura_frp: {
+    publicEndpointKey: 'XPOD_TUNNEL_PUBLIC_URL',
+    publicEndpointLabel: 'Sakura FRP 公开入口 URL',
+    publicEndpointPlaceholder: 'https://example.example.com',
+    credentialKey: 'SAKURA_TUNNEL_TOKEN',
+    credentialLabel: 'Sakura FRP Token',
+  },
+  frp: {
+    publicEndpointKey: 'FRP_TUNNEL_URL',
+    publicEndpointLabel: 'FRP 公开入口 URL',
+    publicEndpointPlaceholder: 'https://example.example.com',
+    credentialKey: 'FRP_TUNNEL_TOKEN',
+    credentialLabel: 'FRP Token',
+  },
+};
+
+function getTunnelProviderFields(provider: TunnelProvider): TunnelProviderFieldSpec | null {
+  return provider === 'none' ? null : TUNNEL_PROVIDER_FIELDS[provider];
+}
+
+function isSecretKey(key: string): boolean {
+  return SECRET_KEYS.has(key);
+}
+
+function fieldChange(env: Record<string, string>, key: string, value: string): Record<string, string> {
+  return { ...env, [key]: value };
+}
+
+function FormField(props: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  helper?: string;
+  placeholder?: string;
+  readOnly?: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={props.id}>{props.label}</Label>
+      <Input
+        id={props.id}
+        value={props.value}
+        onChange={(event) => props.onChange(event.target.value)}
+        placeholder={props.placeholder}
+        readOnly={props.readOnly}
+        aria-readonly={props.readOnly || undefined}
+      />
+      {props.helper ? <p className="text-xs text-muted-foreground">{props.helper}</p> : null}
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const [env, setEnv] = useState<Record<string, string>>({});
+  const [originalEnv, setOriginalEnv] = useState<Record<string, string>>({});
+  const [secretReplacements, setSecretReplacements] = useState<Record<string, string>>({});
+  const [secretConfigured, setSecretConfigured] = useState<Record<string, { configured: boolean }>>({});
   const [publicIpCheckResult, setPublicIpCheckResult] = useState<PublicIpCheckResult | null>(null);
   const [ddnsStatus, setDdnsStatus] = useState<DdnsStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +158,7 @@ export function SettingsPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const mode: DeployMode = env.XPOD_DEPLOY_MODE === 'standalone' ? 'standalone' : 'local';
-  const tunnelProvider: TunnelProvider = ['none', 'cloudflare', 'sakura_frp'].includes(env.XPOD_TUNNEL_PROVIDER)
+  const tunnelProvider: TunnelProvider = ['none', 'ngrok', 'cloudflare', 'sakura_frp', 'frp'].includes(env.XPOD_TUNNEL_PROVIDER)
     ? (env.XPOD_TUNNEL_PROVIDER as TunnelProvider)
     : 'none';
   const httpsMode: HttpsMode = ['none', 'acme', 'manual'].includes(env.XPOD_HTTPS_MODE)
@@ -69,36 +167,27 @@ export function SettingsPage() {
   const publicIpCheck: PublicIpCheckStatus = publicIpCheckResult?.status ?? 'unknown';
   const isLocal = mode === 'local';
   const hasCloudEndpoint = Boolean(env.XPOD_CLOUD_API_ENDPOINT);
-  const canSelectLocal = hasCloudEndpoint;
-  // 只有 Local 模式且配置了 Cloud 端点才是托管模式
-  const isManaged = isLocal && canSelectLocal;
+  const isManaged = isLocal && hasCloudEndpoint;
+  const managedBaseUrl = ddnsStatus?.baseUrl || env.CSS_BASE_URL || (ddnsStatus?.fqdn ? `https://${ddnsStatus.fqdn}/` : '');
+  const tunnelProviderFields = getTunnelProviderFields(tunnelProvider);
 
   useEffect(() => {
     void loadConfig();
   }, []);
 
   useEffect(() => {
-    // Auto-run check on page enter / baseUrl changes.
-    if (loading) {
-      return;
-    }
-
-    void refreshPublicIpCheck(env.CSS_BASE_URL);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [env.CSS_BASE_URL, mode, loading]);
+    if (loading) return;
+    void refreshPublicIpCheck(isManaged ? managedBaseUrl : env.CSS_BASE_URL);
+  }, [env.CSS_BASE_URL, isManaged, managedBaseUrl, mode, loading]);
 
   useEffect(() => {
-    if (loading) {
-      return;
-    }
+    if (loading) return;
     if (isManaged) {
       void loadDdnsStatus();
     } else {
       setDdnsStatus(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isManaged, loading]);
-
 
   const loadDdnsStatus = async (): Promise<void> => {
     try {
@@ -109,12 +198,15 @@ export function SettingsPage() {
       setDdnsStatus(null);
     }
   };
+
   const loadConfig = async (): Promise<void> => {
     try {
       const config = await getAdminConfig();
-      if (config) {
-        setEnv({ ...config.env });
-      }
+      const loadedEnv = { ...(config?.env ?? {}) };
+      setEnv(loadedEnv);
+      setOriginalEnv(loadedEnv);
+      setSecretReplacements({});
+      setSecretConfigured(config?.secrets ?? {});
     } catch (e) {
       console.error('Failed to load config:', e);
     } finally {
@@ -135,6 +227,64 @@ export function SettingsPage() {
     }
   };
 
+  const updateEnv = (key: string, value: string): void => {
+    setEnv((prev) => fieldChange(prev, key, value));
+  };
+
+  const updateSecretReplacement = (key: string, value: string): void => {
+    setSecretReplacements((prev) => fieldChange(prev, key, value));
+  };
+
+  const secretIsConfigured = useCallback(
+    (key: string): boolean => Boolean(secretConfigured[key]?.configured),
+    [secretConfigured],
+  );
+  const secretIsPresentOrReplacing = useCallback(
+    (key: string): boolean => secretIsConfigured(key) || Boolean(secretReplacements[key]),
+    [secretIsConfigured, secretReplacements],
+  );
+
+  const validationError = useMemo(() => {
+    if (tunnelProviderFields) {
+      if (!(env[tunnelProviderFields.publicEndpointKey] || '').trim()) {
+        return `请填写 ${tunnelProviderFields.publicEndpointLabel}`;
+      }
+      if (!secretIsPresentOrReplacing(tunnelProviderFields.credentialKey)) {
+        return `请填写 ${tunnelProviderFields.credentialLabel}`;
+      }
+    }
+
+    if (isManaged && ddnsStatus?.mode === 'tunnel' && tunnelProvider === 'none') {
+      return '当前网络不可直连，必须启用一个隧道供应商。';
+    }
+
+    const baseUrl = (env.CSS_BASE_URL || '').trim();
+    const wantsHttps = baseUrl.startsWith('https://');
+    if (!isManaged && wantsHttps && tunnelProvider === 'none' && httpsMode === 'none') {
+      return '独立部署使用 https:// Base URL 时，需要配置 HTTPS 或启用隧道。';
+    }
+
+    return '';
+  }, [ddnsStatus?.mode, env, httpsMode, isManaged, tunnelProvider, tunnelProviderFields, secretIsPresentOrReplacing]);
+
+  const pendingChanges = useMemo(() => {
+    const changes: Array<{ key: string; from: string; to: string }> = [];
+    for (const key of ALLOWED_KEYS) {
+      const current = env[key];
+      const original = originalEnv[key];
+      if (isSecretKey(key)) {
+        if (secretReplacements[key]) {
+          changes.push({ key, from: secretIsConfigured(key) ? '[configured]' : '', to: '[replace]' });
+        }
+        continue;
+      }
+      if ((current ?? '') !== (original ?? '')) {
+        changes.push({ key, from: original ?? '', to: current ?? '' });
+      }
+    }
+    return changes;
+  }, [env, originalEnv, secretIsConfigured, secretReplacements]);
+
   const saveConfig = async (): Promise<boolean> => {
     if (validationError) {
       setMessage(validationError);
@@ -146,15 +296,24 @@ export function SettingsPage() {
     try {
       const patch: Record<string, string> = {};
       for (const key of ALLOWED_KEYS) {
-        if (key in env) {
+        if (isSecretKey(key)) {
+          if (secretReplacements[key]) {
+            patch[key] = secretReplacements[key];
+          }
+        } else if (key in env) {
           patch[key] = env[key];
         }
       }
 
       const success = await updateAdminConfig(patch);
-      setMessage(success ? '配置已保存，需要重启服务生效' : '保存失败');
+      if (success) {
+        setMessage('配置已保存，需要重启服务生效');
+        await loadConfig();
+      } else {
+        setMessage('保存失败');
+      }
       return Boolean(success);
-    } catch (e) {
+    } catch {
       setMessage('保存失败');
       return false;
     } finally {
@@ -169,211 +328,194 @@ export function SettingsPage() {
       setMessage('重启信号已发送，请稍候...');
       setTimeout(() => window.location.reload(), 3000);
     } else {
-      setMessage('重启失败');
+      setMessage('重启失败。远程访问时默认禁止重启，请在本机或携带管理 Token 操作。');
     }
   };
 
   const handleSaveAndRestart = async (): Promise<void> => {
     const ok = await saveConfig();
-    if (!ok) {
-      return;
-    }
-    await handleRestart();
+    if (ok) await handleRestart();
   };
 
-  const updateEnv = (key: string, value: string): void => {
-    setEnv((prev) => ({ ...prev, [key]: value }));
+  const resetChanges = (): void => {
+    setEnv(originalEnv);
+    setSecretReplacements({});
+    setMessage('未保存变更已重置');
   };
-
-  const validationError = useMemo(() => {
-    // Tunnel token requirements (only when selected)
-    if (tunnelProvider === 'cloudflare' && !env.CLOUDFLARE_TUNNEL_TOKEN) {
-      return '请填写 Cloudflare Tunnel Token';
-    }
-    if (tunnelProvider === 'sakura_frp' && !env.SAKURA_TUNNEL_TOKEN) {
-      return '请填写 Sakura Tunnel Token';
-    }
-
-    // Local managed mode: if Cloud decided tunnel mode, we must enable a tunnel provider locally.
-    if (isManaged && ddnsStatus?.mode === 'tunnel' && tunnelProvider === 'none') {
-      return '当前网络不可直连，必须启用隧道（选择供应商并填写 Token）';
-    }
-
-    // Standalone: HTTPS is only required when you want https without an edge tunnel terminating TLS.
-    const baseUrl = (env.CSS_BASE_URL || '').trim();
-    const wantsHttps = baseUrl.startsWith('https://');
-    if (!isManaged && wantsHttps && tunnelProvider === 'none' && httpsMode === 'none') {
-      return '独立部署使用 https:// Base URL 时，需要配置 HTTPS（或启用隧道由边缘终止 TLS）';
-    }
-
-    return '';
-  }, [
-    ddnsStatus?.mode,
-    env.CLOUDFLARE_TUNNEL_TOKEN,
-    env.SAKURA_TUNNEL_TOKEN,
-    env.CSS_BASE_URL,
-    httpsMode,
-    isManaged,
-    mode,
-    tunnelProvider,
-  ]);
 
   const statusText = useMemo(() => {
     if (checkingIp) return '检测中...';
-    if (publicIpCheck === 'pass') return '✓ 可直连';
-    if (publicIpCheck === 'fail') return '✗ 不可直连';
-    return '? 未知';
+    if (publicIpCheck === 'pass') return '可直连';
+    if (publicIpCheck === 'fail') return '不可直连';
+    return '未知';
   }, [checkingIp, publicIpCheck]);
 
   if (loading) {
-    return <div className="p-8 text-foreground">加载中...</div>;
+    return (
+      <div className="p-4 sm:p-8 max-w-4xl space-y-4">
+        <div>
+          <h1 className="type-h1">设置</h1>
+          <p className="mt-2 text-sm text-muted-foreground">正在读取运行时配置。</p>
+        </div>
+        <Card variant="bordered">
+          <CardContent className="space-y-3 pt-5">
+            <div className="h-4 w-40 rounded bg-muted" />
+            <div className="h-10 rounded bg-muted" />
+            <div className="h-10 rounded bg-muted" />
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
-    <div className="p-8 max-w-4xl">
-      <h1 className="type-h1 mb-4">设置</h1>
+    <div className="p-4 sm:p-8 max-w-4xl">
+      <div className="mb-6">
+        <h1 className="type-h1">设置</h1>
+        <p className="mt-2 text-sm text-muted-foreground">高级运行时设置。大多数用户应在 LinX 中完成配置。</p>
+      </div>
 
-      <Card variant="bordered" className="mb-6">
-        <CardHeader><CardTitle>存储目录</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          <Input value={env.CSS_ROOT_FILE_PATH || './data'} onChange={(e) => updateEnv('CSS_ROOT_FILE_PATH', e.target.value)} />
-        </CardContent>
-      </Card>
-
-      {/* 访问地址 */}
-      <Card variant="bordered" className="mb-6">
-        <CardHeader><CardTitle>访问地址</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          {/* 部署模式 + Base URL */}
-          <div className="flex items-center gap-2">
-            <Select value={mode} onValueChange={(value) => updateEnv('XPOD_DEPLOY_MODE', value)}>
-              <SelectTrigger className="w-36 shrink-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="local">边缘部署</SelectItem>
-                <SelectItem value="standalone">独立部署</SelectItem>
-              </SelectContent>
-            </Select>
-            {isManaged ? (
-              <span className="text-sm text-muted-foreground flex-1">
-                {ddnsStatus?.fqdn || '（等待分配）'}
-              </span>
-            ) : (
-              <Input
-                className="flex-1"
-                value={env.CSS_BASE_URL || 'http://127.0.0.1:3000'}
-                onChange={(e) => updateEnv('CSS_BASE_URL', e.target.value)}
-                placeholder="https://your-domain.com"
-              />
-            )}
+      <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-200">
+        <div className="flex gap-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-medium">高级运行时设置</div>
+            <p className="mt-1">这里修改的是本地 Xpod 运行时，不是用户 Pod 资料，也不是 Cloud IDP 账号设置。</p>
           </div>
-
-          {/* 说明 */}
-          <div className="text-xs text-muted-foreground">
-            {mode === 'local'
-              ? '边缘部署：接入云端，自动获得域名、身份认证和HTTPS证书，数据保留在本地'
-              : '独立部署：完全独立运行，域名、身份认证和证书需自行配置'}
-          </div>
-        </CardContent>
-      </Card>
-
+        </div>
+      </div>
 
       <Card variant="bordered" className="mb-6">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle>隧道供应商</CardTitle>
-              <span className="text-sm">
-                外网:
-                <span
-                  className={clsx(
-                    'ml-1',
-                    publicIpCheck === 'pass'
-                      ? 'text-green-600'
-                      : publicIpCheck === 'fail'
-                        ? 'text-red-600'
-                        : 'text-muted-foreground',
-                  )}
-                >
-                  {statusText}
-                </span>
-              </span>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {isManaged && ddnsStatus?.mode === 'tunnel' ? (
-              <div className="text-xs text-destructive">当前网络不可直连，请选择隧道供应商并填写 Token。</div>
-            ) : null}
-            {mode === 'standalone' ? (
-              <div className="text-xs text-muted-foreground">独立部署下仅当没有公网 IP 时才需要隧道，有公网 IP 可不配置。</div>
-            ) : null}
-            <div className="flex items-center gap-2">
-              <Select value={tunnelProvider} onValueChange={(value) => updateEnv('XPOD_TUNNEL_PROVIDER', value)}>
-                <SelectTrigger className="w-36 shrink-0">
-                  <SelectValue />
-                </SelectTrigger>
+        <CardHeader><CardTitle>运行时</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>部署模式</Label>
+              <Select value={mode} onValueChange={(value) => updateEnv('XPOD_DEPLOY_MODE', value)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">不使用隧道</SelectItem>
-                  <SelectItem value="cloudflare">Cloudflare</SelectItem>
-                  <SelectItem value="sakura_frp">Sakura FRP</SelectItem>
+                  <SelectItem value="local">边缘部署</SelectItem>
+                  <SelectItem value="standalone">独立部署</SelectItem>
                 </SelectContent>
               </Select>
-              {tunnelProvider === 'cloudflare' && (
-                <Input
-                  className="flex-1"
-                  placeholder="Cloudflare Tunnel Token"
-                  value={env.CLOUDFLARE_TUNNEL_TOKEN || ''}
-                  onChange={(e) => updateEnv('CLOUDFLARE_TUNNEL_TOKEN', e.target.value)}
-                />
-              )}
-              {tunnelProvider === 'sakura_frp' && (
-                <Input
-                  className="flex-1"
-                  placeholder="Sakura Tunnel Token"
-                  value={env.SAKURA_TUNNEL_TOKEN}
-                  onChange={(e) => updateEnv('SAKURA_TUNNEL_TOKEN', e.target.value)}
-                />
-              )}
             </div>
-          </CardContent>
-        </Card>
+            <FormField id="storageRoot" label="存储目录" value={env.CSS_ROOT_FILE_PATH || './data'} onChange={(value) => updateEnv('CSS_ROOT_FILE_PATH', value)} />
+          </div>
+          <FormField
+            id="baseUrl"
+            label="资料入口 URL"
+            value={isManaged ? managedBaseUrl : (env.CSS_BASE_URL || 'http://127.0.0.1:3000')}
+            onChange={(value) => updateEnv('CSS_BASE_URL', value)}
+            readOnly={isManaged}
+            helper={isManaged ? '托管模式下由 Cloud 分配稳定域名，本地只上报状态和隧道入口。' : '独立部署需要保证该 URL 可被目标客户端访问。'}
+          />
+          <p className="text-xs text-muted-foreground">
+            {mode === 'local'
+              ? '边缘部署：Cloud IDP 和稳定域名在云端，数据/SP 保留在本地。'
+              : '独立部署：域名、身份认证和证书都由本机或用户自管。'}
+          </p>
+        </CardContent>
+      </Card>
 
-      {/* 独立部署才需要手动配置 HTTPS */}
-      {mode === 'standalone' && (
-        <Card variant="bordered" className="mb-6">
-          <CardHeader><CardTitle>https证书</CardTitle></CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-2">
-            <Select value={httpsMode} onValueChange={(value) => updateEnv('XPOD_HTTPS_MODE', value)}>
-              <SelectTrigger className="w-36 shrink-0">
-                <SelectValue />
-              </SelectTrigger>
+      <Card variant="bordered" className="mb-6">
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-4">
+            <CardTitle>网络访问</CardTitle>
+            <span className="text-sm">
+              外网: <span className={clsx(publicIpCheck === 'pass' ? 'text-green-700 dark:text-green-300' : publicIpCheck === 'fail' ? 'text-destructive' : 'text-muted-foreground')}>{statusText}</span>
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {isManaged && ddnsStatus?.mode === 'tunnel' && tunnelProvider === 'none' ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">当前网络不可直连，请启用一个隧道供应商。</div>
+          ) : null}
+          <div className="space-y-2">
+            <Label>隧道供应商</Label>
+            <Select value={tunnelProvider} onValueChange={(value) => updateEnv('XPOD_TUNNEL_PROVIDER', value)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="none">关闭</SelectItem>
-                <SelectItem value="acme">自动申请 (ACME)</SelectItem>
-                <SelectItem value="manual">手动证书</SelectItem>
+                <SelectItem value="none">不使用隧道</SelectItem>
+                <SelectItem value="ngrok">ngrok</SelectItem>
+                <SelectItem value="cloudflare">Cloudflare</SelectItem>
+                <SelectItem value="sakura_frp">Sakura FRP</SelectItem>
+                <SelectItem value="frp">FRP</SelectItem>
               </SelectContent>
             </Select>
-            {httpsMode === 'manual' && (
-              <>
-                <Input
-                  className="flex-1"
-                  placeholder="证书路径 (PEM)"
-                  value={env.XPOD_HTTPS_CERT_PATH || ''}
-                  onChange={(e) => updateEnv('XPOD_HTTPS_CERT_PATH', e.target.value)}
+            <p className="text-xs text-muted-foreground">同一时间只启用一个隧道。公网、局域网、本机和 P2P 由状态页判断最优接入。</p>
+          </div>
+
+          {tunnelProviderFields ? (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <div className="text-xs text-muted-foreground">隧道入口 URL</div>
+                <FormField
+                  id="tunnelPublicEndpoint"
+                  label={tunnelProviderFields.publicEndpointLabel}
+                  value={env[tunnelProviderFields.publicEndpointKey] || ''}
+                  onChange={(value) => updateEnv(tunnelProviderFields.publicEndpointKey, value)}
+                  placeholder={tunnelProviderFields.publicEndpointPlaceholder}
+                  helper="这是实际数据面入口，不替代上方的稳定资料 URL。"
                 />
-                <Input
-                  className="flex-1"
-                  placeholder="私钥路径 (PEM)"
-                  value={env.XPOD_HTTPS_KEY_PATH || ''}
-                  onChange={(e) => updateEnv('XPOD_HTTPS_KEY_PATH', e.target.value)}
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs text-muted-foreground">访问密钥</div>
+                <SecretField
+                  id="tunnelCredential"
+                  label={tunnelProviderFields.credentialLabel}
+                  configured={secretIsConfigured(tunnelProviderFields.credentialKey)}
+                  value={secretReplacements[tunnelProviderFields.credentialKey] || ''}
+                  onChange={(value) => updateSecretReplacement(tunnelProviderFields.credentialKey, value)}
                 />
-              </>
-            )}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+              不使用隧道时，不填写隧道入口 URL 或访问密钥。
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card variant="bordered" className="mb-6">
+        <CardHeader><CardTitle>Cloud 协调</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <FormField id="cloudEndpoint" label="Cloud API endpoint" value={env.XPOD_CLOUD_API_ENDPOINT || ''} onChange={(value) => updateEnv('XPOD_CLOUD_API_ENDPOINT', value)} />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField id="nodeId" label="nodeId" value={env.XPOD_NODE_ID || ''} onChange={(value) => updateEnv('XPOD_NODE_ID', value)} />
+            <FormField id="spDomain" label="spDomain" value={env.XPOD_SP_DOMAIN || ''} onChange={(value) => updateEnv('XPOD_SP_DOMAIN', value)} />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <SecretField id="nodeToken" label="Node token" configured={secretIsConfigured('XPOD_NODE_TOKEN')} value={secretReplacements.XPOD_NODE_TOKEN || ''} onChange={(value) => updateSecretReplacement('XPOD_NODE_TOKEN', value)} />
+            <SecretField id="serviceToken" label="Service token" configured={secretIsConfigured('XPOD_SERVICE_TOKEN')} value={secretReplacements.XPOD_SERVICE_TOKEN || ''} onChange={(value) => updateSecretReplacement('XPOD_SERVICE_TOKEN', value)} />
           </div>
         </CardContent>
       </Card>
-      )}
+
+      {mode === 'standalone' ? (
+        <Card variant="bordered" className="mb-6">
+          <CardHeader><CardTitle>HTTPS</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label>HTTPS 模式</Label>
+              <Select value={httpsMode} onValueChange={(value) => updateEnv('XPOD_HTTPS_MODE', value)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">关闭</SelectItem>
+                  <SelectItem value="acme">自动申请 ACME</SelectItem>
+                  <SelectItem value="manual">手动证书</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {httpsMode === 'manual' ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <FormField id="certPath" label="证书路径" value={env.XPOD_HTTPS_CERT_PATH || ''} onChange={(value) => updateEnv('XPOD_HTTPS_CERT_PATH', value)} />
+                <FormField id="keyPath" label="私钥路径" value={env.XPOD_HTTPS_KEY_PATH || ''} onChange={(value) => updateEnv('XPOD_HTTPS_KEY_PATH', value)} />
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="mb-6">
         <Button variant="ghost" size="sm" onClick={() => setAdvancedOpen((v) => !v)}>
@@ -381,28 +523,17 @@ export function SettingsPage() {
         </Button>
       </div>
 
-      {advancedOpen && (
+      {advancedOpen ? (
         <Card variant="bordered" className="mb-6">
           <CardHeader><CardTitle>高级设置</CardTitle></CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <Label>端口</Label>
-              <Input value={env.CSS_PORT || '3000'} onChange={(e) => updateEnv('CSS_PORT', e.target.value)} />
-            </div>
-            <div>
-              <Label>SPARQL 存储</Label>
-              <Input value={env.CSS_SPARQL_ENDPOINT || ''} onChange={(e) => updateEnv('CSS_SPARQL_ENDPOINT', e.target.value)} />
-            </div>
-            <div>
-              <Label>身份数据库</Label>
-              <Input value={env.CSS_IDENTITY_DB_URL || ''} onChange={(e) => updateEnv('CSS_IDENTITY_DB_URL', e.target.value)} />
-            </div>
-            <div>
+            <FormField id="cssPort" label="端口" value={env.CSS_PORT || '3000'} onChange={(value) => updateEnv('CSS_PORT', value)} />
+            <FormField id="sparqlEndpoint" label="SPARQL 存储" value={env.CSS_SPARQL_ENDPOINT || ''} onChange={(value) => updateEnv('CSS_SPARQL_ENDPOINT', value)} />
+            <SecretField id="identityDb" label="身份数据库 URL" configured={secretIsConfigured('CSS_IDENTITY_DB_URL')} value={secretReplacements.CSS_IDENTITY_DB_URL || ''} onChange={(value) => updateSecretReplacement('CSS_IDENTITY_DB_URL', value)} />
+            <div className="space-y-2">
               <Label>日志级别</Label>
               <Select value={env.CSS_LOGGING_LEVEL || 'info'} onValueChange={(value) => updateEnv('CSS_LOGGING_LEVEL', value)}>
-                <SelectTrigger className="w-40 shrink-0">
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="error">error</SelectItem>
                   <SelectItem value="warn">warn</SelectItem>
@@ -411,7 +542,7 @@ export function SettingsPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-sm text-foreground">
               <input
                 type="checkbox"
                 id="showStackTrace"
@@ -419,13 +550,15 @@ export function SettingsPage() {
                 onChange={(e) => updateEnv('CSS_SHOW_STACK_TRACE', e.target.checked ? 'true' : 'false')}
                 className="rounded border-input"
               />
-              <label htmlFor="showStackTrace" className="text-sm text-foreground">显示错误堆栈</label>
-            </div>
+              显示错误堆栈
+            </label>
           </CardContent>
         </Card>
-      )}
+      ) : null}
 
-      <div className="flex items-center gap-4">
+      <PendingChangesPanel changes={pendingChanges} onReset={resetChanges} />
+
+      <div className="flex flex-wrap items-center gap-3">
         <Button onClick={() => void saveConfig()} disabled={saving || Boolean(validationError)}>
           {saving ? '保存中...' : '保存配置'}
         </Button>
@@ -434,16 +567,18 @@ export function SettingsPage() {
         </Button>
       </div>
 
-      {(message || validationError) && (
+      {(message || validationError) ? (
         <div
           className={clsx(
-            'mt-4 text-sm',
-            validationError || (message && message.includes('失败')) ? 'text-destructive' : 'text-green-500',
+            'mt-4 rounded-md border px-3 py-2 text-sm',
+            validationError || (message && message.includes('失败'))
+              ? 'border-destructive/30 bg-destructive/10 text-destructive'
+              : 'border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950/20 dark:text-green-200',
           )}
         >
           {message || validationError}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

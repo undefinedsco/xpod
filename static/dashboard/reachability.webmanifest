@@ -1,0 +1,18 @@
+{
+  "name": "Xpod Reachability Verifier",
+  "short_name": "Xpod Verify",
+  "description": "Minimal same-origin browser verifier for Xpod SP domain reachability.",
+  "start_url": "/app/reachability.html",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/app/reachability.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

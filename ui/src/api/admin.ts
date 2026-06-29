@@ -36,6 +36,7 @@ export interface AdminStatus {
 
 export interface AdminConfig {
   env: Record<string, string>;
+  secrets?: Record<string, { configured: boolean }>;
   configFiles: Array<{
     name: string;
     path: string;
@@ -46,6 +47,7 @@ export interface AdminConfig {
 export interface PublicIpCheckResult {
   status: 'pass' | 'fail' | 'unknown';
   publicIp: string | null;
+  ipv4?: string | null;
   baseUrl: string;
   detail: string;
 }
@@ -156,15 +158,57 @@ export async function getLogs(options?: {
     if (options?.level && options.level !== 'all') params.set('level', options.level);
     if (options?.source && options.source !== 'all') params.set('source', options.source);
 
-    // 调用 Gateway 的 /service/logs 获取所有子进程日志
-    const res = await fetch(`/service/logs?${params}`);
+    const qs = params.toString();
+    const res = await fetch(`${API_BASE}/logs${qs ? `?${qs}` : ''}`);
     if (res.ok) {
-      return await res.json();
+      const body = await res.json();
+      return Array.isArray(body) ? body : body.logs ?? [];
     }
   } catch (e) {
     console.error('Failed to get logs:', e);
   }
   return [];
+}
+
+export async function getLogFileTail(options?: {
+  lines?: number;
+}): Promise<{ file: string; lines: string[] } | null> {
+  try {
+    const params = new URLSearchParams();
+    if (options?.lines) params.set('lines', options.lines.toString());
+    const qs = params.toString();
+    const res = await fetch(`${API_BASE}/logs/file${qs ? `?${qs}` : ''}`);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.error('Failed to get log file tail:', e);
+  }
+  return null;
+}
+
+export async function buildDiagnosticsSnapshot(): Promise<Record<string, unknown>> {
+  const [gatewayStatus, adminStatus, config, ddnsStatus, logs, logFile] = await Promise.all([
+    getGatewayStatus(),
+    getAdminStatus(),
+    getAdminConfig(),
+    getDdnsStatus(),
+    getLogs({ limit: 200 }),
+    getLogFileTail({ lines: 120 }),
+  ]);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    gatewayStatus,
+    adminStatus,
+    sanitizedConfig: {
+      env: config?.env ?? {},
+      secrets: config?.secrets ?? {},
+    },
+    ddnsStatus,
+    recentLogs: logs,
+    logFile,
+  };
 }
 
 /**
@@ -174,7 +218,7 @@ export function subscribeLogs(
   onLog: (logs: LogEntry[]) => void,
   onError?: (error: Event) => void
 ): () => void {
-  const eventSource = new EventSource('/service/logs/stream');
+  const eventSource = new EventSource(`${API_BASE}/logs/stream`);
 
   eventSource.onmessage = (event) => {
     try {

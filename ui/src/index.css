@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 /**
- * Xpod 颜色系统 - 与 LinX 对齐，基于 Shadcn UI Violet 标准主题
+ * Xpod 颜色系统 - 与 LinX 对齐，使用 Flat taro runtime theme
  *
- * 核心色值完全对齐 shadcn/ui 官方配置:
- * - Primary: Violet (#7C3AED / #8B5CF6)
+ * 核心色值：
+ * - Primary: Flat taro (#7561AE light / #B8A9DE dark)
  * - Gray: Zinc / Slate
  * - Radius: 0.5rem (8px)
  */
@@ -14,7 +14,7 @@
 @layer base {
   :root {
     /* ============================================== */
-    /* Shadcn UI Standard Theme (Light)               */
+    /* Flat taro Runtime Theme (Light)                */
     /* ============================================== */
     --background: 0 0% 100%;
     --foreground: 224 71.4% 4.1%;
@@ -25,7 +25,7 @@
     --popover: 0 0% 100%;
     --popover-foreground: 224 71.4% 4.1%;
 
-    --primary: 262.1 83.3% 57.8%;
+    --primary: 255.6 32.2% 53.1%;
     --primary-foreground: 210 20% 98%;
 
     --secondary: 220 14.3% 95.9%;
@@ -42,7 +42,7 @@
 
     --border: 220 13% 91%;
     --input: 220 13% 91%;
-    --ring: 262.1 83.3% 57.8%;
+    --ring: 255.6 32.2% 53.1%;
 
     /* 圆角系统 */
     --radius-xs: 2px;
@@ -73,7 +73,7 @@
 
   .dark {
     /* ============================================== */
-    /* Shadcn UI Standard Theme (Dark)                */
+    /* Flat taro Runtime Theme (Dark)                 */
     /* ============================================== */
     --background: 224 71.4% 4.1%;
     --foreground: 210 20% 98%;
@@ -84,8 +84,8 @@
     --popover: 224 71.4% 4.1%;
     --popover-foreground: 210 20% 98%;
 
-    --primary: 263.4 70% 50.4%;
-    --primary-foreground: 210 20% 98%;
+    --primary: 255.8 38% 76.7%;
+    --primary-foreground: 224 71.4% 4.1%;
 
     --secondary: 215 27.9% 16.9%;
     --secondary-foreground: 210 20% 98%;
@@ -101,7 +101,7 @@
 
     --border: 215 27.9% 16.9%;
     --input: 215 27.9% 16.9%;
-    --ring: 263.4 70% 50.4%;
+    --ring: 255.8 38% 76.7%;
 
     /* 圆角系统 */
     --radius-xs: 2px;
@@ -217,10 +217,7 @@
   /* 顶部装饰条 */
   .top-accent {
     @apply absolute top-0 left-0 right-0 h-1 rounded-t-xl;
-    background: linear-gradient(90deg,
-      hsl(var(--primary)),
-      hsl(var(--primary) / 0.5)
-    );
+    background: hsl(var(--primary));
   }
 
   /* 温暖按钮 */

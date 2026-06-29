@@ -15,7 +15,7 @@ export function Button(
   const { className, variant = 'default', size = 'default', children, ...rest } = props;
 
   const base =
-    'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:pointer-events-none';
+    'inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary active:translate-y-px disabled:opacity-50 disabled:pointer-events-none';
 
   const variants: Record<Variant, string> = {
     default: 'bg-primary text-primary-foreground hover:bg-primary/90',
