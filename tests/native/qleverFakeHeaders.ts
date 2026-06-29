@@ -77,11 +77,15 @@ struct BasicGraphPattern {
 };
 struct GroupGraphPattern {
   GraphPattern _child;
-  using GraphSpec = std::variant<std::monostate, TripleComponent::Iri>;
+  enum class GraphVariableBehaviour { ALL, NAMED };
+  using GraphVar = std::pair<Variable, GraphVariableBehaviour>;
+  using GraphSpec = std::variant<std::monostate, TripleComponent::Iri, GraphVar>;
   GraphSpec graphSpec_ = std::monostate{};
   explicit GroupGraphPattern(GraphPattern child) : _child{std::move(child)} {}
   GroupGraphPattern(GraphPattern child, TripleComponent::Iri graphIri)
       : _child{std::move(child)}, graphSpec_{std::move(graphIri)} {}
+  GroupGraphPattern(GraphPattern child, Variable graphVariable, GraphVariableBehaviour behaviour)
+      : _child{std::move(child)}, graphSpec_{GraphVar{std::move(graphVariable), behaviour}} {}
 };
 using GraphPatternOperationVariant = std::variant<BasicGraphPattern, GroupGraphPattern>;
 struct GraphPatternOperation : public GraphPatternOperationVariant {
@@ -119,6 +123,22 @@ class ParsedQuery {
         parsedQuery::GroupGraphPattern{
             std::move(child),
             TripleComponent::Iri{"<urn:g>"}});
+    return query;
+  }
+  static ParsedQuery graphVariableSelect() {
+    ParsedQuery query;
+    parsedQuery::BasicGraphPattern basic;
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{Variable{"?p"}},
+        TripleComponent{Variable{"?o"}});
+    parsedQuery::GraphPattern child;
+    child._graphPatterns.emplace_back(std::move(basic));
+    query._rootGraphPattern._graphPatterns.emplace_back(
+        parsedQuery::GroupGraphPattern{
+            std::move(child),
+            Variable{"?g"},
+            parsedQuery::GroupGraphPattern::GraphVariableBehaviour::NAMED});
     return query;
   }
   static ParsedQuery predicateIriSelect() {

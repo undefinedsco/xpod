@@ -1900,3 +1900,45 @@ bun test tests/native/QleverPlanBridge.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 37: Project parsed GRAPH variables through the scan graph slot
+
+**Files:**
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing parsed GRAPH-variable test**
+
+Extend the fake QLever parsed-query headers with the upstream-shaped
+`GroupGraphPattern::GraphVar` graph spec and a `ParsedQuery::graphVariableSelect()`
+helper. Add a native smoke that expects `GRAPH ?g { ?s ?p ?o }` to include
+`XPOD_RDF_SLOT_GRAPH` in `needed_slots`, append `g` to the output-variable list
+in scan materialization order, and carry a four-column scan width into the
+physical plan.
+
+Expected: FAIL because the parsed fallback only accepted fixed-IRI GRAPH scopes.
+
+- [x] **Step 2: Add graph-variable projection metadata**
+
+Represent a parsed GRAPH scope as either an exact graph binding or a projected
+graph variable. For graph variables, add `XPOD_RDF_SLOT_GRAPH` to the scan
+projection and append the graph variable after S/P/O so it matches the existing
+`SPOG` materializer order.
+
+- [x] **Step 3: Keep unsupported multi-triple GRAPH-variable groups closed**
+
+Reject two-triple parsed fallback groups under `GRAPH ?g` until the fallback can
+join both subject and graph slots. Fixed-IRI GRAPH groups continue to reuse the
+existing graph exact constraint path.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts --run -t "projects parsed GRAPH variables"
+```
+
+Expected: PASS.

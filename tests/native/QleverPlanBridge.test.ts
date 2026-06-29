@@ -253,6 +253,73 @@ int main() {
     }
   });
 
+  it('projects parsed GRAPH variables as the scan graph slot', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native graph variable plan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-plan-graph-var-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/parser'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), '#pragma once\n#include <cstdint>\nusing ColumnIndex = uint64_t;\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'plan_bridge_graph_variable_smoke.cpp');
+      const binary = path.join(root, 'plan_bridge_graph_variable_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPlanBridge.hpp"
+
+int main() {
+  ParsedQuery parsed = ParsedQuery::graphVariableSelect();
+  auto plan = xpod::qlever::planParsedQuery(parsed);
+  if (!plan.has_value()) return 1;
+  if (!plan->term_bindings.empty()) return 2;
+  if (plan->scan.needed_slots !=
+      (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT | XPOD_RDF_SLOT_GRAPH)) return 3;
+  if (plan->result_width != 4) return 4;
+  if (plan->output_variables.size() != 4) return 5;
+  if (plan->output_variables[0] != "s") return 6;
+  if (plan->output_variables[1] != "p") return 7;
+  if (plan->output_variables[2] != "o") return 8;
+  if (plan->output_variables[3] != "g") return 9;
+
+  xpod::qlever::BridgePhysicalPlan physical =
+      xpod::qlever::toBridgePhysicalPlan(*plan);
+  if (physical.scans.size() != 1) return 10;
+  if (physical.scans[0].scan.needed_slots != plan->scan.needed_slots) return 11;
+  if (physical.scans[0].result_width != 4) return 12;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(planHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
 
   it('binds parsed literal constants through the native term dictionary into the scan pattern', async () => {
     expect(hasCxx(), 'c++ compiler is required for native plan bridge check').toBe(true);

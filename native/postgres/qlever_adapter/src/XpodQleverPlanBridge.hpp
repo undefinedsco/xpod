@@ -34,6 +34,11 @@ struct BridgeTextRequiredEntityBinding {
   BridgeTermBinding term;
 };
 
+struct BridgeGraphScope {
+  std::optional<BridgeTermBinding> binding;
+  std::optional<std::string> variable;
+};
+
 struct BridgeFilterScan {
   ScanRequestInput scan;
   std::vector<BridgeTermBinding> term_bindings;
@@ -482,23 +487,32 @@ inline const parsedQuery::BasicGraphPattern* basicPatternFromOperation(
       &static_cast<const parsedQuery::GraphPatternOperationVariant&>(operation));
 }
 
-inline std::optional<BridgeTermBinding> graphBindingFromGroup(
+inline std::optional<BridgeGraphScope> graphScopeFromGroup(
     const parsedQuery::GroupGraphPattern& group) {
-  const auto* graph_iri =
-      std::get_if<TripleComponent::Iri>(&group.graphSpec_);
-  if (graph_iri == nullptr) {
-    return std::nullopt;
+  BridgeGraphScope scope;
+  if (const auto* graph_iri =
+          std::get_if<TripleComponent::Iri>(&group.graphSpec_);
+      graph_iri != nullptr) {
+    BridgeTermBinding binding;
+    binding.slot = XPOD_RDF_SLOT_GRAPH;
+    binding.kind = XPOD_RDF_TERM_IRI;
+    binding.value = iriValueFromIri(*graph_iri);
+    scope.binding = std::move(binding);
+    return scope;
   }
-  BridgeTermBinding binding;
-  binding.slot = XPOD_RDF_SLOT_GRAPH;
-  binding.kind = XPOD_RDF_TERM_IRI;
-  binding.value = iriValueFromIri(*graph_iri);
-  return binding;
+  if (const auto* graph_var =
+          std::get_if<parsedQuery::GroupGraphPattern::GraphVar>(
+              &group.graphSpec_);
+      graph_var != nullptr) {
+    scope.variable = bridgeVariableName(graph_var->first);
+    return scope;
+  }
+  return std::nullopt;
 }
 
 inline const parsedQuery::BasicGraphPattern* scopedBasicPatternFromOperation(
     const parsedQuery::GraphPatternOperation& operation,
-    std::optional<BridgeTermBinding>& graph_binding) {
+    std::optional<BridgeGraphScope>& graph_scope) {
   const parsedQuery::BasicGraphPattern* basic = basicPatternFromOperation(operation);
   if (basic != nullptr) {
     return basic;
@@ -508,11 +522,22 @@ inline const parsedQuery::BasicGraphPattern* scopedBasicPatternFromOperation(
   if (group == nullptr) {
     return nullptr;
   }
-  graph_binding = graphBindingFromGroup(*group);
-  if (!graph_binding.has_value() || group->_child._graphPatterns.size() != 1) {
+  graph_scope = graphScopeFromGroup(*group);
+  if (!graph_scope.has_value() || group->_child._graphPatterns.size() != 1) {
     return nullptr;
   }
   return basicPatternFromOperation(group->_child._graphPatterns.front());
+}
+
+inline void appendGraphScopeProjection(
+    BridgeQueryPlan& plan,
+    const BridgeGraphScope& graph_scope) {
+  if (!graph_scope.variable.has_value()) {
+    return;
+  }
+  plan.scan.needed_slots |= XPOD_RDF_SLOT_GRAPH;
+  plan.output_variables.push_back(*graph_scope.variable);
+  plan.result_width = plan.output_variables.size();
 }
 
 inline std::optional<BridgeQueryPlan> planParsedQuery(
@@ -525,8 +550,8 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
     return std::nullopt;
   }
   const auto& operation = children.front();
-  std::optional<BridgeTermBinding> graph_binding;
-  const auto* basic = scopedBasicPatternFromOperation(operation, graph_binding);
+  std::optional<BridgeGraphScope> graph_scope;
+  const auto* basic = scopedBasicPatternFromOperation(operation, graph_scope);
   if (basic == nullptr || basic->_triples.empty() || basic->_triples.size() > 2) {
     return std::nullopt;
   }
@@ -537,8 +562,15 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
     if (!plan.has_value()) {
       return std::nullopt;
     }
-    if (graph_binding.has_value()) {
-      plan->term_bindings.push_back(*graph_binding);
+    if (graph_scope.has_value() && graph_scope->binding.has_value()) {
+      plan->term_bindings.push_back(*graph_scope->binding);
+    }
+    if (graph_scope.has_value() && graph_scope->variable.has_value() &&
+        basic->_triples.size() == 2) {
+      return std::nullopt;
+    }
+    if (graph_scope.has_value()) {
+      appendGraphScopeProjection(*plan, *graph_scope);
     }
     if (basic->_triples.size() == 2) {
       SparqlTripleSimple second = basic->_triples[1].getSimple();
@@ -546,8 +578,8 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
       if (!planSubjectFilterTriple(second, filter)) {
         return std::nullopt;
       }
-      if (graph_binding.has_value()) {
-        filter.term_bindings.push_back(*graph_binding);
+      if (graph_scope.has_value() && graph_scope->binding.has_value()) {
+        filter.term_bindings.push_back(*graph_scope->binding);
       }
       plan->filter_scans.push_back(std::move(filter));
       plan->descriptor = "xpod scan ?s ?p ?o with subject filter";
