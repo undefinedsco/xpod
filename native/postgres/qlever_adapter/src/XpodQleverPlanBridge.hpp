@@ -305,6 +305,31 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
   }
 }
 
+inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
+  BridgePhysicalPlan physical;
+  BridgePhysicalScan primary;
+  primary.scan = plan.scan;
+  primary.sorted_by = plan.sorted_by;
+  primary.result_width = plan.result_width;
+  primary.descriptor = plan.descriptor;
+  primary.profile_node = 1;
+  physical.scans.push_back(std::move(primary));
+
+  xpod_rdf_profile_node_key profile_node = 2;
+  for (const BridgeFilterScan& filter : plan.filter_scans) {
+    BridgePhysicalScan scan;
+    scan.scan = filter.scan;
+    scan.sorted_by = {0};
+    scan.result_width = 3;
+    scan.descriptor = filter.descriptor;
+    scan.profile_node = profile_node++;
+    physical.scans.push_back(std::move(scan));
+  }
+
+  physical.root = plan.root;
+  return physical;
+}
+
 }  // namespace xpod::qlever
 #endif
 

@@ -86,6 +86,7 @@ describe('native QLever adapter CMake target', () => {
     expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
     expect(existsSync(qleverBridgeSource)).toBe(true);
     expect(readFileSync(cmakeLists, 'utf8')).toContain('src/XpodQleverBridge.cpp');
+    expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/Operation.h');
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-source-present-'));
     try {
@@ -101,6 +102,7 @@ describe('native QLever adapter CMake target', () => {
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakePermissiveSparqlParserHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
@@ -214,6 +216,7 @@ class Permutation {
       expect(output).toContain('parser/ParsedQuery.h');
       expect(output).toContain('parser/SparqlTriple.h');
       expect(output).toContain('engine/QueryPlanner.h');
+      expect(output).toContain('engine/Operation.h');
       expect(output).toContain('engine/Result.h');
       expect(output).toContain('engine/idTable/IdTable.h');
       expect(output).toContain('global/Id.h');

@@ -1,9 +1,9 @@
 #include "XpodQleverBridge.hpp"
-#include "XpodBackedIndexScan.hpp"
 #include "XpodCandidateBridge.hpp"
 #include "XpodQleverIdTableBridge.hpp"
 #include "XpodQleverPermutationMap.hpp"
 #include "XpodQleverPlanBridge.hpp"
+#include "XpodQleverOperationExecutor.hpp"
 #include "XpodQleverResultBridge.hpp"
 #include "XpodQleverScanBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"
@@ -25,7 +25,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace xpod::qlever {
@@ -202,61 +201,6 @@ void writeScanProfileJson(
   out << ",\"outputRows\":" << output_rows << "}}";
 }
 
-
-xpod_rdf_status collectFilterSubjectKeys(
-    xpod::rdf::PhysicalBackend backend,
-    const BridgeFilterScan& filter,
-    std::unordered_set<xpod_rdf_term_key>& allowed_subjects,
-    std::string& error_storage) {
-  XpodBackedIndexScan scan(
-      backend, filter.scan, {0}, 3, filter.descriptor, 2, 0);
-  QleverResultWithStatus result = scan.computeResult(false);
-  if (result.status != XPOD_RDF_STATUS_OK) {
-    error_storage = "Xpod-backed QLever filter scan failed";
-    return result.status;
-  }
-  const IdTable& table = result.result.idTable();
-  for (size_t row = 0; row < table.numRows(); ++row) {
-    xpod_rdf_term_key subject = 0;
-    xpod_rdf_status status = backend.decodeQleverId(
-        table(row, 0).getBits(), subject);
-    if (status != XPOD_RDF_STATUS_OK) {
-      error_storage = "failed to decode QLever filter subject id";
-      return status;
-    }
-    allowed_subjects.insert(subject);
-  }
-  return XPOD_RDF_STATUS_OK;
-}
-
-xpod_rdf_status filterResultBySubject(
-    xpod::rdf::PhysicalBackend backend,
-    const IdTable& input,
-    const std::unordered_set<xpod_rdf_term_key>& allowed_subjects,
-    IdTable& output,
-    std::string& error_storage) {
-  std::vector<Id> row;
-  row.reserve(input.numColumns());
-  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
-    xpod_rdf_term_key subject = 0;
-    xpod_rdf_status status = backend.decodeQleverId(
-        input(input_row, 0).getBits(), subject);
-    if (status != XPOD_RDF_STATUS_OK) {
-      error_storage = "failed to decode QLever result subject id";
-      return status;
-    }
-    if (allowed_subjects.find(subject) == allowed_subjects.end()) {
-      continue;
-    }
-    row.clear();
-    for (size_t column = 0; column < input.numColumns(); ++column) {
-      row.push_back(input(input_row, column));
-    }
-    output.push_back(row);
-  }
-  return XPOD_RDF_STATUS_OK;
-}
-
 }  // namespace
 
 xpod_rdf_status executeBridgeQuery(
@@ -303,41 +247,17 @@ xpod_rdf_status executeBridgeQuery(
     return XPOD_RDF_STATUS_OK;
   }
 
-  std::unordered_set<xpod_rdf_term_key> allowed_subjects;
-  for (const BridgeFilterScan& filter : plan.filter_scans) {
-    xpod_rdf_status filter_status = collectFilterSubjectKeys(
-        backend, filter, allowed_subjects, error_storage);
-    if (filter_status != XPOD_RDF_STATUS_OK) {
-      setResult(out_result, filter_status, result_storage, profile_storage,
-                error_storage);
-      return filter_status;
-    }
-  }
-
-  XpodBackedIndexScan scan(
-      backend, plan.scan, plan.sorted_by, plan.result_width, plan.descriptor,
-      1, 0);
-  QleverResultWithStatus result = scan.computeResult(false);
+  BridgePhysicalPlan physical_plan = toBridgePhysicalPlan(plan);
+  QleverResultWithStatus result = executeBridgeOperationPlan(
+      backend, physical_plan);
   if (result.status != XPOD_RDF_STATUS_OK) {
-    error_storage = "Xpod-backed QLever scan failed";
+    error_storage = "Xpod-backed QLever operation failed";
     setResult(out_result, result.status, result_storage, profile_storage,
               error_storage);
     return result.status;
   }
 
-  IdTable filtered_table(result.result.idTable().numColumns());
   const IdTable* output_table = &result.result.idTable();
-  if (!plan.filter_scans.empty()) {
-    xpod_rdf_status filter_status = filterResultBySubject(
-        backend, result.result.idTable(), allowed_subjects, filtered_table,
-        error_storage);
-    if (filter_status != XPOD_RDF_STATUS_OK) {
-      setResult(out_result, filter_status, result_storage, profile_storage,
-                error_storage);
-      return filter_status;
-    }
-    output_table = &filtered_table;
-  }
 
   std::vector<xpod_rdf_term> terms;
   xpod_rdf_status resolve_status = resolveIdTableTerms(
