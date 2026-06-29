@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -163,6 +164,26 @@ TripleKeyPattern scanSpecificationPattern(
   return pattern;
 }
 
+template <typename QleverScanSpecification, typename = void>
+struct HasQleverGraphFilterAllAllowed : std::false_type {};
+
+template <typename QleverScanSpecification>
+struct HasQleverGraphFilterAllAllowed<
+    QleverScanSpecification,
+    decltype(void(std::declval<const QleverScanSpecification&>()
+                      .graphFilter()
+                      .areAllGraphsAllowed()))> : std::true_type {};
+
+template <typename QleverScanSpecification>
+bool scanSpecificationGraphFilterSupported(
+    const QleverScanSpecification& scan_specification) {
+  if constexpr (HasQleverGraphFilterAllAllowed<
+                    QleverScanSpecification>::value) {
+    return scan_specification.graphFilter().areAllGraphsAllowed();
+  }
+  return true;
+}
+
 class XpodQleverPhysicalPermutation {
  public:
   XpodQleverPhysicalPermutation(
@@ -301,6 +322,9 @@ class XpodQleverPhysicalIndex {
       uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
                               XPOD_RDF_SLOT_PREDICATE |
                               XPOD_RDF_SLOT_OBJECT) const {
+    if (!scanSpecificationGraphFilterSupported(scan_specification)) {
+      return {XPOD_RDF_STATUS_UNSUPPORTED, {}};
+    }
     return estimate(
         permutation,
         scanSpecificationPattern(permutation, scan_specification),
@@ -314,6 +338,11 @@ class XpodQleverPhysicalIndex {
       uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
                               XPOD_RDF_SLOT_PREDICATE |
                               XPOD_RDF_SLOT_OBJECT) const {
+    if (!scanSpecificationGraphFilterSupported(scan_specification)) {
+      return {
+          XPOD_RDF_STATUS_UNSUPPORTED,
+          IdTable(countNeededSlots(needed_slots))};
+    }
     return scan(
         permutation,
         scanSpecificationPattern(permutation, scan_specification),

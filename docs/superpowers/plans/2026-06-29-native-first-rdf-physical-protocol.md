@@ -2770,3 +2770,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 63: Fail closed for unsupported QLever scan-spec graph filters
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing graph-filter smoke**
+
+Add a native physical-index smoke where a QLever-shaped `ScanSpecification` exposes `graphFilter().areAllGraphsAllowed() == false`. The physical index must return `XPOD_RDF_STATUS_UNSUPPORTED` and must not call backend scan/estimate callbacks.
+
+Expected: FAIL because scan-spec mapping ignored graph filters and could return incorrectly broad results.
+
+- [x] **Step 2: Add the fail-closed guard**
+
+Detect scan-spec graph filters that expose `areAllGraphsAllowed()`. If the filter is not all-graphs, `estimateScanSpecification(...)` and `scanScanSpecification(...)` return `XPOD_RDF_STATUS_UNSUPPORTED` before building a backend scan. This preserves correctness until a later QLever patch can expose whitelist/blacklist values as Xpod graph scope.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

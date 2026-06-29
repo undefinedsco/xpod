@@ -882,6 +882,122 @@ int main() {
     }
   });
 
+  it('fails closed for QLever scan specifications with unsupported graph filters', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index scan specification graph filter check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-scan-spec-graph-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_scan_spec_graph_smoke.cpp');
+      const binary = path.join(root, 'physical_index_scan_spec_graph_smoke');
+      await writeFile(smoke, `
+#include <optional>
+#include "XpodQleverPhysicalIndex.hpp"
+
+class GraphFilter {
+ public:
+  explicit GraphFilter(bool all_graphs_allowed)
+      : all_graphs_allowed_(all_graphs_allowed) {}
+  bool areAllGraphsAllowed() const { return all_graphs_allowed_; }
+ private:
+  bool all_graphs_allowed_;
+};
+
+class ScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  ScanSpecification(T col0, T col1, T col2, GraphFilter graph_filter)
+      : col0_(col0), col1_(col1), col2_(col2), graph_filter_(graph_filter) {}
+  const T& col0Id() const { return col0_; }
+  const T& col1Id() const { return col1_; }
+  const T& col2Id() const { return col2_; }
+  const GraphFilter& graphFilter() const { return graph_filter_; }
+ private:
+  T col0_;
+  T col1_;
+  T col2_;
+  GraphFilter graph_filter_;
+};
+
+struct BackendState {
+  int estimate_calls;
+  int scan_calls;
+};
+
+static xpod_rdf_status estimate_scan(
+    void* user_data,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_estimate*) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_calls;
+  return XPOD_RDF_STATUS_BACKEND_ERROR;
+}
+
+static xpod_rdf_status scan_permutation(
+    void* user_data,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_quad_batch_callback,
+    void*) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->scan_calls;
+  return XPOD_RDF_STATUS_BACKEND_ERROR;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.estimate_scan = estimate_scan;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  ScanSpecification spec{Id::fromBits(22), std::nullopt, std::nullopt, GraphFilter(false)};
+  auto estimate = index.estimateScanSpecification(
+      Permutation::Enum::POS,
+      spec,
+      XPOD_RDF_SLOT_SUBJECT);
+  if (estimate.status != XPOD_RDF_STATUS_UNSUPPORTED) return 1;
+
+  auto scan = index.scanScanSpecification(
+      Permutation::Enum::POS,
+      spec,
+      XPOD_RDF_SLOT_SUBJECT);
+  if (scan.status != XPOD_RDF_STATUS_UNSUPPORTED) return 2;
+  if (scan.table.numColumns() != 1) return 3;
+  if (scan.table.numRows() != 0) return 4;
+  if (state.estimate_calls != 0) return 5;
+  if (state.scan_calls != 0) return 6;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes batch term dictionary lookup and resolution through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index batch dictionary check').toBe(true);
 
