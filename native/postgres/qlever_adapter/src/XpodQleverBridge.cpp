@@ -18,6 +18,7 @@
 #include "engine/RuntimeInformation.h"
 #include "index/Index.h"
 #include "libqlever/Qlever.h"
+#include "parser/SparqlParser.h"
 
 #include <sstream>
 #include <string_view>

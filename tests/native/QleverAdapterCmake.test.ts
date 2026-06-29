@@ -90,11 +90,14 @@ describe('native QLever adapter CMake target', () => {
     try {
       const qleverSource = path.join(root, 'qlever');
       await mkdir(path.join(qleverSource, 'src/libqlever'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/parser'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), '#pragma once\nclass ParsedQuery {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), '#pragma once\n#include <string>\n#include \"parser/ParsedQuery.h\"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { (void)query; return {}; } };\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
@@ -205,6 +208,8 @@ class Permutation {
       } catch (error) {
         output = cmakeFailureOutput(error);
       }
+      expect(output).toContain('parser/SparqlParser.h');
+      expect(output).toContain('parser/ParsedQuery.h');
       expect(output).toContain('engine/QueryPlanner.h');
       expect(output).toContain('engine/Result.h');
       expect(output).toContain('engine/idTable/IdTable.h');

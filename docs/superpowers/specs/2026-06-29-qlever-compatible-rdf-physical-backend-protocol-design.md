@@ -132,7 +132,7 @@ Text and vector candidate callbacks are materialized by a separate native C++ br
 The adapter target is intentionally source-provider based:
 
 - `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=OFF` is the default and builds the stub facade without requiring upstream QLever sources.
-- `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON` requires `XPOD_QLEVER_SOURCE_DIR` and validates both the embedded API header and the lower-level planner/index headers before configuration succeeds.
+- `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON` requires `XPOD_QLEVER_SOURCE_DIR` and validates the embedded API, parser, lower-level planner, and index headers before configuration succeeds.
 - Xpod must not vendor a second RDF fact store behind this target. The next integration steps wire QLever planner/executor code to the Xpod physical backend ABI.
 
 ## Core concepts
