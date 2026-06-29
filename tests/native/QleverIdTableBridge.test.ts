@@ -1,0 +1,103 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const repoRoot = path.resolve(__dirname, '../..');
+const bridgeHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverIdTableBridge.hpp');
+
+function hasCxx(): boolean {
+  try {
+    execFileSync('/usr/bin/env', ['c++', '--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe('QLever IdTable bridge', () => {
+  it('converts QLever id-bit row buffers into an upstream IdTable', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native IdTable bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-idtable-bridge-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
+#pragma once
+#include <cstdint>
+class Id {
+ public:
+  static Id fromBits(uint64_t bits) { return Id(bits); }
+  uint64_t getBits() const { return bits_; }
+ private:
+  explicit Id(uint64_t bits) : bits_(bits) {}
+  uint64_t bits_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
+#pragma once
+#include <cstddef>
+#include <vector>
+#include "global/Id.h"
+class IdTable {
+ public:
+  explicit IdTable(size_t width) : width_(width) {}
+  size_t numColumns() const { return width_; }
+  size_t numRows() const { return rows_.size(); }
+  void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
+  const Id& operator()(size_t row, size_t column) const { return rows_[row][column]; }
+ private:
+  size_t width_;
+  std::vector<std::vector<Id>> rows_;
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'idtable_bridge_smoke.cpp');
+      const binary = path.join(root, 'idtable_bridge_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverIdTableBridge.hpp"
+
+int main() {
+  xpod::qlever::QleverIdRowBuffer rows;
+  rows.width = 3;
+  rows.rows = {11, 12, 13, 21, 22, 23};
+
+  IdTable table = xpod::qlever::toQleverIdTable(rows);
+  if (table.numColumns() != 3) return 1;
+  if (table.numRows() != 2) return 2;
+  if (table(0, 0).getBits() != 11 || table(0, 2).getBits() != 13) return 3;
+  if (table(1, 0).getBits() != 21 || table(1, 2).getBits() != 23) return 4;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -91,12 +91,29 @@ describe('native QLever adapter CMake target', () => {
       const qleverSource = path.join(root, 'qlever');
       await mkdir(path.join(qleverSource, 'src/libqlever'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
+#pragma once
+#include <cstddef>
+#include <vector>
+#include "global/Id.h"
+class IdTable {
+ public:
+  explicit IdTable(size_t width) : width_(width) {}
+  size_t numColumns() const { return width_; }
+  size_t numRows() const { return rows_.size(); }
+  void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
+ private:
+  size_t width_;
+  std::vector<std::vector<Id>> rows_;
+};
+`, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/RuntimeInformation.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
 #pragma once
@@ -164,6 +181,7 @@ class Permutation {
         output = cmakeFailureOutput(error);
       }
       expect(output).toContain('engine/QueryPlanner.h');
+      expect(output).toContain('engine/idTable/IdTable.h');
       expect(output).toContain('global/Id.h');
       expect(output).toContain('index/Index.h');
     } finally {

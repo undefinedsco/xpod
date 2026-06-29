@@ -1,4 +1,5 @@
 #include "XpodQleverBridge.hpp"
+#include "XpodQleverIdTableBridge.hpp"
 #include "XpodQleverPermutationMap.hpp"
 #include "XpodQleverScanBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"
