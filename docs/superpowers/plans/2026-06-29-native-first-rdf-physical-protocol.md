@@ -2219,3 +2219,44 @@ bun run check:rdf-protocol-abi
 ```
 
 Expected: PASS.
+
+### Task 46: Propagate cancellation from QLever query request into physical plans
+
+**Files:**
+- Modify: `tests/native/QleverScanBridge.test.ts`
+- Modify: `tests/native/QleverPlanRequestContext.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/qlever_adapter/include/xpod_qlever_adapter.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverScanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerScanInput.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing propagation tests**
+
+Extend the scan bridge and plan request-context smokes so cancellation must flow
+from `xpod_qlever_query_request` to `ScanRequestInput`, physical scan requests,
+filter scans, text/vector candidate requests, and child plans. Extend the ABI
+check so the public QLever query request must expose a cancellation field.
+
+Expected: FAIL because the previous task added physical request cancellation,
+but the QLever adapter query entry point could not pass it into generated plans.
+
+- [x] **Step 2: Thread cancellation through the adapter request context**
+
+Add `const xpod_rdf_cancellation* cancellation` to `xpod_qlever_query_request`,
+carry it through `makeScanRequestInput(...)`, `ScanRequestInput`,
+`makeScanRequest(...)`, `applyBridgeRequestContext(...)`, and the adapter query
+call site.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverScanBridge.test.ts tests/native/QleverPlanRequestContext.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.

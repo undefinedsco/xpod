@@ -25,6 +25,7 @@ struct TripleKeyPattern {
 
 struct ScanRequestInput {
   const xpod_rdf_snapshot* snapshot = nullptr;
+  const xpod_rdf_cancellation* cancellation = nullptr;
   Permutation::Enum permutation = Permutation::Enum::SPO;
   TripleKeyPattern pattern;
   xpod_rdf_graph_scope graph_scope = {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
@@ -58,6 +59,7 @@ inline xpod_rdf_scan_request makeScanRequest(
   if (input.snapshot != nullptr) {
     request.snapshot = *input.snapshot;
   }
+  request.cancellation = input.cancellation;
   request.permutation = toXpodPermutation(input.permutation);
   request.pattern = toXpodQuadPattern(input.pattern);
   request.graph_scope = input.graph_scope;

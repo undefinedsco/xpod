@@ -39,6 +39,9 @@ class Permutation {
 
 int main() {
   xpod_rdf_snapshot snapshot = {};
+  int cancellation_marker = 0;
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.cancellation_user_data = &cancellation_marker;
   xpod::qlever::TripleKeyPattern pattern = {};
   pattern.has_subject = true;
   pattern.subject = 11;
@@ -49,6 +52,7 @@ int main() {
 
   xpod::qlever::ScanRequestInput input = {};
   input.snapshot = &snapshot;
+  input.cancellation = &cancellation;
   input.permutation = Permutation::Enum::SOP;
   input.pattern = pattern;
   input.limit = 100;
@@ -72,6 +76,7 @@ int main() {
 
   xpod_rdf_scan_request request = xpod::qlever::makeScanRequest(input);
   if (request.snapshot.snapshot_token.data != snapshot.snapshot_token.data) return 1;
+  if (request.cancellation != &cancellation) return 17;
   if (request.permutation != XPOD_RDF_PERM_SOPG) return 2;
   if (!request.pattern.has_subject || request.pattern.subject != 11) return 3;
   if (request.pattern.has_predicate) return 4;
@@ -139,9 +144,13 @@ int main() {
   static const char path_prefix[] = "/workspace/docs/";
   xpod_rdf_snapshot snapshot = {};
   snapshot.facts_version = {facts_version, 8};
+  int cancellation_marker = 0;
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.cancellation_user_data = &cancellation_marker;
   xpod_rdf_access_scope access_scope = {};
   xpod_qlever_query_request query = {};
   query.snapshot = snapshot;
+  query.cancellation = &cancellation;
   query.access_scope = &access_scope;
   query.source_scope.local_path_prefix = {path_prefix, 16};
   query.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
@@ -163,6 +172,7 @@ int main() {
 
   xpod_rdf_scan_request request = xpod::qlever::makeScanRequest(input);
   if (request.snapshot.facts_version.data != facts_version) return 1;
+  if (request.cancellation != &cancellation) return 11;
   if (request.access_scope != &access_scope) return 2;
   if (request.permutation != XPOD_RDF_PERM_PSOG) return 3;
   if (!request.pattern.has_predicate || request.pattern.predicate != 20) return 4;

@@ -402,34 +402,39 @@ inline xpod_rdf_status bindPlanTerms(
 inline void applyBridgeRequestContext(
     BridgeQueryPlan& plan,
     const xpod_rdf_snapshot& snapshot,
+    const xpod_rdf_cancellation* cancellation,
     const xpod_rdf_graph_scope& graph_scope,
     const xpod_rdf_source_scope& source_scope,
     const xpod_rdf_access_scope* access_scope) noexcept {
   plan.scan.snapshot = &snapshot;
+  plan.scan.cancellation = cancellation;
   plan.scan.graph_scope = graph_scope;
   plan.scan.source_scope = &source_scope;
   plan.scan.access_scope = access_scope;
   for (BridgeFilterScan& filter : plan.filter_scans) {
     filter.scan.snapshot = &snapshot;
+    filter.scan.cancellation = cancellation;
     filter.scan.graph_scope = graph_scope;
     filter.scan.source_scope = &source_scope;
     filter.scan.access_scope = access_scope;
   }
   for (BridgeTextCandidateSource& source : plan.text_sources) {
     source.request.snapshot = snapshot;
+    source.request.cancellation = cancellation;
     source.request.graph_scope = graph_scope;
     source.request.source_scope = source_scope;
     source.request.access_scope = access_scope;
   }
   for (BridgeVectorCandidateSource& source : plan.vector_sources) {
     source.request.snapshot = snapshot;
+    source.request.cancellation = cancellation;
     source.request.graph_scope = graph_scope;
     source.request.source_scope = source_scope;
     source.request.access_scope = access_scope;
   }
   for (BridgeQueryPlan& child : plan.child_plans) {
     applyBridgeRequestContext(
-        child, snapshot, graph_scope, source_scope, access_scope);
+        child, snapshot, cancellation, graph_scope, source_scope, access_scope);
   }
 }
 

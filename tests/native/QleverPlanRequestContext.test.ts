@@ -62,11 +62,15 @@ int main() {
   vector.request.vector = values;
   vector.request.dimensions = 2;
   plan.vector_sources.push_back(vector);
+  plan.child_plans.emplace_back();
 
   xpod_rdf_snapshot snapshot = {};
   snapshot.facts_version = {"facts-v1", 8};
   xpod_rdf_source_scope source_scope = {};
   source_scope.local_path_prefix = {"/workspace/docs/", 16};
+  int cancellation_marker = 0;
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.cancellation_user_data = &cancellation_marker;
   xpod_rdf_graph_scope graph_scope = {};
   graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
   graph_scope.exact_graph = 99;
@@ -74,28 +78,36 @@ int main() {
   access_scope.permission_version = {"perm-v1", 7};
 
   xpod::qlever::applyBridgeRequestContext(
-      plan, snapshot, graph_scope, source_scope, &access_scope);
+      plan, snapshot, &cancellation, graph_scope, source_scope, &access_scope);
 
   if (plan.scan.snapshot != &snapshot) return 1;
+  if (plan.scan.cancellation != &cancellation) return 15;
   if (plan.scan.source_scope != &source_scope) return 2;
   if (plan.scan.access_scope != &access_scope) return 3;
   if (plan.scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 31;
   if (plan.scan.graph_scope.exact_graph != 99) return 32;
   if (plan.filter_scans[0].scan.snapshot != &snapshot) return 4;
+  if (plan.filter_scans[0].scan.cancellation != &cancellation) return 16;
   if (plan.filter_scans[0].scan.source_scope != &source_scope) return 5;
   if (plan.filter_scans[0].scan.access_scope != &access_scope) return 6;
   if (plan.filter_scans[0].scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 61;
   if (plan.filter_scans[0].scan.graph_scope.exact_graph != 99) return 62;
   if (!bytes_equal(plan.text_sources[0].request.snapshot.facts_version, "facts-v1")) return 7;
+  if (plan.text_sources[0].request.cancellation != &cancellation) return 17;
   if (!bytes_equal(plan.text_sources[0].request.source_scope.local_path_prefix, "/workspace/docs/")) return 8;
   if (plan.text_sources[0].request.access_scope != &access_scope) return 9;
   if (plan.text_sources[0].request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 91;
   if (plan.text_sources[0].request.graph_scope.exact_graph != 99) return 92;
   if (!bytes_equal(plan.vector_sources[0].request.snapshot.facts_version, "facts-v1")) return 10;
+  if (plan.vector_sources[0].request.cancellation != &cancellation) return 18;
   if (!bytes_equal(plan.vector_sources[0].request.source_scope.local_path_prefix, "/workspace/docs/")) return 11;
   if (plan.vector_sources[0].request.access_scope != &access_scope) return 12;
   if (plan.vector_sources[0].request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 121;
   if (plan.vector_sources[0].request.graph_scope.exact_graph != 99) return 122;
+  if (plan.child_plans[0].scan.snapshot != &snapshot) return 19;
+  if (plan.child_plans[0].scan.cancellation != &cancellation) return 20;
+  if (plan.child_plans[0].scan.access_scope != &access_scope) return 21;
+  if (plan.child_plans[0].scan.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT) return 22;
   if (plan.text_sources[0].request.limit != 3) return 13;
   if (plan.vector_sources[0].request.vector != values) return 14;
   return 0;
