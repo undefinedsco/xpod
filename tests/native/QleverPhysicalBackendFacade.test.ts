@@ -86,6 +86,21 @@ static xpod_rdf_status scan(
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status estimate_source_scope(
+    void* backend_user_data,
+    const xpod_rdf_source_scope* source_scope,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_estimate* out_estimate) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 10000;
+  if (source_scope->local_path_prefix.size != 6) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  out_estimate->rows = 12;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
 int main() {
   int calls = 0;
   xpod_rdf_backend_v1 backend = {};
@@ -95,6 +110,7 @@ int main() {
   backend.lookup_terms = lookup_terms;
   backend.resolve_terms = resolve_terms;
   backend.scan_permutation = scan;
+  backend.estimate_source_scope = estimate_source_scope;
 
   xpod::rdf::PhysicalBackend physical(&backend);
   if (!physical.valid()) return 1;
@@ -117,7 +133,12 @@ int main() {
 
   xpod_rdf_scan_request request = {};
   if (physical.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_OK) return 7;
-  if (calls != 111) return 8;
+  xpod_rdf_source_scope source_scope = {};
+  source_scope.local_path_prefix = {"/docs/", 6};
+  xpod_rdf_estimate source_estimate = {};
+  if (physical.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_OK) return 8;
+  if (source_estimate.rows != 12 || source_estimate.confidence != XPOD_RDF_ESTIMATE_FRESH) return 15;
+  if (calls != 10111) return 16;
 
   xpod_rdf_backend_v1 truncated = {};
   truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -128,7 +149,7 @@ int main() {
   xpod_rdf_term_key lookup_key = 0;
   if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
   if (lookup_key != 0) return 13;
-  if (calls != 111) return 14;
+  if (calls != 10111) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -137,6 +158,7 @@ int main() {
   if (unsupported.lookupTerms(terms, 2, snapshot, keys, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 9;
   if (unsupported.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 10;
   if (unsupported.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
+  if (unsupported.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_UNSUPPORTED) return 17;
 
   return 0;
 }

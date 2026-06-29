@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 3
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 4
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -446,6 +446,12 @@ typedef xpod_rdf_status (*xpod_rdf_estimate_access_scope_fn)(
     const xpod_rdf_source_scope* source_scope,
     xpod_rdf_estimate* out_estimate);
 
+typedef xpod_rdf_status (*xpod_rdf_estimate_source_scope_fn)(
+    void* backend_user_data,
+    const xpod_rdf_source_scope* source_scope,
+    const xpod_rdf_snapshot* snapshot,
+    xpod_rdf_estimate* out_estimate);
+
 typedef xpod_rdf_status (*xpod_rdf_encode_qlever_id_fn)(
     void* backend_user_data,
     xpod_rdf_term_key term,
@@ -480,6 +486,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_decode_qlever_id_fn decode_qlever_id;
   xpod_rdf_lookup_terms_fn lookup_terms;
   xpod_rdf_resolve_terms_fn resolve_terms;
+  xpod_rdf_estimate_source_scope_fn estimate_source_scope;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus

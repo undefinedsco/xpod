@@ -272,6 +272,20 @@ class PhysicalBackend {
         &out_estimate);
   }
 
+  xpod_rdf_status estimateSourceScope(
+      const xpod_rdf_source_scope& source_scope,
+      const xpod_rdf_snapshot& snapshot,
+      xpod_rdf_estimate& out_estimate) const noexcept {
+    if (!valid() ||
+        !hasField(offsetof(xpod_rdf_backend_v1, estimate_source_scope),
+                  sizeof(backend_->estimate_source_scope)) ||
+        backend_->estimate_source_scope == nullptr) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return backend_->estimate_source_scope(
+        backend_->backend_user_data, &source_scope, &snapshot, &out_estimate);
+  }
+
   void emitProfileEvent(const xpod_rdf_profile_event& event) const noexcept {
     if (valid() &&
         hasCallback(offsetof(xpod_rdf_backend_v1, on_profile_event),

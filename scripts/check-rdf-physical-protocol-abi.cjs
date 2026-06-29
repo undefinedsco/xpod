@@ -20,6 +20,7 @@ const requiredSymbols = [
   'xpod_rdf_resolve_terms_fn',
   'xpod_rdf_scan_permutation_fn',
   'xpod_rdf_source_scope source_scope',
+  'xpod_rdf_estimate_source_scope_fn',
   'xpod_rdf_estimate_scan_fn',
   'xpod_rdf_text_search_fn',
   'xpod_rdf_vector_search_fn',
