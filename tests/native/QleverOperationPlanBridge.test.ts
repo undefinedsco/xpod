@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -66,6 +66,7 @@ class Operation {
   mutable std::vector<ColumnIndex> sorted_cache_;
 };
 `, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), `
 #pragma once
 #include <string>
@@ -100,6 +101,7 @@ class IndexScan final : public Operation {
       const binary = path.join(root, 'operation_plan_bridge_smoke');
       await writeFile(smoke, `
 #include <memory>
+#include "engine/Join.h"
 #include "XpodQleverOperationPlanBridge.hpp"
 
 int main() {
@@ -138,6 +140,14 @@ int main() {
   if (planner_plan->term_bindings.size() != 1) return 22;
   planner.setReturnEmpty(true);
   if (xpod::qlever::planQleverParsedQueryWithPlanner(planner, parsed).has_value()) return 23;
+  auto left = std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>());
+  auto right = std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>());
+  Join join(left, right);
+  auto join_plan = xpod::qlever::planQleverOperation(join);
+  if (!join_plan.has_value()) return 24;
+  if (join_plan->root.kind != xpod::qlever::BridgeOperationKind::HashJoin) return 25;
+  if (join_plan->filter_scans.size() != 1) return 26;
+  if (join_plan->root.join_slot != XPOD_RDF_SLOT_SUBJECT) return 27;
   return 0;
 }
 `, 'utf8');

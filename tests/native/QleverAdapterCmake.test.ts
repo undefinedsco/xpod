@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeIndexScanHeader, fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterRoot = path.join(repoRoot, 'native/postgres/qlever_adapter');
@@ -86,6 +86,7 @@ describe('native QLever adapter CMake target', () => {
     expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
     expect(existsSync(qleverBridgeSource)).toBe(true);
     expect(readFileSync(cmakeLists, 'utf8')).toContain('src/XpodQleverBridge.cpp');
+    expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/Join.h');
     expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/Operation.h');
     expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/QueryExecutionTree.h');
 
@@ -120,6 +121,7 @@ class Operation {
     return sorted_cache_;
   }
   virtual std::vector<QueryExecutionTree*> getChildren() { return {}; }
+  std::vector<const QueryExecutionTree*> getChildren() const { return {}; }
  protected:
   virtual std::vector<ColumnIndex> resultSortedOn() const { return {}; }
  private:
@@ -128,6 +130,7 @@ class Operation {
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), fakeQueryPlannerHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), fakeIndexScanHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
@@ -243,6 +246,7 @@ class Permutation {
       expect(output).toContain('parser/ParsedQuery.h');
       expect(output).toContain('parser/SparqlTriple.h');
       expect(output).toContain('engine/QueryPlanner.h');
+      expect(output).toContain('engine/Join.h');
       expect(output).toContain('engine/Operation.h');
       expect(output).toContain('engine/QueryExecutionTree.h');
       expect(output).toContain('engine/Result.h');

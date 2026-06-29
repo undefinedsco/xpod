@@ -174,6 +174,34 @@ class QueryPlanner {
 };
 `;
 
+export const fakeJoinHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class Join final : public Operation {
+ public:
+  Join(std::shared_ptr<QueryExecutionTree> left,
+       std::shared_ptr<QueryExecutionTree> right)
+      : left_(std::move(left)), right_(std::move(right)) {}
+  std::string getDescriptor() const override { return "Join on ?s"; }
+  size_t getResultWidth() const override { return 3; }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {left_.get(), right_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {left_.get(), right_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {0}; }
+ private:
+  std::shared_ptr<QueryExecutionTree> left_;
+  std::shared_ptr<QueryExecutionTree> right_;
+};
+`;
+
 export const fakeIndexScanHeader = `
 #pragma once
 #include <string>
