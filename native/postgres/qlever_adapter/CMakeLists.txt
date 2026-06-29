@@ -12,8 +12,18 @@ else()
   set(XPOD_QLEVER_ADAPTER_LIBRARY_TYPE STATIC)
 endif()
 
-add_library(xpod_qlever_adapter ${XPOD_QLEVER_ADAPTER_LIBRARY_TYPE}
+set(XPOD_QLEVER_ADAPTER_SOURCES
   src/xpod_qlever_adapter.cpp
+)
+
+if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
+  list(APPEND XPOD_QLEVER_ADAPTER_SOURCES
+    src/XpodQleverBridge.cpp
+  )
+endif()
+
+add_library(xpod_qlever_adapter ${XPOD_QLEVER_ADAPTER_LIBRARY_TYPE}
+  ${XPOD_QLEVER_ADAPTER_SOURCES}
 )
 
 target_compile_features(xpod_qlever_adapter PUBLIC cxx_std_17)

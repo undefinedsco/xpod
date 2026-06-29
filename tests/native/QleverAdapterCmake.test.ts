@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterRoot = path.join(repoRoot, 'native/postgres/qlever_adapter');
 const cmakeLists = path.join(adapterRoot, 'CMakeLists.txt');
+const qleverBridgeSource = path.join(adapterRoot, 'src/XpodQleverBridge.cpp');
 const nativeBuildTimeoutMs = 30_000;
 
 function hasCmake(): boolean {
@@ -82,6 +83,8 @@ describe('native QLever adapter CMake target', () => {
 
   it('accepts an explicit QLever source tree when the required native headers exist', async () => {
     expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+    expect(existsSync(qleverBridgeSource)).toBe(true);
+    expect(readFileSync(cmakeLists, 'utf8')).toContain('src/XpodQleverBridge.cpp');
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-source-present-'));
     try {

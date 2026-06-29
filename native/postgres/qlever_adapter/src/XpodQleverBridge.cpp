@@ -1,0 +1,15 @@
+#include "XpodQleverBridge.hpp"
+
+#if !XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
+#error "XpodQleverBridge.cpp must only be compiled when XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1"
+#endif
+
+#include "engine/QueryExecutionContext.h"
+#include "engine/RuntimeInformation.h"
+#include "libqlever/Qlever.h"
+
+namespace xpod::qlever {
+
+bool bridgeCompiledWithQlever() noexcept { return true; }
+
+}  // namespace xpod::qlever
