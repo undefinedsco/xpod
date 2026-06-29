@@ -274,6 +274,7 @@ export async function acceptSignaledRawTcpP2PConnectionOnce(
   options: AcceptSignaledRawTcpP2PConnectionOnceOptions,
 ): Promise<AcceptedSignaledRawTcpP2PConnection | undefined> {
   const sessions = await options.signaling.listP2PSessions();
+  const errors: string[] = [];
   for (const session of sessions) {
     if (!selectRawTcpP2PRoute(session.nodeCandidates)) {
       continue;
@@ -315,23 +316,30 @@ export async function acceptSignaledRawTcpP2PConnectionOnce(
       options.sourceId,
       plan.bucket,
     );
-    const socket = await connectRawTcpP2PSocket({
-      localCandidates: effectiveLocalCandidates,
-      remoteCandidates,
-      connectTimeoutMs: options.connectTimeoutMs,
-      winnerSelectionWindowMs: options.winnerSelectionWindowMs,
-      localAddress: options.localAddress,
-      nowMs: options.nowMs,
-      sleepMs: options.sleepMs,
-      connectSocket: options.connectSocket,
-    });
-    return {
-      session: answeredSession,
-      plan,
-      localCandidates: effectiveLocalCandidates,
-      remoteCandidates,
-      socketHandle: attachTcpP2PDataPlaneSocket({ socket, handler: options.handler }),
-    };
+    try {
+      const socket = await connectRawTcpP2PSocket({
+        localCandidates: effectiveLocalCandidates,
+        remoteCandidates,
+        connectTimeoutMs: options.connectTimeoutMs,
+        winnerSelectionWindowMs: options.winnerSelectionWindowMs,
+        localAddress: options.localAddress,
+        nowMs: options.nowMs,
+        sleepMs: options.sleepMs,
+        connectSocket: options.connectSocket,
+      });
+      return {
+        session: answeredSession,
+        plan,
+        localCandidates: effectiveLocalCandidates,
+        remoteCandidates,
+        socketHandle: attachTcpP2PDataPlaneSocket({ socket, handler: options.handler }),
+      };
+    } catch (error) {
+      errors.push(`${session.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(`Failed to accept raw TCP P2P sessions: ${errors.join('; ')}`);
   }
   return undefined;
 }

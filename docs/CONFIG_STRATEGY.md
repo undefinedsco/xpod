@@ -136,6 +136,11 @@ urn:solid-server:default:variable:xxx
 | tencentDnsToken | XPOD_TENCENT_DNS_TOKEN | 腾讯DNS Token | 可选 | - |
 | frpServerHost | XPOD_FRP_SERVER_HOST | FRP服务器地址 | 可选 | - |
 | frpToken | XPOD_FRP_TOKEN | FRP认证Token | 可选 | - |
+| cloudflareTunnelToken | CLOUDFLARE_TUNNEL_TOKEN | 用户自带 Cloudflare Tunnel token，只在 local runtime 使用 | local:user-tunnel | - |
+| tunnelProvider | XPOD_TUNNEL_PROVIDER | 本机隧道 provider 选择（ngrok/cloudflare/sakura-frp/none） | 可选 | - |
+| ngrokAuthToken | NGROK_AUTHTOKEN | ngrok 本机 authtoken，只在 local runtime 使用 | local:user-tunnel | - |
+| ngrokUrl | NGROK_URL | ngrok 固定 dev domain 或 custom domain | local:user-tunnel | - |
+| ngrokPath | NGROK_BIN | ngrok 可执行文件路径 | 可选 | "ngrok" |
 | p2pMaxActiveSessionsPerNode | XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE | 单节点 active P2P signaling session 上限 | 可选 | 16 |
 | p2pMaxCandidatesPerUpdate | XPOD_P2P_MAX_CANDIDATES_PER_UPDATE | 单次 P2P candidate 更新数组长度上限 | 可选 | 32 |
 | p2pMaxCandidatesPerSession | XPOD_P2P_MAX_CANDIDATES_PER_SESSION | 单个 P2P session 累计 candidate 上限 | 可选 | 256 |
@@ -376,6 +381,11 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | frpServerPort | XPOD_FRP_SERVER_PORT | EnvExtractor | "7000" | - |
 | frpToken | XPOD_FRP_TOKEN | EnvExtractor | - | - |
 | frpProtocol | XPOD_FRP_PROTOCOL | EnvExtractor | "tcp" | - |
+| cloudflareTunnelToken | CLOUDFLARE_TUNNEL_TOKEN | API env | - | - |
+| tunnelProvider | XPOD_TUNNEL_PROVIDER | API env | - | - |
+| ngrokAuthToken | NGROK_AUTHTOKEN | API env | - | - |
+| ngrokUrl | NGROK_URL | API env | - | - |
+| ngrokPath | NGROK_BIN | API env | "ngrok" | - |
 | p2pMaxActiveSessionsPerNode | XPOD_P2P_MAX_ACTIVE_SESSIONS_PER_NODE | API env | 16 | - |
 | p2pMaxCandidatesPerUpdate | XPOD_P2P_MAX_CANDIDATES_PER_UPDATE | API env | 32 | - |
 | p2pMaxCandidatesPerSession | XPOD_P2P_MAX_CANDIDATES_PER_SESSION | API env | 256 | - |

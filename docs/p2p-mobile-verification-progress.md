@@ -1,14 +1,15 @@
 # P2P Mobile Verification Progress
 
-日期：2026-06-22；更新：2026-06-25
+日期：2026-06-22；更新：2026-06-28
 
 本文记录 raw TCP P2P 数据面在本地、Docker、Harmony、iPhone 路径上的验证进度。结论先行：
 
 - 本地和 Docker 级别的自动化 smoke 可以证明控制面、信令、候选地址补全、raw TCP frame、node-side 转发和 managed-client fetch 的代码路径。
 - 这些自动化 smoke **不能替代手机/跨 NAT 实网验收**。
-- Harmony Mate 80 实机路径当前被应用签名信任链阻塞，尚未完成手机 P2P 验收。
+- Harmony Mate 80 已通过 Pgyer 安装 LinX Mobile 并跑到 signal/candidate 交换阶段；当前失败点已从安装/登录推进到 raw TCP 数据面。
 - CI/CD 已支持 iOS 产物构建/分发；Xpod 侧仍需拿到 iPhone 真机运行后的 verifier JSON，才能把 iPhone P2P 记为通过。
 - LinX Mobile 已具备 Android/iOS 原生 raw TCP P2P smoke bridge；Android 本机已构建 `1.0.1 (2)` product 与 p2pSmoke debug APK，但当前没有 ADB/HDC 连接设备，尚未完成手机安装后的实网 P2P 结果采集。
+- 2026-06-27 使用 Pgyer 安装的 LinX Mobile 在 Harmony Mate 80 上已跑到 signal/candidate 交换阶段；`route.kind` 仍为 `unknown`，raw TCP 连接超时，不能记为 P2P 验收通过。当前证据指向本地 node 网络至少双层 NAT，无法在这组实网条件下完成 raw TCP P2P 数据面验收。
 
 ## 验证矩阵
 
@@ -17,9 +18,72 @@
 | 本机 deterministic socket injection | 已有自动化测试入口 | route discovery、session 创建、node accept orchestration、`xpod-p2p-http/1` frame 转发 | 真实 TCP socket、跨 NAT simultaneous open |
 | 本机 real TCP listener | 已有自动化测试入口 | Node TCP socket 上的数据面 round-trip | 跨 NAT simultaneous open、手机运行时能力 |
 | Docker bridge E2E | 已有 smoke 与测试入口 | 两个容器之间的真实 TCP 数据面、signal-observed 地址补全 | 蜂窝/Wi-Fi NAT 行为、手机 OS socket 行为 |
-| Harmony Mate 80 | HAP 可构建、可本地签名；安装被系统拒绝 | 项目结构、构建链、OpenHarmony 自签名包生成 | 商用 HarmonyOS 设备上的运行、真实 P2P 数据面 |
+| Harmony Mate 80 | LinX Mobile 已通过 Pgyer 安装并运行 P2P Smoke；raw TCP 全候选超时 | Cloud 登录、Local SP 配置、signal session 创建、候选交换、node/client 端口计划对齐 | 当前 NAT 环境下的 raw TCP 数据面、PUT/GET 2xx |
 | Android LinX P2P Smoke | React Native bridge 已实现；本机已构建 `1.0.1 (2)` APK；未连接真机 | Android 原生 socket bridge、flavor 隔离、launcher 参数注入、JS verifier shape、APK 构建 | 真机网络/NAT 行为、手机上实际 PUT/GET 结果 |
 | iPhone | CI/CD 已支持 iOS 产物构建/分发；真机 P2P 尚未执行 | 可通过 CI/CD 产物继续真机安装/分发；iOS bridge 代码已补齐 | socket 能力、实网 P2P、读写结果 |
+
+## 2026-06-27 Harmony / LinX Mobile 实机结果
+
+本轮使用 Pgyer 安装的 LinX Mobile，在 Harmony Mate 80 上进入 Chat 内置 `P2P Smoke` 面板进行验证。
+
+配置口径：
+
+- Cloud IDP / provider：`https://id.undefineds.co/`
+- Local SP server root：`https://node-0000.undefineds.co/`
+- 登录 WebID：`https://id.undefineds.co/gcloud/profile/card#me`
+- SP storage URL：`https://node-0000.undefineds.co/gcloud/`
+- clientId：`phone-1782497683`
+- nodeId：`node-0000`
+- resource path：`.data/linx-mobile-p2p-smoke.txt`
+
+验收产物目录：
+
+```text
+.test-data/p2p-harmony/manual-20260627-030253/
+  node-result.json
+  mobile-result.json
+  session-p2p_zgxomqhdmh.json
+```
+
+已证明：
+
+1. 手机端可以使用 Cloud IDP 登录，并把 Local SP 作为存储目标。
+2. 手机点击后成功创建 signal session：`p2p_zgxomqhdmh`。
+3. signal API 已完成候选交换：client 8 个 candidates，node 8 个 candidates。
+4. node 侧候选地址由 signal 观测补全为 `27.38.146.3`；client 侧候选地址由 signal 观测补全为 `112.97.83.30`。
+5. 两侧候选端口集合一致，例如 `31052/32741/33146/37299/45226/46484/47287/49846`，说明候选计划和 node-side localPort 运行时已对齐。
+
+未通过项：
+
+- `mobile-result.json`：
+  - `smokeOk=false`
+  - `stage=connect-raw-tcp`
+  - `route.kind=unknown`
+  - `putStatus/status` 均未产生
+- `node-result.json`：
+  - `smokeOk=false`
+  - `accepted=[]`
+- verifier：
+  - `node smoke ok=false`
+  - `node accepted client=false`
+  - `client selected p2p route=false`
+  - `raw tcp connector succeeded=false`
+  - `write http status is 2xx=false`
+
+当前网络判断：
+
+- 手机蜂窝本地地址为 `10.33.132.232`，运营商出口由 signal 观测为 `112.97.83.30`。
+- Mac 本机地址为 `192.168.3.240`，signal 观测公网出口为 `27.38.146.3`。
+- UPnP 探测返回的网关外部地址为 `192.168.1.22`，不是公网 `27.38.146.3`；说明本地 node 所在网络至少存在双层 NAT。UPnP 只能映射第一层 NAT，不能把公网出口映射到本机。
+- 在这组网络下，raw TCP simultaneous open 所有 candidate pair 均超时，不能完成 P2P 数据面。
+
+本轮修正：
+
+- node accept 遇到一个 session 打洞失败后，会继续尝试后续 pending session，避免旧失败 session 阻塞新手机点击。
+- node-side accept smoke 改用 Node.js 运行：`node -r ts-node/register scripts/edge-node-p2p-accept-smoke.ts`。原因是当前 Bun 的 `node:net.createConnection({ localPort })` 在最小探针中没有稳定按指定 `localPort` 出站；raw TCP 打洞必须保留候选本地端口。
+- realnet / Android / Harmony dry-run 生成的 node command 也改为直接 Node.js 命令，避免 `bun run ... > node-result.json` 的命令回显污染 JSON。
+
+结论：本轮不能声明 Harmony 手机 P2P 已验收。当前阻塞不在账号、SP URL 或 signal API，而在当前蜂窝 NAT ↔ 本地双层 NAT 的 raw TCP 数据面连通性。
 
 ## Harmony Mate 80 进度
 

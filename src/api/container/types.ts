@@ -112,6 +112,15 @@ export interface ApiContainerConfig {
   /** SakuraFRP Tunnel Token (SAKURA_TUNNEL_TOKEN；local 托管式/自管式，启动 frpc) */
   sakuraTunnelToken?: string;
 
+  /** ngrok authtoken (local only; not sent to Cloud). */
+  ngrokAuthToken?: string;
+
+  /** Fixed ngrok endpoint/custom domain, e.g. https://example.ngrok-free.dev. */
+  ngrokUrl?: string;
+
+  /** ngrok executable path. */
+  ngrokPath?: string;
+
   /** 是否接受 Edge 节点注册 (cloud 模式) */
   edgeNodesEnabled?: boolean;
 }

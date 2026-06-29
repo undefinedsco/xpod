@@ -98,6 +98,7 @@ import { VectorStore } from './storage/vector/VectorStore';
 // Tunnel and Subdomain components
 import { CloudflareTunnelProvider } from './tunnel/CloudflareTunnelProvider';
 import { LocalTunnelProvider } from './tunnel/LocalTunnelProvider';
+import { NgrokTunnelProvider } from './tunnel/NgrokTunnelProvider';
 import { SubdomainService } from './subdomain/SubdomainService';
 import { UrlAwareRedisLocker } from './storage/locking/UrlAwareRedisLocker';
 // IdP/SP separation components
@@ -225,6 +226,7 @@ export {
   // Tunnel and Subdomain exports
   CloudflareTunnelProvider,
   LocalTunnelProvider,
+  NgrokTunnelProvider,
   SubdomainService,
   // IdP/SP separation exports
   MultiDomainIdentifierStrategy,

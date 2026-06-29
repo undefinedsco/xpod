@@ -9,6 +9,10 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
     'XPOD_EDITION',
     'API_PORT',
     'API_HOST',
+    'CLOUDFLARE_TUNNEL_TOKEN',
+    'NGROK_AUTHTOKEN',
+    'NGROK_URL',
+    'NGROK_BIN',
   ] as const;
 
   const saved: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
@@ -56,5 +60,44 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
 
     process.env.CSS_AUTH_MODE = 'wac';
     expect(loadConfigFromEnv().authMode).toBe('acl');
+  });
+
+  it('reads user-owned tunnel provider credentials from local environment only', () => {
+    process.env.CLOUDFLARE_TUNNEL_TOKEN = 'cf-user-token';
+    process.env.NGROK_AUTHTOKEN = 'ngrok-user-token';
+    process.env.NGROK_URL = 'https://node-tunnel.ngrok-free.dev';
+    process.env.NGROK_BIN = '/opt/homebrew/bin/ngrok';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.cloudflareTunnelToken).toBe('cf-user-token');
+    expect(config.ngrokAuthToken).toBe('ngrok-user-token');
+    expect(config.ngrokUrl).toBe('https://node-tunnel.ngrok-free.dev');
+    expect(config.ngrokPath).toBe('/opt/homebrew/bin/ngrok');
+  });
+
+  it('ignores xpod-prefixed ngrok aliases and only reads native NGROK_* variables', () => {
+    const legacyPrefix = `${'XPOD'}_${'NGROK'}_`;
+    process.env[`${legacyPrefix}AUTHTOKEN`] = 'legacy-token';
+    process.env[`${legacyPrefix}URL`] = 'https://legacy.ngrok-free.dev';
+    process.env[`${legacyPrefix}BIN`] = '/legacy/ngrok';
+
+    expect(loadConfigFromEnv().ngrokAuthToken).toBeUndefined();
+    expect(loadConfigFromEnv().ngrokUrl).toBeUndefined();
+    expect(loadConfigFromEnv().ngrokPath).toBeUndefined();
+
+    process.env.NGROK_AUTHTOKEN = 'native-token';
+    process.env.NGROK_URL = 'https://native.ngrok-free.dev';
+    process.env.NGROK_BIN = '/usr/local/bin/ngrok';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.ngrokAuthToken).toBe('native-token');
+    expect(config.ngrokUrl).toBe('https://native.ngrok-free.dev');
+    expect(config.ngrokPath).toBe('/usr/local/bin/ngrok');
+
+    delete process.env[`${legacyPrefix}AUTHTOKEN`];
+    delete process.env[`${legacyPrefix}URL`];
+    delete process.env[`${legacyPrefix}BIN`];
   });
 });

@@ -11,6 +11,7 @@ import type { ApiContainerCradle, ApiContainerConfig } from './types';
 
 import { SubdomainClient } from '../../subdomain/SubdomainClient';
 import { LocalTunnelProvider } from '../../tunnel/LocalTunnelProvider';
+import { NgrokTunnelProvider } from '../../tunnel/NgrokTunnelProvider';
 import { SakuraFrpTunnelProvider } from '../../tunnel/SakuraFrpTunnelProvider';
 import { CloudflareDnsProvider } from '../../dns/cloudflare/CloudflareDnsProvider';
 import { SubdomainService } from '../../subdomain/SubdomainService';
@@ -35,6 +36,9 @@ export function registerLocalServices(
     nodeToken,
     cloudflareTunnelToken,
     sakuraTunnelToken,
+    ngrokAuthToken,
+    ngrokUrl,
+    ngrokPath,
     subdomain: subdomainConfig,
   } = config;
 
@@ -44,21 +48,39 @@ export function registerLocalServices(
     }).singleton(),
   });
 
-  // 1. 注册 Tunnel Provider (优先 Cloudflare，其次 SakuraFRP)
-  if (cloudflareTunnelToken) {
+  // 1. 注册 Tunnel Provider。只启用一个 provider；ngrok 是用户自带隧道，不由 Xpod Cloud 托管数据面。
+  const activeTunnelProvider = resolveLocalTunnelProvider({
+    cloudflareTunnelToken,
+    sakuraTunnelToken,
+    ngrokAuthToken,
+    ngrokUrl,
+  });
+
+  if (activeTunnelProvider === 'ngrok') {
+    container.register({
+      localTunnelProvider: asFunction(() => {
+        return new NgrokTunnelProvider({
+          authtoken: ngrokAuthToken,
+          url: ngrokUrl,
+          ngrokPath,
+        });
+      }).singleton(),
+    });
+    console.log('[Local] Tunnel provider registered (ngrok configured)');
+  } else if (activeTunnelProvider === 'cloudflare') {
     container.register({
       localTunnelProvider: asFunction(() => {
         return new LocalTunnelProvider({
-          tunnelToken: cloudflareTunnelToken,
+          tunnelToken: cloudflareTunnelToken!,
         });
       }).singleton(),
     });
     console.log('[Local] Tunnel provider registered (CLOUDFLARE_TUNNEL_TOKEN configured)');
-  } else if (sakuraTunnelToken) {
+  } else if (activeTunnelProvider === 'sakura_frp') {
     container.register({
       localTunnelProvider: asFunction(() => {
         return new SakuraFrpTunnelProvider({
-          token: sakuraTunnelToken,
+          token: sakuraTunnelToken!,
         });
       }).singleton(),
     });
@@ -147,8 +169,8 @@ export function registerLocalServices(
   if (!nodeToken) {
     console.log('[Local] Standalone mode (no XPOD_NODE_TOKEN)');
     console.log('[Local] User manages DNS and IdP externally');
-    if (cloudflareTunnelToken) {
-      console.log('[Local] Will start cloudflared with provided CLOUDFLARE_TUNNEL_TOKEN');
+    if (activeTunnelProvider !== 'none') {
+      console.log(`[Local] Will start configured tunnel provider: ${activeTunnelProvider}`);
     }
     return;
   }
@@ -157,11 +179,7 @@ export function registerLocalServices(
   const effectiveCloudApiEndpoint = cloudApiEndpoint || 'https://pods.undefineds.co';
   const effectiveLocalPort = parseInt(process.env.XPOD_MAIN_PORT || process.env.CSS_PORT || '3000', 10);
   const managedSubdomain = nodeId || 'auto';
-  const tunnelProviderHint: 'cloudflare' | 'sakura_frp' | 'none' = cloudflareTunnelToken
-    ? 'cloudflare'
-    : sakuraTunnelToken
-      ? 'sakura_frp'
-      : 'none';
+  const tunnelProviderHint: 'cloudflare' | 'sakura_frp' | 'ngrok' | 'none' = activeTunnelProvider;
 
   container.register({
     subdomainClient: asFunction(() => {
@@ -199,7 +217,40 @@ export function registerLocalServices(
     console.log(`[Local] Using Cloud IdP: ${config.oidcIssuer}`);
   }
 
-  if (!cloudflareTunnelToken && !sakuraTunnelToken) {
-    console.log('[Local] Note: No tunnel token configured, assuming direct network access');
+  if (activeTunnelProvider === 'none') {
+    console.log('[Local] Note: No tunnel provider configured, assuming direct network access');
   }
+}
+
+
+function resolveLocalTunnelProvider(options: {
+  cloudflareTunnelToken?: string;
+  sakuraTunnelToken?: string;
+  ngrokAuthToken?: string;
+  ngrokUrl?: string;
+}): 'cloudflare' | 'sakura_frp' | 'ngrok' | 'none' {
+  const explicit = process.env.XPOD_TUNNEL_PROVIDER?.trim().toLowerCase();
+  if (explicit) {
+    if (explicit === 'cloudflare') {
+      return options.cloudflareTunnelToken ? 'cloudflare' : 'none';
+    }
+    if (explicit === 'sakura-frp' || explicit === 'sakura_frp') {
+      return options.sakuraTunnelToken ? 'sakura_frp' : 'none';
+    }
+    if (explicit === 'ngrok') {
+      return 'ngrok';
+    }
+    return 'none';
+  }
+
+  if (options.ngrokAuthToken || options.ngrokUrl) {
+    return 'ngrok';
+  }
+  if (options.cloudflareTunnelToken) {
+    return 'cloudflare';
+  }
+  if (options.sakuraTunnelToken) {
+    return 'sakura_frp';
+  }
+  return 'none';
 }

@@ -85,9 +85,10 @@ export function createP2PRealnetAcceptancePlan(
   const apiBaseUrl = ensureTrailingSlash(options.apiBaseUrl);
   const signalEndpoint = new URL('/v1/signal', apiBaseUrl).toString();
   const nodeCommand = compactCommand([
-    'bun',
-    'run',
-    'smoke:p2p:node-accept',
+    'node',
+    '-r',
+    'ts-node/register',
+    'scripts/edge-node-p2p-accept-smoke.ts',
     '--signal-endpoint',
     signalEndpoint,
     '--node-id',

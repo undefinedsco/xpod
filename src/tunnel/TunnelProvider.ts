@@ -14,7 +14,7 @@ export interface TunnelConfig {
   subdomain: string;
 
   /** 隧道类型 */
-  provider: 'cloudflare' | 'frp' | 'sakura-frp';
+  provider: 'cloudflare' | 'frp' | 'sakura-frp' | 'ngrok';
 
   /** 公网访问端点 (如 https://mynode.pods.undefieds.co) */
   endpoint: string;
@@ -22,7 +22,7 @@ export interface TunnelConfig {
   /** 本地 origin 地址 (如 http://localhost:5737)，供隧道客户端转发 */
   originUrl?: string;
 
-  /** Cloudflare Tunnel Token (cloudflare 专用) */
+  /** Provider token when the provider exposes a launch token (Cloudflare/SakuraFRP); ngrok authtoken is kept in local options, not persisted here. */
   tunnelToken?: string;
 
   /** Cloudflare Tunnel ID (cloudflare 专用) */

@@ -14,3 +14,8 @@ export {
   LocalTunnelProvider,
   type LocalTunnelProviderOptions,
 } from './LocalTunnelProvider';
+
+export {
+  NgrokTunnelProvider,
+  type NgrokTunnelProviderOptions,
+} from './NgrokTunnelProvider';

@@ -131,6 +131,9 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     cloudflareTunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN,
     // Prefer SAKURA_TUNNEL_TOKEN; keep SAKURA_TOKEN for backward compatibility.
     sakuraTunnelToken: process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN,
+    ngrokAuthToken: process.env.NGROK_AUTHTOKEN,
+    ngrokUrl: process.env.NGROK_URL,
+    ngrokPath: process.env.NGROK_BIN,
 
     // Edge 节点管理 (cloud 模式)
     edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',

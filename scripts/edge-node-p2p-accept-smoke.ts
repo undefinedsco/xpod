@@ -138,7 +138,7 @@ function parseArgs(argv: string[]): CliOptions {
 }
 
 function usage(): void {
-  console.log(`Usage: bun scripts/edge-node-p2p-accept-smoke.ts --signal-endpoint <url> --node-id <id> --node-token <token> --target-base-url <url> [options]
+  console.log(`Usage: node -r ts-node/register scripts/edge-node-p2p-accept-smoke.ts --signal-endpoint <url> --node-id <id> --node-token <token> --target-base-url <url> [options]
 
 Runs the node-side non-browser raw TCP P2P accept smoke:
   1. starts EdgeNodeAgent with p2p enabled

@@ -137,14 +137,35 @@ Local Pod 的可达性由 Cloud 控制面、xpod local runtime、tunnel provider
 
 职责边界：
 
-- xpod local runtime：启动本地 CSS / API，维护 loopback / LAN route，读取用户配置的 `CLOUDFLARE_TUNNEL_TOKEN`、`frpc`、Tailscale 等 provider token，并在配置存在时确定性启动对应本机客户端。
-- tunnel provider：只负责本机隧道进程，例如 `cloudflared tunnel run --token ... --url http://localhost:5737` 或 `frpc`；provider 的公网入口是否终止 TLS 必须在 UI / 文档中明确。
+- xpod local runtime：启动本地 CSS / API，维护 loopback / LAN route，读取用户配置的 `CLOUDFLARE_TUNNEL_TOKEN`、`NGROK_AUTHTOKEN` / `NGROK_URL`、`frpc`、Tailscale 等 provider 配置，并在配置存在时确定性启动对应本机客户端。
+- tunnel provider：只负责本机隧道进程，例如 `cloudflared tunnel run --token ... --url http://localhost:5737`、`ngrok http --url https://xxx.ngrok-free.dev http://127.0.0.1:5737` 或 `frpc`；provider 的公网入口是否终止 TLS 必须在 UI / 文档中明确。
 - LocalNetworkManager：做公网 IPv4/IPv6 检测和 DNS/DDNS 同步；没有公网时保持本机/局域网 route 可用，不隐式启停隧道。
 - Cloud 控制面：维护 Cloud-managed `spDomain`、节点心跳、route registry、P2P signaling、显式 relay session；不把 Cloud relay 当默认公网可达承诺。
 - LinX Desktop / CLI / Native：收集用户配置、触发 Local 启动、读取 route 表、选择 access route、维持 canonical fetch 语义。
 - LinX Web / 普通浏览器：只使用 public HTTPS route；没有 public route 时展示状态和配置指引，不直接使用 loopback / LAN / P2P route。
 
-因此，有 tunnel token 时，xpod local 应在启动阶段确定性拉起用户配置的隧道。没有 tunnel token 或公网直连时，Local 仍必须能通过 same-device / LAN route 登录和读写；只是普通浏览器远程访问不可用。Xpod Cloud relay 只能在用户显式开启且有 TTL / 带宽限制 / 审计时作为临时兜底。
+因此，有 tunnel 配置时，xpod local 应在启动阶段确定性拉起用户配置的隧道。没有 tunnel 配置或公网直连时，Local 仍必须能通过 same-device / LAN route 登录和读写；只是普通浏览器远程访问不可用。Xpod Cloud relay 只能在用户显式开启且有 TTL / 带宽限制 / 审计时作为临时兜底。
+
+### ngrok provider 边界
+
+ngrok 在 Xpod 中属于 `user-tunnel` provider，不属于 Xpod Cloud 托管数据面：
+
+- 用户在本机或 LinX 中配置 `NGROK_AUTHTOKEN`，该 token 只保留在用户本机。
+- 可选配置 `NGROK_URL`，对应用户 ngrok 账号下的固定 dev domain 或 custom domain。
+- xpod local 只负责启动 `ngrok http ... http://127.0.0.1:<port>`、读取 ngrok agent 暴露的 endpoint，并把它作为 `user-tunnel` route。
+- 免费 `*.ngrok-free.*` dev domain 只能作为 native/debug/临时验收 route；它不是 `node-*.undefineds.co` 的 canonical Solid browser origin。
+- 如果要让普通浏览器/Inrupt SDK 正式访问 `https://node-*.undefineds.co/`，ngrok 侧必须有 custom domain，并由 Cloud 在校验 node 归属后写 DNS CNAME；仅 CNAME 到免费 dev domain 不成立。
+- 同一 local runtime 同时只启用一个 tunnel provider；没有显式 `XPOD_TUNNEL_PROVIDER` 时，当前优先级为 ngrok → Cloudflare → SakuraFRP。
+
+### Cloudflare provider 边界
+
+Cloudflare Tunnel 同样属于用户自带 `user-tunnel` provider。Xpod Cloud 不使用自己的 Cloudflare 账号替用户承接默认数据面流量：
+
+- 用户自己申请 Cloudflare 账号、创建 tunnel，并把 `CLOUDFLARE_TUNNEL_TOKEN` 配置到本机 local runtime 或 LinX。
+- xpod local 只负责用用户 token 启动本机 `cloudflared tunnel run --token ... --url http://127.0.0.1:<port>`；Xpod Cloud 不保存 token，也不替用户创建/续费/承诺 Cloudflare 数据面能力。
+- `node-*.undefineds.co` 仍是 Xpod 分配的稳定 canonical 域名；真实数据入口可以是用户 tunnel，但浏览器/Inrupt SDK 要以 canonical 域名稳定工作时，必须由用户隧道侧支持对应 host/SNI 或等价自定义域绑定。
+- 如果用户 tunnel 只提供一个第三方入口域名，native / CLI 可以把它当 `user-tunnel` access route 使用；普通浏览器是否可用取决于该入口是否能服务 canonical host、TLS、CORS 和 OIDC audience。
+- 若没有用户 tunnel、公网 IP 或局域网/managed-client route，Xpod Cloud 不自动 fallback 到长期 relay，只返回可操作的配置错误。
 
 ---
 

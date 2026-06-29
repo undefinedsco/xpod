@@ -27,9 +27,10 @@ describe('P2P real-network acceptance helper', () => {
 
     expect(plan.kind).toBe('raw-tcp-p2p-realnet-acceptance');
     expect(plan.node.command).toEqual([
-      'bun',
-      'run',
-      'smoke:p2p:node-accept',
+      'node',
+      '-r',
+      'ts-node/register',
+      'scripts/edge-node-p2p-accept-smoke.ts',
       '--signal-endpoint',
       'https://id.undefineds.co/v1/signal',
       '--node-id',

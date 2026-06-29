@@ -37,7 +37,7 @@ describe('Android real-network P2P smoke orchestrator', () => {
     expect(stdout).toContain('DRY RUN: Android real-network P2P acceptance');
     expect(stdout).toContain('node-result.json');
     expect(stdout).toContain('mobile-result.json');
-    expect(stdout).toContain('bun run smoke:p2p:node-accept');
+    expect(stdout).toContain('node -r ts-node/register scripts/edge-node-p2p-accept-smoke.ts');
     expect(stdout).toContain('--settle-after-accept-ms 1000');
     expect(stdout).toContain('--require-accept --settle-after-accept-ms 1000 > ');
     expect(stdout).not.toContain("'>'");

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -9,6 +9,15 @@ const execFileAsync = promisify(execFile);
 const root = path.resolve(__dirname, '../..');
 
 describe('P2P real-network acceptance script', () => {
+  it('runs node accept smoke under Node.js so raw TCP localPort is honored', async () => {
+    const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.['smoke:p2p:node-accept']).toContain('node -r ts-node/register');
+    expect(packageJson.scripts?.['smoke:p2p:node-accept']).not.toMatch(/^bun\s+scripts\/edge-node-p2p-accept-smoke\.ts/u);
+  });
+
   it('prints paired node/client commands and fallback preservation caveats', async () => {
     const { stdout } = await execFileAsync('bun', [
       'scripts/p2p-realnet-acceptance.ts',
@@ -56,7 +65,11 @@ describe('P2P real-network acceptance script', () => {
       caveats: string[];
     };
     expect(result.kind).toBe('raw-tcp-p2p-realnet-acceptance');
-    expect(result.node.shell).toContain('smoke:p2p:node-accept');
+    expect(result.node.shell).toContain('node');
+    expect(result.node.shell).toContain('-r');
+    expect(result.node.shell).toContain('ts-node/register');
+    expect(result.node.shell).toContain('scripts/edge-node-p2p-accept-smoke.ts');
+    expect(result.node.shell).not.toContain('bun run smoke:p2p:node-accept');
     expect(result.client.shell).toContain('smoke:p2p:managed');
     expect(result.mobile.packageName).toBe('com.linxmobile.p2psmoke');
     expect(result.mobile.fields).toMatchObject({

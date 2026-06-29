@@ -116,7 +116,7 @@
     "build:single:bun:package": "node scripts/build-platform-package.cjs --current",
     "build:single:standalone": "bun run build && node scripts/build-single-file.js",
     "smoke:p2p:managed": "bun scripts/managed-client-p2p-smoke.ts",
-    "smoke:p2p:node-accept": "bun scripts/edge-node-p2p-accept-smoke.ts",
+    "smoke:p2p:node-accept": "node -r ts-node/register scripts/edge-node-p2p-accept-smoke.ts",
     "smoke:p2p:local-e2e": "bun scripts/local-managed-p2p-e2e-smoke.ts",
     "smoke:p2p:realnet": "bun scripts/p2p-realnet-acceptance.ts",
     "smoke:p2p:android-realnet": "bun scripts/p2p-android-realnet-smoke.ts",
@@ -131,7 +131,11 @@
     "publish:release:dry": "node scripts/publish-release.cjs --dry-run",
     "test:setup": "dotenv -e .env.local -- bun scripts/setup-test-credentials.ts",
     "version": "node scripts/sync-platform-package-version.cjs --stage",
-    "build:harmony:p2p-smoke": "node scripts/build-harmony-p2p-smoke.cjs"
+    "build:harmony:p2p-smoke": "node scripts/build-harmony-p2p-smoke.cjs",
+    "smoke:tunnel:ngrok": "bun scripts/ngrok-tunnel-smoke.ts",
+    "smoke:tunnel:ngrok:pod": "bun scripts/ngrok-pod-readwrite-smoke.ts",
+    "smoke:tunnel:ngrok:browser": "bun scripts/ngrok-browser-pod-smoke.ts",
+    "smoke:tunnel:ngrok:inrupt": "bun scripts/ngrok-inrupt-oidc-smoke.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

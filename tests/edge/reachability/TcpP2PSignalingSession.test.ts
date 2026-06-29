@@ -237,12 +237,11 @@ describe('signaled raw TCP P2P sessions', () => {
 
     try {
       const remotePort = server.address().port;
-      const localPort = await reserveTcpPort();
       const plan = {
         bucket: 99,
         boundary: 123,
         rendezvousTimeSeconds: 1_000,
-        ports: [localPort],
+        ports: [0],
       };
       const localCandidates = createRawTcpHolePunchCandidates({
         role: 'client',
@@ -596,6 +595,94 @@ describe('signaled raw TCP P2P sessions', () => {
     } finally {
       accepted?.socketHandle.close();
       clientTransport?.close();
+      await close();
+    }
+  });
+
+  it('continues to later pending sessions when an earlier raw TCP accept attempt fails', async () => {
+    const handler = createP2PDataPlaneHandler({
+      targetBaseUrl: 'http://127.0.0.1:5737/',
+      fetchImpl: vi.fn(async () => new Response('unused')),
+    });
+    const { serverSocket, close } = await createSocketPair();
+    const failedPlan = {
+      bucket: 204,
+      boundary: 222,
+      rendezvousTimeSeconds: 0,
+      ports: [41_204],
+    };
+    const workingPlan = {
+      bucket: 205,
+      boundary: 222,
+      rendezvousTimeSeconds: 0,
+      ports: [41_205],
+    };
+    const failedClientCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-failed',
+      host: '127.0.0.1',
+      plan: failedPlan,
+    });
+    const workingClientCandidates = createRawTcpHolePunchCandidates({
+      role: 'client',
+      sourceId: 'device-working',
+      host: '127.0.0.1',
+      plan: workingPlan,
+    });
+    const failedSession: P2PSession = {
+      ...baseSession,
+      sessionId: 'p2p_failed',
+      signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_failed',
+      clientId: 'device-failed',
+      candidates: failedClientCandidates,
+    };
+    const workingSession: P2PSession = {
+      ...baseSession,
+      sessionId: 'p2p_working',
+      signalingUrl: 'https://api.example/v1/signal/nodes/node-1/sessions/p2p_working',
+      clientId: 'device-working',
+      candidates: workingClientCandidates,
+    };
+    const updatedSessions = new Map<string, P2PSession>();
+    const signaling: P2PSignalingClient = {
+      createP2PSession: vi.fn(),
+      listP2PSessions: vi.fn(async () => [failedSession, workingSession]),
+      getP2PSession: vi.fn(),
+      addP2PCandidates: vi.fn(async (sessionIdOrUrl, request) => {
+        const base = sessionIdOrUrl === failedSession.signalingUrl ? failedSession : workingSession;
+        const updated = {
+          ...base,
+          candidates: [...base.candidates, ...(request.candidates as P2PTransportCandidate[])],
+        };
+        updatedSessions.set(base.sessionId, updated);
+        return updated;
+      }),
+    };
+    const attempts: RawTcpP2PConnectAttempt[] = [];
+    let accepted: Awaited<ReturnType<typeof acceptSignaledRawTcpP2PConnectionOnce>> | undefined;
+
+    try {
+      accepted = await acceptSignaledRawTcpP2PConnectionOnce({
+        signaling,
+        sourceId: 'node-1',
+        host: '127.0.0.1',
+        handler,
+        connectTimeoutMs: 100,
+        connectSocket: async (attempt) => {
+          attempts.push(attempt);
+          if (attempt.remotePort === 41_204) {
+            throw new Error('first session cannot punch through');
+          }
+          return serverSocket;
+        },
+      });
+
+      expect(accepted?.session.sessionId).toBe('p2p_working');
+      expect(accepted?.session).toEqual(updatedSessions.get('p2p_working'));
+      expect(signaling.addP2PCandidates).toHaveBeenCalledTimes(2);
+      expect(attempts.map((attempt) => attempt.remotePort)).toEqual([41_204, 41_205]);
+    } finally {
+      accepted?.socketHandle.close();
       await close();
     }
   });

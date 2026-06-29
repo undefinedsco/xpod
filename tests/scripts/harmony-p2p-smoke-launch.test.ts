@@ -46,7 +46,7 @@ describe('Harmony P2P smoke launcher', () => {
     expect(stdout).toContain('--ps xpod.p2p.apiBaseUrl https://api.undefineds.co/');
     expect(stdout).toContain('--ps xpod.p2p.clientId harmony-phone-1');
     expect(stdout).toContain('/tmp/hdc -t 62T0226101021775 hilog -T XpodP2PSmoke');
-    expect(stdout).toContain('bun run smoke:p2p:node-accept');
+    expect(stdout).toContain('node -r ts-node/register scripts/edge-node-p2p-accept-smoke.ts');
     expect(stdout).toContain('bun run smoke:p2p:realnet -- verify');
     expect(stdout).toContain('--require-put-status-2xx');
   });
