@@ -385,7 +385,25 @@ int main() {
 
   TextIndexScanForEntity variable_entity_scan("native-first");
   const Operation& variable_entity_operation = variable_entity_scan;
-  if (xpod::qlever::planQleverOperation(variable_entity_operation).has_value()) return 59;
+  auto variable_entity_plan = xpod::qlever::planQleverOperation(variable_entity_operation);
+  if (!variable_entity_plan.has_value()) return 59;
+  if (variable_entity_plan->root.kind != xpod::qlever::BridgeOperationKind::TextSearch) return 66;
+  if (variable_entity_plan->text_sources.size() != 1) return 67;
+  if (!variable_entity_plan->text_required_entities.empty()) return 68;
+  if (variable_entity_plan->result_width != 2) return 69;
+  if (variable_entity_plan->output_variables.size() != 2) return 70;
+  if (variable_entity_plan->output_variables[0] != "text") return 71;
+  if (variable_entity_plan->output_variables[1] != "entity") return 72;
+  if (variable_entity_plan->text_sources[0].output_columns.size() != 2) return 73;
+  if (variable_entity_plan->text_sources[0].output_columns[0].variable != "text") return 74;
+  if (variable_entity_plan->text_sources[0].output_columns[0].kind !=
+      xpod::qlever::BridgeCandidateColumnKind::RetrievalPoint) return 75;
+  if (variable_entity_plan->text_sources[0].output_columns[1].variable != "entity") return 76;
+  if (variable_entity_plan->text_sources[0].output_columns[1].kind !=
+      xpod::qlever::BridgeCandidateColumnKind::ResourceTerm) return 77;
+  auto variable_entity_physical = xpod::qlever::toBridgePhysicalPlan(*variable_entity_plan);
+  if (variable_entity_physical.text_sources.size() != 1) return 78;
+  if (variable_entity_physical.text_sources[0].output_columns.size() != 2) return 79;
 
   auto word_tree = std::make_shared<QueryExecutionTree>(
       std::make_shared<TextIndexScanForWord>("native-first"));

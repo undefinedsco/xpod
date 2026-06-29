@@ -199,13 +199,17 @@ inline xpod_rdf_status bindTermBindings(
   return XPOD_RDF_STATUS_OK;
 }
 
-inline std::string bridgeComponentVariableName(
-    const TripleComponent& component) {
-  std::string name = component.getVariable().name();
+inline std::string bridgeVariableName(const Variable& variable) {
+  std::string name = variable.name();
   if (!name.empty() && name.front() == '?') {
     name.erase(name.begin());
   }
   return name;
+}
+
+inline std::string bridgeComponentVariableName(
+    const TripleComponent& component) {
+  return bridgeVariableName(component.getVariable());
 }
 
 inline void appendParsedOutputVariable(

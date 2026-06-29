@@ -22,6 +22,16 @@ enum class BridgeOperationKind {
   VectorSearch,
 };
 
+enum class BridgeCandidateColumnKind {
+  RetrievalPoint,
+  ResourceTerm,
+};
+
+struct BridgeCandidateOutputColumn {
+  std::string variable;
+  BridgeCandidateColumnKind kind = BridgeCandidateColumnKind::RetrievalPoint;
+};
+
 struct BridgeOperationPlan {
   BridgeOperationKind kind = BridgeOperationKind::PermutationScan;
   std::vector<size_t> scan_indexes;
@@ -44,6 +54,7 @@ struct BridgeTextCandidateSource {
   bool owns_required_entities = false;
   std::string query_storage;
   std::vector<xpod_rdf_term_key> required_entities_storage;
+  std::vector<BridgeCandidateOutputColumn> output_columns;
   std::string descriptor = "XpodBackedTextSearch";
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
@@ -56,6 +67,7 @@ struct BridgeTextCandidateSource {
         owns_required_entities(other.owns_required_entities),
         query_storage(other.query_storage),
         required_entities_storage(other.required_entities_storage),
+        output_columns(other.output_columns),
         descriptor(other.descriptor),
         profile_node(other.profile_node),
         parent_profile_node(other.parent_profile_node) {
@@ -72,6 +84,7 @@ struct BridgeTextCandidateSource {
     owns_required_entities = other.owns_required_entities;
     query_storage = other.query_storage;
     required_entities_storage = other.required_entities_storage;
+    output_columns = other.output_columns;
     descriptor = other.descriptor;
     profile_node = other.profile_node;
     parent_profile_node = other.parent_profile_node;
@@ -85,6 +98,7 @@ struct BridgeTextCandidateSource {
         owns_required_entities(other.owns_required_entities),
         query_storage(std::move(other.query_storage)),
         required_entities_storage(std::move(other.required_entities_storage)),
+        output_columns(std::move(other.output_columns)),
         descriptor(std::move(other.descriptor)),
         profile_node(other.profile_node),
         parent_profile_node(other.parent_profile_node) {
@@ -101,6 +115,7 @@ struct BridgeTextCandidateSource {
     owns_required_entities = other.owns_required_entities;
     query_storage = std::move(other.query_storage);
     required_entities_storage = std::move(other.required_entities_storage);
+    output_columns = std::move(other.output_columns);
     descriptor = std::move(other.descriptor);
     profile_node = other.profile_node;
     parent_profile_node = other.parent_profile_node;

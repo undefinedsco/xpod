@@ -140,6 +140,18 @@ inline std::optional<BridgeQueryPlan> planIndexScanOperation(
   return plan;
 }
 
+inline void appendTextCandidateOutput(
+    BridgeQueryPlan& plan,
+    BridgeTextCandidateSource& source,
+    const Variable& variable,
+    BridgeCandidateColumnKind kind) {
+  BridgeCandidateOutputColumn column;
+  column.variable = bridgeVariableName(variable);
+  column.kind = kind;
+  plan.output_variables.push_back(column.variable);
+  source.output_columns.push_back(std::move(column));
+}
+
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD
 inline std::optional<BridgeQueryPlan> planTextIndexScanForWordOperation(
     const TextIndexScanForWord& scan) {
@@ -147,6 +159,9 @@ inline std::optional<BridgeQueryPlan> planTextIndexScanForWordOperation(
   BridgeTextCandidateSource source;
   source.setQuery(scan.word());
   source.descriptor = scan.getDescriptor();
+  appendTextCandidateOutput(
+      plan, source, scan.textRecordVar(),
+      BridgeCandidateColumnKind::RetrievalPoint);
   plan.text_sources.push_back(std::move(source));
   plan.descriptor = scan.getDescriptor();
   plan.result_width = scan.getResultWidth();
@@ -174,23 +189,29 @@ inline std::optional<BridgeTermBinding> textEntityBindingFromString(
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY
 inline std::optional<BridgeQueryPlan> planTextIndexScanForEntityOperation(
     const TextIndexScanForEntity& scan) {
-  if (!scan.hasFixedEntity()) {
-    return std::nullopt;
-  }
-  auto entity = textEntityBindingFromString(scan.fixedEntity());
-  if (!entity.has_value()) {
-    return std::nullopt;
-  }
-
   BridgeQueryPlan plan;
   BridgeTextCandidateSource source;
   source.setQuery(scan.word());
   source.descriptor = scan.getDescriptor();
+  appendTextCandidateOutput(
+      plan, source, scan.textRecordVar(),
+      BridgeCandidateColumnKind::RetrievalPoint);
+  if (!scan.hasFixedEntity()) {
+    appendTextCandidateOutput(
+        plan, source, scan.entityVariable(),
+        BridgeCandidateColumnKind::ResourceTerm);
+  }
   plan.text_sources.push_back(std::move(source));
-  BridgeTextRequiredEntityBinding required_entity;
-  required_entity.text_source_index = 0;
-  required_entity.term = std::move(*entity);
-  plan.text_required_entities.push_back(std::move(required_entity));
+  if (scan.hasFixedEntity()) {
+    auto entity = textEntityBindingFromString(scan.fixedEntity());
+    if (!entity.has_value()) {
+      return std::nullopt;
+    }
+    BridgeTextRequiredEntityBinding required_entity;
+    required_entity.text_source_index = 0;
+    required_entity.term = std::move(*entity);
+    plan.text_required_entities.push_back(std::move(required_entity));
+  }
   plan.descriptor = scan.getDescriptor();
   plan.result_width = scan.getResultWidth();
   plan.root.kind = BridgeOperationKind::TextSearch;
@@ -225,6 +246,9 @@ inline std::optional<BridgeQueryPlan> planTextWordEntityJoinPair(
   BridgeTextCandidateSource source;
   source.setQuery(word_scan.word());
   source.descriptor = descriptor;
+  appendTextCandidateOutput(
+      plan, source, word_scan.textRecordVar(),
+      BridgeCandidateColumnKind::RetrievalPoint);
   plan.text_sources.push_back(std::move(source));
   BridgeTextRequiredEntityBinding required_entity;
   required_entity.text_source_index = 0;

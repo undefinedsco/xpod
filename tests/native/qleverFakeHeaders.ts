@@ -273,6 +273,7 @@ class TextIndexScanForEntity final : public Operation {
       : word_(std::move(word)), has_fixed_entity_(false) {}
   bool hasFixedEntity() const { return has_fixed_entity_; }
   const std::string& fixedEntity() const { return fixed_entity_; }
+  const Variable& entityVariable() const { return entity_var_; }
   const Variable& textRecordVar() const { return text_record_var_; }
   const std::string& word() const { return word_; }
   std::string getDescriptor() const override { return "TextIndexScanForEntity " + word_; }
@@ -284,5 +285,6 @@ class TextIndexScanForEntity final : public Operation {
   std::string fixed_entity_;
   bool has_fixed_entity_;
   Variable text_record_var_{"?text"};
+  Variable entity_var_{"?entity"};
 };
 `;

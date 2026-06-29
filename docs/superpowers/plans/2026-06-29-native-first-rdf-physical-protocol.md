@@ -180,3 +180,52 @@ Expected: all pass.
 - [x] **Step 2: Commit**
 
 Use a lore commit message that records the native-first boundary and explicitly rejects TS-as-hot-protocol.
+
+### Task 6: Native text candidate output columns
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing native operation-plan test**
+
+Change `tests/native/QleverOperationPlanBridge.test.ts` so variable `TextIndexScanForEntity("native-first")` must produce a native text candidate source instead of returning `std::nullopt`.
+
+Expected shape:
+- `root.kind == BridgeOperationKind::TextSearch`
+- `result_width == 2`
+- `output_variables == ["text", "entity"]`
+- source output column `text` maps to `BridgeCandidateColumnKind::RetrievalPoint`
+- source output column `entity` maps to `BridgeCandidateColumnKind::ResourceTerm`
+- `toBridgePhysicalPlan(...)` preserves the source output columns.
+
+- [x] **Step 2: Run test to verify it fails**
+
+Run: `bun test tests/native/QleverOperationPlanBridge.test.ts --run`
+
+Expected: FAIL because `BridgeTextCandidateSource` has no `output_columns` and `BridgeCandidateColumnKind` does not exist.
+
+- [x] **Step 3: Implement candidate output column metadata**
+
+Add to `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`:
+- `BridgeCandidateColumnKind`
+- `BridgeCandidateOutputColumn`
+- `BridgeTextCandidateSource::output_columns`
+
+Add to `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`:
+- `bridgeVariableName(const Variable&)`
+
+Update `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp` so:
+- `TextIndexScanForWord` emits the text record variable as a retrieval-point candidate column.
+- fixed-entity `TextIndexScanForEntity` emits the text record variable and keeps `required_entities`.
+- variable-entity `TextIndexScanForEntity` emits both text record and entity variables, mapping the entity to `ResourceTerm`.
+
+- [x] **Step 4: Run target verification**
+
+Run: `bun test tests/native/QleverOperationPlanBridge.test.ts --run`
+
+Expected: PASS.
