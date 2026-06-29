@@ -13,6 +13,11 @@
 
 namespace xpod::qlever {
 
+struct XpodBackedScanEstimate {
+  xpod_rdf_status status;
+  xpod_rdf_estimate estimate;
+};
+
 class XpodBackedIndexScan {
  public:
   XpodBackedIndexScan(
@@ -33,6 +38,40 @@ class XpodBackedIndexScan {
 
   const std::vector<ColumnIndex>& resultSortedOn() const noexcept {
     return sorted_by_;
+  }
+
+  XpodBackedScanEstimate estimate() const {
+    xpod_rdf_estimate estimate = {};
+    xpod_rdf_scan_request request = makeScanRequest(input_);
+    return {backend_.estimateScan(request, estimate), estimate};
+  }
+
+  size_t getSizeEstimate() const {
+    XpodBackedScanEstimate result = estimate();
+    if (result.status != XPOD_RDF_STATUS_OK) {
+      return 0;
+    }
+    return static_cast<size_t>(result.estimate.rows);
+  }
+
+  size_t getCostEstimate() const {
+    XpodBackedScanEstimate result = estimate();
+    if (result.status != XPOD_RDF_STATUS_OK) {
+      return 0;
+    }
+    double cost = result.estimate.startup_cost + result.estimate.cpu_cost +
+                  result.estimate.io_cost;
+    if (cost <= 0) {
+      return static_cast<size_t>(result.estimate.rows);
+    }
+    return static_cast<size_t>(cost);
+  }
+
+  bool knownEmptyResult() const {
+    XpodBackedScanEstimate result = estimate();
+    return result.status == XPOD_RDF_STATUS_OK &&
+           result.estimate.confidence == XPOD_RDF_ESTIMATE_EXACT &&
+           result.estimate.rows == 0;
   }
 
   QleverIdTableResult execute() const {

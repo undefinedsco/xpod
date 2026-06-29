@@ -97,6 +97,19 @@ static xpod_rdf_status encode(void*, xpod_rdf_term_key term, uint64_t* out_bits)
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status estimate_scan(
+    void*,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 42;
+  out_estimate->cpu_cost = 5;
+  out_estimate->io_cost = 7;
+  out_estimate->startup_cost = 3;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status scan(
     void*,
     const xpod_rdf_scan_request*,
@@ -116,6 +129,7 @@ int main() {
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   backend.struct_size = sizeof(xpod_rdf_backend_v1);
   backend.encode_qlever_id = encode;
+  backend.estimate_scan = estimate_scan;
   backend.scan_permutation = scan;
   xpod::rdf::PhysicalBackend physical(&backend);
 
@@ -126,6 +140,12 @@ int main() {
   if (scanAdapter.getResultWidth() != 3) return 10;
   if (scanAdapter.getDescriptor() != "xpod scan ?s ?p ?o") return 11;
   if (scanAdapter.resultSortedOn().size() != 1 || scanAdapter.resultSortedOn()[0] != 0) return 12;
+  auto estimate = scanAdapter.estimate();
+  if (estimate.status != XPOD_RDF_STATUS_OK) return 16;
+  if (estimate.estimate.rows != 42) return 17;
+  if (scanAdapter.getSizeEstimate() != 42) return 18;
+  if (scanAdapter.getCostEstimate() != 15) return 19;
+  if (scanAdapter.knownEmptyResult()) return 20;
 
   auto result = scanAdapter.execute();
   if (result.status != XPOD_RDF_STATUS_OK) return 1;
