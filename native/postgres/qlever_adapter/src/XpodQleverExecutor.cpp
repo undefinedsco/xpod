@@ -2,6 +2,7 @@
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 #include "XpodQleverBridge.hpp"
+#include "XpodQleverPlannerContextProvider.hpp"
 #endif
 
 #include <new>
@@ -47,8 +48,10 @@ class BridgedQleverExecutor final : public QueryExecutor {
  public:
   BridgedQleverExecutor(
       xpod::rdf::PhysicalBackend backend,
-      QueryExecutionOptions options) noexcept
-      : backend_(backend), options_(options) {}
+      QueryExecutionOptions options)
+      : backend_(backend),
+        options_(options),
+        planner_context_provider_(createQueryPlannerContextProvider(backend)) {}
 
   xpod_rdf_status execute(
       const xpod_qlever_query_request& request,
@@ -60,14 +63,19 @@ class BridgedQleverExecutor final : public QueryExecutor {
     profile_storage.clear();
     (void)options_;
     (void)bridgeCompiledWithQlever();
-    return executeBridgeQuery(
-        backend_, request, out_result, result_storage, profile_storage,
-        error_storage);
+    QueryExecutionContext* planner_context =
+        planner_context_provider_ == nullptr
+            ? nullptr
+            : planner_context_provider_->current();
+    return executeBridgeQueryWithPlannerContext(
+        backend_, planner_context, request, out_result, result_storage,
+        profile_storage, error_storage);
   }
 
  private:
   xpod::rdf::PhysicalBackend backend_;
   QueryExecutionOptions options_;
+  std::unique_ptr<QueryPlannerContextProvider> planner_context_provider_;
 };
 #endif
 
