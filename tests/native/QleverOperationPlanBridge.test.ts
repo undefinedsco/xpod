@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeGroupByHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
+import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeGroupByHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeMultiColumnJoinHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -225,6 +225,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/CartesianProductJoin.h'), fakeCartesianProductJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Minus.h'), fakeMinusHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/MultiColumnJoin.h'), fakeMultiColumnJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OptionalJoin.h'), fakeOptionalJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/GroupBy.h'), fakeGroupByHeader, 'utf8');
@@ -298,6 +299,7 @@ class IndexScan final : public Operation {
 #include "engine/Join.h"
 #include "engine/CartesianProductJoin.h"
 #include "engine/Minus.h"
+#include "engine/MultiColumnJoin.h"
 #include "engine/OptionalJoin.h"
 #include "engine/Distinct.h"
 #include "engine/GroupBy.h"
@@ -582,6 +584,47 @@ int main() {
   if (optional_physical.scans.size() != 2) return 256;
   if (optional_physical.root.children[0].scan_indexes[0] != 0) return 257;
   if (optional_physical.root.children[1].scan_indexes[0] != 1) return 258;
+
+  auto multi_left = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{Variable{"?category"}},
+          TripleComponent{Variable{"?name"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity ?category ?name",
+          3,
+          std::vector<ColumnIndex>{0, 1}));
+  auto multi_right = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{Variable{"?category"}},
+          TripleComponent{Variable{"?score"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity ?category ?score",
+          3,
+          std::vector<ColumnIndex>{0, 1}));
+  MultiColumnJoin multi_operation(nullptr, multi_left, multi_right, 4);
+  auto multi_plan = xpod::qlever::planQleverOperation(multi_operation);
+  if (!multi_plan.has_value()) return 283;
+  if (multi_plan->root.kind != xpod::qlever::BridgeOperationKind::MultiColumnJoin) return 284;
+  if (multi_plan->child_plans.size() != 2) return 285;
+  if (multi_plan->result_width != 4) return 286;
+  if (multi_plan->output_variables.size() != 4) return 287;
+  if (multi_plan->output_variables[0] != "entity") return 288;
+  if (multi_plan->output_variables[1] != "category") return 289;
+  if (multi_plan->output_variables[2] != "name") return 290;
+  if (multi_plan->output_variables[3] != "score") return 291;
+  if (multi_plan->root.matched_columns.size() != 2) return 292;
+  if (multi_plan->root.matched_columns[0][0] != 0 ||
+      multi_plan->root.matched_columns[0][1] != 0) return 293;
+  if (multi_plan->root.matched_columns[1][0] != 1 ||
+      multi_plan->root.matched_columns[1][1] != 1) return 294;
+  if (multi_plan->root.right_projection_columns.size() != 1 ||
+      multi_plan->root.right_projection_columns[0] != 2) return 295;
+  auto multi_physical = xpod::qlever::toBridgePhysicalPlan(*multi_plan);
+  if (multi_physical.root.kind != xpod::qlever::BridgeOperationKind::MultiColumnJoin) return 296;
+  if (multi_physical.root.children.size() != 2) return 297;
+  if (multi_physical.scans.size() != 2) return 298;
 
   auto group_child = std::make_shared<QueryExecutionTree>(
       std::make_shared<IndexScan>(

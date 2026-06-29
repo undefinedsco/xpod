@@ -295,6 +295,47 @@ class GroupBy final : public Operation {
 };
 `;
 
+export const fakeMultiColumnJoinHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class QueryExecutionContext;
+class MultiColumnJoin final : public Operation {
+ public:
+  MultiColumnJoin(QueryExecutionContext*,
+                  std::shared_ptr<QueryExecutionTree> left,
+                  std::shared_ptr<QueryExecutionTree> right,
+                  size_t result_width)
+      : left_(std::move(left)),
+        right_(std::move(right)),
+        result_width_(result_width) {}
+  MultiColumnJoin(std::shared_ptr<QueryExecutionTree> left,
+                  std::shared_ptr<QueryExecutionTree> right,
+                  size_t result_width)
+      : left_(std::move(left)),
+        right_(std::move(right)),
+        result_width_(result_width) {}
+  std::string getDescriptor() const override { return "MultiColumnJoin"; }
+  size_t getResultWidth() const override { return result_width_; }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {left_.get(), right_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {left_.get(), right_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
+ private:
+  std::shared_ptr<QueryExecutionTree> left_;
+  std::shared_ptr<QueryExecutionTree> right_;
+  size_t result_width_;
+};
+`;
+
 
 export const fakeOrderByHeader = `
 #pragma once

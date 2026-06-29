@@ -80,6 +80,13 @@
 #define XPOD_QLEVER_HAS_OPTIONAL_JOIN 0
 #endif
 
+#if __has_include("engine/MultiColumnJoin.h")
+#include "engine/MultiColumnJoin.h"
+#define XPOD_QLEVER_HAS_MULTI_COLUMN_JOIN 1
+#else
+#define XPOD_QLEVER_HAS_MULTI_COLUMN_JOIN 0
+#endif
+
 #if __has_include("engine/GroupBy.h")
 #include "engine/GroupBy.h"
 #define XPOD_QLEVER_HAS_GROUP_BY 1
@@ -1065,6 +1072,51 @@ inline std::optional<BridgeQueryPlan> planOptionalJoinOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_MULTI_COLUMN_JOIN
+inline std::optional<BridgeQueryPlan> planMultiColumnJoinOperation(
+    MultiColumnJoin& operation) {
+  std::vector<QueryExecutionTree*> children = operation.getChildren();
+  if (children.size() != 2 || children[0] == nullptr ||
+      children[1] == nullptr) {
+    return std::nullopt;
+  }
+
+  auto left_plan = planQleverExecutionTree(*children[0]);
+  auto right_plan = planQleverExecutionTree(*children[1]);
+  if (!left_plan.has_value() || !right_plan.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.descriptor = operation.getDescriptor();
+  plan.result_width = operation.getResultWidth();
+  plan.sorted_by = operation.getResultSortedOn();
+  plan.root.kind = BridgeOperationKind::MultiColumnJoin;
+  plan.root.sorted_by = plan.sorted_by;
+  plan.output_variables = left_plan->output_variables;
+  plan.root.matched_columns = matchedOutputVariableColumns(
+      left_plan->output_variables, right_plan->output_variables);
+  if (plan.root.matched_columns.empty()) {
+    return std::nullopt;
+  }
+  plan.root.right_projection_columns = rightProjectionColumns(
+      left_plan->output_variables, right_plan->output_variables);
+  for (size_t column : plan.root.right_projection_columns) {
+    if (column >= right_plan->output_variables.size()) {
+      return std::nullopt;
+    }
+    plan.output_variables.push_back(right_plan->output_variables[column]);
+  }
+  plan.child_plans.push_back(std::move(*left_plan));
+  plan.child_plans.push_back(std::move(*right_plan));
+
+  if (plan.output_variables.size() != plan.result_width) {
+    return std::nullopt;
+  }
+  return plan;
+}
+#endif
+
 #if XPOD_QLEVER_HAS_GROUP_BY
 inline std::optional<BridgeQueryPlan> planGroupByOperation(
     GroupBy& operation) {
@@ -1141,6 +1193,13 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
       dynamic_cast<OptionalJoin*>(const_cast<Operation*>(&operation));
   if (optional_join != nullptr) {
     return planOptionalJoinOperation(*optional_join);
+  }
+#endif
+#if XPOD_QLEVER_HAS_MULTI_COLUMN_JOIN
+  auto* multi_column_join =
+      dynamic_cast<MultiColumnJoin*>(const_cast<Operation*>(&operation));
+  if (multi_column_join != nullptr) {
+    return planMultiColumnJoinOperation(*multi_column_join);
   }
 #endif
 #if XPOD_QLEVER_HAS_GROUP_BY

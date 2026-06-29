@@ -1461,3 +1461,61 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 27: MultiColumnJoin over supported child roots
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing planner and executor tests**
+
+Extend the fake QLever headers with a public `MultiColumnJoin` shape exposing
+`getChildren()` and `getResultWidth()`.
+
+Extend the operation-plan smoke with a join whose children share two variables:
+`?entity` and `?category`. The left child contributes `?name`; the right child
+contributes `?score`.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::MultiColumnJoin`;
+- both child plans are preserved through `toBridgePhysicalPlan(...)`;
+- `matched_columns` contains both shared-variable column pairs;
+- `right_projection_columns` contains only right-side non-duplicate variables;
+- output variables are `?entity`, `?category`, `?name`, `?score`.
+
+Extend the operation executor smoke with a hand-built MultiColumnJoin root over
+two scans where only rows matching both configured key columns are joined.
+
+Expected: FAIL because the bridge previously had no MultiColumnJoin operation
+root.
+
+- [x] **Step 2: Add native MultiColumnJoin metadata**
+
+Add `BridgeOperationKind::MultiColumnJoin` to the internal native operation plan
+and profile it as `RDF_JOIN`. This stays outside the public C ABI.
+
+- [x] **Step 3: Plan and execute exact-id inner joins**
+
+When the embedded QLever build exposes `engine/MultiColumnJoin.h`, map the
+operation by using only public child metadata. Derive shared-variable columns
+from the child output variable lists and reject shapes with no shared variables.
+
+Execution recursively evaluates both child roots, compares all configured
+matched columns by encoded QLever id bits, appends the left row plus configured
+right projection columns, and preserves root result modifiers.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

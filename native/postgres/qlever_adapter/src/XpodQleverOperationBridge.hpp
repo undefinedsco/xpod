@@ -28,6 +28,7 @@ enum class BridgeOperationKind {
   CartesianProductJoin,
   Minus,
   OptionalJoin,
+  MultiColumnJoin,
   GroupBy,
 };
 
@@ -221,6 +222,8 @@ inline std::string_view profileKind(BridgeOperationKind kind) noexcept {
       return "Minus";
     case BridgeOperationKind::OptionalJoin:
       return "OptionalJoin";
+    case BridgeOperationKind::MultiColumnJoin:
+      return "MultiColumnJoin";
     case BridgeOperationKind::GroupBy:
       return "GroupBy";
     case BridgeOperationKind::HashJoin:
