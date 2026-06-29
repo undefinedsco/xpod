@@ -763,6 +763,125 @@ int main() {
     }
   });
 
+  it('maps QLever scan specifications through the physical index seam', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index scan specification check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-scan-spec-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_scan_spec_smoke.cpp');
+      const binary = path.join(root, 'physical_index_scan_spec_smoke');
+      await writeFile(smoke, `
+#include <optional>
+#include "XpodQleverPhysicalIndex.hpp"
+
+class ScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  ScanSpecification(T col0, T col1, T col2)
+      : col0_(col0), col1_(col1), col2_(col2) {}
+  const T& col0Id() const { return col0_; }
+  const T& col1Id() const { return col1_; }
+  const T& col2Id() const { return col2_; }
+ private:
+  T col0_;
+  T col1_;
+  T col2_;
+};
+
+struct BackendState {
+  int estimate_calls;
+  int scan_calls;
+};
+
+static xpod_rdf_status estimate_scan(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_calls;
+  if (request->permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 1 || request->pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_object != 1 || request->pattern.object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_subject != 0) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->needed_slots != XPOD_RDF_SLOT_SUBJECT) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan_permutation(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->scan_calls;
+  if (request->permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 1 || request->pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_object != 1 || request->pattern.object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  xpod_rdf_quad_key row = {11, 22, 33, 44};
+  xpod_rdf_quad_batch batch = {&row, 1, XPOD_RDF_SLOT_SUBJECT, 1};
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.estimate_scan = estimate_scan;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  ScanSpecification spec{Id::fromBits(22), Id::fromBits(33), std::nullopt};
+  auto estimate = index.estimateScanSpecification(
+      Permutation::Enum::POS,
+      spec,
+      XPOD_RDF_SLOT_SUBJECT);
+  if (estimate.status != XPOD_RDF_STATUS_OK) return 1;
+  if (estimate.estimate.rows != 1) return 2;
+
+  auto scan = index.scanScanSpecification(
+      Permutation::Enum::POS,
+      spec,
+      XPOD_RDF_SLOT_SUBJECT);
+  if (scan.status != XPOD_RDF_STATUS_OK) return 3;
+  if (scan.table.numColumns() != 1) return 4;
+  if (scan.table.numRows() != 1) return 5;
+  if (scan.table(0, 0).getBits() != 11) return 6;
+  if (state.estimate_calls != 1) return 7;
+  if (state.scan_calls != 1) return 8;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes batch term dictionary lookup and resolution through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index batch dictionary check').toBe(true);
 

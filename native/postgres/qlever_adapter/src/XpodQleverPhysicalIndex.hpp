@@ -110,6 +110,59 @@ inline std::string physicalPermutationDescriptor(
   return descriptor;
 }
 
+inline void setPatternSlot(
+    TripleKeyPattern& pattern,
+    char slot,
+    xpod_rdf_term_key key) noexcept {
+  switch (slot) {
+    case 'S':
+      pattern.has_subject = true;
+      pattern.subject = key;
+      break;
+    case 'P':
+      pattern.has_predicate = true;
+      pattern.predicate = key;
+      break;
+    case 'O':
+      pattern.has_object = true;
+      pattern.object = key;
+      break;
+    case 'G':
+      pattern.has_graph = true;
+      pattern.graph = key;
+      break;
+    default:
+      break;
+  }
+}
+
+template <typename QleverId>
+xpod_rdf_term_key qleverIdToTermKey(const QleverId& id) noexcept {
+  return static_cast<xpod_rdf_term_key>(id.getBits());
+}
+
+template <typename QleverOptionalId>
+void applyQleverScanSpecColumn(
+    TripleKeyPattern& pattern,
+    char slot,
+    const QleverOptionalId& id) noexcept {
+  if (id.has_value()) {
+    setPatternSlot(pattern, slot, qleverIdToTermKey(*id));
+  }
+}
+
+template <typename QleverScanSpecification>
+TripleKeyPattern scanSpecificationPattern(
+    Permutation::Enum permutation,
+    const QleverScanSpecification& scan_specification) noexcept {
+  TripleKeyPattern pattern = {};
+  const char* slots = permutationSlots(permutation);
+  applyQleverScanSpecColumn(pattern, slots[0], scan_specification.col0Id());
+  applyQleverScanSpecColumn(pattern, slots[1], scan_specification.col1Id());
+  applyQleverScanSpecColumn(pattern, slots[2], scan_specification.col2Id());
+  return pattern;
+}
+
 class XpodQleverPhysicalPermutation {
  public:
   XpodQleverPhysicalPermutation(
@@ -239,6 +292,32 @@ class XpodQleverPhysicalIndex {
                               XPOD_RDF_SLOT_PREDICATE |
                               XPOD_RDF_SLOT_OBJECT) const {
     return this->permutation(permutation).scan(pattern, needed_slots);
+  }
+
+  template <typename QleverScanSpecification>
+  XpodBackedScanEstimate estimateScanSpecification(
+      Permutation::Enum permutation,
+      const QleverScanSpecification& scan_specification,
+      uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                              XPOD_RDF_SLOT_PREDICATE |
+                              XPOD_RDF_SLOT_OBJECT) const {
+    return estimate(
+        permutation,
+        scanSpecificationPattern(permutation, scan_specification),
+        needed_slots);
+  }
+
+  template <typename QleverScanSpecification>
+  QleverIdTableResult scanScanSpecification(
+      Permutation::Enum permutation,
+      const QleverScanSpecification& scan_specification,
+      uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                              XPOD_RDF_SLOT_PREDICATE |
+                              XPOD_RDF_SLOT_OBJECT) const {
+    return scan(
+        permutation,
+        scanSpecificationPattern(permutation, scan_specification),
+        needed_slots);
   }
 
   xpod_rdf_status lookupTerm(

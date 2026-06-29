@@ -2742,3 +2742,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 62: Map QLever ScanSpecification into the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing scan-spec smoke**
+
+Add a native physical-index smoke where a QLever-shaped `ScanSpecification` with `col0Id()/col1Id()/col2Id()` must be accepted by `XpodQleverPhysicalIndex` and mapped by the selected `Permutation::Enum` into RDF subject/predicate/object pattern slots.
+
+Expected: FAIL because the physical index seam could scan only from Xpod `TripleKeyPattern`, not from QLever's lower `ScanSpecification` shape.
+
+- [x] **Step 2: Add the minimal lower mapping**
+
+Add `scanSpecificationPattern(...)` plus `estimateScanSpecification(...)` / `scanScanSpecification(...)`. The mapping only translates permutation columns to RDF slots and delegates to the existing physical permutation scan; it does not interpret SPARQL, joins, graph filter policy, or QLever block metadata.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.
