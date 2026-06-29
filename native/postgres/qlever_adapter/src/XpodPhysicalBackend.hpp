@@ -89,6 +89,40 @@ class PhysicalBackend {
         backend_->backend_user_data, key, &snapshot, &out_term);
   }
 
+  xpod_rdf_status lookupTerms(
+      const xpod_rdf_term* terms,
+      size_t term_count,
+      const xpod_rdf_snapshot& snapshot,
+      xpod_rdf_term_key* out_keys,
+      xpod_rdf_status* out_statuses) const noexcept {
+    if (!valid() ||
+        !hasField(offsetof(xpod_rdf_backend_v1, lookup_terms),
+                  sizeof(backend_->lookup_terms)) ||
+        backend_->lookup_terms == nullptr) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return backend_->lookup_terms(
+        backend_->backend_user_data, terms, term_count, &snapshot, out_keys,
+        out_statuses);
+  }
+
+  xpod_rdf_status resolveTerms(
+      const xpod_rdf_term_key* keys,
+      size_t key_count,
+      const xpod_rdf_snapshot& snapshot,
+      xpod_rdf_term* out_terms,
+      xpod_rdf_status* out_statuses) const noexcept {
+    if (!valid() ||
+        !hasField(offsetof(xpod_rdf_backend_v1, resolve_terms),
+                  sizeof(backend_->resolve_terms)) ||
+        backend_->resolve_terms == nullptr) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return backend_->resolve_terms(
+        backend_->backend_user_data, keys, key_count, &snapshot, out_terms,
+        out_statuses);
+  }
+
   xpod_rdf_status scanPermutation(
       const xpod_rdf_scan_request& request,
       xpod_rdf_quad_batch_callback on_batch,

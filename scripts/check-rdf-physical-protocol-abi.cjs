@@ -16,6 +16,8 @@ const requiredSymbols = [
   'extern "C"',
   'typedef struct xpod_rdf_backend_v1',
   'xpod_rdf_lookup_term_fn',
+  'xpod_rdf_lookup_terms_fn',
+  'xpod_rdf_resolve_terms_fn',
   'xpod_rdf_scan_permutation_fn',
   'xpod_rdf_estimate_scan_fn',
   'xpod_rdf_text_search_fn',

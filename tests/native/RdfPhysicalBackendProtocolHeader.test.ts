@@ -25,6 +25,8 @@ describe('native RDF physical backend protocol header', () => {
     expect(header).toContain('#define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1');
     expect(header).toContain('extern "C"');
     expect(header).toContain('typedef struct xpod_rdf_backend_v1');
+    expect(header).toContain('xpod_rdf_lookup_terms_fn');
+    expect(header).toContain('xpod_rdf_resolve_terms_fn');
     expect(header).toContain('xpod_rdf_scan_permutation_fn');
     expect(header).toContain('xpod_rdf_text_search_fn');
     expect(header).toContain('xpod_rdf_vector_search_fn');

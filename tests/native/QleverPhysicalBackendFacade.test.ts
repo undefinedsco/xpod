@@ -29,6 +29,39 @@ describe('QLever adapter physical backend facade', () => {
       await writeFile(source, `
 #include "XpodPhysicalBackend.hpp"
 
+static xpod_rdf_status lookup_terms(
+    void* backend_user_data,
+    const xpod_rdf_term* terms,
+    size_t term_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_keys,
+    xpod_rdf_status* out_statuses) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 10;
+  for (size_t i = 0; i < term_count; ++i) {
+    out_keys[i] = terms[i].value.size + 100;
+    out_statuses[i] = XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status resolve_terms(
+    void* backend_user_data,
+    const xpod_rdf_term_key* keys,
+    size_t key_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term* out_terms,
+    xpod_rdf_status* out_statuses) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 100;
+  for (size_t i = 0; i < key_count; ++i) {
+    out_terms[i].kind = XPOD_RDF_TERM_IRI;
+    out_terms[i].value = {nullptr, keys[i] - 100};
+    out_statuses[i] = XPOD_RDF_STATUS_OK;
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status scan(
     void* backend_user_data,
     const xpod_rdf_scan_request* request,
@@ -46,20 +79,42 @@ int main() {
   int calls = 0;
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
   backend.backend_user_data = &calls;
+  backend.lookup_terms = lookup_terms;
+  backend.resolve_terms = resolve_terms;
   backend.scan_permutation = scan;
 
   xpod::rdf::PhysicalBackend physical(&backend);
   if (!physical.valid()) return 1;
 
+  xpod_rdf_term terms[2] = {};
+  terms[0].kind = XPOD_RDF_TERM_IRI;
+  terms[0].value = {"abcd", 4};
+  terms[1].kind = XPOD_RDF_TERM_LITERAL;
+  terms[1].value = {"xy", 2};
+  xpod_rdf_term_key keys[2] = {};
+  xpod_rdf_status term_statuses[2] = {};
+  xpod_rdf_snapshot snapshot = {};
+  if (physical.lookupTerms(terms, 2, snapshot, keys, term_statuses) != XPOD_RDF_STATUS_OK) return 2;
+  if (keys[0] != 104 || keys[1] != 102) return 3;
+  if (term_statuses[0] != XPOD_RDF_STATUS_OK || term_statuses[1] != XPOD_RDF_STATUS_OK) return 4;
+
+  xpod_rdf_term resolved[2] = {};
+  if (physical.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_OK) return 5;
+  if (resolved[0].value.size != 4 || resolved[1].value.size != 2) return 6;
+
   xpod_rdf_scan_request request = {};
-  if (physical.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_OK) return 2;
-  if (calls != 1) return 3;
+  if (physical.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_OK) return 7;
+  if (calls != 111) return 8;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  missing.struct_size = sizeof(xpod_rdf_backend_v1);
   xpod::rdf::PhysicalBackend unsupported(&missing);
-  if (unsupported.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_UNSUPPORTED) return 4;
+  if (unsupported.lookupTerms(terms, 2, snapshot, keys, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 9;
+  if (unsupported.resolveTerms(keys, 2, snapshot, resolved, term_statuses) != XPOD_RDF_STATUS_UNSUPPORTED) return 10;
+  if (unsupported.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
 
   return 0;
 }

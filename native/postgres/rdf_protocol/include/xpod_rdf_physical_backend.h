@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 1
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 2
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -367,6 +367,22 @@ typedef xpod_rdf_status (*xpod_rdf_resolve_term_fn)(
     const xpod_rdf_snapshot* snapshot,
     xpod_rdf_term* out_term);
 
+typedef xpod_rdf_status (*xpod_rdf_lookup_terms_fn)(
+    void* backend_user_data,
+    const xpod_rdf_term* terms,
+    size_t term_count,
+    const xpod_rdf_snapshot* snapshot,
+    xpod_rdf_term_key* out_keys,
+    xpod_rdf_status* out_statuses);
+
+typedef xpod_rdf_status (*xpod_rdf_resolve_terms_fn)(
+    void* backend_user_data,
+    const xpod_rdf_term_key* keys,
+    size_t key_count,
+    const xpod_rdf_snapshot* snapshot,
+    xpod_rdf_term* out_terms,
+    xpod_rdf_status* out_statuses);
+
 typedef xpod_rdf_status (*xpod_rdf_scan_permutation_fn)(
     void* backend_user_data,
     const xpod_rdf_scan_request* request,
@@ -461,6 +477,8 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_term_key_encoding term_key_encoding;
   xpod_rdf_encode_qlever_id_fn encode_qlever_id;
   xpod_rdf_decode_qlever_id_fn decode_qlever_id;
+  xpod_rdf_lookup_terms_fn lookup_terms;
+  xpod_rdf_resolve_terms_fn resolve_terms;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus
