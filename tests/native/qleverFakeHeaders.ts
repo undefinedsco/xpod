@@ -533,3 +533,65 @@ class NeutralElementOperation final : public Operation {
   std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
 };
 `;
+
+export const fakeUnionHeader = `
+#pragma once
+#include <array>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class QueryExecutionContext;
+class Union final : public Operation {
+ public:
+  static constexpr size_t NO_COLUMN = static_cast<size_t>(-1);
+  Union(QueryExecutionContext*,
+        const std::shared_ptr<QueryExecutionTree>& left,
+        const std::shared_ptr<QueryExecutionTree>& right,
+        std::vector<ColumnIndex> target_order = {})
+      : left_(left), right_(right), target_order_(std::move(target_order)) {
+    size_t width = getResultWidth();
+    column_origins_.resize(width);
+    for (size_t column = 0; column < width; ++column) {
+      column_origins_[column] = {column, column};
+    }
+  }
+  Union(std::shared_ptr<QueryExecutionTree> left,
+        std::shared_ptr<QueryExecutionTree> right,
+        std::vector<std::array<size_t, 2>> column_origins,
+        std::vector<ColumnIndex> target_order = {})
+      : left_(std::move(left)),
+        right_(std::move(right)),
+        column_origins_(std::move(column_origins)),
+        target_order_(std::move(target_order)) {}
+  std::string getDescriptor() const override { return "Union"; }
+  size_t getResultWidth() const override {
+    if (!column_origins_.empty()) return column_origins_.size();
+    return left_ == nullptr ? 0 : left_->getRootOperation()->getResultWidth();
+  }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {left_.get(), right_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {left_.get(), right_.get()};
+  }
+  const std::shared_ptr<QueryExecutionTree>& leftChild() const { return left_; }
+  const std::shared_ptr<QueryExecutionTree>& rightChild() const { return right_; }
+  std::optional<ColumnIndex> getOriginalColumn(bool left_child, ColumnIndex union_column) const {
+    if (union_column >= column_origins_.size()) return std::nullopt;
+    size_t column = column_origins_[union_column][left_child ? 0 : 1];
+    if (column == NO_COLUMN) return std::nullopt;
+    return static_cast<ColumnIndex>(column);
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return target_order_; }
+ private:
+  std::shared_ptr<QueryExecutionTree> left_;
+  std::shared_ptr<QueryExecutionTree> right_;
+  std::vector<std::array<size_t, 2>> column_origins_;
+  std::vector<ColumnIndex> target_order_;
+};
+`;

@@ -6,6 +6,7 @@
 #include "xpod_rdf_physical_backend.h"
 
 #include <optional>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -50,6 +51,7 @@ struct BridgeQueryPlan {
   std::vector<BridgeVectorCandidateSource> vector_sources;
   std::vector<BridgeTextRequiredEntityBinding> text_required_entities;
   std::vector<std::string> output_variables;
+  std::vector<BridgeQueryPlan> child_plans;
   BridgeOperationPlan root;
   bool known_empty = false;
 };
@@ -292,7 +294,21 @@ inline xpod_rdf_status bindPlanTerms(
       return XPOD_RDF_STATUS_OK;
     }
   }
-  return bindTextRequiredEntities(backend, snapshot, plan, error_storage);
+  status = bindTextRequiredEntities(backend, snapshot, plan, error_storage);
+  if (status != XPOD_RDF_STATUS_OK || plan.known_empty) {
+    return status;
+  }
+  for (BridgeQueryPlan& child : plan.child_plans) {
+    status = bindPlanTerms(backend, snapshot, child, error_storage);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    if (child.known_empty) {
+      plan.known_empty = true;
+      return XPOD_RDF_STATUS_OK;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
 }
 
 inline void applyBridgeRequestContext(
@@ -317,6 +333,9 @@ inline void applyBridgeRequestContext(
     source.request.snapshot = snapshot;
     source.request.source_scope = source_scope;
     source.request.access_scope = access_scope;
+  }
+  for (BridgeQueryPlan& child : plan.child_plans) {
+    applyBridgeRequestContext(child, snapshot, source_scope, access_scope);
   }
 }
 
@@ -418,6 +437,53 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
   }
 }
 
+inline void offsetBridgeOperationIndexes(
+    BridgeOperationPlan& root,
+    size_t scan_offset,
+    size_t text_offset,
+    size_t vector_offset) {
+  for (size_t& scan_index : root.scan_indexes) {
+    scan_index += scan_offset;
+  }
+  if ((root.kind == BridgeOperationKind::TextSearch ||
+       root.use_candidate_join) &&
+      root.candidate_source == BridgeCandidateSourceKind::Text) {
+    root.candidate_index += text_offset;
+  }
+  if ((root.kind == BridgeOperationKind::VectorSearch ||
+       root.use_candidate_join) &&
+      root.candidate_source == BridgeCandidateSourceKind::Vector) {
+    root.candidate_index += vector_offset;
+  }
+  for (BridgeOperationPlan& child : root.children) {
+    offsetBridgeOperationIndexes(
+        child, scan_offset, text_offset, vector_offset);
+  }
+}
+
+inline void appendChildPhysicalPlan(
+    BridgePhysicalPlan& physical,
+    BridgePhysicalPlan child_physical) {
+  size_t scan_offset = physical.scans.size();
+  size_t text_offset = physical.text_sources.size();
+  size_t vector_offset = physical.vector_sources.size();
+  offsetBridgeOperationIndexes(
+      child_physical.root, scan_offset, text_offset, vector_offset);
+  physical.root.children.push_back(std::move(child_physical.root));
+  physical.scans.insert(
+      physical.scans.end(),
+      std::make_move_iterator(child_physical.scans.begin()),
+      std::make_move_iterator(child_physical.scans.end()));
+  physical.text_sources.insert(
+      physical.text_sources.end(),
+      std::make_move_iterator(child_physical.text_sources.begin()),
+      std::make_move_iterator(child_physical.text_sources.end()));
+  physical.vector_sources.insert(
+      physical.vector_sources.end(),
+      std::make_move_iterator(child_physical.vector_sources.begin()),
+      std::make_move_iterator(child_physical.vector_sources.end()));
+}
+
 inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
   BridgePhysicalPlan physical;
   physical.root = plan.root;
@@ -466,6 +532,9 @@ inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
     physical.text_sources = plan.text_sources;
   }
   physical.vector_sources = plan.vector_sources;
+  for (const BridgeQueryPlan& child : plan.child_plans) {
+    appendChildPhysicalPlan(physical, toBridgePhysicalPlan(child));
+  }
   return physical;
 }
 

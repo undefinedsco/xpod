@@ -52,6 +52,13 @@
 #define XPOD_QLEVER_HAS_NEUTRAL_ELEMENT 0
 #endif
 
+#if __has_include("engine/Union.h")
+#include "engine/Union.h"
+#define XPOD_QLEVER_HAS_UNION 1
+#else
+#define XPOD_QLEVER_HAS_UNION 0
+#endif
+
 #if __has_include("engine/Distinct.h")
 #include "engine/Distinct.h"
 #define XPOD_QLEVER_HAS_DISTINCT 1
@@ -825,6 +832,50 @@ inline std::optional<BridgeQueryPlan> planNeutralElementOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_UNION
+inline std::optional<BridgeQueryPlan> planUnionOperation(
+    const Union& operation) {
+  if (operation.leftChild() == nullptr || operation.rightChild() == nullptr) {
+    return std::nullopt;
+  }
+  auto left_plan = planQleverExecutionTree(*operation.leftChild());
+  auto right_plan = planQleverExecutionTree(*operation.rightChild());
+  if (!left_plan.has_value() || !right_plan.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.descriptor = operation.getDescriptor();
+  plan.result_width = operation.getResultWidth();
+  plan.sorted_by = operation.getResultSortedOn();
+  plan.root.kind = BridgeOperationKind::Union;
+  plan.root.sorted_by = plan.sorted_by;
+  plan.child_plans.push_back(std::move(*left_plan));
+  plan.child_plans.push_back(std::move(*right_plan));
+
+  if (plan.result_width == 0 ||
+      plan.child_plans[0].output_variables.size() != plan.result_width ||
+      plan.child_plans[1].output_variables.size() != plan.result_width) {
+    return std::nullopt;
+  }
+
+  plan.output_variables = plan.child_plans[0].output_variables;
+  for (size_t column = 0; column < plan.result_width; ++column) {
+    if (plan.child_plans[1].output_variables[column] !=
+        plan.output_variables[column]) {
+      return std::nullopt;
+    }
+    auto left_column = operation.getOriginalColumn(true, column);
+    auto right_column = operation.getOriginalColumn(false, column);
+    if (!left_column.has_value() || !right_column.has_value()) {
+      return std::nullopt;
+    }
+    plan.root.column_origins.push_back({*left_column, *right_column});
+  }
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_NEUTRAL_ELEMENT
@@ -832,6 +883,12 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
       dynamic_cast<const NeutralElementOperation*>(&operation);
   if (neutral != nullptr) {
     return planNeutralElementOperation(*neutral);
+  }
+#endif
+#if XPOD_QLEVER_HAS_UNION
+  const auto* union_operation = dynamic_cast<const Union*>(&operation);
+  if (union_operation != nullptr) {
+    return planUnionOperation(*union_operation);
   }
 #endif
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET

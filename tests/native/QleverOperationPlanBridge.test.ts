@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeNeutralElementOperationHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader } from './qleverFakeHeaders';
+import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeNeutralElementOperationHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -228,6 +228,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/LimitOffset.h'), fakeLimitOffsetHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/NeutralElementOperation.h'), fakeNeutralElementOperationHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Union.h'), fakeUnionHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForEntity.h'), fakeTextIndexScanForEntityHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextLimit.h'), fakeTextLimitHeader, 'utf8');
@@ -296,6 +297,7 @@ class IndexScan final : public Operation {
 #include "engine/Sort.h"
 #include "engine/LimitOffset.h"
 #include "engine/NeutralElementOperation.h"
+#include "engine/Union.h"
 #include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
 #include "engine/TextLimit.h"
@@ -411,6 +413,27 @@ int main() {
   auto neutral_physical = xpod::qlever::toBridgePhysicalPlan(*neutral_plan);
   if (neutral_physical.root.kind != xpod::qlever::BridgeOperationKind::NeutralElement) return 203;
   if (!neutral_physical.scans.empty()) return 204;
+
+  auto union_left = std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>());
+  auto union_right = std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>());
+  Union union_operation(nullptr, union_left, union_right, std::vector<ColumnIndex>{0});
+  auto union_plan = xpod::qlever::planQleverOperation(union_operation);
+  if (!union_plan.has_value()) return 205;
+  if (union_plan->root.kind != xpod::qlever::BridgeOperationKind::Union) return 206;
+  if (union_plan->child_plans.size() != 2) return 207;
+  if (union_plan->root.children.size() != 0) return 208;
+  if (union_plan->root.column_origins.size() != 2) return 209;
+  if (union_plan->root.column_origins[0][0] != 0 || union_plan->root.column_origins[0][1] != 0) return 210;
+  if (union_plan->root.column_origins[1][0] != 1 || union_plan->root.column_origins[1][1] != 1) return 211;
+  if (union_plan->sorted_by.size() != 1 || union_plan->sorted_by[0] != 0) return 212;
+  auto union_physical = xpod::qlever::toBridgePhysicalPlan(*union_plan);
+  if (union_physical.root.kind != xpod::qlever::BridgeOperationKind::Union) return 213;
+  if (union_physical.root.children.size() != 2) return 214;
+  if (union_physical.scans.size() != 2) return 215;
+  if (union_physical.root.children[0].scan_indexes.size() != 1 ||
+      union_physical.root.children[0].scan_indexes[0] != 0) return 216;
+  if (union_physical.root.children[1].scan_indexes.size() != 1 ||
+      union_physical.root.children[1].scan_indexes[0] != 1) return 217;
 
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;

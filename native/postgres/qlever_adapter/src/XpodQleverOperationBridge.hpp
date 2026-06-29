@@ -4,6 +4,7 @@
 #include "XpodQleverScanBridge.hpp"
 #include "xpod_rdf_physical_backend.h"
 
+#include <array>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@ enum class BridgeOperationKind {
   TextSearch,
   VectorSearch,
   NeutralElement,
+  Union,
 };
 
 enum class BridgeCandidateColumnKind {
@@ -71,6 +73,9 @@ struct BridgeOperationPlan {
   size_t offset = 0;
   bool has_distinct = false;
   std::vector<ColumnIndex> distinct_columns;
+  std::vector<ColumnIndex> sorted_by;
+  std::vector<std::array<size_t, 2>> column_origins;
+  std::vector<BridgeOperationPlan> children;
   std::vector<BridgeResultModifier> result_modifiers;
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
@@ -199,6 +204,8 @@ struct BridgePhysicalPlan {
 
 inline std::string_view profileKind(BridgeOperationKind kind) noexcept {
   switch (kind) {
+    case BridgeOperationKind::Union:
+      return "Union";
     case BridgeOperationKind::HashJoin:
       return "HashJoin";
     case BridgeOperationKind::TextSearch:

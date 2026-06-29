@@ -72,6 +72,8 @@ inline XpodBackedCandidateResult makeEmptyCandidateOperationResult(
 inline xpod_rdf_profile_kind profileEventKind(
     BridgeOperationKind kind) noexcept {
   switch (kind) {
+    case BridgeOperationKind::Union:
+      return XPOD_RDF_PROFILE_RDF_JOIN;
     case BridgeOperationKind::HashJoin:
       return XPOD_RDF_PROFILE_RDF_JOIN;
     case BridgeOperationKind::TextSearch:
@@ -1039,33 +1041,112 @@ inline QleverResultWithStatus applyBridgeResultModifiers(
   return applyBridgeLimitOffset(root, std::move(result));
 }
 
-inline QleverResultWithStatus executeBridgeOperationPlan(
+inline QleverResultWithStatus executeBridgeOperationRoot(
     xpod::rdf::PhysicalBackend backend,
-    const BridgePhysicalPlan& plan) {
+    const BridgePhysicalPlan& plan,
+    const BridgeOperationPlan& root);
+
+inline xpod_rdf_status appendBridgeUnionRows(
+    const IdTable& input,
+    size_t child_index,
+    const std::vector<std::array<size_t, 2>>& column_origins,
+    IdTable& output) {
+  std::vector<Id> row;
+  row.reserve(column_origins.size());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    row.clear();
+    for (const auto& origin : column_origins) {
+      size_t input_column = origin[child_index];
+      if (input_column >= input.numColumns()) {
+        return XPOD_RDF_STATUS_UNSUPPORTED;
+      }
+      row.push_back(input(input_row, input_column));
+    }
+    output.push_back(row);
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline QleverResultWithStatus executeBridgeUnion(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan,
+    const BridgeOperationPlan& root) {
+  if (root.children.size() != 2 || root.column_origins.empty()) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
+
+  emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_RUNNING);
+  QleverResultWithStatus left =
+      executeBridgeOperationRoot(backend, plan, root.children[0]);
+  if (left.status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+    return left;
+  }
+  QleverResultWithStatus right =
+      executeBridgeOperationRoot(backend, plan, root.children[1]);
+  if (right.status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+    return right;
+  }
+
+  IdTable output(root.column_origins.size());
+  xpod_rdf_status status = appendBridgeUnionRows(
+      left.result.idTable(), 0, root.column_origins, output);
+  if (status == XPOD_RDF_STATUS_OK) {
+    status = appendBridgeUnionRows(
+        right.result.idTable(), 1, root.column_origins, output);
+  }
+  if (status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+    return makeEmptyOperationResult(status, root.column_origins.size());
+  }
+  emitOperationProfileEvent(
+      backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
+  return applyBridgeResultModifiers(
+      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+                           root.sorted_by));
+}
+
+inline QleverResultWithStatus executeBridgeOperationRoot(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan,
+    const BridgeOperationPlan& root) {
+  BridgePhysicalPlan rooted_plan = plan;
+  rooted_plan.root = root;
   QleverResultWithStatus result =
       makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
-  if (plan.root.kind == BridgeOperationKind::NeutralElement) {
+  if (root.kind == BridgeOperationKind::NeutralElement) {
     IdTable output(0);
     std::vector<Id> row;
     output.push_back(row);
-    return toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {});
+    return applyBridgeResultModifiers(
+        root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {}));
   }
-  if (plan.root.kind == BridgeOperationKind::PermutationScan) {
-    if (plan.root.scan_indexes.size() != 1) {
+  if (root.kind == BridgeOperationKind::PermutationScan) {
+    if (root.scan_indexes.size() != 1) {
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
     }
-    size_t scan_index = plan.root.scan_indexes.front();
+    size_t scan_index = root.scan_indexes.front();
     if (scan_index >= plan.scans.size()) {
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
     }
     result = executeBridgePhysicalScan(backend, plan.scans[scan_index]);
-    return applyBridgeResultModifiers(plan.root, std::move(result));
+    return applyBridgeResultModifiers(root, std::move(result));
   }
-  if (plan.root.kind == BridgeOperationKind::HashJoin) {
-    result = executeBridgeHashJoin(backend, plan);
-    return applyBridgeResultModifiers(plan.root, std::move(result));
+  if (root.kind == BridgeOperationKind::HashJoin) {
+    result = executeBridgeHashJoin(backend, rooted_plan);
+    return applyBridgeResultModifiers(root, std::move(result));
+  }
+  if (root.kind == BridgeOperationKind::Union) {
+    return executeBridgeUnion(backend, plan, root);
   }
   return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+}
+
+inline QleverResultWithStatus executeBridgeOperationPlan(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan) {
+  return executeBridgeOperationRoot(backend, plan, plan.root);
 }
 
 inline BridgePhysicalResult executeBridgePhysicalPlan(

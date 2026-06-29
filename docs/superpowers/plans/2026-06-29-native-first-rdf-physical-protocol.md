@@ -1063,3 +1063,76 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 21: Union operation over supported child plans
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever `Union.h` as the source of truth.
+
+`Union` exposes:
+- `leftChild()` and `rightChild()` as public child accessors;
+- `getOriginalColumn(leftChild, unionColumn)` for output-column origins;
+- `resultSortedOn()` / `getResultSortedOn()` for target sortedness;
+- `getResultWidth()` and `getDescriptor()`.
+
+- [x] **Step 2: Write failing planner and executor tests**
+
+Extend the operation-plan smoke with a two-child `Union` where both children are
+already supported `IndexScan` roots.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::Union`;
+- query-plan children are kept as pre-binding child plans;
+- physical-plan children are flattened into shared scan storage with adjusted
+  child scan indexes;
+- `column_origins` records the left/right source column for each union output
+  column;
+- sortedness is preserved on the union root.
+
+Extend the operation executor smoke with a hand-built union root over two scan
+children.
+
+Expected execution:
+- both child scans execute;
+- rows from the left child are emitted first, followed by rows from the right
+  child;
+- the result is not deduplicated; `Distinct` remains the operation that removes
+  duplicates;
+- sortedness is preserved from the union root.
+
+Expected: FAIL because the bridge previously had no tree-shaped children or
+union root.
+
+- [x] **Step 3: Add recursive child-plan support and constrained Union**
+
+Add `BridgeQueryPlan.child_plans` so term binding and request-context propagation
+can run before physical flattening. Flatten child physical plans into shared
+scan/candidate storage and offset child indexes during `toBridgePhysicalPlan`.
+
+When the embedded QLever build exposes `engine/Union.h`, map `Union` to a native
+root if both child plans have complete output-column mappings. Missing columns /
+UNDEF padding are not implemented yet and fail closed.
+
+Execution recursively evaluates the two child roots and appends rows according
+to `column_origins`.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.
