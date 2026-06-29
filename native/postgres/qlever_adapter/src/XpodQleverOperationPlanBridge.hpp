@@ -10,6 +10,7 @@
 #include "engine/IndexScan.h"
 #include "engine/Operation.h"
 #include "engine/QueryExecutionTree.h"
+#include "engine/QueryPlanner.h"
 
 namespace xpod::qlever {
 
@@ -68,6 +69,13 @@ inline std::optional<BridgeQueryPlan> planQleverExecutionTree(
     return std::nullopt;
   }
   return planQleverOperation(*operation);
+}
+
+inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithPlanner(
+    QueryPlanner& planner,
+    ParsedQuery& parsed) {
+  QueryExecutionTree tree = planner.createExecutionTree(parsed);
+  return planQleverExecutionTree(tree);
 }
 
 }  // namespace xpod::qlever

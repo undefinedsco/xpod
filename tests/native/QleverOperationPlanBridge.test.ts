@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -43,6 +43,7 @@ class Permutation {
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), fakeQueryPlannerHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
 #pragma once
 #include <string>
@@ -129,6 +130,14 @@ int main() {
   if (tree_plan->term_bindings.size() != 1) return 18;
   QueryExecutionTree empty_tree;
   if (xpod::qlever::planQleverExecutionTree(empty_tree).has_value()) return 19;
+  ParsedQuery parsed = ParsedQuery::minimalSelect();
+  QueryPlanner planner;
+  auto planner_plan = xpod::qlever::planQleverParsedQueryWithPlanner(planner, parsed);
+  if (!planner_plan.has_value()) return 20;
+  if (planner_plan->descriptor != plan->descriptor) return 21;
+  if (planner_plan->term_bindings.size() != 1) return 22;
+  planner.setReturnEmpty(true);
+  if (xpod::qlever::planQleverParsedQueryWithPlanner(planner, parsed).has_value()) return 23;
   return 0;
 }
 `, 'utf8');

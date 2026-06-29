@@ -153,6 +153,27 @@ class QueryExecutionTree {
 };
 `;
 
+export const fakeQueryPlannerHeader = `
+#pragma once
+#include <memory>
+#include "engine/IndexScan.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+class QueryPlanner {
+ public:
+  QueryPlanner() = default;
+  void setReturnEmpty(bool value) { return_empty_ = value; }
+  QueryExecutionTree createExecutionTree(ParsedQuery&, bool = false) {
+    if (return_empty_) {
+      return QueryExecutionTree();
+    }
+    return QueryExecutionTree(std::make_shared<IndexScan>());
+  }
+ private:
+  bool return_empty_ = false;
+};
+`;
+
 export const fakeIndexScanHeader = `
 #pragma once
 #include <string>
