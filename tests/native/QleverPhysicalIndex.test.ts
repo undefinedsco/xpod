@@ -208,6 +208,7 @@ int main() {
 struct BackendState {
   int count_calls;
   int distinct_calls;
+  int estimate_distinct_calls;
 };
 
 static xpod_rdf_status count_scan(
@@ -238,6 +239,21 @@ static xpod_rdf_status distinct_scan(
   return on_batch(callback_user_data, &batch);
 }
 
+static xpod_rdf_status estimate_distinct(
+    void* user_data,
+    const xpod_rdf_distinct_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_distinct_calls;
+  if (request->scan.permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->scan.pattern.has_predicate != 1 || request->scan.pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->distinct_slots != XPOD_RDF_SLOT_OBJECT) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 5;
+  out_estimate->distinct_objects = 5;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
 int main() {
   BackendState state = {};
   xpod_rdf_backend_v1 raw_backend = {};
@@ -246,6 +262,7 @@ int main() {
   raw_backend.backend_user_data = &state;
   raw_backend.count_scan = count_scan;
   raw_backend.distinct_scan = distinct_scan;
+  raw_backend.estimate_distinct = estimate_distinct;
   raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
   xpod::rdf::PhysicalBackend physical(&raw_backend);
 
@@ -267,8 +284,13 @@ int main() {
   if (distinct.row_count != 2) return 5;
   if (distinct.terms.size() != 2) return 6;
   if (distinct.terms[0] != 33 || distinct.terms[1] != 44) return 7;
-  if (state.count_calls != 1) return 8;
-  if (state.distinct_calls != 1) return 9;
+  auto estimate = permutation.estimateDistinct(pattern, XPOD_RDF_SLOT_OBJECT);
+  if (estimate.status != XPOD_RDF_STATUS_OK) return 8;
+  if (estimate.estimate.rows != 5) return 9;
+  if (estimate.estimate.distinct_objects != 5) return 10;
+  if (state.count_calls != 1) return 11;
+  if (state.distinct_calls != 1) return 12;
+  if (state.estimate_distinct_calls != 1) return 13;
   return 0;
 }
 `, 'utf8');

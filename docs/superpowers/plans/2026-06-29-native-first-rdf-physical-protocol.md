@@ -2630,3 +2630,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 58: Add distinct cardinality estimates to the physical permutation seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing estimateDistinct smoke**
+
+Extend the physical permutation stats smoke so `XpodQleverPhysicalPermutation::estimateDistinct(...)` must call the backend `estimate_distinct` callback with the same native distinct request shape as `distinct(...)`.
+
+Expected: FAIL because the physical permutation seam exposed exact distinct scans, but not the distinct-cardinality estimate that QLever-style cost planning needs.
+
+- [x] **Step 2: Add the minimal estimateDistinct result seam**
+
+Add `XpodQleverDistinctEstimateResult` and `XpodQleverPhysicalPermutation::estimateDistinct(...)`. Reuse the same distinct request construction as `distinct(...)`, delegate to the native backend, and return the backend estimate unchanged.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

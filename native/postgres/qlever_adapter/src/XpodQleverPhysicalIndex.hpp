@@ -43,6 +43,11 @@ struct XpodQleverDistinctTermsResult {
   uint32_t tuple_width = 0;
 };
 
+struct XpodQleverDistinctEstimateResult {
+  xpod_rdf_status status;
+  xpod_rdf_estimate estimate;
+};
+
 inline xpod_rdf_status collectPrefixRangeBatch(
     void* callback_user_data,
     const xpod_rdf_term_range_batch* batch) {
@@ -146,12 +151,24 @@ class XpodQleverPhysicalPermutation {
                               XPOD_RDF_SLOT_PREDICATE |
                               XPOD_RDF_SLOT_OBJECT) const {
     XpodQleverDistinctTermsResult result = {};
-    const ScanRequestInput input = makeScanInput(pattern, needed_slots);
-    xpod_rdf_distinct_request request = {};
-    request.scan = makeScanRequest(input);
-    request.distinct_slots = distinct_slots;
+    const xpod_rdf_distinct_request request =
+        makeDistinctRequest(pattern, distinct_slots, needed_slots);
     result.status = context_.backend.distinctScan(
         request, collectDistinctTermsBatch, &result);
+    return result;
+  }
+
+  XpodQleverDistinctEstimateResult estimateDistinct(
+      TripleKeyPattern pattern,
+      uint32_t distinct_slots,
+      uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                              XPOD_RDF_SLOT_PREDICATE |
+                              XPOD_RDF_SLOT_OBJECT) const {
+    XpodQleverDistinctEstimateResult result = {};
+    const xpod_rdf_distinct_request request =
+        makeDistinctRequest(pattern, distinct_slots, needed_slots);
+    result.status =
+        context_.backend.estimateDistinct(request, result.estimate);
     return result;
   }
 
@@ -163,6 +180,17 @@ class XpodQleverPhysicalPermutation {
         makeScanRequestInput(context_, permutation_, pattern);
     input.needed_slots = needed_slots;
     return input;
+  }
+
+  xpod_rdf_distinct_request makeDistinctRequest(
+      TripleKeyPattern pattern,
+      uint32_t distinct_slots,
+      uint32_t needed_slots) const {
+    const ScanRequestInput input = makeScanInput(pattern, needed_slots);
+    xpod_rdf_distinct_request request = {};
+    request.scan = makeScanRequest(input);
+    request.distinct_slots = distinct_slots;
+    return request;
   }
 
   XpodBackedIndexScan makeBackedScan(
