@@ -1,5 +1,6 @@
 #include "XpodQleverBridge.hpp"
 #include "XpodBackedIndexScan.hpp"
+#include "XpodCandidateBridge.hpp"
 #include "XpodQleverIdTableBridge.hpp"
 #include "XpodQleverPermutationMap.hpp"
 #include "XpodQleverResultBridge.hpp"
