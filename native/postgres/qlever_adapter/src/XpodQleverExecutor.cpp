@@ -58,20 +58,11 @@ class BridgedQleverExecutor final : public QueryExecutor {
       std::string& error_storage) override {
     result_storage.clear();
     profile_storage.clear();
-    error_storage =
-        "upstream QLever bridge is compiled, but query execution is not wired "
-        "to QLever yet";
-
-    out_result.status = XPOD_RDF_STATUS_UNSUPPORTED;
-    out_result.result_json = {result_storage.data(), result_storage.size()};
-    out_result.profile_json = {profile_storage.data(), profile_storage.size()};
-    out_result.error_message = {error_storage.data(), error_storage.size()};
-
-    (void)sparql;
-    (void)backend_;
     (void)options_;
     (void)bridgeCompiledWithQlever();
-    return XPOD_RDF_STATUS_UNSUPPORTED;
+    return executeBridgeQuery(
+        backend_, sparql, out_result, result_storage, profile_storage,
+        error_storage);
   }
 
  private:

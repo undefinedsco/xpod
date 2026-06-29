@@ -45,6 +45,7 @@ class IdTable {
   size_t numColumns() const { return width_; }
   size_t numRows() const { return rows_.size(); }
   void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
+  const Id& operator()(size_t row, size_t column) const { return rows_[row][column]; }
  private:
   size_t width_;
   std::vector<std::vector<Id>> rows_;
@@ -58,6 +59,7 @@ using ColumnIndex = uint64_t;
 class Id {
  public:
   static Id fromBits(uint64_t bits) { return Id(bits); }
+  uint64_t getBits() const { return bits_; }
   uint64_t bits_;
  private:
   explicit Id(uint64_t bits) : bits_(bits) {}
@@ -100,9 +102,40 @@ class Permutation {
 #include <string_view>
 #include "xpod_qlever_adapter.h"
 
+static xpod_rdf_status encode(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
+  *out_bits = term + 1000;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_scan(
+    void*,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_estimate* out_estimate) {
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan(
+    void*,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  xpod_rdf_quad_key rows[1] = {{10, 20, 30, 40}};
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 1;
+  return on_batch(callback_user_data, &batch);
+}
+
 int main() {
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.encode_qlever_id = encode;
+  backend.estimate_scan = estimate_scan;
+  backend.scan_permutation = scan;
 
   xpod_qlever_adapter_config config = {};
   config.backend = &backend;
@@ -113,9 +146,19 @@ int main() {
   xpod_qlever_query_result result = {};
   xpod_rdf_bytes query = {"SELECT * WHERE { ?s ?p ?o }", 27};
   xpod_rdf_status status = xpod_qlever_adapter_query(adapter, query, &result);
+  std::string_view body(result.result_json.data, result.result_json.size);
+  if (status != XPOD_RDF_STATUS_OK) return 2;
+  if (result.status != XPOD_RDF_STATUS_OK) return 3;
+  if (body.find("\\"rows\\":[[1010,1020,1030]]") == std::string_view::npos) return 4;
+  if (body.find("xpod-qlever-bridge") == std::string_view::npos) return 5;
+
+  xpod_qlever_adapter_release_result(adapter, &result);
+
+  xpod_rdf_bytes unsupported_query = {"ASK { ?s ?p ?o }", 16};
+  status = xpod_qlever_adapter_query(adapter, unsupported_query, &result);
   std::string_view error(result.error_message.data, result.error_message.size);
-  if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 2;
-  if (error.find("upstream QLever bridge") == std::string_view::npos) return 3;
+  if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 6;
+  if (error.find("unsupported QLever bridge query") == std::string_view::npos) return 7;
 
   xpod_qlever_adapter_destroy(adapter);
   return 0;

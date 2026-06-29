@@ -109,6 +109,7 @@ class IdTable {
   size_t numColumns() const { return width_; }
   size_t numRows() const { return rows_.size(); }
   void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
+  const Id& operator()(size_t row, size_t column) const { return rows_[row][column]; }
  private:
   size_t width_;
   std::vector<std::vector<Id>> rows_;
@@ -122,6 +123,7 @@ using ColumnIndex = uint64_t;
 class Id {
  public:
   static Id fromBits(uint64_t bits) { return Id(bits); }
+  uint64_t getBits() const { return bits_; }
   uint64_t bits_;
  private:
   explicit Id(uint64_t bits) : bits_(bits) {}
