@@ -89,6 +89,80 @@ int main() {
     }
   });
 
+  it('builds scan input from the native planner request context', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native scan context check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-scan-context-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'scan_context_smoke.cpp');
+      const binary = path.join(root, 'scan_context_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPlannerScanInput.hpp"
+
+int main() {
+  static const char facts_version[] = "facts-v1";
+  xpod_rdf_snapshot snapshot = {};
+  snapshot.facts_version = {facts_version, 8};
+  xpod_rdf_access_scope access_scope = {};
+  xpod_qlever_query_request query = {};
+  query.snapshot = snapshot;
+  query.access_scope = &access_scope;
+
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  xpod::qlever::PlannerRequestContext context{physical, &query};
+
+  xpod::qlever::TripleKeyPattern pattern = {};
+  pattern.has_predicate = true;
+  pattern.predicate = 20;
+  xpod::qlever::ScanRequestInput input =
+      xpod::qlever::makeScanRequestInput(context, Permutation::Enum::PSO, pattern);
+  input.limit = 12;
+  input.needed_slots = XPOD_RDF_SLOT_PREDICATE;
+
+  xpod_rdf_scan_request request = xpod::qlever::makeScanRequest(input);
+  if (request.snapshot.facts_version.data != facts_version) return 1;
+  if (request.access_scope != &access_scope) return 2;
+  if (request.permutation != XPOD_RDF_PERM_PSOG) return 3;
+  if (!request.pattern.has_predicate || request.pattern.predicate != 20) return 4;
+  if (request.limit != 12) return 5;
+  if (request.needed_slots != XPOD_RDF_SLOT_PREDICATE) return 6;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('executes an Xpod physical scan through PhysicalBackend and forwards result batches', async () => {
     expect(hasCxx(), 'c++ compiler is required for native scan bridge check').toBe(true);
 
