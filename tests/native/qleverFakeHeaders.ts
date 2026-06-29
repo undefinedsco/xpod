@@ -141,6 +141,26 @@ class ParsedQuery {
             parsedQuery::GroupGraphPattern::GraphVariableBehaviour::NAMED});
     return query;
   }
+  static ParsedQuery graphVariableSubjectFilterSelect() {
+    ParsedQuery query;
+    parsedQuery::BasicGraphPattern basic;
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{Variable{"?p"}},
+        TripleComponent{Variable{"?o"}});
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{TripleComponent::Iri{"<urn:type>"}},
+        TripleComponent{TripleComponent::Iri{"<urn:Thing>"}});
+    parsedQuery::GraphPattern child;
+    child._graphPatterns.emplace_back(std::move(basic));
+    query._rootGraphPattern._graphPatterns.emplace_back(
+        parsedQuery::GroupGraphPattern{
+            std::move(child),
+            Variable{"?g"},
+            parsedQuery::GroupGraphPattern::GraphVariableBehaviour::NAMED});
+    return query;
+  }
   static ParsedQuery predicateIriSelect() {
     ParsedQuery query;
     parsedQuery::BasicGraphPattern basic;

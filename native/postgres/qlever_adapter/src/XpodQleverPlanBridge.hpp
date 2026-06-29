@@ -565,10 +565,6 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
     if (graph_scope.has_value() && graph_scope->binding.has_value()) {
       plan->term_bindings.push_back(*graph_scope->binding);
     }
-    if (graph_scope.has_value() && graph_scope->variable.has_value() &&
-        basic->_triples.size() == 2) {
-      return std::nullopt;
-    }
     if (graph_scope.has_value()) {
       appendGraphScopeProjection(*plan, *graph_scope);
     }
@@ -581,6 +577,9 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
       if (graph_scope.has_value() && graph_scope->binding.has_value()) {
         filter.term_bindings.push_back(*graph_scope->binding);
       }
+      if (graph_scope.has_value() && graph_scope->variable.has_value()) {
+        filter.scan.needed_slots |= XPOD_RDF_SLOT_GRAPH;
+      }
       plan->filter_scans.push_back(std::move(filter));
       plan->descriptor = "xpod scan ?s ?p ?o with subject filter";
       plan->root.kind = BridgeOperationKind::HashJoin;
@@ -590,6 +589,17 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
           XPOD_RDF_SLOT_SUBJECT,
           XPOD_RDF_SLOT_SUBJECT,
       };
+      if (graph_scope.has_value() && graph_scope->variable.has_value()) {
+        plan->root.join_key_slots = {
+            {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_GRAPH},
+            {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_GRAPH},
+        };
+        plan->root.scan_project_slots = {
+            {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_PREDICATE,
+             XPOD_RDF_SLOT_OBJECT, XPOD_RDF_SLOT_GRAPH},
+            {},
+        };
+      }
     }
     return plan;
   } catch (...) {

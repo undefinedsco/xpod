@@ -1942,3 +1942,39 @@ bun test tests/native/QleverPlanBridge.test.ts --run -t "projects parsed GRAPH v
 ```
 
 Expected: PASS.
+
+### Task 38: Join parsed GRAPH variable groups on subject and graph
+
+**Files:**
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing GRAPH-variable multi-triple test**
+
+Add a parsed fallback smoke for
+`GRAPH ?g { ?s ?p ?o . ?s <urn:type> <urn:Thing> }`. The plan must not fall
+back to subject-only join semantics; it must project graph on both scans and
+record a composite `{subject, graph}` join key.
+
+Expected: FAIL because `GRAPH ?g` with two triples was intentionally rejected
+after single-scan graph projection landed.
+
+- [x] **Step 2: Reuse projected hash join with composite graph key**
+
+For two-triple parsed fallback groups under `GRAPH ?g`, add graph to the filter
+scan projection and set `join_key_slots` to `{S,G}` for both scans. Use
+`scan_project_slots` to preserve the left scan output (`S/P/O/G`) and project no
+columns from the filter scan, so execution remains a graph-safe semi-join over
+the native physical executor.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts --run -t "joins parsed GRAPH variable groups"
+```
+
+Expected: PASS.
