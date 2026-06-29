@@ -4,6 +4,7 @@
 #include "XpodQleverPermutationMap.hpp"
 #include "XpodQleverPlanBridge.hpp"
 #include "XpodQleverOperationExecutor.hpp"
+#include "XpodQleverOperationIntrospection.hpp"
 #include "XpodQleverResultBridge.hpp"
 #include "XpodQleverScanBridge.hpp"
 #include "XpodQleverScanMaterializer.hpp"

@@ -87,6 +87,7 @@ describe('native QLever adapter CMake target', () => {
     expect(existsSync(qleverBridgeSource)).toBe(true);
     expect(readFileSync(cmakeLists, 'utf8')).toContain('src/XpodQleverBridge.cpp');
     expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/Operation.h');
+    expect(readFileSync(cmakeLists, 'utf8')).toContain('engine/QueryExecutionTree.h');
 
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-source-present-'));
     try {
@@ -102,7 +103,42 @@ describe('native QLever adapter CMake target', () => {
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakePermissiveSparqlParserHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), `
+#pragma once
+#include <string>
+#include <vector>
+#include "global/Id.h"
+class QueryExecutionTree {
+ public:
+  const std::string& getDescriptor() const { return descriptor_; }
+  size_t getResultWidth() const { return 0; }
+  std::vector<ColumnIndex> resultSortedOn() const { return {}; }
+ private:
+  std::string descriptor_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
+#pragma once
+#include <string>
+#include <vector>
+#include "engine/QueryExecutionTree.h"
+#include "global/Id.h"
+class Operation {
+ public:
+  virtual ~Operation() = default;
+  virtual std::string getDescriptor() const { return ""; }
+  virtual size_t getResultWidth() const { return 0; }
+  const std::vector<ColumnIndex>& getResultSortedOn() const {
+    sorted_cache_ = resultSortedOn();
+    return sorted_cache_;
+  }
+  virtual std::vector<QueryExecutionTree*> getChildren() { return {}; }
+ protected:
+  virtual std::vector<ColumnIndex> resultSortedOn() const { return {}; }
+ private:
+  mutable std::vector<ColumnIndex> sorted_cache_;
+};
+`, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
@@ -217,6 +253,7 @@ class Permutation {
       expect(output).toContain('parser/SparqlTriple.h');
       expect(output).toContain('engine/QueryPlanner.h');
       expect(output).toContain('engine/Operation.h');
+      expect(output).toContain('engine/QueryExecutionTree.h');
       expect(output).toContain('engine/Result.h');
       expect(output).toContain('engine/idTable/IdTable.h');
       expect(output).toContain('global/Id.h');

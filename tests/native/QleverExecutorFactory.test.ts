@@ -37,6 +37,42 @@ describe('QLever executor factory', () => {
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakeThrowingSparqlParserHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), `
+#pragma once
+#include <string>
+#include <vector>
+#include "global/Id.h"
+class QueryExecutionTree {
+ public:
+  const std::string& getDescriptor() const { return descriptor_; }
+  size_t getResultWidth() const { return 0; }
+  std::vector<ColumnIndex> resultSortedOn() const { return {}; }
+ private:
+  std::string descriptor_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
+#pragma once
+#include <string>
+#include <vector>
+#include "engine/QueryExecutionTree.h"
+#include "global/Id.h"
+class Operation {
+ public:
+  virtual ~Operation() = default;
+  virtual std::string getDescriptor() const { return ""; }
+  virtual size_t getResultWidth() const { return 0; }
+  const std::vector<ColumnIndex>& getResultSortedOn() const {
+    sorted_cache_ = resultSortedOn();
+    return sorted_cache_;
+  }
+  virtual std::vector<QueryExecutionTree*> getChildren() { return {}; }
+ protected:
+  virtual std::vector<ColumnIndex> resultSortedOn() const { return {}; }
+ private:
+  mutable std::vector<ColumnIndex> sorted_cache_;
+};
+`, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `

@@ -55,6 +55,7 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/idTable/IdTable.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/Operation.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryExecutionContext.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryExecutionTree.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryPlanner.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/Result.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/RuntimeInformation.h"
