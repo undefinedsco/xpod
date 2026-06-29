@@ -91,9 +91,13 @@ describe('native QLever adapter CMake target', () => {
       const qleverSource = path.join(root, 'qlever');
       await mkdir(path.join(qleverSource, 'src/libqlever'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/RuntimeInformation.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Index.h'), '#pragma once\n', 'utf8');
 
       const buildDir = path.join(root, 'build');
       execFileSync('cmake', [
@@ -109,6 +113,39 @@ describe('native QLever adapter CMake target', () => {
         cwd: repoRoot,
         stdio: 'pipe',
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree missing lower-level planner and index headers', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-source-incomplete-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/libqlever'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/RuntimeInformation.h'), '#pragma once\n', 'utf8');
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('engine/QueryPlanner.h');
+      expect(output).toContain('index/Index.h');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

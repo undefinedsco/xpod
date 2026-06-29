@@ -38,7 +38,8 @@ Implication:
 
 - Reusing QLever's observability model is straightforward conceptually.
 - Reusing QLever's full executor over PG facts requires a broad backend compatibility layer, not a small `scan()` replacement.
-- Whole-QLever-as-PG-extension is not the first step. First define and test the physical backend protocol.
+- The top-level embedded API (`qlever::Qlever`) is not the integration point for Xpod's PG-backed facts. It constructs and loads QLever's own on-disk `Index` from `EngineConfig.baseName_`, which would create the second RDF fact store that this design explicitly avoids.
+- Whole-QLever-as-PG-extension is not the first step. First define and test the physical backend protocol, then adapt the lower-level planner/executor dependencies (`QueryExecutionContext`, `QueryPlanner`, `Index`/permutation access, runtime profile) to that protocol.
 
 ## Architecture
 
@@ -111,7 +112,7 @@ The physical backend header is the data execution-boundary artifact. The adapter
 The adapter target is intentionally source-provider based:
 
 - `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=OFF` is the default and builds the stub facade without requiring upstream QLever sources.
-- `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON` requires `XPOD_QLEVER_SOURCE_DIR` and validates the key upstream headers before configuration succeeds.
+- `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON` requires `XPOD_QLEVER_SOURCE_DIR` and validates both the embedded API header and the lower-level planner/index headers before configuration succeeds.
 - Xpod must not vendor a second RDF fact store behind this target. The next integration steps wire QLever planner/executor code to the Xpod physical backend ABI.
 
 ## Core concepts

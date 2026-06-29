@@ -27,9 +27,13 @@ describe('QLever executor factory', () => {
       const qleverSource = path.join(root, 'qlever');
       await mkdir(path.join(qleverSource, 'src/libqlever'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/RuntimeInformation.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Index.h'), '#pragma once\n', 'utf8');
 
       const smoke = path.join(root, 'enabled_executor_smoke.cpp');
       const binary = path.join(root, 'enabled_executor_smoke');

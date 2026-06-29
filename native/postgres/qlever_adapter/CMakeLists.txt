@@ -48,8 +48,11 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
   get_filename_component(XPOD_QLEVER_SOURCE_DIR "${XPOD_QLEVER_SOURCE_DIR}" ABSOLUTE)
   set(XPOD_QLEVER_REQUIRED_HEADERS
     "${XPOD_QLEVER_SOURCE_DIR}/src/libqlever/Qlever.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/engine/IndexScan.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryExecutionContext.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryPlanner.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/RuntimeInformation.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/index/Index.h"
   )
 
   set(XPOD_QLEVER_MISSING_HEADERS "")
