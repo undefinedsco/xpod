@@ -26,6 +26,11 @@ class XpodBackedTextSearch {
   const std::string& getDescriptor() const noexcept { return descriptor_; }
 
   XpodBackedCandidateEstimate estimate() const {
+    xpod_rdf_status capability_status = validateBackendFeatureCapability(
+        backend_, XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, {}};
+    }
     xpod_rdf_estimate estimate = {};
     return {backend_.estimateTextSearch(request_, estimate), estimate};
   }
@@ -52,6 +57,11 @@ class XpodBackedTextSearch {
   }
 
   XpodBackedCandidateResult execute() const {
+    xpod_rdf_status capability_status = validateBackendFeatureCapability(
+        backend_, XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, {}};
+    }
     xpod::rdf::CandidateBuffer candidates;
     xpod_rdf_status status =
         xpod::rdf::executeTextSearchToCandidates(backend_, request_, candidates);

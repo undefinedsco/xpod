@@ -2481,3 +2481,35 @@ bun test tests/native/QleverBackedIndexScan.test.ts tests/native/QleverPermutati
 ```
 
 Expected: PASS.
+
+### Task 53: Gate candidate sources with backend feature capabilities
+
+**Files:**
+- Modify: `tests/native/QleverBackedTextSearch.test.ts`
+- Modify: `tests/native/QleverBackedVectorSearch.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedCandidateOperation.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedTextSearch.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedVectorSearch.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing text/vector feature-gate tests**
+
+Add native smokes where the backend explicitly returns capabilities that do not include the requested candidate feature. Text search must require `XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH`; vector search must require `XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH`.
+
+Expected: FAIL because text/vector operation shells previously delegated directly to estimate/search callbacks.
+
+- [x] **Step 2: Add shared lower-protocol feature gate**
+
+Add a small candidate-operation helper that treats an OK capability response as authoritative and returns `UNSUPPORTED` before estimate/search callbacks when the required feature bit is absent. Missing capability callbacks remain compatible and keep the older callback-driven behavior.
+
+This keeps feature enforcement in the lower data interface; it does not add planner policy or QLever operator replicas.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverBackedTextSearch.test.ts tests/native/QleverBackedVectorSearch.test.ts --run
+```
+
+Expected: PASS.

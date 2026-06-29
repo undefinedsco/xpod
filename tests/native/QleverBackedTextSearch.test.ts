@@ -199,6 +199,77 @@ int main() {
         binary,
       ], { stdio: 'pipe' });
       execFileSync(binary, [], { stdio: 'pipe' });
+
+      const unsupportedFeatureSmoke = path.join(root, 'backed_text_search_capability_smoke.cpp');
+      const unsupportedFeatureBinary = path.join(root, 'backed_text_search_capability_smoke');
+      await writeFile(unsupportedFeatureSmoke, `
+#include "XpodBackedTextSearch.hpp"
+
+struct CallState {
+  int estimate_calls;
+  int search_calls;
+};
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->features = XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_text_search(
+    void* user_data,
+    const xpod_rdf_text_search_request*,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<CallState*>(user_data);
+  ++state->estimate_calls;
+  out_estimate->rows = 1;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status text_search(
+    void* user_data,
+    const xpod_rdf_text_search_request*,
+    xpod_rdf_candidate_batch_callback,
+    void*) {
+  auto* state = static_cast<CallState*>(user_data);
+  ++state->search_calls;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  CallState calls = {};
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.backend_user_data = &calls;
+  backend.get_capabilities = get_capabilities;
+  backend.estimate_text_search = estimate_text_search;
+  backend.text_search = text_search;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod_rdf_text_search_request request = {};
+  request.query = {"hello", 5};
+  xpod::qlever::XpodBackedTextSearch textSearch(physical, request);
+  if (textSearch.estimate().status != XPOD_RDF_STATUS_UNSUPPORTED) return 1;
+  if (textSearch.execute().status != XPOD_RDF_STATUS_UNSUPPORTED) return 2;
+  if (calls.estimate_calls != 0 || calls.search_calls != 0) return 3;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-I', path.dirname(textSearchHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        unsupportedFeatureSmoke,
+        '-o',
+        unsupportedFeatureBinary,
+      ], { stdio: 'pipe' });
+      execFileSync(unsupportedFeatureBinary, [], { stdio: 'pipe' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

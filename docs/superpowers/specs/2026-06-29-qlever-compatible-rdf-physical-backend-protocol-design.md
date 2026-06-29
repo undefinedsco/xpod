@@ -653,6 +653,8 @@ Current state: `xpod_qlever_adapter` exists as a C ABI / C++ facade shell. In QL
 
 The Xpod-backed scan adapter uses the same capability contract as a lower-protocol guard: when a backend explicitly returns capabilities, unsupported permutations fail closed before estimate or scan callbacks are invoked. Backends without the optional capability callback keep the older callback-driven behavior for compatibility.
 
+Text and vector candidate operation shells use the same rule for feature bits: an OK capability response without `TEXT_SEARCH` or `VECTOR_SEARCH` fails closed before estimate/search callbacks. This keeps FTS/vector availability in the native data contract that QLever-facing code can plan against.
+
 - Build a read-only spike that maps a small QLever-like operator subset to this protocol:
   - term lookup;
   - single permutation scan;

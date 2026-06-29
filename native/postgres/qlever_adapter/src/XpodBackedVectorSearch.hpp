@@ -26,6 +26,11 @@ class XpodBackedVectorSearch {
   const std::string& getDescriptor() const noexcept { return descriptor_; }
 
   XpodBackedCandidateEstimate estimate() const {
+    xpod_rdf_status capability_status = validateBackendFeatureCapability(
+        backend_, XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, {}};
+    }
     xpod_rdf_estimate estimate = {};
     return {backend_.estimateVectorSearch(request_, estimate), estimate};
   }
@@ -52,6 +57,11 @@ class XpodBackedVectorSearch {
   }
 
   XpodBackedCandidateResult execute() const {
+    xpod_rdf_status capability_status = validateBackendFeatureCapability(
+        backend_, XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, {}};
+    }
     xpod::rdf::CandidateBuffer candidates;
     xpod_rdf_status status = xpod::rdf::executeVectorSearchToCandidates(
         backend_, request_, candidates);

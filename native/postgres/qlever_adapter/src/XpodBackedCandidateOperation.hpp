@@ -15,6 +15,22 @@ struct XpodBackedCandidateResult {
   xpod::rdf::CandidateBuffer candidates = {};
 };
 
+inline xpod_rdf_status validateBackendFeatureCapability(
+    const xpod::rdf::PhysicalBackend& backend,
+    uint32_t feature) noexcept {
+  xpod_rdf_backend_capabilities capabilities = {};
+  xpod_rdf_status status = backend.getCapabilities(capabilities);
+  if (status == XPOD_RDF_STATUS_UNSUPPORTED) {
+    return XPOD_RDF_STATUS_OK;
+  }
+  if (status != XPOD_RDF_STATUS_OK) {
+    return status;
+  }
+  return (capabilities.features & feature) != 0
+             ? XPOD_RDF_STATUS_OK
+             : XPOD_RDF_STATUS_UNSUPPORTED;
+}
+
 }  // namespace xpod::qlever
 
 #endif
