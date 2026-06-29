@@ -52,6 +52,13 @@
 #define XPOD_QLEVER_HAS_ORDER_BY 0
 #endif
 
+#if __has_include("engine/Sort.h")
+#include "engine/Sort.h"
+#define XPOD_QLEVER_HAS_SORT 1
+#else
+#define XPOD_QLEVER_HAS_SORT 0
+#endif
+
 #if __has_include("engine/QueryExecutionContext.h")
 #include "engine/QueryExecutionContext.h"
 #define XPOD_QLEVER_HAS_QUERY_EXECUTION_CONTEXT 1
@@ -751,12 +758,40 @@ inline std::optional<BridgeQueryPlan> planOrderByOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_SORT
+inline std::optional<BridgeQueryPlan> planSortOperation(
+    const Sort& operation) {
+  std::vector<QueryExecutionTree*> children =
+      const_cast<Sort&>(operation).getChildren();
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(*children[0]);
+  if (!plan.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeResultModifier modifier;
+  modifier.kind = BridgeResultModifierKind::InternalSort;
+  modifier.columns = operation.resultSortedOn();
+  plan->sorted_by = modifier.columns;
+  plan->root.result_modifiers.push_back(std::move(modifier));
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET
   const auto* limit_offset = dynamic_cast<const LimitOffset*>(&operation);
   if (limit_offset != nullptr) {
     return planLimitOffsetOperation(*limit_offset);
+  }
+#endif
+#if XPOD_QLEVER_HAS_SORT
+  const auto* sort = dynamic_cast<const Sort*>(&operation);
+  if (sort != nullptr) {
+    return planSortOperation(*sort);
   }
 #endif
 #if XPOD_QLEVER_HAS_ORDER_BY

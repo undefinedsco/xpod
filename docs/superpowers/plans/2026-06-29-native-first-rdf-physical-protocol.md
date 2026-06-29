@@ -832,8 +832,9 @@ Use upstream QLever headers as the source of truth.
 - `resultSortedOn() == {}` because semantic user-facing ordering is not the
   same as internal ID sortedness.
 
-`Sort.h` has no public sort-column getter, so do not implement it by parsing
-descriptors or reaching into private fields.
+`Sort.h` exposes the internal sort columns through public `resultSortedOn()`,
+but it is a different operation from `OrderBy`: `Sort` uses QLever's internal
+ID order, while `OrderBy` represents user-facing semantic value ordering.
 
 - [x] **Step 2: Write the failing planner OrderBy test**
 
@@ -880,6 +881,71 @@ QLever composition; full SPARQL semantic term comparison remains a later
 dictionary / ValueId comparator integration.
 
 - [x] **Step 6: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.
+
+### Task 18: Sort internal result modifier
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever `Sort.h` as the source of truth.
+
+`Sort` exposes:
+- one child through `getChildren()`;
+- internal sorted columns through public `resultSortedOn()`;
+- ID-based internal sort semantics, not SPARQL `ORDER BY` semantic value
+  comparison.
+
+- [x] **Step 2: Write the failing planner Sort test**
+
+Extend the operation-plan smoke with `Sort(IndexScan(...), [2, 0])`.
+
+Expected native plan shape:
+- child root stays `BridgeOperationKind::PermutationScan`;
+- `root.result_modifiers` records one `InternalSort` modifier;
+- modifier columns are `[2, 0]`;
+- `sorted_by` is updated to `[2, 0]`;
+- output variables are preserved.
+
+Expected: FAIL because the bridge previously had no internal Sort modifier.
+
+- [x] **Step 3: Write the failing native execution Sort test**
+
+Extend the operation executor smoke with an intentionally unsorted scan and an
+internal sort modifier over the subject column.
+
+Expected output:
+- executor still runs the scan once;
+- rows are stably sorted by encoded QLever id bits in ascending order;
+- returned internal `sortedBy` records the sort columns.
+
+Expected: FAIL because execution previously had no internal sort modifier.
+
+- [x] **Step 4: Plan and execute Sort**
+
+When the embedded QLever build exposes `engine/Sort.h`, map
+`Sort(child, columns)` to the child's `BridgeQueryPlan`, append an
+`InternalSort` result modifier, and set `sorted_by` to the sort columns.
+
+Execution applies a stable ascending native sort over encoded QLever id bits.
+This intentionally models QLever's internal `Sort`, not SPARQL `OrderBy`.
+
+- [x] **Step 5: Run target verification**
 
 Run:
 

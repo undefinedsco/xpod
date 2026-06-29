@@ -36,6 +36,7 @@ enum class BridgeResultModifierKind {
   LimitOffset,
   Distinct,
   OrderBy,
+  InternalSort,
 };
 
 struct BridgeCandidateOutputColumn {

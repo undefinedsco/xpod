@@ -946,6 +946,56 @@ inline QleverResultWithStatus applyBridgeOrderBy(
   return toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {});
 }
 
+inline QleverResultWithStatus applyBridgeInternalSort(
+    const BridgeResultModifier& modifier,
+    QleverResultWithStatus result) {
+  if (result.status != XPOD_RDF_STATUS_OK) {
+    return result;
+  }
+
+  const IdTable& input = result.result.idTable();
+  for (ColumnIndex column : modifier.columns) {
+    if (column >= input.numColumns()) {
+      return makeEmptyOperationResult(
+          XPOD_RDF_STATUS_UNSUPPORTED, input.numColumns(),
+          result.result.sortedBy());
+    }
+  }
+
+  std::vector<size_t> row_order;
+  row_order.reserve(input.numRows());
+  for (size_t row = 0; row < input.numRows(); ++row) {
+    row_order.push_back(row);
+  }
+  std::stable_sort(
+      row_order.begin(), row_order.end(),
+      [&input, &modifier](size_t left, size_t right) {
+        for (ColumnIndex column : modifier.columns) {
+          uint64_t left_bits = input(left, column).getBits();
+          uint64_t right_bits = input(right, column).getBits();
+          if (left_bits == right_bits) {
+            continue;
+          }
+          return left_bits < right_bits;
+        }
+        return false;
+      });
+
+  IdTable output(input.numColumns());
+  std::vector<Id> row;
+  row.reserve(input.numColumns());
+  for (size_t input_row : row_order) {
+    row.clear();
+    for (size_t column = 0; column < input.numColumns(); ++column) {
+      row.push_back(input(input_row, column));
+    }
+    output.push_back(row);
+  }
+
+  return toQleverResult(
+      {XPOD_RDF_STATUS_OK, std::move(output)}, modifier.columns);
+}
+
 inline QleverResultWithStatus applyBridgeResultModifier(
     const BridgeResultModifier& modifier,
     QleverResultWithStatus result) {
@@ -961,6 +1011,9 @@ inline QleverResultWithStatus applyBridgeResultModifier(
   }
   if (modifier.kind == BridgeResultModifierKind::OrderBy) {
     return applyBridgeOrderBy(modifier, std::move(result));
+  }
+  if (modifier.kind == BridgeResultModifierKind::InternalSort) {
+    return applyBridgeInternalSort(modifier, std::move(result));
   }
   return result;
 }

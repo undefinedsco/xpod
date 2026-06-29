@@ -287,6 +287,45 @@ class OrderBy final : public Operation {
 };
 `;
 
+export const fakeSortHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class QueryExecutionContext;
+class Sort final : public Operation {
+ public:
+  Sort(QueryExecutionContext*,
+       std::shared_ptr<QueryExecutionTree> child,
+       std::vector<ColumnIndex> sort_column_indices)
+      : child_(std::move(child)),
+        sort_column_indices_(std::move(sort_column_indices)) {}
+  Sort(std::shared_ptr<QueryExecutionTree> child,
+       std::vector<ColumnIndex> sort_column_indices)
+      : child_(std::move(child)),
+        sort_column_indices_(std::move(sort_column_indices)) {}
+  std::string getDescriptor() const override { return "Sort"; }
+  size_t getResultWidth() const override {
+    return child_ == nullptr ? 0 : child_->getRootOperation()->getResultWidth();
+  }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {child_.get()};
+  }
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return sort_column_indices_;
+  }
+ private:
+  std::shared_ptr<QueryExecutionTree> child_;
+  std::vector<ColumnIndex> sort_column_indices_;
+};
+`;
+
 export const fakeLimitOffsetHeader = `
 #pragma once
 #include <memory>

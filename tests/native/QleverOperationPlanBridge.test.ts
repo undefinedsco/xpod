@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
+import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -225,6 +225,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/LimitOffset.h'), fakeLimitOffsetHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForEntity.h'), fakeTextIndexScanForEntityHeader, 'utf8');
@@ -290,6 +291,7 @@ class IndexScan final : public Operation {
 #include "engine/Join.h"
 #include "engine/Distinct.h"
 #include "engine/OrderBy.h"
+#include "engine/Sort.h"
 #include "engine/LimitOffset.h"
 #include "engine/TextIndexScanForEntity.h"
 #include "engine/TextIndexScanForWord.h"
@@ -665,6 +667,33 @@ int main() {
   if (order_plan->output_variables[0] != "s") return 176;
   if (order_plan->output_variables[1] != "p") return 177;
   if (order_plan->output_variables[2] != "o") return 178;
+
+  auto sort_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?s"}},
+          TripleComponent{Variable{"?p"}},
+          TripleComponent{Variable{"?o"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?s ?p ?o",
+          3,
+          std::vector<ColumnIndex>{0}));
+  Sort sort_operation(sort_tree, std::vector<ColumnIndex>{2, 0});
+  auto sort_plan = xpod::qlever::planQleverOperation(sort_operation);
+  if (!sort_plan.has_value()) return 179;
+  if (sort_plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 180;
+  if (sort_plan->root.result_modifiers.size() != 1) return 181;
+  if (sort_plan->root.result_modifiers[0].kind !=
+      xpod::qlever::BridgeResultModifierKind::InternalSort) return 182;
+  if (sort_plan->root.result_modifiers[0].columns.size() != 2) return 183;
+  if (sort_plan->root.result_modifiers[0].columns[0] != 2) return 184;
+  if (sort_plan->root.result_modifiers[0].columns[1] != 0) return 185;
+  if (sort_plan->sorted_by.size() != 2) return 186;
+  if (sort_plan->sorted_by[0] != 2) return 187;
+  if (sort_plan->sorted_by[1] != 0) return 188;
+  if (sort_plan->output_variables.size() != 3) return 189;
+  if (sort_plan->output_variables[0] != "s") return 190;
+  if (sort_plan->output_variables[1] != "p") return 191;
+  if (sort_plan->output_variables[2] != "o") return 192;
   return 0;
 }
 `, 'utf8');
