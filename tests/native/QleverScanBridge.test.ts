@@ -55,6 +55,10 @@ int main() {
   input.offset = 7;
   input.batch_size = 64;
   input.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT | XPOD_RDF_SLOT_GRAPH;
+  xpod_rdf_term_key graph_set[2] = {44, 55};
+  input.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_SET;
+  input.graph_scope.graph_set = graph_set;
+  input.graph_scope.graph_set_size = 2;
   xpod_rdf_slot_term_range subject_range = {};
   subject_range.slot = XPOD_RDF_SLOT_SUBJECT;
   subject_range.range.lower = 1000;
@@ -73,7 +77,10 @@ int main() {
   if (request.pattern.has_predicate) return 4;
   if (!request.pattern.has_object || request.pattern.object != 33) return 5;
   if (!request.pattern.has_graph || request.pattern.graph != 44) return 6;
-  if (request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_ALL) return 7;
+  if (request.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_SET) return 7;
+  if (request.graph_scope.graph_set == nullptr) return 71;
+  if (request.graph_scope.graph_set_size != 2) return 72;
+  if (request.graph_scope.graph_set[0] != 44 || request.graph_scope.graph_set[1] != 55) return 73;
   if (request.order.kind != XPOD_RDF_SCAN_ORDER_NATIVE) return 8;
   if (request.limit != 100 || request.offset != 7) return 9;
   if (request.batch_size != 64) return 10;

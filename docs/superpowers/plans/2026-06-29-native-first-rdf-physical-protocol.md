@@ -1978,3 +1978,36 @@ bun test tests/native/QleverPlanBridge.test.ts --run -t "joins parsed GRAPH vari
 ```
 
 Expected: PASS.
+
+### Task 39: Carry graph scope through the scan request input
+
+**Files:**
+- Modify: `tests/native/QleverScanBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverScanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing scan-scope test**
+
+Extend the scan-bridge smoke so `ScanRequestInput` can carry an
+`xpod_rdf_graph_scope` set and `makeScanRequest(...)` forwards it unchanged to
+the native `xpod_rdf_scan_request`.
+
+Expected: FAIL because `ScanRequestInput` had no graph-scope field and
+`makeScanRequest(...)` always forced `XPOD_RDF_GRAPH_SCOPE_ALL`.
+
+- [x] **Step 2: Move graph scope to the physical scan boundary**
+
+Add `graph_scope` to `ScanRequestInput` with `ALL` as the default, and copy it
+directly into the C ABI scan request. This lets QLever planner/executor paths
+carry graph exact/set/prefix constraints through the same low-level scan
+protocol instead of requiring graph-specific operator glue above the scan.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverScanBridge.test.ts --run -t "builds an Xpod physical scan request"
+```
+
+Expected: PASS.

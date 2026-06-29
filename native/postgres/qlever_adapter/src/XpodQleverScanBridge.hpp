@@ -27,6 +27,7 @@ struct ScanRequestInput {
   const xpod_rdf_snapshot* snapshot = nullptr;
   Permutation::Enum permutation = Permutation::Enum::SPO;
   TripleKeyPattern pattern;
+  xpod_rdf_graph_scope graph_scope = {XPOD_RDF_GRAPH_SCOPE_ALL, 0, {}, nullptr, 0};
   const xpod_rdf_source_scope* source_scope = nullptr;
   const xpod_rdf_access_scope* access_scope = nullptr;
   uint64_t limit = 0;
@@ -59,7 +60,7 @@ inline xpod_rdf_scan_request makeScanRequest(
   }
   request.permutation = toXpodPermutation(input.permutation);
   request.pattern = toXpodQuadPattern(input.pattern);
-  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_ALL;
+  request.graph_scope = input.graph_scope;
   if (input.source_scope != nullptr) {
     request.source_scope = *input.source_scope;
   }
