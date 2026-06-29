@@ -571,6 +571,56 @@ int main() {
   if (rdf_projection_table(1, 0).getBits() != 1011) return 76;
   if (rdf_projection_table(1, 1).getBits() != 1031) return 77;
   if (rdf_projection_table(1, 2).getBits() != 1111) return 78;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan multi_key_plan;
+  xpod::qlever::BridgePhysicalScan multi_key_primary;
+  multi_key_primary.scan.permutation = Permutation::Enum::SPO;
+  multi_key_primary.scan.needed_slots =
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  multi_key_primary.sorted_by = {0, 1};
+  multi_key_primary.result_width = 3;
+  multi_key_primary.descriptor = "multi-key primary scan";
+  multi_key_plan.scans.push_back(multi_key_primary);
+
+  xpod::qlever::BridgePhysicalScan multi_key_filter;
+  multi_key_filter.scan.permutation = Permutation::Enum::SPO;
+  multi_key_filter.scan.needed_slots =
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  multi_key_filter.sorted_by = {0, 1};
+  multi_key_filter.result_width = 3;
+  multi_key_filter.descriptor = "multi-key filter scan";
+  multi_key_plan.scans.push_back(multi_key_filter);
+
+  multi_key_plan.root.kind = xpod::qlever::BridgeOperationKind::HashJoin;
+  multi_key_plan.root.scan_indexes = {0, 1};
+  multi_key_plan.root.join_slot = XPOD_RDF_SLOT_SUBJECT;
+  multi_key_plan.root.join_slots = {
+      XPOD_RDF_SLOT_SUBJECT,
+      XPOD_RDF_SLOT_SUBJECT,
+  };
+  multi_key_plan.root.join_key_slots = {
+      {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_PREDICATE},
+      {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_PREDICATE},
+  };
+  multi_key_plan.root.scan_project_slots = {
+      {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_PREDICATE, XPOD_RDF_SLOT_OBJECT},
+      {XPOD_RDF_SLOT_OBJECT},
+  };
+
+  auto multi_key_result = xpod::qlever::executeBridgeOperationPlan(physical, multi_key_plan);
+  if (multi_key_result.status != XPOD_RDF_STATUS_OK) return 79;
+  if (state.calls != 2) return 80;
+  const IdTable& multi_key_table = multi_key_result.result.idTable();
+  if (multi_key_table.numColumns() != 4 || multi_key_table.numRows() != 2) return 81;
+  if (multi_key_table(0, 0).getBits() != 1010) return 82;
+  if (multi_key_table(0, 1).getBits() != 1020) return 83;
+  if (multi_key_table(0, 2).getBits() != 1030) return 84;
+  if (multi_key_table(0, 3).getBits() != 1030) return 85;
+  if (multi_key_table(1, 0).getBits() != 1011) return 86;
+  if (multi_key_table(1, 1).getBits() != 1020) return 87;
+  if (multi_key_table(1, 2).getBits() != 1031) return 88;
+  if (multi_key_table(1, 3).getBits() != 1031) return 89;
   return 0;
 }
 `, 'utf8');

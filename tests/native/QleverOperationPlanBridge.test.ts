@@ -542,6 +542,45 @@ int main() {
   if (rdf_projection_plan->root.scan_project_slots[0][1] != XPOD_RDF_SLOT_OBJECT) return 121;
   if (rdf_projection_plan->root.scan_project_slots[1].size() != 1) return 122;
   if (rdf_projection_plan->root.scan_project_slots[1][0] != XPOD_RDF_SLOT_OBJECT) return 123;
+
+  auto multi_key_left = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?s"}},
+          TripleComponent{Variable{"?p"}},
+          TripleComponent{Variable{"?o"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?s ?p ?o",
+          3,
+          std::vector<ColumnIndex>{0, 1}));
+  auto multi_key_right = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?s"}},
+          TripleComponent{Variable{"?p"}},
+          TripleComponent{Variable{"?type"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?s ?p ?type",
+          3,
+          std::vector<ColumnIndex>{0, 1}));
+  Join multi_key_join(multi_key_left, multi_key_right);
+  auto multi_key_plan = xpod::qlever::planQleverOperation(multi_key_join);
+  if (!multi_key_plan.has_value()) return 124;
+  if (multi_key_plan->result_width != 4) return 125;
+  if (multi_key_plan->output_variables.size() != 4) return 126;
+  if (multi_key_plan->output_variables[0] != "s") return 127;
+  if (multi_key_plan->output_variables[1] != "p") return 128;
+  if (multi_key_plan->output_variables[2] != "o") return 129;
+  if (multi_key_plan->output_variables[3] != "type") return 130;
+  if (multi_key_plan->root.join_key_slots.size() != 2) return 131;
+  if (multi_key_plan->root.join_key_slots[0].size() != 2) return 132;
+  if (multi_key_plan->root.join_key_slots[0][0] != XPOD_RDF_SLOT_SUBJECT) return 133;
+  if (multi_key_plan->root.join_key_slots[0][1] != XPOD_RDF_SLOT_PREDICATE) return 134;
+  if (multi_key_plan->root.join_key_slots[1].size() != 2) return 135;
+  if (multi_key_plan->root.join_key_slots[1][0] != XPOD_RDF_SLOT_SUBJECT) return 136;
+  if (multi_key_plan->root.join_key_slots[1][1] != XPOD_RDF_SLOT_PREDICATE) return 137;
+  if (multi_key_plan->root.scan_project_slots.size() != 2) return 138;
+  if (multi_key_plan->root.scan_project_slots[0].size() != 3) return 139;
+  if (multi_key_plan->root.scan_project_slots[1].size() != 1) return 140;
+  if (multi_key_plan->root.scan_project_slots[1][0] != XPOD_RDF_SLOT_OBJECT) return 141;
   return 0;
 }
 `, 'utf8');

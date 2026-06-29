@@ -503,6 +503,49 @@ inline std::optional<std::vector<uint32_t>> inferCommonVariableJoinSlots(
   return std::nullopt;
 }
 
+inline std::optional<std::vector<std::vector<uint32_t>>>
+inferCommonVariableJoinKeySlots(
+    const std::vector<const IndexScan*>& scans) {
+  if (scans.size() < 2) {
+    return std::nullopt;
+  }
+  std::vector<std::vector<uint32_t>> join_key_slots(scans.size());
+  for (uint32_t first_slot : {
+           XPOD_RDF_SLOT_SUBJECT,
+           XPOD_RDF_SLOT_PREDICATE,
+           XPOD_RDF_SLOT_OBJECT,
+       }) {
+    const TripleComponent& first_component =
+        indexScanComponentForSlot(*scans.front(), first_slot);
+    if (!first_component.isVariable()) {
+      continue;
+    }
+    std::string variable = bridgeComponentVariableName(first_component);
+    std::vector<uint32_t> slots_for_variable;
+    slots_for_variable.reserve(scans.size());
+    slots_for_variable.push_back(first_slot);
+    for (size_t i = 1; i < scans.size(); ++i) {
+      std::optional<uint32_t> join_slot =
+          indexScanSlotForVariable(*scans[i], variable);
+      if (!join_slot.has_value()) {
+        slots_for_variable.clear();
+        break;
+      }
+      slots_for_variable.push_back(*join_slot);
+    }
+    if (slots_for_variable.size() != scans.size()) {
+      continue;
+    }
+    for (size_t i = 0; i < scans.size(); ++i) {
+      join_key_slots[i].push_back(slots_for_variable[i]);
+    }
+  }
+  if (join_key_slots.front().empty()) {
+    return std::nullopt;
+  }
+  return join_key_slots;
+}
+
 inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD && \
     XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_ENTITY
@@ -520,9 +563,17 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
       !collectIndexScanLeaves(children[1], scans)) {
     return std::nullopt;
   }
-  auto join_slots = inferCommonVariableJoinSlots(scans);
-  if (!join_slots.has_value()) {
+  auto join_key_slots = inferCommonVariableJoinKeySlots(scans);
+  if (!join_key_slots.has_value()) {
     return std::nullopt;
+  }
+  std::vector<uint32_t> legacy_join_slots;
+  legacy_join_slots.reserve(join_key_slots->size());
+  for (const std::vector<uint32_t>& slots_for_scan : *join_key_slots) {
+    if (slots_for_scan.empty()) {
+      return std::nullopt;
+    }
+    legacy_join_slots.push_back(slots_for_scan.front());
   }
 
   auto left_plan = planIndexScanOperation(*scans.front());
@@ -560,15 +611,16 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
     BridgeFilterScan filter;
     filter.scan = right_plan->scan;
     filter.term_bindings = std::move(right_plan->term_bindings);
-    filter.join_slot = (*join_slots)[i];
+    filter.join_slot = legacy_join_slots[i];
     filter.descriptor = right_plan->descriptor;
     left_plan->filter_scans.push_back(std::move(filter));
     left_plan->root.scan_indexes.push_back(i);
   }
   left_plan->descriptor = join.getDescriptor();
   left_plan->root.kind = BridgeOperationKind::HashJoin;
-  left_plan->root.join_slot = join_slots->front();
-  left_plan->root.join_slots = *join_slots;
+  left_plan->root.join_slot = legacy_join_slots.front();
+  left_plan->root.join_slots = std::move(legacy_join_slots);
+  left_plan->root.join_key_slots = std::move(*join_key_slots);
   left_plan->root.scan_project_slots = std::move(scan_project_slots);
   left_plan->result_width = left_plan->output_variables.size();
   return left_plan;

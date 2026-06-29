@@ -612,3 +612,63 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 14: Multi-key RDF/RDF HashJoin
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing planner multi-key test**
+
+Extend the QLever operation-plan smoke for a join with two shared variables:
+
+```sparql
+{ ?s ?p ?o . ?s ?p ?type }
+```
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::HashJoin`
+- `root.join_key_slots == [[SUBJECT, PREDICATE], [SUBJECT, PREDICATE]]`
+- `root.scan_project_slots == [[SUBJECT, PREDICATE, OBJECT], [OBJECT]]`
+- output variables are `s`, `p`, `o`, `type`
+
+Expected: FAIL because RDF/RDF joins previously had only one join slot per scan.
+
+- [x] **Step 2: Write the failing native execution multi-key test**
+
+Extend the native HashJoin smoke with a hand-built two-scan plan that joins by `(subject, predicate)` and projects the right object.
+
+Expected output:
+- one row for each matching `(subject, predicate)` tuple;
+- right rows with the same subject but different predicate do not match.
+
+Expected: FAIL because projected HashJoin previously keyed right rows by a single term.
+
+- [x] **Step 3: Add explicit multi-key join slots**
+
+Add `BridgeOperationPlan::join_key_slots`, aligned with `scan_indexes`.
+
+Planner-generated RDF/RDF joins infer all common variables in canonical RDF slot order `S/P/O`, preserving the legacy `join_slot`/`join_slots` first-key fallback for existing call sites.
+
+- [x] **Step 4: Execute projected HashJoin with tuple keys**
+
+Change the explicit-projection HashJoin path to:
+- decode a tuple join key from each scan row;
+- group right scan projections by the tuple key;
+- match primary rows against every right-side tuple group;
+- keep legacy single-key fallback when `join_key_slots` is absent.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.
