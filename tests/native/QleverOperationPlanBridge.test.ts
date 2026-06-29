@@ -148,6 +148,15 @@ int main() {
   if (join_plan->root.kind != xpod::qlever::BridgeOperationKind::HashJoin) return 25;
   if (join_plan->filter_scans.size() != 1) return 26;
   if (join_plan->root.join_slot != XPOD_RDF_SLOT_SUBJECT) return 27;
+  auto join_tree = std::make_shared<QueryExecutionTree>(std::make_shared<Join>(left, right));
+  auto third = std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>());
+  Join nested_join(join_tree, third);
+  auto nested_join_plan = xpod::qlever::planQleverOperation(nested_join);
+  if (!nested_join_plan.has_value()) return 28;
+  if (nested_join_plan->root.kind != xpod::qlever::BridgeOperationKind::HashJoin) return 29;
+  if (nested_join_plan->filter_scans.size() != 2) return 30;
+  if (nested_join_plan->root.scan_indexes.size() != 3) return 31;
+  if (nested_join_plan->root.join_slot != XPOD_RDF_SLOT_SUBJECT) return 32;
   return 0;
 }
 `, 'utf8');

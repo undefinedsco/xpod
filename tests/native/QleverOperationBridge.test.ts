@@ -123,9 +123,15 @@ static xpod_rdf_status scan(
   state->calls += 1;
   if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->pattern.has_predicate) {
-    if (request->pattern.predicate != 50) return XPOD_RDF_STATUS_BACKEND_ERROR;
-    if (!request->pattern.has_object || request->pattern.object != 60) return XPOD_RDF_STATUS_BACKEND_ERROR;
-    xpod_rdf_quad_key rows[1] = {{10, 50, 60, 40}};
+    if (!request->pattern.has_object) return XPOD_RDF_STATUS_BACKEND_ERROR;
+    xpod_rdf_quad_key rows[1] = {};
+    if (request->pattern.predicate == 50 && request->pattern.object == 60) {
+      rows[0] = {10, 50, 60, 40};
+    } else if (request->pattern.predicate == 70 && request->pattern.object == 80) {
+      rows[0] = {10, 70, 80, 40};
+    } else {
+      return XPOD_RDF_STATUS_BACKEND_ERROR;
+    }
     xpod_rdf_quad_batch batch = {};
     batch.rows = rows;
     batch.row_count = 1;
@@ -171,13 +177,23 @@ int main() {
   filter.descriptor = "filter scan";
   plan.scans.push_back(filter);
 
+  xpod::qlever::BridgePhysicalScan second_filter;
+  second_filter.scan.permutation = Permutation::Enum::SPO;
+  second_filter.scan.pattern.has_predicate = true;
+  second_filter.scan.pattern.predicate = 70;
+  second_filter.scan.pattern.has_object = true;
+  second_filter.scan.pattern.object = 80;
+  second_filter.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  second_filter.descriptor = "second filter scan";
+  plan.scans.push_back(second_filter);
+
   plan.root.kind = xpod::qlever::BridgeOperationKind::HashJoin;
-  plan.root.scan_indexes = {0, 1};
+  plan.root.scan_indexes = {0, 1, 2};
   plan.root.join_slot = XPOD_RDF_SLOT_SUBJECT;
 
   auto result = xpod::qlever::executeBridgeOperationPlan(physical, plan);
   if (result.status != XPOD_RDF_STATUS_OK) return 1;
-  if (state.calls != 2) return 2;
+  if (state.calls != 3) return 2;
   const IdTable& table = result.result.idTable();
   if (table.numColumns() != 3 || table.numRows() != 1) return 3;
   if (table(0, 0).getBits() != 1010) return 4;

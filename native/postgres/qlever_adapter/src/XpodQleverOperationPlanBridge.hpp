@@ -63,32 +63,63 @@ inline const TripleComponent& indexScanComponentForSlot(
   return scan.object();
 }
 
-inline std::optional<uint32_t> inferSameVariableJoinSlot(
-    const IndexScan& left,
-    const IndexScan& right) {
+inline bool collectIndexScanLeaves(
+    const QueryExecutionTree* tree,
+    std::vector<const IndexScan*>& scans) {
+  if (tree == nullptr || tree->isEmpty()) {
+    return false;
+  }
+  auto operation = tree->getRootOperation();
+  if (operation == nullptr) {
+    return false;
+  }
+  const auto* scan = dynamic_cast<const IndexScan*>(operation.get());
+  if (scan != nullptr) {
+    scans.push_back(scan);
+    return true;
+  }
+  const auto* join = dynamic_cast<const Join*>(operation.get());
+  if (join == nullptr) {
+    return false;
+  }
+  std::vector<const QueryExecutionTree*> children = join->getChildren();
+  if (children.size() != 2) {
+    return false;
+  }
+  return collectIndexScanLeaves(children[0], scans) &&
+         collectIndexScanLeaves(children[1], scans);
+}
+
+inline std::optional<uint32_t> inferCommonVariableJoinSlot(
+    const std::vector<const IndexScan*>& scans) {
+  if (scans.size() < 2) {
+    return std::nullopt;
+  }
   for (uint32_t slot : {
            XPOD_RDF_SLOT_SUBJECT,
            XPOD_RDF_SLOT_PREDICATE,
            XPOD_RDF_SLOT_OBJECT,
        }) {
-    const TripleComponent& left_component = indexScanComponentForSlot(left, slot);
-    const TripleComponent& right_component = indexScanComponentForSlot(right, slot);
-    if (left_component.isVariable() && right_component.isVariable() &&
-        left_component.getVariable().name() ==
-            right_component.getVariable().name()) {
+    const TripleComponent& first_component =
+        indexScanComponentForSlot(*scans.front(), slot);
+    if (!first_component.isVariable()) {
+      continue;
+    }
+    const std::string& variable = first_component.getVariable().name();
+    bool all_match = true;
+    for (const IndexScan* scan : scans) {
+      const TripleComponent& component = indexScanComponentForSlot(*scan, slot);
+      if (!component.isVariable() ||
+          component.getVariable().name() != variable) {
+        all_match = false;
+        break;
+      }
+    }
+    if (all_match) {
       return slot;
     }
   }
   return std::nullopt;
-}
-
-inline const IndexScan* rootIndexScan(const QueryExecutionTree* tree) {
-  if (tree == nullptr || tree->isEmpty()) {
-    return nullptr;
-  }
-  auto operation = tree->getRootOperation();
-  return operation == nullptr ? nullptr
-                              : dynamic_cast<const IndexScan*>(operation.get());
 }
 
 inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
@@ -96,31 +127,38 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
   if (children.size() != 2) {
     return std::nullopt;
   }
-  const IndexScan* left_scan = rootIndexScan(children[0]);
-  const IndexScan* right_scan = rootIndexScan(children[1]);
-  if (left_scan == nullptr || right_scan == nullptr) {
+  std::vector<const IndexScan*> scans;
+  if (!collectIndexScanLeaves(children[0], scans) ||
+      !collectIndexScanLeaves(children[1], scans)) {
     return std::nullopt;
   }
-  auto join_slot = inferSameVariableJoinSlot(*left_scan, *right_scan);
+  auto join_slot = inferCommonVariableJoinSlot(scans);
   if (!join_slot.has_value()) {
     return std::nullopt;
   }
 
-  auto left_plan = planIndexScanOperation(*left_scan);
-  auto right_plan = planIndexScanOperation(*right_scan);
-  if (!left_plan.has_value() || !right_plan.has_value()) {
+  auto left_plan = planIndexScanOperation(*scans.front());
+  if (!left_plan.has_value()) {
     return std::nullopt;
   }
 
-  BridgeFilterScan filter;
-  filter.scan = right_plan->scan;
-  filter.term_bindings = std::move(right_plan->term_bindings);
-  filter.join_slot = *join_slot;
-  filter.descriptor = right_plan->descriptor;
-  left_plan->filter_scans.push_back(std::move(filter));
+  left_plan->filter_scans.clear();
+  left_plan->root.scan_indexes = {0};
+  for (size_t i = 1; i < scans.size(); ++i) {
+    auto right_plan = planIndexScanOperation(*scans[i]);
+    if (!right_plan.has_value()) {
+      return std::nullopt;
+    }
+    BridgeFilterScan filter;
+    filter.scan = right_plan->scan;
+    filter.term_bindings = std::move(right_plan->term_bindings);
+    filter.join_slot = *join_slot;
+    filter.descriptor = right_plan->descriptor;
+    left_plan->filter_scans.push_back(std::move(filter));
+    left_plan->root.scan_indexes.push_back(i);
+  }
   left_plan->descriptor = join.getDescriptor();
   left_plan->root.kind = BridgeOperationKind::HashJoin;
-  left_plan->root.scan_indexes = {0, 1};
   left_plan->root.join_slot = *join_slot;
   return left_plan;
 }

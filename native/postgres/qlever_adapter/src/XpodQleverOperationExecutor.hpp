@@ -101,33 +101,55 @@ inline xpod_rdf_status filterTableByJoinKeys(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline void intersectJoinKeys(
+    std::unordered_set<xpod_rdf_term_key>& keys,
+    const std::unordered_set<xpod_rdf_term_key>& filter_keys) {
+  for (auto it = keys.begin(); it != keys.end();) {
+    if (filter_keys.find(*it) == filter_keys.end()) {
+      it = keys.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 inline QleverResultWithStatus executeBridgeHashJoin(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
-  if (plan.root.scan_indexes.size() != 2) {
+  if (plan.root.scan_indexes.size() < 2) {
     return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
   }
   size_t left_index = plan.root.scan_indexes[0];
-  size_t right_index = plan.root.scan_indexes[1];
-  if (left_index >= plan.scans.size() || right_index >= plan.scans.size()) {
+  if (left_index >= plan.scans.size()) {
     return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
   }
 
   const BridgePhysicalScan& left_scan = plan.scans[left_index];
-  const BridgePhysicalScan& right_scan = plan.scans[right_index];
-
-  QleverResultWithStatus right = executeBridgePhysicalScan(backend, right_scan);
-  if (right.status != XPOD_RDF_STATUS_OK) {
-    return right;
-  }
   std::unordered_set<xpod_rdf_term_key> allowed_keys;
-  xpod_rdf_status status = collectJoinKeys(
-      backend, right.result.idTable(),
-      columnForSlot(right_scan.scan.permutation, plan.root.join_slot),
-      allowed_keys);
-  if (status != XPOD_RDF_STATUS_OK) {
-    return makeEmptyOperationResult(status, left_scan.result_width,
-                                    left_scan.sorted_by);
+  for (size_t i = 1; i < plan.root.scan_indexes.size(); ++i) {
+    size_t right_index = plan.root.scan_indexes[i];
+    if (right_index >= plan.scans.size()) {
+      return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+    }
+    const BridgePhysicalScan& right_scan = plan.scans[right_index];
+    QleverResultWithStatus right = executeBridgePhysicalScan(backend, right_scan);
+    if (right.status != XPOD_RDF_STATUS_OK) {
+      return right;
+    }
+    std::unordered_set<xpod_rdf_term_key> filter_keys;
+    xpod_rdf_status status = collectJoinKeys(
+        backend, right.result.idTable(),
+        columnForSlot(right_scan.scan.permutation, plan.root.join_slot),
+        filter_keys);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return makeEmptyOperationResult(status, left_scan.result_width,
+                                      left_scan.sorted_by);
+    }
+    if (i == 1) {
+      allowed_keys = std::move(filter_keys);
+    } else {
+      intersectJoinKeys(allowed_keys, filter_keys);
+    }
   }
 
   QleverResultWithStatus left = executeBridgePhysicalScan(backend, left_scan);
@@ -136,7 +158,7 @@ inline QleverResultWithStatus executeBridgeHashJoin(
   }
 
   IdTable output(left.result.idTable().numColumns());
-  status = filterTableByJoinKeys(
+  xpod_rdf_status status = filterTableByJoinKeys(
       backend, left.result.idTable(),
       columnForSlot(left_scan.scan.permutation, plan.root.join_slot),
       allowed_keys, output);
