@@ -2,6 +2,10 @@
 #define XPOD_BACKED_INDEX_SCAN_HPP
 
 #include "XpodQleverIdTableBridge.hpp"
+#include "XpodQleverResultBridge.hpp"
+
+#include <utility>
+#include <vector>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 
@@ -16,6 +20,11 @@ class XpodBackedIndexScan {
 
   QleverIdTableResult execute() const {
     return executeScanToQleverIdTable(backend_, input_);
+  }
+
+  QleverResultWithStatus executeResult(
+      std::vector<ColumnIndex> sorted_by = {}) const {
+    return toQleverResult(execute(), std::move(sorted_by));
   }
 
  private:

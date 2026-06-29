@@ -24,11 +24,13 @@ describe('Xpod-backed QLever IndexScan adapter', () => {
     try {
       const qleverSource = path.join(root, 'qlever');
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
 #pragma once
 #include <cstdint>
+using ColumnIndex = uint64_t;
 class Id {
  public:
   static Id fromBits(uint64_t bits) { return Id(bits); }
@@ -37,6 +39,10 @@ class Id {
   explicit Id(uint64_t bits) : bits_(bits) {}
   uint64_t bits_;
 };
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), `
+#pragma once
+class LocalVocab {};
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
 #pragma once
@@ -60,6 +66,24 @@ class IdTable {
  private:
   size_t width_;
   std::vector<std::vector<Id>> rows_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
+#pragma once
+#include <utility>
+#include <vector>
+#include "engine/idTable/IdTable.h"
+#include "global/Id.h"
+#include "index/LocalVocab.h"
+class Result {
+ public:
+  Result(IdTable table, std::vector<ColumnIndex> sortedBy, LocalVocab&&)
+      : table_(std::move(table)), sortedBy_(std::move(sortedBy)) {}
+  const IdTable& idTable() const { return table_; }
+  const std::vector<ColumnIndex>& sortedBy() const { return sortedBy_; }
+ private:
+  IdTable table_;
+  std::vector<ColumnIndex> sortedBy_;
 };
 `, 'utf8');
 
@@ -105,6 +129,12 @@ int main() {
   if (result.table(0, 0).getBits() != 1010) return 3;
   if (result.table(0, 1).getBits() != 1020) return 4;
   if (result.table(0, 2).getBits() != 1030) return 5;
+
+  auto qleverResult = scanAdapter.executeResult({0});
+  if (qleverResult.status != XPOD_RDF_STATUS_OK) return 6;
+  if (qleverResult.result.idTable().numRows() != 1) return 7;
+  if (qleverResult.result.idTable()(0, 2).getBits() != 1030) return 8;
+  if (qleverResult.result.sortedBy().size() != 1 || qleverResult.result.sortedBy()[0] != 0) return 9;
   return 0;
 }
 `, 'utf8');
