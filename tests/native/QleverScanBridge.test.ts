@@ -111,12 +111,14 @@ class Permutation {
 
 int main() {
   static const char facts_version[] = "facts-v1";
+  static const char path_prefix[] = "/workspace/docs/";
   xpod_rdf_snapshot snapshot = {};
   snapshot.facts_version = {facts_version, 8};
   xpod_rdf_access_scope access_scope = {};
   xpod_qlever_query_request query = {};
   query.snapshot = snapshot;
   query.access_scope = &access_scope;
+  query.source_scope.local_path_prefix = {path_prefix, 16};
 
   xpod_rdf_backend_v1 raw_backend = {};
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -139,6 +141,8 @@ int main() {
   if (!request.pattern.has_predicate || request.pattern.predicate != 20) return 4;
   if (request.limit != 12) return 5;
   if (request.needed_slots != XPOD_RDF_SLOT_PREDICATE) return 6;
+  if (request.source_scope.local_path_prefix.data != path_prefix) return 7;
+  if (request.source_scope.local_path_prefix.size != 16) return 8;
   return 0;
 }
 `, 'utf8');

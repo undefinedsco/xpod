@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 2
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 3
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -168,6 +168,7 @@ typedef struct xpod_rdf_scan_request {
   xpod_rdf_permutation permutation;
   xpod_rdf_quad_pattern pattern;
   xpod_rdf_graph_scope graph_scope;
+  xpod_rdf_source_scope source_scope;
   const xpod_rdf_access_scope* access_scope;
   xpod_rdf_scan_order order;
   uint64_t limit;

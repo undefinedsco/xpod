@@ -28,6 +28,7 @@ describe('native RDF physical backend protocol header', () => {
     expect(header).toContain('xpod_rdf_lookup_terms_fn');
     expect(header).toContain('xpod_rdf_resolve_terms_fn');
     expect(header).toContain('xpod_rdf_scan_permutation_fn');
+    expect(header).toContain('xpod_rdf_source_scope source_scope');
     expect(header).toContain('xpod_rdf_text_search_fn');
     expect(header).toContain('xpod_rdf_vector_search_fn');
     expect(header).toContain('xpod_rdf_encode_qlever_id_fn');

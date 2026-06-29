@@ -21,6 +21,7 @@ typedef struct xpod_qlever_adapter_config {
 typedef struct xpod_qlever_query_request {
   xpod_rdf_bytes sparql;
   xpod_rdf_snapshot snapshot;
+  xpod_rdf_source_scope source_scope;
   const xpod_rdf_access_scope* access_scope;
 } xpod_qlever_query_request;
 
