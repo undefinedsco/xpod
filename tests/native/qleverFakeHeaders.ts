@@ -245,6 +245,57 @@ class Distinct final : public Operation {
 `;
 
 
+export const fakeGroupByHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+class QueryExecutionContext;
+class Alias {};
+class GroupBy final : public Operation {
+ public:
+  using Aliases = std::vector<Alias>;
+  GroupBy(QueryExecutionContext*,
+          std::shared_ptr<QueryExecutionTree> child,
+          std::vector<Variable> group_by_variables,
+          Aliases aliases = {})
+      : child_(std::move(child)),
+        group_by_variables_(std::move(group_by_variables)),
+        aliases_(std::move(aliases)) {}
+  GroupBy(std::shared_ptr<QueryExecutionTree> child,
+          std::vector<Variable> group_by_variables,
+          Aliases aliases = {})
+      : child_(std::move(child)),
+        group_by_variables_(std::move(group_by_variables)),
+        aliases_(std::move(aliases)) {}
+  std::string getDescriptor() const override { return "GroupBy"; }
+  size_t getResultWidth() const override {
+    return group_by_variables_.size() + aliases_.size();
+  }
+  const std::vector<Variable>& groupByVariables() const {
+    return group_by_variables_;
+  }
+  const Aliases& aliases() const { return aliases_; }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {child_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
+ private:
+  std::shared_ptr<QueryExecutionTree> child_;
+  std::vector<Variable> group_by_variables_;
+  Aliases aliases_;
+};
+`;
+
+
 export const fakeOrderByHeader = `
 #pragma once
 #include <memory>

@@ -1401,3 +1401,63 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 26: GroupBy without aggregate aliases
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing planner and executor tests**
+
+Extend the fake QLever headers with a public `GroupBy` shape exposing
+`groupByVariables()`, `aliases()`, and `getChildren()`.
+
+Extend the operation-plan smoke with `GroupBy(child, {?category})` above a
+supported child `IndexScan`.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::GroupBy`;
+- one child plan is preserved through `toBridgePhysicalPlan(...)`;
+- `result_width == groupByVariables().size()`;
+- `root.projection_columns` maps group-key variables to child output columns.
+
+Extend the operation executor smoke with a hand-built GroupBy root over a scan
+that returns duplicate category ids.
+
+Expected execution:
+- the child scan executes once;
+- the output projects only group-key columns;
+- duplicate exact-id group tuples are removed while preserving first-seen order.
+
+Expected: FAIL because the bridge previously had no GroupBy operation root.
+
+- [x] **Step 2: Add the native GroupBy root metadata**
+
+Add `BridgeOperationKind::GroupBy` and `BridgeOperationPlan::projection_columns`
+to the internal native operation plan. This stays outside the public C ABI.
+
+- [x] **Step 3: Plan and execute the no-alias GroupBy subset**
+
+When the embedded QLever build exposes `engine/GroupBy.h`, map only the safe
+public subset where `aliases().empty()` is true. Aggregate aliases still fail
+closed because aggregate value semantics require QLever's richer GroupByImpl
+state.
+
+Execution recursively evaluates the child root, projects configured group-key
+columns, and deduplicates exact encoded QLever id tuples.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

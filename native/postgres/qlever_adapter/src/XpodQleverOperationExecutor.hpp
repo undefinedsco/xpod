@@ -108,6 +108,8 @@ inline xpod_rdf_profile_kind profileEventKind(
       return XPOD_RDF_PROFILE_RDF_JOIN;
     case BridgeOperationKind::OptionalJoin:
       return XPOD_RDF_PROFILE_RDF_JOIN;
+    case BridgeOperationKind::GroupBy:
+      return XPOD_RDF_PROFILE_MATERIALIZED_RESULT;
     case BridgeOperationKind::HashJoin:
       return XPOD_RDF_PROFILE_RDF_JOIN;
     case BridgeOperationKind::TextSearch:
@@ -1379,6 +1381,57 @@ inline QleverResultWithStatus executeBridgeOptionalJoin(
                            root.sorted_by));
 }
 
+inline QleverResultWithStatus executeBridgeGroupBy(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan,
+    const BridgeOperationPlan& root) {
+  if (root.children.size() != 1 || root.projection_columns.empty()) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
+
+  emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_RUNNING);
+  QleverResultWithStatus child =
+      executeBridgeOperationRoot(backend, plan, root.children[0]);
+  if (child.status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+    return child;
+  }
+
+  const IdTable& input = child.result.idTable();
+  for (ColumnIndex column : root.projection_columns) {
+    if (column >= input.numColumns()) {
+      emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+      return makeEmptyOperationResult(
+          XPOD_RDF_STATUS_UNSUPPORTED, root.projection_columns.size());
+    }
+  }
+
+  IdTable output(root.projection_columns.size());
+  std::set<std::vector<uint64_t>> seen;
+  std::vector<uint64_t> key;
+  std::vector<Id> row;
+  key.reserve(root.projection_columns.size());
+  row.reserve(root.projection_columns.size());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    key.clear();
+    row.clear();
+    for (ColumnIndex column : root.projection_columns) {
+      const Id& value = input(input_row, column);
+      key.push_back(value.getBits());
+      row.push_back(value);
+    }
+    if (seen.insert(key).second) {
+      output.push_back(row);
+    }
+  }
+
+  emitOperationProfileEvent(
+      backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
+  return applyBridgeResultModifiers(
+      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+                           root.sorted_by));
+}
+
 inline QleverResultWithStatus executeBridgeOperationRoot(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan,
@@ -1420,6 +1473,9 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
   }
   if (root.kind == BridgeOperationKind::OptionalJoin) {
     return executeBridgeOptionalJoin(backend, plan, root);
+  }
+  if (root.kind == BridgeOperationKind::GroupBy) {
+    return executeBridgeGroupBy(backend, plan, root);
   }
   return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
 }

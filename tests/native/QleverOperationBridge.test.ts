@@ -263,6 +263,17 @@ static xpod_rdf_status scan(
       batch.row_count = 1;
       return on_batch(callback_user_data, &batch);
     }
+    if (request->pattern.predicate == 170 && !request->pattern.has_object) {
+      xpod_rdf_quad_key rows[3] = {
+        {10, 170, 30, 40},
+        {11, 170, 30, 40},
+        {12, 170, 31, 40},
+      };
+      xpod_rdf_quad_batch batch = {};
+      batch.rows = rows;
+      batch.row_count = 3;
+      return on_batch(callback_user_data, &batch);
+    }
     if (!request->pattern.has_object) return XPOD_RDF_STATUS_BACKEND_ERROR;
     xpod_rdf_quad_key rows[1] = {};
     if (request->pattern.predicate == 50 && request->pattern.object == 60) {
@@ -968,6 +979,30 @@ int main() {
   if (optional_table(1, 0).getBits() != 1011 || optional_table(1, 1).getBits() != 1031 ||
       optional_table(1, 2).getBits() != Id::makeUndefined().getBits()) return 150;
   if (optional_result.result.sortedBy().size() != 1 || optional_result.result.sortedBy()[0] != 0) return 151;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan group_plan;
+  xpod::qlever::BridgePhysicalScan group_scan;
+  group_scan.scan.permutation = Permutation::Enum::SPO;
+  group_scan.scan.pattern.has_predicate = true;
+  group_scan.scan.pattern.predicate = 170;
+  group_scan.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  group_scan.result_width = 2;
+  group_plan.scans.push_back(group_scan);
+  group_plan.root.kind = xpod::qlever::BridgeOperationKind::GroupBy;
+  group_plan.root.projection_columns = {1};
+  xpod::qlever::BridgeOperationPlan group_child_root;
+  group_child_root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  group_child_root.scan_indexes = {0};
+  group_plan.root.children = {group_child_root};
+  auto group_result = xpod::qlever::executeBridgeOperationPlan(physical, group_plan);
+  if (group_result.status != XPOD_RDF_STATUS_OK) return 159;
+  if (state.calls != 1) return 160;
+  const IdTable& group_table = group_result.result.idTable();
+  if (group_table.numColumns() != 1 || group_table.numRows() != 2) return 161;
+  if (group_table(0, 0).getBits() != 1030) return 162;
+  if (group_table(1, 0).getBits() != 1031) return 163;
+
   return 0;
 }
 `, 'utf8');

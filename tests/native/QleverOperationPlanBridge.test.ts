@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
+import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeGroupByHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -227,6 +227,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/Minus.h'), fakeMinusHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OptionalJoin.h'), fakeOptionalJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/GroupBy.h'), fakeGroupByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/LimitOffset.h'), fakeLimitOffsetHeader, 'utf8');
@@ -299,6 +300,7 @@ class IndexScan final : public Operation {
 #include "engine/Minus.h"
 #include "engine/OptionalJoin.h"
 #include "engine/Distinct.h"
+#include "engine/GroupBy.h"
 #include "engine/OrderBy.h"
 #include "engine/Sort.h"
 #include "engine/LimitOffset.h"
@@ -580,6 +582,31 @@ int main() {
   if (optional_physical.scans.size() != 2) return 256;
   if (optional_physical.root.children[0].scan_indexes[0] != 0) return 257;
   if (optional_physical.root.children[1].scan_indexes[0] != 1) return 258;
+
+  auto group_child = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:category>"}},
+          TripleComponent{Variable{"?category"}},
+          Permutation::Enum::POS,
+          "IndexScan POS ?entity <urn:category> ?category",
+          2,
+          std::vector<ColumnIndex>{0}));
+  GroupBy group_operation(nullptr, group_child, std::vector<Variable>{Variable{"?category"}});
+  auto group_plan = xpod::qlever::planQleverOperation(group_operation);
+  if (!group_plan.has_value()) return 273;
+  if (group_plan->root.kind != xpod::qlever::BridgeOperationKind::GroupBy) return 274;
+  if (group_plan->child_plans.size() != 1) return 275;
+  if (group_plan->result_width != 1) return 276;
+  if (group_plan->output_variables.size() != 1 ||
+      group_plan->output_variables[0] != "category") return 277;
+  if (group_plan->root.projection_columns.size() != 1 ||
+      group_plan->root.projection_columns[0] != 0) return 278;
+  auto group_physical = xpod::qlever::toBridgePhysicalPlan(*group_plan);
+  if (group_physical.root.kind != xpod::qlever::BridgeOperationKind::GroupBy) return 279;
+  if (group_physical.root.children.size() != 1) return 280;
+  if (group_physical.scans.size() != 1) return 281;
+  if (group_physical.root.children[0].scan_indexes[0] != 0) return 282;
 
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;

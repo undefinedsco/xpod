@@ -80,6 +80,13 @@
 #define XPOD_QLEVER_HAS_OPTIONAL_JOIN 0
 #endif
 
+#if __has_include("engine/GroupBy.h")
+#include "engine/GroupBy.h"
+#define XPOD_QLEVER_HAS_GROUP_BY 1
+#else
+#define XPOD_QLEVER_HAS_GROUP_BY 0
+#endif
+
 #if __has_include("engine/Distinct.h")
 #include "engine/Distinct.h"
 #define XPOD_QLEVER_HAS_DISTINCT 1
@@ -1058,6 +1065,49 @@ inline std::optional<BridgeQueryPlan> planOptionalJoinOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_GROUP_BY
+inline std::optional<BridgeQueryPlan> planGroupByOperation(
+    GroupBy& operation) {
+  if (!operation.aliases().empty()) {
+    return std::nullopt;
+  }
+  std::vector<QueryExecutionTree*> children = operation.getChildren();
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto child_plan = planQleverExecutionTree(*children[0]);
+  if (!child_plan.has_value()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.descriptor = operation.getDescriptor();
+  plan.result_width = operation.getResultWidth();
+  plan.sorted_by = operation.getResultSortedOn();
+  plan.root.kind = BridgeOperationKind::GroupBy;
+  plan.root.sorted_by = plan.sorted_by;
+
+  const std::vector<Variable>& variables = operation.groupByVariables();
+  if (variables.empty() || plan.result_width != variables.size()) {
+    return std::nullopt;
+  }
+  plan.output_variables.reserve(variables.size());
+  plan.root.projection_columns.reserve(variables.size());
+  for (const Variable& variable : variables) {
+    std::string name = bridgeVariableName(variable);
+    auto column = outputColumnForVariable(child_plan->output_variables, name);
+    if (!column.has_value()) {
+      return std::nullopt;
+    }
+    plan.output_variables.push_back(std::move(name));
+    plan.root.projection_columns.push_back(*column);
+  }
+
+  plan.child_plans.push_back(std::move(*child_plan));
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_NEUTRAL_ELEMENT
@@ -1091,6 +1141,12 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
       dynamic_cast<OptionalJoin*>(const_cast<Operation*>(&operation));
   if (optional_join != nullptr) {
     return planOptionalJoinOperation(*optional_join);
+  }
+#endif
+#if XPOD_QLEVER_HAS_GROUP_BY
+  auto* group_by = dynamic_cast<GroupBy*>(const_cast<Operation*>(&operation));
+  if (group_by != nullptr) {
+    return planGroupByOperation(*group_by);
   }
 #endif
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET
