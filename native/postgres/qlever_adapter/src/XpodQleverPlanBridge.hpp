@@ -270,6 +270,31 @@ inline xpod_rdf_status bindPlanTerms(
   return bindTextRequiredEntities(backend, snapshot, plan, error_storage);
 }
 
+inline void applyBridgeRequestContext(
+    BridgeQueryPlan& plan,
+    const xpod_rdf_snapshot& snapshot,
+    const xpod_rdf_source_scope& source_scope,
+    const xpod_rdf_access_scope* access_scope) noexcept {
+  plan.scan.snapshot = &snapshot;
+  plan.scan.source_scope = &source_scope;
+  plan.scan.access_scope = access_scope;
+  for (BridgeFilterScan& filter : plan.filter_scans) {
+    filter.scan.snapshot = &snapshot;
+    filter.scan.source_scope = &source_scope;
+    filter.scan.access_scope = access_scope;
+  }
+  for (BridgeTextCandidateSource& source : plan.text_sources) {
+    source.request.snapshot = snapshot;
+    source.request.source_scope = source_scope;
+    source.request.access_scope = access_scope;
+  }
+  for (BridgeVectorCandidateSource& source : plan.vector_sources) {
+    source.request.snapshot = snapshot;
+    source.request.source_scope = source_scope;
+    source.request.access_scope = access_scope;
+  }
+}
+
 inline void initializeScanPlan(BridgeQueryPlan& plan) {
   plan.scan.permutation = Permutation::Enum::SPO;
   plan.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |

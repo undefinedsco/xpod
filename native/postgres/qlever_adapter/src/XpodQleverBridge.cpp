@@ -243,14 +243,8 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
               error_storage);
     return parse_status;
   }
-  plan.scan.snapshot = &request.snapshot;
-  plan.scan.source_scope = &request.source_scope;
-  plan.scan.access_scope = request.access_scope;
-  for (BridgeFilterScan& filter : plan.filter_scans) {
-    filter.scan.snapshot = &request.snapshot;
-    filter.scan.source_scope = &request.source_scope;
-    filter.scan.access_scope = request.access_scope;
-  }
+  applyBridgeRequestContext(
+      plan, request.snapshot, request.source_scope, request.access_scope);
   xpod_rdf_status bind_status = bindPlanTerms(
       backend, request.snapshot, plan, error_storage);
   if (bind_status != XPOD_RDF_STATUS_OK) {
