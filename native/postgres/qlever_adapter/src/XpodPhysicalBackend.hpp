@@ -266,6 +266,42 @@ class PhysicalBackend {
         backend_->backend_user_data, &request, &out_estimate);
   }
 
+  xpod_rdf_status histogramHints(
+      const xpod_rdf_histogram_request& request,
+      xpod_rdf_histogram_hint_batch_callback on_batch,
+      void* callback_user_data,
+      xpod_rdf_bytes& out_stats_version) const noexcept {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, histogram_hints),
+                     backend_->histogram_hints)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    out_stats_version = {nullptr, 0};
+
+    struct CallbackState {
+      xpod_rdf_histogram_hint_batch_callback downstream;
+      void* downstream_user_data;
+      xpod_rdf_bytes* stats_version;
+    };
+
+    CallbackState state{on_batch, callback_user_data, &out_stats_version};
+    auto forwarding_callback = [](
+        void* user_data,
+        const xpod_rdf_histogram_hint_batch* batch) -> xpod_rdf_status {
+      CallbackState* state = static_cast<CallbackState*>(user_data);
+      if (batch != nullptr && state->stats_version != nullptr) {
+        *state->stats_version = batch->stats_version;
+      }
+      if (state->downstream == nullptr) {
+        return XPOD_RDF_STATUS_OK;
+      }
+      return state->downstream(state->downstream_user_data, batch);
+    };
+
+    return backend_->histogram_hints(
+        backend_->backend_user_data, &request, forwarding_callback, &state);
+  }
+
   xpod_rdf_status textSearch(
       const xpod_rdf_text_search_request& request,
       xpod_rdf_candidate_batch_callback on_batch,

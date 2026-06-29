@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 8
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 9
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -287,6 +287,36 @@ typedef struct xpod_rdf_join_fanout_request {
   const xpod_rdf_access_scope* access_scope;
 } xpod_rdf_join_fanout_request;
 
+typedef struct xpod_rdf_histogram_request {
+  xpod_rdf_snapshot snapshot;
+  xpod_rdf_quad_pattern pattern;
+  xpod_rdf_graph_scope graph_scope;
+  xpod_rdf_source_scope source_scope;
+  const xpod_rdf_access_scope* access_scope;
+  uint32_t slots;
+  uint32_t max_buckets;
+} xpod_rdf_histogram_request;
+
+typedef struct xpod_rdf_histogram_hint {
+  uint32_t slots;
+  xpod_rdf_term_range range;
+  uint64_t rows;
+  uint64_t distinct_terms;
+  double selectivity;
+  xpod_rdf_estimate_confidence confidence;
+  xpod_rdf_bytes reason;
+} xpod_rdf_histogram_hint;
+
+typedef struct xpod_rdf_histogram_hint_batch {
+  const xpod_rdf_histogram_hint* rows;
+  size_t row_count;
+  xpod_rdf_bytes stats_version;
+} xpod_rdf_histogram_hint_batch;
+
+typedef xpod_rdf_status (*xpod_rdf_histogram_hint_batch_callback)(
+    void* callback_user_data,
+    const xpod_rdf_histogram_hint_batch* batch);
+
 typedef struct xpod_rdf_text_search_request {
   xpod_rdf_snapshot snapshot;
   xpod_rdf_bytes query;
@@ -467,6 +497,12 @@ typedef xpod_rdf_status (*xpod_rdf_estimate_join_fanout_fn)(
     const xpod_rdf_join_fanout_request* request,
     xpod_rdf_estimate* out_estimate);
 
+typedef xpod_rdf_status (*xpod_rdf_histogram_hints_fn)(
+    void* backend_user_data,
+    const xpod_rdf_histogram_request* request,
+    xpod_rdf_histogram_hint_batch_callback on_batch,
+    void* callback_user_data);
+
 typedef xpod_rdf_status (*xpod_rdf_text_search_fn)(
     void* backend_user_data,
     const xpod_rdf_text_search_request* request,
@@ -552,6 +588,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_estimate_source_scope_fn estimate_source_scope;
   xpod_rdf_qlever_term_ordering qlever_term_ordering;
   xpod_rdf_prefix_range_fn prefix_range;
+  xpod_rdf_histogram_hints_fn histogram_hints;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus

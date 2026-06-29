@@ -330,6 +330,27 @@ type Estimate = {
   reason?: string;
 };
 
+type HistogramRequest = {
+  snapshot: FactsSnapshot;
+  pattern: QuadPattern;
+  graphScope?: GraphScope;
+  sourceScope?: SourceScope;
+  accessScope?: AccessScope;
+  slots: Array<'subject' | 'predicate' | 'object' | 'graph'>;
+  maxBuckets?: number;
+};
+
+type HistogramHint = {
+  slots: Array<'subject' | 'predicate' | 'object' | 'graph'>;
+  range?: TermRange;
+  rows: number;
+  distinctTerms?: number;
+  selectivity?: number;
+  confidence: Estimate['confidence'];
+  statsVersion?: string;
+  reason?: string;
+};
+
 interface CardinalityStats {
   estimateScan(request: ScanRequest): Promise<Estimate>;
   estimateDistinct(request: DistinctRequest): Promise<Estimate>;
@@ -357,6 +378,7 @@ Stats must include confidence. A stale or heuristic estimate is allowed only if 
 type TextSearchRequest = {
   snapshot: FactsSnapshot;
   query: string;
+  graphScope?: GraphScope;
   workspace?: string;
   sourceScope?: SourceScope;
   accessScope?: AccessScope;
@@ -398,6 +420,7 @@ type VectorSearchRequest = {
   model: string;
   dimensions: number;
   metric: 'cosine' | 'dot' | 'euclidean';
+  graphScope?: GraphScope;
   workspace?: string;
   sourceScope?: SourceScope;
   accessScope?: AccessScope;

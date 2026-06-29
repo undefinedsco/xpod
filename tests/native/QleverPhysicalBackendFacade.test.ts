@@ -133,6 +133,37 @@ static xpod_rdf_status estimate_source_scope(
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status histogram_hints(
+    void* backend_user_data,
+    const xpod_rdf_histogram_request* request,
+    xpod_rdf_histogram_hint_batch_callback on_batch,
+    void* callback_user_data) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 1000000;
+  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      request->source_scope.local_path_prefix.size != 6 ||
+      request->pattern.has_predicate != 1 ||
+      request->slots != XPOD_RDF_SLOT_OBJECT ||
+      request->max_buckets != 8) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_histogram_hint hint = {};
+  hint.slots = XPOD_RDF_SLOT_OBJECT;
+  hint.range.lower = 10;
+  hint.range.upper = 20;
+  hint.range.has_lower = 1;
+  hint.range.has_upper = 1;
+  hint.rows = 7;
+  hint.distinct_terms = 3;
+  hint.selectivity = 0.25;
+  hint.confidence = XPOD_RDF_ESTIMATE_FRESH;
+  xpod_rdf_histogram_hint_batch batch = {};
+  batch.rows = &hint;
+  batch.row_count = 1;
+  batch.stats_version = {"stats-v1", 8};
+  return on_batch(callback_user_data, &batch);
+}
+
 int main() {
   int calls = 0;
   xpod_rdf_backend_v1 backend = {};
@@ -144,6 +175,7 @@ int main() {
   backend.prefix_range = prefix_range;
   backend.scan_permutation = scan;
   backend.estimate_source_scope = estimate_source_scope;
+  backend.histogram_hints = histogram_hints;
 
   xpod::rdf::PhysicalBackend physical(&backend);
   if (!physical.valid()) return 1;
@@ -192,7 +224,31 @@ int main() {
   xpod_rdf_estimate source_estimate = {};
   if (physical.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_OK) return 8;
   if (source_estimate.rows != 12 || source_estimate.confidence != XPOD_RDF_ESTIMATE_FRESH) return 15;
-  if (calls != 110111) return 16;
+
+  xpod_rdf_histogram_request histogram_request = {};
+  histogram_request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  histogram_request.source_scope = source_scope;
+  histogram_request.pattern.has_predicate = 1;
+  histogram_request.pattern.predicate = 5;
+  histogram_request.slots = XPOD_RDF_SLOT_OBJECT;
+  histogram_request.max_buckets = 8;
+  xpod_rdf_histogram_hint histogram_rows[2] = {};
+  size_t histogram_row_count = 0;
+  xpod_rdf_bytes histogram_stats_version = {};
+  auto on_histogram_hints = [](void* user_data, const xpod_rdf_histogram_hint_batch* batch) -> xpod_rdf_status {
+    auto* state = static_cast<std::pair<xpod_rdf_histogram_hint*, size_t*>*>(user_data);
+    for (size_t i = 0; i < batch->row_count; ++i) {
+      state->first[*state->second + i] = batch->rows[i];
+    }
+    *state->second += batch->row_count;
+    return XPOD_RDF_STATUS_OK;
+  };
+  std::pair<xpod_rdf_histogram_hint*, size_t*> histogram_state{histogram_rows, &histogram_row_count};
+  if (physical.histogramHints(histogram_request, on_histogram_hints, &histogram_state, histogram_stats_version) != XPOD_RDF_STATUS_OK) return 23;
+  if (histogram_row_count != 1) return 24;
+  if (histogram_rows[0].rows != 7 || histogram_rows[0].distinct_terms != 3) return 25;
+  if (histogram_stats_version.size != 8) return 26;
+  if (calls != 1110111) return 16;
 
   xpod_rdf_backend_v1 truncated = {};
   truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -203,7 +259,7 @@ int main() {
   xpod_rdf_term_key lookup_key = 0;
   if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
   if (lookup_key != 0) return 13;
-  if (calls != 110111) return 14;
+  if (calls != 1110111) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -214,6 +270,7 @@ int main() {
   if (unsupported.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
   if (unsupported.estimateSourceScope(source_scope, snapshot, source_estimate) != XPOD_RDF_STATUS_UNSUPPORTED) return 17;
   if (unsupported.prefixRange(prefix_request, on_prefix_ranges, &prefix_state, prefix_collation) != XPOD_RDF_STATUS_UNSUPPORTED) return 22;
+  if (unsupported.histogramHints(histogram_request, on_histogram_hints, &histogram_state, histogram_stats_version) != XPOD_RDF_STATUS_UNSUPPORTED) return 27;
 
   return 0;
 }

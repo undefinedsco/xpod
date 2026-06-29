@@ -2146,3 +2146,40 @@ bun run check:rdf-protocol-abi
 ```
 
 Expected: PASS.
+
+### Task 44: Expose scoped histogram hints in the native physical protocol
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalBackendFacade.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing protocol/facade tests**
+
+Extend the ABI smoke and C++ facade smoke so the physical backend must expose a
+scoped `histogram_hints` callback over `xpod_rdf_histogram_request` and return
+`xpod_rdf_histogram_hint_batch` rows.
+
+Expected: FAIL because the native protocol had scan and join fanout estimates,
+but no histogram hint request/batch/callback surface.
+
+- [x] **Step 2: Add the minimal histogram hint ABI**
+
+Add `xpod_rdf_histogram_request`, `xpod_rdf_histogram_hint`,
+`xpod_rdf_histogram_hint_batch`, `xpod_rdf_histogram_hints_fn`, and a guarded
+`PhysicalBackend::histogramHints(...)` wrapper. The request carries snapshot,
+quad pattern, graph scope, source scope, access scope, slot mask, and max bucket
+count so QLever can consume selectivity hints without a TS planner layer.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalBackendFacade.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.
