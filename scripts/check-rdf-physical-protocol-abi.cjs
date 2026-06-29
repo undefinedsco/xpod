@@ -8,6 +8,8 @@ const repoRoot = path.resolve(__dirname, '..');
 const headerPath = path.join(repoRoot, 'native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h');
 const adapterHeaderPath = path.join(repoRoot, 'native/postgres/qlever_adapter/include/xpod_qlever_adapter.h');
 const adapterSourcePath = path.join(repoRoot, 'native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp');
+const adapterRoot = path.join(repoRoot, 'native/postgres/qlever_adapter');
+const adapterCmakePath = path.join(adapterRoot, 'CMakeLists.txt');
 
 const requiredSymbols = [
   '#define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1',
@@ -90,6 +92,9 @@ if (!fs.existsSync(adapterHeaderPath)) {
 if (!fs.existsSync(adapterSourcePath)) {
   fail(`missing adapter source: ${path.relative(repoRoot, adapterSourcePath)}`);
 }
+if (!fs.existsSync(adapterCmakePath)) {
+  fail(`missing adapter CMake target: ${path.relative(repoRoot, adapterCmakePath)}`);
+}
 
 const adapterHeader = fs.readFileSync(adapterHeaderPath, 'utf8');
 for (const symbol of requiredAdapterHeaderSymbols) {
@@ -134,11 +139,26 @@ try {
   } else {
     console.warn('[rdf-protocol-abi] warning: c++ not found, skipped C++ syntax check');
   }
+  if (commandExists('cmake')) {
+    const buildDir = path.join(tmp, 'adapter-build');
+    execFileSync('cmake', [
+      '-S', adapterRoot,
+      '-B', buildDir,
+      '-DXPOD_QLEVER_ADAPTER_BUILD_SHARED=OFF',
+    ], { stdio: 'pipe' });
+    execFileSync('cmake', [
+      '--build', buildDir,
+      '--target', 'xpod_qlever_adapter',
+    ], { stdio: 'pipe' });
+  } else {
+    console.warn('[rdf-protocol-abi] warning: cmake not found, skipped adapter target build check');
+  }
 } catch (error) {
-  fail('header compile check failed', error);
+  fail('native RDF protocol ABI check failed', error);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
 console.log('[rdf-protocol-abi] OK: native RDF physical backend C ABI header is valid.');
 console.log('[rdf-protocol-abi] OK: QLever adapter facade is valid.');
+console.log('[rdf-protocol-abi] OK: QLever adapter CMake target builds.');

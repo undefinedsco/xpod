@@ -99,6 +99,7 @@ The first native-first protocol artifacts are:
 - Physical backend C ABI header: [`native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`](../../../native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h)
 - QLever adapter C ABI facade: [`native/postgres/qlever_adapter/include/xpod_qlever_adapter.h`](../../../native/postgres/qlever_adapter/include/xpod_qlever_adapter.h)
 - QLever adapter C++ implementation shell: [`native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp`](../../../native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp)
+- QLever adapter CMake target: [`native/postgres/qlever_adapter/CMakeLists.txt`](../../../native/postgres/qlever_adapter/CMakeLists.txt)
 - ABI validator: [`scripts/check-rdf-physical-protocol-abi.cjs`](../../../scripts/check-rdf-physical-protocol-abi.cjs)
 - Focused tests: [`tests/native/RdfPhysicalBackendProtocolHeader.test.ts`](../../../tests/native/RdfPhysicalBackendProtocolHeader.test.ts), [`tests/native/QleverAdapterFacade.test.ts`](../../../tests/native/QleverAdapterFacade.test.ts)
 
