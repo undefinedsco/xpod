@@ -19,9 +19,10 @@
 #include "index/Index.h"
 #include "libqlever/Qlever.h"
 #include "parser/SparqlParser.h"
+#include "parser/SparqlTriple.h"
 
-#include <cctype>
 #include <exception>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -41,36 +42,52 @@ std::string_view bytesView(xpod_rdf_bytes bytes) noexcept {
 }
 
 
-std::string collapseWhitespace(std::string_view input) {
-  std::string out;
-  out.reserve(input.size());
-  bool previous_was_space = false;
-  for (unsigned char c : input) {
-    if (std::isspace(c)) {
-      if (!previous_was_space && !out.empty()) {
-        out.push_back(' ');
-      }
-      previous_was_space = true;
-      continue;
-    }
-    out.push_back(static_cast<char>(c));
-    previous_was_space = false;
-  }
-  if (!out.empty() && out.back() == ' ') {
-    out.pop_back();
-  }
-  return out;
+
+struct BridgeQueryPlan {
+  bool minimal_scan = false;
+};
+
+bool variableNamed(const TripleComponent& component, std::string_view name) {
+  return component.isVariable() && component.getVariable().name() == name;
 }
 
-bool isSupportedMinimalScanQuery(std::string_view query) {
-  return collapseWhitespace(query) == "SELECT * WHERE { ?s ?p ?o }";
+std::optional<BridgeQueryPlan> planBridgeQuery(const ParsedQuery& parsed) {
+  if (!parsed.hasSelectClause()) {
+    return std::nullopt;
+  }
+  const auto& children = parsed.children();
+  if (children.size() != 1) {
+    return std::nullopt;
+  }
+  const auto& operation = children.front();
+  const auto* basic = std::get_if<parsedQuery::BasicGraphPattern>(
+      &static_cast<const parsedQuery::GraphPatternOperationVariant&>(operation));
+  if (basic == nullptr || basic->_triples.size() != 1) {
+    return std::nullopt;
+  }
+  try {
+    SparqlTripleSimple triple = basic->_triples.front().getSimple();
+    if (!variableNamed(triple.s_, "?s") || !variableNamed(triple.p_, "?p") ||
+        !variableNamed(triple.o_, "?o")) {
+      return std::nullopt;
+    }
+  } catch (...) {
+    return std::nullopt;
+  }
+  return BridgeQueryPlan{true};
 }
 
 xpod_rdf_status parseBridgeQuery(std::string_view query,
-                                 std::string& error_storage) {
+                                 std::string& error_storage,
+                                 BridgeQueryPlan& out_plan) {
   try {
     auto parsed = SparqlParser::parseQuery(nullptr, std::string(query));
-    (void)parsed;
+    auto plan = planBridgeQuery(parsed);
+    if (!plan.has_value()) {
+      error_storage = "unsupported QLever bridge query";
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    out_plan = *plan;
     return XPOD_RDF_STATUS_OK;
   } catch (const std::exception& error) {
     error_storage = "failed to parse QLever bridge query: ";
@@ -225,19 +242,14 @@ xpod_rdf_status executeBridgeQuery(
   error_storage.clear();
 
   std::string_view query = bytesView(sparql);
-  xpod_rdf_status parse_status = parseBridgeQuery(query, error_storage);
+  BridgeQueryPlan plan;
+  xpod_rdf_status parse_status = parseBridgeQuery(query, error_storage, plan);
   if (parse_status != XPOD_RDF_STATUS_OK) {
     setResult(out_result, parse_status, result_storage, profile_storage,
               error_storage);
     return parse_status;
   }
-
-  if (!isSupportedMinimalScanQuery(query)) {
-    error_storage = "unsupported QLever bridge query";
-    setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
-              profile_storage, error_storage);
-    return XPOD_RDF_STATUS_UNSUPPORTED;
-  }
+  (void)plan;
 
   ScanRequestInput input = {};
   input.permutation = Permutation::Enum::SPO;

@@ -50,6 +50,7 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "${XPOD_QLEVER_SOURCE_DIR}/src/libqlever/Qlever.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/parser/SparqlParser.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/parser/ParsedQuery.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/parser/SparqlTriple.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/IndexScan.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/idTable/IdTable.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryExecutionContext.h"

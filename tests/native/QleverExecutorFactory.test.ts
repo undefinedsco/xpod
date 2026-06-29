@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { fakeParsedQueryHeader, fakeThrowingSparqlParserHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterSource = path.join(repoRoot, 'native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp');
@@ -32,8 +33,9 @@ describe('QLever executor factory', () => {
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), '#pragma once\nclass ParsedQuery {};\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), '#pragma once\n#include <stdexcept>\n#include <string>\n#include \"parser/ParsedQuery.h\"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find(\"BROKEN\") != std::string::npos) throw std::runtime_error(\"synthetic parse failure\"); return {}; } };\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakeThrowingSparqlParserHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
@@ -184,7 +186,7 @@ int main() {
   if (xpod_qlever_adapter_create(&config, &adapter) != XPOD_RDF_STATUS_OK) return 1;
 
   xpod_qlever_query_result result = {};
-  xpod_rdf_bytes query = {"SELECT  *  WHERE {\\n  ?s   ?p   ?o\\n}", 35};
+  xpod_rdf_bytes query = {"SELECT ?s ?p ?o WHERE { ?s ?p ?o }", 36};
   xpod_rdf_status status = xpod_qlever_adapter_query(adapter, query, &result);
   std::string_view body(result.result_json.data, result.result_json.size);
   std::string_view profile(result.profile_json.data, result.profile_json.size);
