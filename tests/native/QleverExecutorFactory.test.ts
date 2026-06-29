@@ -187,12 +187,16 @@ int main() {
   xpod_rdf_bytes query = {"SELECT * WHERE { ?s ?p ?o }", 27};
   xpod_rdf_status status = xpod_qlever_adapter_query(adapter, query, &result);
   std::string_view body(result.result_json.data, result.result_json.size);
+  std::string_view profile(result.profile_json.data, result.profile_json.size);
   if (status != XPOD_RDF_STATUS_OK) return 2;
   if (result.status != XPOD_RDF_STATUS_OK) return 3;
   if (body.find("\\"head\\":{\\"vars\\":[\\"s\\",\\"p\\",\\"o\\"]}") == std::string_view::npos) return 4;
   if (body.find("\\"s\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s\\"}") == std::string_view::npos) return 5;
   if (body.find("\\"o\\":{\\"type\\":\\"literal\\",\\"value\\":\\"value\\"") == std::string_view::npos) return 8;
   if (body.find("1010") != std::string_view::npos) return 9;
+  if (profile.find("\\"kind\\":\\"PermutationScan\\"") == std::string_view::npos) return 10;
+  if (profile.find("\\"outputRows\\":1") == std::string_view::npos) return 11;
+  if (profile.find("\\"descriptor\\":\\"xpod scan ?s ?p ?o\\"") == std::string_view::npos) return 12;
 
   xpod_qlever_adapter_release_result(adapter, &result);
 

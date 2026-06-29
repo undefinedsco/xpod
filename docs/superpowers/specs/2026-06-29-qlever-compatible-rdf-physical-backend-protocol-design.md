@@ -562,7 +562,7 @@ A backend implements this protocol only when it passes these tests:
 
 ### P2 — QLever compatibility spike
 
-Current state: `xpod_qlever_adapter` exists as a C ABI / C++ facade shell. In QLever-enabled builds, `xpod_qlever_adapter_query(...)` can execute the minimal physical scan query `SELECT * WHERE { ?s ?p ?o }` through the Xpod-backed scan seam and return SPARQL-style JSON bindings. The bridge decodes QLever result ids through the native id codec and batch-resolves RDF terms through the native dictionary seam before serializing. Other query shapes still fail closed with `XPOD_RDF_STATUS_UNSUPPORTED` until the real QLever parser/planner/executor is wired behind the facade.
+Current state: `xpod_qlever_adapter` exists as a C ABI / C++ facade shell. In QLever-enabled builds, `xpod_qlever_adapter_query(...)` can execute the minimal physical scan query `SELECT * WHERE { ?s ?p ?o }` through the Xpod-backed scan seam and return SPARQL-style JSON bindings. The bridge decodes QLever result ids through the native id codec and batch-resolves RDF terms through the native dictionary seam before serializing. It also returns a minimal scan profile JSON with operation kind, descriptor, and output rows so the result boundary already carries QLever-style observability data. Other query shapes still fail closed with `XPOD_RDF_STATUS_UNSUPPORTED` until the real QLever parser/planner/executor is wired behind the facade.
 
 - Build a read-only spike that maps a small QLever-like operator subset to this protocol:
   - term lookup;

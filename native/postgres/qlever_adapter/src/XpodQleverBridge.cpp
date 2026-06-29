@@ -158,6 +158,14 @@ void writeSparqlJson(std::ostringstream& out, const IdTable& table,
   out << "]}}";
 }
 
+
+void writeScanProfileJson(std::ostringstream& out, std::string_view descriptor,
+                          uint64_t output_rows) {
+  out << "{\"engine\":\"xpod-qlever-bridge\",\"root\":{\"kind\":\"PermutationScan\",\"descriptor\":";
+  writeJsonString(out, descriptor);
+  out << ",\"outputRows\":" << output_rows << "}}";
+}
+
 }  // namespace
 
 xpod_rdf_status executeBridgeQuery(
@@ -202,8 +210,10 @@ xpod_rdf_status executeBridgeQuery(
   std::ostringstream json;
   writeSparqlJson(json, result.result.idTable(), terms);
   result_storage = json.str();
-  profile_storage =
-      "{\"engine\":\"xpod-qlever-bridge\",\"profile\":\"native-events\"}";
+  std::ostringstream profile;
+  writeScanProfileJson(profile, "xpod scan ?s ?p ?o",
+                       result.result.idTable().numRows());
+  profile_storage = profile.str();
   setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
             error_storage);
   return XPOD_RDF_STATUS_OK;
