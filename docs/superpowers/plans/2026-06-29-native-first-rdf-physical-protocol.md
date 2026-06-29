@@ -2183,3 +2183,39 @@ bun run check:rdf-protocol-abi
 ```
 
 Expected: PASS.
+
+### Task 45: Carry cancellation through long-running physical requests
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalBackendFacade.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing ABI/facade cancellation tests**
+
+Extend the C++ facade smoke so scan and prefix-range callbacks must receive an
+optional `xpod_rdf_cancellation` token and can return `XPOD_RDF_STATUS_CANCELLED`
+when the token is set. Extend the ABI smoke so text/vector/join/histogram
+requests also compile with the same cancellation field.
+
+Expected: FAIL because the C ABI exposed `XPOD_RDF_STATUS_CANCELLED` but no
+request-level cancellation token.
+
+- [x] **Step 2: Add the minimal cancellation token protocol**
+
+Add `xpod_rdf_is_cancelled_fn` and `xpod_rdf_cancellation`, then attach an
+optional `const xpod_rdf_cancellation* cancellation` to long-running physical
+requests: prefix range, permutation scan, join fanout estimate, histogram hints,
+text search, and vector search.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalBackendFacade.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.

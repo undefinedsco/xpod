@@ -81,6 +81,14 @@ static xpod_rdf_status prefix_range(
     void* callback_user_data) {
   int* calls = static_cast<int*>(backend_user_data);
   *calls += 100000;
+  if (request->cancellation == nullptr ||
+      request->cancellation->is_cancelled == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  if (request->cancellation->is_cancelled(
+          request->cancellation->cancellation_user_data) != 0) {
+    return XPOD_RDF_STATUS_CANCELLED;
+  }
   if (request->prefix.size != 5 || !request->has_kind ||
       request->kind != XPOD_RDF_TERM_IRI) {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
@@ -105,14 +113,26 @@ static xpod_rdf_status prefix_range(
   return on_batch(callback_user_data, &batch);
 }
 
+static uint8_t cancel_requested(void* cancellation_user_data) {
+  int* cancelled = static_cast<int*>(cancellation_user_data);
+  return *cancelled != 0 ? 1 : 0;
+}
+
 static xpod_rdf_status scan(
     void* backend_user_data,
     const xpod_rdf_scan_request* request,
     xpod_rdf_quad_batch_callback on_batch,
     void* callback_user_data) {
+  if (request->cancellation == nullptr ||
+      request->cancellation->is_cancelled == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  if (request->cancellation->is_cancelled(
+          request->cancellation->cancellation_user_data) != 0) {
+    return XPOD_RDF_STATUS_CANCELLED;
+  }
   int* calls = static_cast<int*>(backend_user_data);
   *calls += 1;
-  (void)request;
   (void)on_batch;
   (void)callback_user_data;
   return XPOD_RDF_STATUS_OK;
@@ -166,6 +186,10 @@ static xpod_rdf_status histogram_hints(
 
 int main() {
   int calls = 0;
+  int cancelled = 0;
+  xpod_rdf_cancellation cancellation = {};
+  cancellation.cancellation_user_data = &cancelled;
+  cancellation.is_cancelled = cancel_requested;
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   backend.struct_size = sizeof(xpod_rdf_backend_v1);
@@ -200,6 +224,7 @@ int main() {
   prefix_request.prefix = {"urn:x", 5};
   prefix_request.has_kind = 1;
   prefix_request.kind = XPOD_RDF_TERM_IRI;
+  prefix_request.cancellation = &cancellation;
   xpod_rdf_term_range prefix_ranges[4] = {};
   size_t prefix_range_count = 0;
   xpod_rdf_term_collation prefix_collation = XPOD_RDF_TERM_COLLATION_UNKNOWN;
@@ -218,7 +243,11 @@ int main() {
   if (prefix_collation != XPOD_RDF_TERM_COLLATION_BYTEWISE) return 21;
 
   xpod_rdf_scan_request request = {};
+  request.cancellation = &cancellation;
   if (physical.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_OK) return 7;
+  cancelled = 1;
+  if (physical.scanPermutation(request, nullptr, nullptr) != XPOD_RDF_STATUS_CANCELLED) return 28;
+  cancelled = 0;
   xpod_rdf_source_scope source_scope = {};
   source_scope.local_path_prefix = {"/docs/", 6};
   xpod_rdf_estimate source_estimate = {};

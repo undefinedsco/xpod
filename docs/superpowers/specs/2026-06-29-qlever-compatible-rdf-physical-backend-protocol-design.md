@@ -220,6 +220,9 @@ Rules:
 ```ts
 type SourceNodeKey = string;
 type RetrievalPointKey = string;
+type CancellationToken = {
+  isCancelled(): boolean;
+};
 ```
 
 Rules:
@@ -247,6 +250,7 @@ Required behavior:
 - Batch lookup/resolve is mandatory. Per-row dictionary calls are not acceptable for broad joins.
 - `prefixRange` is for vocabulary/IRI/literal lexical range planning. It is not a substitute for structural path scope.
 - The native ABI returns zero or more `TermRange` batches and a collation marker. Multiple ranges are allowed because long-literal/digest storage, kind partitions, or database-specific dictionaries may not make every prefix a single contiguous term-key interval.
+- Native `prefixRange` requests carry the same optional cancellation token as scan/candidate requests so long prefix expansion can stop without waiting for the next upper operator.
 - The backend must expose whether term collation is bytewise, locale-aware, or database-default. Graph-prefix and path-prefix filters must not depend on unsafe collation.
 
 ### 2. PermutationAccess
@@ -283,6 +287,7 @@ type SlotTermRange = {
 
 type ScanRequest = {
   snapshot: FactsSnapshot;
+  cancellation?: CancellationToken;
   permutation: Permutation;
   pattern: QuadPattern;
   slotRanges?: SlotTermRange[];
@@ -332,6 +337,7 @@ type Estimate = {
 
 type HistogramRequest = {
   snapshot: FactsSnapshot;
+  cancellation?: CancellationToken;
   pattern: QuadPattern;
   graphScope?: GraphScope;
   sourceScope?: SourceScope;
@@ -377,6 +383,7 @@ Stats must include confidence. A stale or heuristic estimate is allowed only if 
 ```ts
 type TextSearchRequest = {
   snapshot: FactsSnapshot;
+  cancellation?: CancellationToken;
   query: string;
   graphScope?: GraphScope;
   workspace?: string;
@@ -416,6 +423,7 @@ Required behavior:
 ```ts
 type VectorSearchRequest = {
   snapshot: FactsSnapshot;
+  cancellation?: CancellationToken;
   vector: number[];
   model: string;
   dimensions: number;

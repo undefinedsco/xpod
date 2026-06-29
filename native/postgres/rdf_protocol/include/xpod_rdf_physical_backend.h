@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 9
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 10
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -42,6 +42,14 @@ typedef enum xpod_rdf_status {
   XPOD_RDF_STATUS_STALE_STATS = 5,
   XPOD_RDF_STATUS_BACKEND_ERROR = 100
 } xpod_rdf_status;
+
+typedef uint8_t (*xpod_rdf_is_cancelled_fn)(
+    void* cancellation_user_data);
+
+typedef struct xpod_rdf_cancellation {
+  void* cancellation_user_data;
+  xpod_rdf_is_cancelled_fn is_cancelled;
+} xpod_rdf_cancellation;
 
 typedef enum xpod_rdf_term_kind {
   XPOD_RDF_TERM_IRI = 1,
@@ -192,6 +200,7 @@ typedef struct xpod_rdf_slot_term_range {
 
 typedef struct xpod_rdf_scan_request {
   xpod_rdf_snapshot snapshot;
+  const xpod_rdf_cancellation* cancellation;
   xpod_rdf_permutation permutation;
   xpod_rdf_quad_pattern pattern;
   xpod_rdf_graph_scope graph_scope;
@@ -272,6 +281,7 @@ typedef xpod_rdf_status (*xpod_rdf_term_range_batch_callback)(
 
 typedef struct xpod_rdf_prefix_range_request {
   xpod_rdf_snapshot snapshot;
+  const xpod_rdf_cancellation* cancellation;
   xpod_rdf_bytes prefix;
   xpod_rdf_term_kind kind;
   uint8_t has_kind;
@@ -279,6 +289,7 @@ typedef struct xpod_rdf_prefix_range_request {
 
 typedef struct xpod_rdf_join_fanout_request {
   xpod_rdf_snapshot snapshot;
+  const xpod_rdf_cancellation* cancellation;
   xpod_rdf_graph_scope graph_scope;
   xpod_rdf_source_scope source_scope;
   const xpod_rdf_quad_pattern* patterns;
@@ -289,6 +300,7 @@ typedef struct xpod_rdf_join_fanout_request {
 
 typedef struct xpod_rdf_histogram_request {
   xpod_rdf_snapshot snapshot;
+  const xpod_rdf_cancellation* cancellation;
   xpod_rdf_quad_pattern pattern;
   xpod_rdf_graph_scope graph_scope;
   xpod_rdf_source_scope source_scope;
@@ -319,6 +331,7 @@ typedef xpod_rdf_status (*xpod_rdf_histogram_hint_batch_callback)(
 
 typedef struct xpod_rdf_text_search_request {
   xpod_rdf_snapshot snapshot;
+  const xpod_rdf_cancellation* cancellation;
   xpod_rdf_bytes query;
   xpod_rdf_graph_scope graph_scope;
   xpod_rdf_source_scope source_scope;
@@ -337,6 +350,7 @@ typedef enum xpod_rdf_vector_metric {
 
 typedef struct xpod_rdf_vector_search_request {
   xpod_rdf_snapshot snapshot;
+  const xpod_rdf_cancellation* cancellation;
   const double* vector;
   size_t dimensions;
   xpod_rdf_bytes model;
