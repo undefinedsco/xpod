@@ -224,6 +224,16 @@ static xpod_rdf_status scan(
   state->calls += 1;
   if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (request->pattern.has_predicate) {
+    if (request->pattern.predicate == 110 && !request->pattern.has_object) {
+      xpod_rdf_quad_key rows[2] = {
+        {11, 110, 111, 40},
+        {10, 110, 112, 40},
+      };
+      xpod_rdf_quad_batch batch = {};
+      batch.rows = rows;
+      batch.row_count = 2;
+      return on_batch(callback_user_data, &batch);
+    }
     if (!request->pattern.has_object) return XPOD_RDF_STATUS_BACKEND_ERROR;
     xpod_rdf_quad_key rows[1] = {};
     if (request->pattern.predicate == 50 && request->pattern.object == 60) {
@@ -517,6 +527,50 @@ int main() {
   if (profile.kinds[5] != XPOD_RDF_PROFILE_RDF_JOIN || profile.statuses[5] != XPOD_RDF_PROFILE_COMPLETED) return 67;
   if (profile.nodes[5] != 300 || profile.has_parents[5]) return 68;
   if (profile.output_rows[5] != 1) return 69;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan rdf_projection_plan;
+  xpod::qlever::BridgePhysicalScan rdf_projection_primary;
+  rdf_projection_primary.scan.permutation = Permutation::Enum::SPO;
+  rdf_projection_primary.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  rdf_projection_primary.sorted_by = {0};
+  rdf_projection_primary.result_width = 2;
+  rdf_projection_primary.descriptor = "rdf projection primary scan";
+  rdf_projection_plan.scans.push_back(rdf_projection_primary);
+
+  xpod::qlever::BridgePhysicalScan rdf_projection_filter;
+  rdf_projection_filter.scan.permutation = Permutation::Enum::SPO;
+  rdf_projection_filter.scan.pattern.has_predicate = true;
+  rdf_projection_filter.scan.pattern.predicate = 110;
+  rdf_projection_filter.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  rdf_projection_filter.sorted_by = {0};
+  rdf_projection_filter.result_width = 2;
+  rdf_projection_filter.descriptor = "rdf projection filter scan";
+  rdf_projection_plan.scans.push_back(rdf_projection_filter);
+
+  rdf_projection_plan.root.kind = xpod::qlever::BridgeOperationKind::HashJoin;
+  rdf_projection_plan.root.scan_indexes = {0, 1};
+  rdf_projection_plan.root.join_slot = XPOD_RDF_SLOT_SUBJECT;
+  rdf_projection_plan.root.join_slots = {
+      XPOD_RDF_SLOT_SUBJECT,
+      XPOD_RDF_SLOT_SUBJECT,
+  };
+  rdf_projection_plan.root.scan_project_slots = {
+      {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_OBJECT},
+      {XPOD_RDF_SLOT_OBJECT},
+  };
+
+  auto rdf_projection_result = xpod::qlever::executeBridgeOperationPlan(physical, rdf_projection_plan);
+  if (rdf_projection_result.status != XPOD_RDF_STATUS_OK) return 70;
+  if (state.calls != 2) return 71;
+  const IdTable& rdf_projection_table = rdf_projection_result.result.idTable();
+  if (rdf_projection_table.numColumns() != 3 || rdf_projection_table.numRows() != 2) return 72;
+  if (rdf_projection_table(0, 0).getBits() != 1010) return 73;
+  if (rdf_projection_table(0, 1).getBits() != 1030) return 74;
+  if (rdf_projection_table(0, 2).getBits() != 1112) return 75;
+  if (rdf_projection_table(1, 0).getBits() != 1011) return 76;
+  if (rdf_projection_table(1, 1).getBits() != 1031) return 77;
+  if (rdf_projection_table(1, 2).getBits() != 1111) return 78;
   return 0;
 }
 `, 'utf8');

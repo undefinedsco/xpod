@@ -309,6 +309,144 @@ inline xpod_rdf_status filterTableByJoinKeys(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline bool scanIncludesSlot(
+    const BridgePhysicalScan& scan,
+    uint32_t slot) noexcept {
+  return (normalizeNeededSlots(scan.scan.needed_slots) & slot) != 0;
+}
+
+inline xpod_rdf_status appendScanProjection(
+    const BridgePhysicalScan& scan,
+    const IdTable& table,
+    size_t input_row,
+    const std::vector<uint32_t>& project_slots,
+    std::vector<Id>& row) {
+  for (uint32_t slot : project_slots) {
+    if (!scanIncludesSlot(scan, slot)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    size_t column = columnForSlot(
+        scan.scan.permutation, scan.scan.needed_slots, slot);
+    if (column >= table.numColumns()) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    row.push_back(table(input_row, column));
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+using ProjectedScanRow = std::vector<Id>;
+using ProjectedRowsByKey =
+    std::unordered_map<xpod_rdf_term_key, std::vector<ProjectedScanRow>>;
+
+inline xpod_rdf_status collectProjectedScanRowsByJoinKey(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalScan& scan,
+    const IdTable& table,
+    uint32_t join_slot,
+    const std::vector<uint32_t>& project_slots,
+    ProjectedRowsByKey& rows_by_key) {
+  if (!scanIncludesSlot(scan, join_slot)) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  size_t join_column = columnForSlot(
+      scan.scan.permutation, scan.scan.needed_slots, join_slot);
+  if (join_column >= table.numColumns()) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  std::vector<Id> projected_row;
+  projected_row.reserve(project_slots.size());
+  for (size_t input_row = 0; input_row < table.numRows(); ++input_row) {
+    xpod_rdf_term_key key = 0;
+    xpod_rdf_status status = backend.decodeQleverId(
+        table(input_row, join_column).getBits(), key);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    projected_row.clear();
+    status = appendScanProjection(
+        scan, table, input_row, project_slots, projected_row);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    rows_by_key[key].push_back(projected_row);
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline void appendProjectedCombinations(
+    const std::vector<const std::vector<ProjectedScanRow>*>& groups,
+    size_t group_index,
+    std::vector<Id>& row,
+    IdTable& output) {
+  if (group_index >= groups.size()) {
+    output.push_back(row);
+    return;
+  }
+  for (const ProjectedScanRow& projected : *groups[group_index]) {
+    size_t before = row.size();
+    row.insert(row.end(), projected.begin(), projected.end());
+    appendProjectedCombinations(groups, group_index + 1, row, output);
+    while (row.size() > before) {
+      row.pop_back();
+    }
+  }
+}
+
+inline xpod_rdf_status joinTableWithProjectedScanRows(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalScan& left_scan,
+    const IdTable& left_table,
+    uint32_t left_join_slot,
+    const std::vector<uint32_t>& left_project_slots,
+    const std::vector<ProjectedRowsByKey>& filter_rows_by_key,
+    IdTable& output) {
+  if (!scanIncludesSlot(left_scan, left_join_slot)) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  size_t left_join_column = columnForSlot(
+      left_scan.scan.permutation, left_scan.scan.needed_slots,
+      left_join_slot);
+  if (left_join_column >= left_table.numColumns()) {
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
+  std::vector<Id> row;
+  row.reserve(output.numColumns());
+  std::vector<const std::vector<ProjectedScanRow>*> matching_groups;
+  matching_groups.reserve(filter_rows_by_key.size());
+  for (size_t input_row = 0; input_row < left_table.numRows(); ++input_row) {
+    xpod_rdf_term_key key = 0;
+    xpod_rdf_status status = backend.decodeQleverId(
+        left_table(input_row, left_join_column).getBits(), key);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    matching_groups.clear();
+    bool matched = true;
+    for (const ProjectedRowsByKey& rows_by_key : filter_rows_by_key) {
+      auto found = rows_by_key.find(key);
+      if (found == rows_by_key.end()) {
+        matched = false;
+        break;
+      }
+      matching_groups.push_back(&found->second);
+    }
+    if (!matched) {
+      continue;
+    }
+
+    row.clear();
+    status = appendScanProjection(
+        left_scan, left_table, input_row, left_project_slots, row);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    appendProjectedCombinations(matching_groups, 0, row, output);
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 inline xpod_rdf_status appendCandidateProjection(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod::rdf::CandidateRow& candidate,
@@ -452,11 +590,116 @@ inline QleverResultWithStatus executeBridgeCandidateHashJoin(
                         shiftSortedBy(scan.sorted_by, projected_columns));
 }
 
+inline size_t projectedHashJoinWidth(
+    const BridgeOperationPlan& root) noexcept {
+  size_t width = 0;
+  for (const std::vector<uint32_t>& slots : root.scan_project_slots) {
+    width += slots.size();
+  }
+  return width;
+}
+
+inline std::vector<ColumnIndex> projectedSortedBy(
+    const BridgePhysicalScan& scan,
+    const std::vector<uint32_t>& project_slots) {
+  std::vector<ColumnIndex> sorted_by;
+  for (ColumnIndex sorted_column : scan.sorted_by) {
+    for (size_t output_column = 0; output_column < project_slots.size();
+         ++output_column) {
+      uint32_t slot = project_slots[output_column];
+      if (!scanIncludesSlot(scan, slot)) {
+        continue;
+      }
+      if (columnForSlot(
+              scan.scan.permutation, scan.scan.needed_slots, slot) ==
+          sorted_column) {
+        sorted_by.push_back(output_column);
+        break;
+      }
+    }
+  }
+  return sorted_by;
+}
+
+inline QleverResultWithStatus executeBridgeProjectedHashJoin(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgePhysicalPlan& plan) {
+  if (plan.root.scan_indexes.size() < 2 ||
+      plan.root.scan_project_slots.size() != plan.root.scan_indexes.size()) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
+  size_t left_index = plan.root.scan_indexes[0];
+  if (left_index >= plan.scans.size()) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
+
+  const BridgePhysicalScan& left_scan = plan.scans[left_index];
+  const size_t output_width = projectedHashJoinWidth(plan.root);
+  std::vector<ProjectedRowsByKey> filter_rows_by_key;
+  filter_rows_by_key.reserve(plan.root.scan_indexes.size() - 1);
+
+  emitOperationProfileEvent(
+      backend, plan.root, XPOD_RDF_PROFILE_RUNNING);
+  for (size_t i = 1; i < plan.root.scan_indexes.size(); ++i) {
+    size_t right_index = plan.root.scan_indexes[i];
+    if (right_index >= plan.scans.size()) {
+      emitOperationProfileEvent(
+          backend, plan.root, XPOD_RDF_PROFILE_FAILED);
+      return makeEmptyOperationResult(
+          XPOD_RDF_STATUS_UNSUPPORTED, output_width);
+    }
+    const BridgePhysicalScan& right_scan = plan.scans[right_index];
+    QleverResultWithStatus right = executeBridgePhysicalScan(backend, right_scan);
+    if (right.status != XPOD_RDF_STATUS_OK) {
+      emitOperationProfileEvent(
+          backend, plan.root, XPOD_RDF_PROFILE_FAILED);
+      return right;
+    }
+    ProjectedRowsByKey rows_by_key;
+    xpod_rdf_status status = collectProjectedScanRowsByJoinKey(
+        backend, right_scan, right.result.idTable(),
+        joinSlotForScan(plan.root, i),
+        plan.root.scan_project_slots[i], rows_by_key);
+    if (status != XPOD_RDF_STATUS_OK) {
+      emitOperationProfileEvent(
+          backend, plan.root, XPOD_RDF_PROFILE_FAILED);
+      return makeEmptyOperationResult(status, output_width);
+    }
+    filter_rows_by_key.push_back(std::move(rows_by_key));
+  }
+
+  QleverResultWithStatus left = executeBridgePhysicalScan(backend, left_scan);
+  if (left.status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(
+        backend, plan.root, XPOD_RDF_PROFILE_FAILED);
+    return left;
+  }
+
+  IdTable output(output_width);
+  xpod_rdf_status status = joinTableWithProjectedScanRows(
+      backend, left_scan, left.result.idTable(),
+      joinSlotForScan(plan.root, 0),
+      plan.root.scan_project_slots[0], filter_rows_by_key, output);
+  if (status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(
+        backend, plan.root, XPOD_RDF_PROFILE_FAILED);
+    return makeEmptyOperationResult(status, output_width);
+  }
+  emitOperationProfileEvent(
+      backend, plan.root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
+  return toQleverResult(
+      {XPOD_RDF_STATUS_OK, std::move(output)},
+      projectedSortedBy(left_scan, plan.root.scan_project_slots[0]));
+}
+
 inline QleverResultWithStatus executeBridgeHashJoin(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
   if (plan.root.use_candidate_join) {
     return executeBridgeCandidateHashJoin(backend, plan);
+  }
+  if (!plan.root.scan_project_slots.empty()) {
+    return executeBridgeProjectedHashJoin(backend, plan);
   }
   if (plan.root.scan_indexes.size() < 2) {
     return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);

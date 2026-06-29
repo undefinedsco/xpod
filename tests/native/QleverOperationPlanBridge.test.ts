@@ -509,6 +509,39 @@ int main() {
   if (cross_slot_plan->root.join_slots[0] != XPOD_RDF_SLOT_OBJECT) return 84;
   if (cross_slot_plan->root.join_slots[1] != XPOD_RDF_SLOT_SUBJECT) return 85;
   if (cross_slot_plan->root.join_slot != XPOD_RDF_SLOT_OBJECT) return 86;
+
+  auto rdf_projection_left = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:label>"}},
+          TripleComponent{Variable{"?label"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity <urn:label> ?label",
+          2,
+          std::vector<ColumnIndex>{0}));
+  auto rdf_projection_right = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?entity"}},
+          TripleComponent{TripleComponent::Iri{"<urn:type>"}},
+          TripleComponent{Variable{"?type"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?entity <urn:type> ?type",
+          2,
+          std::vector<ColumnIndex>{0}));
+  Join rdf_projection_join(rdf_projection_left, rdf_projection_right);
+  auto rdf_projection_plan = xpod::qlever::planQleverOperation(rdf_projection_join);
+  if (!rdf_projection_plan.has_value()) return 112;
+  if (rdf_projection_plan->result_width != 3) return 113;
+  if (rdf_projection_plan->output_variables.size() != 3) return 114;
+  if (rdf_projection_plan->output_variables[0] != "entity") return 115;
+  if (rdf_projection_plan->output_variables[1] != "label") return 116;
+  if (rdf_projection_plan->output_variables[2] != "type") return 117;
+  if (rdf_projection_plan->root.scan_project_slots.size() != 2) return 118;
+  if (rdf_projection_plan->root.scan_project_slots[0].size() != 2) return 119;
+  if (rdf_projection_plan->root.scan_project_slots[0][0] != XPOD_RDF_SLOT_SUBJECT) return 120;
+  if (rdf_projection_plan->root.scan_project_slots[0][1] != XPOD_RDF_SLOT_OBJECT) return 121;
+  if (rdf_projection_plan->root.scan_project_slots[1].size() != 1) return 122;
+  if (rdf_projection_plan->root.scan_project_slots[1][0] != XPOD_RDF_SLOT_OBJECT) return 123;
   return 0;
 }
 `, 'utf8');

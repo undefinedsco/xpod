@@ -105,6 +105,46 @@ inline std::vector<std::string> indexScanOutputVariables(
   return output_variables;
 }
 
+inline uint32_t indexScanSlotMask(char slot) noexcept {
+  switch (slot) {
+    case 'S':
+      return XPOD_RDF_SLOT_SUBJECT;
+    case 'P':
+      return XPOD_RDF_SLOT_PREDICATE;
+    case 'O':
+      return XPOD_RDF_SLOT_OBJECT;
+    default:
+      return 0;
+  }
+}
+
+inline void appendIndexScanOutputSlot(
+    std::vector<uint32_t>& output_slots,
+    char slot,
+    const IndexScan& scan) {
+  const TripleComponent* component = nullptr;
+  if (slot == 'S') {
+    component = &scan.subject();
+  } else if (slot == 'P') {
+    component = &scan.predicate();
+  } else if (slot == 'O') {
+    component = &scan.object();
+  }
+  if (component != nullptr && component->isVariable()) {
+    output_slots.push_back(indexScanSlotMask(slot));
+  }
+}
+
+inline std::vector<uint32_t> indexScanOutputSlots(
+    const IndexScan& scan) {
+  std::vector<uint32_t> output_slots;
+  output_slots.reserve(scan.getResultWidth());
+  for (char slot : indexScanPermutationSlots(scan.permutation().permutation())) {
+    appendIndexScanOutputSlot(output_slots, slot, scan);
+  }
+  return output_slots;
+}
+
 inline void initializeIndexScanOperationPlan(
     BridgeQueryPlan& plan,
     const IndexScan& scan) {
@@ -490,6 +530,10 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
     return std::nullopt;
   }
 
+  std::vector<std::vector<uint32_t>> scan_project_slots;
+  scan_project_slots.reserve(scans.size());
+  scan_project_slots.push_back(indexScanOutputSlots(*scans.front()));
+
   left_plan->filter_scans.clear();
   left_plan->root.scan_indexes = {0};
   for (size_t i = 1; i < scans.size(); ++i) {
@@ -497,6 +541,22 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
     if (!right_plan.has_value()) {
       return std::nullopt;
     }
+    std::vector<uint32_t> right_output_slots =
+        indexScanOutputSlots(*scans[i]);
+    std::vector<uint32_t> right_project_slots;
+    right_project_slots.reserve(right_output_slots.size());
+    for (size_t column = 0;
+         column < right_plan->output_variables.size() &&
+         column < right_output_slots.size();
+         ++column) {
+      const std::string& variable = right_plan->output_variables[column];
+      if (containsOutputVariable(left_plan->output_variables, variable)) {
+        continue;
+      }
+      left_plan->output_variables.push_back(variable);
+      right_project_slots.push_back(right_output_slots[column]);
+    }
+    scan_project_slots.push_back(std::move(right_project_slots));
     BridgeFilterScan filter;
     filter.scan = right_plan->scan;
     filter.term_bindings = std::move(right_plan->term_bindings);
@@ -509,6 +569,8 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
   left_plan->root.kind = BridgeOperationKind::HashJoin;
   left_plan->root.join_slot = join_slots->front();
   left_plan->root.join_slots = *join_slots;
+  left_plan->root.scan_project_slots = std::move(scan_project_slots);
+  left_plan->result_width = left_plan->output_variables.size();
   return left_plan;
 }
 

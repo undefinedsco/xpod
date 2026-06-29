@@ -542,3 +542,73 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 13: RDF/RDF HashJoin projection merge
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing planner projection test**
+
+Extend the QLever operation-plan smoke for an RDF/RDF join:
+
+```sparql
+{ ?entity <urn:label> ?label . ?entity <urn:type> ?type }
+```
+
+Expected output variables:
+- `entity`, `label` from the primary scan;
+- `type` from the right scan;
+- duplicate join variable `entity` is not emitted twice.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::HashJoin`
+- `root.scan_project_slots == [[SUBJECT, OBJECT], [OBJECT]]`
+- `result_width == 3`
+
+Expected: FAIL because RDF/RDF joins previously kept only the left scan projection.
+
+- [x] **Step 2: Write the failing native execution projection test**
+
+Extend the native HashJoin smoke with a hand-built two-scan plan whose right scan matches by subject and projects object.
+
+Expected output rows:
+- primary subject/object columns;
+- right object column appended for each matching right row.
+
+Expected: FAIL because RDF/RDF HashJoin previously behaved as a semi-join filter and discarded right-side columns.
+
+- [x] **Step 3: Add explicit scan projection slots**
+
+Add `BridgeOperationPlan::scan_project_slots`, aligned with `scan_indexes`.
+
+Planner-generated RDF/RDF joins populate:
+- primary scan slots in output-variable order;
+- each filter/right scan's non-duplicate variable slots;
+- output variables and `result_width` from the merged projection.
+
+Hand-built or legacy plans that omit `scan_project_slots` continue to use the old semi-join path.
+
+- [x] **Step 4: Merge right scan projections during native execution**
+
+Change the explicit-projection HashJoin path to:
+- execute each right scan;
+- group projected right rows by each scan's join key;
+- execute the primary scan;
+- for each primary row, append the cartesian combination of matching right projections;
+- preserve the previous semi-join behavior when no explicit projection slots are present.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

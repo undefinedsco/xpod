@@ -48,6 +48,7 @@ struct BridgeOperationPlan {
   std::vector<BridgeCandidateOutputColumn> candidate_project_columns;
   uint32_t join_slot = XPOD_RDF_SLOT_SUBJECT;
   std::vector<uint32_t> join_slots;
+  std::vector<std::vector<uint32_t>> scan_project_slots;
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
 };
