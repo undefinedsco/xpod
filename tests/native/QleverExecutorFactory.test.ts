@@ -27,12 +27,24 @@ describe('QLever executor factory', () => {
       const qleverSource = path.join(root, 'qlever');
       await mkdir(path.join(qleverSource, 'src/libqlever'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/RuntimeInformation.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
+#pragma once
+#include <cstdint>
+class Id {
+ public:
+  static Id fromBits(uint64_t bits) { return Id(bits); }
+  uint64_t bits_;
+ private:
+  explicit Id(uint64_t bits) : bits_(bits) {}
+};
+`, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Index.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
 #pragma once
