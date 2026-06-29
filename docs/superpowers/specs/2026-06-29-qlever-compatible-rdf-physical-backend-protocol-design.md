@@ -120,6 +120,7 @@ The physical backend header is the data execution-boundary artifact. The adapter
 The scan materializer has two explicit result shapes: a raw `TermKey` row buffer for protocol tests, and a QLever-id-bits row buffer that must go through `PhysicalBackend::encodeQleverId`.
 The IdTable bridge then converts the QLever-id-bits row buffer into upstream `IdTable`, giving the future `IndexScan` replacement a single `PhysicalBackend scan -> IdTable` seam.
 The backed IndexScan adapter shell can expose the same scan as upstream `Result`, making the next step a replacement of QLever `IndexScan::computeResult()` rather than another data-shape bridge.
+The same shell now exposes operation-shaped metadata (`descriptor`, result width, sorted columns) and a `computeResult(false)` seam. It deliberately does not inherit upstream `Operation` yet, because upstream `Operation` brings the whole `QueryExecutionContext`/cache/runtime tree; the next patch can move this seam either into an upstream `IndexScan::computeResult()` patch or into a planner-generated Xpod-backed operation.
 
 The adapter target is intentionally source-provider based:
 

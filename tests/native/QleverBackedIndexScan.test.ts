@@ -122,7 +122,11 @@ int main() {
   xpod::qlever::ScanRequestInput input = {};
   input.permutation = Permutation::Enum::SPO;
 
-  xpod::qlever::XpodBackedIndexScan scanAdapter(physical, input);
+  xpod::qlever::XpodBackedIndexScan scanAdapter(physical, input, {0}, 3, "xpod scan ?s ?p ?o");
+  if (scanAdapter.getResultWidth() != 3) return 10;
+  if (scanAdapter.getDescriptor() != "xpod scan ?s ?p ?o") return 11;
+  if (scanAdapter.resultSortedOn().size() != 1 || scanAdapter.resultSortedOn()[0] != 0) return 12;
+
   auto result = scanAdapter.execute();
   if (result.status != XPOD_RDF_STATUS_OK) return 1;
   if (result.table.numColumns() != 3 || result.table.numRows() != 1) return 2;
@@ -135,6 +139,11 @@ int main() {
   if (qleverResult.result.idTable().numRows() != 1) return 7;
   if (qleverResult.result.idTable()(0, 2).getBits() != 1030) return 8;
   if (qleverResult.result.sortedBy().size() != 1 || qleverResult.result.sortedBy()[0] != 0) return 9;
+
+  auto operationResult = scanAdapter.computeResult(false);
+  if (operationResult.status != XPOD_RDF_STATUS_OK) return 13;
+  if (operationResult.result.idTable().numRows() != 1) return 14;
+  if (operationResult.result.sortedBy().size() != 1 || operationResult.result.sortedBy()[0] != 0) return 15;
   return 0;
 }
 `, 'utf8');
