@@ -42,6 +42,51 @@ inline std::string iriValueFromComponent(const TripleComponent& component) {
   return iri;
 }
 
+inline std::optional<BridgeTermBinding> literalBindingFromComponent(
+    const TripleComponent& component,
+    uint32_t slot) {
+  std::string literal =
+      std::string(component.getLiteral().toStringRepresentation());
+  BridgeTermBinding binding;
+  binding.slot = slot;
+  binding.kind = XPOD_RDF_TERM_LITERAL;
+
+  if (literal.empty() || literal.front() != '"') {
+    binding.value = std::move(literal);
+    return binding;
+  }
+
+  size_t end = 1;
+  bool escaped = false;
+  for (; end < literal.size(); ++end) {
+    char c = literal[end];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (c == '"') {
+      break;
+    }
+  }
+  if (end >= literal.size()) {
+    return std::nullopt;
+  }
+
+  binding.value = literal.substr(1, end - 1);
+  std::string_view suffix(literal.data() + end + 1, literal.size() - end - 1);
+  if (!suffix.empty() && suffix.front() == '@') {
+    binding.language = std::string(suffix.substr(1));
+  } else if (suffix.size() >= 4 && suffix.substr(0, 3) == "^^<" &&
+             suffix.back() == '>') {
+    binding.datatype_iri = std::string(suffix.substr(3, suffix.size() - 4));
+  }
+  return binding;
+}
+
 inline bool bindableComponent(
     const TripleComponent& component,
     std::string_view expected_variable,
@@ -56,6 +101,14 @@ inline bool bindableComponent(
     binding.kind = XPOD_RDF_TERM_IRI;
     binding.value = iriValueFromComponent(component);
     plan.term_bindings.push_back(std::move(binding));
+    return true;
+  }
+  if (component.isLiteral()) {
+    auto binding = literalBindingFromComponent(component, slot);
+    if (!binding.has_value()) {
+      return false;
+    }
+    plan.term_bindings.push_back(std::move(*binding));
     return true;
   }
   return false;

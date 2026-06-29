@@ -20,17 +20,28 @@ class TripleComponent {
    private:
     std::string value_;
   };
+  class Literal {
+   public:
+    explicit Literal(std::string value) : value_(std::move(value)) {}
+    const std::string& toStringRepresentation() const { return value_; }
+   private:
+    std::string value_;
+  };
   explicit TripleComponent(Variable variable) : kind_(Kind::Variable), variable_(std::move(variable)) {}
   explicit TripleComponent(Iri iri) : kind_(Kind::Iri), iri_(std::move(iri)) {}
+  explicit TripleComponent(Literal literal) : kind_(Kind::Literal), literal_(std::move(literal)) {}
   bool isVariable() const { return kind_ == Kind::Variable; }
   const Variable& getVariable() const { return variable_; }
   bool isIri() const { return kind_ == Kind::Iri; }
   const Iri& getIri() const { return iri_; }
+  bool isLiteral() const { return kind_ == Kind::Literal; }
+  const Literal& getLiteral() const { return literal_; }
  private:
-  enum class Kind { Variable, Iri };
+  enum class Kind { Variable, Iri, Literal };
   Kind kind_ = Kind::Variable;
   Variable variable_{""};
   Iri iri_{""};
+  Literal literal_{""};
 };
 class SparqlTripleSimple {
  public:
@@ -81,6 +92,16 @@ class ParsedQuery {
         TripleComponent{Variable{"?s"}},
         TripleComponent{TripleComponent::Iri{"<urn:p>"}},
         TripleComponent{Variable{"?o"}});
+    query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
+    return query;
+  }
+  static ParsedQuery objectLiteralSelect() {
+    ParsedQuery query;
+    parsedQuery::BasicGraphPattern basic;
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{Variable{"?p"}},
+        TripleComponent{TripleComponent::Literal{"\\"value\\""}});
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
     return query;
   }
