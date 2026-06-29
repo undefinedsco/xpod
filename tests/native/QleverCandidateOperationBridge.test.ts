@@ -198,6 +198,9 @@ int main() {
   backend.estimate_vector_search = estimate_vector_search;
   backend.vector_search = vector_search;
   xpod::rdf::PhysicalBackend physical(&backend);
+  if (!xpod::qlever::isBridgeCandidateRoot(xpod::qlever::BridgeOperationKind::TextSearch)) return 32;
+  if (!xpod::qlever::isBridgeCandidateRoot(xpod::qlever::BridgeOperationKind::VectorSearch)) return 33;
+  if (xpod::qlever::isBridgeCandidateRoot(xpod::qlever::BridgeOperationKind::HashJoin)) return 34;
 
   xpod::qlever::BridgePhysicalPlan text_plan;
   xpod::qlever::BridgeTextCandidateSource text;

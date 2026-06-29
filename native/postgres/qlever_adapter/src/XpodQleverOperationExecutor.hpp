@@ -252,8 +252,7 @@ inline BridgePhysicalResult executeBridgePhysicalPlan(
     xpod::rdf::PhysicalBackend backend,
     const BridgePhysicalPlan& plan) {
   BridgePhysicalResult result;
-  if (plan.root.kind == BridgeOperationKind::TextSearch ||
-      plan.root.kind == BridgeOperationKind::VectorSearch) {
+  if (isBridgeCandidateRoot(plan.root.kind)) {
     result.kind = BridgePhysicalResultKind::CandidateRows;
     result.candidates = executeBridgeCandidateOperationPlan(backend, plan);
     result.status = result.candidates->status;

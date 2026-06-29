@@ -159,6 +159,11 @@ inline std::string_view profileKind(BridgeOperationKind kind) noexcept {
   }
 }
 
+inline bool isBridgeCandidateRoot(BridgeOperationKind kind) noexcept {
+  return kind == BridgeOperationKind::TextSearch ||
+         kind == BridgeOperationKind::VectorSearch;
+}
+
 }  // namespace xpod::qlever
 #endif
 
