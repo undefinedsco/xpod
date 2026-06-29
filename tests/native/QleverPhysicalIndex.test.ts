@@ -414,6 +414,109 @@ int main() {
     }
   });
 
+  it('exposes QLever id codec and comparator through the physical index', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index id codec check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-id-codec-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_id_codec_smoke.cpp');
+      const binary = path.join(root, 'physical_index_id_codec_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int encode_calls;
+  int decode_calls;
+  int compare_calls;
+};
+
+static xpod_rdf_status encode_qlever_id(
+    void* user_data,
+    xpod_rdf_term_key term,
+    uint64_t* out_qlever_id_bits) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->encode_calls;
+  *out_qlever_id_bits = term + 1000;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status decode_qlever_id(
+    void* user_data,
+    uint64_t qlever_id_bits,
+    xpod_rdf_term_key* out_term) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->decode_calls;
+  *out_term = qlever_id_bits - 1000;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status compare_qlever_ids(
+    void* user_data,
+    uint64_t left_qlever_id_bits,
+    uint64_t right_qlever_id_bits,
+    int32_t* out_compare) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->compare_calls;
+  *out_compare = left_qlever_id_bits == right_qlever_id_bits
+                     ? 0
+                     : (left_qlever_id_bits > right_qlever_id_bits ? -1 : 1);
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.encode_qlever_id = encode_qlever_id;
+  raw_backend.decode_qlever_id = decode_qlever_id;
+  raw_backend.compare_qlever_ids = compare_qlever_ids;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  uint64_t qlever_id_bits = 0;
+  if (index.encodeQleverId(42, qlever_id_bits) != XPOD_RDF_STATUS_OK) return 1;
+  if (qlever_id_bits != 1042) return 2;
+
+  xpod_rdf_term_key term = 0;
+  if (index.decodeQleverId(1042, term) != XPOD_RDF_STATUS_OK) return 3;
+  if (term != 42) return 4;
+
+  int32_t compare = 0;
+  if (index.compareQleverIds(2000, 1000, compare) != XPOD_RDF_STATUS_OK) return 5;
+  if (compare != -1) return 6;
+  if (state.encode_calls != 1) return 7;
+  if (state.decode_calls != 1) return 8;
+  if (state.compare_calls != 1) return 9;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes batch term dictionary lookup and resolution through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index batch dictionary check').toBe(true);
 

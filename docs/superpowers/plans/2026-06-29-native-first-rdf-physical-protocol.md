@@ -2658,3 +2658,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 59: Expose QLever id codec and comparator on the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing id codec smoke**
+
+Add a native physical-index smoke so `XpodQleverPhysicalIndex::encodeQleverId(...)`, `decodeQleverId(...)`, and `compareQleverIds(...)` must delegate to the backend QLever id callbacks.
+
+Expected: FAIL because the lower physical index exposed dictionary lookup/resolution but not QLever ValueId encoding, decoding, or semantic comparison.
+
+- [x] **Step 2: Add the minimal codec/comparator wrappers**
+
+Add direct physical-index wrappers over `PhysicalBackend::encodeQleverId(...)`, `decodeQleverId(...)`, and `compareQleverIds(...)`. These are backend data contracts, not planner policy.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

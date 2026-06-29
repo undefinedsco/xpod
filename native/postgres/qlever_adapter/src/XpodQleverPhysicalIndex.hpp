@@ -250,6 +250,26 @@ class XpodQleverPhysicalIndex {
     return context_.backend.resolveTerm(key, snapshot(), out_term);
   }
 
+  xpod_rdf_status encodeQleverId(
+      xpod_rdf_term_key term,
+      uint64_t& out_qlever_id_bits) const noexcept {
+    return context_.backend.encodeQleverId(term, out_qlever_id_bits);
+  }
+
+  xpod_rdf_status decodeQleverId(
+      uint64_t qlever_id_bits,
+      xpod_rdf_term_key& out_term) const noexcept {
+    return context_.backend.decodeQleverId(qlever_id_bits, out_term);
+  }
+
+  xpod_rdf_status compareQleverIds(
+      uint64_t left_qlever_id_bits,
+      uint64_t right_qlever_id_bits,
+      int32_t& out_compare) const noexcept {
+    return context_.backend.compareQleverIds(
+        left_qlever_id_bits, right_qlever_id_bits, out_compare);
+  }
+
   XpodQleverLookupTermsResult lookupTerms(
       const xpod_rdf_term* terms,
       size_t term_count) const {
