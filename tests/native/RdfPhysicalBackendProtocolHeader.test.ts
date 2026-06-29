@@ -25,6 +25,11 @@ describe('native RDF physical backend protocol header', () => {
     expect(header).toContain('#define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1');
     expect(header).toContain('extern "C"');
     expect(header).toContain('typedef struct xpod_rdf_backend_v1');
+    expect(header).toContain('typedef struct xpod_rdf_backend_capabilities');
+    expect(header).toContain('xpod_rdf_backend_capabilities_fn');
+    expect(header).toContain('xpod_rdf_backend_capabilities_fn get_capabilities');
+    expect(header).toContain('XPOD_RDF_PERM_CAP_SPOG');
+    expect(header).toContain('XPOD_RDF_BACKEND_FEATURE_SLOT_RANGES');
     expect(header).toContain('xpod_rdf_lookup_terms_fn');
     expect(header).toContain('xpod_rdf_resolve_terms_fn');
     expect(header).toContain('typedef struct xpod_rdf_prefix_range_request');

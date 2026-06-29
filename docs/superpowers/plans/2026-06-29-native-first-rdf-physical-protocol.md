@@ -2380,3 +2380,37 @@ bun run check:rdf-protocol-abi
 ```
 
 Expected: PASS.
+
+
+### Task 50: Native backend capability negotiation
+
+**Files:**
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `tests/native/QleverPhysicalBackendFacade.test.ts`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing native protocol tests**
+
+Extend the protocol/header smoke and physical backend facade smoke so a backend can declare supported permutation indexes and hard pushdown features before QLever-facing code plans against it.
+
+Expected: FAIL because the native protocol had data callbacks but no capability negotiation callback.
+
+- [x] **Step 2: Add the minimal C ABI and C++ facade seam**
+
+Add `xpod_rdf_backend_capabilities`, permutation capability bits, backend feature bits, and `xpod_rdf_backend_capabilities_fn get_capabilities` as an additive struct-size-gated callback. Surface it as `PhysicalBackend::getCapabilities(...)`.
+
+This is intentionally a lower data-protocol seam. It does not add planner policies or QLever operator replicas to Xpod.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts tests/native/QleverPhysicalBackendFacade.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.

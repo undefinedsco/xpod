@@ -107,6 +107,17 @@ class PhysicalBackend {
     return XPOD_RDF_STATUS_OK;
   }
 
+  xpod_rdf_status getCapabilities(
+      xpod_rdf_backend_capabilities& out_capabilities) const noexcept {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, get_capabilities),
+                     backend_->get_capabilities)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return backend_->get_capabilities(
+        backend_->backend_user_data, &out_capabilities);
+  }
+
   xpod_rdf_status lookupTerm(
       const xpod_rdf_term& term,
       const xpod_rdf_snapshot& snapshot,

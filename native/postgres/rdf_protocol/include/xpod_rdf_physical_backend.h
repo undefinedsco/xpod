@@ -6,7 +6,7 @@
 
 #define XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION 1
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MAJOR 0
-#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 12
+#define XPOD_RDF_PHYSICAL_BACKEND_VERSION_MINOR 13
 #define XPOD_RDF_PHYSICAL_BACKEND_VERSION_PATCH 0
 
 #ifdef __cplusplus
@@ -94,6 +94,38 @@ typedef enum xpod_rdf_permutation {
   XPOD_RDF_PERM_GSPO = 7,
   XPOD_RDF_PERM_GPOS = 8
 } xpod_rdf_permutation;
+
+typedef enum xpod_rdf_permutation_capability {
+  XPOD_RDF_PERM_CAP_SPOG = 1u << 0,
+  XPOD_RDF_PERM_CAP_SOPG = 1u << 1,
+  XPOD_RDF_PERM_CAP_PSOG = 1u << 2,
+  XPOD_RDF_PERM_CAP_POSG = 1u << 3,
+  XPOD_RDF_PERM_CAP_OSPG = 1u << 4,
+  XPOD_RDF_PERM_CAP_OPSG = 1u << 5,
+  XPOD_RDF_PERM_CAP_GSPO = 1u << 6,
+  XPOD_RDF_PERM_CAP_GPOS = 1u << 7
+} xpod_rdf_permutation_capability;
+
+typedef enum xpod_rdf_backend_feature {
+  XPOD_RDF_BACKEND_FEATURE_SCAN_LIMIT = 1u << 0,
+  XPOD_RDF_BACKEND_FEATURE_SCAN_OFFSET = 1u << 1,
+  XPOD_RDF_BACKEND_FEATURE_SLOT_RANGES = 1u << 2,
+  XPOD_RDF_BACKEND_FEATURE_GRAPH_SCOPE = 1u << 3,
+  XPOD_RDF_BACKEND_FEATURE_SOURCE_SCOPE = 1u << 4,
+  XPOD_RDF_BACKEND_FEATURE_ACCESS_SCOPE = 1u << 5,
+  XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH = 1u << 6,
+  XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH = 1u << 7,
+  XPOD_RDF_BACKEND_FEATURE_HISTOGRAM_HINTS = 1u << 8,
+  XPOD_RDF_BACKEND_FEATURE_DISTINCT_ESTIMATE = 1u << 9
+} xpod_rdf_backend_feature;
+
+typedef struct xpod_rdf_backend_capabilities {
+  uint32_t supported_permutations;
+  uint32_t features;
+  uint32_t max_batch_size;
+  xpod_rdf_bytes backend_name;
+  xpod_rdf_bytes backend_version;
+} xpod_rdf_backend_capabilities;
 
 typedef struct xpod_rdf_quad_pattern {
   uint8_t has_subject;
@@ -592,6 +624,10 @@ typedef xpod_rdf_status (*xpod_rdf_compare_qlever_ids_fn)(
     uint64_t right_qlever_id_bits,
     int32_t* out_compare);
 
+typedef xpod_rdf_status (*xpod_rdf_backend_capabilities_fn)(
+    void* backend_user_data,
+    xpod_rdf_backend_capabilities* out_capabilities);
+
 typedef struct xpod_rdf_backend_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -623,6 +659,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_histogram_hints_fn histogram_hints;
   xpod_rdf_resolve_source_scope_fn resolve_source_scope;
   xpod_rdf_estimate_distinct_fn estimate_distinct;
+  xpod_rdf_backend_capabilities_fn get_capabilities;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus
