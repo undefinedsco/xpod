@@ -249,6 +249,68 @@ int main() {
   });
 
 
+  it('exposes a QLever-like operation root for single scan and hash join plans', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native plan bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-operation-root-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/parser'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), '#pragma once\n#include <cstdint>\nusing ColumnIndex = uint64_t;\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'operation_root_smoke.cpp');
+      const binary = path.join(root, 'operation_root_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPlanBridge.hpp"
+
+int main() {
+  auto single = xpod::qlever::planParsedQuery(ParsedQuery::minimalSelect());
+  if (!single.has_value()) return 1;
+  if (single->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 2;
+  if (single->root.scan_indexes.size() != 1 || single->root.scan_indexes[0] != 0) return 3;
+  if (xpod::qlever::profileKind(single->root.kind) != std::string_view("PermutationScan")) return 4;
+
+  auto joined = xpod::qlever::planParsedQuery(ParsedQuery::subjectFilterSelect());
+  if (!joined.has_value()) return 5;
+  if (joined->root.kind != xpod::qlever::BridgeOperationKind::HashJoin) return 6;
+  if (joined->root.join_slot != XPOD_RDF_SLOT_SUBJECT) return 7;
+  if (joined->root.scan_indexes.size() != 2) return 8;
+  if (joined->root.scan_indexes[0] != 0 || joined->root.scan_indexes[1] != 1) return 9;
+  if (xpod::qlever::profileKind(joined->root.kind) != std::string_view("HashJoin")) return 10;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(planHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('plans a two-triple BGP as a primary scan plus subject filter scan', async () => {
     expect(hasCxx(), 'c++ compiler is required for native plan bridge check').toBe(true);
 

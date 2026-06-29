@@ -112,6 +112,7 @@ The first native-first protocol artifacts are:
 - QLever permutation mapping shim: [`native/postgres/qlever_adapter/src/XpodQleverPermutationMap.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverPermutationMap.hpp)
 - QLever scan request bridge: [`native/postgres/qlever_adapter/src/XpodQleverScanBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverScanBridge.hpp)
 - QLever parsed plan bridge: [`native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp)
+- QLever operation plan bridge: [`native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp)
 - QLever scan row materializer: [`native/postgres/qlever_adapter/src/XpodQleverScanMaterializer.hpp`](../../../native/postgres/qlever_adapter/src/XpodQleverScanMaterializer.hpp)
 - QLever adapter C++ implementation shell: [`native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp`](../../../native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp)
 - QLever adapter CMake target: [`native/postgres/qlever_adapter/CMakeLists.txt`](../../../native/postgres/qlever_adapter/CMakeLists.txt)
@@ -124,7 +125,7 @@ The C ABI includes batch term lookup/resolve callbacks. The C++ facade gates eve
 
 The scan materializer has two explicit result shapes: a raw `TermKey` row buffer for protocol tests, and a QLever-id-bits row buffer that must go through `PhysicalBackend::encodeQleverId`.
 The IdTable bridge then converts the QLever-id-bits row buffer into upstream `IdTable`, giving the future `IndexScan` replacement a single `PhysicalBackend scan -> IdTable` seam.
-Parsed BGP constants are bound through the native batch term dictionary before scan execution; the scan request receives term keys and still carries snapshot/access-scope context from `xpod_qlever_query_request`. The bridge also has a first two-triple BGP seam: a primary scan plus subject filter scan that materializes a HashJoin-shaped result without using a second RDF fact store.
+Parsed BGP constants are bound through the native batch term dictionary before scan execution; the scan request receives term keys and still carries snapshot/access-scope context from `xpod_qlever_query_request`. The bridge also has a first two-triple BGP seam: a primary scan plus subject filter scan represented by an explicit operation root and materialized as a HashJoin-shaped result without using a second RDF fact store.
 The backed IndexScan adapter shell can expose the same scan as upstream `Result`, making the next step a replacement of QLever `IndexScan::computeResult()` rather than another data-shape bridge.
 The adapter query request already carries snapshot and access-scope context into the generated scan request, so future QLever-backed execution does not bypass Solid snapshot or ACL/ACR semantics.
 The same shell now exposes operation-shaped metadata (`descriptor`, result width, sorted columns) and a `computeResult(false)` seam. It deliberately does not inherit upstream `Operation` yet, because upstream `Operation` brings the whole `QueryExecutionContext`/cache/runtime tree; the next patch can move this seam either into an upstream `IndexScan::computeResult()` patch or into a planner-generated Xpod-backed operation.

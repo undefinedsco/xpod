@@ -1,6 +1,7 @@
 #ifndef XPOD_QLEVER_PLAN_BRIDGE_HPP
 #define XPOD_QLEVER_PLAN_BRIDGE_HPP
 
+#include "XpodQleverOperationBridge.hpp"
 #include "XpodQleverScanBridge.hpp"
 #include "xpod_rdf_physical_backend.h"
 
@@ -40,6 +41,7 @@ struct BridgeQueryPlan {
   std::string descriptor;
   std::vector<BridgeTermBinding> term_bindings;
   std::vector<BridgeFilterScan> filter_scans;
+  BridgeOperationPlan root;
   bool known_empty = false;
 };
 
@@ -221,6 +223,9 @@ inline void initializeScanPlan(BridgeQueryPlan& plan) {
   plan.sorted_by = {0};
   plan.result_width = 3;
   plan.descriptor = "xpod scan ?s ?p ?o";
+  plan.root.kind = BridgeOperationKind::PermutationScan;
+  plan.root.scan_indexes = {0};
+  plan.root.join_slot = XPOD_RDF_SLOT_SUBJECT;
 }
 
 inline void initializeFilterScan(BridgeFilterScan& filter) {
@@ -290,6 +295,9 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
       }
       plan->filter_scans.push_back(std::move(filter));
       plan->descriptor = "xpod scan ?s ?p ?o with subject filter";
+      plan->root.kind = BridgeOperationKind::HashJoin;
+      plan->root.scan_indexes = {0, 1};
+      plan->root.join_slot = XPOD_RDF_SLOT_SUBJECT;
     }
     return plan;
   } catch (...) {

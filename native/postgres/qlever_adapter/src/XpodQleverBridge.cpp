@@ -296,7 +296,7 @@ xpod_rdf_status executeBridgeQuery(
     writeEmptySparqlJson(json);
     result_storage = json.str();
     std::ostringstream profile;
-    writeScanProfileJson(profile, "PermutationScan", plan.descriptor, 0);
+    writeScanProfileJson(profile, profileKind(plan.root.kind), plan.descriptor, 0);
     profile_storage = profile.str();
     setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
               error_storage);
@@ -353,8 +353,8 @@ xpod_rdf_status executeBridgeQuery(
   result_storage = json.str();
   std::ostringstream profile;
   writeScanProfileJson(
-      profile, plan.filter_scans.empty() ? "PermutationScan" : "HashJoin",
-      plan.descriptor, output_table->numRows());
+      profile, profileKind(plan.root.kind), plan.descriptor,
+      output_table->numRows());
   profile_storage = profile.str();
   setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
             error_storage);
