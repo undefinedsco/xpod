@@ -1729,3 +1729,52 @@ bun test tests/native/QleverPlanBridge.test.ts --run -t "prefix term constraints
 ```
 
 Expected: PASS.
+
+### Task 33: Backend QLever id comparator for native sort modifiers
+
+**Files:**
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing ABI and native operation tests**
+
+Extend the protocol-header test with `xpod_rdf_compare_qlever_ids_fn` and a
+`compare_qlever_ids` callback field on `xpod_rdf_backend_v1`.
+
+Add a native operation smoke where the backend uses opaque QLever id bits that
+sort in the opposite order from the underlying term keys. An `OrderBy` modifier
+must call the backend comparator and return rows in semantic term-key order.
+
+Expected: FAIL because the ABI had no comparator field and native sort/order
+modifiers compared raw encoded id bits directly.
+
+- [x] **Step 2: Add optional comparator to the native protocol**
+
+Add `xpod_rdf_compare_qlever_ids_fn` to the C ABI. The callback compares two
+QLever id-bit values and returns a negative/zero/positive compare result.
+
+Expose it through `PhysicalBackend::compareQleverIds(...)`. Missing callbacks
+fall back to numeric id-bit order for compatibility only; correctness-sensitive
+backends with opaque or non-order-preserving id bits must provide the callback.
+
+- [x] **Step 3: Use the comparator in native sort modifiers**
+
+Update native `OrderBy` and internal sort modifiers to compare ids through
+`PhysicalBackend::compareQleverIds(...)` instead of directly comparing
+`Id::getBits()`. Comparator errors fail closed.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts --run -t "exists and exposes"
+bun test tests/native/QleverOperationBridge.test.ts --run -t "orders QLever ids"
+```
+
+Expected: PASS.

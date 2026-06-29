@@ -30,9 +30,11 @@ const requiredSymbols = [
   'xpod_rdf_vector_search_fn',
   'xpod_rdf_resolve_access_scope_fn',
   'xpod_rdf_encode_qlever_id_fn',
+  'xpod_rdf_compare_qlever_ids_fn',
   'XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS',
   'XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED',
   'xpod_rdf_qlever_term_ordering qlever_term_ordering',
+  'xpod_rdf_compare_qlever_ids_fn compare_qlever_ids',
   'xpod_rdf_profile_event_callback',
 ];
 

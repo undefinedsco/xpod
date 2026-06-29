@@ -37,9 +37,11 @@ describe('native RDF physical backend protocol header', () => {
     expect(header).toContain('xpod_rdf_text_search_fn');
     expect(header).toContain('xpod_rdf_vector_search_fn');
     expect(header).toContain('xpod_rdf_encode_qlever_id_fn');
+    expect(header).toContain('xpod_rdf_compare_qlever_ids_fn');
     expect(header).toContain('XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS');
     expect(header).toContain('XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED');
     expect(header).toContain('xpod_rdf_qlever_term_ordering qlever_term_ordering');
+    expect(header).toContain('xpod_rdf_compare_qlever_ids_fn compare_qlever_ids');
     expect(header).toContain('xpod_rdf_profile_event_callback');
 
     expect(header).not.toMatch(/std::|namespace\s+|template\s*</);

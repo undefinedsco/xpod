@@ -4,6 +4,7 @@
 #include "xpod_rdf_physical_backend.h"
 
 #include <cstddef>
+#include <cstdint>
 
 namespace xpod::rdf {
 
@@ -86,6 +87,24 @@ class PhysicalBackend {
       return XPOD_RDF_STATUS_OK;
     }
     return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
+  xpod_rdf_status compareQleverIds(
+      uint64_t left_qlever_id_bits,
+      uint64_t right_qlever_id_bits,
+      int32_t& out_compare) const noexcept {
+    if (valid() &&
+        hasField(offsetof(xpod_rdf_backend_v1, compare_qlever_ids),
+                 sizeof(backend_->compare_qlever_ids)) &&
+        backend_->compare_qlever_ids != nullptr) {
+      return backend_->compare_qlever_ids(
+          backend_->backend_user_data, left_qlever_id_bits,
+          right_qlever_id_bits, &out_compare);
+    }
+    out_compare = left_qlever_id_bits < right_qlever_id_bits
+                      ? -1
+                      : (left_qlever_id_bits > right_qlever_id_bits ? 1 : 0);
+    return XPOD_RDF_STATUS_OK;
   }
 
   xpod_rdf_status lookupTerm(

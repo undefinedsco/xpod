@@ -935,7 +935,16 @@ inline QleverResultWithStatus applyBridgeDistinct(
       {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
 }
 
+inline xpod_rdf_status compareBridgeIds(
+    const xpod::rdf::PhysicalBackend& backend,
+    uint64_t left_bits,
+    uint64_t right_bits,
+    int32_t& out_compare) {
+  return backend.compareQleverIds(left_bits, right_bits, out_compare);
+}
+
 inline QleverResultWithStatus applyBridgeOrderBy(
+    const xpod::rdf::PhysicalBackend& backend,
     const BridgeResultModifier& modifier,
     QleverResultWithStatus result) {
   if (result.status != XPOD_RDF_STATUS_OK) {
@@ -957,21 +966,34 @@ inline QleverResultWithStatus applyBridgeOrderBy(
   for (size_t row = 0; row < input.numRows(); ++row) {
     row_order.push_back(row);
   }
+  xpod_rdf_status sort_status = XPOD_RDF_STATUS_OK;
   std::stable_sort(
       row_order.begin(), row_order.end(),
-      [&input, &modifier](size_t left, size_t right) {
+      [&backend, &input, &modifier, &sort_status](
+          size_t left, size_t right) {
+        if (sort_status != XPOD_RDF_STATUS_OK) {
+          return false;
+        }
         for (size_t index = 0; index < modifier.columns.size(); ++index) {
           ColumnIndex column = modifier.columns[index];
           uint64_t left_bits = input(left, column).getBits();
           uint64_t right_bits = input(right, column).getBits();
-          if (left_bits == right_bits) {
+          int32_t compare = 0;
+          sort_status = compareBridgeIds(
+              backend, left_bits, right_bits, compare);
+          if (sort_status != XPOD_RDF_STATUS_OK) {
+            return false;
+          }
+          if (compare == 0) {
             continue;
           }
-          return modifier.descending[index] ? left_bits > right_bits
-                                            : left_bits < right_bits;
+          return modifier.descending[index] ? compare > 0 : compare < 0;
         }
         return false;
       });
+  if (sort_status != XPOD_RDF_STATUS_OK) {
+    return makeEmptyOperationResult(sort_status, input.numColumns(), {});
+  }
 
   IdTable output(input.numColumns());
   std::vector<Id> row;
@@ -988,6 +1010,7 @@ inline QleverResultWithStatus applyBridgeOrderBy(
 }
 
 inline QleverResultWithStatus applyBridgeInternalSort(
+    const xpod::rdf::PhysicalBackend& backend,
     const BridgeResultModifier& modifier,
     QleverResultWithStatus result) {
   if (result.status != XPOD_RDF_STATUS_OK) {
@@ -1008,19 +1031,34 @@ inline QleverResultWithStatus applyBridgeInternalSort(
   for (size_t row = 0; row < input.numRows(); ++row) {
     row_order.push_back(row);
   }
+  xpod_rdf_status sort_status = XPOD_RDF_STATUS_OK;
   std::stable_sort(
       row_order.begin(), row_order.end(),
-      [&input, &modifier](size_t left, size_t right) {
+      [&backend, &input, &modifier, &sort_status](
+          size_t left, size_t right) {
+        if (sort_status != XPOD_RDF_STATUS_OK) {
+          return false;
+        }
         for (ColumnIndex column : modifier.columns) {
           uint64_t left_bits = input(left, column).getBits();
           uint64_t right_bits = input(right, column).getBits();
-          if (left_bits == right_bits) {
+          int32_t compare = 0;
+          sort_status = compareBridgeIds(
+              backend, left_bits, right_bits, compare);
+          if (sort_status != XPOD_RDF_STATUS_OK) {
+            return false;
+          }
+          if (compare == 0) {
             continue;
           }
-          return left_bits < right_bits;
+          return compare < 0;
         }
         return false;
       });
+  if (sort_status != XPOD_RDF_STATUS_OK) {
+    return makeEmptyOperationResult(
+        sort_status, input.numColumns(), result.result.sortedBy());
+  }
 
   IdTable output(input.numColumns());
   std::vector<Id> row;
@@ -1038,6 +1076,7 @@ inline QleverResultWithStatus applyBridgeInternalSort(
 }
 
 inline QleverResultWithStatus applyBridgeResultModifier(
+    const xpod::rdf::PhysicalBackend& backend,
     const BridgeResultModifier& modifier,
     QleverResultWithStatus result) {
   if (modifier.kind == BridgeResultModifierKind::LimitOffset) {
@@ -1051,20 +1090,21 @@ inline QleverResultWithStatus applyBridgeResultModifier(
     return applyBridgeDistinct(modifier, std::move(result));
   }
   if (modifier.kind == BridgeResultModifierKind::OrderBy) {
-    return applyBridgeOrderBy(modifier, std::move(result));
+    return applyBridgeOrderBy(backend, modifier, std::move(result));
   }
   if (modifier.kind == BridgeResultModifierKind::InternalSort) {
-    return applyBridgeInternalSort(modifier, std::move(result));
+    return applyBridgeInternalSort(backend, modifier, std::move(result));
   }
   return result;
 }
 
 inline QleverResultWithStatus applyBridgeResultModifiers(
+    const xpod::rdf::PhysicalBackend& backend,
     const BridgeOperationPlan& root,
     QleverResultWithStatus result) {
   if (!root.result_modifiers.empty()) {
     for (const BridgeResultModifier& modifier : root.result_modifiers) {
-      result = applyBridgeResultModifier(modifier, std::move(result));
+      result = applyBridgeResultModifier(backend, modifier, std::move(result));
       if (result.status != XPOD_RDF_STATUS_OK) {
         return result;
       }
@@ -1146,7 +1186,7 @@ inline QleverResultWithStatus executeBridgeUnion(
   emitOperationProfileEvent(
       backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return applyBridgeResultModifiers(
-      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+      backend, root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
                            root.sorted_by));
 }
 
@@ -1209,7 +1249,7 @@ inline QleverResultWithStatus executeBridgeCartesianProductJoin(
   emitOperationProfileEvent(
       backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return applyBridgeResultModifiers(
-      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+      backend, root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
                            root.sorted_by));
 }
 
@@ -1287,7 +1327,7 @@ inline QleverResultWithStatus executeBridgeMinus(
   emitOperationProfileEvent(
       backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return applyBridgeResultModifiers(
-      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+      backend, root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
                            root.sorted_by));
 }
 
@@ -1380,7 +1420,7 @@ inline QleverResultWithStatus executeBridgeOptionalJoin(
   emitOperationProfileEvent(
       backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return applyBridgeResultModifiers(
-      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+      backend, root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
                            root.sorted_by));
 }
 
@@ -1486,7 +1526,7 @@ inline QleverResultWithStatus executeBridgeMultiColumnJoin(
   emitOperationProfileEvent(
       backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return applyBridgeResultModifiers(
-      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+      backend, root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
                            root.sorted_by));
 }
 
@@ -1537,7 +1577,7 @@ inline QleverResultWithStatus executeBridgeGroupBy(
   emitOperationProfileEvent(
       backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return applyBridgeResultModifiers(
-      root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+      backend, root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
                            root.sorted_by));
 }
 
@@ -1554,7 +1594,8 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
     std::vector<Id> row;
     output.push_back(row);
     return applyBridgeResultModifiers(
-        root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {}));
+        backend, root,
+        toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {}));
   }
   if (root.kind == BridgeOperationKind::PermutationScan) {
     if (root.scan_indexes.size() != 1) {
@@ -1565,11 +1606,11 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
     }
     result = executeBridgePhysicalScan(backend, plan.scans[scan_index]);
-    return applyBridgeResultModifiers(root, std::move(result));
+    return applyBridgeResultModifiers(backend, root, std::move(result));
   }
   if (root.kind == BridgeOperationKind::HashJoin) {
     result = executeBridgeHashJoin(backend, rooted_plan);
-    return applyBridgeResultModifiers(root, std::move(result));
+    return applyBridgeResultModifiers(backend, root, std::move(result));
   }
   if (root.kind == BridgeOperationKind::Union) {
     return executeBridgeUnion(backend, plan, root);

@@ -18,28 +18,13 @@ function hasCxx(): boolean {
   }
 }
 
-describe('QLever native physical operation bridge', () => {
-  it('keeps query bridge delegated to the native physical operation executor', () => {
-    const source = readFileSync(bridgeSource, 'utf8');
-
-    expect(source).toContain('executeBridgeOperationPlan');
-    expect(source).toContain('isBridgeCandidateRoot(plan.root.kind)');
-    expect(source).toContain('QLever bridge query produced candidate rows');
-    expect(source).not.toContain('collectFilterSubjectKeys');
-    expect(source).not.toContain('filterResultBySubject');
-  });
-
-  it('executes a hash-join physical plan without TS planner mediation', async () => {
-    expect(hasCxx(), 'c++ compiler is required for native operation bridge check').toBe(true);
-
-    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-operation-bridge-'));
-    try {
-      const qleverSource = path.join(root, 'qlever');
-      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
-      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
-      await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
-      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
-      await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
+async function writeFakeOperationQleverHeaders(root: string): Promise<string> {
+  const qleverSource = path.join(root, 'qlever');
+  await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+  await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+  await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
+  await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+  await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
 #pragma once
 #include <cstdint>
 using ColumnIndex = uint64_t;
@@ -53,18 +38,18 @@ class Id {
   uint64_t bits_;
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), `
+  await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), `
 #pragma once
 class LocalVocab {};
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+  await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
 #pragma once
 class Permutation {
  public:
   enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
+  await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
 #include <cstddef>
 #include <vector>
@@ -81,7 +66,7 @@ class IdTable {
   std::vector<std::vector<Id>> rows_;
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
+  await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
 #pragma once
 #include <utility>
 #include <vector>
@@ -99,6 +84,138 @@ class Result {
   std::vector<ColumnIndex> sortedBy_;
 };
 `, 'utf8');
+  return qleverSource;
+}
+
+describe('QLever native physical operation bridge', () => {
+  it('keeps query bridge delegated to the native physical operation executor', () => {
+    const source = readFileSync(bridgeSource, 'utf8');
+
+    expect(source).toContain('executeBridgeOperationPlan');
+    expect(source).toContain('isBridgeCandidateRoot(plan.root.kind)');
+    expect(source).toContain('QLever bridge query produced candidate rows');
+    expect(source).not.toContain('collectFilterSubjectKeys');
+    expect(source).not.toContain('filterResultBySubject');
+  });
+
+  it('orders QLever ids through the backend term comparator when ids are opaque', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native operation ordering bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-operation-compare-'));
+    try {
+      const qleverSource = await writeFakeOperationQleverHeaders(root);
+
+      const smoke = path.join(root, 'operation_compare_smoke.cpp');
+      const binary = path.join(root, 'operation_compare_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverOperationExecutor.hpp"
+
+struct State {
+  int scan_calls = 0;
+  int compare_calls = 0;
+};
+
+static xpod_rdf_status encode(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
+  *out_bits = 1000 - term;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status compare_ids(
+    void* user_data,
+    uint64_t left_bits,
+    uint64_t right_bits,
+    int32_t* out_compare) {
+  auto* state = static_cast<State*>(user_data);
+  ++state->compare_calls;
+  uint64_t left_term = 1000 - left_bits;
+  uint64_t right_term = 1000 - right_bits;
+  *out_compare = left_term < right_term ? -1 : (left_term > right_term ? 1 : 0);
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan(
+    void* user_data,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<State*>(user_data);
+  ++state->scan_calls;
+  xpod_rdf_quad_key rows[3] = {
+    {3, 20, 30, 0},
+    {1, 20, 10, 0},
+    {2, 20, 20, 0},
+  };
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 3;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  State state;
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.backend_user_data = &state;
+  backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_OPAQUE;
+  backend.encode_qlever_id = encode;
+  backend.compare_qlever_ids = compare_ids;
+  backend.scan_permutation = scan;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::BridgePhysicalPlan plan;
+  xpod::qlever::BridgePhysicalScan scan_node;
+  scan_node.scan.permutation = Permutation::Enum::SPO;
+  scan_node.scan.needed_slots =
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  scan_node.result_width = 3;
+  plan.scans.push_back(scan_node);
+  plan.root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  plan.root.scan_indexes = {0};
+  xpod::qlever::BridgeResultModifier modifier;
+  modifier.kind = xpod::qlever::BridgeResultModifierKind::OrderBy;
+  modifier.columns = {0};
+  modifier.descending = {false};
+  plan.root.result_modifiers.push_back(modifier);
+
+  auto result = xpod::qlever::executeBridgeOperationPlan(physical, plan);
+  if (result.status != XPOD_RDF_STATUS_OK) return 1;
+  if (state.scan_calls != 1) return 2;
+  if (state.compare_calls == 0) return 3;
+  const IdTable& table = result.result.idTable();
+  if (table.numColumns() != 3 || table.numRows() != 3) return 4;
+  if (table(0, 0).getBits() != 999) return 5;
+  if (table(1, 0).getBits() != 998) return 6;
+  if (table(2, 0).getBits() != 997) return 7;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(operationHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executes a hash-join physical plan without TS planner mediation', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native operation bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-operation-bridge-'));
+    try {
+      const qleverSource = await writeFakeOperationQleverHeaders(root);
 
       const smoke = path.join(root, 'operation_bridge_smoke.cpp');
       const binary = path.join(root, 'operation_bridge_smoke');
