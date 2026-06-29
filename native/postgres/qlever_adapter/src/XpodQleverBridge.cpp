@@ -21,6 +21,7 @@
 
 #include <sstream>
 #include <string_view>
+#include <vector>
 
 namespace xpod::qlever {
 
@@ -47,22 +48,113 @@ void setResult(
   out_result.error_message = {error_storage.data(), error_storage.size()};
 }
 
-void writeIdTableJson(std::ostringstream& out, const IdTable& table) {
-  out << "{\"engine\":\"xpod-qlever-bridge\",\"columns\":[\"s\",\"p\",\"o\"],\"rows\":[";
+void writeJsonString(std::ostringstream& out, std::string_view value) {
+  out << '"';
+  for (char c : value) {
+    switch (c) {
+      case '"':
+        out << "\\\"";
+        break;
+      case '\\':
+        out << "\\\\";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      case '\r':
+        out << "\\r";
+        break;
+      case '\t':
+        out << "\\t";
+        break;
+      default:
+        out << c;
+        break;
+    }
+  }
+  out << '"';
+}
+
+xpod_rdf_status resolveIdTableTerms(
+    xpod::rdf::PhysicalBackend backend,
+    const IdTable& table,
+    std::vector<xpod_rdf_term>& out_terms,
+    std::string& error_storage) {
+  std::vector<xpod_rdf_term_key> keys;
+  keys.reserve(table.numRows() * table.numColumns());
+  for (size_t row = 0; row < table.numRows(); ++row) {
+    for (size_t column = 0; column < table.numColumns(); ++column) {
+      xpod_rdf_term_key key = 0;
+      xpod_rdf_status status = backend.decodeQleverId(
+          table(row, column).getBits(), key);
+      if (status != XPOD_RDF_STATUS_OK) {
+        error_storage = "failed to decode QLever result id";
+        return status;
+      }
+      keys.push_back(key);
+    }
+  }
+
+  out_terms.resize(keys.size());
+  std::vector<xpod_rdf_status> statuses(keys.size());
+  xpod_rdf_snapshot snapshot = {};
+  xpod_rdf_status status = backend.resolveTerms(
+      keys.data(), keys.size(), snapshot, out_terms.data(), statuses.data());
+  if (status != XPOD_RDF_STATUS_OK) {
+    error_storage = "failed to resolve QLever result terms";
+    return status;
+  }
+  for (xpod_rdf_status term_status : statuses) {
+    if (term_status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to resolve one or more QLever result terms";
+      return term_status;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+void writeTermBinding(std::ostringstream& out, const xpod_rdf_term& term) {
+  out << '{';
+  if (term.kind == XPOD_RDF_TERM_IRI) {
+    out << "\"type\":\"uri\",\"value\":";
+    writeJsonString(out, bytesView(term.value));
+  } else if (term.kind == XPOD_RDF_TERM_BLANK) {
+    out << "\"type\":\"bnode\",\"value\":";
+    writeJsonString(out, bytesView(term.value));
+  } else {
+    out << "\"type\":\"literal\",\"value\":";
+    writeJsonString(out, bytesView(term.value));
+    if (term.language.size != 0) {
+      out << ",\"xml:lang\":";
+      writeJsonString(out, bytesView(term.language));
+    } else if (term.datatype_iri.size != 0) {
+      out << ",\"datatype\":";
+      writeJsonString(out, bytesView(term.datatype_iri));
+    }
+  }
+  out << '}';
+}
+
+void writeSparqlJson(std::ostringstream& out, const IdTable& table,
+                     const std::vector<xpod_rdf_term>& terms) {
+  static constexpr const char* variables[3] = {"s", "p", "o"};
+  out << "{\"engine\":\"xpod-qlever-bridge\",\"head\":{\"vars\":[\"s\",\"p\",\"o\"]},\"results\":{\"bindings\":[";
+  size_t term_index = 0;
   for (size_t row = 0; row < table.numRows(); ++row) {
     if (row != 0) {
       out << ',';
     }
-    out << '[';
+    out << '{';
     for (size_t column = 0; column < table.numColumns(); ++column) {
       if (column != 0) {
         out << ',';
       }
-      out << table(row, column).getBits();
+      out << '"' << variables[column] << "\":";
+      writeTermBinding(out, terms[term_index++]);
     }
-    out << ']';
+    out << '}';
   }
-  out << "]}";
+  out << "]}}";
 }
 
 }  // namespace
@@ -97,8 +189,17 @@ xpod_rdf_status executeBridgeQuery(
     return result.status;
   }
 
+  std::vector<xpod_rdf_term> terms;
+  xpod_rdf_status resolve_status = resolveIdTableTerms(
+      backend, result.result.idTable(), terms, error_storage);
+  if (resolve_status != XPOD_RDF_STATUS_OK) {
+    setResult(out_result, resolve_status, result_storage, profile_storage,
+              error_storage);
+    return resolve_status;
+  }
+
   std::ostringstream json;
-  writeIdTableJson(json, result.result.idTable());
+  writeSparqlJson(json, result.result.idTable(), terms);
   result_storage = json.str();
   profile_storage =
       "{\"engine\":\"xpod-qlever-bridge\",\"profile\":\"native-events\"}";

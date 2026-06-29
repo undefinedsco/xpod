@@ -107,6 +107,41 @@ static xpod_rdf_status encode(void*, xpod_rdf_term_key term, uint64_t* out_bits)
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status decode(void*, uint64_t bits, xpod_rdf_term_key* out_term) {
+  *out_term = bits - 1000;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status resolve_terms(
+    void*,
+    const xpod_rdf_term_key* keys,
+    size_t key_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term* out_terms,
+    xpod_rdf_status* out_statuses) {
+  static const char s[] = "urn:s";
+  static const char p[] = "urn:p";
+  static const char o[] = "value";
+  static const char datatype[] = "http://www.w3.org/2001/XMLSchema#string";
+  for (size_t i = 0; i < key_count; ++i) {
+    out_statuses[i] = XPOD_RDF_STATUS_OK;
+    if (keys[i] == 10) {
+      out_terms[i].kind = XPOD_RDF_TERM_IRI;
+      out_terms[i].value = {s, 5};
+    } else if (keys[i] == 20) {
+      out_terms[i].kind = XPOD_RDF_TERM_IRI;
+      out_terms[i].value = {p, 5};
+    } else if (keys[i] == 30) {
+      out_terms[i].kind = XPOD_RDF_TERM_LITERAL;
+      out_terms[i].value = {o, 5};
+      out_terms[i].datatype_iri = {datatype, 40};
+    } else {
+      out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status estimate_scan(
     void*,
     const xpod_rdf_scan_request*,
@@ -134,6 +169,8 @@ int main() {
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   backend.struct_size = sizeof(xpod_rdf_backend_v1);
   backend.encode_qlever_id = encode;
+  backend.decode_qlever_id = decode;
+  backend.resolve_terms = resolve_terms;
   backend.estimate_scan = estimate_scan;
   backend.scan_permutation = scan;
 
@@ -149,8 +186,10 @@ int main() {
   std::string_view body(result.result_json.data, result.result_json.size);
   if (status != XPOD_RDF_STATUS_OK) return 2;
   if (result.status != XPOD_RDF_STATUS_OK) return 3;
-  if (body.find("\\"rows\\":[[1010,1020,1030]]") == std::string_view::npos) return 4;
-  if (body.find("xpod-qlever-bridge") == std::string_view::npos) return 5;
+  if (body.find("\\"head\\":{\\"vars\\":[\\"s\\",\\"p\\",\\"o\\"]}") == std::string_view::npos) return 4;
+  if (body.find("\\"s\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s\\"}") == std::string_view::npos) return 5;
+  if (body.find("\\"o\\":{\\"type\\":\\"literal\\",\\"value\\":\\"value\\"") == std::string_view::npos) return 8;
+  if (body.find("1010") != std::string_view::npos) return 9;
 
   xpod_qlever_adapter_release_result(adapter, &result);
 
