@@ -279,6 +279,8 @@ typedef struct xpod_rdf_prefix_range_request {
 
 typedef struct xpod_rdf_join_fanout_request {
   xpod_rdf_snapshot snapshot;
+  xpod_rdf_graph_scope graph_scope;
+  xpod_rdf_source_scope source_scope;
   const xpod_rdf_quad_pattern* patterns;
   size_t pattern_count;
   uint32_t bound_slots;

@@ -136,6 +136,7 @@ The physical backend header is the data execution-boundary artifact. The adapter
 
 The C ABI includes batch term lookup/resolve callbacks. The C++ facade gates every callback field through `struct_size`, so older or partially initialized callback tables fail closed with `UNSUPPORTED` instead of reading past the struct. Broad QLever-style planning must use this batch seam rather than row-by-row dictionary calls.
 Path/source scope now has a native estimate callback as well as request propagation. This gives the planner a CBO-visible subtree cardinality signal before it chooses between RDF scans, text/vector candidate sources, and joins.
+Join fanout estimates also carry graph and source scope, so QLever cost estimates do not accidentally use global fanout statistics for a scoped Solid request.
 
 The scan materializer has two explicit result shapes: a raw `TermKey` row buffer for protocol tests, and a QLever-id-bits row buffer that must go through `PhysicalBackend::encodeQleverId`.
 The IdTable bridge then converts the QLever-id-bits row buffer into upstream `IdTable`, giving the future `IndexScan` replacement a single `PhysicalBackend scan -> IdTable` seam.

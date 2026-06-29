@@ -2115,3 +2115,34 @@ bun test tests/native/QleverPlanRequestContext.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 43: Carry graph/source scope into join fanout estimates
+
+**Files:**
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing ABI smoke for scoped join fanout stats**
+
+Extend the native ABI smoke so `xpod_rdf_join_fanout_request` must expose both
+`graph_scope` and `source_scope`.
+
+Expected: FAIL because join fanout estimates only carried snapshot, patterns,
+bound slots, and access scope.
+
+- [x] **Step 2: Add scope fields to join fanout request**
+
+Add `xpod_rdf_graph_scope graph_scope` and `xpod_rdf_source_scope source_scope`
+to `xpod_rdf_join_fanout_request`, keeping planner statistics under the same
+graph/path protocol boundary as scan and candidate-source execution.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.
