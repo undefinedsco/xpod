@@ -125,6 +125,11 @@ int main() {
   if (plan->term_bindings[0].slot != XPOD_RDF_SLOT_PREDICATE) return 3;
   if (plan->term_bindings[0].kind != XPOD_RDF_TERM_IRI) return 4;
   if (plan->term_bindings[0].value != "urn:p") return 5;
+  if (plan->scan.needed_slots !=
+      (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return 10;
+  if (plan->result_width != 2) return 11;
+  if (plan->output_variables.size() != 2) return 12;
+  if (plan->output_variables[0] != "s" || plan->output_variables[1] != "o") return 13;
 
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -212,6 +217,11 @@ int main() {
   if (plan->term_bindings[0].slot != XPOD_RDF_SLOT_OBJECT) return 3;
   if (plan->term_bindings[0].kind != XPOD_RDF_TERM_LITERAL) return 4;
   if (plan->term_bindings[0].value != "value") return 5;
+  if (plan->scan.needed_slots !=
+      (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE)) return 10;
+  if (plan->result_width != 2) return 11;
+  if (plan->output_variables.size() != 2) return 12;
+  if (plan->output_variables[0] != "s" || plan->output_variables[1] != "p") return 13;
 
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;

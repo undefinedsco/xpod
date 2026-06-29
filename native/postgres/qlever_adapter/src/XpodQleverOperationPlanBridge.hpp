@@ -59,14 +59,6 @@ inline bool bindIndexScanComponent(
   return bindableComponent(component, std::string_view{}, slot, plan);
 }
 
-inline std::string bridgeVariableName(const TripleComponent& component) {
-  std::string name = component.getVariable().name();
-  if (!name.empty() && name.front() == '?') {
-    name.erase(name.begin());
-  }
-  return name;
-}
-
 inline void appendIndexScanOutputVariable(
     std::vector<std::string>& output_variables,
     char slot,
@@ -80,7 +72,7 @@ inline void appendIndexScanOutputVariable(
     component = &scan.object();
   }
   if (component != nullptr && component->isVariable()) {
-    output_variables.push_back(bridgeVariableName(*component));
+    output_variables.push_back(bridgeComponentVariableName(*component));
   }
 }
 

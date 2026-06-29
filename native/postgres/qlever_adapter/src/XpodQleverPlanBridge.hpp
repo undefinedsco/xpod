@@ -199,6 +199,26 @@ inline xpod_rdf_status bindTermBindings(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline std::string bridgeComponentVariableName(
+    const TripleComponent& component) {
+  std::string name = component.getVariable().name();
+  if (!name.empty() && name.front() == '?') {
+    name.erase(name.begin());
+  }
+  return name;
+}
+
+inline void appendParsedOutputVariable(
+    BridgeQueryPlan& plan,
+    const TripleComponent& component,
+    uint32_t slot) {
+  if (!component.isVariable()) {
+    return;
+  }
+  plan.scan.needed_slots |= slot;
+  plan.output_variables.push_back(bridgeComponentVariableName(component));
+}
+
 inline xpod_rdf_status bindTextRequiredEntities(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod_rdf_snapshot& snapshot,
@@ -296,13 +316,17 @@ inline void applyBridgeRequestContext(
   }
 }
 
-inline void initializeScanPlan(BridgeQueryPlan& plan) {
+inline void initializeScanPlan(
+    BridgeQueryPlan& plan,
+    const SparqlTripleSimple& triple) {
   plan.scan.permutation = Permutation::Enum::SPO;
-  plan.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
-                           XPOD_RDF_SLOT_OBJECT;
+  plan.scan.needed_slots = 0;
+  plan.output_variables.clear();
+  appendParsedOutputVariable(plan, triple.s_, XPOD_RDF_SLOT_SUBJECT);
+  appendParsedOutputVariable(plan, triple.p_, XPOD_RDF_SLOT_PREDICATE);
+  appendParsedOutputVariable(plan, triple.o_, XPOD_RDF_SLOT_OBJECT);
   plan.sorted_by = {0};
-  plan.result_width = 3;
-  plan.output_variables = {"s", "p", "o"};
+  plan.result_width = plan.output_variables.size();
   plan.descriptor = "xpod scan ?s ?p ?o";
   plan.root.kind = BridgeOperationKind::PermutationScan;
   plan.root.scan_indexes = {0};
@@ -325,7 +349,7 @@ inline std::optional<BridgeQueryPlan> planSingleTriple(
       !bindableComponent(triple.o_, "?o", XPOD_RDF_SLOT_OBJECT, plan)) {
     return std::nullopt;
   }
-  initializeScanPlan(plan);
+  initializeScanPlan(plan, triple);
   return plan;
 }
 
