@@ -286,6 +286,81 @@ int main() {
         opaqueOrderBinary,
       ], { stdio: 'pipe' });
       execFileSync(opaqueOrderBinary, [], { stdio: 'pipe' });
+
+      const unsupportedCapabilitySmoke = path.join(root, 'backed_index_scan_capability_smoke.cpp');
+      const unsupportedCapabilityBinary = path.join(root, 'backed_index_scan_capability_smoke');
+      await writeFile(unsupportedCapabilitySmoke, `
+#include "XpodBackedIndexScan.hpp"
+
+struct CallState {
+  int estimate_calls;
+  int scan_calls;
+};
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_POSG;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_scan(
+    void* user_data,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<CallState*>(user_data);
+  ++state->estimate_calls;
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan(
+    void* user_data,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_quad_batch_callback,
+    void*) {
+  auto* state = static_cast<CallState*>(user_data);
+  ++state->scan_calls;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  CallState calls = {};
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.backend_user_data = &calls;
+  backend.get_capabilities = get_capabilities;
+  backend.estimate_scan = estimate_scan;
+  backend.scan_permutation = scan;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  xpod::qlever::ScanRequestInput input = {};
+  input.permutation = Permutation::Enum::SPO;
+
+  xpod::qlever::XpodBackedIndexScan scanAdapter(physical, input, {0}, 3, "unsupported capability scan");
+  if (scanAdapter.estimate().status != XPOD_RDF_STATUS_UNSUPPORTED) return 1;
+  if (scanAdapter.execute().status != XPOD_RDF_STATUS_UNSUPPORTED) return 2;
+  if (calls.estimate_calls != 0 || calls.scan_calls != 0) return 3;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(scanHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(qleverSource, 'src'),
+        unsupportedCapabilitySmoke,
+        '-o',
+        unsupportedCapabilityBinary,
+      ], { stdio: 'pipe' });
+      execFileSync(unsupportedCapabilityBinary, [], { stdio: 'pipe' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

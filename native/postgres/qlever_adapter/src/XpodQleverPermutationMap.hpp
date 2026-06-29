@@ -27,6 +27,25 @@ inline xpod_rdf_permutation toXpodPermutation(
   return XPOD_RDF_PERM_SPOG;
 }
 
+inline xpod_rdf_permutation_capability toXpodPermutationCapability(
+    Permutation::Enum permutation) noexcept {
+  switch (permutation) {
+    case Permutation::Enum::PSO:
+      return XPOD_RDF_PERM_CAP_PSOG;
+    case Permutation::Enum::POS:
+      return XPOD_RDF_PERM_CAP_POSG;
+    case Permutation::Enum::SPO:
+      return XPOD_RDF_PERM_CAP_SPOG;
+    case Permutation::Enum::SOP:
+      return XPOD_RDF_PERM_CAP_SOPG;
+    case Permutation::Enum::OPS:
+      return XPOD_RDF_PERM_CAP_OPSG;
+    case Permutation::Enum::OSP:
+      return XPOD_RDF_PERM_CAP_OSPG;
+  }
+  return XPOD_RDF_PERM_CAP_SPOG;
+}
+
 }  // namespace xpod::qlever
 #endif
 

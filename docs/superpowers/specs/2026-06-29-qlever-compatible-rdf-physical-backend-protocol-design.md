@@ -651,6 +651,8 @@ Current state: `xpod_qlever_adapter` exists as a C ABI / C++ facade shell. In QL
 
 `PlannerRequestContext` also snapshots the native backend capability callback result for each query. A patched or embedded QLever planner can therefore inspect supported permutations, hard scope pushdowns, slot ranges, and candidate-source features at construction/planning time without probing callback pointers or consulting TypeScript configuration. Missing capability callbacks remain explicit `UNSUPPORTED` snapshots, not assumed support.
 
+The Xpod-backed scan adapter uses the same capability contract as a lower-protocol guard: when a backend explicitly returns capabilities, unsupported permutations fail closed before estimate or scan callbacks are invoked. Backends without the optional capability callback keep the older callback-driven behavior for compatibility.
+
 - Build a read-only spike that maps a small QLever-like operator subset to this protocol:
   - term lookup;
   - single permutation scan;

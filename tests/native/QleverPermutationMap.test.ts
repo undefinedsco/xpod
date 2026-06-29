@@ -44,6 +44,12 @@ int main() {
   if (xpod::qlever::toXpodPermutation(Permutation::Enum::SOP) != XPOD_RDF_PERM_SOPG) return 4;
   if (xpod::qlever::toXpodPermutation(Permutation::Enum::OPS) != XPOD_RDF_PERM_OPSG) return 5;
   if (xpod::qlever::toXpodPermutation(Permutation::Enum::OSP) != XPOD_RDF_PERM_OSPG) return 6;
+  if (xpod::qlever::toXpodPermutationCapability(Permutation::Enum::PSO) != XPOD_RDF_PERM_CAP_PSOG) return 7;
+  if (xpod::qlever::toXpodPermutationCapability(Permutation::Enum::POS) != XPOD_RDF_PERM_CAP_POSG) return 8;
+  if (xpod::qlever::toXpodPermutationCapability(Permutation::Enum::SPO) != XPOD_RDF_PERM_CAP_SPOG) return 9;
+  if (xpod::qlever::toXpodPermutationCapability(Permutation::Enum::SOP) != XPOD_RDF_PERM_CAP_SOPG) return 10;
+  if (xpod::qlever::toXpodPermutationCapability(Permutation::Enum::OPS) != XPOD_RDF_PERM_CAP_OPSG) return 11;
+  if (xpod::qlever::toXpodPermutationCapability(Permutation::Enum::OSP) != XPOD_RDF_PERM_CAP_OSPG) return 12;
   return 0;
 }
 `, 'utf8');

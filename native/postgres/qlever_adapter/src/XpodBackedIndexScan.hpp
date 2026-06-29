@@ -46,6 +46,10 @@ class XpodBackedIndexScan {
   }
 
   XpodBackedScanEstimate estimate() const {
+    xpod_rdf_status capability_status = validatePermutationCapability();
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, {}};
+    }
     xpod_rdf_estimate estimate = {};
     xpod_rdf_scan_request request = makeScanRequest(input_);
     return {backend_.estimateScan(request, estimate), estimate};
@@ -80,6 +84,10 @@ class XpodBackedIndexScan {
   }
 
   QleverIdTableResult execute() const {
+    xpod_rdf_status capability_status = validatePermutationCapability();
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, IdTable(result_width_)};
+    }
     return executeScanToQleverIdTable(backend_, input_);
   }
 
@@ -112,6 +120,21 @@ class XpodBackedIndexScan {
   }
 
  private:
+  xpod_rdf_status validatePermutationCapability() const noexcept {
+    xpod_rdf_backend_capabilities capabilities = {};
+    xpod_rdf_status status = backend_.getCapabilities(capabilities);
+    if (status == XPOD_RDF_STATUS_UNSUPPORTED) {
+      return XPOD_RDF_STATUS_OK;
+    }
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    return (capabilities.supported_permutations &
+            toXpodPermutationCapability(input_.permutation)) != 0
+               ? XPOD_RDF_STATUS_OK
+               : XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
   const std::vector<ColumnIndex>& effectiveSortedBy() const noexcept {
     if (backend_.preservesQleverTermOrder()) {
       return sorted_by_;

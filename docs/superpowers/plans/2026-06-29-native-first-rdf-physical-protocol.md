@@ -2444,3 +2444,40 @@ bun test tests/native/QleverExecutorPlannerContextProvider.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 52: Gate Xpod-backed scans with backend permutation capabilities
+
+**Files:**
+- Modify: `tests/native/QleverPermutationMap.test.ts`
+- Modify: `tests/native/QleverBackedIndexScan.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPermutationMap.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing permutation capability mapping test**
+
+Extend the QLever permutation smoke so every `Permutation::Enum` maps to the corresponding `XPOD_RDF_PERM_CAP_*` bit as well as the physical `XPOD_RDF_PERM_*` value.
+
+Expected: FAIL because only the physical permutation mapping existed.
+
+- [x] **Step 2: Write failing backed IndexScan capability gate test**
+
+Add a native smoke where the backend declares support for `POSG` only, while the Xpod-backed scan requests QLever `SPO`. The adapter must return `UNSUPPORTED` before calling estimate or scan callbacks.
+
+Expected: FAIL because the adapter previously ignored capability snapshots and delegated directly to backend callbacks.
+
+- [x] **Step 3: Add the minimal lower-protocol capability gate**
+
+Add `toXpodPermutationCapability(...)` beside the existing permutation mapping and make `XpodBackedIndexScan` treat an OK capability response as authoritative for the requested permutation. Missing capability callbacks remain compatible and keep the old callback-driven behavior.
+
+This keeps capability enforcement in the lower data interface; it does not add planner policy or QLever operator replicas.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverBackedIndexScan.test.ts tests/native/QleverPermutationMap.test.ts --run
+```
+
+Expected: PASS.
