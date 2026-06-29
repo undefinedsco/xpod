@@ -6,6 +6,7 @@
 #include <optional>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 #include "engine/IndexScan.h"
@@ -13,6 +14,13 @@
 #include "engine/Operation.h"
 #include "engine/QueryExecutionTree.h"
 #include "engine/QueryPlanner.h"
+
+#if __has_include("engine/TextIndexScanForWord.h")
+#include "engine/TextIndexScanForWord.h"
+#define XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD 1
+#else
+#define XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD 0
+#endif
 
 #if __has_include("engine/QueryExecutionContext.h")
 #include "engine/QueryExecutionContext.h"
@@ -67,6 +75,22 @@ inline std::optional<BridgeQueryPlan> planIndexScanOperation(
   initializeIndexScanOperationPlan(plan, scan);
   return plan;
 }
+
+#if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD
+inline std::optional<BridgeQueryPlan> planTextIndexScanForWordOperation(
+    const TextIndexScanForWord& scan) {
+  BridgeQueryPlan plan;
+  BridgeTextCandidateSource source;
+  source.setQuery(scan.word());
+  source.descriptor = scan.getDescriptor();
+  plan.text_sources.push_back(std::move(source));
+  plan.descriptor = scan.getDescriptor();
+  plan.result_width = scan.getResultWidth();
+  plan.root.kind = BridgeOperationKind::TextSearch;
+  plan.root.candidate_index = 0;
+  return plan;
+}
+#endif
 
 inline const TripleComponent& indexScanComponentForSlot(
     const IndexScan& scan,
@@ -182,6 +206,12 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
 
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
+#if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD
+  const auto* text_scan = dynamic_cast<const TextIndexScanForWord*>(&operation);
+  if (text_scan != nullptr) {
+    return planTextIndexScanForWordOperation(*text_scan);
+  }
+#endif
   const auto* scan = dynamic_cast<const IndexScan*>(&operation);
   if (scan != nullptr) {
     return planIndexScanOperation(*scan);

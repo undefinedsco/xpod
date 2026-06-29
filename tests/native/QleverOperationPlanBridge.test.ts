@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -67,6 +67,7 @@ class Operation {
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/TextIndexScanForWord.h'), fakeTextIndexScanForWordHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), `
 #pragma once
 #include <string>
@@ -100,8 +101,11 @@ class IndexScan final : public Operation {
       const smoke = path.join(root, 'operation_plan_bridge_smoke.cpp');
       const binary = path.join(root, 'operation_plan_bridge_smoke');
       await writeFile(smoke, `
+#include <cstring>
 #include <memory>
+#include <string>
 #include "engine/Join.h"
+#include "engine/TextIndexScanForWord.h"
 #include "XpodQleverOperationPlanBridge.hpp"
 
 int main() {
@@ -157,6 +161,24 @@ int main() {
   if (nested_join_plan->filter_scans.size() != 2) return 30;
   if (nested_join_plan->root.scan_indexes.size() != 3) return 31;
   if (nested_join_plan->root.join_slot != XPOD_RDF_SLOT_SUBJECT) return 32;
+  TextIndexScanForWord text_scan("native-first");
+  const Operation& text_operation = text_scan;
+  auto text_plan = xpod::qlever::planQleverOperation(text_operation);
+  if (!text_plan.has_value()) return 33;
+  if (text_plan->root.kind != xpod::qlever::BridgeOperationKind::TextSearch) return 34;
+  if (text_plan->root.candidate_index != 0) return 35;
+  if (!text_plan->root.scan_indexes.empty()) return 36;
+  if (text_plan->text_sources.size() != 1) return 37;
+  const auto& source = text_plan->text_sources[0];
+  if (source.request.query.size != std::strlen("native-first")) return 38;
+  if (std::string(source.request.query.data, source.request.query.size) != "native-first") return 39;
+  if (source.descriptor != "TextIndexScanForWord native-first") return 40;
+  auto physical = xpod::qlever::toBridgePhysicalPlan(*text_plan);
+  if (physical.root.kind != xpod::qlever::BridgeOperationKind::TextSearch) return 41;
+  if (physical.root.candidate_index != 0) return 42;
+  if (!physical.scans.empty()) return 43;
+  if (physical.text_sources.size() != 1) return 44;
+  if (std::string(physical.text_sources[0].request.query.data, physical.text_sources[0].request.query.size) != "native-first") return 45;
   return 0;
 }
 `, 'utf8');

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
@@ -39,9 +40,75 @@ struct BridgePhysicalScan {
 
 struct BridgeTextCandidateSource {
   xpod_rdf_text_search_request request = {};
+  bool owns_query = false;
+  std::string query_storage;
   std::string descriptor = "XpodBackedTextSearch";
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
+
+  BridgeTextCandidateSource() = default;
+
+  BridgeTextCandidateSource(const BridgeTextCandidateSource& other)
+      : request(other.request),
+        owns_query(other.owns_query),
+        query_storage(other.query_storage),
+        descriptor(other.descriptor),
+        profile_node(other.profile_node),
+        parent_profile_node(other.parent_profile_node) {
+    refreshViews();
+  }
+
+  BridgeTextCandidateSource& operator=(
+      const BridgeTextCandidateSource& other) {
+    if (this == &other) {
+      return *this;
+    }
+    request = other.request;
+    owns_query = other.owns_query;
+    query_storage = other.query_storage;
+    descriptor = other.descriptor;
+    profile_node = other.profile_node;
+    parent_profile_node = other.parent_profile_node;
+    refreshViews();
+    return *this;
+  }
+
+  BridgeTextCandidateSource(BridgeTextCandidateSource&& other) noexcept
+      : request(other.request),
+        owns_query(other.owns_query),
+        query_storage(std::move(other.query_storage)),
+        descriptor(std::move(other.descriptor)),
+        profile_node(other.profile_node),
+        parent_profile_node(other.parent_profile_node) {
+    refreshViews();
+  }
+
+  BridgeTextCandidateSource& operator=(
+      BridgeTextCandidateSource&& other) noexcept {
+    if (this == &other) {
+      return *this;
+    }
+    request = other.request;
+    owns_query = other.owns_query;
+    query_storage = std::move(other.query_storage);
+    descriptor = std::move(other.descriptor);
+    profile_node = other.profile_node;
+    parent_profile_node = other.parent_profile_node;
+    refreshViews();
+    return *this;
+  }
+
+  void setQuery(std::string query) {
+    query_storage = std::move(query);
+    owns_query = true;
+    refreshViews();
+  }
+
+  void refreshViews() noexcept {
+    if (owns_query) {
+      request.query = {query_storage.data(), query_storage.size()};
+    }
+  }
 };
 
 struct BridgeVectorCandidateSource {

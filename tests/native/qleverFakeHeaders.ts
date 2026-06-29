@@ -235,3 +235,22 @@ class IndexScan final : public Operation {
 export const fakePermissiveSparqlParserHeader = '#pragma once\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("<urn:type>") != std::string::npos) return ParsedQuery::subjectFilterSelect(); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); return ParsedQuery::minimalSelect(); } };\n';
 
 export const fakeThrowingSparqlParserHeader = '#pragma once\n#include <stdexcept>\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("BROKEN") != std::string::npos) throw std::runtime_error("synthetic parse failure"); if (query.find("<urn:type>") != std::string::npos) return ParsedQuery::subjectFilterSelect(); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); if (query.find("SELECT") != std::string::npos) return ParsedQuery::minimalSelect(); ParsedQuery parsed; parsed.select_ = false; return parsed; } };\n';
+
+export const fakeTextIndexScanForWordHeader = `
+#pragma once
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+class TextIndexScanForWord final : public Operation {
+ public:
+  explicit TextIndexScanForWord(std::string word) : word_(std::move(word)) {}
+  const std::string& word() const { return word_; }
+  std::string getDescriptor() const override { return "TextIndexScanForWord " + word_; }
+  size_t getResultWidth() const override { return 1; }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
+ private:
+  std::string word_;
+};
+`;
