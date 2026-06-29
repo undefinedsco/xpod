@@ -44,11 +44,13 @@ std::string_view bytesView(xpod_rdf_bytes bytes) noexcept {
 
 xpod_rdf_status parseBridgeQuery(
     std::string_view query,
+    QueryExecutionContext* planner_context,
     std::string& error_storage,
     BridgeQueryPlan& out_plan) {
   try {
     auto parsed = SparqlParser::parseQuery(nullptr, std::string(query));
-    auto plan = planQleverParsedQueryWithAvailablePlanner(nullptr, parsed);
+    auto plan = planQleverParsedQueryWithAvailablePlanner(
+        planner_context, parsed);
     if (!plan.has_value()) {
       plan = planParsedQuery(parsed);
     }
@@ -215,13 +217,27 @@ xpod_rdf_status executeBridgeQuery(
     std::string& result_storage,
     std::string& profile_storage,
     std::string& error_storage) {
+  return executeBridgeQueryWithPlannerContext(
+      backend, nullptr, request, out_result, result_storage, profile_storage,
+      error_storage);
+}
+
+xpod_rdf_status executeBridgeQueryWithPlannerContext(
+    xpod::rdf::PhysicalBackend backend,
+    QueryExecutionContext* planner_context,
+    const xpod_qlever_query_request& request,
+    xpod_qlever_query_result& out_result,
+    std::string& result_storage,
+    std::string& profile_storage,
+    std::string& error_storage) {
   result_storage.clear();
   profile_storage.clear();
   error_storage.clear();
 
   std::string_view query = bytesView(request.sparql);
   BridgeQueryPlan plan;
-  xpod_rdf_status parse_status = parseBridgeQuery(query, error_storage, plan);
+  xpod_rdf_status parse_status = parseBridgeQuery(
+      query, planner_context, error_storage, plan);
   if (parse_status != XPOD_RDF_STATUS_OK) {
     setResult(out_result, parse_status, result_storage, profile_storage,
               error_storage);
