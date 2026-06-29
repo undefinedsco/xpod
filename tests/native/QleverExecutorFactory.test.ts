@@ -34,6 +34,13 @@ describe('QLever executor factory', () => {
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/RuntimeInformation.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Index.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
 
       const smoke = path.join(root, 'enabled_executor_smoke.cpp');
       const binary = path.join(root, 'enabled_executor_smoke');

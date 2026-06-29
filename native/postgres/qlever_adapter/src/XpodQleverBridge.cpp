@@ -1,4 +1,5 @@
 #include "XpodQleverBridge.hpp"
+#include "XpodQleverPermutationMap.hpp"
 
 #if !XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 #error "XpodQleverBridge.cpp must only be compiled when XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1"

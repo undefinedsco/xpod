@@ -53,6 +53,7 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryPlanner.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/engine/RuntimeInformation.h"
     "${XPOD_QLEVER_SOURCE_DIR}/src/index/Index.h"
+    "${XPOD_QLEVER_SOURCE_DIR}/src/index/Permutation.h"
   )
 
   set(XPOD_QLEVER_MISSING_HEADERS "")
