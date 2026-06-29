@@ -41,14 +41,16 @@ describe('QLever executor planner context provider', () => {
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
 #pragma once
 #include <string_view>
-#include "xpod_qlever_adapter.h"
+#include "XpodQleverPlannerRequestContext.hpp"
 class QueryExecutionContext {
  public:
   bool ready = false;
-  void setXpodRequestContext(const xpod_qlever_query_request& request) {
-    ready = request.access_scope != nullptr &&
-            std::string_view(request.snapshot.facts_version.data,
-                             request.snapshot.facts_version.size) == "facts-v1";
+  void setXpodPlannerRequestContext(const xpod::qlever::PlannerRequestContext& context) {
+    ready = context.backend.valid() &&
+            context.request != nullptr &&
+            context.request->access_scope != nullptr &&
+            std::string_view(context.request->snapshot.facts_version.data,
+                             context.request->snapshot.facts_version.size) == "facts-v1";
   }
 };
 `, 'utf8');

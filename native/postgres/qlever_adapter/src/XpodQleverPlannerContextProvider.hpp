@@ -1,8 +1,7 @@
 #ifndef XPOD_QLEVER_PLANNER_CONTEXT_PROVIDER_HPP
 #define XPOD_QLEVER_PLANNER_CONTEXT_PROVIDER_HPP
 
-#include "XpodPhysicalBackend.hpp"
-#include "xpod_qlever_adapter.h"
+#include "XpodQleverPlannerRequestContext.hpp"
 
 #include <memory>
 #include <type_traits>
@@ -36,36 +35,41 @@ struct IsDefaultConstructibleIfComplete<T, true>
     : std::is_default_constructible<T> {};
 
 template <typename Context, typename = void>
-struct HasXpodRequestContextSetter : std::false_type {};
+struct HasXpodPlannerRequestContextSetter : std::false_type {};
 
 template <typename Context>
-struct HasXpodRequestContextSetter<
+struct HasXpodPlannerRequestContextSetter<
     Context,
-    decltype(void(std::declval<Context&>().setXpodRequestContext(
-        std::declval<const xpod_qlever_query_request&>())))> : std::true_type {};
+    decltype(void(std::declval<Context&>().setXpodPlannerRequestContext(
+        std::declval<const PlannerRequestContext&>())))> : std::true_type {};
 
 template <typename Context, bool HasSetter>
-struct XpodRequestContextApplier {
+struct XpodPlannerRequestContextApplier {
   static void apply(
       Context& context,
-      const xpod_qlever_query_request& request) {
+      const PlannerRequestContext& planner_context) {
     (void)context;
-    (void)request;
+    (void)planner_context;
   }
 };
 
 template <typename Context>
-struct XpodRequestContextApplier<Context, true> {
+struct XpodPlannerRequestContextApplier<Context, true> {
   static void apply(
       Context& context,
-      const xpod_qlever_query_request& request) {
-    context.setXpodRequestContext(request);
+      const PlannerRequestContext& planner_context) {
+    context.setXpodPlannerRequestContext(planner_context);
   }
 };
 
 template <typename Context, bool IsComplete, bool IsDefaultConstructible>
 class DefaultPlannerContextProvider final : public QueryPlannerContextProvider {
  public:
+  explicit DefaultPlannerContextProvider(
+      xpod::rdf::PhysicalBackend backend) noexcept {
+    (void)backend;
+  }
+
   QueryExecutionContext* current(
       const xpod_qlever_query_request& request) override {
     (void)request;
@@ -77,15 +81,22 @@ template <typename Context>
 class DefaultPlannerContextProvider<Context, true, true> final
     : public QueryPlannerContextProvider {
  public:
+  explicit DefaultPlannerContextProvider(
+      xpod::rdf::PhysicalBackend backend) noexcept
+      : backend_(backend) {}
+
   QueryExecutionContext* current(
       const xpod_qlever_query_request& request) override {
-    XpodRequestContextApplier<
+    PlannerRequestContext planner_context{backend_, &request};
+    XpodPlannerRequestContextApplier<
         Context,
-        HasXpodRequestContextSetter<Context>::value>::apply(context_, request);
+        HasXpodPlannerRequestContextSetter<Context>::value>::apply(
+            context_, planner_context);
     return &context_;
   }
 
  private:
+  xpod::rdf::PhysicalBackend backend_;
   Context context_;
 };
 
@@ -100,8 +111,8 @@ using DefaultQueryExecutionContextProvider = DefaultPlannerContextProvider<
 
 inline std::unique_ptr<QueryPlannerContextProvider>
 createQueryPlannerContextProvider(xpod::rdf::PhysicalBackend backend) {
-  (void)backend;
-  return std::make_unique<detail::DefaultQueryExecutionContextProvider>();
+  return std::make_unique<detail::DefaultQueryExecutionContextProvider>(
+      backend);
 }
 
 }  // namespace xpod::qlever
