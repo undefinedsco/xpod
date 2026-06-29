@@ -1136,3 +1136,63 @@ bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOpera
 ```
 
 Expected: PASS.
+
+### Task 22: CartesianProductJoin over supported child plans
+
+**Files:**
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Confirm upstream operation shape**
+
+Use upstream QLever `CartesianProductJoin.h` as the source of truth.
+
+`CartesianProductJoin` exposes:
+- child access through `getChildren()`;
+- `getResultWidth()` and `getDescriptor()`;
+- empty sortedness by default through `getResultSortedOn()`.
+
+- [x] **Step 2: Write failing planner and executor tests**
+
+Extend the operation-plan smoke with a two-child `CartesianProductJoin` whose
+children are supported `IndexScan` roots.
+
+Expected native plan shape:
+- `root.kind == BridgeOperationKind::CartesianProductJoin`;
+- query-plan children are kept as pre-binding child plans;
+- output variables are concatenated in child order;
+- physical-plan children are flattened into shared scan storage with adjusted
+  child scan indexes.
+
+Extend the operation executor smoke with a hand-built Cartesian root over two
+scan children.
+
+Expected execution:
+- every child scan executes once;
+- output rows are the full Cartesian product in child order;
+- output columns are concatenated in child order;
+- sortedness is empty unless a future modifier supplies it.
+
+Expected: FAIL because the bridge previously had no Cartesian root.
+
+- [x] **Step 3: Plan and execute CartesianProductJoin**
+
+When the embedded QLever build exposes `engine/CartesianProductJoin.h`, map the
+operation to a native tree root and reuse the existing child-plan boundary.
+Execution recursively evaluates all children and materializes the product by
+concatenating row columns.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Expected: PASS.

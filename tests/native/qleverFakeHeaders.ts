@@ -595,3 +595,41 @@ class Union final : public Operation {
   std::vector<ColumnIndex> target_order_;
 };
 `;
+
+export const fakeCartesianProductJoinHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+class QueryExecutionContext;
+class CartesianProductJoin final : public Operation {
+ public:
+  using Children = std::vector<std::shared_ptr<QueryExecutionTree>>;
+  CartesianProductJoin(QueryExecutionContext*, Children children, size_t = 1000000)
+      : children_(std::move(children)) {}
+  explicit CartesianProductJoin(Children children)
+      : children_(std::move(children)) {}
+  std::vector<QueryExecutionTree*> getChildren() override {
+    std::vector<QueryExecutionTree*> children;
+    for (const auto& child : children_) {
+      children.push_back(child.get());
+    }
+    return children;
+  }
+  std::string getDescriptor() const override { return "Cartesian Product Join"; }
+  size_t getResultWidth() const override {
+    size_t width = 0;
+    for (const auto& child : children_) {
+      width += child->getRootOperation()->getResultWidth();
+    }
+    return width;
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override { return {}; }
+ private:
+  Children children_;
+};
+`;

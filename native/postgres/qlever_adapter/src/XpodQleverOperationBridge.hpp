@@ -23,6 +23,7 @@ enum class BridgeOperationKind {
   VectorSearch,
   NeutralElement,
   Union,
+  CartesianProductJoin,
 };
 
 enum class BridgeCandidateColumnKind {
@@ -206,6 +207,8 @@ inline std::string_view profileKind(BridgeOperationKind kind) noexcept {
   switch (kind) {
     case BridgeOperationKind::Union:
       return "Union";
+    case BridgeOperationKind::CartesianProductJoin:
+      return "CartesianProductJoin";
     case BridgeOperationKind::HashJoin:
       return "HashJoin";
     case BridgeOperationKind::TextSearch:

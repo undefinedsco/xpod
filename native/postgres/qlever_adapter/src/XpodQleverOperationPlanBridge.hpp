@@ -59,6 +59,13 @@
 #define XPOD_QLEVER_HAS_UNION 0
 #endif
 
+#if __has_include("engine/CartesianProductJoin.h")
+#include "engine/CartesianProductJoin.h"
+#define XPOD_QLEVER_HAS_CARTESIAN_PRODUCT_JOIN 1
+#else
+#define XPOD_QLEVER_HAS_CARTESIAN_PRODUCT_JOIN 0
+#endif
+
 #if __has_include("engine/Distinct.h")
 #include "engine/Distinct.h"
 #define XPOD_QLEVER_HAS_DISTINCT 1
@@ -876,6 +883,42 @@ inline std::optional<BridgeQueryPlan> planUnionOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_CARTESIAN_PRODUCT_JOIN
+inline std::optional<BridgeQueryPlan> planCartesianProductJoinOperation(
+    CartesianProductJoin& operation) {
+  std::vector<QueryExecutionTree*> children = operation.getChildren();
+  if (children.empty()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.descriptor = operation.getDescriptor();
+  plan.result_width = operation.getResultWidth();
+  plan.sorted_by = operation.getResultSortedOn();
+  plan.root.kind = BridgeOperationKind::CartesianProductJoin;
+  plan.root.sorted_by = plan.sorted_by;
+
+  for (QueryExecutionTree* child : children) {
+    if (child == nullptr) {
+      return std::nullopt;
+    }
+    auto child_plan = planQleverExecutionTree(*child);
+    if (!child_plan.has_value()) {
+      return std::nullopt;
+    }
+    plan.output_variables.insert(
+        plan.output_variables.end(),
+        child_plan->output_variables.begin(),
+        child_plan->output_variables.end());
+    plan.child_plans.push_back(std::move(*child_plan));
+  }
+  if (plan.output_variables.size() != plan.result_width) {
+    return std::nullopt;
+  }
+  return plan;
+}
+#endif
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation) {
 #if XPOD_QLEVER_HAS_NEUTRAL_ELEMENT
@@ -889,6 +932,13 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
   const auto* union_operation = dynamic_cast<const Union*>(&operation);
   if (union_operation != nullptr) {
     return planUnionOperation(*union_operation);
+  }
+#endif
+#if XPOD_QLEVER_HAS_CARTESIAN_PRODUCT_JOIN
+  auto* cartesian = dynamic_cast<CartesianProductJoin*>(
+      const_cast<Operation*>(&operation));
+  if (cartesian != nullptr) {
+    return planCartesianProductJoinOperation(*cartesian);
   }
 #endif
 #if XPOD_QLEVER_HAS_LIMIT_OFFSET

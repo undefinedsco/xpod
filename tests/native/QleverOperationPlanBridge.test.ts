@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeNeutralElementOperationHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
+import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeNeutralElementOperationHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -223,6 +223,7 @@ class Operation {
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/CartesianProductJoin.h'), fakeCartesianProductJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
@@ -292,6 +293,7 @@ class IndexScan final : public Operation {
 #include <string>
 #include <string_view>
 #include "engine/Join.h"
+#include "engine/CartesianProductJoin.h"
 #include "engine/Distinct.h"
 #include "engine/OrderBy.h"
 #include "engine/Sort.h"
@@ -434,6 +436,22 @@ int main() {
       union_physical.root.children[0].scan_indexes[0] != 0) return 216;
   if (union_physical.root.children[1].scan_indexes.size() != 1 ||
       union_physical.root.children[1].scan_indexes[0] != 1) return 217;
+
+  CartesianProductJoin cartesian_operation(nullptr, {
+      std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>()),
+      std::make_shared<QueryExecutionTree>(std::make_shared<IndexScan>())});
+  auto cartesian_plan = xpod::qlever::planQleverOperation(cartesian_operation);
+  if (!cartesian_plan.has_value()) return 218;
+  if (cartesian_plan->root.kind != xpod::qlever::BridgeOperationKind::CartesianProductJoin) return 219;
+  if (cartesian_plan->child_plans.size() != 2) return 220;
+  if (cartesian_plan->result_width != 4) return 221;
+  if (cartesian_plan->output_variables.size() != 4) return 222;
+  auto cartesian_physical = xpod::qlever::toBridgePhysicalPlan(*cartesian_plan);
+  if (cartesian_physical.root.kind != xpod::qlever::BridgeOperationKind::CartesianProductJoin) return 223;
+  if (cartesian_physical.root.children.size() != 2) return 224;
+  if (cartesian_physical.scans.size() != 2) return 225;
+  if (cartesian_physical.root.children[0].scan_indexes[0] != 0) return 226;
+  if (cartesian_physical.root.children[1].scan_indexes[0] != 1) return 227;
 
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;

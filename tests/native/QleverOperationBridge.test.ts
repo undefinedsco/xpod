@@ -796,6 +796,41 @@ int main() {
   if (union_table(2, 0).getBits() != 1011 || union_table(2, 1).getBits() != 1111) return 132;
   if (union_table(3, 0).getBits() != 1010 || union_table(3, 1).getBits() != 1112) return 133;
   if (union_result.result.sortedBy().size() != 1 || union_result.result.sortedBy()[0] != 0) return 134;
+
+  state.calls = 0;
+  xpod::qlever::BridgePhysicalPlan cartesian_plan;
+  xpod::qlever::BridgePhysicalScan cartesian_left;
+  cartesian_left.scan.permutation = Permutation::Enum::SPO;
+  cartesian_left.scan.pattern.has_predicate = true;
+  cartesian_left.scan.pattern.predicate = 20;
+  cartesian_left.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  cartesian_left.result_width = 2;
+  cartesian_plan.scans.push_back(cartesian_left);
+  xpod::qlever::BridgePhysicalScan cartesian_right;
+  cartesian_right.scan.permutation = Permutation::Enum::SPO;
+  cartesian_right.scan.pattern.has_predicate = true;
+  cartesian_right.scan.pattern.predicate = 110;
+  cartesian_right.scan.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  cartesian_right.result_width = 2;
+  cartesian_plan.scans.push_back(cartesian_right);
+  cartesian_plan.root.kind = xpod::qlever::BridgeOperationKind::CartesianProductJoin;
+  xpod::qlever::BridgeOperationPlan cartesian_left_root;
+  cartesian_left_root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  cartesian_left_root.scan_indexes = {0};
+  xpod::qlever::BridgeOperationPlan cartesian_right_root;
+  cartesian_right_root.kind = xpod::qlever::BridgeOperationKind::PermutationScan;
+  cartesian_right_root.scan_indexes = {1};
+  cartesian_plan.root.children = {cartesian_left_root, cartesian_right_root};
+  auto cartesian_result = xpod::qlever::executeBridgeOperationPlan(physical, cartesian_plan);
+  if (cartesian_result.status != XPOD_RDF_STATUS_OK) return 135;
+  if (state.calls != 2) return 136;
+  const IdTable& cartesian_table = cartesian_result.result.idTable();
+  if (cartesian_table.numColumns() != 4 || cartesian_table.numRows() != 4) return 137;
+  if (cartesian_table(0, 0).getBits() != 1010 || cartesian_table(0, 1).getBits() != 1030 ||
+      cartesian_table(0, 2).getBits() != 1011 || cartesian_table(0, 3).getBits() != 1111) return 138;
+  if (cartesian_table(3, 0).getBits() != 1011 || cartesian_table(3, 1).getBits() != 1031 ||
+      cartesian_table(3, 2).getBits() != 1010 || cartesian_table(3, 3).getBits() != 1112) return 139;
+  if (!cartesian_result.result.sortedBy().empty()) return 140;
   return 0;
 }
 `, 'utf8');
