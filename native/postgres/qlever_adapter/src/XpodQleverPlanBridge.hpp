@@ -420,17 +420,25 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
 
 inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
   BridgePhysicalPlan physical;
+  physical.root = plan.root;
   if (plan.root.kind == BridgeOperationKind::PermutationScan ||
       plan.root.kind == BridgeOperationKind::HashJoin) {
+    xpod_rdf_profile_node_key profile_node = 1;
+    xpod_rdf_profile_node_key parent_profile_node = 0;
+    if (plan.root.kind == BridgeOperationKind::HashJoin) {
+      physical.root.profile_node = profile_node++;
+      parent_profile_node = physical.root.profile_node;
+    }
+
     BridgePhysicalScan primary;
     primary.scan = plan.scan;
     primary.sorted_by = plan.sorted_by;
     primary.result_width = plan.result_width;
     primary.descriptor = plan.descriptor;
-    primary.profile_node = 1;
+    primary.profile_node = profile_node++;
+    primary.parent_profile_node = parent_profile_node;
     physical.scans.push_back(std::move(primary));
 
-    xpod_rdf_profile_node_key profile_node = 2;
     for (const BridgeFilterScan& filter : plan.filter_scans) {
       BridgePhysicalScan scan;
       scan.scan = filter.scan;
@@ -438,13 +446,13 @@ inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
       scan.result_width = 3;
       scan.descriptor = filter.descriptor;
       scan.profile_node = profile_node++;
+      scan.parent_profile_node = parent_profile_node;
       physical.scans.push_back(std::move(scan));
     }
   }
 
   physical.text_sources = plan.text_sources;
   physical.vector_sources = plan.vector_sources;
-  physical.root = plan.root;
   return physical;
 }
 

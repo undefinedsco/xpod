@@ -298,6 +298,11 @@ int main() {
   if (joined->root.scan_indexes.size() != 2) return 8;
   if (joined->root.scan_indexes[0] != 0 || joined->root.scan_indexes[1] != 1) return 9;
   if (xpod::qlever::profileKind(joined->root.kind) != std::string_view("HashJoin")) return 10;
+  auto physical = xpod::qlever::toBridgePhysicalPlan(*joined);
+  if (physical.root.profile_node != 1) return 11;
+  if (physical.scans.size() != 2) return 12;
+  if (physical.scans[0].profile_node != 2 || physical.scans[0].parent_profile_node != 1) return 13;
+  if (physical.scans[1].profile_node != 3 || physical.scans[1].parent_profile_node != 1) return 14;
   return 0;
 }
 `, 'utf8');

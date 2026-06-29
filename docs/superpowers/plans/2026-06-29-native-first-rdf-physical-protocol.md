@@ -327,3 +327,59 @@ bun test tests/native/QleverOperationPlanBridge.test.ts --run
 ```
 
 Expected: PASS.
+
+### Task 9: Native HashJoin profile tree
+
+**Files:**
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write the failing native execution profile test**
+
+Extend the native HashJoin smoke test with a profile callback and a two-scan join plan where:
+- root `BridgeOperationPlan.profile_node == 100`
+- primary scan `profile_node == 101`, `parent_profile_node == 100`
+- filter scan `profile_node == 102`, `parent_profile_node == 100`
+
+Expected event sequence:
+- `RDF_JOIN` running for node 100
+- filter scan running/completed under parent 100
+- primary scan running/completed under parent 100
+- `RDF_JOIN` completed for node 100 with output row count
+
+Expected: FAIL because `BridgeOperationPlan` has no root profile node and the executor does not emit root join events.
+
+- [x] **Step 2: Implement native operation profile events**
+
+Add root profile node fields to `BridgeOperationPlan` and make `executeBridgeHashJoin(...)` emit:
+- `XPOD_RDF_PROFILE_RDF_JOIN` running before child scan execution
+- `XPOD_RDF_PROFILE_RDF_JOIN` failed before error returns after execution starts
+- `XPOD_RDF_PROFILE_RDF_JOIN` completed with output row count after filtering succeeds
+
+- [x] **Step 3: Write the failing physical-plan profile tree test**
+
+Extend the parsed plan bridge test so `toBridgePhysicalPlan(...)` for a parsed two-triple join produces:
+- root profile node 1
+- primary scan node 2, parent 1
+- filter scan node 3, parent 1
+
+Expected: FAIL because the converter only assigns profile nodes to scans and leaves the root unprofiled.
+
+- [x] **Step 4: Implement physical profile tree generation**
+
+Update `toBridgePhysicalPlan(...)` so `HashJoin` roots get profile node 1 and child scan adapters are assigned sequential nodes with `parent_profile_node = 1`. Keep single `PermutationScan` plans as direct scan profile nodes without an artificial root.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationBridge.test.ts --run
+bun test tests/native/QleverPlanBridge.test.ts --run
+```
+
+Expected: PASS.

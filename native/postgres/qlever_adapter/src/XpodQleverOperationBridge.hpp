@@ -38,6 +38,8 @@ struct BridgeOperationPlan {
   size_t candidate_index = 0;
   uint32_t join_slot = XPOD_RDF_SLOT_SUBJECT;
   std::vector<uint32_t> join_slots;
+  xpod_rdf_profile_node_key profile_node = 0;
+  xpod_rdf_profile_node_key parent_profile_node = 0;
 };
 
 struct BridgePhysicalScan {

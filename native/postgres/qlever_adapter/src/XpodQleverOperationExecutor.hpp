@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <unordered_set>
 #include <vector>
@@ -63,6 +64,41 @@ inline QleverResultWithStatus makeEmptyOperationResult(
 inline XpodBackedCandidateResult makeEmptyCandidateOperationResult(
     xpod_rdf_status status) {
   return {status, {}};
+}
+
+inline xpod_rdf_profile_kind profileEventKind(
+    BridgeOperationKind kind) noexcept {
+  switch (kind) {
+    case BridgeOperationKind::HashJoin:
+      return XPOD_RDF_PROFILE_RDF_JOIN;
+    case BridgeOperationKind::TextSearch:
+      return XPOD_RDF_PROFILE_TEXT_SEARCH;
+    case BridgeOperationKind::VectorSearch:
+      return XPOD_RDF_PROFILE_VECTOR_SEARCH;
+    case BridgeOperationKind::PermutationScan:
+    default:
+      return XPOD_RDF_PROFILE_PERMUTATION_SCAN;
+  }
+}
+
+inline void emitOperationProfileEvent(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgeOperationPlan& root,
+    xpod_rdf_profile_status status,
+    uint64_t output_rows = 0) noexcept {
+  if (root.profile_node == 0) {
+    return;
+  }
+  xpod_rdf_profile_event event = {};
+  event.node = root.profile_node;
+  event.parent = root.parent_profile_node;
+  event.has_parent = root.parent_profile_node != 0 ? 1 : 0;
+  event.kind = profileEventKind(root.kind);
+  event.status = status;
+  std::string_view descriptor = profileKind(root.kind);
+  event.descriptor = {descriptor.data(), descriptor.size()};
+  event.output_rows = output_rows;
+  backend.emitProfileEvent(event);
 }
 
 inline bool candidateRowHasOutputColumn(
@@ -239,14 +275,20 @@ inline QleverResultWithStatus executeBridgeHashJoin(
 
   const BridgePhysicalScan& left_scan = plan.scans[left_index];
   std::unordered_set<xpod_rdf_term_key> allowed_keys;
+  emitOperationProfileEvent(
+      backend, plan.root, XPOD_RDF_PROFILE_RUNNING);
   for (size_t i = 1; i < plan.root.scan_indexes.size(); ++i) {
     size_t right_index = plan.root.scan_indexes[i];
     if (right_index >= plan.scans.size()) {
+      emitOperationProfileEvent(
+          backend, plan.root, XPOD_RDF_PROFILE_FAILED);
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
     }
     const BridgePhysicalScan& right_scan = plan.scans[right_index];
     QleverResultWithStatus right = executeBridgePhysicalScan(backend, right_scan);
     if (right.status != XPOD_RDF_STATUS_OK) {
+      emitOperationProfileEvent(
+          backend, plan.root, XPOD_RDF_PROFILE_FAILED);
       return right;
     }
     std::unordered_set<xpod_rdf_term_key> filter_keys;
@@ -257,6 +299,8 @@ inline QleverResultWithStatus executeBridgeHashJoin(
             joinSlotForScan(plan.root, i)),
         filter_keys);
     if (status != XPOD_RDF_STATUS_OK) {
+      emitOperationProfileEvent(
+          backend, plan.root, XPOD_RDF_PROFILE_FAILED);
       return makeEmptyOperationResult(status, left_scan.result_width,
                                       left_scan.sorted_by);
     }
@@ -269,6 +313,8 @@ inline QleverResultWithStatus executeBridgeHashJoin(
 
   QleverResultWithStatus left = executeBridgePhysicalScan(backend, left_scan);
   if (left.status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(
+        backend, plan.root, XPOD_RDF_PROFILE_FAILED);
     return left;
   }
 
@@ -280,9 +326,13 @@ inline QleverResultWithStatus executeBridgeHashJoin(
           joinSlotForScan(plan.root, 0)),
       allowed_keys, output);
   if (status != XPOD_RDF_STATUS_OK) {
+    emitOperationProfileEvent(
+        backend, plan.root, XPOD_RDF_PROFILE_FAILED);
     return makeEmptyOperationResult(status, left_scan.result_width,
                                     left_scan.sorted_by);
   }
+  emitOperationProfileEvent(
+      backend, plan.root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
   return toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
                         left_scan.sorted_by);
 }
