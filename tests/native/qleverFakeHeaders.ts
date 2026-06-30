@@ -81,6 +81,21 @@ class SelectClause {
   bool asterisk_ = true;
   std::vector<Variable> selected_;
 };
+namespace sparqlExpression {
+class SparqlExpressionPimpl {
+ public:
+  SparqlExpressionPimpl() = default;
+  explicit SparqlExpressionPimpl(std::string descriptor)
+      : descriptor_(std::move(descriptor)) {}
+  const std::string& getDescriptor() const { return descriptor_; }
+ private:
+  std::string descriptor_;
+};
+}
+class SparqlFilter {
+ public:
+  sparqlExpression::SparqlExpressionPimpl expression_;
+};
 namespace parsedQuery {
 struct GraphPatternOperation;
 struct GraphPattern {
@@ -90,6 +105,7 @@ struct GraphPattern {
   GraphPattern& operator=(const GraphPattern&);
   GraphPattern& operator=(GraphPattern&&) noexcept;
   ~GraphPattern();
+  std::vector<SparqlFilter> _filters;
   std::vector<GraphPatternOperation> _graphPatterns;
 };
 struct BasicGraphPattern {
@@ -236,6 +252,26 @@ class ParsedQuery {
         TripleComponent{Variable{"?tail"}});
     query.select_clause_.setSelected({Variable{"?s"}, Variable{"?tail"}});
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
+    return query;
+  }
+  static ParsedQuery filterObjectNotTailSelect() {
+    ParsedQuery query;
+    parsedQuery::BasicGraphPattern basic;
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{Variable{"?p"}},
+        TripleComponent{Variable{"?o"}});
+    query.select_clause_.setSelected({Variable{"?s"}, Variable{"?o"}});
+    SparqlFilter filter;
+    filter.expression_ = sparqlExpression::SparqlExpressionPimpl{"(?o != <urn:tail>)"};
+    query._rootGraphPattern._filters.push_back(std::move(filter));
+    query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
+    return query;
+  }
+  static ParsedQuery unsupportedFilterSelect() {
+    ParsedQuery query = filterObjectNotTailSelect();
+    query._rootGraphPattern._filters[0].expression_ =
+        sparqlExpression::SparqlExpressionPimpl{"(?o = <urn:tail>)"};
     return query;
   }
   bool hasSelectClause() const { return select_; }

@@ -5,6 +5,7 @@
 #include "XpodQleverScanBridge.hpp"
 #include "xpod_rdf_physical_backend.h"
 
+#include <cctype>
 #include <optional>
 #include <iterator>
 #include <string>
@@ -34,6 +35,11 @@ struct BridgeTextRequiredEntityBinding {
   BridgeTermBinding term;
 };
 
+struct BridgeModifierTermBinding {
+  size_t modifier_index = 0;
+  BridgeTermBinding term;
+};
+
 struct BridgeGraphScope {
   std::optional<BridgeTermBinding> binding;
   std::optional<std::string> variable;
@@ -58,6 +64,7 @@ struct BridgeQueryPlan {
   std::vector<BridgeVectorCandidateSource> vector_sources;
   std::vector<BridgeTextRequiredEntityBinding> text_required_entities;
   std::vector<std::vector<BridgeTermBinding>> value_rows;
+  std::vector<BridgeModifierTermBinding> modifier_term_bindings;
   std::vector<std::string> output_variables;
   std::vector<BridgeQueryPlan> child_plans;
   BridgeOperationPlan root;
@@ -514,6 +521,49 @@ inline xpod_rdf_status bindValuesRows(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline xpod_rdf_status bindModifierTermBindings(
+    const xpod::rdf::PhysicalBackend& backend,
+    const xpod_rdf_snapshot& snapshot,
+    BridgeQueryPlan& plan,
+    std::string& error_storage) {
+  for (const BridgeModifierTermBinding& binding :
+       plan.modifier_term_bindings) {
+    if (binding.modifier_index >= plan.root.result_modifiers.size()) {
+      error_storage = "QLever filter modifier binding references missing modifier";
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+
+    xpod_rdf_term term = toNativeTerm(binding.term);
+    xpod_rdf_term_key key = 0;
+    xpod_rdf_status term_status = XPOD_RDF_STATUS_OK;
+    xpod_rdf_status status = backend.lookupTerms(
+        &term, 1, snapshot, &key, &term_status);
+    if (status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to lookup QLever filter constant";
+      return status;
+    }
+    if (term_status == XPOD_RDF_STATUS_NOT_FOUND) {
+      continue;
+    }
+    if (term_status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to lookup QLever filter constant";
+      return term_status;
+    }
+
+    uint64_t bits = 0;
+    status = backend.encodeQleverId(key, bits);
+    if (status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to encode QLever filter constant";
+      return status;
+    }
+    BridgeResultModifier& modifier =
+        plan.root.result_modifiers[binding.modifier_index];
+    modifier.term_id_bits = bits;
+    modifier.has_term_id_bits = true;
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 inline xpod_rdf_status bindPlanTerms(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod_rdf_snapshot& snapshot,
@@ -543,6 +593,10 @@ inline xpod_rdf_status bindPlanTerms(
   }
   status = bindValuesRows(backend, snapshot, plan, error_storage);
   if (status != XPOD_RDF_STATUS_OK || plan.known_empty) {
+    return status;
+  }
+  status = bindModifierTermBindings(backend, snapshot, plan, error_storage);
+  if (status != XPOD_RDF_STATUS_OK) {
     return status;
   }
   for (BridgeQueryPlan& child : plan.child_plans) {
@@ -1039,6 +1093,88 @@ inline bool valuesVariablesAllJoinBGP(
   return true;
 }
 
+inline std::string_view trimFilterToken(std::string_view value) {
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+    value.remove_prefix(1);
+  }
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+    value.remove_suffix(1);
+  }
+  return value;
+}
+
+inline std::string_view stripOuterFilterParens(std::string_view value) {
+  value = trimFilterToken(value);
+  if (value.size() >= 2 && value.front() == '(' && value.back() == ')') {
+    value.remove_prefix(1);
+    value.remove_suffix(1);
+    return trimFilterToken(value);
+  }
+  return value;
+}
+
+inline std::optional<BridgeTermBinding> iriFilterBindingFromToken(
+    std::string_view token) {
+  token = trimFilterToken(token);
+  if (token.size() < 3 || token.front() != '<' || token.back() != '>') {
+    return std::nullopt;
+  }
+  BridgeTermBinding binding;
+  binding.kind = XPOD_RDF_TERM_IRI;
+  binding.value = std::string(token.substr(1, token.size() - 2));
+  return binding;
+}
+
+inline bool applyNotEqualFilterDescriptor(
+    BridgeQueryPlan& plan,
+    std::string_view descriptor) {
+  descriptor = stripOuterFilterParens(descriptor);
+  size_t separator = descriptor.find(" != ");
+  if (separator == std::string_view::npos) {
+    return false;
+  }
+  std::string_view left = trimFilterToken(descriptor.substr(0, separator));
+  std::string_view right = trimFilterToken(descriptor.substr(separator + 4));
+  if (left.size() < 2 || left.front() != '?') {
+    return false;
+  }
+  std::string variable(left.substr(1));
+  std::optional<ColumnIndex> column =
+      outputColumnForVariable(plan.output_variables, variable);
+  if (!column.has_value()) {
+    return false;
+  }
+  std::optional<BridgeTermBinding> term = iriFilterBindingFromToken(right);
+  if (!term.has_value()) {
+    return false;
+  }
+
+  BridgeResultModifier modifier;
+  modifier.kind = BridgeResultModifierKind::NotEqualTerm;
+  modifier.columns.push_back(*column);
+  size_t modifier_index = plan.root.result_modifiers.size();
+  plan.root.result_modifiers.push_back(std::move(modifier));
+  plan.modifier_term_bindings.push_back({modifier_index, std::move(*term)});
+  if (plan.descriptor.find("Filter") == std::string::npos) {
+    plan.descriptor += " + Filter";
+  }
+  return true;
+}
+
+inline bool applyGraphPatternFilters(
+    BridgeQueryPlan& plan,
+    const std::vector<SparqlFilter>& filters) {
+  for (const SparqlFilter& filter : filters) {
+    if (!applyNotEqualFilterDescriptor(
+            plan, filter.expression_.getDescriptor())) {
+      return false;
+    }
+  }
+  return true;
+}
+
 inline std::optional<BridgeQueryPlan> planBasicPatternFallback(
     const ParsedQuery& parsed,
     const parsedQuery::BasicGraphPattern& basic,
@@ -1119,6 +1255,11 @@ inline std::optional<BridgeQueryPlan> planValuesBasicJoinFallback(
   return plan;
 }
 
+inline std::optional<BridgeQueryPlan> planParsedGraphPatternFallback(
+    const ParsedQuery& parsed,
+    const parsedQuery::GraphPattern& graph_pattern,
+    const std::optional<BridgeGraphScope>& graph_scope);
+
 inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
     const ParsedQuery& parsed,
     const std::vector<parsedQuery::GraphPatternOperation>& children,
@@ -1134,8 +1275,7 @@ inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
         }
         nested_scope = std::move(local_scope);
       }
-      return planParsedChildrenFallback(
-          parsed, group->_child._graphPatterns, nested_scope);
+      return planParsedGraphPatternFallback(parsed, group->_child, nested_scope);
     }
     const auto* basic = basicPatternFromOperation(children.front());
     if (basic == nullptr) {
@@ -1160,12 +1300,28 @@ inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
   return std::nullopt;
 }
 
+inline std::optional<BridgeQueryPlan> planParsedGraphPatternFallback(
+    const ParsedQuery& parsed,
+    const parsedQuery::GraphPattern& graph_pattern,
+    const std::optional<BridgeGraphScope>& graph_scope) {
+  auto plan = planParsedChildrenFallback(
+      parsed, graph_pattern._graphPatterns, graph_scope);
+  if (!plan.has_value()) {
+    return std::nullopt;
+  }
+  if (!applyGraphPatternFilters(*plan, graph_pattern._filters)) {
+    return std::nullopt;
+  }
+  return plan;
+}
+
 inline std::optional<BridgeQueryPlan> planParsedQuery(
     const ParsedQuery& parsed) {
   if (!parsed.hasSelectClause()) {
     return std::nullopt;
   }
-  return planParsedChildrenFallback(parsed, parsed.children(), std::nullopt);
+  return planParsedGraphPatternFallback(
+      parsed, parsed._rootGraphPattern, std::nullopt);
 }
 
 inline void offsetBridgeOperationIndexes(

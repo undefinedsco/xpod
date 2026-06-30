@@ -4187,3 +4187,44 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally after rebuilding the adapter. Running the runtime smoke with a stale `libxpod_qlever_adapter.a` reproduced `unsupported QLever bridge query`; rebuilding the adapter fixed it.
+
+
+### Task 103: Keep parsed FILTER semantics from being silently dropped
+
+**Files:**
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a linked upstream FILTER smoke**
+
+The real runtime smoke now exercises:
+
+```sparql
+SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o != <urn:tail>) } ORDER BY ?s
+```
+
+The generated smoke requires a `Filter` profile descriptor, requires `urn:s` and `urn:o`, and rejects `urn:tail`. This catches the previous correctness bug where the direct upstream tree failed, the parsed fallback ran the BGP, and `_filters` were silently ignored.
+
+- [x] **Step 2: Add a bounded parsed filter modifier**
+
+The parsed fallback now supports the safe `FILTER(?var != <iri>)` subset when `?var` is still present in the fallback output variables. The filter constant is looked up through `xpod_rdf_backend_v1.lookup_terms(...)`, encoded through `encode_qlever_id`, and applied as a row-level `NotEqualTerm` result modifier before public order/limit/project modifiers. If the constant is absent from the Xpod dictionary, the not-equals filter is a no-op for bound BGP rows. Unsupported filter expressions continue to fail closed instead of being ignored.
+
+This is not a general SPARQL expression engine and does not change the product boundary: the native path remains Cloud Enterprise-only; local deployments do not expose the QLever-compatible adapter or runtime selector.
+
+- [x] **Step 3: Verify linked upstream FILTER execution**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed before implementation: the generated smoke test failed first, then the linked runtime smoke failed with exit `58` because `urn:tail` leaked into the result. After the bounded modifier, both focused tests and the linked runtime smoke pass.

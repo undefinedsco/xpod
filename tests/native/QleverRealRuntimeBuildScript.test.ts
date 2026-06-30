@@ -175,6 +175,9 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('SELECT ?s WHERE { VALUES ?s { <urn:s> <urn:o> } ?s ?p ?o } ORDER BY ?s');
       expect(smoke).toContain('values_profile.find("Values")');
       expect(smoke).toContain('values_json.find("urn:tail") != std::string_view::npos');
+      expect(smoke).toContain('SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o != <urn:tail>) } ORDER BY ?s');
+      expect(smoke).toContain('filter_profile.find("Filter")');
+      expect(smoke).toContain('filter_json.find("urn:tail") != std::string_view::npos');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

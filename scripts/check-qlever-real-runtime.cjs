@@ -686,6 +686,35 @@ int main() {
   if (values_profile.find("OrderBy") == std::string_view::npos) return 53;
   xpod_qlever_adapter_release_result(adapter, &values_result);
 
+  xpod_qlever_query_request filter_request = {};
+  filter_request.sparql = bytes(
+      "SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o != <urn:tail>) } ORDER BY ?s");
+  xpod_qlever_query_result filter_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &filter_request, &filter_result);
+  std::string_view filter_json(
+      filter_result.result_json.data, filter_result.result_json.size);
+  std::string_view filter_profile(
+      filter_result.profile_json.data, filter_result.profile_json.size);
+  std::string_view filter_error(
+      filter_result.error_message.data, filter_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "filter query failed: %.*s\n",
+                 static_cast<int>(filter_error.size()), filter_error.data());
+    return 54;
+  }
+  if (filter_json.find(R"("head":{"vars":["s","o"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "filter head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(filter_json.size()), filter_json.data(),
+                 static_cast<int>(filter_profile.size()), filter_profile.data());
+    return 55;
+  }
+  if (filter_json.find("urn:s") == std::string_view::npos) return 56;
+  if (filter_json.find("urn:o") == std::string_view::npos) return 57;
+  if (filter_json.find("urn:tail") != std::string_view::npos) return 58;
+  if (filter_profile.find("Filter") == std::string_view::npos) return 59;
+  if (filter_profile.find("OrderBy") == std::string_view::npos) return 60;
+  xpod_qlever_adapter_release_result(adapter, &filter_result);
+
   xpod_qlever_adapter_release_result(adapter, &result);
   xpod_qlever_query_request text_request = {};
   text_request.sparql = bytes("SELECT * WHERE { ?text ql:contains-word \"topic\" }");

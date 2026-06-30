@@ -51,6 +51,7 @@ enum class BridgeResultModifierKind {
   OrderBy,
   InternalSort,
   Project,
+  NotEqualTerm,
 };
 
 struct BridgeCandidateOutputColumn {
@@ -64,6 +65,8 @@ struct BridgeResultModifier {
   size_t offset = 0;
   std::vector<ColumnIndex> columns;
   std::vector<bool> descending;
+  uint64_t term_id_bits = 0;
+  bool has_term_id_bits = false;
 };
 
 struct BridgeOperationPlan {
