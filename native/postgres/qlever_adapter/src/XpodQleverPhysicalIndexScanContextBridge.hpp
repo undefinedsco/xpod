@@ -51,6 +51,15 @@ decltype(auto) scanSpecificationFromScanSpecAndBlocks(
   }
 }
 
+template <typename ScanSpecAndBlocks, typename = void>
+struct HasBlockMetadataView : std::false_type {};
+
+template <typename ScanSpecAndBlocks>
+struct HasBlockMetadataView<
+    ScanSpecAndBlocks,
+    decltype(void(std::declval<const ScanSpecAndBlocks&>()
+                      .getBlockMetadataView()))> : std::true_type {};
+
 inline void setQuadSlot(
     xpod_rdf_quad_key& quad,
     char slot,
@@ -112,6 +121,31 @@ std::vector<xpod_rdf_scan_block_metadata> blockMetadataFromQlever(
   return result;
 }
 
+template <typename QleverBlockMetadataRange>
+std::vector<xpod_rdf_scan_block_metadata> blockMetadataFromQleverRange(
+    Permutation::Enum permutation,
+    const QleverBlockMetadataRange& blocks) {
+  std::vector<xpod_rdf_scan_block_metadata> result;
+  for (const auto& block : blocks) {
+    result.push_back(blockMetadataFromQlever(permutation, block));
+  }
+  return result;
+}
+
+template <typename QleverScanSpecAndBlocks>
+std::vector<xpod_rdf_scan_block_metadata>
+blockMetadataFromQleverScanSpecAndBlocks(
+    Permutation::Enum permutation,
+    const QleverScanSpecAndBlocks& scan_spec_and_blocks) {
+  if constexpr (HasBlockMetadataView<QleverScanSpecAndBlocks>::value) {
+    return blockMetadataFromQleverRange(
+        permutation,
+        scan_spec_and_blocks.getBlockMetadataView());
+  } else {
+    return {};
+  }
+}
+
 }  // namespace detail
 
 template <typename Context>
@@ -156,7 +190,12 @@ QleverLazyScanRangeResult lazyScanRangeFromQleverScanSpecAndBlocks(
                             XPOD_RDF_SLOT_PREDICATE |
                             XPOD_RDF_SLOT_OBJECT,
     xpod_rdf_bytes block_metadata_version = {}) {
-  if (!blocks.has_value()) {
+  std::vector<xpod_rdf_scan_block_metadata> selected_blocks =
+      blocks.has_value()
+          ? detail::blockMetadataFromQlever(permutation, blocks.value())
+          : detail::blockMetadataFromQleverScanSpecAndBlocks(
+                permutation, scan_spec_and_blocks);
+  if (selected_blocks.empty()) {
     return {XPOD_RDF_STATUS_UNSUPPORTED, {}};
   }
   const auto& scan_specification =
@@ -165,7 +204,7 @@ QleverLazyScanRangeResult lazyScanRangeFromQleverScanSpecAndBlocks(
       context,
       permutation,
       scan_specification,
-      detail::blockMetadataFromQlever(permutation, blocks.value()),
+      selected_blocks,
       needed_slots,
       block_metadata_version);
 }

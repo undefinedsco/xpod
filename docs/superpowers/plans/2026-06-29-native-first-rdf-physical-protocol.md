@@ -3344,3 +3344,31 @@ bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts --run
 
 Expected: PASS.
 - The remaining gap is applying the equivalent patch to the real upstream QLever source tree / overlay so `IndexScan::getLazyScan(...)` uses this seam in an embedded build.
+
+### Task 82: Support the non-prefiltered `getLazyScan(nullopt)` path
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndexScanContextBridge.hpp`
+- Modify: `tests/native/QleverPhysicalIndexScanContextBridge.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Extend the failing smoke to call `getLazyScan(std::nullopt)`**
+
+The upstream `IndexScan::chunkedIndexScan()` path calls `getLazyScan()` without selected prefilter blocks. The smoke now gives `ScanSpecAndBlocks` its own block metadata view and requires `getLazyScan(std::nullopt)` to scan those blocks through the physical backend.
+
+Expected: FAIL because the bridge treats missing selected blocks as unsupported and returns an empty range.
+
+- [x] **Step 2: Convert `ScanSpecAndBlocks` block metadata views**
+
+When selected `CompressedBlockMetadata` is absent, `lazyScanRangeFromQleverScanSpecAndBlocks(...)` now detects `getBlockMetadataView()` and converts that view to Xpod block metadata. If neither selected blocks nor a metadata view are available, it still fails closed.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts --run
+```
+
+Expected: PASS.
+- The remaining gap is the real upstream source overlay/patch and limit/offset/column-subset parity.

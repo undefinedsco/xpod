@@ -118,6 +118,18 @@ class InputRangeTypeErased {
 
 class CompressedRelationReader {
  public:
+  struct CompressedBlockMetadata {
+    struct PermutedTriple {
+      Id col0Id_;
+      Id col1Id_;
+      Id col2Id_;
+      Id graphId_;
+    };
+    size_t blockIndex_ = 0;
+    size_t numRows_ = 0;
+    PermutedTriple firstTriple_;
+    PermutedTriple lastTriple_;
+  };
   struct ScanSpecification {
     std::optional<Id> col0;
     std::optional<Id> col1;
@@ -128,6 +140,10 @@ class CompressedRelationReader {
   };
   struct ScanSpecAndBlocks {
     ScanSpecification scanSpec_;
+    std::vector<CompressedBlockMetadata> blockMetadata_;
+    const std::vector<CompressedBlockMetadata>& getBlockMetadataView() const {
+      return blockMetadata_;
+    }
   };
   struct LazyScanMetadata {
     size_t numBlocksRead_ = 0;
@@ -286,18 +302,7 @@ int main() {
 
 #include <optional>
 
-struct CompressedBlockMetadata {
-  struct PermutedTriple {
-    Id col0Id_;
-    Id col1Id_;
-    Id col2Id_;
-    Id graphId_;
-  };
-  size_t blockIndex_ = 0;
-  size_t numRows_ = 0;
-  PermutedTriple firstTriple_;
-  PermutedTriple lastTriple_;
-};
+using CompressedBlockMetadata = CompressedRelationReader::CompressedBlockMetadata;
 
 class QueryExecutionContext {
  public:
@@ -406,6 +411,7 @@ int main() {
       Id::fromBits(303),
       Id::fromBits(404)};
   CompressedBlockMetadata block = {7, 1, triple, triple};
+  scan_spec_and_blocks.blockMetadata_ = {block};
 
   IndexScan scan(qec, Permutation::Enum::SPO, scan_spec_and_blocks);
   auto range = scan.getLazyScan(std::vector<CompressedBlockMetadata>{block});
@@ -416,6 +422,15 @@ int main() {
   if ((*table)(0, 0).getBits() != 101 || (*table)(0, 1).getBits() != 303) return 3;
   if (range.get().has_value()) return 4;
   if (state.scan_calls != 1) return 5;
+
+  auto all_block_range = scan.getLazyScan(std::nullopt);
+  auto all_block_table = all_block_range.get();
+  if (!all_block_table.has_value()) return 6;
+  if (all_block_table->numColumns() != 2 || all_block_table->numRows() != 1) return 7;
+  if ((*all_block_table)(0, 0).getBits() != 101 ||
+      (*all_block_table)(0, 1).getBits() != 303) return 8;
+  if (all_block_range.get().has_value()) return 9;
+  if (state.scan_calls != 2) return 10;
   return 0;
 }
 `, 'utf8');
