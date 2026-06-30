@@ -590,12 +590,13 @@ static xpod_rdf_status lookup_terms(
     xpod_rdf_term_key* out_keys,
     xpod_rdf_status* out_statuses) {
   if (term_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
   std::string_view value(terms[0].value.data, terms[0].value.size);
-  if (value == "urn:tail") {
+  if (terms[0].kind == XPOD_RDF_TERM_IRI && value == "urn:tail") {
     out_keys[0] = 70;
-  } else if (value == "urn:o") {
+  } else if (terms[0].kind == XPOD_RDF_TERM_IRI && value == "urn:o") {
     out_keys[0] = 30;
+  } else if (terms[0].kind == XPOD_RDF_TERM_LITERAL && value == "literal-value") {
+    out_keys[0] = 80;
   } else {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
@@ -646,7 +647,21 @@ int main() {
   if (status != XPOD_RDF_STATUS_OK) return 18;
   if (!equal_plan->root.result_modifiers[0].has_term_id_bits) return 19;
   if (equal_plan->root.result_modifiers[0].term_id_bits != 1030) return 20;
-  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 21;
+
+  auto literal_plan = xpod::qlever::planParsedQuery(ParsedQuery::filterObjectEqualsLiteralSelect());
+  if (!literal_plan.has_value()) return 21;
+  if (literal_plan->root.result_modifiers.size() != 1) return 22;
+  const auto& literal_modifier = literal_plan->root.result_modifiers[0];
+  if (literal_modifier.kind != xpod::qlever::BridgeResultModifierKind::EqualTerm) return 23;
+  if (literal_modifier.columns.size() != 1 || literal_modifier.columns[0] != 1) return 24;
+  if (literal_plan->modifier_term_bindings.size() != 1) return 25;
+  if (literal_plan->modifier_term_bindings[0].term.kind != XPOD_RDF_TERM_LITERAL) return 26;
+  if (literal_plan->modifier_term_bindings[0].term.value != "literal-value") return 27;
+  status = xpod::qlever::bindPlanTerms(physical, snapshot, *literal_plan, error);
+  if (status != XPOD_RDF_STATUS_OK) return 28;
+  if (!literal_plan->root.result_modifiers[0].has_term_id_bits) return 29;
+  if (literal_plan->root.result_modifiers[0].term_id_bits != 1080) return 30;
+  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 31;
   return 0;
 }
 `, 'utf8');

@@ -25,6 +25,7 @@ describe('QLever product boundary', () => {
     }
     expect(spec).not.toContain("Xpod's PG/SQLite RDF engine");
     expect(spec).toContain("Xpod's Cloud Enterprise PostgreSQL-backed RDF engine");
+    expect(spec).toContain('Xpod-backed text scans require physical `TEXT_SEARCH`; QLever native postings are never an Xpod fallback');
     expect(performancePlan).toContain('public cloud configuration stays on `pg-hot-operators`');
     expect(rdfEngineSpec).toContain('QLever-compatible native acceleration 是 **Cloud Enterprise-only**');
     expect(rdfEngineSpec).toContain('local 不提供、不预留 runtime selector');

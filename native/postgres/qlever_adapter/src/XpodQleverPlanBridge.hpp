@@ -1127,6 +1127,61 @@ inline std::optional<BridgeTermBinding> iriFilterBindingFromToken(
   return binding;
 }
 
+inline std::optional<BridgeTermBinding> literalFilterBindingFromToken(
+    std::string_view token) {
+  token = trimFilterToken(token);
+  if (token.empty() || token.front() != '"') {
+    return std::nullopt;
+  }
+
+  size_t end = 1;
+  bool escaped = false;
+  for (; end < token.size(); ++end) {
+    char c = token[end];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (c == '"') {
+      break;
+    }
+  }
+  if (end >= token.size()) {
+    return std::nullopt;
+  }
+
+  BridgeTermBinding binding;
+  binding.kind = XPOD_RDF_TERM_LITERAL;
+  binding.value = std::string(token.substr(1, end - 1));
+
+  std::string_view suffix(token.data() + end + 1, token.size() - end - 1);
+  if (suffix.empty()) {
+    return binding;
+  }
+  if (suffix.front() == '@') {
+    binding.language = std::string(suffix.substr(1));
+    return binding;
+  }
+  if (suffix.size() >= 4 && suffix.substr(0, 3) == "^^<" &&
+      suffix.back() == '>') {
+    binding.datatype_iri = std::string(suffix.substr(3, suffix.size() - 4));
+    return binding;
+  }
+  return std::nullopt;
+}
+
+inline std::optional<BridgeTermBinding> filterBindingFromToken(
+    std::string_view token) {
+  if (auto iri = iriFilterBindingFromToken(token); iri.has_value()) {
+    return iri;
+  }
+  return literalFilterBindingFromToken(token);
+}
+
 inline bool applyNotEqualFilterDescriptor(
     BridgeQueryPlan& plan,
     std::string_view descriptor) {
@@ -1146,7 +1201,7 @@ inline bool applyNotEqualFilterDescriptor(
   if (!column.has_value()) {
     return false;
   }
-  std::optional<BridgeTermBinding> term = iriFilterBindingFromToken(right);
+  std::optional<BridgeTermBinding> term = filterBindingFromToken(right);
   if (!term.has_value()) {
     return false;
   }
@@ -1182,7 +1237,7 @@ inline bool applyEqualFilterDescriptor(
   if (!column.has_value()) {
     return false;
   }
-  std::optional<BridgeTermBinding> term = iriFilterBindingFromToken(right);
+  std::optional<BridgeTermBinding> term = filterBindingFromToken(right);
   if (!term.has_value()) {
     return false;
   }

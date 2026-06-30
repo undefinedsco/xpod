@@ -252,6 +252,8 @@ static xpod_rdf_status resolve_terms(
     out_terms[i].kind = XPOD_RDF_TERM_IRI;
     if (keys[i] == 10) {
       out_terms[i].value = bytes("urn:s");
+    } else if (keys[i] == 15) {
+      out_terms[i].value = bytes("urn:literal-s");
     } else if (keys[i] == 20) {
       out_terms[i].value = bytes("urn:p");
     } else if (keys[i] == 21) {
@@ -266,6 +268,9 @@ static xpod_rdf_status resolve_terms(
       out_terms[i].value = bytes("urn:entity");
     } else if (keys[i] == 70) {
       out_terms[i].value = bytes("urn:tail");
+    } else if (keys[i] == 80) {
+      out_terms[i].kind = XPOD_RDF_TERM_LITERAL;
+      out_terms[i].value = bytes("literal-value");
     } else {
       std::fprintf(stderr, "unexpected term key: %llu\n", static_cast<unsigned long long>(keys[i]));
       out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
@@ -275,10 +280,10 @@ static xpod_rdf_status resolve_terms(
 }
 
 static xpod_rdf_status estimate_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_estimate* out_estimate) {
-  out_estimate->rows = 2;
-  out_estimate->distinct_subjects = 2;
+  out_estimate->rows = 3;
+  out_estimate->distinct_subjects = 3;
   out_estimate->distinct_predicates = 2;
-  out_estimate->distinct_objects = 2;
+  out_estimate->distinct_objects = 3;
   out_estimate->distinct_graphs = 1;
   out_estimate->selectivity = 1.0;
   out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
@@ -286,7 +291,7 @@ static xpod_rdf_status estimate_scan(void*, const xpod_rdf_scan_request*, xpod_r
 }
 
 static xpod_rdf_status count_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_count_result* out_result) {
-  out_result->count = 2;
+  out_result->count = 3;
   out_result->confidence = XPOD_RDF_ESTIMATE_EXACT;
   return XPOD_RDF_STATUS_OK;
 }
@@ -337,6 +342,10 @@ static xpod_rdf_status lookup_terms(
     } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
         bytes_equal(terms[i].value, "urn:tail")) {
       out_keys[i] = 70;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_LITERAL &&
+        bytes_equal(terms[i].value, "literal-value")) {
+      out_keys[i] = 80;
       out_statuses[i] = XPOD_RDF_STATUS_OK;
     } else {
       out_keys[i] = 0;
@@ -410,6 +419,7 @@ static xpod_rdf_status estimate_distinct(
   ++state->estimate_distinct_calls;
   const xpod_rdf_quad_key rows[] = {
       {10, 20, 30, 40},
+      {15, 20, 80, 40},
       {30, 21, 70, 40},
   };
   uint64_t matched_count = 0;
@@ -436,9 +446,10 @@ static xpod_rdf_status scan_permutation(
   ++state->scan_calls;
   const xpod_rdf_quad_key rows[] = {
       {10, 20, 30, 40},
+      {15, 20, 80, 40},
       {30, 21, 70, 40},
   };
-  xpod_rdf_quad_key matched[2] = {};
+  xpod_rdf_quad_key matched[3] = {};
   size_t matched_count = 0;
   for (const auto& row : rows) {
     if (matches_pattern(request->pattern, row)) {
@@ -747,6 +758,39 @@ int main() {
   if (equal_filter_profile.find("Filter") == std::string_view::npos) return 70;
   if (equal_filter_profile.find("OrderBy") == std::string_view::npos) return 71;
   xpod_qlever_adapter_release_result(adapter, &equal_filter_result);
+
+  xpod_qlever_query_request literal_filter_request = {};
+  literal_filter_request.sparql = bytes(
+      "SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o = \"literal-value\") } ORDER BY ?s");
+  xpod_qlever_query_result literal_filter_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &literal_filter_request, &literal_filter_result);
+  std::string_view literal_filter_json(
+      literal_filter_result.result_json.data, literal_filter_result.result_json.size);
+  std::string_view literal_filter_profile(
+      literal_filter_result.profile_json.data, literal_filter_result.profile_json.size);
+  std::string_view literal_filter_error(
+      literal_filter_result.error_message.data, literal_filter_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "literal filter query failed: %.*s\n",
+                 static_cast<int>(literal_filter_error.size()),
+                 literal_filter_error.data());
+    return 72;
+  }
+  if (literal_filter_json.find(R"("head":{"vars":["s","o"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "literal filter head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(literal_filter_json.size()),
+                 literal_filter_json.data(),
+                 static_cast<int>(literal_filter_profile.size()),
+                 literal_filter_profile.data());
+    return 73;
+  }
+  if (literal_filter_json.find("urn:literal-s") == std::string_view::npos) return 74;
+  if (literal_filter_json.find("literal-value") == std::string_view::npos) return 75;
+  if (literal_filter_json.find("urn:tail") != std::string_view::npos) return 76;
+  if (literal_filter_profile.find("Filter") == std::string_view::npos) return 77;
+  if (literal_filter_profile.find("OrderBy") == std::string_view::npos) return 78;
+  xpod_qlever_adapter_release_result(adapter, &literal_filter_result);
 
   xpod_qlever_query_request ask_request = {};
   ask_request.sparql = bytes("ASK { ?s ?p ?o }");

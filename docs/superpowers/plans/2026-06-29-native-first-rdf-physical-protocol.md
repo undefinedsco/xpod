@@ -4313,3 +4313,58 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally after rebuilding the adapter.
+
+
+### Task 106: Bind bounded literal FILTER constants through the physical dictionary
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `tests/native/QleverProductBoundary.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add literal FILTER regression gates**
+
+The focused plan-bridge smoke now requires `FILTER(?o = "literal-value")` to produce an `EqualTerm` result modifier with an `XPOD_RDF_TERM_LITERAL` binding. The linked real-runtime smoke also issues:
+
+```sparql
+SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o = "literal-value") } ORDER BY ?s
+```
+
+The smoke requires the public `?s ?o` head, requires `urn:literal-s` and the literal binding, rejects `urn:tail`, and requires `Filter` / `OrderBy` profile markers.
+
+Observed before implementation: the focused smoke failed with exit `21` because the parsed filter bridge only accepted IRI constants.
+
+- [x] **Step 2: Parse literal filter tokens at the filter-binding seam**
+
+`filterBindingFromToken(...)` now accepts either `<iri>` or a quoted literal token with optional language/datatype suffix. Equality and inequality filter descriptors both use this term-binding seam, so constants continue to bind through `lookup_terms(...)` / `encode_qlever_id(...)`. The executor still compares encoded term ids; it does not compare raw lexical strings.
+
+This remains a bounded bridge seam, not a general SPARQL expression evaluator.
+
+- [x] **Step 3: Reassert product boundary**
+
+The product-boundary test and spec now make the deployment rule explicit: Xpod-backed text scans require physical `TEXT_SEARCH`; QLever native postings are never an Xpod fallback. Local deployments still do not expose the QLever-compatible adapter or runtime selector; this path remains Cloud Enterprise-only.
+
+- [x] **Step 4: Verify focused behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts tests/native/QleverProductBoundary.test.ts --run
+```
+
+Observed: PASS locally:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts tests/native/QleverProductBoundary.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+bun test tests/native --run
+bun run build:ts
+git diff --check
+```
+
+`tests/native` passed with `131 pass`, `0 fail`. The linked runtime smoke passed with expected local linker/runtime warnings only.
