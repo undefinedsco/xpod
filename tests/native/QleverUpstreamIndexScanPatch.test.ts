@@ -97,7 +97,7 @@ CompressedRelationReader::IdTableGeneratorInputRange IndexScan::getLazyScan(
 `;
 
 describe('QLever upstream IndexScan patch asset', () => {
-  it('applies to the upstream-shaped IndexScan getLazyScan source and preserves QLever fallback', async () => {
+  it('applies to the upstream-shaped IndexScan source and only preserves QLever fallback when no Xpod index is injected', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-indexscan-patch-'));
     try {
       const qleverSource = path.join(root, 'qlever');
@@ -116,16 +116,21 @@ describe('QLever upstream IndexScan patch asset', () => {
 
       const patched = await readFile(indexScanPath, 'utf8');
       expect(patched).toContain('"XpodQleverPhysicalIndexScanContextBridge.hpp"');
+      expect(patched).toContain('xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr');
       expect(patched).toContain('xpod::qlever::materializedScanFromQleverScanSpecAndBlocks');
       expect(patched).toContain('xpodMaterializedScan.status == XPOD_RDF_STATUS_OK');
+      expect(patched).toContain('AD_CONTRACT_CHECK(xpodMaterializedScan.status == XPOD_RDF_STATUS_OK);');
       expect(patched).toContain('xpod::qlever::sizeEstimateFromQleverScanSpecAndBlocks');
+      expect(patched).toContain('AD_CONTRACT_CHECK(xpodSizeEstimate.status == XPOD_RDF_STATUS_OK);');
       expect(patched).toContain('xpod::qlever::exactSizeFromQleverScanSpecAndBlocks');
       expect(patched).toContain('xpodExactSize.status == XPOD_RDF_STATUS_OK');
+      expect(patched).toContain('AD_CONTRACT_CHECK(xpodExactSize.status == XPOD_RDF_STATUS_OK);');
       expect(patched).toContain('xpod::qlever::canUsePhysicalScanSpecAndBlocks');
       expect(patched).toContain('BlockMetadataRanges{}');
       expect(patched).toContain('xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks');
       expect(patched).toContain('!scanSpecAndBlocksIsPrefiltered_');
       expect(patched).toContain('xpodLazyScan.status == XPOD_RDF_STATUS_OK');
+      expect(patched).toContain('AD_CONTRACT_CHECK(xpodLazyScan.status == XPOD_RDF_STATUS_OK);');
       expect(patched).toContain('permutation().getSizeEstimateForScan(');
       expect(patched).toContain('permutation().getResultSizeOfScan(');
       expect(patched).toContain('permutation().getScanSpecAndBlocks(');

@@ -67,6 +67,11 @@ async function writeRequiredQleverConfigureSkeleton(
     patchedTextIndexScanForWordSource,
     'utf8',
   );
+  await writeFile(
+    path.join(qleverSource, 'src/engine/TextIndexScanForEntity.cpp'),
+    patchedTextIndexScanForEntitySource,
+    'utf8',
+  );
   await writePatchedLibcxxSources(qleverSource);
 }
 
@@ -76,6 +81,15 @@ const patchedTextIndexScanForWordSource = `
 void xpod_text_overlay_marker() {
   (void)"textWordResultFromContext";
   (void)"textWordSizeEstimateFromContext";
+}
+`;
+
+const patchedTextIndexScanForEntitySource = `
+#include "engine/TextIndexScanForEntity.h"
+#include "XpodQleverPhysicalTextIndexScanContextBridge.hpp"
+void xpod_text_entity_overlay_marker() {
+  (void)"textEntityResultFromContext";
+  (void)"textEntitySizeEstimateFromContext";
 }
 `;
 
@@ -332,6 +346,11 @@ class Operation {
         patchedTextIndexScanForWordSource,
         'utf8',
       );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/TextIndexScanForEntity.cpp'),
+        patchedTextIndexScanForEntitySource,
+        'utf8',
+      );
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
@@ -518,6 +537,48 @@ class Permutation {
       }
       expect(output).toContain('src/engine/TextIndexScanForWord.cpp is not patched');
       expect(output).toContain('Xpod text-index');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree whose TextIndexScanForEntity overlay is missing', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-unpatched-text-entity-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await writeRequiredQleverConfigureSkeleton(
+        qleverSource,
+        'void xpod_overlay_marker() { (void)"materializedScanFromQleverScanSpecAndBlocks"; (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; (void)"sizeEstimateFromQleverScanSpecAndBlocks"; (void)"exactSizeFromQleverScanSpecAndBlocks"; (void)"canUsePhysicalScanSpecAndBlocks"; }\n',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/QueryExecutionContext.h'),
+        patchedQueryExecutionContextHeader,
+        'utf8',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/TextIndexScanForEntity.cpp'),
+        '#include "engine/TextIndexScanForEntity.h"\nvoid unpatched_text_entity() {}\n',
+        'utf8',
+      );
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('src/engine/TextIndexScanForEntity.cpp is not patched');
+      expect(output).toContain('text-index entity');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

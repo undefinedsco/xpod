@@ -176,6 +176,7 @@ struct QueryExecutionContext {
 };
 
 static int text_search_calls = 0;
+static int lookup_term_calls = 0;
 
 static xpod_rdf_status get_capabilities(
     void*,
@@ -192,6 +193,21 @@ static xpod_rdf_status encode_qlever_id(
   return XPOD_RDF_STATUS_OK;
 }
 
+static xpod_rdf_status lookup_term(
+    void*,
+    const xpod_rdf_term* term,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_key) {
+  ++lookup_term_calls;
+  if (term->kind != XPOD_RDF_TERM_IRI ||
+      term->value.size != 10 ||
+      std::memcmp(term->value.data, "urn:entity", 10) != 0) {
+    return XPOD_RDF_STATUS_NOT_FOUND;
+  }
+  *out_key = 77;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status estimate_text_search(
     void*,
     const xpod_rdf_text_search_request* request,
@@ -199,7 +215,12 @@ static xpod_rdf_status estimate_text_search(
   if (request->query.size != 7 || std::memcmp(request->query.data, "runtime", 7) != 0) {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
-  out_estimate->rows = 2;
+  if (request->required_entities_size > 0 &&
+      (request->required_entities_size != 1 ||
+       request->required_entities[0] != 77)) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  out_estimate->rows = request->required_entities_size == 1 ? 1 : 2;
   out_estimate->startup_cost = 3;
   out_estimate->cpu_cost = 4;
   out_estimate->io_cost = 5;
@@ -216,14 +237,23 @@ static xpod_rdf_status text_search(
   if (request->query.size != 7 || std::memcmp(request->query.data, "runtime", 7) != 0) {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
+  if (request->required_entities_size > 0 &&
+      (request->required_entities_size != 1 ||
+       request->required_entities[0] != 77)) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
   xpod_rdf_candidate rows[2] = {};
   rows[0].retrieval_point = 41;
   rows[0].has_retrieval_point = 1;
+  rows[0].resource_term = request->required_entities_size == 1 ? 77 : 51;
+  rows[0].has_resource_term = 1;
   rows[1].retrieval_point = 42;
   rows[1].has_retrieval_point = 1;
+  rows[1].resource_term = 52;
+  rows[1].has_resource_term = 1;
   xpod_rdf_candidate_batch batch = {};
   batch.rows = rows;
-  batch.row_count = 2;
+  batch.row_count = request->required_entities_size == 1 ? 1 : 2;
   batch.scanned_rows = 9;
   return on_batch(callback_user_data, &batch);
 }
@@ -245,6 +275,7 @@ int main() {
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
   raw_backend.get_capabilities = get_capabilities;
+  raw_backend.lookup_term = lookup_term;
   raw_backend.encode_qlever_id = encode_qlever_id;
   raw_backend.estimate_text_search = estimate_text_search;
   raw_backend.text_search = text_search;
@@ -290,6 +321,41 @@ int main() {
   auto unsupported = xpod::qlever::textWordResultFromContext(
       no_text_qec, "runtime", false, false, {ColumnIndex{0}});
   if (unsupported.status != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
+  auto entity_estimate = xpod::qlever::textEntitySizeEstimateFromContext(
+      qec, "runtime", false, "", false);
+  if (entity_estimate.status != XPOD_RDF_STATUS_OK) return 15;
+  if (entity_estimate.rows != 2 || entity_estimate.cost != 12) return 16;
+
+  auto variable_entity = xpod::qlever::textEntityResultFromContext(
+      qec, "runtime", false, "", false, {ColumnIndex{0}});
+  if (variable_entity.status != XPOD_RDF_STATUS_OK) return 17;
+  if (variable_entity.result.idTable().numColumns() != 2) return 18;
+  if (variable_entity.result.idTable().numRows() != 2) return 19;
+  if (variable_entity.result.idTable()(0, 0).getBits() != 1041) return 20;
+  if (variable_entity.result.idTable()(0, 1).getBits() != 1051) return 21;
+  if (variable_entity.result.idTable()(1, 0).getBits() != 1042) return 22;
+  if (variable_entity.result.idTable()(1, 1).getBits() != 1052) return 23;
+
+  auto fixed_estimate = xpod::qlever::textEntitySizeEstimateFromContext(
+      qec, "runtime", true, "<urn:entity>", false);
+  if (fixed_estimate.status != XPOD_RDF_STATUS_OK) return 24;
+  if (fixed_estimate.rows != 1 || fixed_estimate.cost != 12) return 25;
+
+  auto fixed_entity = xpod::qlever::textEntityResultFromContext(
+      qec, "runtime", true, "<urn:entity>", false, {ColumnIndex{0}});
+  if (fixed_entity.status != XPOD_RDF_STATUS_OK) return 26;
+  if (fixed_entity.result.idTable().numColumns() != 1) return 27;
+  if (fixed_entity.result.idTable().numRows() != 1) return 28;
+  if (fixed_entity.result.idTable()(0, 0).getBits() != 1041) return 29;
+  if (lookup_term_calls != 2) return 30;
+
+  auto entity_score = xpod::qlever::textEntityResultFromContext(
+      qec, "runtime", false, "", true, {ColumnIndex{0}});
+  if (entity_score.status != XPOD_RDF_STATUS_UNSUPPORTED) return 31;
+
+  auto entity_unsupported = xpod::qlever::textEntityResultFromContext(
+      no_text_qec, "runtime", false, "", false, {ColumnIndex{0}});
+  if (entity_unsupported.status != XPOD_RDF_STATUS_UNSUPPORTED) return 32;
   return 0;
 }
 `, 'utf8');

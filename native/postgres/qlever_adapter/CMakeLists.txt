@@ -123,6 +123,14 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "src/engine/TextIndexScanForWord.cpp"
     "textWordSizeEstimateFromContext"
     "Xpod text-index word overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/TextIndexScanForEntity.cpp"
+    "textEntityResultFromContext"
+    "Xpod text-index entity overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/TextIndexScanForEntity.cpp"
+    "textEntitySizeEstimateFromContext"
+    "Xpod text-index entity overlay")
 
   xpod_qlever_require_overlay_token(
     "src/parser/NormalizedString.h"
