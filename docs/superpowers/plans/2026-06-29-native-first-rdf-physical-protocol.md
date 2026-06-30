@@ -3284,3 +3284,33 @@ bun test tests/native/QleverExecutorPlannerContextProvider.test.ts --run -t "phy
 
 Expected: PASS.
 - The next gap is patching or embedding QLever `IndexScan::getLazyScan()` / `Permutation::lazyScan(...)` to fetch this physical index and call `lazyScanRange(...)`.
+
+### Task 80: Add the upstream-shaped lazy scan context bridge
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndexScanContextBridge.hpp`
+- Add: `tests/native/QleverPhysicalIndexScanContextBridge.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing context lazy-scan smoke**
+
+Add a native smoke where an upstream-shaped `QueryExecutionContext` stores the injected `XpodQleverPhysicalIndex` and exposes `xpodPhysicalIndex()`. The smoke calls `lazyScanRangeFromContext(...)` with a QLever `ScanSpecification`-shaped object and a selected block, then requires the backend scan request to receive the mapped predicate key, needed slots, and selected block metadata.
+
+Expected: FAIL because there is no context-to-physical-index lazy scan bridge header.
+
+- [x] **Step 2: Add the minimal context bridge**
+
+Add `XpodQleverPhysicalIndexScanContextBridge.hpp` with `physicalIndexFromContext(...)` and `lazyScanRangeFromContext(...)`. The bridge only retrieves the already-injected physical index from an upstream context, maps the QLever scan specification through `XpodQleverPhysicalPermutation::getScanSpecAndBlocks(...)`, and delegates to `lazyScanRange(...)`.
+
+This is intentionally not a planner or executor. It is the small patch target for upstream `Permutation::lazyScan(...)` / `IndexScan::getLazyScan()` code that already owns block selection and lazy execution policy.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts --run
+```
+
+Expected: PASS.
+- The remaining gap is applying this bridge inside the real embedded/patched QLever call path instead of calling it from an external smoke.
