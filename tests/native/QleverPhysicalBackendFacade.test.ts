@@ -221,6 +221,37 @@ static xpod_rdf_status histogram_hints(
   return on_batch(callback_user_data, &batch);
 }
 
+static xpod_rdf_status scan_block_metadata(
+    void* backend_user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_scan_block_metadata_batch_callback on_batch,
+    void* callback_user_data) {
+  int* calls = static_cast<int*>(backend_user_data);
+  *calls += 200000000;
+  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT ||
+      request->source_scope.local_path_prefix.size != 6 ||
+      request->pattern.has_predicate != 1) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_scan_block_metadata rows[2] = {};
+  rows[0].block_id = 1001;
+  rows[0].first_quad = {10, 5, 30, 201};
+  rows[0].last_quad = {19, 5, 39, 201};
+  rows[0].row_count = 10;
+  rows[0].sorted_slots = XPOD_RDF_SLOT_SUBJECT;
+  rows[1].block_id = 1002;
+  rows[1].first_quad = {20, 5, 40, 202};
+  rows[1].last_quad = {29, 5, 49, 202};
+  rows[1].row_count = 10;
+  rows[1].sorted_slots = XPOD_RDF_SLOT_SUBJECT;
+  xpod_rdf_scan_block_metadata_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 2;
+  batch.total_blocks = 4;
+  batch.metadata_version = {"blocks-v1", 9};
+  return on_batch(callback_user_data, &batch);
+}
+
 static xpod_rdf_status get_capabilities(
     void* backend_user_data,
     xpod_rdf_backend_capabilities* out_capabilities) {
@@ -233,7 +264,8 @@ static xpod_rdf_status get_capabilities(
       XPOD_RDF_BACKEND_FEATURE_GRAPH_SCOPE |
       XPOD_RDF_BACKEND_FEATURE_SOURCE_SCOPE |
       XPOD_RDF_BACKEND_FEATURE_ACCESS_SCOPE |
-      XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH;
+      XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH |
+      XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA;
   out_capabilities->max_batch_size = 4096;
   out_capabilities->backend_name = {"postgres-rdf3x", 14};
   out_capabilities->backend_version = {"0.13", 4};
@@ -258,6 +290,7 @@ int main() {
   backend.estimate_source_scope = estimate_source_scope;
   backend.resolve_source_scope = resolve_source_scope;
   backend.histogram_hints = histogram_hints;
+  backend.scan_block_metadata = scan_block_metadata;
   backend.get_capabilities = get_capabilities;
 
   xpod::rdf::PhysicalBackend physical(&backend);
@@ -351,12 +384,34 @@ int main() {
   if (histogram_row_count != 1) return 24;
   if (histogram_rows[0].rows != 7 || histogram_rows[0].distinct_terms != 3) return 25;
   if (histogram_stats_version.size != 8) return 26;
+  xpod_rdf_scan_request block_request = {};
+  block_request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  block_request.source_scope = source_scope;
+  block_request.pattern.has_predicate = 1;
+  block_request.pattern.predicate = 5;
+  xpod_rdf_scan_block_metadata block_rows[4] = {};
+  size_t block_row_count = 0;
+  xpod_rdf_bytes block_metadata_version = {};
+  auto on_scan_block_metadata = [](void* user_data, const xpod_rdf_scan_block_metadata_batch* batch) -> xpod_rdf_status {
+    auto* state = static_cast<std::pair<xpod_rdf_scan_block_metadata*, size_t*>*>(user_data);
+    for (size_t i = 0; i < batch->row_count; ++i) {
+      state->first[*state->second + i] = batch->rows[i];
+    }
+    *state->second += batch->row_count;
+    return XPOD_RDF_STATUS_OK;
+  };
+  std::pair<xpod_rdf_scan_block_metadata*, size_t*> block_state{block_rows, &block_row_count};
+  if (physical.scanBlockMetadata(block_request, on_scan_block_metadata, &block_state, block_metadata_version) != XPOD_RDF_STATUS_OK) return 40;
+  if (block_row_count != 2) return 41;
+  if (block_rows[0].block_id != 1001 || block_rows[1].last_quad.object != 49) return 42;
+  if (block_metadata_version.size != 9) return 43;
   xpod_rdf_backend_capabilities capabilities = {};
   if (physical.getCapabilities(capabilities) != XPOD_RDF_STATUS_OK) return 35;
   if ((capabilities.supported_permutations & XPOD_RDF_PERM_CAP_POSG) == 0) return 36;
   if ((capabilities.features & XPOD_RDF_BACKEND_FEATURE_SLOT_RANGES) == 0) return 37;
+  if ((capabilities.features & XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA) == 0) return 45;
   if (capabilities.max_batch_size != 4096 || capabilities.backend_name.size != 14) return 38;
-  if (calls != 1111110111) return 16;
+  if (calls != 1311110111) return 16;
 
   xpod_rdf_backend_v1 truncated = {};
   truncated.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -367,7 +422,7 @@ int main() {
   xpod_rdf_term_key lookup_key = 0;
   if (truncated_physical.lookupTerm(terms[0], snapshot, lookup_key) != XPOD_RDF_STATUS_UNSUPPORTED) return 12;
   if (lookup_key != 0) return 13;
-  if (calls != 1111110111) return 14;
+  if (calls != 1311110111) return 14;
 
   xpod_rdf_backend_v1 missing = {};
   missing.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
@@ -381,6 +436,7 @@ int main() {
   if (unsupported.resolveSourceScope(source_scope, snapshot, resolved_source_scope) != XPOD_RDF_STATUS_UNSUPPORTED) return 31;
   if (unsupported.prefixRange(prefix_request, on_prefix_ranges, &prefix_state, prefix_collation) != XPOD_RDF_STATUS_UNSUPPORTED) return 22;
   if (unsupported.histogramHints(histogram_request, on_histogram_hints, &histogram_state, histogram_stats_version) != XPOD_RDF_STATUS_UNSUPPORTED) return 27;
+  if (unsupported.scanBlockMetadata(block_request, on_scan_block_metadata, &block_state, block_metadata_version) != XPOD_RDF_STATUS_UNSUPPORTED) return 44;
   if (unsupported.getCapabilities(capabilities) != XPOD_RDF_STATUS_UNSUPPORTED) return 39;
 
   return 0;

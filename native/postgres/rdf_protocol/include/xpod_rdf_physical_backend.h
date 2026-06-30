@@ -116,7 +116,8 @@ typedef enum xpod_rdf_backend_feature {
   XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH = 1u << 6,
   XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH = 1u << 7,
   XPOD_RDF_BACKEND_FEATURE_HISTOGRAM_HINTS = 1u << 8,
-  XPOD_RDF_BACKEND_FEATURE_DISTINCT_ESTIMATE = 1u << 9
+  XPOD_RDF_BACKEND_FEATURE_DISTINCT_ESTIMATE = 1u << 9,
+  XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA = 1u << 10
 } xpod_rdf_backend_feature;
 
 typedef struct xpod_rdf_backend_capabilities {
@@ -264,6 +265,25 @@ typedef struct xpod_rdf_quad_batch {
 typedef xpod_rdf_status (*xpod_rdf_quad_batch_callback)(
     void* callback_user_data,
     const xpod_rdf_quad_batch* batch);
+
+typedef struct xpod_rdf_scan_block_metadata {
+  uint64_t block_id;
+  xpod_rdf_quad_key first_quad;
+  xpod_rdf_quad_key last_quad;
+  uint64_t row_count;
+  uint32_t sorted_slots;
+} xpod_rdf_scan_block_metadata;
+
+typedef struct xpod_rdf_scan_block_metadata_batch {
+  const xpod_rdf_scan_block_metadata* rows;
+  size_t row_count;
+  uint64_t total_blocks;
+  xpod_rdf_bytes metadata_version;
+} xpod_rdf_scan_block_metadata_batch;
+
+typedef xpod_rdf_status (*xpod_rdf_scan_block_metadata_batch_callback)(
+    void* callback_user_data,
+    const xpod_rdf_scan_block_metadata_batch* batch);
 
 typedef enum xpod_rdf_estimate_confidence {
   XPOD_RDF_ESTIMATE_EXACT = 1,
@@ -529,6 +549,12 @@ typedef xpod_rdf_status (*xpod_rdf_scan_permutation_fn)(
     xpod_rdf_quad_batch_callback on_batch,
     void* callback_user_data);
 
+typedef xpod_rdf_status (*xpod_rdf_scan_block_metadata_fn)(
+    void* backend_user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_scan_block_metadata_batch_callback on_batch,
+    void* callback_user_data);
+
 typedef xpod_rdf_status (*xpod_rdf_count_scan_fn)(
     void* backend_user_data,
     const xpod_rdf_scan_request* request,
@@ -660,6 +686,7 @@ typedef struct xpod_rdf_backend_v1 {
   xpod_rdf_resolve_source_scope_fn resolve_source_scope;
   xpod_rdf_estimate_distinct_fn estimate_distinct;
   xpod_rdf_backend_capabilities_fn get_capabilities;
+  xpod_rdf_scan_block_metadata_fn scan_block_metadata;
 } xpod_rdf_backend_v1;
 
 #ifdef __cplusplus

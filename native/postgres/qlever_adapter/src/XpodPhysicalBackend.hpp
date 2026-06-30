@@ -228,6 +228,42 @@ class PhysicalBackend {
         backend_->backend_user_data, &request, on_batch, callback_user_data);
   }
 
+  xpod_rdf_status scanBlockMetadata(
+      const xpod_rdf_scan_request& request,
+      xpod_rdf_scan_block_metadata_batch_callback on_batch,
+      void* callback_user_data,
+      xpod_rdf_bytes& out_metadata_version) const noexcept {
+    if (!valid() ||
+        !hasCallback(offsetof(xpod_rdf_backend_v1, scan_block_metadata),
+                     backend_->scan_block_metadata)) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    out_metadata_version = {nullptr, 0};
+
+    struct CallbackState {
+      xpod_rdf_scan_block_metadata_batch_callback downstream;
+      void* downstream_user_data;
+      xpod_rdf_bytes* metadata_version;
+    };
+
+    CallbackState state{on_batch, callback_user_data, &out_metadata_version};
+    auto forwarding_callback = [](
+        void* user_data,
+        const xpod_rdf_scan_block_metadata_batch* batch) -> xpod_rdf_status {
+      CallbackState* state = static_cast<CallbackState*>(user_data);
+      if (batch != nullptr && state->metadata_version != nullptr) {
+        *state->metadata_version = batch->metadata_version;
+      }
+      if (state->downstream == nullptr) {
+        return XPOD_RDF_STATUS_OK;
+      }
+      return state->downstream(state->downstream_user_data, batch);
+    };
+
+    return backend_->scan_block_metadata(
+        backend_->backend_user_data, &request, forwarding_callback, &state);
+  }
+
   xpod_rdf_status countScan(
       const xpod_rdf_scan_request& request,
       xpod_rdf_count_result& out_result) const noexcept {

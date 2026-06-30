@@ -2985,3 +2985,38 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run -t "scan-spec size"
 
 Expected: PASS.
 - No upstream QLever C++ dependency yet.
+
+### Task 71: Add scan block metadata to the native physical backend protocol
+
+**Files:**
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodPhysicalBackend.hpp`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `tests/native/QleverPhysicalBackendFacade.test.ts`
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing block-metadata facade smoke**
+
+Add a native physical-backend facade smoke where a backend implements `scan_block_metadata(...)` and returns block ids, first/last quad keys, row counts, sorted slots, total block count, and a metadata version for a scoped scan request.
+
+Expected: FAIL because the C ABI and C++ facade do not expose scan block metadata.
+
+- [x] **Step 2: Add the minimal append-only C ABI and facade method**
+
+Add `xpod_rdf_scan_block_metadata`, `xpod_rdf_scan_block_metadata_batch`, `xpod_rdf_scan_block_metadata_fn`, `XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA`, and `PhysicalBackend::scanBlockMetadata(...)`.
+
+This is only the lower metadata seam required by QLever lazy scan / block join integration. It does not implement lazy scanning or block join policy in Xpod.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalBackendFacade.test.ts --run
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.
+- No upstream QLever lazy scan consumer yet.
