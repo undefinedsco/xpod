@@ -3433,3 +3433,40 @@ bun test tests/native/QleverAdapterCmake.test.ts --run
 
 Expected: PASS.
 - The remaining gap is a real patched upstream QLever compile/e2e; this CMake gate only prevents accidental unpatched source-tree use.
+
+### Task 85: Gate QLever-enabled adapter builds on the upstream QueryExecutionContext overlay
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/patches/qlever-queryexecutioncontext-physical-index.patch`
+- Add: `tests/native/QleverUpstreamQueryExecutionContextPatch.test.ts`
+- Modify: `scripts/check-qlever-upstream-patches.cjs`
+- Modify: `native/postgres/qlever_adapter/CMakeLists.txt`
+- Modify: `tests/native/QleverAdapterCmake.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing upstream QueryExecutionContext patch asset test**
+
+Add a native patch smoke with an upstream-shaped `src/engine/QueryExecutionContext.h` fixture. The smoke must run the shared patch validator, apply the overlay to a temporary QLever source tree, and assert that the patched header contains `XpodQleverPhysicalIndex.hpp`, `setXpodPhysicalIndex(...)`, `xpodPhysicalIndex() const`, and the value-owned physical-index storage.
+
+Expected: FAIL before the patch asset exists or applies cleanly.
+
+- [x] **Step 2: Add the context overlay patch and validator entry**
+
+Add `qlever-queryexecutioncontext-physical-index.patch` that includes `XpodQleverPhysicalIndex.hpp`, injects `setXpodPhysicalIndex(...)` next to `getIndex()`, exposes `xpodPhysicalIndex() const` for the upstream lazy-scan patch, and stores the physical index by value so the provider does not hand QLever a dangling pointer. Extend `check-qlever-upstream-patches.cjs` so it validates both upstream overlays by default and can validate either patch explicitly.
+
+- [x] **Step 3: Require the context overlay in QLever mode**
+
+When `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON`, CMake now reads `${XPOD_QLEVER_SOURCE_DIR}/src/engine/QueryExecutionContext.h` and fails if either `setXpodPhysicalIndex` or `xpodPhysicalIndex() const` is absent. The accepted-source-tree CMake smoke writes a minimal patched context, and a separate smoke verifies that a tree with only the IndexScan overlay still fails clearly.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverUpstreamQueryExecutionContextPatch.test.ts tests/native/QleverUpstreamIndexScanPatch.test.ts --run
+bun test tests/native/QleverAdapterCmake.test.ts --run
+node scripts/check-qlever-upstream-patches.cjs --qlever-source <downloaded-current-qlever-fixture> --patch native/postgres/qlever_adapter/patches/qlever-queryexecutioncontext-physical-index.patch --apply
+```
+
+Expected: PASS.
+- The remaining gap is compiling a patched upstream QLever source tree and running a real `QueryPlanner -> QueryExecutionContext -> IndexScan::getLazyScan -> XpodPhysicalIndex -> native backend` query. Source patch validation and CMake gating now prevent the known half-wired state.

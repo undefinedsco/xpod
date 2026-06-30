@@ -78,6 +78,18 @@ CompressedRelationReader::IdTableGeneratorInputRange IndexScan::getLazyScan(
 }
 `;
 
+const patchedQueryExecutionContextHeader = `
+#pragma once
+namespace xpod { namespace qlever { class XpodQleverPhysicalIndex; } }
+class QueryExecutionContext {
+ public:
+  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex&) {}
+  const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
+    return nullptr;
+  }
+};
+`;
+
 describe('native QLever adapter CMake target', () => {
   it('configures and builds the adapter facade as a native library', async () => {
     expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
@@ -154,7 +166,7 @@ describe('native QLever adapter CMake target', () => {
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakePermissiveSparqlParserHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), '#pragma once\nnamespace ad_utility { struct SharedCancellationHandle {}; }\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), patchedQueryExecutionContextHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
 #pragma once
@@ -295,6 +307,38 @@ class Permutation {
         output = cmakeFailureOutput(error);
       }
       expect(output).toContain('IndexScan.cpp is not patched with the Xpod lazy-scan overlay');
+      expect(output).toContain('check-qlever-upstream-patches.cjs');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree whose QueryExecutionContext physical-index overlay is missing', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-unpatched-context-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await writeRequiredQleverConfigureSkeleton(
+        qleverSource,
+        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; }\n',
+      );
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('QueryExecutionContext.h is not patched with the Xpod physical-index');
       expect(output).toContain('check-qlever-upstream-patches.cjs');
     } finally {
       await rm(root, { recursive: true, force: true });
