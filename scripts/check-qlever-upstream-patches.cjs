@@ -50,6 +50,37 @@ const patchSpecs = [
     ],
     alreadyPatchedMessage: 'already contains the Xpod IndexScan lazy-scan overlay',
   },
+
+  {
+    patchPath: path.join(patchesRoot, 'qlever-text-indexscan-physical-text-search.patch'),
+    target: 'src/engine/TextIndexScanForWord.cpp',
+    patchTokens: [
+      'XpodQleverPhysicalTextIndexScanContextBridge.hpp',
+      'xpod::qlever::physicalIndexFromContext(*getExecutionContext())',
+      'xpod::qlever::textWordResultFromContext',
+      'xpod::qlever::textWordSizeEstimateFromContext',
+      'xpodText.status == XPOD_RDF_STATUS_OK',
+      'return std::move(xpodText.result);',
+      'getWordPostingsForTerm',
+      'getSizeOfTextBlocksSum',
+    ],
+    anchors: [
+      'TextIndexScanForWord::computeResult(',
+      'TextIndexScanForWord::getCostEstimate()',
+      'TextIndexScanForWord::getSizeEstimateBeforeLimit()',
+      'getWordPostingsForTerm',
+      'getSizeOfTextBlocksSum',
+    ],
+    appliedTokens: [
+      'XpodQleverPhysicalTextIndexScanContextBridge.hpp',
+      'xpod::qlever::physicalIndexFromContext(*getExecutionContext())',
+      'xpod::qlever::textWordResultFromContext',
+      'xpod::qlever::textWordSizeEstimateFromContext',
+      'xpodText.status == XPOD_RDF_STATUS_OK',
+      'return std::move(xpodText.result);',
+    ],
+    alreadyPatchedMessage: 'already contains the Xpod text-index word overlay',
+  },
   {
     patchPath: path.join(patchesRoot, 'qlever-libcxx-normalized-string.patch'),
     target: 'src/parser/NormalizedString.h',

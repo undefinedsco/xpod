@@ -116,6 +116,15 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
   endfunction()
 
   xpod_qlever_require_overlay_token(
+    "src/engine/TextIndexScanForWord.cpp"
+    "textWordResultFromContext"
+    "Xpod text-index word overlay")
+  xpod_qlever_require_overlay_token(
+    "src/engine/TextIndexScanForWord.cpp"
+    "textWordSizeEstimateFromContext"
+    "Xpod text-index word overlay")
+
+  xpod_qlever_require_overlay_token(
     "src/parser/NormalizedString.h"
     "using NormalizedString = std::string;"
     "Xpod libc++ compatibility overlay")
