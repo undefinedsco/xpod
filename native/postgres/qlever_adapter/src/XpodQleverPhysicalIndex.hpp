@@ -299,6 +299,43 @@ class XpodQleverPhysicalPermutation {
     return makeBackedScan(pattern, needed_slots).execute();
   }
 
+  QleverIdTableResult scanSelectedBlocks(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks,
+      const std::vector<xpod_rdf_scan_block_metadata>& blocks,
+      xpod_rdf_bytes block_metadata_version = {}) const {
+    if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) {
+      return {
+          scan_spec_and_blocks.status,
+          IdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
+    }
+    if (blocks.empty()) {
+      return {
+          XPOD_RDF_STATUS_OK,
+          IdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
+    }
+
+    ScanRequestInput input = makeScanInput(
+        scan_spec_and_blocks.pattern,
+        scan_spec_and_blocks.needed_slots);
+    input.block_metadata = blocks;
+    if (block_metadata_version.data != nullptr &&
+        block_metadata_version.size > 0) {
+      input.block_metadata_version_storage.assign(
+          block_metadata_version.data, block_metadata_version.size);
+      input.block_metadata_version = {
+          input.block_metadata_version_storage.data(),
+          input.block_metadata_version_storage.size()};
+    }
+
+    return XpodBackedIndexScan(
+        context_.backend,
+        input,
+        {},
+        countNeededSlots(input.needed_slots),
+        physicalPermutationDescriptor(permutation_))
+        .execute();
+  }
+
   XpodQleverCountResult count(
       TripleKeyPattern pattern = {},
       uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |

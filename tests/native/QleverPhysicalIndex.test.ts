@@ -1335,6 +1335,180 @@ int main() {
     }
   });
 
+  it('passes selected scan-spec blocks into a physical permutation scan', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index selected block scan check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-selected-block-scan-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_selected_block_scan_smoke.cpp');
+      const binary = path.join(root, 'physical_index_selected_block_scan_smoke');
+      await writeFile(smoke, `
+#include <optional>
+#include "XpodQleverPhysicalIndex.hpp"
+
+class ScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  ScanSpecification(T col0, T col1, T col2)
+      : col0_(col0), col1_(col1), col2_(col2) {}
+  const T& col0Id() const { return col0_; }
+  const T& col1Id() const { return col1_; }
+  const T& col2Id() const { return col2_; }
+ private:
+  T col0_;
+  T col1_;
+  T col2_;
+};
+
+struct BackendState {
+  int metadata_calls;
+  int scan_calls;
+};
+
+static bool bytes_equal(xpod_rdf_bytes actual, const char* expected, size_t size) {
+  if (actual.size != size) return false;
+  for (size_t i = 0; i < size; ++i) {
+    if (actual.data[i] != expected[i]) return false;
+  }
+  return true;
+}
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_POSG;
+  out_capabilities->features =
+      XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA |
+      XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan_block_metadata(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_scan_block_metadata_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->metadata_calls;
+  if (request->permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 1 || request->pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_object != 1 || request->pattern.object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata_count != 0) return XPOD_RDF_STATUS_BACKEND_ERROR;
+
+  xpod_rdf_scan_block_metadata rows[2] = {};
+  rows[0].block_id = 1001;
+  rows[0].first_quad = {10, 22, 33, 99};
+  rows[0].last_quad = {19, 22, 33, 99};
+  rows[0].row_count = 10;
+  rows[0].sorted_slots = XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  rows[1].block_id = 1002;
+  rows[1].first_quad = {20, 22, 33, 99};
+  rows[1].last_quad = {29, 22, 33, 99};
+  rows[1].row_count = 10;
+  rows[1].sorted_slots = XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  static const char version[] = "blocks-v1";
+  xpod_rdf_scan_block_metadata_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 2;
+  batch.total_blocks = 2;
+  batch.metadata_version = {version, 9};
+  return on_batch(callback_user_data, &batch);
+}
+
+static xpod_rdf_status scan_permutation(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->scan_calls;
+  if (request->permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 1 || request->pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_object != 1 || request->pattern.object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata_count != 2) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata == nullptr) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata[0].block_id != 1001) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata[1].first_quad.subject != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!bytes_equal(request->block_metadata_version, "blocks-v1", 9)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+
+  xpod_rdf_quad_key row = {11, 22, 33, 99};
+  xpod_rdf_quad_batch batch = {&row, 1, XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH, 1};
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.scan_block_metadata = scan_block_metadata;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  ScanSpecification spec{Id::fromBits(22), Id::fromBits(33), std::nullopt};
+  auto permutation = index.permutation(Permutation::Enum::POS);
+  auto scan_spec_and_blocks = permutation.getScanSpecAndBlocks(
+      spec,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH);
+  if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) return 1;
+
+  auto metadata = permutation.getMetadataAndBlocks(scan_spec_and_blocks);
+  if (metadata.status != XPOD_RDF_STATUS_OK) return 2;
+  if (metadata.blocks.size() != 2) return 3;
+
+  auto scan = permutation.scanSelectedBlocks(
+      scan_spec_and_blocks,
+      metadata.blocks,
+      metadata.metadata_version);
+  if (scan.status != XPOD_RDF_STATUS_OK) return 4;
+  if (scan.table.numColumns() != 2) return 5;
+  if (scan.table.numRows() != 1) return 6;
+  if (scan.table(0, 0).getBits() != 11) return 7;
+  if (scan.table(0, 1).getBits() != 99) return 8;
+  if (state.metadata_calls != 1) return 9;
+  if (state.scan_calls != 1) return 10;
+
+  auto empty = permutation.scanSelectedBlocks(
+      scan_spec_and_blocks,
+      {},
+      metadata.metadata_version);
+  if (empty.status != XPOD_RDF_STATUS_OK) return 11;
+  if (empty.table.numColumns() != 2) return 12;
+  if (empty.table.numRows() != 0) return 13;
+  if (state.scan_calls != 1) return 14;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed for QLever scan specifications with unsupported graph filters', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index scan specification graph filter check').toBe(true);
 

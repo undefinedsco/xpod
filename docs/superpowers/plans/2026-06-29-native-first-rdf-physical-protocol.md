@@ -3091,3 +3091,39 @@ bun run check:rdf-protocol-abi
 
 Expected: PASS.
 - No upstream QLever `lazyScan(...)` consumer yet.
+
+### Task 74: Add a selected-block scan consumer to the QLever physical permutation seam
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing selected-block consumer smoke**
+
+Add a native physical-index smoke where `getMetadataAndBlocks(...)` returns two block metadata rows and `XpodQleverPhysicalPermutation::scanSelectedBlocks(...)` must pass those selected blocks plus the metadata version into the lower `scan_permutation` request.
+
+Expected: FAIL because the physical permutation seam can produce block metadata and the scan bridge can carry it, but no QLever-facing consumer method connects the two.
+
+- [x] **Step 2: Preserve empty selected-block semantics**
+
+Extend the smoke so an empty selected-block list returns an empty IdTable without calling the backend scan. This matches QLever lazy/block-prefilter semantics: an explicit empty selection means no blocks, not a broad scan.
+
+Expected: FAIL until the consumer treats empty selected blocks as an empty result.
+
+- [x] **Step 3: Add the minimal consumer seam**
+
+Add `XpodQleverPhysicalPermutation::scanSelectedBlocks(...)`. It copies selected block metadata and metadata version into `ScanRequestInput`, delegates execution through `XpodBackedIndexScan`, and relies on the existing `BLOCK_RESTRICTED_SCAN` capability guard.
+
+This is deliberately a lower materialized consumer seam, not QLever `lazyScan(...)` itself. QLever still owns block selection, lazy execution strategy, located-triples behavior, and block-zipper joins.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run -t "selected scan-spec blocks"
+```
+
+Expected: PASS.
+- Upstream QLever `lazyScan(...)` is still not consuming this seam yet.
