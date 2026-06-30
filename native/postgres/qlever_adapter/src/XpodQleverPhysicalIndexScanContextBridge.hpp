@@ -17,6 +17,11 @@ struct QleverSizeEstimateResult {
   size_t rows = 0;
 };
 
+struct QleverExactSizeResult {
+  xpod_rdf_status status = XPOD_RDF_STATUS_UNSUPPORTED;
+  size_t rows = 0;
+};
+
 namespace detail {
 
 template <typename Context, typename = void>
@@ -207,6 +212,31 @@ QleverSizeEstimateResult sizeEstimateFromQleverScanSpecAndBlocks(
       XPOD_RDF_STATUS_OK,
       estimate.exact,
       estimate.lower + (estimate.upper - estimate.lower) / 2};
+}
+
+template <typename Context, typename QleverScanSpecAndBlocks>
+QleverExactSizeResult exactSizeFromQleverScanSpecAndBlocks(
+    const Context& context,
+    Permutation::Enum permutation,
+    const QleverScanSpecAndBlocks& scan_spec_and_blocks,
+    uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                            XPOD_RDF_SLOT_PREDICATE |
+                            XPOD_RDF_SLOT_OBJECT) {
+  const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
+  if (index == nullptr) {
+    return {};
+  }
+  const auto& scan_specification =
+      detail::scanSpecificationFromScanSpecAndBlocks(scan_spec_and_blocks);
+  auto physical_permutation = index->permutation(permutation);
+  auto physical_scan_spec_and_blocks = physical_permutation.getScanSpecAndBlocks(
+      scan_specification, needed_slots);
+  auto count =
+      physical_permutation.getResultSizeOfScan(physical_scan_spec_and_blocks);
+  if (count.status != XPOD_RDF_STATUS_OK) {
+    return {count.status, 0};
+  }
+  return {XPOD_RDF_STATUS_OK, static_cast<size_t>(count.result.count)};
 }
 
 template <typename Context, typename QleverScanSpecAndBlocks>

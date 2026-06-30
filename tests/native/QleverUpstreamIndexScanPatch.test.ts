@@ -64,6 +64,12 @@ std::pair<bool, size_t> IndexScan::computeSizeEstimate() const {
   return {lower == upper, lower + (upper - lower) / 2};
 }
 
+size_t IndexScan::getExactSize() const {
+  AD_CORRECTNESS_CHECK(_executionContext);
+  return permutation().getResultSizeOfScan(scanSpecAndBlocks_,
+                                           locatedTriplesState());
+}
+
 // ___________________________________________________________________________
 Permutation::ScanSpecAndBlocks IndexScan::getScanSpecAndBlocks() const {
   return permutation().getScanSpecAndBlocks(getScanSpecification(),
@@ -113,12 +119,15 @@ describe('QLever upstream IndexScan patch asset', () => {
       expect(patched).toContain('xpod::qlever::materializedScanFromQleverScanSpecAndBlocks');
       expect(patched).toContain('xpodMaterializedScan.status == XPOD_RDF_STATUS_OK');
       expect(patched).toContain('xpod::qlever::sizeEstimateFromQleverScanSpecAndBlocks');
+      expect(patched).toContain('xpod::qlever::exactSizeFromQleverScanSpecAndBlocks');
+      expect(patched).toContain('xpodExactSize.status == XPOD_RDF_STATUS_OK');
       expect(patched).toContain('xpod::qlever::canUsePhysicalScanSpecAndBlocks');
       expect(patched).toContain('BlockMetadataRanges{}');
       expect(patched).toContain('xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks');
       expect(patched).toContain('!scanSpecAndBlocksIsPrefiltered_');
       expect(patched).toContain('xpodLazyScan.status == XPOD_RDF_STATUS_OK');
       expect(patched).toContain('permutation().getSizeEstimateForScan(');
+      expect(patched).toContain('permutation().getResultSizeOfScan(');
       expect(patched).toContain('permutation().getScanSpecAndBlocks(');
       expect(patched).toContain('permutation().scan(');
       expect(patched).toContain('permutation().lazyScan(');
