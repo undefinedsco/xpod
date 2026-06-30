@@ -2955,3 +2955,33 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run -t "scope"
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 70: Add QLever-shaped scan-spec size/count methods to the physical permutation seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing scan-spec size/count smoke**
+
+Add a native physical-index smoke where a QLever-shaped `ScanSpecification` is converted by `XpodQleverPhysicalPermutation::getScanSpecAndBlocks(...)`, then passed to `getSizeEstimateForScan(...)` and `getResultSizeOfScan(...)`.
+
+Expected: FAIL because the physical permutation seam could map and execute scan specifications, but did not expose QLever `Permutation`-shaped size/count methods that `IndexScan::computeSizeEstimate()` and `IndexScan::getExactSize()` expect.
+
+- [x] **Step 2: Add the minimal lower size/count seam**
+
+Add `XpodQleverScanSpecAndBlocks` and `XpodQleverScanSizeBoundsResult`. `getScanSpecAndBlocks(...)` only stores the mapped pattern and needed slots, failing closed for unsupported graph filters. `getSizeEstimateForScan(...)` delegates to backend scan estimates and converts `EXACT` confidence to equal lower/upper bounds; non-exact estimates use `0..rows` as conservative bounds. `getResultSizeOfScan(...)` delegates to backend exact `countScan`.
+
+This is deliberately not compressed block metadata or lazy join strategy. The next QLever lower-layer step is a block/lazy scan protocol that real QLever `IndexScan` can consume without Xpod reimplementing join planning.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run -t "scan-spec size"
+```
+
+Expected: PASS.
+- No upstream QLever C++ dependency yet.

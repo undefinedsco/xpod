@@ -1066,6 +1066,139 @@ int main() {
     }
   });
 
+  it('exposes QLever-shaped scan-spec size estimates and exact counts', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index scan-spec size check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-scan-spec-size-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_scan_spec_size_smoke.cpp');
+      const binary = path.join(root, 'physical_index_scan_spec_size_smoke');
+      await writeFile(smoke, `
+#include <optional>
+#include "XpodQleverPhysicalIndex.hpp"
+
+class ScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  ScanSpecification(T col0, T col1, T col2)
+      : col0_(col0), col1_(col1), col2_(col2) {}
+  const T& col0Id() const { return col0_; }
+  const T& col1Id() const { return col1_; }
+  const T& col2Id() const { return col2_; }
+ private:
+  T col0_;
+  T col1_;
+  T col2_;
+};
+
+struct BackendState {
+  int estimate_calls;
+  int count_calls;
+};
+
+static xpod_rdf_status estimate_scan(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_calls;
+  if (request->permutation != XPOD_RDF_PERM_SOPG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_subject != 1 || request->pattern.subject != 11) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_object != 1 || request->pattern.object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 0) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->needed_slots != XPOD_RDF_SLOT_PREDICATE) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT || request->graph_scope.exact_graph != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->source_scope.has_source_node != 1 || request->source_scope.source_node != 55) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->access_scope == nullptr || request->access_scope->mode != XPOD_RDF_ACCESS_READ) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 9;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status count_scan(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_count_result* out_result) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->count_calls;
+  if (request->permutation != XPOD_RDF_PERM_SOPG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_subject != 1 || request->pattern.subject != 11) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_object != 1 || request->pattern.object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->needed_slots != XPOD_RDF_SLOT_PREDICATE) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT || request->graph_scope.exact_graph != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->source_scope.has_source_node != 1 || request->source_scope.source_node != 55) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->access_scope == nullptr || request->access_scope->mode != XPOD_RDF_ACCESS_READ) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_result->count = 7;
+  out_result->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.estimate_scan = estimate_scan;
+  raw_backend.count_scan = count_scan;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_rdf_access_scope access = {};
+  access.mode = XPOD_RDF_ACCESS_READ;
+  xpod_qlever_query_request request = {};
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  request.graph_scope.exact_graph = 99;
+  request.source_scope.has_source_node = 1;
+  request.source_scope.source_node = 55;
+  request.access_scope = &access;
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  ScanSpecification spec{Id::fromBits(11), Id::fromBits(33), std::nullopt};
+  auto permutation = index.permutation(Permutation::Enum::SOP);
+  auto scan_spec_and_blocks = permutation.getScanSpecAndBlocks(
+      spec,
+      XPOD_RDF_SLOT_PREDICATE);
+  if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) return 1;
+
+  auto bounds = permutation.getSizeEstimateForScan(scan_spec_and_blocks);
+  if (bounds.status != XPOD_RDF_STATUS_OK) return 2;
+  if (bounds.lower != 0) return 3;
+  if (bounds.upper != 9) return 4;
+  if (bounds.exact) return 5;
+  if (bounds.confidence != XPOD_RDF_ESTIMATE_FRESH) return 6;
+
+  auto exact = permutation.getResultSizeOfScan(scan_spec_and_blocks);
+  if (exact.status != XPOD_RDF_STATUS_OK) return 7;
+  if (exact.result.count != 7) return 8;
+  if (exact.result.confidence != XPOD_RDF_ESTIMATE_EXACT) return 9;
+  if (state.estimate_calls != 1) return 10;
+  if (state.count_calls != 1) return 11;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed for QLever scan specifications with unsupported graph filters', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index scan specification graph filter check').toBe(true);
 

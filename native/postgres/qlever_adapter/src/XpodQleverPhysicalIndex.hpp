@@ -40,6 +40,22 @@ struct XpodQleverCountResult {
   xpod_rdf_count_result result;
 };
 
+struct XpodQleverScanSpecAndBlocks {
+  xpod_rdf_status status = XPOD_RDF_STATUS_OK;
+  TripleKeyPattern pattern = {};
+  uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                          XPOD_RDF_SLOT_PREDICATE |
+                          XPOD_RDF_SLOT_OBJECT;
+};
+
+struct XpodQleverScanSizeBoundsResult {
+  xpod_rdf_status status = XPOD_RDF_STATUS_OK;
+  uint64_t lower = 0;
+  uint64_t upper = 0;
+  bool exact = false;
+  xpod_rdf_estimate_confidence confidence = XPOD_RDF_ESTIMATE_HEURISTIC;
+};
+
 struct XpodQleverDistinctTermsResult {
   xpod_rdf_status status;
   std::vector<xpod_rdf_term_key> terms;
@@ -259,6 +275,57 @@ class XpodQleverPhysicalPermutation {
     const xpod_rdf_scan_request request = makeScanRequest(input);
     result.status = context_.backend.countScan(request, result.result);
     return result;
+  }
+
+  template <typename QleverScanSpecification>
+  XpodQleverScanSpecAndBlocks getScanSpecAndBlocks(
+      const QleverScanSpecification& scan_specification,
+      uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                              XPOD_RDF_SLOT_PREDICATE |
+                              XPOD_RDF_SLOT_OBJECT) const {
+    XpodQleverScanSpecAndBlocks result = {};
+    result.needed_slots = needed_slots;
+    if (!scanSpecificationGraphFilterSupported(scan_specification)) {
+      result.status = XPOD_RDF_STATUS_UNSUPPORTED;
+      return result;
+    }
+    result.pattern =
+        scanSpecificationPattern(permutation_, scan_specification);
+    return result;
+  }
+
+  XpodQleverScanSizeBoundsResult getSizeEstimateForScan(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks) const {
+    XpodQleverScanSizeBoundsResult result = {};
+    result.status = scan_spec_and_blocks.status;
+    if (result.status != XPOD_RDF_STATUS_OK) {
+      return result;
+    }
+
+    const XpodBackedScanEstimate estimate_result = estimate(
+        scan_spec_and_blocks.pattern,
+        scan_spec_and_blocks.needed_slots);
+    result.status = estimate_result.status;
+    if (result.status != XPOD_RDF_STATUS_OK) {
+      return result;
+    }
+
+    result.upper = estimate_result.estimate.rows;
+    result.confidence = estimate_result.estimate.confidence;
+    result.exact = estimate_result.estimate.confidence ==
+                   XPOD_RDF_ESTIMATE_EXACT;
+    result.lower = result.exact ? result.upper : 0;
+    return result;
+  }
+
+  XpodQleverCountResult getResultSizeOfScan(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks) const {
+    if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) {
+      return {scan_spec_and_blocks.status, {}};
+    }
+    return count(
+        scan_spec_and_blocks.pattern,
+        scan_spec_and_blocks.needed_slots);
   }
 
   XpodQleverDistinctTermsResult distinct(
