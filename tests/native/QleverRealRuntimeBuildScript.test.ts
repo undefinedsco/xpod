@@ -45,7 +45,7 @@ describe('QLever real upstream runtime smoke script', () => {
     expect(parsed.fullEngineArgs).toContain('scripts/check-qlever-full-engine-build.cjs');
     expect(parsed.fullEngineArgs).toContain('--target');
     expect(parsed.fullEngineArgs).toContain('engine');
-    expect(parsed.libraryBuildArgs).toEqual(['--build', path.join(repoRoot, '.test-data/qlever-full-build'), '--target', 'qlever', 'SortPerformanceEstimator', 'compilationInfo', '-j2']);
+    expect(parsed.libraryBuildArgs).toEqual(['--build', path.join(repoRoot, '.test-data/qlever-full-build'), '--target', 'parser', 'qlever', 'SortPerformanceEstimator', 'compilationInfo', '-j2']);
     expect(parsed.realAdapterArgs).toContain('scripts/check-qlever-real-adapter-build.cjs');
     expect(parsed.smokeSourcePath).toBe(path.join(repoRoot, '.test-data/qlever-real-runtime-build', 'xpod_qlever_real_runtime_smoke.cpp'));
     expect(parsed.smokeObjectPath).toBe(path.join(repoRoot, '.test-data/qlever-real-runtime-build', 'xpod_qlever_real_runtime_smoke.o'));
@@ -144,8 +144,14 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('text_search');
       expect(smoke).toContain('estimate_text_search');
       expect(smoke).toContain('ql:contains-word');
+      expect(smoke).toContain('ql:contains-entity <urn:entity>');
+      expect(smoke).toContain('lookup_terms');
       expect(smoke).toContain('urn:text');
+      expect(smoke).toContain('urn:entity');
+      expect(smoke).toContain('request->required_entities[0] != 60');
       expect(smoke).toContain('state.text_calls');
+      expect(smoke).toContain('state.entity_text_calls');
+      expect(smoke).toContain('state.entity_text_estimate_calls');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

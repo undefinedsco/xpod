@@ -3914,3 +3914,44 @@ bun run build:ts
 ```
 
 Observed: PASS locally. The smoke still uses an in-process callback backend, but it now proves that real upstream QLever text syntax reaches the Xpod `TEXT_SEARCH` physical data source and returns SPARQL JSON through the public adapter query API.
+
+### Task 96: Let real fixed-entity QLever text search bind through Xpod dictionary
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/patches/qlever-text-search-query-physical-fixed-entity.patch`
+- Add: `tests/native/QleverUpstreamTextSearchQueryPatch.test.ts`
+- Add: `tests/native/QleverBridgeParserContext.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalTextIndexScanContextBridge.hpp`
+- Modify: `scripts/check-qlever-upstream-patches.cjs`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/QleverPhysicalTextIndexScanContextBridge.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+- Modify: `docs/rdf-engine-spec.md`
+
+- [x] **Step 1: Lock the fixed-entity upstream patch contract**
+
+Add a patch for upstream `TextSearchQuery` so an injected Xpod physical index bypasses QLever's native vocab existence check for fixed `ql:contains-entity` values. In Xpod-backed mode, QLever-native vocab is not populated and cannot be used as the source of truth.
+
+Observed before implementation: the real runtime smoke failed with `The entity <urn:entity> is not part of the underlying knowledge graph`.
+
+- [x] **Step 2: Keep upstream parsing from dereferencing a null encoded IRI manager**
+
+The adapter now passes a real `EncodedIriManager` into `SparqlParser::parseQuery(...)`. Fixed IRI text-search terms can therefore pass through upstream parsing without crashing before the physical dictionary bridge sees them.
+
+Observed before implementation: the same smoke could segfault in `EncodedIriManagerImpl::encode(...)` when parsing IRI text-search terms.
+
+- [x] **Step 3: Bind fixed text entities via batch dictionary lookup**
+
+The physical text bridge now resolves fixed entities through `lookupTerms(...)` and then passes the resolved key to `required_entities` for `TEXT_SEARCH` estimates and materialization. The real runtime smoke covers both estimate and materialization callbacks for `ql:contains-word + ql:contains-entity`.
+
+Observed: PASS locally:
+
+```bash
+bun test tests/native/QleverRealRuntimeBuildScript.test.ts tests/native/QleverUpstreamTextSearchQueryPatch.test.ts tests/native/QleverBridgeParserContext.test.ts tests/native/QleverPhysicalTextIndexScanContextBridge.test.ts --run
+bun run check:qlever-upstream-patches -- --qlever-source .test-data/qlever-upstream
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --jobs 2
+```
+
+This is still a Cloud Enterprise-only native path. Local deployments do not expose the QLever-compatible adapter; local fixtures here are conformance gates for the Cloud Enterprise protocol.

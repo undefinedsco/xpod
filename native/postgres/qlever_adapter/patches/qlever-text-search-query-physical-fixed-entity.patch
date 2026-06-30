@@ -1,0 +1,22 @@
+diff --git a/src/parser/TextSearchQuery.cpp b/src/parser/TextSearchQuery.cpp
+--- a/src/parser/TextSearchQuery.cpp
++++ b/src/parser/TextSearchQuery.cpp
+@@ -3,6 +3,7 @@
+ // Author: Felix Meisen (fesemeisen@outlook.de)
+
+ #include "parser/TextSearchQuery.h"
++#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+
+ #include <absl/strings/str_split.h>
+
+@@ -60,6 +61,10 @@ std::variant<Variable, FixedEntity> VarOrFixedEntity::makeEntityVariant(
+   if (std::holds_alternative<std::string>(entity)) {
+     VocabIndex index;
+     std::string fixedEntity = std::move(std::get<std::string>(entity));
++    if (qec != nullptr &&
++        xpod::qlever::physicalIndexFromContext(*qec) != nullptr) {
++      return FixedEntity(std::move(fixedEntity), VocabIndex{});
++    }
+     bool success = qec->getIndex().getVocab().getId(fixedEntity, &index);
+     if (!success) {
+       throw std::runtime_error(

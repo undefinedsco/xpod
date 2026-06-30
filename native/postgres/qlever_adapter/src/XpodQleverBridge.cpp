@@ -19,6 +19,7 @@
 #include "engine/QueryExecutionContext.h"
 #include "engine/QueryPlanner.h"
 #include "engine/RuntimeInformation.h"
+#include "index/EncodedIriManager.h"
 #include "index/Index.h"
 #include "libqlever/Qlever.h"
 #include "parser/SparqlParser.h"
@@ -526,7 +527,8 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
   BridgeQueryPlan plan;
   xpod_rdf_status parse_status = XPOD_RDF_STATUS_OK;
   try {
-    auto parsed = SparqlParser::parseQuery(nullptr, std::string(query));
+    EncodedIriManager encoded_iri_manager;
+    auto parsed = SparqlParser::parseQuery(&encoded_iri_manager, std::string(query));
     std::optional<NativeQleverExecution> native_execution;
     try {
       native_execution =

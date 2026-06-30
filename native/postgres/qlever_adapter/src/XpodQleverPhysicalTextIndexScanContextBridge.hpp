@@ -51,12 +51,15 @@ inline xpod_rdf_status bindFixedEntity(
   xpod_rdf_term term = {};
   term.kind = XPOD_RDF_TERM_IRI;
   term.value = {iri.data(), iri.size()};
-  xpod_rdf_term_key key = 0;
-  xpod_rdf_status status = index.lookupTerm(term, key);
-  if (status != XPOD_RDF_STATUS_OK) {
-    return status;
+  XpodQleverLookupTermsResult lookup = index.lookupTerms(&term, 1);
+  if (lookup.status != XPOD_RDF_STATUS_OK) {
+    return lookup.status;
   }
-  required_entities.push_back(key);
+  if (lookup.statuses.empty() || lookup.statuses[0] != XPOD_RDF_STATUS_OK) {
+    return lookup.statuses.empty() ? XPOD_RDF_STATUS_NOT_FOUND
+                                   : lookup.statuses[0];
+  }
+  required_entities.push_back(lookup.keys[0]);
   return XPOD_RDF_STATUS_OK;
 }
 

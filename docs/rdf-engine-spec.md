@@ -352,21 +352,24 @@ local  -> SolidRdfEngine on SQLite files
 cloud  -> SolidRdfEngine on PostgreSQL / shared storage
 ```
 
-QLever 更适合作为 cloud-first 的后续加速候选：cloud 更早会遇到多 Pod scope、
-高并发 SPARQL、全文/RDF 混合排序、查询 cache、materialized result table 和
-shared index lifecycle 的压力；local 第一目标仍是零额外服务、可移动、可重建的
-embedded index。即便后续 cloud 接入 QLever，也应该是 `SolidRdfEngine` 内部的
-可替换执行层 / cache layer，而不是改变 Pod 文件权威或对外协议。
+QLever-compatible native acceleration 先限定为 **Cloud Enterprise-only**：
+cloud 更早会遇到多 Pod scope、高并发 SPARQL、全文/RDF 混合排序、查询 cache、
+materialized result table 和 shared index lifecycle 的压力；local 第一目标仍是
+零额外服务、可移动、可重建的 embedded index，不暴露 QLever-compatible native
+adapter，也不在 `config/local.json` 增加 runtime selector。即便后续 cloud 接入
+QLever，也应该是 `SolidRdfEngine` 内部的可替换执行层 / cache layer，而不是改变
+Pod 文件权威或对外协议。
 
-换句话说，QLever 的 cloud-first 含义是 “cloud 更早需要 QLever 那类结果表/cache/
-全文-RDF 一体化执行能力”，不是 “cloud 绕过 RDF-3X 内核” 或 “cloud 暴露另一套
-QLever API”。local 也可以继续吸收 QLever 的 vocabulary、text search 和 result
-table 思路；只是 local 不应该为了这些能力先引入额外常驻服务。
+换句话说，QLever 的 Cloud Enterprise 含义是 “企业版 cloud 可以把 QLever planner /
+executor 适配到 Xpod physical backend”，不是 “cloud 绕过 RDF-3X 内核” 或
+“cloud 暴露另一套 QLever API”。local 只保留同一 `SolidRdfEngine` 语义契约和
+RDF-3X 基础内核；如果以后复用 vocabulary、text search、result table 的思想，也必须
+作为普通 `SolidRdfEngine` 内部实现演进，而不是把 QLever native runtime 下放到 local。
 
 当前只做 embedded 形态，不为 sidecar 提前设计 public backend interface，也不在 Components.js 配置层暴露 `SidecarQLeverBackend` 这类组件。C++/QLever sidecar 进入后续阶段时，必须先以 `SolidRdfEngine` 内部替换 adapter 的方式评估，不能改变 Pod 文件权威和现有 `/-/sparql` 协议边界。
 
 - **现在**：先把 RDF-3X 风格的基础内核翻译进 Xpod 进程内 `SolidRdfEngine`，底层 term table、quad index、delta/journal、cache table 落到 SQLite/PG；同时只吸收 QLever 对 result table、全文/RDF 一体化和 cache 的设计启发。没有额外进程、没有额外协议边界，先和 SolidFS、ACL、runtime lifecycle、事务/journal 统一。
-- **以后**：如果复用 QLever C++ 实现作为同机/同 Pod sidecar，Xpod 只通过 `SolidRdfEngine` 内部 adapter 喂数据、校验版本、切换 index 和 fallback。sidecar 仍不是 Pod 内容权威，也不成为当前阶段的公开配置选项，更不能把 cloud 变成一套绕开 RDF-3X 基础内核的独立查询语义。
+- **以后**：如果复用 QLever C++ 实现作为 Cloud Enterprise 内部执行层，Xpod 只通过 `SolidRdfEngine` 内部 adapter 喂数据、校验版本、切换 index 和 fallback。它仍不是 Pod 内容权威，也不成为当前阶段的公开配置选项，更不能把 cloud 变成一套绕开 RDF-3X 基础内核的独立查询语义。
 
 Sidecar 延期的核心原因不是查询算法，而是存储边界必须补齐；下面只作为未来迁移说明，不进入当前实现：
 

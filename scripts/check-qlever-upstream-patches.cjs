@@ -119,6 +119,31 @@ const patchSpecs = [
     alreadyPatchedMessage: 'already contains the Xpod text-index entity overlay',
   },
   {
+    patchPath: path.join(patchesRoot, 'qlever-text-search-query-physical-fixed-entity.patch'),
+    target: 'src/parser/TextSearchQuery.cpp',
+    patchTokens: [
+      'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'qec != nullptr',
+      'xpod::qlever::physicalIndexFromContext(*qec) != nullptr',
+      'return FixedEntity(std::move(fixedEntity), VocabIndex{});',
+      'getVocab().getId(fixedEntity, &index)',
+    ],
+    anchors: [
+      '#include "parser/TextSearchQuery.h"',
+      'VarOrFixedEntity::makeEntityVariant(',
+      'std::string fixedEntity = std::move(std::get<std::string>(entity));',
+      'bool success = qec->getIndex().getVocab().getId(fixedEntity, &index);',
+      'therefore not be used as the object of ql:contains-entity',
+    ],
+    appliedTokens: [
+      'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'qec != nullptr',
+      'xpod::qlever::physicalIndexFromContext(*qec) != nullptr',
+      'return FixedEntity(std::move(fixedEntity), VocabIndex{});',
+    ],
+    alreadyPatchedMessage: 'already contains the Xpod TextSearchQuery fixed-entity overlay',
+  },
+  {
     patchPath: path.join(patchesRoot, 'qlever-libcxx-normalized-string.patch'),
     target: 'src/parser/NormalizedString.h',
     patchTokens: [

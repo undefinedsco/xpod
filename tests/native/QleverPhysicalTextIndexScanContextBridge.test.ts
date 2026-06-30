@@ -179,7 +179,7 @@ struct QueryExecutionContext {
 };
 
 static int text_search_calls = 0;
-static int lookup_term_calls = 0;
+static int lookup_terms_calls = 0;
 
 static xpod_rdf_status get_capabilities(
     void*,
@@ -196,18 +196,25 @@ static xpod_rdf_status encode_qlever_id(
   return XPOD_RDF_STATUS_OK;
 }
 
-static xpod_rdf_status lookup_term(
+static xpod_rdf_status lookup_terms(
     void*,
-    const xpod_rdf_term* term,
+    const xpod_rdf_term* terms,
+    size_t term_count,
     const xpod_rdf_snapshot*,
-    xpod_rdf_term_key* out_key) {
-  ++lookup_term_calls;
-  if (term->kind != XPOD_RDF_TERM_IRI ||
-      term->value.size != 10 ||
-      std::memcmp(term->value.data, "urn:entity", 10) != 0) {
-    return XPOD_RDF_STATUS_NOT_FOUND;
+    xpod_rdf_term_key* out_keys,
+    xpod_rdf_status* out_statuses) {
+  ++lookup_terms_calls;
+  for (size_t i = 0; i < term_count; ++i) {
+    if (terms[i].kind != XPOD_RDF_TERM_IRI ||
+        terms[i].value.size != 10 ||
+        std::memcmp(terms[i].value.data, "urn:entity", 10) != 0) {
+      out_keys[i] = 0;
+      out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
+    } else {
+      out_keys[i] = 77;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    }
   }
-  *out_key = 77;
   return XPOD_RDF_STATUS_OK;
 }
 
@@ -280,7 +287,7 @@ int main() {
   raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
   raw_backend.get_capabilities = get_capabilities;
-  raw_backend.lookup_term = lookup_term;
+  raw_backend.lookup_terms = lookup_terms;
   raw_backend.encode_qlever_id = encode_qlever_id;
   raw_backend.estimate_text_search = estimate_text_search;
   raw_backend.text_search = text_search;
@@ -357,7 +364,7 @@ int main() {
   if (fixed_entity.result.idTable().numColumns() != 1) return 27;
   if (fixed_entity.result.idTable().numRows() != 1) return 28;
   if (fixed_entity.result.idTable()(0, 0).getBits() != 1041) return 29;
-  if (lookup_term_calls != 2) return 30;
+  if (lookup_terms_calls != 2) return 30;
 
   auto entity_score = xpod::qlever::textEntityResultFromContext(
       qec, "runtime", false, "", true, {ColumnIndex{0}});

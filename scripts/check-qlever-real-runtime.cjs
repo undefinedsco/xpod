@@ -201,6 +201,8 @@ function writeSmokeSource(smokeSourcePath) {
 struct BackendState {
   int scan_calls = 0;
   int text_calls = 0;
+  int entity_text_estimate_calls = 0;
+  int entity_text_calls = 0;
 };
 
 static xpod_rdf_bytes bytes(const char* value) {
@@ -288,12 +290,41 @@ static bool bytes_equal(xpod_rdf_bytes actual, const char* expected) {
          std::string_view(actual.data, actual.size) == expected;
 }
 
-static xpod_rdf_status estimate_text_search(
+
+static xpod_rdf_status lookup_terms(
     void*,
+    const xpod_rdf_term* terms,
+    size_t term_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term_key* out_keys,
+    xpod_rdf_status* out_statuses) {
+  for (size_t i = 0; i < term_count; ++i) {
+    if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:entity")) {
+      out_keys[i] = 60;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else {
+      out_keys[i] = 0;
+      out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_text_search(
+    void* user_data,
     const xpod_rdf_text_search_request* request,
     xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
   if (!bytes_equal(request->query, "topic")) {
     return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  if (request->required_entities_size != 0) {
+    if (request->required_entities_size != 1 ||
+        request->required_entities[0] != 60) {
+      return XPOD_RDF_STATUS_BACKEND_ERROR;
+    }
+    ++state->entity_text_estimate_calls;
   }
   out_estimate->rows = 1;
   out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
@@ -311,7 +342,11 @@ static xpod_rdf_status text_search(
     return XPOD_RDF_STATUS_BACKEND_ERROR;
   }
   if (request->required_entities_size != 0) {
-    return XPOD_RDF_STATUS_BACKEND_ERROR;
+    if (request->required_entities_size != 1 ||
+        request->required_entities[0] != 60) {
+      return XPOD_RDF_STATUS_BACKEND_ERROR;
+    }
+    ++state->entity_text_calls;
   }
   xpod_rdf_candidate row = {};
   row.retrieval_point = 50;
@@ -363,6 +398,7 @@ int main() {
   raw_backend.decode_qlever_id = decode_qlever_id;
   raw_backend.compare_qlever_ids = compare_qlever_ids;
   raw_backend.resolve_terms = resolve_terms;
+  raw_backend.lookup_terms = lookup_terms;
   raw_backend.estimate_scan = estimate_scan;
   raw_backend.count_scan = count_scan;
   raw_backend.scan_permutation = scan_permutation;
@@ -410,6 +446,29 @@ int main() {
   if (text_json.find("urn:text") == std::string_view::npos) return 10;
   if (text_profile.find("TextSearch") == std::string_view::npos) return 11;
   xpod_qlever_adapter_release_result(adapter, &text_result);
+
+  xpod_qlever_query_request entity_text_request = {};
+  entity_text_request.sparql = bytes(
+      "SELECT * WHERE { ?text ql:contains-word \"topic\" . "
+      "?text ql:contains-entity <urn:entity> }");
+  xpod_qlever_query_result entity_text_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &entity_text_request, &entity_text_result);
+  std::string_view entity_text_json(
+      entity_text_result.result_json.data, entity_text_result.result_json.size);
+  std::string_view entity_text_error(
+      entity_text_result.error_message.data,
+      entity_text_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "entity text query failed: %.*s\n",
+                 static_cast<int>(entity_text_error.size()),
+                 entity_text_error.data());
+    return 12;
+  }
+  if (state.entity_text_calls < 1) return 13;
+  if (state.entity_text_estimate_calls < 1) return 14;
+  if (entity_text_json.find("urn:text") == std::string_view::npos) return 15;
+  xpod_qlever_adapter_release_result(adapter, &entity_text_result);
   xpod_qlever_adapter_destroy(adapter);
   return 0;
 }
@@ -463,7 +522,7 @@ const realAdapterArgs = [
 ];
 const libraryBuildArgs = [
   '--build', qleverBuildDir,
-  '--target', 'qlever', 'SortPerformanceEstimator', 'compilationInfo',
+  '--target', 'parser', 'qlever', 'SortPerformanceEstimator', 'compilationInfo',
   `-j${jobs}`,
 ];
 const compileArgs = makeCompileArgs(qleverSource, qleverBuildDir, linkLinePath, smokeSourcePath, smokeObjectPath);
