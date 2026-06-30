@@ -46,35 +46,6 @@ std::string_view bytesView(xpod_rdf_bytes bytes) noexcept {
   return {bytes.data, bytes.size};
 }
 
-xpod_rdf_status planBridgeParsedQuery(
-    ParsedQuery& parsed,
-    PlannerContextHandle planner_context,
-    std::string& error_storage,
-    BridgeQueryPlan& out_plan) {
-  std::optional<BridgeQueryPlan> plan;
-  std::string planner_error;
-  try {
-    plan = planQleverParsedQueryWithAvailablePlanner(planner_context, parsed);
-  } catch (const std::exception& error) {
-    planner_error = error.what();
-  } catch (...) {
-    planner_error = "unknown planner error";
-  }
-  if (!plan.has_value()) {
-    plan = planParsedQuery(parsed);
-  }
-  if (!plan.has_value()) {
-    error_storage = "unsupported QLever bridge query";
-    if (!planner_error.empty()) {
-      error_storage += "; QLever planner fallback failed earlier: ";
-      error_storage += planner_error;
-    }
-    return XPOD_RDF_STATUS_UNSUPPORTED;
-  }
-  out_plan = *plan;
-  return XPOD_RDF_STATUS_OK;
-}
-
 void setResult(
     xpod_qlever_query_result& out_result,
     xpod_rdf_status status,
@@ -114,6 +85,26 @@ void writeJsonString(std::ostringstream& out, std::string_view value) {
   out << '"';
 }
 
+template <typename IdT, typename = void>
+struct HasQleverUndefinedValue : std::false_type {};
+
+template <typename IdT>
+struct HasQleverUndefinedValue<
+    IdT, std::void_t<decltype(IdT::makeUndefined())>>
+    : std::true_type {};
+
+template <typename IdT>
+bool isQleverUndefinedIdValue(const IdT& id) {
+  if constexpr (HasQleverUndefinedValue<IdT>::value) {
+    return id.getBits() == IdT::makeUndefined().getBits();
+  }
+  return false;
+}
+
+bool isQleverUndefinedId(const Id& id) {
+  return isQleverUndefinedIdValue(id);
+}
+
 xpod_rdf_status resolveIdTableTerms(
     xpod::rdf::PhysicalBackend backend,
     const IdTable& table,
@@ -124,6 +115,9 @@ xpod_rdf_status resolveIdTableTerms(
   keys.reserve(table.numRows() * table.numColumns());
   for (size_t row = 0; row < table.numRows(); ++row) {
     for (size_t column = 0; column < table.numColumns(); ++column) {
+      if (isQleverUndefinedId(table(row, column))) {
+        continue;
+      }
       xpod_rdf_term_key key = 0;
       xpod_rdf_status status = backend.decodeQleverId(
           table(row, column).getBits(), key);
@@ -206,10 +200,15 @@ void writeSparqlJson(
       out << ',';
     }
     out << '{';
+    bool first_binding = true;
     for (size_t column = 0; column < table.numColumns(); ++column) {
-      if (column != 0) {
+      if (isQleverUndefinedId(table(row, column))) {
+        continue;
+      }
+      if (!first_binding) {
         out << ',';
       }
+      first_binding = false;
       out << '"' << variables[column] << "\":";
       writeTermBinding(out, terms[term_index++]);
     }
@@ -522,6 +521,40 @@ inline bool appendParsedPublicModifiers(
     selected_projection = std::nullopt;
   }
   return true;
+}
+
+xpod_rdf_status planBridgeParsedQuery(
+    ParsedQuery& parsed,
+    PlannerContextHandle planner_context,
+    std::string& error_storage,
+    BridgeQueryPlan& out_plan) {
+  std::optional<BridgeQueryPlan> plan;
+  std::string planner_error;
+  try {
+    plan = planQleverParsedQueryWithAvailablePlanner(planner_context, parsed);
+  } catch (const std::exception& error) {
+    planner_error = error.what();
+  } catch (...) {
+    planner_error = "unknown planner error";
+  }
+  if (!plan.has_value()) {
+    plan = planParsedQuery(parsed);
+  }
+  if (!plan.has_value()) {
+    error_storage = "unsupported QLever bridge query";
+    if (!planner_error.empty()) {
+      error_storage += "; QLever planner fallback failed earlier: ";
+      error_storage += planner_error;
+    }
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  std::optional<BridgeResultModifier> selected_projection;
+  if (!appendParsedPublicModifiers(*plan, parsed, selected_projection)) {
+    error_storage = "unsupported QLever public query modifiers";
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  out_plan = *plan;
+  return XPOD_RDF_STATUS_OK;
 }
 
 template <typename Planner>

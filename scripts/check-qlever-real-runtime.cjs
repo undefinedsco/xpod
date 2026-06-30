@@ -307,8 +307,36 @@ static xpod_rdf_status lookup_terms(
     xpod_rdf_status* out_statuses) {
   for (size_t i = 0; i < term_count; ++i) {
     if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:s")) {
+      out_keys[i] = 10;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:p")) {
+      out_keys[i] = 20;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:p2")) {
+      out_keys[i] = 21;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:o")) {
+      out_keys[i] = 30;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:g")) {
+      out_keys[i] = 40;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:text")) {
+      out_keys[i] = 50;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
         bytes_equal(terms[i].value, "urn:entity")) {
       out_keys[i] = 60;
+      out_statuses[i] = XPOD_RDF_STATUS_OK;
+    } else if (terms[i].kind == XPOD_RDF_TERM_IRI &&
+        bytes_equal(terms[i].value, "urn:tail")) {
+      out_keys[i] = 70;
       out_statuses[i] = XPOD_RDF_STATUS_OK;
     } else {
       out_keys[i] = 0;
@@ -539,6 +567,95 @@ int main() {
   if (modifier_json.find("urn:o") != std::string_view::npos) return 27;
   if (modifier_profile.find("OrderBy") == std::string_view::npos) return 28;
   xpod_qlever_adapter_release_result(adapter, &modifier_result);
+
+  xpod_qlever_query_request union_request = {};
+  union_request.sparql = bytes(
+      "SELECT DISTINCT ?x WHERE { { ?x ?p ?o } UNION { ?s ?p2 ?x } } ORDER BY ?x");
+  xpod_qlever_query_result union_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &union_request, &union_result);
+  std::string_view union_json(
+      union_result.result_json.data, union_result.result_json.size);
+  std::string_view union_profile(
+      union_result.profile_json.data, union_result.profile_json.size);
+  std::string_view union_error(
+      union_result.error_message.data, union_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "union query failed: %.*s\n",
+                 static_cast<int>(union_error.size()), union_error.data());
+    return 29;
+  }
+  if (union_json.find(R"("head":{"vars":["x"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "union head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(union_json.size()), union_json.data(),
+                 static_cast<int>(union_profile.size()), union_profile.data());
+    return 30;
+  }
+  if (union_json.find("urn:s") == std::string_view::npos) return 31;
+  if (union_json.find("urn:o") == std::string_view::npos) return 32;
+  if (union_json.find("urn:tail") == std::string_view::npos) return 33;
+  if (union_profile.find("Union") == std::string_view::npos) return 34;
+  xpod_qlever_adapter_release_result(adapter, &union_result);
+
+  xpod_qlever_query_request optional_request = {};
+  optional_request.sparql = bytes(
+      "SELECT ?s ?tail WHERE { ?s ?p ?o OPTIONAL { ?o ?p2 ?tail } } ORDER BY ?s LIMIT 1");
+  xpod_qlever_query_result optional_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &optional_request, &optional_result);
+  std::string_view optional_json(
+      optional_result.result_json.data, optional_result.result_json.size);
+  std::string_view optional_profile(
+      optional_result.profile_json.data, optional_result.profile_json.size);
+  std::string_view optional_error(
+      optional_result.error_message.data, optional_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "optional query failed: %.*s\n",
+                 static_cast<int>(optional_error.size()), optional_error.data());
+    return 35;
+  }
+  if (optional_json.find(R"("head":{"vars":["s","tail"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "optional head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(optional_json.size()), optional_json.data(),
+                 static_cast<int>(optional_profile.size()), optional_profile.data());
+    return 36;
+  }
+  if (optional_json.find("urn:s") == std::string_view::npos) return 37;
+  if (optional_json.find("urn:tail") == std::string_view::npos) return 38;
+  if (optional_json.find("urn:o") != std::string_view::npos) {
+    std::fprintf(stderr, "optional leaked non-limited row json=%.*s profile=%.*s\n",
+                 static_cast<int>(optional_json.size()), optional_json.data(),
+                 static_cast<int>(optional_profile.size()), optional_profile.data());
+    return 39;
+  }
+  if (optional_profile.find("OptionalJoin") == std::string_view::npos) return 40;
+  if (optional_profile.find("LimitOffset") == std::string_view::npos) return 46;
+  xpod_qlever_adapter_release_result(adapter, &optional_result);
+
+  xpod_qlever_query_request minus_request = {};
+  minus_request.sparql = bytes(
+      "SELECT ?s WHERE { ?s ?p ?o MINUS { ?s <urn:p2> ?tail } }");
+  xpod_qlever_query_result minus_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &minus_request, &minus_result);
+  std::string_view minus_json(
+      minus_result.result_json.data, minus_result.result_json.size);
+  std::string_view minus_profile(
+      minus_result.profile_json.data, minus_result.profile_json.size);
+  std::string_view minus_error(
+      minus_result.error_message.data, minus_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "minus query failed: %.*s\n",
+                 static_cast<int>(minus_error.size()), minus_error.data());
+    return 41;
+  }
+  if (minus_json.find(R"("head":{"vars":["s"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "minus head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(minus_json.size()), minus_json.data(),
+                 static_cast<int>(minus_profile.size()), minus_profile.data());
+    return 42;
+  }
+  if (minus_json.find("urn:s") == std::string_view::npos) return 43;
+  if (minus_json.find("urn:o") != std::string_view::npos) return 44;
+  if (minus_profile.find("Minus") == std::string_view::npos) return 45;
+  xpod_qlever_adapter_release_result(adapter, &minus_result);
 
   xpod_qlever_adapter_release_result(adapter, &result);
   xpod_qlever_query_request text_request = {};

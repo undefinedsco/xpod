@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeEncodedIriManagerHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeEncodedIriManagerHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const bridgeSource = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverBridge.cpp');
@@ -43,7 +43,36 @@ class QueryExecutionContext {
   bool ready = true;
 };
 `, 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), `
+#pragma once
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <vector>
+#include "engine/Result.h"
+#include "global/Id.h"
+class Operation;
+class QueryExecutionTree {
+ public:
+  QueryExecutionTree() = default;
+  explicit QueryExecutionTree(std::shared_ptr<Operation> root) : root_(root) {}
+  bool isEmpty() const { return root_ == nullptr; }
+  std::shared_ptr<Operation> getRootOperation() const { return root_; }
+  const std::string& getDescriptor() const { return descriptor_; }
+  size_t getResultWidth() const { return 2; }
+  std::vector<ColumnIndex> resultSortedOn() const { return {0}; }
+  std::shared_ptr<Result> getResult(bool) const {
+    IdTable table(2);
+    table.push_back({Id::fromBits(30), Id::fromBits(10)});
+    table.push_back({Id::makeUndefined(), Id::fromBits(11)});
+    return std::make_shared<Result>(
+        std::move(table), std::vector<ColumnIndex>{0}, LocalVocab{});
+  }
+ private:
+  std::shared_ptr<Operation> root_;
+  std::string descriptor_;
+};
+`, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
 #pragma once
 #include <string>
@@ -162,6 +191,8 @@ using ColumnIndex = uint64_t;
 class Id {
  public:
   static Id fromBits(uint64_t bits) { return Id(bits); }
+  static Id makeUndefined() { return Id(0); }
+  bool isUndefined() const { return bits_ == 0; }
   uint64_t getBits() const { return bits_; }
  private:
   explicit Id(uint64_t bits) : bits_(bits) {}
@@ -222,6 +253,7 @@ static xpod_rdf_status resolve_terms(
     xpod_rdf_term* out_terms,
     xpod_rdf_status* out_statuses) {
   static const char s[] = "urn:s";
+  static const char s2[] = "urn:s2";
   static const char p[] = "urn:p";
   static const char o[] = "urn:o";
   for (size_t i = 0; i < key_count; ++i) {
@@ -229,6 +261,8 @@ static xpod_rdf_status resolve_terms(
     out_terms[i].kind = XPOD_RDF_TERM_IRI;
     if (keys[i] == 10) {
       out_terms[i].value = {s, 5};
+    } else if (keys[i] == 11) {
+      out_terms[i].value = {s2, 6};
     } else if (keys[i] == 20) {
       out_terms[i].value = {p, 5};
     } else if (keys[i] == 30) {
@@ -295,6 +329,8 @@ int main() {
   if (body.find("\\"head\\":{\\"vars\\":[\\"o\\",\\"s\\"]}") == std::string_view::npos) return 3;
   if (body.find("\\"o\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:o\\"}") == std::string_view::npos) return 6;
   if (body.find("\\"s\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s\\"}") == std::string_view::npos) return 7;
+  if (body.find("\\"s\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s2\\"}") == std::string_view::npos) return 9;
+  if (body.find("\\"o\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s2\\"}") != std::string_view::npos) return 10;
   if (body.find("\\"p\\":") != std::string_view::npos) return 8;
 
   qec.ready = false;

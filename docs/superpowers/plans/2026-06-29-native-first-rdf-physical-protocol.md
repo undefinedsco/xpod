@@ -4098,3 +4098,50 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally. This remains a Cloud Enterprise-only native seam gate; local deployments still do not expose the QLever-compatible adapter.
+
+
+### Task 101: Gate real QLever control-flow roots through the Xpod physical seam
+
+**Files:**
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `tests/native/QleverBridgePlannerContext.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add real linked control-flow smoke queries**
+
+The real runtime smoke now exercises:
+
+```sparql
+SELECT DISTINCT ?x WHERE { { ?x ?p ?o } UNION { ?s ?p2 ?x } } ORDER BY ?x
+SELECT ?s ?tail WHERE { ?s ?p ?o OPTIONAL { ?o ?p2 ?tail } } ORDER BY ?s LIMIT 1
+SELECT ?s WHERE { ?s ?p ?o MINUS { ?s <urn:p2> ?tail } }
+```
+
+The generated smoke requires `Union`, `OptionalJoin`, and `Minus` profile descriptors. The OPTIONAL probe also requires `LimitOffset` in the profile and rejects leaked `urn:o`, so the gate proves public modifier handling instead of only raw control-flow materialization.
+
+- [x] **Step 2: Serialize QLever UNDEF as omitted SPARQL JSON bindings**
+
+QLever represents unbound OPTIONAL cells as `Id::makeUndefined()`. The bridge now detects QLever `UNDEF` by comparing against `Id::makeUndefined()` when the upstream Id type supports it, skips those cells during physical dictionary resolution, and omits the corresponding variable binding in SPARQL JSON rows. This keeps undefined values out of `xpod_rdf_backend_v1.resolve_terms(...)`; they are not real RDF terms and must not be looked up as term key `0`.
+
+Observed before implementation: the real OPTIONAL smoke failed with `failed to resolve one or more QLever result terms` after trying to resolve QLever's undefined id.
+
+- [x] **Step 3: Apply parsed public modifiers to fallback operation plans**
+
+The direct native-tree path already applied parsed public modifiers, but the operation-plan fallback used by real upstream OPTIONAL only applied selected projection. `planBridgeParsedQuery(...)` now appends parsed `ORDER BY`, `DISTINCT`, and `LIMIT/OFFSET` modifiers after planner/fallback plan creation. This keeps the direct-tree and fallback branches aligned without adding new public C ABI operations.
+
+Observed before implementation: OPTIONAL returned both rows, including the unmatched row with `?s = urn:o`, and the profile was only `OptionalJoin on ?o` with no `LimitOffset`.
+
+- [x] **Step 4: Verify linked upstream control-flow execution**
+
+Run:
+
+```bash
+bun test tests/native/QleverBridgePlannerContext.test.ts --run
+bun test tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally after rebuilding the adapter. This remains a Cloud Enterprise-only native seam gate; local deployments still do not expose the QLever-compatible adapter.
