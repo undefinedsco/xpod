@@ -1155,7 +1155,7 @@ inline std::optional<BridgeQueryPlan> planGroupByOperation(
 
   const std::vector<Variable>& variables = operation.groupByVariables();
   const std::vector<Alias>& aliases = operation.aliases();
-  if (variables.empty() ||
+  if ((variables.empty() && aliases.empty()) ||
       plan.result_width != variables.size() + aliases.size()) {
     return std::nullopt;
   }

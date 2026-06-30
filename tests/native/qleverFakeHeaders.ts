@@ -443,7 +443,11 @@ export const fakeGroupByHeader = `
 #include "engine/QueryExecutionTree.h"
 #include "parser/ParsedQuery.h"
 class QueryExecutionContext;
-class Alias {};
+class Alias {
+ public:
+  explicit Alias(Variable target = Variable{"?alias"}) : _target(std::move(target)) {}
+  Variable _target;
+};
 class GroupBy final : public Operation {
  public:
   using Aliases = std::vector<Alias>;

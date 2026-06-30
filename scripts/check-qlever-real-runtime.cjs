@@ -985,6 +985,61 @@ int main() {
     return 99;
   }
   xpod_qlever_adapter_release_result(adapter, &count_result);
+
+  xpod_qlever_query_request scalar_count_request = {};
+  scalar_count_request.sparql = bytes(
+      "SELECT (COUNT(?s) AS ?count) WHERE { ?s ?p ?o }");
+  xpod_qlever_query_result scalar_count_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &scalar_count_request, &scalar_count_result);
+  std::string_view scalar_count_json(
+      scalar_count_result.result_json.data,
+      scalar_count_result.result_json.size);
+  std::string_view scalar_count_profile(
+      scalar_count_result.profile_json.data,
+      scalar_count_result.profile_json.size);
+  std::string_view scalar_count_error(
+      scalar_count_result.error_message.data,
+      scalar_count_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "scalar count query failed: %.*s\n",
+                 static_cast<int>(scalar_count_error.size()),
+                 scalar_count_error.data());
+    return 100;
+  }
+  if (scalar_count_json.find(R"("head":{"vars":["count"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "scalar count head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(scalar_count_json.size()),
+                 scalar_count_json.data(),
+                 static_cast<int>(scalar_count_profile.size()),
+                 scalar_count_profile.data());
+    return 101;
+  }
+  if (scalar_count_json.find(R"("value":"3")") == std::string_view::npos) {
+    std::fprintf(stderr, "scalar count missing value 3 json=%.*s profile=%.*s\n",
+                 static_cast<int>(scalar_count_json.size()),
+                 scalar_count_json.data(),
+                 static_cast<int>(scalar_count_profile.size()),
+                 scalar_count_profile.data());
+    return 102;
+  }
+  if (scalar_count_json.find("http://www.w3.org/2001/XMLSchema#integer") == std::string_view::npos) {
+    std::fprintf(stderr, "scalar count missing integer datatype json=%.*s profile=%.*s\n",
+                 static_cast<int>(scalar_count_json.size()),
+                 scalar_count_json.data(),
+                 static_cast<int>(scalar_count_profile.size()),
+                 scalar_count_profile.data());
+    return 103;
+  }
+  if (scalar_count_profile.find("GroupBy") == std::string_view::npos) {
+    std::fprintf(stderr, "scalar count missing GroupBy profile json=%.*s profile=%.*s\n",
+                 static_cast<int>(scalar_count_json.size()),
+                 scalar_count_json.data(),
+                 static_cast<int>(scalar_count_profile.size()),
+                 scalar_count_profile.data());
+    return 104;
+  }
+  xpod_qlever_adapter_release_result(adapter, &scalar_count_result);
   xpod_qlever_adapter_destroy(adapter);
   return 0;
 }

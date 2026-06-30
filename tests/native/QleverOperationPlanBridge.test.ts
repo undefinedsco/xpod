@@ -688,6 +688,21 @@ int main() {
   if (group_physical.scans.size() != 1) return 281;
   if (group_physical.root.children[0].scan_indexes[0] != 0) return 282;
 
+  GroupBy scalar_group_operation(
+      nullptr,
+      group_child,
+      std::vector<Variable>{},
+      GroupBy::Aliases{Alias{Variable{"?count"}}});
+  auto scalar_group_plan =
+      xpod::qlever::planQleverOperation(scalar_group_operation);
+  if (!scalar_group_plan.has_value()) return 299;
+  if (scalar_group_plan->root.kind != xpod::qlever::BridgeOperationKind::GroupBy) return 300;
+  if (!scalar_group_plan->root.native_result_only) return 301;
+  if (!scalar_group_plan->root.projection_columns.empty()) return 302;
+  if (scalar_group_plan->output_variables.size() != 1 ||
+      scalar_group_plan->output_variables[0] != "count") return 303;
+  if (scalar_group_plan->result_width != 1) return 304;
+
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;
   auto entity_plan = xpod::qlever::planQleverOperation(fixed_entity_operation);

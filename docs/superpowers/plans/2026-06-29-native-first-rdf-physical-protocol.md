@@ -4513,3 +4513,44 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally. The real runtime smoke first failed with an empty result for `FILTER(?o != <urn:tail>)` on a real upstream `Filter(IndexScan OPS ...)` tree. Root cause: direct `QueryExecutionTree::getResult(true)` was executing QLever's expression path before the bridge-owned bounded-filter modifier could safely run over Xpod's physical plan. The final gate passes after the direct tree path fails closed for bridge-owned term filters.
+
+
+### Task 110: Let upstream QLever scalar COUNT aggregate over Xpod scans
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/rdf-engine-spec.md`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add scalar aggregate regression gates**
+
+The focused operation-plan smoke now constructs an upstream-shaped `GroupBy` operation with no group variables and one aggregate alias target `?count`. The expected bridge metadata keeps the root as `GroupBy`, records the public output variable `count`, leaves group-key projection columns empty, and marks the plan `native_result_only` so the simplified fallback executor cannot pretend to implement aggregate semantics.
+
+The linked real-runtime smoke now issues:
+
+```sparql
+SELECT (COUNT(?s) AS ?count) WHERE { ?s ?p ?o }
+```
+
+and requires a one-column `?count` result with the `xsd:integer` value `3` and a `GroupBy` profile marker.
+
+Observed before implementation: the focused smoke failed at the new scalar group gate (`return 299`, shell exit `43`), and the linked smoke failed with `scalar count query failed: unsupported QLever bridge query`.
+
+- [x] **Step 2: Allow aggregate-only GroupBy metadata for direct upstream results**
+
+`planGroupByOperation(...)` now rejects only the degenerate shape with no group variables and no aliases. Aggregate-only `GroupBy` roots are accepted when upstream exposes alias target names, produce alias-only output metadata, and remain `native_result_only`. This keeps scalar aggregates on the real upstream QLever execution path while preserving the fallback executor boundary.
+
+- [x] **Step 3: Verify focused and linked runtime behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.
