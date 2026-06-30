@@ -11,6 +11,7 @@ const patchSpecs = [
     target: 'src/engine/IndexScan.cpp',
     patchTokens: [
       'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'materializedScanFromQleverScanSpecAndBlocks',
       'sizeEstimateFromQleverScanSpecAndBlocks',
       'canUsePhysicalScanSpecAndBlocks',
       'BlockMetadataRanges{}',
@@ -20,8 +21,10 @@ const patchSpecs = [
     ],
     anchors: [
       'IndexScan::getLazyScan(',
+      'IndexScan::materializedIndexScan()',
       'IndexScan::computeSizeEstimate()',
       'IndexScan::getScanSpecAndBlocks()',
+      'permutation().scan(',
       'auto filteredBlocks =',
       'permutation().lazyScan(',
       'permutation().getSizeEstimateForScan(',
@@ -30,6 +33,8 @@ const patchSpecs = [
     ],
     appliedTokens: [
       'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'xpod::qlever::materializedScanFromQleverScanSpecAndBlocks',
+      'xpodMaterializedScan.status == XPOD_RDF_STATUS_OK',
       'xpod::qlever::sizeEstimateFromQleverScanSpecAndBlocks',
       'xpod::qlever::canUsePhysicalScanSpecAndBlocks',
       'BlockMetadataRanges{}',

@@ -209,6 +209,28 @@ QleverSizeEstimateResult sizeEstimateFromQleverScanSpecAndBlocks(
       estimate.lower + (estimate.upper - estimate.lower) / 2};
 }
 
+template <typename Context, typename QleverScanSpecAndBlocks>
+QleverIdTableResult materializedScanFromQleverScanSpecAndBlocks(
+    const Context& context,
+    Permutation::Enum permutation,
+    const QleverScanSpecAndBlocks& scan_spec_and_blocks,
+    uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                            XPOD_RDF_SLOT_PREDICATE |
+                            XPOD_RDF_SLOT_OBJECT) {
+  const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
+  if (index == nullptr) {
+    return {
+        XPOD_RDF_STATUS_UNSUPPORTED,
+        makeQleverIdTable(countNeededSlots(needed_slots))};
+  }
+  const auto& scan_specification =
+      detail::scanSpecificationFromScanSpecAndBlocks(scan_spec_and_blocks);
+  auto physical_permutation = index->permutation(permutation);
+  auto physical_scan_spec_and_blocks = physical_permutation.getScanSpecAndBlocks(
+      scan_specification, needed_slots);
+  return physical_permutation.scan(physical_scan_spec_and_blocks);
+}
+
 template <typename Context, typename QleverScanSpecification>
 QleverLazyScanRangeResult lazyScanRangeFromContext(
     const Context& context,

@@ -7,6 +7,24 @@ diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
 +#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
 +
  #include <absl/container/inlined_vector.h>
+@@ -321,4 +322,17 @@
+ IdTable IndexScan::materializedIndexScan() const {
++  auto xpodMaterializedScan =
++      xpod::qlever::materializedScanFromQleverScanSpecAndBlocks(
++          *_executionContext, permutation().permutation(), scanSpecAndBlocks_);
++  if (xpodMaterializedScan.status == XPOD_RDF_STATUS_OK) {
++    IdTable idTable = std::move(xpodMaterializedScan.table);
++    checkCancellation();
++    idTable = makeApplyColumnSubset()(std::move(idTable));
++    AD_CORRECTNESS_CHECK(idTable.numColumns() == getResultWidth());
++    return idTable;
++  }
++  AD_CONTRACT_CHECK(
++      xpodMaterializedScan.status == XPOD_RDF_STATUS_UNSUPPORTED);
++
+   IdTable idTable = permutation().scan(scanSpecAndBlocks_, additionalColumns(),
+                                        cancellationHandle_,
+                                        locatedTriplesState(), getLimitOffset());
 @@ -354,4 +355,13 @@
  std::pair<bool, size_t> IndexScan::computeSizeEstimate() const {
    AD_CORRECTNESS_CHECK(_executionContext);
