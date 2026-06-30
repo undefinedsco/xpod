@@ -11,6 +11,12 @@
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 
 namespace xpod::qlever {
+struct QleverSizeEstimateResult {
+  xpod_rdf_status status = XPOD_RDF_STATUS_UNSUPPORTED;
+  bool exact = false;
+  size_t rows = 0;
+};
+
 namespace detail {
 
 template <typename Context, typename = void>
@@ -156,6 +162,51 @@ const XpodQleverPhysicalIndex* physicalIndexFromContext(
         context.xpodPhysicalIndex());
   }
   return nullptr;
+}
+
+template <typename Context, typename QleverScanSpecification>
+bool canUsePhysicalScanSpecAndBlocks(
+    const Context& context,
+    Permutation::Enum permutation,
+    const QleverScanSpecification& scan_specification) {
+  const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
+  if (index == nullptr) {
+    return false;
+  }
+  auto physical_permutation = index->permutation(permutation);
+  auto scan_spec_and_blocks = physical_permutation.getScanSpecAndBlocks(
+      scan_specification);
+  return scan_spec_and_blocks.status == XPOD_RDF_STATUS_OK &&
+         physical_permutation.indexScanConstructionCapabilityStatus() ==
+             XPOD_RDF_STATUS_OK;
+}
+
+template <typename Context, typename QleverScanSpecAndBlocks>
+QleverSizeEstimateResult sizeEstimateFromQleverScanSpecAndBlocks(
+    const Context& context,
+    Permutation::Enum permutation,
+    const QleverScanSpecAndBlocks& scan_spec_and_blocks,
+    uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                            XPOD_RDF_SLOT_PREDICATE |
+                            XPOD_RDF_SLOT_OBJECT) {
+  const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
+  if (index == nullptr) {
+    return {};
+  }
+  const auto& scan_specification =
+      detail::scanSpecificationFromScanSpecAndBlocks(scan_spec_and_blocks);
+  auto physical_permutation = index->permutation(permutation);
+  auto physical_scan_spec_and_blocks = physical_permutation.getScanSpecAndBlocks(
+      scan_specification, needed_slots);
+  auto estimate =
+      physical_permutation.getSizeEstimateForScan(physical_scan_spec_and_blocks);
+  if (estimate.status != XPOD_RDF_STATUS_OK) {
+    return {estimate.status, false, 0};
+  }
+  return {
+      XPOD_RDF_STATUS_OK,
+      estimate.exact,
+      estimate.lower + (estimate.upper - estimate.lower) / 2};
 }
 
 template <typename Context, typename QleverScanSpecification>

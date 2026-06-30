@@ -159,6 +159,132 @@ class CompressedRelationReader {
 }
 
 describe('QLever physical index scan context bridge', () => {
+  it('recognizes when upstream IndexScan construction can avoid QLever block metadata', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index context bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-context-scan-spec-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'context_scan_spec_smoke.cpp');
+      const binary = path.join(root, 'context_scan_spec_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+
+#include <optional>
+
+struct ScanSpec {
+  std::optional<Id> col0Id() const { return std::nullopt; }
+  std::optional<Id> col1Id() const { return Id::fromBits(20); }
+  std::optional<Id> col2Id() const { return std::nullopt; }
+};
+
+class QueryExecutionContext {
+ public:
+  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex& index) {
+    index_.emplace(index);
+  }
+  const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
+    return index_.has_value() ? &*index_ : nullptr;
+  }
+ private:
+  std::optional<xpod::qlever::XpodQleverPhysicalIndex> index_;
+};
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  out_capabilities->features = 0;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan_permutation(
+    void*,
+    const xpod_rdf_scan_request*,
+    xpod_rdf_quad_batch_callback,
+    void*) {
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_scan(
+    void*,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!request->pattern.has_predicate || request->pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 12;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.estimate_scan = estimate_scan;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext planner_context{physical, &request, request.cancellation};
+  planner_context.capabilities_status = physical.getCapabilities(planner_context.capabilities);
+
+  QueryExecutionContext qec;
+  qec.setXpodPhysicalIndex(xpod::qlever::XpodQleverPhysicalIndex(planner_context));
+
+  ScanSpec spec;
+  if (!xpod::qlever::canUsePhysicalScanSpecAndBlocks(
+          qec, Permutation::Enum::SPO, spec)) {
+    return 1;
+  }
+  auto estimate = xpod::qlever::sizeEstimateFromQleverScanSpecAndBlocks(
+      qec, Permutation::Enum::SPO, spec);
+  if (estimate.status != XPOD_RDF_STATUS_OK) return 2;
+  if (!estimate.exact || estimate.rows != 12) return 3;
+
+  xpod_rdf_backend_v1 no_estimate_backend = raw_backend;
+  no_estimate_backend.estimate_scan = nullptr;
+  xpod::rdf::PhysicalBackend no_estimate_physical(&no_estimate_backend);
+  xpod::qlever::PlannerRequestContext no_estimate_context{
+      no_estimate_physical,
+      &request,
+      request.cancellation};
+  no_estimate_context.capabilities_status =
+      no_estimate_physical.getCapabilities(no_estimate_context.capabilities);
+  QueryExecutionContext no_estimate_qec;
+  no_estimate_qec.setXpodPhysicalIndex(
+      xpod::qlever::XpodQleverPhysicalIndex(no_estimate_context));
+  if (xpod::qlever::canUsePhysicalScanSpecAndBlocks(
+          no_estimate_qec, Permutation::Enum::SPO, spec)) {
+    return 4;
+  }
+
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('lets an upstream-shaped context lazy-scan through the injected physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index context bridge check').toBe(true);
 

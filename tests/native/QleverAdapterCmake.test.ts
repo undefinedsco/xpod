@@ -310,7 +310,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), fakeIndexScanHeader, 'utf8');
       await writeFile(
         path.join(qleverSource, 'src/engine/IndexScan.cpp'),
-        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; }\n',
+        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; (void)"sizeEstimateFromQleverScanSpecAndBlocks"; (void)"canUsePhysicalScanSpecAndBlocks"; }\n',
         'utf8',
       );
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
@@ -438,7 +438,7 @@ class Permutation {
       const qleverSource = path.join(root, 'qlever');
       await writeRequiredQleverConfigureSkeleton(
         qleverSource,
-        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; }\n',
+        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; (void)"sizeEstimateFromQleverScanSpecAndBlocks"; (void)"canUsePhysicalScanSpecAndBlocks"; }\n',
       );
 
       let output = '';
@@ -470,7 +470,7 @@ class Permutation {
       const qleverSource = path.join(root, 'qlever');
       await writeRequiredQleverConfigureSkeleton(
         qleverSource,
-        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; }\n',
+        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; (void)"sizeEstimateFromQleverScanSpecAndBlocks"; (void)"canUsePhysicalScanSpecAndBlocks"; }\n',
       );
       await writeFile(
         path.join(qleverSource, 'src/engine/QueryExecutionContext.h'),

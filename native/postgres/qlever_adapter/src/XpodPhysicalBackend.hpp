@@ -45,6 +45,18 @@ class PhysicalBackend {
     return hasField(offset, sizeof(callback)) && callback != nullptr;
   }
 
+  bool hasScanPermutation() const noexcept {
+    return valid() &&
+           hasCallback(offsetof(xpod_rdf_backend_v1, scan_permutation),
+                       backend_->scan_permutation);
+  }
+
+  bool hasEstimateScan() const noexcept {
+    return valid() &&
+           hasCallback(offsetof(xpod_rdf_backend_v1, estimate_scan),
+                       backend_->estimate_scan);
+  }
+
   xpod_rdf_status encodeQleverId(
       xpod_rdf_term_key term,
       uint64_t& out_qlever_id_bits) const noexcept {
@@ -219,9 +231,7 @@ class PhysicalBackend {
       const xpod_rdf_scan_request& request,
       xpod_rdf_quad_batch_callback on_batch,
       void* callback_user_data) const noexcept {
-    if (!valid() ||
-        !hasCallback(offsetof(xpod_rdf_backend_v1, scan_permutation),
-                     backend_->scan_permutation)) {
+    if (!hasScanPermutation()) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->scan_permutation(
@@ -304,9 +314,7 @@ class PhysicalBackend {
   xpod_rdf_status estimateScan(
       const xpod_rdf_scan_request& request,
       xpod_rdf_estimate& out_estimate) const noexcept {
-    if (!valid() ||
-        !hasCallback(offsetof(xpod_rdf_backend_v1, estimate_scan),
-                     backend_->estimate_scan)) {
+    if (!hasEstimateScan()) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
     return backend_->estimate_scan(

@@ -284,6 +284,14 @@ class XpodQleverPhysicalPermutation {
 
   Permutation::Enum permutation() const noexcept { return permutation_; }
 
+  xpod_rdf_status indexScanConstructionCapabilityStatus() const noexcept {
+    if (!context_.backend.hasScanPermutation() ||
+        !context_.backend.hasEstimateScan()) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return validatePermutationScanCapability();
+  }
+
   XpodBackedScanEstimate estimate(
       TripleKeyPattern pattern = {},
       uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
@@ -614,6 +622,12 @@ class XpodQleverPhysicalIndex {
   XpodQleverPhysicalPermutation permutation(
       Permutation::Enum permutation) const noexcept {
     return {context_, permutation};
+  }
+
+  xpod_rdf_status indexScanConstructionCapabilityStatus(
+      Permutation::Enum permutation) const noexcept {
+    return this->permutation(permutation)
+        .indexScanConstructionCapabilityStatus();
   }
 
   XpodBackedScanEstimate estimate(
