@@ -1163,12 +1163,49 @@ inline bool applyNotEqualFilterDescriptor(
   return true;
 }
 
+inline bool applyEqualFilterDescriptor(
+    BridgeQueryPlan& plan,
+    std::string_view descriptor) {
+  descriptor = stripOuterFilterParens(descriptor);
+  size_t separator = descriptor.find(" = ");
+  if (separator == std::string_view::npos) {
+    return false;
+  }
+  std::string_view left = trimFilterToken(descriptor.substr(0, separator));
+  std::string_view right = trimFilterToken(descriptor.substr(separator + 3));
+  if (left.size() < 2 || left.front() != '?') {
+    return false;
+  }
+  std::string variable(left.substr(1));
+  std::optional<ColumnIndex> column =
+      outputColumnForVariable(plan.output_variables, variable);
+  if (!column.has_value()) {
+    return false;
+  }
+  std::optional<BridgeTermBinding> term = iriFilterBindingFromToken(right);
+  if (!term.has_value()) {
+    return false;
+  }
+
+  BridgeResultModifier modifier;
+  modifier.kind = BridgeResultModifierKind::EqualTerm;
+  modifier.columns.push_back(*column);
+  size_t modifier_index = plan.root.result_modifiers.size();
+  plan.root.result_modifiers.push_back(std::move(modifier));
+  plan.modifier_term_bindings.push_back({modifier_index, std::move(*term)});
+  if (plan.descriptor.find("Filter") == std::string::npos) {
+    plan.descriptor += " + Filter";
+  }
+  return true;
+}
+
 inline bool applyGraphPatternFilters(
     BridgeQueryPlan& plan,
     const std::vector<SparqlFilter>& filters) {
   for (const SparqlFilter& filter : filters) {
-    if (!applyNotEqualFilterDescriptor(
-            plan, filter.expression_.getDescriptor())) {
+    std::string_view descriptor = filter.expression_.getDescriptor();
+    if (!applyNotEqualFilterDescriptor(plan, descriptor) &&
+        !applyEqualFilterDescriptor(plan, descriptor)) {
       return false;
     }
   }

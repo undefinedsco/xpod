@@ -591,8 +591,14 @@ static xpod_rdf_status lookup_terms(
     xpod_rdf_status* out_statuses) {
   if (term_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:tail") return XPOD_RDF_STATUS_BACKEND_ERROR;
-  out_keys[0] = 70;
+  std::string_view value(terms[0].value.data, terms[0].value.size);
+  if (value == "urn:tail") {
+    out_keys[0] = 70;
+  } else if (value == "urn:o") {
+    out_keys[0] = 30;
+  } else {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
   out_statuses[0] = XPOD_RDF_STATUS_OK;
   return XPOD_RDF_STATUS_OK;
 }
@@ -627,7 +633,20 @@ int main() {
   if (status != XPOD_RDF_STATUS_OK) return 9;
   if (!plan->root.result_modifiers[0].has_term_id_bits) return 10;
   if (plan->root.result_modifiers[0].term_id_bits != 1070) return 11;
-  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 12;
+
+  auto equal_plan = xpod::qlever::planParsedQuery(ParsedQuery::filterObjectEqualsOSelect());
+  if (!equal_plan.has_value()) return 12;
+  if (equal_plan->root.result_modifiers.size() != 1) return 13;
+  const auto& equal_modifier = equal_plan->root.result_modifiers[0];
+  if (equal_modifier.kind != xpod::qlever::BridgeResultModifierKind::EqualTerm) return 14;
+  if (equal_modifier.columns.size() != 1 || equal_modifier.columns[0] != 1) return 15;
+  if (equal_plan->modifier_term_bindings.size() != 1) return 16;
+  if (equal_plan->modifier_term_bindings[0].term.value != "urn:o") return 17;
+  status = xpod::qlever::bindPlanTerms(physical, snapshot, *equal_plan, error);
+  if (status != XPOD_RDF_STATUS_OK) return 18;
+  if (!equal_plan->root.result_modifiers[0].has_term_id_bits) return 19;
+  if (equal_plan->root.result_modifiers[0].term_id_bits != 1030) return 20;
+  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 21;
   return 0;
 }
 `, 'utf8');

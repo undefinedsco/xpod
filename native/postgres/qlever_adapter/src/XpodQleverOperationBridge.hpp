@@ -52,6 +52,7 @@ enum class BridgeResultModifierKind {
   InternalSort,
   Project,
   NotEqualTerm,
+  EqualTerm,
 };
 
 struct BridgeCandidateOutputColumn {

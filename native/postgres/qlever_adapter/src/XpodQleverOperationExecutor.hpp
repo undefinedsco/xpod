@@ -1161,6 +1161,46 @@ inline QleverResultWithStatus applyBridgeNotEqualTerm(
       {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
 }
 
+inline QleverResultWithStatus applyBridgeEqualTerm(
+    const BridgeResultModifier& modifier,
+    QleverResultWithStatus result) {
+  if (result.status != XPOD_RDF_STATUS_OK) {
+    return result;
+  }
+  if (modifier.columns.size() != 1) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
+  const IdTable& input = result.result.idTable();
+  ColumnIndex column = modifier.columns.front();
+  if (column >= input.numColumns()) {
+    return makeEmptyOperationResult(
+        XPOD_RDF_STATUS_UNSUPPORTED, input.numColumns(),
+        result.result.sortedBy());
+  }
+
+  IdTable output = makeQleverIdTable(input.numColumns());
+  if (!modifier.has_term_id_bits) {
+    return toQleverResult(
+        {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
+  }
+
+  std::vector<Id> row;
+  row.reserve(input.numColumns());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    if (input(input_row, column).getBits() != modifier.term_id_bits) {
+      continue;
+    }
+    row.clear();
+    for (size_t output_column = 0; output_column < input.numColumns();
+         ++output_column) {
+      row.push_back(input(input_row, output_column));
+    }
+    output.push_back(row);
+  }
+  return toQleverResult(
+      {XPOD_RDF_STATUS_OK, std::move(output)}, result.result.sortedBy());
+}
+
 inline QleverResultWithStatus applyBridgeResultModifier(
     const xpod::rdf::PhysicalBackend& backend,
     const BridgeResultModifier& modifier,
@@ -1186,6 +1226,9 @@ inline QleverResultWithStatus applyBridgeResultModifier(
   }
   if (modifier.kind == BridgeResultModifierKind::NotEqualTerm) {
     return applyBridgeNotEqualTerm(modifier, std::move(result));
+  }
+  if (modifier.kind == BridgeResultModifierKind::EqualTerm) {
+    return applyBridgeEqualTerm(modifier, std::move(result));
   }
   return result;
 }

@@ -274,10 +274,16 @@ class ParsedQuery {
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
     return query;
   }
+  static ParsedQuery filterObjectEqualsOSelect() {
+    ParsedQuery query = filterObjectNotTailSelect();
+    query._rootGraphPattern._filters[0].expression_ =
+        sparqlExpression::SparqlExpressionPimpl{"(?o = <urn:o>)"};
+    return query;
+  }
   static ParsedQuery unsupportedFilterSelect() {
     ParsedQuery query = filterObjectNotTailSelect();
     query._rootGraphPattern._filters[0].expression_ =
-        sparqlExpression::SparqlExpressionPimpl{"(?o = <urn:tail>)"};
+        sparqlExpression::SparqlExpressionPimpl{"(?o < <urn:tail>)"};
     return query;
   }
   bool hasSelectClause() const { return select_; }

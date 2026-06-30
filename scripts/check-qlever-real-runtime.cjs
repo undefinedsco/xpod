@@ -715,6 +715,39 @@ int main() {
   if (filter_profile.find("OrderBy") == std::string_view::npos) return 60;
   xpod_qlever_adapter_release_result(adapter, &filter_result);
 
+  xpod_qlever_query_request equal_filter_request = {};
+  equal_filter_request.sparql = bytes(
+      "SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o = <urn:o>) } ORDER BY ?s");
+  xpod_qlever_query_result equal_filter_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &equal_filter_request, &equal_filter_result);
+  std::string_view equal_filter_json(
+      equal_filter_result.result_json.data, equal_filter_result.result_json.size);
+  std::string_view equal_filter_profile(
+      equal_filter_result.profile_json.data, equal_filter_result.profile_json.size);
+  std::string_view equal_filter_error(
+      equal_filter_result.error_message.data, equal_filter_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "equal filter query failed: %.*s\n",
+                 static_cast<int>(equal_filter_error.size()),
+                 equal_filter_error.data());
+    return 65;
+  }
+  if (equal_filter_json.find(R"("head":{"vars":["s","o"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "equal filter head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(equal_filter_json.size()),
+                 equal_filter_json.data(),
+                 static_cast<int>(equal_filter_profile.size()),
+                 equal_filter_profile.data());
+    return 66;
+  }
+  if (equal_filter_json.find("urn:s") == std::string_view::npos) return 67;
+  if (equal_filter_json.find("urn:o") == std::string_view::npos) return 68;
+  if (equal_filter_json.find("urn:tail") != std::string_view::npos) return 69;
+  if (equal_filter_profile.find("Filter") == std::string_view::npos) return 70;
+  if (equal_filter_profile.find("OrderBy") == std::string_view::npos) return 71;
+  xpod_qlever_adapter_release_result(adapter, &equal_filter_result);
+
   xpod_qlever_query_request ask_request = {};
   ask_request.sparql = bytes("ASK { ?s ?p ?o }");
   xpod_qlever_query_result ask_result = {};

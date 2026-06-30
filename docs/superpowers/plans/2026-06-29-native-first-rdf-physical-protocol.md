@@ -4270,3 +4270,46 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally after rebuilding the adapter.
+
+
+### Task 105: Support bounded equality FILTER over physical terms
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add equality FILTER regression gates**
+
+The focused plan-bridge smoke now requires `FILTER(?o = <urn:o>)` to produce an `EqualTerm` result modifier bound through the Xpod physical dictionary. The linked real-runtime smoke now issues:
+
+```sparql
+SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o = <urn:o>) } ORDER BY ?s
+```
+
+The smoke requires the public `?s ?o` head, requires `urn:s` / `urn:o`, rejects `urn:tail`, and requires `Filter` / `OrderBy` profile markers.
+
+Observed before implementation: the focused smoke failed at compile time because `BridgeResultModifierKind::EqualTerm` did not exist.
+
+- [x] **Step 2: Add a bounded EqualTerm modifier**
+
+The parsed fallback now accepts the safe descriptor shape `(?var = <iri>)`. It resolves the filter variable to an existing output column, binds the IRI through `lookup_terms(...)` / `encode_qlever_id(...)`, and applies a row-level equality filter in the native operation executor. If the equality constant is absent from the Xpod dictionary, the modifier returns an empty successful result instead of broadening the scan.
+
+Unsupported filter descriptors, such as relational `<`, still fail closed instead of being silently ignored. This remains a bounded bridge seam, not a general SPARQL expression evaluator.
+
+- [x] **Step 3: Verify focused and linked runtime behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally after rebuilding the adapter.
