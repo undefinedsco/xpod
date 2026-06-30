@@ -3652,3 +3652,52 @@ bun run test:integration
 Observed: PASS locally after applying the full patch set and configuring upstream QLever with the Xpod adapter/protocol include paths and `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1`. The upstream `engine` target now compiles with the Xpod lower lazy-scan bridge visible.
 
 Remaining gap: this is still a compile/data-interface gate. It does not yet prove a linked real upstream query binary over PG-backed facts. The next gate is to replace the upstream-shaped runtime fixture with a real linked execution path that returns rows through `QueryPlanner -> QueryExecutionTree::getResult(true) -> IndexScan::getLazyScan -> XpodQleverPhysicalIndex -> xpod_rdf_backend_v1`.
+
+### Task 90: Make the full upstream engine gate reproducible
+
+**Files:**
+- Add: `scripts/check-qlever-full-engine-build.cjs`
+- Add: `tests/native/QleverFullEngineBuildScript.test.ts`
+- Modify: `package.json`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a failing script contract test**
+
+Add a native test that requires:
+
+- `package.json` exposes `check:qlever-full-engine`;
+- the script can print its CMake plan in `--dry-run --json` mode;
+- the printed configure args contain `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1` and the adapter/protocol include paths;
+- the build target defaults to upstream QLever `engine`;
+- missing source configuration fails with `missing --qlever-source or XPOD_QLEVER_SOURCE_DIR`.
+
+Expected: FAIL before the script and package entry exist.
+
+- [x] **Step 2: Implement the native-first full-engine build script**
+
+`scripts/check-qlever-full-engine-build.cjs` now:
+
+- resolves `--qlever-source` / `XPOD_QLEVER_SOURCE_DIR`;
+- runs the upstream patch checker before real builds;
+- configures upstream QLever with the Xpod adapter/protocol include paths and `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1`;
+- defaults to `CHEAPER_COMPILATION=ON`, no precompiled headers, no io_uring, and target `engine`;
+- supports `--dry-run`, `--json`, `--configure-only`, `--build-only`, `--target`, `--jobs`, and env-driven compiler / prefix / ICU / Boost overrides.
+
+This script is still a build gate, not a product runtime entrypoint.
+
+- [x] **Step 3: Verify against the real local upstream tree**
+
+Run:
+
+```bash
+bun test tests/native/QleverFullEngineBuildScript.test.ts --run
+node scripts/check-qlever-full-engine-build.cjs \
+  --qlever-source .test-data/qlever-upstream \
+  --build-dir .test-data/qlever-full-build \
+  --target engine \
+  --jobs 2
+```
+
+Observed: PASS locally. The script now reproduces the previous manual full upstream `engine` build with the Xpod lower data seam visible.
+
+Remaining gap: the next gate is still a linked real-upstream query execution binary over `xpod_rdf_backend_v1`; this task only removes the manual CMake command as a source of drift.
