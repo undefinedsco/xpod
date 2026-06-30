@@ -363,6 +363,27 @@ IdTable materializeQleverResultTable(
   return table;
 }
 
+[[maybe_unused]] std::optional<IdTable> projectMaterializedTable(
+    const IdTable& input,
+    const std::vector<ColumnIndex>& columns) {
+  for (ColumnIndex column : columns) {
+    if (column >= input.numColumns()) {
+      return std::nullopt;
+    }
+  }
+  IdTable output = makeQleverIdTable(columns.size());
+  std::vector<Id> row;
+  row.reserve(columns.size());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    row.clear();
+    for (ColumnIndex column : columns) {
+      row.push_back(input(input_row, column));
+    }
+    output.push_back(row);
+  }
+  return output;
+}
+
 template <typename Tree, typename = void>
 struct HasLazyTreeResult : std::false_type {};
 
@@ -393,6 +414,38 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
   if (!plan.has_value() || isBridgeCandidateRoot(plan->root.kind)) {
     return std::nullopt;
   }
+  size_t qlever_result_width = plan->result_width;
+  std::optional<BridgeResultModifier> selected_projection;
+  std::optional<std::vector<std::string>> selected =
+      selectedVariablesFromParsedQuery(parsed);
+  if (selected.has_value()) {
+    BridgeResultModifier projection;
+    projection.kind = BridgeResultModifierKind::Project;
+    projection.columns.reserve(selected->size());
+    for (const std::string& variable : *selected) {
+      std::optional<ColumnIndex> column =
+          outputColumnForVariable(plan->output_variables, variable);
+      if (!column.has_value()) {
+        return std::nullopt;
+      }
+      projection.columns.push_back(*column);
+    }
+    bool identity_projection =
+        projection.columns.size() == plan->output_variables.size();
+    if (identity_projection) {
+      for (size_t column = 0; column < projection.columns.size(); ++column) {
+        if (projection.columns[column] != column) {
+          identity_projection = false;
+          break;
+        }
+      }
+    }
+    plan->output_variables = *selected;
+    plan->result_width = plan->output_variables.size();
+    if (!identity_projection) {
+      selected_projection = std::move(projection);
+    }
+  }
   if constexpr (!HasLazyTreeResult<Tree>::value) {
     return std::nullopt;
   } else {
@@ -400,7 +453,15 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
     if (result == nullptr) {
       return std::nullopt;
     }
-    IdTable table = materializeQleverResultTable(*result, plan->result_width);
+    IdTable table = materializeQleverResultTable(*result, qlever_result_width);
+    if (selected_projection.has_value()) {
+      std::optional<IdTable> projected =
+          projectMaterializedTable(table, selected_projection->columns);
+      if (!projected.has_value()) {
+        return std::nullopt;
+      }
+      table = std::move(*projected);
+    }
     return NativeQleverExecution{std::move(*plan), std::move(table)};
   }
 }

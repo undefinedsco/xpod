@@ -143,6 +143,7 @@ describe('QLever real upstream runtime smoke script', () => {
       const smoke = readFileSync(path.join(runtimeBuild, 'xpod_qlever_real_runtime_smoke.cpp'), 'utf8');
       expect(smoke).toContain('text_search');
       expect(smoke).toContain('estimate_text_search');
+      expect(smoke).toContain('estimate_distinct');
       expect(smoke).toContain('ql:contains-word');
       expect(smoke).toContain('ql:contains-entity <urn:entity>');
       expect(smoke).toContain('lookup_terms');
@@ -152,10 +153,12 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('state.text_calls');
       expect(smoke).toContain('state.entity_text_calls');
       expect(smoke).toContain('state.entity_text_estimate_calls');
+      expect(smoke).toContain('state.estimate_distinct_calls');
       expect(smoke).toContain('SELECT ?s ?tail WHERE { ?s ?p ?o . ?o ?p2 ?tail }');
       expect(smoke).toContain('urn:tail');
       expect(smoke).toContain('join_scan_calls');
-      expect(smoke).toContain('join_scan_calls < 2');
+      expect(smoke).toContain('join_scan_calls < 1');
+      expect(smoke).toContain('join_estimate_distinct_calls < 1');
       expect(smoke).toContain('"head":{"vars":["s","tail"]}');
     } finally {
       await rm(root, { recursive: true, force: true });

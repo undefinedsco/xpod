@@ -3990,3 +3990,78 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 This is still not a complete QLever join-statistics integration. It is a safety and conformance step: in Xpod-backed Cloud Enterprise mode, QLever-native index metadata is not authoritative, and unsupported native planner/executor attempts must fall through to the Xpod physical protocol rather than surfacing as a 500.
+
+
+### Task 98: Keep candidate-source runtime Cloud Enterprise-only
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedCandidateOperation.hpp`
+- Modify: `tests/native/QleverBackedTextSearch.test.ts`
+- Modify: `tests/native/QleverBackedVectorSearch.test.ts`
+- Modify: `tests/native/QleverCandidateOperationBridge.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Lock missing capability declaration as fail-closed**
+
+Add text/vector candidate smoke tests where the backend provides working search callbacks but no `get_capabilities` declaration. The expected behavior is `XPOD_RDF_STATUS_UNSUPPORTED` and zero estimate/search callback calls.
+
+Observed before implementation: the tests failed because `validateBackendFeatureCapability(...)` treated missing capability callbacks as implicit support.
+
+- [x] **Step 2: Require explicit candidate-source feature bits**
+
+`validateBackendFeatureCapability(...)` now returns `UNSUPPORTED` when `get_capabilities` itself is unsupported. Successful candidate-source fixtures declare `TEXT_SEARCH` / `VECTOR_SEARCH` explicitly. This does not create a local runtime feature; local/native execution remains a conformance harness for the Cloud Enterprise protocol.
+
+- [x] **Step 3: Verify focused candidate-source behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverBackedTextSearch.test.ts tests/native/QleverBackedVectorSearch.test.ts tests/native/QleverCandidateOperationBridge.test.ts tests/native/QleverOperationBridge.test.ts --run
+```
+
+Observed: PASS locally. This only verifies the candidate-source capability gate; broader native/QLever runtime verification remains part of the surrounding QLever integration tasks.
+
+
+### Task 99: Feed real QLever join planning with physical stats and public projection
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndexScanContextBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/patches/qlever-indexscan-physical-lazy-scan.patch`
+- Modify: `scripts/check-qlever-upstream-patches.cjs`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `tests/native/QleverPhysicalIndexScanContextBridge.test.ts`
+- Modify: `tests/native/QleverUpstreamIndexScanPatch.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Route upstream IndexScan multiplicities through physical distinct estimates**
+
+Add `multiplicitiesFromQleverScanSpecAndBlocks(...)` and patch upstream `IndexScan::determineMultiplicities()` so injected Xpod physical indexes use `estimate_distinct` instead of QLever-native permutation metadata. The helper computes multiplicity from the physical row estimate and the distinct estimate for each projected RDF slot.
+
+Observed before implementation: real QLever RDF/RDF join planning could reach native-index statistics that are not populated in Xpod-backed mode.
+
+- [x] **Step 2: Preserve public SELECT projection for direct QLever tree execution**
+
+The operation-plan path already had a `Project` result modifier, but direct upstream `QueryExecutionTree::getResult(true)` materialization bypassed it. The bridge now applies the parsed `SELECT` projection to the materialized QLever result table before SPARQL JSON serialization, so internal join variables such as `?o`, `?p`, and `?p2` do not leak when the public query asks for `?s ?tail`.
+
+Observed before implementation: the real runtime smoke returned head vars `["o","p","s","p2","tail"]` for `SELECT ?s ?tail ...`.
+
+- [x] **Step 3: Verify linked upstream runtime**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts tests/native/QleverPhysicalIndexScanContextBridge.test.ts tests/native/QleverUpstreamIndexScanPatch.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun test tests/native --run
+bun run build:ts
+git diff --check
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally after rebuilding the adapter. A stale adapter library reproduced the old projection failure; rebuilding `libxpod_qlever_adapter.a` made the linked smoke pass.

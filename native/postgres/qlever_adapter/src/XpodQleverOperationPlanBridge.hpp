@@ -1283,11 +1283,54 @@ inline std::optional<BridgeQueryPlan> planQleverExecutionTree(
   return planQleverOperation(*operation);
 }
 
+inline bool applySelectedProjectionModifier(
+    BridgeQueryPlan& plan,
+    const ParsedQuery& parsed) {
+  std::optional<std::vector<std::string>> selected =
+      selectedVariablesFromParsedQuery(parsed);
+  if (!selected.has_value()) {
+    return true;
+  }
+
+  BridgeResultModifier modifier;
+  modifier.kind = BridgeResultModifierKind::Project;
+  modifier.columns.reserve(selected->size());
+  for (const std::string& variable : *selected) {
+    std::optional<ColumnIndex> column =
+        outputColumnForVariable(plan.output_variables, variable);
+    if (!column.has_value()) {
+      return false;
+    }
+    modifier.columns.push_back(*column);
+  }
+
+  bool identity_projection =
+      modifier.columns.size() == plan.output_variables.size();
+  if (identity_projection) {
+    for (size_t column = 0; column < modifier.columns.size(); ++column) {
+      if (modifier.columns[column] != column) {
+        identity_projection = false;
+        break;
+      }
+    }
+  }
+  plan.output_variables = std::move(*selected);
+  plan.result_width = plan.output_variables.size();
+  if (!identity_projection) {
+    plan.root.result_modifiers.push_back(std::move(modifier));
+  }
+  return true;
+}
+
 inline std::optional<BridgeQueryPlan> planQleverParsedQueryWithPlanner(
     QueryPlanner& planner,
     ParsedQuery& parsed) {
   QueryExecutionTree tree = planner.createExecutionTree(parsed);
-  return planQleverExecutionTree(tree);
+  std::optional<BridgeQueryPlan> plan = planQleverExecutionTree(tree);
+  if (!plan.has_value() || !applySelectedProjectionModifier(*plan, parsed)) {
+    return std::nullopt;
+  }
+  return plan;
 }
 
 namespace detail {

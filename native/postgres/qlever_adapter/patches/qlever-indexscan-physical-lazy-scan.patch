@@ -52,6 +52,43 @@ diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
    return permutation().getResultSizeOfScan(scanSpecAndBlocks_,
                                             locatedTriplesState());
  }
+@@ -418,5 +436,36 @@
+ void IndexScan::determineMultiplicities() {
+   multiplicity_ = [this]() -> std::vector<float> {
++    if (xpod::qlever::physicalIndexFromContext(*_executionContext) != nullptr) {
++      const char* xpodPermutationSlots =
++          xpod::qlever::permutationSlots(permutation().permutation());
++      const auto permutedTriple = getPermutedTriple();
++      std::vector<uint32_t> xpodProjectedSlots;
++      for (size_t column = 0; column < permutedTriple.size(); ++column) {
++        if (!permutedTriple[column]->isVariable()) {
++          continue;
++        }
++        switch (xpodPermutationSlots[column]) {
++          case 'S':
++            xpodProjectedSlots.push_back(XPOD_RDF_SLOT_SUBJECT);
++            break;
++          case 'P':
++            xpodProjectedSlots.push_back(XPOD_RDF_SLOT_PREDICATE);
++            break;
++          case 'O':
++            xpodProjectedSlots.push_back(XPOD_RDF_SLOT_OBJECT);
++            break;
++          default:
++            AD_FAIL();
++        }
++      }
++      auto xpodMultiplicities =
++          xpod::qlever::multiplicitiesFromQleverScanSpecAndBlocks(
++              *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++              xpodProjectedSlots);
++      AD_CONTRACT_CHECK(xpodMultiplicities.status == XPOD_RDF_STATUS_OK);
++      return std::move(xpodMultiplicities.values);
++    }
++
+     const auto& idx = getIndex();
+     if (numVariables_ == 0) {
+       return {};
 @@ -455,5 +465,11 @@
  // ___________________________________________________________________________
  Permutation::ScanSpecAndBlocks IndexScan::getScanSpecAndBlocks() const {

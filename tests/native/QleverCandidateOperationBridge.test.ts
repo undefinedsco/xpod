@@ -120,6 +120,15 @@ static void on_profile(void* user_data, const xpod_rdf_profile_event* event) {
   state->profile_statuses[index] = event->status;
 }
 
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->features =
+      XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH |
+      XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status estimate_text_search(
     void*,
     const xpod_rdf_text_search_request* request,
@@ -193,6 +202,7 @@ int main() {
   backend.backend_user_data = &state;
   backend.on_profile_event = on_profile;
   backend.profile_user_data = &state;
+  backend.get_capabilities = get_capabilities;
   backend.estimate_text_search = estimate_text_search;
   backend.text_search = text_search;
   backend.estimate_vector_search = estimate_vector_search;
@@ -305,6 +315,13 @@ static bool bytes_equal(xpod_rdf_bytes actual, const char* expected) {
   return std::string(actual.data, actual.size) == expected;
 }
 
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->features = XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status estimate_text_search(
     void*,
     const xpod_rdf_text_search_request*,
@@ -336,6 +353,7 @@ int main() {
   xpod_rdf_backend_v1 backend = {};
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.get_capabilities = get_capabilities;
   backend.estimate_text_search = estimate_text_search;
   backend.text_search = text_search;
   xpod::rdf::PhysicalBackend physical(&backend);

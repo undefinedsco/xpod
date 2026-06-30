@@ -70,6 +70,34 @@ size_t IndexScan::getExactSize() const {
                                            locatedTriplesState());
 }
 
+void IndexScan::determineMultiplicities() {
+  multiplicity_ = [this]() -> std::vector<float> {
+    const auto& idx = getIndex();
+    if (numVariables_ == 0) {
+      return {};
+    } else if (numVariables_ == 1) {
+      // There are no duplicate triples in RDF and two elements are fixed.
+      return {1.0f};
+    } else if (numVariables_ == 2) {
+      return idx.getMultiplicities(*getPermutedTriple()[0], permutation(),
+                                   locatedTriplesState());
+    } else {
+      AD_CORRECTNESS_CHECK(numVariables_ == 3);
+      return idx.getMultiplicities(permutation());
+    }
+  }();
+  multiplicity_.resize(multiplicity_.size() + additionalColumns_.size(), 1.0f);
+
+  if (varsToKeep_.has_value()) {
+    std::vector<float> actualMultiplicites;
+    for (size_t column : getSubsetForStrippedColumns()) {
+      actualMultiplicites.push_back(multiplicity_.at(column));
+    }
+    multiplicity_ = std::move(actualMultiplicites);
+  }
+  AD_CONTRACT_CHECK(multiplicity_.size() == getResultWidth());
+}
+
 // ___________________________________________________________________________
 Permutation::ScanSpecAndBlocks IndexScan::getScanSpecAndBlocks() const {
   return permutation().getScanSpecAndBlocks(getScanSpecification(),
@@ -125,6 +153,9 @@ describe('QLever upstream IndexScan patch asset', () => {
       expect(patched).toContain('xpod::qlever::exactSizeFromQleverScanSpecAndBlocks');
       expect(patched).toContain('xpodExactSize.status == XPOD_RDF_STATUS_OK');
       expect(patched).toContain('AD_CONTRACT_CHECK(xpodExactSize.status == XPOD_RDF_STATUS_OK);');
+      expect(patched).toContain('xpod::qlever::multiplicitiesFromQleverScanSpecAndBlocks');
+      expect(patched).toContain('xpodMultiplicities.status == XPOD_RDF_STATUS_OK');
+      expect(patched).toContain('AD_CONTRACT_CHECK(xpodMultiplicities.status == XPOD_RDF_STATUS_OK);');
       expect(patched).toContain('xpod::qlever::canUsePhysicalScanSpecAndBlocks');
       expect(patched).toContain('BlockMetadataRanges{}');
       expect(patched).toContain('xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks');
@@ -133,6 +164,7 @@ describe('QLever upstream IndexScan patch asset', () => {
       expect(patched).toContain('AD_CONTRACT_CHECK(xpodLazyScan.status == XPOD_RDF_STATUS_OK);');
       expect(patched).toContain('permutation().getSizeEstimateForScan(');
       expect(patched).toContain('permutation().getResultSizeOfScan(');
+      expect(patched).toContain('idx.getMultiplicities(permutation())');
       expect(patched).toContain('permutation().getScanSpecAndBlocks(');
       expect(patched).toContain('permutation().scan(');
       expect(patched).toContain('permutation().lazyScan(');

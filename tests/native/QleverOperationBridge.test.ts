@@ -267,6 +267,22 @@ static bool bytes_equal(xpod_rdf_bytes actual, const char* expected) {
   return index == actual.size;
 }
 
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations =
+      XPOD_RDF_PERM_CAP_SPOG |
+      XPOD_RDF_PERM_CAP_SOPG |
+      XPOD_RDF_PERM_CAP_PSOG |
+      XPOD_RDF_PERM_CAP_POSG |
+      XPOD_RDF_PERM_CAP_OSPG |
+      XPOD_RDF_PERM_CAP_OPSG;
+  out_capabilities->features =
+      XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH |
+      XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status estimate_text_search(
     void*,
     const xpod_rdf_text_search_request*,
@@ -449,6 +465,7 @@ int main() {
   backend.backend_user_data = &state;
   backend.encode_qlever_id = encode;
   backend.decode_qlever_id = decode;
+  backend.get_capabilities = get_capabilities;
   backend.scan_permutation = scan;
   backend.estimate_text_search = estimate_text_search;
   backend.text_search = text_search;

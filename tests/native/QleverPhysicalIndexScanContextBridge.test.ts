@@ -410,6 +410,142 @@ int main() {
     }
   }, 30_000);
 
+  it('estimates upstream IndexScan multiplicities through physical distinct estimates', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical multiplicity bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-context-multiplicity-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'context_multiplicity_smoke.cpp');
+      const binary = path.join(root, 'context_multiplicity_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+
+#include <cmath>
+#include <optional>
+#include <vector>
+
+class QueryExecutionContext {
+ public:
+  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex& index) {
+    index_.emplace(index);
+  }
+  const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
+    return index_.has_value() ? &*index_ : nullptr;
+  }
+ private:
+  std::optional<xpod::qlever::XpodQleverPhysicalIndex> index_;
+};
+
+struct BackendState {
+  int estimate_scan_calls = 0;
+  int estimate_distinct_calls = 0;
+  uint32_t distinct_slots_seen[3] = {};
+};
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  out_capabilities->features = 0;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_scan(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_scan_calls;
+  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!request->pattern.has_predicate || request->pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 12;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_distinct(
+    void* user_data,
+    const xpod_rdf_distinct_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  if (state->estimate_distinct_calls >= 3) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  state->distinct_slots_seen[state->estimate_distinct_calls] = request->distinct_slots;
+  ++state->estimate_distinct_calls;
+  if (request->scan.permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!request->scan.pattern.has_predicate || request->scan.pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->distinct_slots == XPOD_RDF_SLOT_SUBJECT) {
+    out_estimate->rows = 3;
+  } else if (request->distinct_slots == XPOD_RDF_SLOT_OBJECT) {
+    out_estimate->rows = 4;
+  } else {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.estimate_scan = estimate_scan;
+  raw_backend.estimate_distinct = estimate_distinct;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext planner_context{physical, &request, request.cancellation};
+  planner_context.capabilities_status = physical.getCapabilities(planner_context.capabilities);
+
+  QueryExecutionContext qec;
+  qec.setXpodPhysicalIndex(xpod::qlever::XpodQleverPhysicalIndex(planner_context));
+
+  CompressedRelationReader::ScanSpecAndBlocks scan_spec_and_blocks = {};
+  scan_spec_and_blocks.scanSpec_.col1 = Id::fromBits(20);
+
+  const std::vector<uint32_t> projected_slots = {
+      XPOD_RDF_SLOT_SUBJECT,
+      XPOD_RDF_SLOT_OBJECT,
+  };
+  auto multiplicities =
+      xpod::qlever::multiplicitiesFromQleverScanSpecAndBlocks(
+          qec, Permutation::Enum::SPO, scan_spec_and_blocks, projected_slots);
+  if (multiplicities.status != XPOD_RDF_STATUS_OK) return 1;
+  if (multiplicities.values.size() != 2) return 2;
+  if (std::fabs(multiplicities.values[0] - 4.0f) > 0.001f) return 3;
+  if (std::fabs(multiplicities.values[1] - 3.0f) > 0.001f) return 4;
+  if (state.estimate_scan_calls != 1) return 5;
+  if (state.estimate_distinct_calls != 2) return 6;
+  if (state.distinct_slots_seen[0] != XPOD_RDF_SLOT_SUBJECT) return 7;
+  if (state.distinct_slots_seen[1] != XPOD_RDF_SLOT_OBJECT) return 8;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('materializes upstream IndexScan results through the injected physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index context bridge check').toBe(true);
 

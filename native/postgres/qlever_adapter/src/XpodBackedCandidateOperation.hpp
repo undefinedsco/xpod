@@ -21,7 +21,7 @@ inline xpod_rdf_status validateBackendFeatureCapability(
   xpod_rdf_backend_capabilities capabilities = {};
   xpod_rdf_status status = backend.getCapabilities(capabilities);
   if (status == XPOD_RDF_STATUS_UNSUPPORTED) {
-    return XPOD_RDF_STATUS_OK;
+    return XPOD_RDF_STATUS_UNSUPPORTED;
   }
   if (status != XPOD_RDF_STATUS_OK) {
     return status;

@@ -30,6 +30,7 @@ enum class BridgeOperationKind {
   OptionalJoin,
   MultiColumnJoin,
   GroupBy,
+  Project,
 };
 
 enum class BridgeCandidateColumnKind {
@@ -47,6 +48,7 @@ enum class BridgeResultModifierKind {
   Distinct,
   OrderBy,
   InternalSort,
+  Project,
 };
 
 struct BridgeCandidateOutputColumn {

@@ -22,6 +22,11 @@ struct QleverExactSizeResult {
   size_t rows = 0;
 };
 
+struct QleverMultiplicityEstimateResult {
+  xpod_rdf_status status = XPOD_RDF_STATUS_UNSUPPORTED;
+  std::vector<float> values;
+};
+
 namespace detail {
 
 template <typename Context, typename = void>
@@ -237,6 +242,61 @@ QleverExactSizeResult exactSizeFromQleverScanSpecAndBlocks(
     return {count.status, 0};
   }
   return {XPOD_RDF_STATUS_OK, static_cast<size_t>(count.result.count)};
+}
+
+template <typename Context, typename QleverScanSpecAndBlocks>
+QleverMultiplicityEstimateResult multiplicitiesFromQleverScanSpecAndBlocks(
+    const Context& context,
+    Permutation::Enum permutation,
+    const QleverScanSpecAndBlocks& scan_spec_and_blocks,
+    const std::vector<uint32_t>& projected_slots) {
+  QleverMultiplicityEstimateResult result = {};
+  const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
+  if (index == nullptr) {
+    return result;
+  }
+  const auto& scan_specification =
+      detail::scanSpecificationFromScanSpecAndBlocks(scan_spec_and_blocks);
+  uint32_t needed_slots = 0;
+  for (uint32_t slot : projected_slots) {
+    needed_slots |= slot;
+  }
+  if (needed_slots == 0) {
+    result.status = XPOD_RDF_STATUS_OK;
+    return result;
+  }
+
+  auto physical_permutation = index->permutation(permutation);
+  auto physical_scan_spec_and_blocks =
+      physical_permutation.getScanSpecAndBlocks(scan_specification,
+                                                needed_slots);
+  auto size_estimate =
+      physical_permutation.getSizeEstimateForScan(physical_scan_spec_and_blocks);
+  if (size_estimate.status != XPOD_RDF_STATUS_OK) {
+    result.status = size_estimate.status;
+    return result;
+  }
+  const uint64_t rows = size_estimate.upper;
+
+  result.values.reserve(projected_slots.size());
+  for (uint32_t slot : projected_slots) {
+    XpodQleverDistinctEstimateResult distinct =
+        physical_permutation.estimateDistinct(
+            physical_scan_spec_and_blocks.pattern, slot, needed_slots);
+    if (distinct.status != XPOD_RDF_STATUS_OK) {
+      result.status = distinct.status;
+      result.values.clear();
+      return result;
+    }
+    const uint64_t distinct_rows = distinct.estimate.rows;
+    result.values.push_back(distinct_rows == 0
+                                ? 1.0f
+                                : static_cast<float>(
+                                      static_cast<double>(rows) /
+                                      static_cast<double>(distinct_rows)));
+  }
+  result.status = XPOD_RDF_STATUS_OK;
+  return result;
 }
 
 template <typename Context, typename QleverScanSpecAndBlocks>

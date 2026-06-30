@@ -1075,6 +1075,52 @@ inline QleverResultWithStatus applyBridgeInternalSort(
       {XPOD_RDF_STATUS_OK, std::move(output)}, modifier.columns);
 }
 
+inline std::vector<ColumnIndex> projectedSortedColumns(
+    const std::vector<ColumnIndex>& input_sorted_by,
+    const std::vector<ColumnIndex>& projection_columns) {
+  std::vector<ColumnIndex> sorted_by;
+  for (ColumnIndex sorted_column : input_sorted_by) {
+    for (size_t projected_column = 0;
+         projected_column < projection_columns.size();
+         ++projected_column) {
+      if (projection_columns[projected_column] == sorted_column) {
+        sorted_by.push_back(static_cast<ColumnIndex>(projected_column));
+        break;
+      }
+    }
+  }
+  return sorted_by;
+}
+
+inline QleverResultWithStatus applyBridgeProject(
+    const BridgeResultModifier& modifier,
+    QleverResultWithStatus result) {
+  if (result.status != XPOD_RDF_STATUS_OK) {
+    return result;
+  }
+  const IdTable& input = result.result.idTable();
+  for (ColumnIndex column : modifier.columns) {
+    if (column >= input.numColumns()) {
+      return makeEmptyOperationResult(
+          XPOD_RDF_STATUS_UNSUPPORTED, modifier.columns.size());
+    }
+  }
+
+  IdTable output = makeQleverIdTable(modifier.columns.size());
+  std::vector<Id> row;
+  row.reserve(modifier.columns.size());
+  for (size_t input_row = 0; input_row < input.numRows(); ++input_row) {
+    row.clear();
+    for (ColumnIndex column : modifier.columns) {
+      row.push_back(input(input_row, column));
+    }
+    output.push_back(row);
+  }
+  return toQleverResult(
+      {XPOD_RDF_STATUS_OK, std::move(output)},
+      projectedSortedColumns(result.result.sortedBy(), modifier.columns));
+}
+
 inline QleverResultWithStatus applyBridgeResultModifier(
     const xpod::rdf::PhysicalBackend& backend,
     const BridgeResultModifier& modifier,
@@ -1094,6 +1140,9 @@ inline QleverResultWithStatus applyBridgeResultModifier(
   }
   if (modifier.kind == BridgeResultModifierKind::InternalSort) {
     return applyBridgeInternalSort(backend, modifier, std::move(result));
+  }
+  if (modifier.kind == BridgeResultModifierKind::Project) {
+    return applyBridgeProject(modifier, std::move(result));
   }
   return result;
 }

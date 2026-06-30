@@ -53,6 +53,13 @@ struct ProfileState {
   uint64_t estimate_rows[2];
 };
 
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->features = XPOD_RDF_BACKEND_FEATURE_VECTOR_SEARCH;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static bool request_matches(const xpod_rdf_vector_search_request* request) {
   if (request == nullptr) return false;
   if (request->dimensions != 3) return false;
@@ -132,6 +139,7 @@ int main() {
   backend.backend_user_data = &callbacks;
   backend.on_profile_event = on_profile;
   backend.profile_user_data = &profile;
+  backend.get_capabilities = get_capabilities;
   backend.estimate_vector_search = estimate_vector_search;
   backend.vector_search = vector_search;
   xpod::rdf::PhysicalBackend physical(&backend);
@@ -274,6 +282,82 @@ int main() {
         unsupportedFeatureBinary,
       ], { stdio: 'pipe' });
       execFileSync(unsupportedFeatureBinary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when vector search capability is not declared', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native backed vector search capability check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-backed-vector-search-missing-capability-'));
+    try {
+      const smoke = path.join(root, 'backed_vector_search_missing_capability_smoke.cpp');
+      const binary = path.join(root, 'backed_vector_search_missing_capability_smoke');
+      await writeFile(smoke, `
+#include "XpodBackedVectorSearch.hpp"
+
+struct CallState {
+  int estimate_calls;
+  int search_calls;
+};
+
+static xpod_rdf_status estimate_vector_search(
+    void* user_data,
+    const xpod_rdf_vector_search_request*,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<CallState*>(user_data);
+  ++state->estimate_calls;
+  out_estimate->rows = 1;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status vector_search(
+    void* user_data,
+    const xpod_rdf_vector_search_request*,
+    xpod_rdf_candidate_batch_callback,
+    void*) {
+  auto* state = static_cast<CallState*>(user_data);
+  ++state->search_calls;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  CallState calls = {};
+  xpod_rdf_backend_v1 backend = {};
+  backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  backend.backend_user_data = &calls;
+  backend.estimate_vector_search = estimate_vector_search;
+  backend.vector_search = vector_search;
+  xpod::rdf::PhysicalBackend physical(&backend);
+
+  double values[1] = {0.5};
+  xpod_rdf_vector_search_request request = {};
+  request.vector = values;
+  request.dimensions = 1;
+  request.model = {"test-embedding", 14};
+  request.metric = XPOD_RDF_VECTOR_COSINE;
+  xpod::qlever::XpodBackedVectorSearch vectorSearch(physical, request);
+  if (vectorSearch.estimate().status != XPOD_RDF_STATUS_UNSUPPORTED) return 1;
+  if (vectorSearch.execute().status != XPOD_RDF_STATUS_UNSUPPORTED) return 2;
+  if (calls.estimate_calls != 0 || calls.search_calls != 0) return 3;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-I', path.dirname(vectorSearchHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

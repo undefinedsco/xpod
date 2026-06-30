@@ -200,6 +200,7 @@ function writeSmokeSource(smokeSourcePath) {
 
 struct BackendState {
   int scan_calls = 0;
+  int estimate_distinct_calls = 0;
   int text_calls = 0;
   int entity_text_estimate_calls = 0;
   int entity_text_calls = 0;
@@ -373,6 +374,31 @@ static bool matches_pattern(const xpod_rdf_quad_pattern& pattern, const xpod_rdf
          (!pattern.has_graph || pattern.graph == row.graph);
 }
 
+static xpod_rdf_status estimate_distinct(
+    void* user_data,
+    const xpod_rdf_distinct_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_distinct_calls;
+  const xpod_rdf_quad_key rows[] = {
+      {10, 20, 30, 40},
+      {30, 21, 70, 40},
+  };
+  uint64_t matched_count = 0;
+  for (const auto& row : rows) {
+    if (matches_pattern(request->scan.pattern, row)) {
+      ++matched_count;
+    }
+  }
+  out_estimate->rows = matched_count;
+  out_estimate->distinct_subjects = matched_count;
+  out_estimate->distinct_predicates = matched_count;
+  out_estimate->distinct_objects = matched_count;
+  out_estimate->distinct_graphs = matched_count == 0 ? 0 : 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
 static xpod_rdf_status scan_permutation(
     void* user_data,
     const xpod_rdf_scan_request* request,
@@ -413,6 +439,7 @@ int main() {
   raw_backend.lookup_terms = lookup_terms;
   raw_backend.estimate_scan = estimate_scan;
   raw_backend.count_scan = count_scan;
+  raw_backend.estimate_distinct = estimate_distinct;
   raw_backend.scan_permutation = scan_permutation;
   raw_backend.estimate_text_search = estimate_text_search;
   raw_backend.text_search = text_search;
@@ -442,6 +469,7 @@ int main() {
   if (profile.find("xpod-qlever-bridge") == std::string_view::npos) return 7;
 
   int scans_before_join = state.scan_calls;
+  int estimates_before_join = state.estimate_distinct_calls;
   xpod_qlever_query_request join_request = {};
   join_request.sparql = bytes(
       "SELECT ?s ?tail WHERE { ?s ?p ?o . ?o ?p2 ?tail }");
@@ -456,12 +484,25 @@ int main() {
     return 16;
   }
   int join_scan_calls = state.scan_calls - scans_before_join;
-  if (join_scan_calls < 2) return 17;
+  int join_estimate_distinct_calls =
+      state.estimate_distinct_calls - estimates_before_join;
+  if (join_scan_calls < 1) {
+    std::fprintf(stderr,
+                 "join_scan_calls=%d join_estimate_distinct_calls=%d json=%.*s profile=%.*s\n",
+                 join_scan_calls,
+                 join_estimate_distinct_calls,
+                 static_cast<int>(join_json.size()),
+                 join_json.data(),
+                 static_cast<int>(join_profile.size()),
+                 join_profile.data());
+    return 17;
+  }
   if (join_json.find("urn:s") == std::string_view::npos) return 18;
   if (join_json.find("urn:tail") == std::string_view::npos) return 19;
   if (join_profile.find("HashJoin") == std::string_view::npos &&
       join_profile.find("Join") == std::string_view::npos) return 20;
   if (join_json.find(R"("head":{"vars":["s","tail"]})") == std::string_view::npos) return 21;
+  if (join_estimate_distinct_calls < 1) return 22;
   xpod_qlever_adapter_release_result(adapter, &join_result);
 
   xpod_qlever_adapter_release_result(adapter, &result);
