@@ -96,6 +96,7 @@ struct BridgeOperationPlan {
   std::vector<std::vector<uint64_t>> value_id_rows;
   std::vector<BridgeOperationPlan> children;
   std::vector<BridgeResultModifier> result_modifiers;
+  bool native_result_only = false;
   xpod_rdf_profile_node_key profile_node = 0;
   xpod_rdf_profile_node_key parent_profile_node = 0;
 };

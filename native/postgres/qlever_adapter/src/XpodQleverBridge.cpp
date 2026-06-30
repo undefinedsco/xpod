@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <iomanip>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -106,43 +107,170 @@ bool isQleverUndefinedId(const Id& id) {
   return isQleverUndefinedIdValue(id);
 }
 
+struct ResolvedQleverBinding {
+  xpod_rdf_term term = {};
+  std::string value;
+  std::string datatype_iri;
+  std::string language;
+
+  void refreshViews() noexcept {
+    term.value = {value.data(), value.size()};
+    term.datatype_iri = {datatype_iri.data(), datatype_iri.size()};
+    term.language = {language.data(), language.size()};
+  }
+
+  void setLiteral(std::string literal_value, std::string datatype) {
+    term.kind = XPOD_RDF_TERM_LITERAL;
+    value = std::move(literal_value);
+    datatype_iri = std::move(datatype);
+    language.clear();
+    refreshViews();
+  }
+
+  void setFromTerm(const xpod_rdf_term& resolved) {
+    term.kind = resolved.kind;
+    value = std::string(bytesView(resolved.value));
+    datatype_iri = std::string(bytesView(resolved.datatype_iri));
+    language = std::string(bytesView(resolved.language));
+    refreshViews();
+  }
+};
+
+template <typename IdT, typename = void>
+struct HasQleverIntValue : std::false_type {};
+
+template <typename IdT>
+struct HasQleverIntValue<
+    IdT,
+    std::void_t<decltype(IdT::makeFromInt(std::declval<const IdT&>().getInt()))>>
+    : std::true_type {};
+
+template <typename IdT, typename = void>
+struct HasQleverDoubleValue : std::false_type {};
+
+template <typename IdT>
+struct HasQleverDoubleValue<
+    IdT,
+    std::void_t<decltype(IdT::makeFromDouble(
+        std::declval<const IdT&>().getDouble()))>>
+    : std::true_type {};
+
+template <typename IdT, typename = void>
+struct HasQleverBoolValue : std::false_type {};
+
+template <typename IdT>
+struct HasQleverBoolValue<
+    IdT,
+    std::void_t<decltype(IdT::makeFromBool(std::declval<const IdT&>().getBool())),
+                decltype(std::declval<const IdT&>().getBoolLiteral())>>
+    : std::true_type {};
+
+template <typename IdT, typename = void>
+struct HasQleverZeroOneBoolValue : std::false_type {};
+
+template <typename IdT>
+struct HasQleverZeroOneBoolValue<
+    IdT,
+    std::void_t<decltype(IdT::makeBoolFromZeroOrOne(
+        std::declval<const IdT&>().getBool()))>>
+    : std::true_type {};
+
+template <typename IdT>
+std::optional<ResolvedQleverBinding> inlineQleverBindingFromId(const IdT& id) {
+  if constexpr (HasQleverIntValue<IdT>::value) {
+    int64_t value = id.getInt();
+    if (IdT::makeFromInt(value).getBits() == id.getBits()) {
+      ResolvedQleverBinding binding;
+      binding.setLiteral(
+          std::to_string(value),
+          "http://www.w3.org/2001/XMLSchema#integer");
+      return binding;
+    }
+  }
+  if constexpr (HasQleverDoubleValue<IdT>::value) {
+    double value = id.getDouble();
+    if (IdT::makeFromDouble(value).getBits() == id.getBits()) {
+      std::ostringstream out;
+      out << std::setprecision(17) << value;
+      ResolvedQleverBinding binding;
+      binding.setLiteral(
+          out.str(),
+          "http://www.w3.org/2001/XMLSchema#double");
+      return binding;
+    }
+  }
+  if constexpr (HasQleverBoolValue<IdT>::value) {
+    bool value = id.getBool();
+    bool is_bool = IdT::makeFromBool(value).getBits() == id.getBits();
+    if constexpr (HasQleverZeroOneBoolValue<IdT>::value) {
+      is_bool = is_bool ||
+                IdT::makeBoolFromZeroOrOne(value).getBits() == id.getBits();
+    }
+    if (is_bool) {
+      ResolvedQleverBinding binding;
+      binding.setLiteral(
+          std::string(id.getBoolLiteral()),
+          "http://www.w3.org/2001/XMLSchema#boolean");
+      return binding;
+    }
+  }
+  return std::nullopt;
+}
+
 xpod_rdf_status resolveIdTableTerms(
     xpod::rdf::PhysicalBackend backend,
     const IdTable& table,
     const xpod_rdf_snapshot& snapshot,
-    std::vector<xpod_rdf_term>& out_terms,
+    std::vector<ResolvedQleverBinding>& out_terms,
     std::string& error_storage) {
+  out_terms.clear();
   std::vector<xpod_rdf_term_key> keys;
   keys.reserve(table.numRows() * table.numColumns());
+  std::vector<size_t> key_positions;
+  key_positions.reserve(keys.capacity());
   for (size_t row = 0; row < table.numRows(); ++row) {
     for (size_t column = 0; column < table.numColumns(); ++column) {
-      if (isQleverUndefinedId(table(row, column))) {
+      const Id& id = table(row, column);
+      if (isQleverUndefinedId(id)) {
+        continue;
+      }
+      if (std::optional<ResolvedQleverBinding> inline_binding =
+              inlineQleverBindingFromId(id);
+          inline_binding.has_value()) {
+        out_terms.push_back(std::move(*inline_binding));
         continue;
       }
       xpod_rdf_term_key key = 0;
-      xpod_rdf_status status = backend.decodeQleverId(
-          table(row, column).getBits(), key);
+      xpod_rdf_status status = backend.decodeQleverId(id.getBits(), key);
       if (status != XPOD_RDF_STATUS_OK) {
         error_storage = "failed to decode QLever result id";
         return status;
       }
+      key_positions.push_back(out_terms.size());
+      out_terms.push_back({});
       keys.push_back(key);
     }
   }
 
-  out_terms.resize(keys.size());
   std::vector<xpod_rdf_status> statuses(keys.size());
+  std::vector<xpod_rdf_term> resolved_terms(keys.size());
   xpod_rdf_status status = backend.resolveTerms(
-      keys.data(), keys.size(), snapshot, out_terms.data(), statuses.data());
+      keys.data(), keys.size(), snapshot, resolved_terms.data(),
+      statuses.data());
   if (status != XPOD_RDF_STATUS_OK) {
     error_storage = "failed to resolve QLever result terms";
     return status;
   }
-  for (xpod_rdf_status term_status : statuses) {
+  for (size_t index = 0; index < statuses.size(); ++index) {
+    xpod_rdf_status term_status = statuses[index];
     if (term_status != XPOD_RDF_STATUS_OK) {
       error_storage = "failed to resolve one or more QLever result terms";
       return term_status;
     }
+    out_terms[key_positions[index]].setFromTerm(resolved_terms[index]);
+  }
+  for (ResolvedQleverBinding& term : out_terms) {
+    term.refreshViews();
   }
   return XPOD_RDF_STATUS_OK;
 }
@@ -196,7 +324,7 @@ void writeAskSparqlJson(std::ostringstream& out, bool result) {
 void writeSparqlJson(
     std::ostringstream& out,
     const IdTable& table,
-    const std::vector<xpod_rdf_term>& terms,
+    const std::vector<ResolvedQleverBinding>& terms,
     const std::vector<std::string>& variables) {
   writeSparqlHead(out, variables);
   out << '[';
@@ -216,7 +344,7 @@ void writeSparqlJson(
       }
       first_binding = false;
       out << '"' << variables[column] << "\":";
-      writeTermBinding(out, terms[term_index++]);
+      writeTermBinding(out, terms[term_index++].term);
     }
     out << '}';
   }
@@ -298,7 +426,7 @@ xpod_rdf_status writeCandidateSparqlJson(
     return status;
   }
 
-  std::vector<xpod_rdf_term> terms;
+  std::vector<ResolvedQleverBinding> terms;
   status = resolveIdTableTerms(
       backend, output_table, snapshot, terms, error_storage);
   if (status != XPOD_RDF_STATUS_OK) {
@@ -826,7 +954,7 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
           native_execution->plan, request.snapshot, request.cancellation,
           request.graph_scope, request.source_scope, request.access_scope);
       const IdTable& output_table = native_execution->table;
-      std::vector<xpod_rdf_term> terms;
+      std::vector<ResolvedQleverBinding> terms;
       xpod_rdf_status resolve_status = resolveIdTableTerms(
           backend, output_table, request.snapshot, terms, error_storage);
       if (resolve_status != XPOD_RDF_STATUS_OK) {
@@ -943,7 +1071,7 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
     return XPOD_RDF_STATUS_OK;
   }
 
-  std::vector<xpod_rdf_term> terms;
+  std::vector<ResolvedQleverBinding> terms;
   xpod_rdf_status resolve_status = resolveIdTableTerms(
       backend, *output_table, request.snapshot, terms, error_storage);
   if (resolve_status != XPOD_RDF_STATUS_OK) {

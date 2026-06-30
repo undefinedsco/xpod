@@ -1,0 +1,22 @@
+diff --git a/src/engine/GroupByImpl.cpp b/src/engine/GroupByImpl.cpp
+index 0000000..0000000 100644
+--- a/src/engine/GroupByImpl.cpp
++++ b/src/engine/GroupByImpl.cpp
+@@ -15,2 +15,3 @@
+ #include "engine/IndexScan.h"
++#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+ #include "engine/Join.h"
+@@ -547,6 +548,8 @@ Result GroupByImpl::computeResult(bool requestLaziness) {
+-  if (auto idTable = computeOptimizedGroupByIfPossible()) {
+-    // Note: The optimized group bys currently all include index scans and thus
+-    // can never produce local vocab entries. If this should ever change, then
+-    // we also have to take care of the local vocab here.
+-    return {std::move(idTable).value(), resultSortedOn(), LocalVocab{}};
++  if (xpod::qlever::physicalIndexFromContext(*getExecutionContext()) == nullptr) {
++    if (auto idTable = computeOptimizedGroupByIfPossible()) {
++      // Note: The optimized group bys currently all include index scans and thus
++      // can never produce local vocab entries. If this should ever change, then
++      // we also have to take care of the local vocab here.
++      return {std::move(idTable).value(), resultSortedOn(), LocalVocab{}};
++    }
+   }

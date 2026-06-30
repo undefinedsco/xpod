@@ -1108,11 +1108,35 @@ inline std::optional<BridgeQueryPlan> planMultiColumnJoinOperation(
 #endif
 
 #if XPOD_QLEVER_HAS_GROUP_BY
+template <typename AliasT, typename = void>
+struct HasAliasTargetName : std::false_type {};
+
+template <typename AliasT>
+struct HasAliasTargetName<
+    AliasT,
+    std::void_t<decltype(std::declval<const AliasT&>()._target.name())>>
+    : std::true_type {};
+
+template <typename AliasT,
+          typename std::enable_if<HasAliasTargetName<AliasT>::value, int>::type = 0>
+inline std::optional<std::string> aliasTargetVariableNameImpl(
+    const AliasT& alias) {
+  return bridgeVariableName(alias._target);
+}
+
+template <typename AliasT,
+          typename std::enable_if<!HasAliasTargetName<AliasT>::value, int>::type = 0>
+inline std::optional<std::string> aliasTargetVariableNameImpl(
+    const AliasT&) {
+  return std::nullopt;
+}
+
+inline std::optional<std::string> aliasTargetVariableName(const Alias& alias) {
+  return aliasTargetVariableNameImpl(alias);
+}
+
 inline std::optional<BridgeQueryPlan> planGroupByOperation(
     GroupBy& operation) {
-  if (!operation.aliases().empty()) {
-    return std::nullopt;
-  }
   std::vector<QueryExecutionTree*> children = operation.getChildren();
   if (children.size() != 1 || children[0] == nullptr) {
     return std::nullopt;
@@ -1130,10 +1154,12 @@ inline std::optional<BridgeQueryPlan> planGroupByOperation(
   plan.root.sorted_by = plan.sorted_by;
 
   const std::vector<Variable>& variables = operation.groupByVariables();
-  if (variables.empty() || plan.result_width != variables.size()) {
+  const std::vector<Alias>& aliases = operation.aliases();
+  if (variables.empty() ||
+      plan.result_width != variables.size() + aliases.size()) {
     return std::nullopt;
   }
-  plan.output_variables.reserve(variables.size());
+  plan.output_variables.reserve(variables.size() + aliases.size());
   plan.root.projection_columns.reserve(variables.size());
   for (const Variable& variable : variables) {
     std::string name = bridgeVariableName(variable);
@@ -1143,6 +1169,16 @@ inline std::optional<BridgeQueryPlan> planGroupByOperation(
     }
     plan.output_variables.push_back(std::move(name));
     plan.root.projection_columns.push_back(*column);
+  }
+  for (const Alias& alias : aliases) {
+    std::optional<std::string> name = aliasTargetVariableName(alias);
+    if (!name.has_value()) {
+      return std::nullopt;
+    }
+    plan.output_variables.push_back(std::move(*name));
+  }
+  if (!aliases.empty()) {
+    plan.root.native_result_only = true;
   }
 
   plan.child_plans.push_back(std::move(*child_plan));

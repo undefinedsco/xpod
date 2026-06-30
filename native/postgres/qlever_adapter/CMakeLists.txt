@@ -133,6 +133,11 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     "Xpod Filter bounded-expression overlay")
 
   xpod_qlever_require_overlay_token(
+    "src/engine/GroupByImpl.cpp"
+    "physicalIndexFromContext(*getExecutionContext()) == nullptr"
+    "Xpod GroupBy physical-index optimization guard")
+
+  xpod_qlever_require_overlay_token(
     "src/engine/TextIndexScanForWord.cpp"
     "textWordResultFromContext"
     "Xpod text-index word overlay")

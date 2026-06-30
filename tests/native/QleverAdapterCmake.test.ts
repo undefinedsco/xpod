@@ -83,6 +83,11 @@ async function writeRequiredQleverConfigureSkeleton(
     patchedFilterSource,
     'utf8',
   );
+  await writeFile(
+    path.join(qleverSource, 'src/engine/GroupByImpl.cpp'),
+    patchedGroupByImplSource,
+    'utf8',
+  );
   await writePatchedLibcxxSources(qleverSource);
 }
 
@@ -125,6 +130,21 @@ const unpatchedFilterSource = `
 #include "engine/Filter.h"
 void unpatched_filter() {
   (void)"filterIdTable(subRes->sortedBy(), subRes->idTableView())";
+}
+`;
+
+const patchedGroupByImplSource = `
+#include "engine/GroupByImpl.h"
+#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+void xpod_groupby_overlay_marker() {
+  (void)"xpod::qlever::physicalIndexFromContext(*getExecutionContext()) == nullptr";
+}
+`;
+
+const unpatchedGroupByImplSource = `
+#include "engine/GroupByImpl.h"
+void unpatched_groupby() {
+  (void)"computeOptimizedGroupByIfPossible()";
 }
 `;
 
@@ -384,6 +404,11 @@ class Operation {
         'utf8',
       );
       await writeFile(
+        path.join(qleverSource, 'src/engine/GroupByImpl.cpp'),
+        patchedGroupByImplSource,
+        'utf8',
+      );
+      await writeFile(
         path.join(qleverSource, 'src/engine/TextIndexScanForWord.cpp'),
         patchedTextIndexScanForWordSource,
         'utf8',
@@ -628,6 +653,49 @@ class Permutation {
       expect(output).toContain('src/engine/Filter.cpp is not patched');
       expect(output).toContain('Xpod Filter');
       expect(output).toContain('bounded-expression overlay');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree whose GroupBy physical-index optimization guard is missing', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-unpatched-groupby-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await writeRequiredQleverConfigureSkeleton(
+        qleverSource,
+        'void xpod_overlay_marker() { (void)"materializedScanFromQleverScanSpecAndBlocks"; (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; (void)"sizeEstimateFromQleverScanSpecAndBlocks"; (void)"exactSizeFromQleverScanSpecAndBlocks"; (void)"canUsePhysicalScanSpecAndBlocks"; }\n',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/QueryExecutionContext.h'),
+        patchedQueryExecutionContextHeader,
+        'utf8',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/GroupByImpl.cpp'),
+        unpatchedGroupByImplSource,
+        'utf8',
+      );
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('src/engine/GroupByImpl.cpp is not patched');
+      expect(output).toContain('Xpod GroupBy');
+      expect(output).toContain('physical-index optimization guard');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

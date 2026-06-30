@@ -175,6 +175,28 @@ const patchSpecs = [
   },
 
   {
+    patchPath: path.join(patchesRoot, 'qlever-groupby-physical-disable-native-optimization.patch'),
+    target: 'src/engine/GroupByImpl.cpp',
+    patchTokens: [
+      'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'xpod::qlever::physicalIndexFromContext(*getExecutionContext()) == nullptr',
+      'computeOptimizedGroupByIfPossible()',
+    ],
+    anchors: [
+      '#include "engine/GroupByImpl.h"',
+      'Result GroupByImpl::computeResult(bool requestLaziness)',
+      'if (auto idTable = computeOptimizedGroupByIfPossible())',
+      'return {std::move(idTable).value(), resultSortedOn(), LocalVocab{}};',
+    ],
+    appliedTokens: [
+      'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'xpod::qlever::physicalIndexFromContext(*getExecutionContext()) == nullptr',
+      'computeOptimizedGroupByIfPossible()',
+    ],
+    alreadyPatchedMessage: 'already contains the Xpod GroupBy physical-index optimization guard',
+  },
+
+  {
     patchPath: path.join(patchesRoot, 'qlever-libcxx-normalized-string.patch'),
     target: 'src/parser/NormalizedString.h',
     patchTokens: [

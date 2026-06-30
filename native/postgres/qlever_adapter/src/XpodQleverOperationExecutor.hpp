@@ -1765,6 +1765,9 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
         backend, root,
         toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)}, {}));
   }
+  if (root.native_result_only) {
+    return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
+  }
   if (root.kind == BridgeOperationKind::PermutationScan) {
     if (root.scan_indexes.size() != 1) {
       return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);

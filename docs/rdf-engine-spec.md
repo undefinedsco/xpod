@@ -929,6 +929,12 @@ QLever-compatible 数据层边界单独定义在
 和 execution profile，再决定是否把 QLever executor 或 PG native extension 接入。这里不允许先引入第二套
 SPO 事实源。
 
+当前 QLever-compatible native seam 已能在 Cloud Enterprise-only 的真实 upstream runtime smoke 中执行
+`GROUP BY COUNT`：patched upstream `GroupBy` 会在 Xpod physical index 注入时跳过 QLever-native
+permutation/stat shortcut，改为聚合 Xpod-backed `IndexScan` / join 结果；聚合产生的 QLever inline numeric
+`Id` 序列化为 typed literal，RDF grouping key 仍经 Xpod term dictionary 解析。local 不因此获得
+QLever adapter 或 runtime selector。
+
 路径处理分两层：
 
 1. **Path structural index**：结构硬约束，负责 exact path、prefix/subtree、parent-child、depth、workspace、
