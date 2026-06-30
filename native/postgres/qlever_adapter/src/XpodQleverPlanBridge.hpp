@@ -1416,13 +1416,19 @@ inline std::optional<BridgeQueryPlan> planParsedGraphPatternFallback(
     const parsedQuery::GraphPattern& graph_pattern,
     const std::optional<BridgeGraphScope>& graph_scope,
     bool apply_selected_projection) {
+  bool defer_projection_for_filters =
+      apply_selected_projection && !graph_pattern._filters.empty();
   auto plan = planParsedChildrenFallback(
       parsed, graph_pattern._graphPatterns, graph_scope,
-      apply_selected_projection);
+      defer_projection_for_filters ? false : apply_selected_projection);
   if (!plan.has_value()) {
     return std::nullopt;
   }
   if (!applyGraphPatternFilters(*plan, graph_pattern._filters)) {
+    return std::nullopt;
+  }
+  if (defer_projection_for_filters &&
+      !applySelectedProjectionByOutputVariables(*plan, parsed)) {
     return std::nullopt;
   }
   return plan;

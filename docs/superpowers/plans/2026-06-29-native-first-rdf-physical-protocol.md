@@ -4417,3 +4417,52 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.
+
+
+### Task 108: Apply parsed FILTER before SELECT projection
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add unprojected-filter-variable regression gates**
+
+The focused plan-bridge smoke now requires:
+
+```sparql
+SELECT ?s WHERE { ?s ?p ?o FILTER(?o = <urn:o>) }
+```
+
+to remain supported. The resulting native plan must keep `?o` long enough for the `EqualTerm` filter, then apply a `Project` modifier to return only `?s`.
+
+The linked real-runtime smoke now issues:
+
+```sparql
+SELECT ?s WHERE { ?s ?p ?o FILTER(?o = <urn:o>) } ORDER BY ?s
+```
+
+and requires the public head to contain only `?s`, requires `urn:s`, rejects leaked `urn:o` / `urn:tail`, and requires a `Filter` profile marker.
+
+Observed before implementation: the focused plan-bridge smoke failed with exit `41` because SELECT projection removed `?o` before the filter binder could resolve the filter column.
+
+- [x] **Step 2: Defer projection only for graph patterns that have filters**
+
+`planParsedGraphPatternFallback(...)` now asks child BGP / VALUES-BGP planning to keep the full intermediate output only when the parsed graph pattern contains filters. It then applies bounded filters and finally applies selected projection. Graph patterns without filters keep the old early-projection shape, so existing join plan structure is not broadened unnecessarily.
+
+This is still a bridge fallback safety path. Full expression placement remains QLever-owned once the upstream planner/executor path can represent and execute it over the Xpod physical backend.
+
+- [x] **Step 3: Verify focused and linked runtime behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.

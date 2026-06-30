@@ -759,6 +759,41 @@ int main() {
   if (equal_filter_profile.find("OrderBy") == std::string_view::npos) return 71;
   xpod_qlever_adapter_release_result(adapter, &equal_filter_result);
 
+  xpod_qlever_query_request filtered_projection_request = {};
+  filtered_projection_request.sparql = bytes(
+      "SELECT ?s WHERE { ?s ?p ?o FILTER(?o = <urn:o>) } ORDER BY ?s");
+  xpod_qlever_query_result filtered_projection_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &filtered_projection_request, &filtered_projection_result);
+  std::string_view filtered_projection_json(
+      filtered_projection_result.result_json.data,
+      filtered_projection_result.result_json.size);
+  std::string_view filtered_projection_profile(
+      filtered_projection_result.profile_json.data,
+      filtered_projection_result.profile_json.size);
+  std::string_view filtered_projection_error(
+      filtered_projection_result.error_message.data,
+      filtered_projection_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "filtered projection query failed: %.*s\n",
+                 static_cast<int>(filtered_projection_error.size()),
+                 filtered_projection_error.data());
+    return 86;
+  }
+  if (filtered_projection_json.find(R"("head":{"vars":["s"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "filtered projection head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(filtered_projection_json.size()),
+                 filtered_projection_json.data(),
+                 static_cast<int>(filtered_projection_profile.size()),
+                 filtered_projection_profile.data());
+    return 87;
+  }
+  if (filtered_projection_json.find("urn:s") == std::string_view::npos) return 88;
+  if (filtered_projection_json.find("urn:o") != std::string_view::npos) return 89;
+  if (filtered_projection_json.find("urn:tail") != std::string_view::npos) return 90;
+  if (filtered_projection_profile.find("Filter") == std::string_view::npos) return 91;
+  xpod_qlever_adapter_release_result(adapter, &filtered_projection_result);
+
   xpod_qlever_query_request literal_filter_request = {};
   literal_filter_request.sparql = bytes(
       "SELECT ?s ?o WHERE { ?s ?p ?o FILTER(?o = \"literal-value\") } ORDER BY ?s");

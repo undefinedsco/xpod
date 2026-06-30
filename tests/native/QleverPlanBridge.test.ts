@@ -613,10 +613,15 @@ int main() {
   ParsedQuery parsed = ParsedQuery::filterObjectNotTailSelect();
   auto plan = xpod::qlever::planParsedQuery(parsed);
   if (!plan.has_value()) return 1;
-  if (plan->root.result_modifiers.size() != 1) return 2;
+  if (plan->root.result_modifiers.size() != 2) return 2;
   const auto& modifier = plan->root.result_modifiers[0];
   if (modifier.kind != xpod::qlever::BridgeResultModifierKind::NotEqualTerm) return 3;
-  if (modifier.columns.size() != 1 || modifier.columns[0] != 1) return 4;
+  if (modifier.columns.size() != 1 || modifier.columns[0] != 2) return 4;
+  if (plan->root.result_modifiers[1].kind !=
+      xpod::qlever::BridgeResultModifierKind::Project) return 52;
+  if (plan->root.result_modifiers[1].columns.size() != 2 ||
+      plan->root.result_modifiers[1].columns[0] != 0 ||
+      plan->root.result_modifiers[1].columns[1] != 2) return 53;
   if (plan->modifier_term_bindings.size() != 1) return 5;
   if (plan->modifier_term_bindings[0].modifier_index != 0) return 6;
   if (plan->modifier_term_bindings[0].term.value != "urn:tail") return 7;
@@ -637,10 +642,10 @@ int main() {
 
   auto equal_plan = xpod::qlever::planParsedQuery(ParsedQuery::filterObjectEqualsOSelect());
   if (!equal_plan.has_value()) return 12;
-  if (equal_plan->root.result_modifiers.size() != 1) return 13;
+  if (equal_plan->root.result_modifiers.size() != 2) return 13;
   const auto& equal_modifier = equal_plan->root.result_modifiers[0];
   if (equal_modifier.kind != xpod::qlever::BridgeResultModifierKind::EqualTerm) return 14;
-  if (equal_modifier.columns.size() != 1 || equal_modifier.columns[0] != 1) return 15;
+  if (equal_modifier.columns.size() != 1 || equal_modifier.columns[0] != 2) return 15;
   if (equal_plan->modifier_term_bindings.size() != 1) return 16;
   if (equal_plan->modifier_term_bindings[0].term.value != "urn:o") return 17;
   status = xpod::qlever::bindPlanTerms(physical, snapshot, *equal_plan, error);
@@ -650,10 +655,10 @@ int main() {
 
   auto literal_plan = xpod::qlever::planParsedQuery(ParsedQuery::filterObjectEqualsLiteralSelect());
   if (!literal_plan.has_value()) return 21;
-  if (literal_plan->root.result_modifiers.size() != 1) return 22;
+  if (literal_plan->root.result_modifiers.size() != 2) return 22;
   const auto& literal_modifier = literal_plan->root.result_modifiers[0];
   if (literal_modifier.kind != xpod::qlever::BridgeResultModifierKind::EqualTerm) return 23;
-  if (literal_modifier.columns.size() != 1 || literal_modifier.columns[0] != 1) return 24;
+  if (literal_modifier.columns.size() != 1 || literal_modifier.columns[0] != 2) return 24;
   if (literal_plan->modifier_term_bindings.size() != 1) return 25;
   if (literal_plan->modifier_term_bindings[0].term.kind != XPOD_RDF_TERM_LITERAL) return 26;
   if (literal_plan->modifier_term_bindings[0].term.value != "literal-value") return 27;
@@ -664,10 +669,10 @@ int main() {
 
   auto literal_left_plan = xpod::qlever::planParsedQuery(ParsedQuery::filterLiteralEqualsObjectSelect());
   if (!literal_left_plan.has_value()) return 31;
-  if (literal_left_plan->root.result_modifiers.size() != 1) return 32;
+  if (literal_left_plan->root.result_modifiers.size() != 2) return 32;
   const auto& literal_left_modifier = literal_left_plan->root.result_modifiers[0];
   if (literal_left_modifier.kind != xpod::qlever::BridgeResultModifierKind::EqualTerm) return 33;
-  if (literal_left_modifier.columns.size() != 1 || literal_left_modifier.columns[0] != 1) return 34;
+  if (literal_left_modifier.columns.size() != 1 || literal_left_modifier.columns[0] != 2) return 34;
   if (literal_left_plan->modifier_term_bindings.size() != 1) return 35;
   if (literal_left_plan->modifier_term_bindings[0].term.kind != XPOD_RDF_TERM_LITERAL) return 36;
   if (literal_left_plan->modifier_term_bindings[0].term.value != "literal-value") return 37;
@@ -675,7 +680,26 @@ int main() {
   if (status != XPOD_RDF_STATUS_OK) return 38;
   if (!literal_left_plan->root.result_modifiers[0].has_term_id_bits) return 39;
   if (literal_left_plan->root.result_modifiers[0].term_id_bits != 1080) return 40;
-  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 41;
+
+  auto filtered_projection_plan =
+      xpod::qlever::planParsedQuery(ParsedQuery::filterObjectEqualsOSelectSubjectOnly());
+  if (!filtered_projection_plan.has_value()) return 41;
+  if (filtered_projection_plan->output_variables.size() != 1 ||
+      filtered_projection_plan->output_variables[0] != "s") return 42;
+  if (filtered_projection_plan->root.result_modifiers.size() != 2) return 43;
+  if (filtered_projection_plan->root.result_modifiers[0].kind !=
+      xpod::qlever::BridgeResultModifierKind::EqualTerm) return 44;
+  if (filtered_projection_plan->root.result_modifiers[1].kind !=
+      xpod::qlever::BridgeResultModifierKind::Project) return 45;
+  if (filtered_projection_plan->root.result_modifiers[0].columns.size() != 1 ||
+      filtered_projection_plan->root.result_modifiers[0].columns[0] != 2) return 46;
+  if (filtered_projection_plan->root.result_modifiers[1].columns.size() != 1 ||
+      filtered_projection_plan->root.result_modifiers[1].columns[0] != 0) return 47;
+  status = xpod::qlever::bindPlanTerms(physical, snapshot, *filtered_projection_plan, error);
+  if (status != XPOD_RDF_STATUS_OK) return 48;
+  if (!filtered_projection_plan->root.result_modifiers[0].has_term_id_bits) return 49;
+  if (filtered_projection_plan->root.result_modifiers[0].term_id_bits != 1030) return 50;
+  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 51;
   return 0;
 }
 `, 'utf8');

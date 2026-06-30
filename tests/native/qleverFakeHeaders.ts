@@ -280,6 +280,11 @@ class ParsedQuery {
         sparqlExpression::SparqlExpressionPimpl{"(?o = <urn:o>)"};
     return query;
   }
+  static ParsedQuery filterObjectEqualsOSelectSubjectOnly() {
+    ParsedQuery query = filterObjectEqualsOSelect();
+    query.select_clause_.setSelected({Variable{"?s"}});
+    return query;
+  }
   static ParsedQuery filterObjectEqualsLiteralSelect() {
     ParsedQuery query = filterObjectNotTailSelect();
     query._rootGraphPattern._filters[0].expression_ =
