@@ -62,6 +62,7 @@ async function writeRequiredQleverConfigureSkeleton(
   const indexScanPath = path.join(qleverSource, 'src/engine/IndexScan.cpp');
   await mkdir(path.dirname(indexScanPath), { recursive: true });
   await writeFile(indexScanPath, indexScanSource, 'utf8');
+  await writePatchedLibcxxSources(qleverSource);
 }
 
 const unpatchedIndexScanSource = `
@@ -81,6 +82,7 @@ CompressedRelationReader::IdTableGeneratorInputRange IndexScan::getLazyScan(
 const patchedQueryExecutionContextHeader = `
 #pragma once
 #include <gtest/gtest_prod.h>
+#include <memory>
 #include "global/Id.h"
 #include "util/AllocatorWithLimit.h"
 #if defined(__clang__) && __clang_major__ < 17 && !defined(QLEVER_CPP_17)
@@ -92,7 +94,7 @@ const patchedQueryExecutionContextHeader = `
 namespace xpod { namespace qlever { class XpodQleverPhysicalIndex; } }
 class QueryExecutionContext {
  public:
-  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex&) {}
+  void setXpodPhysicalIndex(std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex>) {}
   const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
     return nullptr;
   }
@@ -111,6 +113,68 @@ const abslDependentQueryExecutionContextHeader = patchedQueryExecutionContextHea
   '#include <gtest/gtest_prod.h>',
   '#include <gtest/gtest_prod.h>\n#include <absl/types/compare.h>',
 );
+
+const patchedNormalizedStringHeader = `
+#pragma once
+#include <string>
+#include <string_view>
+struct NormalizedChar {
+  char c_;
+  constexpr operator char() const noexcept { return c_; }
+};
+using NormalizedString = std::string;
+using NormalizedStringView = std::string_view;
+`;
+
+const unpatchedNormalizedStringHeader = `
+#pragma once
+#include <string>
+#include <string_view>
+struct NormalizedChar {
+  char c_;
+};
+using NormalizedString = std::basic_string<NormalizedChar>;
+using NormalizedStringView = std::basic_string_view<NormalizedChar>;
+`;
+
+const patchedStringSortComparatorHeader = `
+#pragma once
+#include <string>
+#include <string_view>
+class LocaleManager {
+ public:
+  using U8String = std::string;
+  using U8StringView = std::string_view;
+  template <typename T>
+  class SortKeyImpl {};
+  using SortKey = SortKeyImpl<std::string>;
+  using SortKeyView = SortKeyImpl<std::string_view>;
+};
+`;
+
+const patchedStringUtilsHeader = `
+#pragma once
+#include <string_view>
+inline bool constantTimeEquals(std::string_view view1, std::string_view view2) {
+  const volatile unsigned char* bytes1 =
+      reinterpret_cast<const volatile unsigned char*>(view1.data());
+  const volatile unsigned char* bytes2 =
+      reinterpret_cast<const volatile unsigned char*>(view2.data());
+  return bytes1 == bytes2 || view1.size() == view2.size();
+}
+`;
+
+async function writePatchedLibcxxSources(qleverSource: string): Promise<void> {
+  const normalizedPath = path.join(qleverSource, 'src/parser/NormalizedString.h');
+  const comparatorPath = path.join(qleverSource, 'src/index/StringSortComparator.h');
+  const stringUtilsPath = path.join(qleverSource, 'src/util/StringUtils.h');
+  await mkdir(path.dirname(normalizedPath), { recursive: true });
+  await mkdir(path.dirname(comparatorPath), { recursive: true });
+  await mkdir(path.dirname(stringUtilsPath), { recursive: true });
+  await writeFile(normalizedPath, patchedNormalizedStringHeader, 'utf8');
+  await writeFile(comparatorPath, patchedStringSortComparatorHeader, 'utf8');
+  await writeFile(stringUtilsPath, patchedStringUtilsHeader, 'utf8');
+}
 
 describe('native QLever adapter CMake target', () => {
   it('configures and builds the adapter facade as a native library', async () => {
@@ -187,6 +251,7 @@ describe('native QLever adapter CMake target', () => {
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/util/MemorySize'), { recursive: true });
+      await writePatchedLibcxxSources(qleverSource);
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
@@ -391,6 +456,49 @@ class Permutation {
         output = cmakeFailureOutput(error);
       }
       expect(output).toContain('QueryExecutionContext.h is not patched with the Xpod physical-index');
+      expect(output).toContain('check-qlever-upstream-patches.cjs');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree whose libc++ compatibility overlays are missing', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-unpatched-libcxx-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await writeRequiredQleverConfigureSkeleton(
+        qleverSource,
+        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; }\n',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/QueryExecutionContext.h'),
+        patchedQueryExecutionContextHeader,
+        'utf8',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/parser/NormalizedString.h'),
+        unpatchedNormalizedStringHeader,
+        'utf8',
+      );
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('src/parser/NormalizedString.h is not patched');
+      expect(output).toContain('Xpod libc++');
       expect(output).toContain('check-qlever-upstream-patches.cjs');
     } finally {
       await rm(root, { recursive: true, force: true });

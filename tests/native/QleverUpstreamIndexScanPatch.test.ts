@@ -11,7 +11,7 @@ const patchPath = path.join(
   'native/postgres/qlever_adapter/patches/qlever-indexscan-physical-lazy-scan.patch',
 );
 
-const upstreamIndexScanFixture = String.raw`// Copyright 2015, University of Freiburg,
+const upstreamIndexScanFixture = `// Copyright 2015, University of Freiburg,
 // Chair of Algorithms and Data Structures.
 // Author: Björn Buchhold (buchhold@informatik.uni-freiburg.de)
 

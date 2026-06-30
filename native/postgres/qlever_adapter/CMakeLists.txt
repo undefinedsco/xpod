@@ -98,6 +98,39 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
     message(FATAL_ERROR "QueryExecutionContext.h is not patched with the Xpod physical-index overlay. Run node ${CMAKE_CURRENT_SOURCE_DIR}/../../../scripts/check-qlever-upstream-patches.cjs --qlever-source ${XPOD_QLEVER_SOURCE_DIR} --apply")
   endif()
 
+  function(xpod_qlever_require_overlay_token relative_source token overlay_label)
+    set(source_path "${XPOD_QLEVER_SOURCE_DIR}/${relative_source}")
+    if(NOT EXISTS "${source_path}")
+      message(FATAL_ERROR "XPOD_QLEVER_SOURCE_DIR does not include ${relative_source}; cannot verify the ${overlay_label}")
+    endif()
+    file(READ "${source_path}" source_text)
+    string(FIND "${source_text}" "${token}" token_pos)
+    if(token_pos EQUAL -1)
+      message(FATAL_ERROR "${relative_source} is not patched with the ${overlay_label}. Run node ${CMAKE_CURRENT_SOURCE_DIR}/../../../scripts/check-qlever-upstream-patches.cjs --qlever-source ${XPOD_QLEVER_SOURCE_DIR} --apply")
+    endif()
+  endfunction()
+
+  xpod_qlever_require_overlay_token(
+    "src/parser/NormalizedString.h"
+    "using NormalizedString = std::string;"
+    "Xpod libc++ compatibility overlay")
+  xpod_qlever_require_overlay_token(
+    "src/parser/NormalizedString.h"
+    "using NormalizedStringView = std::string_view;"
+    "Xpod libc++ compatibility overlay")
+  xpod_qlever_require_overlay_token(
+    "src/index/StringSortComparator.h"
+    "using U8String = std::string;"
+    "Xpod libc++ compatibility overlay")
+  xpod_qlever_require_overlay_token(
+    "src/index/StringSortComparator.h"
+    "using SortKey = SortKeyImpl<std::string>;"
+    "Xpod libc++ compatibility overlay")
+  xpod_qlever_require_overlay_token(
+    "src/util/StringUtils.h"
+    "const volatile unsigned char* bytes1"
+    "Xpod libc++ compatibility overlay")
+
   target_compile_definitions(xpod_qlever_adapter PRIVATE XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1)
   target_compile_features(xpod_qlever_adapter PRIVATE cxx_std_20)
   if((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang") AND

@@ -186,18 +186,18 @@ class QueryExecutionTree {
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
 #pragma once
-#include <optional>
+#include <memory>
 #include "XpodQleverPhysicalIndex.hpp"
 class QueryExecutionContext {
  public:
-  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex& index) {
-    index_.emplace(index);
+  void setXpodPhysicalIndex(std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
+    index_ = std::move(index);
   }
   const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
-    return index_.has_value() ? &*index_ : nullptr;
+    return index_.get();
   }
  private:
-  std::optional<xpod::qlever::XpodQleverPhysicalIndex> index_;
+  std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index_;
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/CompressedRelation.h'), `

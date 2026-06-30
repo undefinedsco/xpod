@@ -1,9 +1,13 @@
 diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
 --- a/src/engine/IndexScan.cpp
 +++ b/src/engine/IndexScan.cpp
-@@ -5,0 +6 @@
+@@ -7,3 +7,4 @@
+ #include "engine/IndexScan.h"
+-
 +#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
-@@ -466,5 +467,19 @@
++
+ #include <absl/container/inlined_vector.h>
+@@ -466,4 +467,18 @@
    auto filteredBlocks =
        getLimitOffset().isUnconstrained() ? std::move(blocks) : std::nullopt;
 +  auto xpodLazyScan =
@@ -22,4 +26,3 @@ diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
 +  AD_CONTRACT_CHECK(xpodLazyScan.status == XPOD_RDF_STATUS_UNSUPPORTED);
    auto lazyScanAllCols = permutation().lazyScan(
        scanSpecAndBlocks_, filteredBlocks, additionalColumns(),
-       cancellationHandle_, locatedTriplesState(), getLimitOffset());

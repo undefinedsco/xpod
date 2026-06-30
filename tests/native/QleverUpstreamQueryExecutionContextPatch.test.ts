@@ -79,10 +79,11 @@ describe('QLever upstream QueryExecutionContext patch asset', () => {
       ], { stdio: 'pipe' });
 
       const patched = await readFile(qecPath, 'utf8');
-      expect(patched).toContain('"XpodQleverPhysicalIndex.hpp"');
+      expect(patched).not.toContain('"XpodQleverPhysicalIndex.hpp"');
+      expect(patched).toContain('namespace xpod { namespace qlever { class XpodQleverPhysicalIndex; } }');
       expect(patched).toContain('setXpodPhysicalIndex');
       expect(patched).toContain('xpodPhysicalIndex() const');
-      expect(patched).toContain('std::optional<xpod::qlever::XpodQleverPhysicalIndex>');
+      expect(patched).toContain('std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex>');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

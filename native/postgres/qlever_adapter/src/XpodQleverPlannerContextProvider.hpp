@@ -77,7 +77,8 @@ template <typename Context>
 struct HasXpodPhysicalIndexSetter<
     Context,
     decltype(void(std::declval<Context&>().setXpodPhysicalIndex(
-        std::declval<const XpodQleverPhysicalIndex&>())))> : std::true_type {};
+        std::declval<std::shared_ptr<const XpodQleverPhysicalIndex>>())))>
+    : std::true_type {};
 #endif
 
 template <typename Context, bool HasSetter>
@@ -115,8 +116,8 @@ struct XpodPhysicalIndexApplier<Context, true> {
   static void apply(
       Context& context,
       const PlannerRequestContext& planner_context) {
-    XpodQleverPhysicalIndex index(planner_context);
-    context.setXpodPhysicalIndex(index);
+    context.setXpodPhysicalIndex(
+        std::make_shared<const XpodQleverPhysicalIndex>(planner_context));
   }
 };
 #endif

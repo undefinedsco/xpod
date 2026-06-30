@@ -169,15 +169,16 @@ class Result {
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
 #pragma once
+#include <memory>
 #include "XpodQleverPhysicalIndex.hpp"
 class QueryExecutionContext {
  public:
   bool received_physical_index = false;
   uint64_t estimated_rows = 0;
-  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex& index) {
-    auto estimate = index.permutation(Permutation::Enum::SPO).estimate();
-    received_physical_index = index.context().backend.valid() &&
-                              index.context().request != nullptr &&
+  void setXpodPhysicalIndex(std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
+    auto estimate = index->permutation(Permutation::Enum::SPO).estimate();
+    received_physical_index = index->context().backend.valid() &&
+                              index->context().request != nullptr &&
                               estimate.status == XPOD_RDF_STATUS_OK;
     estimated_rows = estimate.estimate.rows;
   }

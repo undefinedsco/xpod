@@ -2,41 +2,32 @@ diff --git a/src/engine/QueryExecutionContext.h b/src/engine/QueryExecutionConte
 index e1ecf0a..2381990 100644
 --- a/src/engine/QueryExecutionContext.h
 +++ b/src/engine/QueryExecutionContext.h
-@@ -10,8 +10,11 @@
- 
- #include <chrono>
- #include <memory>
-+#include <optional>
+@@ -13,3 +13,5 @@
  #include <string>
- 
-+#include "XpodQleverPhysicalIndex.hpp"
+-
++
++namespace xpod { namespace qlever { class XpodQleverPhysicalIndex; } }
 +
  #include "backports/three_way_comparison.h"
- #include "engine/QueryPlanningCostFactors.h"
- #include "engine/Result.h"
-@@ -120,6 +123,15 @@ class QueryExecutionContext
- 
+@@ -123,3 +125,12 @@ class QueryExecutionContext
    [[nodiscard]] const Index& getIndex() const { return *_index; }
- 
+-
++
 +  void setXpodPhysicalIndex(
-+      const xpod::qlever::XpodQleverPhysicalIndex& index) {
-+    xpodPhysicalIndex_.emplace(index);
++      std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
++    xpodPhysicalIndex_ = std::move(index);
 +  }
 +
 +  const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
-+    return xpodPhysicalIndex_.has_value() ? &*xpodPhysicalIndex_ : nullptr;
++    return xpodPhysicalIndex_.get();
 +  }
 +
    const LocatedTriplesState& locatedTriplesState() const {
-     AD_CORRECTNESS_CHECK(locatedTriplesSharedState_ != nullptr);
-     return *locatedTriplesSharedState_;
-@@ -221,6 +233,9 @@ class QueryExecutionContext
-   // this context is alive.
+@@ -224,3 +235,6 @@ class QueryExecutionContext
    std::shared_ptr<const Index> _index;
- 
-+  std::optional<xpod::qlever::XpodQleverPhysicalIndex> xpodPhysicalIndex_ =
-+      std::nullopt;
+-
++
++  std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex>
++      xpodPhysicalIndex_;
 +
    // When the `QueryExecutionContext` is constructed, get a stable read-only
-   // snapshot of the current (located) delta triples. These can then be used
-   // by the respective query without interfering with further incoming

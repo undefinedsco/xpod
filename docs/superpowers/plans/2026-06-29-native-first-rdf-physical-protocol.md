@@ -3601,3 +3601,54 @@ git diff --check
 Observed: PASS locally. This is the first runtime gate that proves the public adapter can take a planner-produced QLever tree, request lazy execution, and reach the Xpod physical scan seam through `IndexScan::getLazyScan(...)`.
 
 Remaining gap: the runtime gate still uses an upstream-shaped fixture. The real patched upstream QLever source tree currently proves compilation against the same bridge code, but not a full linked upstream QLever server/query execution binary over PG-backed facts. The next gate is either a Linux/Clang>=16 full upstream build or a smaller embedded upstream target that links enough real QLever objects to execute the same query without fake headers.
+
+### Task 89: Make the real upstream engine compile gate explicit
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/patches/qlever-libcxx-normalized-string.patch`
+- Add: `native/postgres/qlever_adapter/patches/qlever-libcxx-string-sort-comparator.patch`
+- Add: `native/postgres/qlever_adapter/patches/qlever-libcxx-string-utils.patch`
+- Add: `tests/native/QleverUpstreamLibcxxCompatPatch.test.ts`
+- Add: `tests/native/QleverUpstreamNormalizedStringPatch.test.ts`
+- Modify: `scripts/check-qlever-upstream-patches.cjs`
+- Modify: `native/postgres/qlever_adapter/CMakeLists.txt`
+- Modify: `tests/native/QleverAdapterCmake.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Reproduce the real full-engine compile blockers**
+
+Build upstream QLever's real `engine` target after applying the existing Xpod `IndexScan` and `QueryExecutionContext` overlays.
+
+Observed before this task: the build reached upstream libc++ portability errors: `std::basic_string<uint8_t>`, `std::basic_string_view<volatile std::byte>`, and `std::basic_string<NormalizedChar>` do not have portable `std::char_traits` support on the local Clang/libc++ toolchain.
+
+- [x] **Step 2: Add explicit libc++ overlay patch assets**
+
+Add three small upstream overlays:
+
+- `NormalizedString` becomes char-backed `std::string` / `std::string_view`;
+- byte sort-key strings become `std::string` / `std::string_view`;
+- constant-time string compare uses volatile `unsigned char*` byte loops instead of `std::basic_string_view<volatile std::byte>`.
+
+These are source-tree compatibility patches, not product semantics. They exist so the patched upstream engine can compile far enough to exercise the Xpod lower data seam.
+
+- [x] **Step 3: Make patch validation and adapter CMake reject half-patched trees**
+
+`check-qlever-upstream-patches.cjs` now validates five upstream patches by default. QLever-enabled adapter CMake also checks the libc++ overlay tokens in `NormalizedString.h`, `StringSortComparator.h`, and `StringUtils.h`, so a source tree that can pass the adapter header probe but fail the full upstream engine build is rejected earlier with an actionable message.
+
+- [x] **Step 4: Verify the real upstream engine target**
+
+Run:
+
+```bash
+node scripts/check-qlever-upstream-patches.cjs --qlever-source .test-data/qlever-upstream
+cmake --build .test-data/qlever-full-build --target engine -j2
+cmake --build .test-data/qlever-real-adapter-build --target xpod_qlever_adapter -j2
+bun test tests/native --run
+bun run check:rdf-protocol-abi
+bun run build:ts
+bun run test:integration
+```
+
+Observed: PASS locally after applying the full patch set and configuring upstream QLever with the Xpod adapter/protocol include paths and `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1`. The upstream `engine` target now compiles with the Xpod lower lazy-scan bridge visible.
+
+Remaining gap: this is still a compile/data-interface gate. It does not yet prove a linked real upstream query binary over PG-backed facts. The next gate is to replace the upstream-shaped runtime fixture with a real linked execution path that returns rows through `QueryPlanner -> QueryExecutionTree::getResult(true) -> IndexScan::getLazyScan -> XpodQleverPhysicalIndex -> xpod_rdf_backend_v1`.
