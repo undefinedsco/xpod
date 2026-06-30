@@ -17,7 +17,7 @@
     "@inrupt/solid-client-authn-browser": "^3.1.1",
     "@openai/chatkit-react": "^1.4.1",
     "@radix-ui/react-select": "^2.2.6",
-    "@undefineds.co/drizzle-solid": "0.3.17",
+    "@undefineds.co/drizzle-solid": "0.3.18",
     "ansi-to-html": "^0.7.2",
     "clsx": "^2.1.1",
     "framer-motion": "^12.23.26",

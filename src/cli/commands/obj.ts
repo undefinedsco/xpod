@@ -1,13 +1,16 @@
 import type { Argv, CommandModule } from 'yargs';
-import { readFileSync, writeFileSync } from 'fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import {
+  createPodModelDescriptorRegistry,
   createPodStorage,
   podSchema,
   type PodModelDescriptor,
   type PodModelFieldDescriptor,
   type PodStorageMutationPlan,
 } from '@undefineds.co/models';
-import { requireAuthContext, type CliAuthContext } from '../lib/auth-context';
+import { normalizeBaseUrl, requireAuthContext, type CliAuthContext } from '../lib/auth-context';
+import { getSolidHomeDir } from '../lib/credentials-store';
 import { CliCommandError, handleCliError, writeJsonItems, writeJsonResult } from '../lib/output';
 import {
   ensureOk,
@@ -34,6 +37,14 @@ interface ObjUpsertArgs extends ObjArgs {
   from: string;
   'dry-run'?: boolean;
   commit?: boolean;
+}
+
+interface ObjSchemasArgs extends ObjArgs {
+  domain?: string;
+}
+
+interface ObjDescribeArgs extends ObjArgs {
+  schema: string;
 }
 
 interface ObjSelectorArgs extends ObjArgs {
@@ -134,6 +145,22 @@ type ItemResult = {
   message?: string;
   [key: string]: unknown;
 };
+type ObjMutationContext = CliAuthContext & {
+  planningOnly?: boolean;
+  planningWarning?: string;
+  pendingOnly?: boolean;
+  pendingWarning?: string;
+  outboxPath?: string;
+};
+
+type DiscoveryDescriptor = PodModelDescriptor & {
+  aliases?: string[];
+  domains?: string[];
+  idSemantics?: Record<string, unknown>;
+  relationFields?: string[];
+  documentPathPolicy?: Record<string, unknown>;
+  exampleInput?: Record<string, unknown>;
+};
 
 function objOptions<T>(yargs: Argv): Argv<T> {
   return yargs
@@ -221,16 +248,31 @@ function descriptorLocalName(value: string): string {
   return value.split(/[\/#]/u).filter(Boolean).pop() ?? value;
 }
 
+function normalizeDescriptorAlias(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/gu, '');
+}
+
+function descriptorAliases(descriptor: PodModelDescriptor): string[] {
+  const discovery = descriptor as DiscoveryDescriptor;
+  return discovery.aliases?.length ? discovery.aliases : [ descriptorLocalName(descriptor.class) ];
+}
+
+function descriptorMatchesRef(descriptor: PodModelDescriptor, ref: string): boolean {
+  const normalized = normalizeDescriptorAlias(ref);
+  return descriptor.uri === ref ||
+    descriptor.class === ref ||
+    descriptor.resourceKind.toLowerCase() === ref.trim().toLowerCase() ||
+    normalizeDescriptorAlias(descriptorLocalName(descriptor.uri)) === normalized ||
+    normalizeDescriptorAlias(descriptorLocalName(descriptor.class)) === normalized ||
+    descriptorAliases(descriptor).some((alias) => normalizeDescriptorAlias(alias) === normalized);
+}
+
 function resolveDescriptorOrNull(schema: string): PodModelDescriptor | null {
-  const exact = podSchema.describe({ schemaUri: schema });
+  const exact = podSchema.describe({ schemaUri: schema }) ??
+    (podSchema as unknown as { describe(input: { alias: string }): PodModelDescriptor | null }).describe?.({ alias: schema });
   if (exact) return exact;
 
-  const normalized = schema.trim().toLowerCase();
-  return podSchema.list().find((descriptor) =>
-    descriptor.resourceKind.toLowerCase() === normalized ||
-    descriptorLocalName(descriptor.uri).toLowerCase() === normalized ||
-    descriptorLocalName(descriptor.class).toLowerCase() === normalized,
-  ) ?? null;
+  return podSchema.list().find((descriptor) => descriptorMatchesRef(descriptor, schema)) ?? null;
 }
 
 function resolveDescriptor(schema: string): PodModelDescriptor {
@@ -243,6 +285,50 @@ function resolveDescriptor(schema: string): PodModelDescriptor {
 
 function resourceUrlFromPlan(podRoot: string, plan: PodStorageMutationPlan): string {
   return new URL(plan.resourceUri.replace(/^\/+/, ''), podRoot).toString();
+}
+
+export async function resolveObjMutationContext(argv: ObjArgs, commit: boolean): Promise<ObjMutationContext> {
+  try {
+    return await requireAuthContext(argv);
+  } catch (error) {
+    const podRoot = normalizeBaseUrl(argv.url ?? 'https://pod.local/');
+    const outboxPath = getObjLocalOutboxPath();
+    return {
+      baseUrl: podRoot,
+      webId: 'urn:xpod:unauthenticated',
+      podRoot,
+      baseIri: podRoot,
+      accessToken: '',
+      credentials: {
+        url: podRoot,
+        webId: 'urn:xpod:unauthenticated',
+        authType: 'client_credentials',
+        secrets: {
+          clientId: '',
+          clientSecret: '',
+        },
+      },
+      ...(commit
+        ? {
+            pendingOnly: true,
+            outboxPath,
+            pendingWarning: `No Solid credentials found; mutation was written to local xpod outbox at ${outboxPath} and was not saved to a Pod.`,
+          }
+        : {
+            planningOnly: true,
+            planningWarning: 'No Solid credentials found; this is an offline dry-run plan and was not saved to a Pod.',
+          }),
+    };
+  }
+}
+
+export function getObjLocalOutboxPath(): string {
+  return join(getSolidHomeDir(), 'apps', 'xpod', 'outbox', 'obj-mutations.jsonl');
+}
+
+function appendObjLocalOutbox(entry: Record<string, unknown>, outboxPath = getObjLocalOutboxPath()): void {
+  mkdirSync(dirname(outboxPath), { recursive: true });
+  appendFileSync(outboxPath, `${JSON.stringify(entry)}\n`, 'utf-8');
 }
 
 function varName(field: string): string {
@@ -297,6 +383,56 @@ export function redactDescriptorObject(descriptor: PodModelDescriptor, value: Re
     redacted[key] = descriptor.fields[key]?.secret ? '[redacted]' : item;
   }
   return redacted;
+}
+
+export function serializeSchemaDescriptor(descriptor: PodModelDescriptor): Record<string, unknown> {
+  const discovery = descriptor as DiscoveryDescriptor;
+  return {
+    schema: descriptor.uri,
+    uri: descriptor.uri,
+    alias: descriptorAliases(descriptor)[0] ?? descriptor.resourceKind,
+    aliases: descriptorAliases(descriptor),
+    domains: discovery.domains ?? [],
+    version: descriptor.version,
+    source: descriptor.source,
+    trustLevel: descriptor.trustLevel,
+    namespace: descriptor.namespace,
+    class: descriptor.class,
+    resourceKind: descriptor.resourceKind,
+    description: descriptor.description,
+    storage: descriptor.storage,
+    idSemantics: discovery.idSemantics ?? null,
+    relationFields: discovery.relationFields ?? Object.entries(descriptor.fields)
+      .filter(([, field]) => field.type === 'uri')
+      .map(([ field ]) => field),
+    documentPathPolicy: discovery.documentPathPolicy ?? null,
+    fields: descriptor.fields,
+    requiredFields: Object.entries(descriptor.fields)
+      .filter(([, field]) => field.required)
+      .map(([ field ]) => field),
+    uniqueBy: descriptor.uniqueBy,
+    writableFields: descriptor.writableFields,
+    mergePolicy: descriptor.mergePolicy,
+    exampleInput: discovery.exampleInput ?? descriptor.examples[0] ?? null,
+    examples: descriptor.examples,
+  };
+}
+
+export function listSchemaDescriptors(
+  input: { domain?: string } = {},
+  descriptors: readonly PodModelDescriptor[] = podSchema.list(),
+): Record<string, unknown>[] {
+  return descriptors
+    .filter((descriptor) => !input.domain || ((descriptor as DiscoveryDescriptor).domains ?? []).includes(input.domain))
+    .map(serializeSchemaDescriptor);
+}
+
+export function describeSchemaDescriptor(
+  schemaOrAlias: string,
+  descriptors: readonly PodModelDescriptor[] = podSchema.list(),
+): Record<string, unknown> | null {
+  const descriptor = descriptors.find((item) => descriptorMatchesRef(item, schemaOrAlias));
+  return descriptor ? serializeSchemaDescriptor(descriptor) : null;
 }
 
 export function buildDescriptorUpsertSparql(descriptor: PodModelDescriptor, subject: string, row: ObjMutationRow): string {
@@ -899,44 +1035,66 @@ async function executeDescriptorRow(context: CliAuthContext, row: ObjMutationRow
     throw new CliCommandError('unsupported_operation', `Unsupported object operation: ${op}`, 2);
   }
 
-  const storage = createPodStorage();
-  const validation = storage.validate({
-    schemaUri: descriptor.uri,
-    operation: 'upsert',
-    match: row.match ?? {},
-    set: row.set ?? {},
+  const item = descriptorUpsertPlanItem({
+    descriptor,
+    index,
+    commit,
+    podRoot: context.podRoot,
+    row,
   });
-  if (!validation.ok) {
-    throw new CliCommandError(validation.error.code, validation.error.message, 2);
-  }
-
-  const subject = resourceUrlFromPlan(context.podRoot, validation.plan);
+  const subject = String(item.subject);
   if (commit) {
     const sparql = buildDescriptorUpsertSparql(descriptor, subject, row);
     await patchSubject({ context, subject, sparql, ifMatch: row.ifMatch, errorCode: 'obj_commit_failed' });
   }
 
+  return item;
+}
+
+export function descriptorUpsertPlanItem(input: {
+  descriptor: PodModelDescriptor;
+  index: number;
+  commit: boolean;
+  podRoot: string;
+  row: ObjMutationRow;
+}): ItemResult {
+  const storage = createPodStorage(createPodModelDescriptorRegistry([ input.descriptor ]));
+  const validation = storage.validate({
+    schemaUri: input.descriptor.uri,
+    operation: 'upsert',
+    match: input.row.match ?? {},
+    set: input.row.set ?? {},
+  });
+  if (!validation.ok) {
+    throw new CliCommandError(validation.error.code, validation.error.message, 2);
+  }
+
+  const discovery = input.descriptor as DiscoveryDescriptor;
+  const subject = resourceUrlFromPlan(input.podRoot, validation.plan);
   return {
-    index,
+    index: input.index,
     ok: true,
-    code: commit ? 'committed' : 'plan_ready',
-    operation: op,
-    schema: descriptor.uri,
+    code: input.commit ? 'committed' : 'plan_ready',
+    operation: input.row.op ?? 'upsert',
+    schema: input.descriptor.uri,
     subject,
     resourceUrl: documentResourceInput(subject),
     planId: validation.plan.id,
-    match: redactDescriptorObject(descriptor, row.match ?? {}),
-    set: redactDescriptorObject(descriptor, row.set ?? {}),
+    resourceId: validation.plan.resourceId,
+    resourceUri: validation.plan.resourceUri,
+    documentPathPolicy: discovery.documentPathPolicy ?? null,
+    match: redactDescriptorObject(input.descriptor, input.row.match ?? {}),
+    set: redactDescriptorObject(input.descriptor, input.row.set ?? {}),
   };
 }
 
-async function executeRows(input: {
+export async function executeRows(input: {
   argv: ObjArgs;
   rows: ObjMutationRow[];
   defaultSchema?: string;
   commit: boolean;
 }): Promise<ItemResult[]> {
-  const context = await requireAuthContext(input.argv);
+  const context = await resolveObjMutationContext(input.argv, input.commit);
   const items: ItemResult[] = [];
   for (const [ index, originalRow ] of input.rows.entries()) {
     const row = {
@@ -944,10 +1102,44 @@ async function executeRows(input: {
       schema: originalRow.schema ?? input.defaultSchema,
     };
     try {
+      const shouldCommitToPod = input.commit && !context.pendingOnly;
       const item = row.schema
-        ? await executeDescriptorRow(context, row, index, input.commit)
-        : await executeRawRow(context, row, index, input.commit);
-      items.push(item);
+        ? await executeDescriptorRow(context, row, index, shouldCommitToPod)
+        : await executeRawRow(context, row, index, shouldCommitToPod);
+      if (context.pendingOnly && input.commit) {
+        const outboxPath = context.outboxPath ?? getObjLocalOutboxPath();
+        appendObjLocalOutbox({
+          kind: 'xpod.obj.mutation',
+          version: 1,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          webId: context.webId,
+          podRoot: context.podRoot,
+          row,
+          item,
+        }, outboxPath);
+        items.push({
+          ...item,
+          code: 'pending_local',
+          pendingLocal: true,
+          outboxPath,
+          warnings: [
+            ...((Array.isArray(item.warnings) ? item.warnings : []) as unknown[]),
+            context.pendingWarning,
+          ],
+        });
+        continue;
+      }
+      items.push(context.planningOnly
+        ? {
+            ...item,
+            planningOnly: true,
+            warnings: [
+              ...((Array.isArray(item.warnings) ? item.warnings : []) as unknown[]),
+              context.planningWarning,
+            ],
+          }
+        : item);
     } catch (error) {
       const err = error instanceof CliCommandError
         ? error
@@ -958,11 +1150,62 @@ async function executeRows(input: {
   return items;
 }
 
+export function mutationItemsResultCode(items: ItemResult[], commit: boolean): 'plan_ready' | 'committed' | 'pending_local' | 'partial_failure' {
+  if (!items.every((item) => item.ok)) return 'partial_failure';
+  if (items.some((item) => item.code === 'pending_local')) return 'pending_local';
+  return commit ? 'committed' : 'plan_ready';
+}
+
 function printItems(items: ItemResult[]): void {
   for (const item of items) {
     console.log(`${item.index}\t${item.ok ? item.code : `ERROR ${item.code}`}\t${String(item.subject ?? item.resourceUrl ?? item.message ?? '')}`);
   }
 }
+
+const schemasCommand: CommandModule<object, ObjSchemasArgs> = {
+  command: 'schemas',
+  describe: 'List model-backed object schemas available to AI tools',
+  builder: (yargs) =>
+    objOptions<ObjSchemasArgs>(yargs)
+      .option('domain', { type: 'string', description: 'Filter schemas by domain such as capture or symphony' }),
+  handler: async (argv) => {
+    try {
+      const schemas = listSchemaDescriptors({ domain: argv.domain });
+      if (argv.json) {
+        writeJsonResult({ schemas }, 'schemas');
+        return;
+      }
+      for (const descriptor of schemas) {
+        console.log(`${String(descriptor.alias)}\t${String(descriptor.schema)}\t${String(descriptor.resourceKind)}`);
+      }
+    } catch (error) {
+      handleCliError(error, argv.json);
+    }
+  },
+};
+
+const describeCommand: CommandModule<object, ObjDescribeArgs> = {
+  command: 'describe <schema>',
+  describe: 'Describe one model-backed object schema by URI or alias',
+  builder: (yargs) =>
+    objOptions<ObjDescribeArgs>(yargs)
+      .positional('schema', { type: 'string', demandOption: true, description: 'Schema URI or descriptor alias' }),
+  handler: async (argv) => {
+    try {
+      const descriptor = describeSchemaDescriptor(argv.schema);
+      if (!descriptor) {
+        throw new CliCommandError('schema_unknown', `Schema is not known by @undefineds.co/models: ${argv.schema}`, 2);
+      }
+      if (argv.json) {
+        writeJsonResult({ descriptor }, 'schema');
+        return;
+      }
+      console.log(JSON.stringify(descriptor, null, 2));
+    } catch (error) {
+      handleCliError(error, argv.json);
+    }
+  },
+};
 
 const importCommand: CommandModule<object, ObjImportArgs> = {
   command: 'import <file>',
@@ -980,9 +1223,7 @@ const importCommand: CommandModule<object, ObjImportArgs> = {
         rows: await readJsonl(argv.file),
         commit: argv.commit === true,
       });
-      const code = items.every((item) => item.ok)
-        ? (argv.commit ? 'committed' : 'plan_ready')
-        : 'partial_failure';
+      const code = mutationItemsResultCode(items, argv.commit === true);
       if (argv.json) {
         writeJsonItems(items, code);
         return;
@@ -1002,6 +1243,7 @@ const upsertCommand: CommandModule<object, ObjUpsertArgs> = {
     objOptions<ObjUpsertArgs>(yargs)
       .option('schema', { type: 'string', demandOption: true, description: 'Schema URI or descriptor alias' })
       .option('from', { type: 'string', demandOption: true, description: 'JSONL file to read, or - for stdin' })
+      .nargs('from', 1)
       .option('dry-run', { type: 'boolean', description: 'Validate and print a plan without writing' })
       .option('commit', { type: 'boolean', description: 'Commit the validated mutations' })
       .check(mutationModeCheck),
@@ -1013,9 +1255,7 @@ const upsertCommand: CommandModule<object, ObjUpsertArgs> = {
         defaultSchema: resolveDescriptor(argv.schema).uri,
         commit: argv.commit === true,
       });
-      const code = items.every((item) => item.ok)
-        ? (argv.commit ? 'committed' : 'plan_ready')
-        : 'partial_failure';
+      const code = mutationItemsResultCode(items, argv.commit === true);
       if (argv.json) {
         writeJsonItems(items, code);
         return;
@@ -1259,6 +1499,8 @@ export const objCommand: CommandModule<object, ObjArgs> = {
   describe: 'Descriptor-backed object transport',
   builder: (yargs) =>
     (yargs
+      .command(schemasCommand)
+      .command(describeCommand)
       .command(exportCommand)
       .command(importCommand)
       .command(getCommand)
