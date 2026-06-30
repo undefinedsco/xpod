@@ -11,6 +11,7 @@ import {
   buildDescriptorObjectQuery,
   buildDescriptorPatchSparql,
   buildDescriptorUpsertSparql,
+  descriptorObjectFromTurtle,
   descriptorUpsertPlanItem,
   extractReservedWhereSelectors,
   executeRows,
@@ -289,6 +290,35 @@ describe('obj command helpers', () => {
     });
   });
 
+  it('parses exact descriptor object from Turtle for direct resource fallback', () => {
+    const object = descriptorObjectFromTurtle(
+      credentialDescriptor,
+      'https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key',
+      'https://pod.example/alice/settings/credentials.ttl',
+      `
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> a <https://undefineds.co/ns#Credential> .
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#id> "ai-openai-api-key" .
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#service> "ai" .
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#provider> "openai" .
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#secretType> "api-key" .
+<https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key> <https://undefineds.co/ns#apiKey> "sk-secret" .
+      `,
+    );
+
+    expect(object).toMatchObject({
+      schema: credentialDescriptor.uri,
+      subject: 'https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key',
+      resourceUrl: 'https://pod.example/alice/settings/credentials.ttl',
+      object: {
+        id: 'ai-openai-api-key',
+        service: 'ai',
+        providerId: 'openai',
+        secretType: 'api-key',
+        apiKey: '[redacted]',
+      },
+    });
+  });
+
   it('builds descriptor-backed upsert SPARQL without private predicates', () => {
     const sparql = buildDescriptorUpsertSparql(
       credentialDescriptor,
@@ -312,6 +342,32 @@ describe('obj command helpers', () => {
     expect(sparql).toContain(`<${credentialDescriptor.fields.providerId.predicate}> "openai"`);
     expect(sparql).toContain(`<${credentialDescriptor.fields.apiKey.predicate}> "sk-secret"`);
     expect(sparql).not.toContain('udfs:');
+  });
+
+  it('builds Cloud-compatible upsert SPARQL with per-field DELETE WHERE and INSERT DATA', () => {
+    const sparql = buildDescriptorUpsertSparql(
+      credentialDescriptor,
+      'https://pod.example/alice/settings/credentials.ttl#ai-openai-api-key',
+      {
+        schema: credentialDescriptor.uri,
+        match: {
+          service: 'ai',
+          providerId: 'openai',
+          secretType: 'api-key',
+        },
+        set: {
+          label: 'OpenAI',
+          apiKey: 'sk-secret',
+          status: 'active',
+        },
+      },
+    );
+
+    expect(sparql).toContain('DELETE WHERE');
+    expect(sparql).toContain('INSERT DATA');
+    expect(sparql).not.toContain('OPTIONAL');
+    expect(sparql).not.toContain('DELETE {');
+    expect(sparql.match(/DELETE WHERE/gu)).toHaveLength(3);
   });
 
   it('builds descriptor-backed patch SPARQL only for writable descriptor fields', () => {

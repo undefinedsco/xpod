@@ -1,6 +1,7 @@
 import type { Argv, CommandModule } from 'yargs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
+import { Parser } from 'n3';
 import {
   createPodModelDescriptorRegistry,
   createPodStorage,
@@ -445,10 +446,7 @@ export function buildDescriptorUpsertSparql(descriptor: PodModelDescriptor, subj
   const merged = { ...match, ...set };
   const deleteFields = Object.keys(set).filter((field) => fields[field]);
   const deletes = deleteFields.map((field) =>
-    `<${subject}> <${fields[field].predicate}> ?old_${field.replace(/[^A-Za-z0-9_]/gu, '_')} .`,
-  );
-  const optionals = deleteFields.map((field) =>
-    `OPTIONAL { <${subject}> <${fields[field].predicate}> ?old_${field.replace(/[^A-Za-z0-9_]/gu, '_')} }`,
+    `DELETE WHERE {\n  <${subject}> <${fields[field].predicate}> ?old_${field.replace(/[^A-Za-z0-9_]/gu, '_')} .\n}`,
   );
   const inserts = [
     `<${subject}> a <${descriptor.class}>`,
@@ -457,7 +455,10 @@ export function buildDescriptorUpsertSparql(descriptor: PodModelDescriptor, subj
       .map(([ field, value ]) => `<${subject}> <${fields[field].predicate}> ${sparqlValue(value, fields[field])}`),
   ];
 
-  return `DELETE {\n  ${deletes.join('\n  ')}\n}\nINSERT {\n  ${inserts.join(' .\n  ')} .\n}\nWHERE {\n  ${optionals.join('\n  ')}\n}`;
+  return [
+    ...deletes,
+    `INSERT DATA {\n  ${inserts.join(' .\n  ')} .\n}`,
+  ].join(';\n');
 }
 
 export function buildDescriptorPatchSparql(descriptor: PodModelDescriptor, subject: string, set: Record<string, unknown>): string {
@@ -690,6 +691,52 @@ function bindingToValue(binding: SparqlBinding | undefined, field: PodModelField
   return binding.value;
 }
 
+export function descriptorObjectFromTurtle(
+  descriptor: PodModelDescriptor,
+  subject: string,
+  resourceUrl: string,
+  turtle: string,
+): DescriptorObject | null {
+  const quads = new Parser({ baseIRI: resourceUrl }).parse(turtle);
+  const object: Record<string, unknown> = {};
+  let hasDescriptorType = false;
+
+  for (const quad of quads) {
+    if (quad.subject.value !== subject) continue;
+    if (
+      quad.predicate.value === 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type' &&
+      quad.object.value === descriptor.class
+    ) {
+      hasDescriptorType = true;
+    }
+  }
+
+  for (const [ field, descriptorField ] of Object.entries(descriptor.fields)) {
+    const quad = quads.find((item) =>
+      item.subject.value === subject &&
+      item.predicate.value === descriptorField.predicate);
+    if (!quad) continue;
+    const value = bindingToValue({
+      type: quad.object.termType === 'NamedNode' ? 'uri' : 'literal',
+      value: quad.object.value,
+      datatype: 'datatype' in quad.object ? quad.object.datatype.value : undefined,
+    }, descriptorField);
+    if (value !== undefined) {
+      object[field] = descriptorField.secret ? '[redacted]' : value;
+    }
+  }
+
+  if (!hasDescriptorType && Object.keys(object).length === 0) {
+    return null;
+  }
+  return {
+    schema: descriptor.uri,
+    subject,
+    resourceUrl,
+    object,
+  };
+}
+
 async function applyEtags(context: CliAuthContext, objects: DescriptorObject[]): Promise<void> {
   const cache = new Map<string, string | null>();
   for (const object of objects) {
@@ -725,6 +772,12 @@ async function queryDescriptorObjects(context: CliAuthContext, selector: Resolve
     },
     body: query,
   });
+  if (!response.ok) {
+    const fallback = await queryDescriptorObjectFromResource(context, selector);
+    if (fallback) {
+      return fallback;
+    }
+  }
   ensureOk(response, 'obj_query_failed', `Failed to list objects for ${selector.descriptor.uri}`);
   const result = (await response.json()) as {
     results?: { bindings?: Array<Record<string, SparqlBinding>> };
@@ -748,6 +801,31 @@ async function queryDescriptorObjects(context: CliAuthContext, selector: Resolve
     }];
   });
 
+  if (selector.includeMetadata) {
+    await applyEtags(context, objects);
+  }
+  return objects;
+}
+
+async function queryDescriptorObjectFromResource(
+  context: CliAuthContext,
+  selector: ResolvedObjSelector,
+): Promise<DescriptorObject[] | null> {
+  if (!selector.subject) return null;
+  if (Object.keys(selector.where).length > 0) return null;
+  if (Object.keys(selector.relations).length > 0) return null;
+
+  const resourceUrl = documentResourceInput(selector.subject);
+  const target = resolveResourceTarget(context, resourceUrl);
+  const response = await fetchResource(context, target, {
+    method: 'GET',
+    headers: { Accept: 'text/turtle' },
+  });
+  if (response.status === 404) return [];
+  if (!response.ok) return null;
+  const turtle = await response.text();
+  const object = descriptorObjectFromTurtle(selector.descriptor, selector.subject, target.resourceUrl, turtle);
+  const objects = object ? [ object ] : [];
   if (selector.includeMetadata) {
     await applyEtags(context, objects);
   }
