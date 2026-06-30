@@ -3226,3 +3226,31 @@ bun test tests/native/QleverLazyScanBridge.test.ts --run
 
 Expected: PASS.
 - Upstream QLever `IndexScan::getLazyScan()` still needs to call this adapter from the patched/embedded permutation path.
+
+### Task 78: Expose the QLever generator range from the physical permutation seam
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing physical lazy-range smoke**
+
+Extend the physical-index smoke with an upstream-shaped `CompressedRelationReader` stub and require `XpodQleverPhysicalPermutation::lazyScanRange(...)` to return a QLever `IdTableGeneratorInputRange`.
+
+Expected: FAIL because the standalone lower-block adapter exists, but the physical permutation seam does not yet expose it.
+
+- [x] **Step 2: Add the minimal physical adapter method**
+
+Include `XpodQleverLazyScanBridge.hpp` from the physical index and add `lazyScanRange(...)` when `index/CompressedRelation.h` is available. The method simply calls the lower `lazyScan(...)` data seam and adapts the result to QLever's generator range.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run -t "lazy scans to QLever generator ranges"
+```
+
+Expected: PASS.
+- The remaining integration gap is the actual patched/embedded upstream `IndexScan::getLazyScan()` / `Permutation::lazyScan(...)` call path.

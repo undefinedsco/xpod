@@ -4,6 +4,7 @@
 #include "XpodBackedIndexScan.hpp"
 #include "XpodBackedTextSearch.hpp"
 #include "XpodBackedVectorSearch.hpp"
+#include "XpodQleverLazyScanBridge.hpp"
 #include "XpodQleverPlannerScanInput.hpp"
 
 #include <cstdint>
@@ -359,6 +360,16 @@ class XpodQleverPhysicalPermutation {
 
     return executeScanToQleverIdTableBlocks(context_.backend, input);
   }
+
+#if __has_include("index/CompressedRelation.h")
+  QleverLazyScanRangeResult lazyScanRange(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks,
+      const std::vector<xpod_rdf_scan_block_metadata>& blocks,
+      xpod_rdf_bytes block_metadata_version = {}) const {
+    return toQleverLazyScanRange(
+        lazyScan(scan_spec_and_blocks, blocks, block_metadata_version));
+  }
+#endif
 
   XpodQleverCountResult count(
       TripleKeyPattern pattern = {},

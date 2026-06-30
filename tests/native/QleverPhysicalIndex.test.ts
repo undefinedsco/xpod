@@ -81,6 +81,52 @@ class Result {
   std::vector<ColumnIndex> sortedBy_;
 };
 `, 'utf8');
+  await writeFile(path.join(qleverSource, 'src/index/CompressedRelation.h'), `
+#pragma once
+#include <memory>
+#include <optional>
+#include "engine/idTable/IdTable.h"
+
+namespace ad_utility {
+template <typename T, typename Details>
+class InputRangeFromGet {
+ public:
+  virtual ~InputRangeFromGet() = default;
+  virtual std::optional<T> get() = 0;
+  Details& details() { return details_; }
+ private:
+  Details details_;
+};
+
+template <typename T, typename Details>
+class InputRangeTypeErased {
+ public:
+  InputRangeTypeErased() = default;
+  explicit InputRangeTypeErased(std::unique_ptr<InputRangeFromGet<T, Details>> impl)
+      : impl_(std::move(impl)) {}
+  std::optional<T> get() {
+    if (!impl_) return std::nullopt;
+    return impl_->get();
+  }
+  Details& details() { return impl_->details(); }
+  bool has_value() const { return impl_ != nullptr; }
+ private:
+  std::unique_ptr<InputRangeFromGet<T, Details>> impl_;
+};
+}
+
+class CompressedRelationReader {
+ public:
+  struct LazyScanMetadata {
+    size_t numBlocksRead_ = 0;
+    size_t numBlocksAll_ = 0;
+    size_t numElementsRead_ = 0;
+    size_t numElementsYielded_ = 0;
+  };
+  using IdTableGeneratorInputRange =
+      ad_utility::InputRangeTypeErased<IdTable, LazyScanMetadata>;
+};
+`, 'utf8');
   return qleverSource;
 }
 
@@ -2230,6 +2276,98 @@ int main() {
     }
   });
 
+
+  it('adapts physical lazy scans to QLever generator ranges', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical lazy range check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-lazy-range-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_lazy_range_smoke.cpp');
+      const binary = path.join(root, 'physical_lazy_range_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  out_capabilities->features = XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan_permutation(
+    void*,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  if (request->block_metadata_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  xpod_rdf_quad_key first_rows[1] = {{101, 202, 303, 404}};
+  xpod_rdf_quad_batch first = {first_rows, 1, XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT, 1};
+  xpod_rdf_status status = on_batch(callback_user_data, &first);
+  if (status != XPOD_RDF_STATUS_OK) return status;
+  xpod_rdf_quad_key second_rows[1] = {{102, 202, 304, 404}};
+  xpod_rdf_quad_batch second = {second_rows, 1, XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT, 1};
+  return on_batch(callback_user_data, &second);
+}
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  context.capabilities_status = physical.getCapabilities(context.capabilities);
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  xpod::qlever::XpodQleverScanSpecAndBlocks scan_spec = {};
+  scan_spec.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  xpod_rdf_scan_block_metadata selected_block = {};
+  selected_block.block_id = 8001;
+
+  auto range = index.permutation(Permutation::Enum::SPO)
+      .lazyScanRange(scan_spec, {selected_block});
+  if (range.status != XPOD_RDF_STATUS_OK) return 1;
+  auto first = range.blocks.get();
+  if (!first.has_value()) return 2;
+  if (first->numColumns() != 2 || first->numRows() != 1) return 3;
+  if ((*first)(0, 0).getBits() != 101 || (*first)(0, 1).getBits() != 303) return 4;
+  auto second = range.blocks.get();
+  if (!second.has_value()) return 5;
+  if ((*second)(0, 0).getBits() != 102 || (*second)(0, 1).getBits() != 304) return 6;
+  if (range.blocks.get().has_value()) return 7;
+  auto& details = range.blocks.details();
+  if (details.numBlocksAll_ != 2) return 8;
+  if (details.numBlocksRead_ != 2) return 9;
+  if (details.numElementsRead_ != 2 || details.numElementsYielded_ != 2) return 10;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('exposes a lower lazy scan seam that preserves backend batch boundaries', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical lazy scan check').toBe(true);
 

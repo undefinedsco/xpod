@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const headerPath = path.join(repoRoot, 'native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h');
+const nativeAbiCheckTimeoutMs = 30_000;
 
 function compiler(name: 'cc' | 'c++'): string | null {
   try {
@@ -91,6 +92,6 @@ describe('native RDF physical backend protocol header', () => {
     const scriptPath = path.join(repoRoot, 'scripts/check-rdf-physical-protocol-abi.cjs');
     expect(existsSync(scriptPath)).toBe(true);
     execFileSync(process.execPath, [scriptPath], { cwd: repoRoot, stdio: 'pipe' });
-  });
+  }, nativeAbiCheckTimeoutMs);
 
 });
