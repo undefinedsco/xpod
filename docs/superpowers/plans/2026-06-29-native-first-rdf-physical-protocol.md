@@ -3372,3 +3372,36 @@ bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts --run
 
 Expected: PASS.
 - The remaining gap is the real upstream source overlay/patch and limit/offset/column-subset parity.
+
+### Task 83: Add the real upstream `IndexScan::getLazyScan` overlay patch
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/patches/qlever-indexscan-physical-lazy-scan.patch`
+- Add: `scripts/check-qlever-upstream-patches.cjs`
+- Add: `tests/native/QleverUpstreamIndexScanPatch.test.ts`
+- Modify: `package.json`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing upstream patch asset test**
+
+Add a native patch smoke with an upstream-shaped `src/engine/IndexScan.cpp` fixture. The smoke must run a patch validator, apply the overlay to a temporary QLever source tree, and assert that the patched source contains the Xpod physical lazy scan hook while preserving the original `permutation().lazyScan(...)` fallback.
+
+Expected: FAIL because the patch asset and validator do not exist.
+
+- [x] **Step 2: Add the minimal overlay patch and validator**
+
+Add `qlever-indexscan-physical-lazy-scan.patch` that includes `XpodQleverPhysicalIndexScanContextBridge.hpp` and inserts the Xpod physical lazy scan path immediately after QLever computes `filteredBlocks`. The inserted path delegates to `lazyScanRangeFromQleverScanSpecAndBlocks(...)`, returns the QLever generator range on `OK`, falls back only on `UNSUPPORTED`, and keeps the original QLever `permutation().lazyScan(...)` call intact.
+
+Add `scripts/check-qlever-upstream-patches.cjs` plus `check:qlever-upstream-patches` so a supplied `XPOD_QLEVER_SOURCE_DIR` / `--qlever-source` can verify or apply the overlay without making TypeScript the hot-path protocol.
+
+- [x] **Step 3: Verify against fixture and current upstream source**
+
+Run:
+
+```bash
+bun test tests/native/QleverUpstreamIndexScanPatch.test.ts --run
+node scripts/check-qlever-upstream-patches.cjs --qlever-source <downloaded-current-qlever-fixture>
+```
+
+Expected: PASS.
+- The remaining gap is compiling a patched upstream QLever build with the adapter include path and then running a real `QueryPlanner -> IndexScan::getLazyScan -> XpodPhysicalIndex` query instead of only validating the source overlay.

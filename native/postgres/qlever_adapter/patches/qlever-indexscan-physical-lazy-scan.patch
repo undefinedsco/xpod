@@ -1,0 +1,25 @@
+diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
+--- a/src/engine/IndexScan.cpp
++++ b/src/engine/IndexScan.cpp
+@@ -5,0 +6 @@
++#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+@@ -466,5 +467,19 @@
+   auto filteredBlocks =
+       getLimitOffset().isUnconstrained() ? std::move(blocks) : std::nullopt;
++  auto xpodLazyScan =
++      xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks(
++          *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
++          filteredBlocks);
++  if (xpodLazyScan.status == XPOD_RDF_STATUS_OK) {
++    auto lazyScanAllCols = std::move(xpodLazyScan.blocks);
++    return CompressedRelationReader::IdTableGeneratorInputRange{
++        ad_utility::CachingTransformInputRange<
++            ad_utility::OwningView<
++                CompressedRelationReader::IdTableGeneratorInputRange>,
++            decltype(makeApplyColumnSubset()), LazyScanMetadata>{
++            std::move(lazyScanAllCols), makeApplyColumnSubset()}};
++  }
++  AD_CONTRACT_CHECK(xpodLazyScan.status == XPOD_RDF_STATUS_UNSUPPORTED);
+   auto lazyScanAllCols = permutation().lazyScan(
+       scanSpecAndBlocks_, filteredBlocks, additionalColumns(),
+       cancellationHandle_, locatedTriplesState(), getLimitOffset());
