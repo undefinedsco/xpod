@@ -253,12 +253,18 @@ static xpod_rdf_status resolve_terms(
       out_terms[i].value = bytes("urn:s");
     } else if (keys[i] == 20) {
       out_terms[i].value = bytes("urn:p");
+    } else if (keys[i] == 21) {
+      out_terms[i].value = bytes("urn:p2");
     } else if (keys[i] == 30) {
       out_terms[i].value = bytes("urn:o");
     } else if (keys[i] == 40) {
       out_terms[i].value = bytes("urn:g");
     } else if (keys[i] == 50) {
       out_terms[i].value = bytes("urn:text");
+    } else if (keys[i] == 60) {
+      out_terms[i].value = bytes("urn:entity");
+    } else if (keys[i] == 70) {
+      out_terms[i].value = bytes("urn:tail");
     } else {
       std::fprintf(stderr, "unexpected term key: %llu\n", static_cast<unsigned long long>(keys[i]));
       out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
@@ -268,10 +274,10 @@ static xpod_rdf_status resolve_terms(
 }
 
 static xpod_rdf_status estimate_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_estimate* out_estimate) {
-  out_estimate->rows = 1;
-  out_estimate->distinct_subjects = 1;
-  out_estimate->distinct_predicates = 1;
-  out_estimate->distinct_objects = 1;
+  out_estimate->rows = 2;
+  out_estimate->distinct_subjects = 2;
+  out_estimate->distinct_predicates = 2;
+  out_estimate->distinct_objects = 2;
   out_estimate->distinct_graphs = 1;
   out_estimate->selectivity = 1.0;
   out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
@@ -279,7 +285,7 @@ static xpod_rdf_status estimate_scan(void*, const xpod_rdf_scan_request*, xpod_r
 }
 
 static xpod_rdf_status count_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_count_result* out_result) {
-  out_result->count = 1;
+  out_result->count = 2;
   out_result->confidence = XPOD_RDF_ESTIMATE_EXACT;
   return XPOD_RDF_STATUS_OK;
 }
@@ -374,16 +380,22 @@ static xpod_rdf_status scan_permutation(
     void* callback_user_data) {
   auto* state = static_cast<BackendState*>(user_data);
   ++state->scan_calls;
-  xpod_rdf_quad_key row = {10, 20, 30, 40};
-  if (!matches_pattern(request->pattern, row)) {
-    xpod_rdf_quad_batch empty = {};
-    return on_batch(callback_user_data, &empty);
+  const xpod_rdf_quad_key rows[] = {
+      {10, 20, 30, 40},
+      {30, 21, 70, 40},
+  };
+  xpod_rdf_quad_key matched[2] = {};
+  size_t matched_count = 0;
+  for (const auto& row : rows) {
+    if (matches_pattern(request->pattern, row)) {
+      matched[matched_count++] = row;
+    }
   }
   xpod_rdf_quad_batch batch = {};
-  batch.rows = &row;
-  batch.row_count = 1;
+  batch.rows = matched;
+  batch.row_count = matched_count;
   batch.sorted_slots = request->needed_slots;
-  batch.scanned_rows = 1;
+  batch.scanned_rows = 2;
   return on_batch(callback_user_data, &batch);
 }
 
@@ -428,6 +440,29 @@ int main() {
   if (json.find("urn:p") == std::string_view::npos) return 5;
   if (json.find("urn:o") == std::string_view::npos) return 6;
   if (profile.find("xpod-qlever-bridge") == std::string_view::npos) return 7;
+
+  int scans_before_join = state.scan_calls;
+  xpod_qlever_query_request join_request = {};
+  join_request.sparql = bytes(
+      "SELECT ?s ?tail WHERE { ?s ?p ?o . ?o ?p2 ?tail }");
+  xpod_qlever_query_result join_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &join_request, &join_result);
+  std::string_view join_json(join_result.result_json.data, join_result.result_json.size);
+  std::string_view join_profile(join_result.profile_json.data, join_result.profile_json.size);
+  std::string_view join_error(join_result.error_message.data, join_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "join query failed: %.*s\n",
+                 static_cast<int>(join_error.size()), join_error.data());
+    return 16;
+  }
+  int join_scan_calls = state.scan_calls - scans_before_join;
+  if (join_scan_calls < 2) return 17;
+  if (join_json.find("urn:s") == std::string_view::npos) return 18;
+  if (join_json.find("urn:tail") == std::string_view::npos) return 19;
+  if (join_profile.find("HashJoin") == std::string_view::npos &&
+      join_profile.find("Join") == std::string_view::npos) return 20;
+  if (join_json.find(R"("head":{"vars":["s","tail"]})") == std::string_view::npos) return 21;
+  xpod_qlever_adapter_release_result(adapter, &join_result);
 
   xpod_qlever_adapter_release_result(adapter, &result);
   xpod_qlever_query_request text_request = {};

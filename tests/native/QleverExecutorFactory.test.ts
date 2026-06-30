@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeThrowingSparqlParserHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeEncodedIriManagerHeader, fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeThrowingSparqlParserHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterSource = path.join(repoRoot, 'native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp');
@@ -32,6 +32,7 @@ describe('QLever executor factory', () => {
       await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/EncodedIriManager.h'), fakeEncodedIriManagerHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');

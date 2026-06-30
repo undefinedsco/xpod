@@ -152,6 +152,11 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('state.text_calls');
       expect(smoke).toContain('state.entity_text_calls');
       expect(smoke).toContain('state.entity_text_estimate_calls');
+      expect(smoke).toContain('SELECT ?s ?tail WHERE { ?s ?p ?o . ?o ?p2 ?tail }');
+      expect(smoke).toContain('urn:tail');
+      expect(smoke).toContain('join_scan_calls');
+      expect(smoke).toContain('join_scan_calls < 2');
+      expect(smoke).toContain('"head":{"vars":["s","tail"]}');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

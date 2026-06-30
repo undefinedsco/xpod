@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeEncodedIriManagerHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterSource = path.join(repoRoot, 'native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp');
@@ -107,6 +107,7 @@ int main() {
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/EncodedIriManager.h'), fakeEncodedIriManagerHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
 #pragma once
 #include <cstdint>
@@ -257,6 +258,7 @@ int main() {
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/EncodedIriManager.h'), fakeEncodedIriManagerHeader, 'utf8');
       await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
 #pragma once
@@ -409,6 +411,7 @@ int main() {
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/EncodedIriManager.h'), fakeEncodedIriManagerHeader, 'utf8');
       await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
 #pragma once
@@ -597,6 +600,7 @@ int main() {
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/EncodedIriManager.h'), fakeEncodedIriManagerHeader, 'utf8');
       await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');

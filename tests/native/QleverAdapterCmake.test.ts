@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeEncodedIriManagerHeader, fakeIndexScanHeader, fakeJoinHeader, fakeParsedQueryHeader, fakePermissiveSparqlParserHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const adapterRoot = path.join(repoRoot, 'native/postgres/qlever_adapter');
@@ -50,6 +50,7 @@ async function writeRequiredQleverConfigureSkeleton(
     'src/engine/RuntimeInformation.h',
     'src/global/Id.h',
     'src/index/Index.h',
+    'src/index/EncodedIriManager.h',
     'src/index/LocalVocab.h',
     'src/index/Permutation.h',
     'src/util/CancellationHandle.h',
@@ -291,6 +292,7 @@ describe('native QLever adapter CMake target', () => {
       await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/index/EncodedIriManager.h'), fakeEncodedIriManagerHeader, 'utf8');
       await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/util/MemorySize'), { recursive: true });
       await writePatchedLibcxxSources(qleverSource);

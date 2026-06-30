@@ -3955,3 +3955,38 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 This is still a Cloud Enterprise-only native path. Local deployments do not expose the QLever-compatible adapter; local fixtures here are conformance gates for the Cloud Enterprise protocol.
+
+
+### Task 97: Prove real RDF/RDF join fallback over Xpod physical scans
+
+**Files:**
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a real linked RDF/RDF join probe**
+
+The real runtime smoke now includes `SELECT ?s ?tail WHERE { ?s ?p ?o . ?o ?p2 ?tail }` over two physical quads. The backend must observe at least two physical scan calls and the public adapter result must contain `urn:s` and `urn:tail`.
+
+Observed before implementation: the smoke failed because upstream QLever attempted to use QLever-native `IndexImpl` distinct statistics for the join path and asserted that all native permutations had not been registered.
+
+- [x] **Step 2: Do not treat upstream native-index stats failure as a public adapter failure**
+
+`executeBridgeQueryWithPlannerContext(...)` now treats native tree execution failure as a signal to continue into the Xpod physical operation plan path. `planBridgeParsedQuery(...)` also catches failures from the QLever planner-output mapping before falling back to the parser-only physical plan. This keeps Xpod-backed execution from depending on QLever-native fact/index metadata that is intentionally not populated.
+
+- [x] **Step 3: Teach parsed two-triple fallback cross-slot joins**
+
+The parsed fallback can now plan a two-triple BGP where the shared variable appears in different RDF slots, such as first object to second subject. It records `join_key_slots` and right-side projection slots so the physical executor can return variables introduced by the second triple.
+
+Observed: PASS locally:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverOperationBridge.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --jobs 2
+```
+
+This is still not a complete QLever join-statistics integration. It is a safety and conformance step: in Xpod-backed Cloud Enterprise mode, QLever-native index metadata is not authoritative, and unsupported native planner/executor attempts must fall through to the Xpod physical protocol rather than surfacing as a 500.

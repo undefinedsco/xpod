@@ -21,6 +21,8 @@ describe('QLever product boundary', () => {
       expect(document).toContain('Cloud Enterprise-only');
       expect(document).toContain('Local deployments do not expose the QLever-compatible native adapter');
     }
+    expect(spec).not.toContain("Xpod's PG/SQLite RDF engine");
+    expect(spec).toContain("Xpod's Cloud Enterprise PostgreSQL-backed RDF engine");
     expect(performancePlan).toContain('public cloud configuration stays on `pg-hot-operators`');
   });
 

@@ -151,6 +151,32 @@ inline bool bindableComponent(
   return false;
 }
 
+inline bool bindableAnyComponent(
+    const TripleComponent& component,
+    uint32_t slot,
+    BridgeQueryPlan& plan) {
+  if (component.isVariable()) {
+    return true;
+  }
+  if (component.isIri()) {
+    BridgeTermBinding binding;
+    binding.slot = slot;
+    binding.kind = XPOD_RDF_TERM_IRI;
+    binding.value = iriValueFromComponent(component);
+    plan.term_bindings.push_back(std::move(binding));
+    return true;
+  }
+  if (component.isLiteral()) {
+    auto binding = literalBindingFromComponent(component, slot);
+    if (!binding.has_value()) {
+      return false;
+    }
+    plan.term_bindings.push_back(std::move(*binding));
+    return true;
+  }
+  return false;
+}
+
 inline xpod_rdf_term toNativeTerm(const BridgeTermBinding& binding) noexcept {
   xpod_rdf_term term = {};
   term.kind = binding.kind;
@@ -466,29 +492,258 @@ inline void initializeFilterScan(BridgeFilterScan& filter) {
 inline std::optional<BridgeQueryPlan> planSingleTriple(
     const SparqlTripleSimple& triple) {
   BridgeQueryPlan plan;
-  if (!bindableComponent(triple.s_, "?s", XPOD_RDF_SLOT_SUBJECT, plan) ||
-      !bindableComponent(triple.p_, "?p", XPOD_RDF_SLOT_PREDICATE, plan) ||
-      !bindableComponent(triple.o_, "?o", XPOD_RDF_SLOT_OBJECT, plan)) {
+  if (!bindableAnyComponent(triple.s_, XPOD_RDF_SLOT_SUBJECT, plan) ||
+      !bindableAnyComponent(triple.p_, XPOD_RDF_SLOT_PREDICATE, plan) ||
+      !bindableAnyComponent(triple.o_, XPOD_RDF_SLOT_OBJECT, plan)) {
     return std::nullopt;
   }
   initializeScanPlan(plan, triple);
   return plan;
 }
 
-inline bool planSubjectFilterTriple(
+struct BridgeVariableSlot {
+  std::string variable;
+  uint32_t slot = 0;
+};
+
+struct BridgeProjectionSlot {
+  std::string variable;
+  size_t scan_position = 0;
+  uint32_t slot = 0;
+};
+
+inline void appendVariableSlot(
+    std::vector<BridgeVariableSlot>& slots,
+    const TripleComponent& component,
+    uint32_t slot) {
+  if (!component.isVariable()) {
+    return;
+  }
+  slots.push_back({bridgeComponentVariableName(component), slot});
+}
+
+inline std::vector<BridgeVariableSlot> variableSlotsForTriple(
+    const SparqlTripleSimple& triple) {
+  std::vector<BridgeVariableSlot> slots;
+  appendVariableSlot(slots, triple.s_, XPOD_RDF_SLOT_SUBJECT);
+  appendVariableSlot(slots, triple.p_, XPOD_RDF_SLOT_PREDICATE);
+  appendVariableSlot(slots, triple.o_, XPOD_RDF_SLOT_OBJECT);
+  return slots;
+}
+
+inline std::optional<uint32_t> slotForVariable(
+    const std::vector<BridgeVariableSlot>& slots,
+    std::string_view variable) {
+  for (const BridgeVariableSlot& slot : slots) {
+    if (slot.variable == variable) {
+      return slot.slot;
+    }
+  }
+  return std::nullopt;
+}
+
+inline bool containsProjectionVariable(
+    const std::vector<BridgeProjectionSlot>& slots,
+    std::string_view variable) {
+  for (const BridgeProjectionSlot& slot : slots) {
+    if (slot.variable == variable) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline void appendProjectionSlot(
+    std::vector<BridgeProjectionSlot>& slots,
+    const TripleComponent& component,
+    size_t scan_position,
+    uint32_t slot) {
+  if (!component.isVariable()) {
+    return;
+  }
+  std::string variable = bridgeComponentVariableName(component);
+  if (containsProjectionVariable(slots, variable)) {
+    return;
+  }
+  slots.push_back({std::move(variable), scan_position, slot});
+}
+
+inline void appendProjectionSlotsForTriple(
+    std::vector<BridgeProjectionSlot>& slots,
     const SparqlTripleSimple& triple,
-    BridgeFilterScan& filter) {
+    size_t scan_position) {
+  appendProjectionSlot(
+      slots, triple.s_, scan_position, XPOD_RDF_SLOT_SUBJECT);
+  appendProjectionSlot(
+      slots, triple.p_, scan_position, XPOD_RDF_SLOT_PREDICATE);
+  appendProjectionSlot(
+      slots, triple.o_, scan_position, XPOD_RDF_SLOT_OBJECT);
+}
+
+inline std::optional<BridgeProjectionSlot> projectionSlotForVariable(
+    const std::vector<BridgeProjectionSlot>& slots,
+    std::string_view variable) {
+  for (const BridgeProjectionSlot& slot : slots) {
+    if (slot.variable == variable) {
+      return slot;
+    }
+  }
+  return std::nullopt;
+}
+
+inline bool appendTripleTermBindings(
+    const SparqlTripleSimple& triple,
+    std::vector<BridgeTermBinding>& bindings) {
   BridgeQueryPlan scratch;
-  if (!bindableComponent(triple.s_, "?s", XPOD_RDF_SLOT_SUBJECT, scratch) ||
-      !bindableComponent(triple.p_, "?p", XPOD_RDF_SLOT_PREDICATE, scratch) ||
-      !bindableComponent(triple.o_, "?o", XPOD_RDF_SLOT_OBJECT, scratch)) {
+  if (!bindableAnyComponent(triple.s_, XPOD_RDF_SLOT_SUBJECT, scratch) ||
+      !bindableAnyComponent(triple.p_, XPOD_RDF_SLOT_PREDICATE, scratch) ||
+      !bindableAnyComponent(triple.o_, XPOD_RDF_SLOT_OBJECT, scratch)) {
     return false;
   }
-  if (scratch.term_bindings.empty()) {
+  for (BridgeTermBinding& binding : scratch.term_bindings) {
+    bindings.push_back(std::move(binding));
+  }
+  return true;
+}
+
+inline std::optional<std::vector<std::string>> selectedVariablesFromParsedQuery(
+    const ParsedQuery& parsed) {
+  const auto& select = parsed.selectClause();
+  if (select.isAsterisk()) {
+    return std::nullopt;
+  }
+  std::vector<std::string> variables;
+  for (const Variable& variable : select.getSelectedVariables()) {
+    variables.push_back(bridgeVariableName(variable));
+  }
+  return variables;
+}
+
+inline bool applySelectedProjection(
+    BridgeQueryPlan& plan,
+    const ParsedQuery& parsed,
+    const SparqlTripleSimple& first,
+    const std::optional<SparqlTripleSimple>& second,
+    const std::optional<BridgeGraphScope>& graph_scope) {
+  std::optional<std::vector<std::string>> selected =
+      selectedVariablesFromParsedQuery(parsed);
+  if (!selected.has_value()) {
+    return true;
+  }
+
+  std::vector<BridgeProjectionSlot> available;
+  appendProjectionSlotsForTriple(available, first, 0);
+  if (second.has_value()) {
+    appendProjectionSlotsForTriple(available, *second, 1);
+  }
+  if (graph_scope.has_value() && graph_scope->variable.has_value() &&
+      !containsProjectionVariable(available, *graph_scope->variable)) {
+    available.push_back({
+        *graph_scope->variable,
+        0,
+        XPOD_RDF_SLOT_GRAPH,
+    });
+  }
+
+  std::vector<std::string> output_variables;
+  std::vector<std::vector<uint32_t>> project_slots(
+      second.has_value() ? 2 : 1);
+  for (const std::string& variable : *selected) {
+    std::optional<BridgeProjectionSlot> slot =
+        projectionSlotForVariable(available, variable);
+    if (!slot.has_value() || slot->scan_position >= project_slots.size()) {
+      return false;
+    }
+    output_variables.push_back(variable);
+    project_slots[slot->scan_position].push_back(slot->slot);
+  }
+
+  plan.output_variables = std::move(output_variables);
+  plan.result_width = plan.output_variables.size();
+  if (second.has_value()) {
+    plan.root.scan_project_slots = std::move(project_slots);
+    return true;
+  }
+
+  plan.scan.needed_slots = 0;
+  for (uint32_t slot : project_slots.front()) {
+    plan.scan.needed_slots |= slot;
+  }
+  plan.sorted_by.clear();
+  for (size_t column = 0; column < project_slots.front().size(); ++column) {
+    if (project_slots.front()[column] == XPOD_RDF_SLOT_SUBJECT) {
+      plan.sorted_by = {static_cast<ColumnIndex>(column)};
+      break;
+    }
+  }
+  return true;
+}
+
+inline bool appendSecondTripleJoin(
+    BridgeQueryPlan& plan,
+    const SparqlTripleSimple& first,
+    const SparqlTripleSimple& second,
+    const std::optional<BridgeGraphScope>& graph_scope) {
+  const std::vector<BridgeVariableSlot> first_slots = variableSlotsForTriple(first);
+  const std::vector<BridgeVariableSlot> second_slots = variableSlotsForTriple(second);
+  std::vector<uint32_t> first_join_slots;
+  std::vector<uint32_t> second_join_slots;
+  std::vector<uint32_t> first_project_slots;
+  std::vector<uint32_t> second_project_slots;
+
+  for (const BridgeVariableSlot& slot : first_slots) {
+    first_project_slots.push_back(slot.slot);
+  }
+  for (const BridgeVariableSlot& second_slot : second_slots) {
+    std::optional<uint32_t> first_slot = slotForVariable(
+        first_slots, second_slot.variable);
+    if (first_slot.has_value()) {
+      first_join_slots.push_back(*first_slot);
+      second_join_slots.push_back(second_slot.slot);
+      continue;
+    }
+    plan.output_variables.push_back(second_slot.variable);
+    second_project_slots.push_back(second_slot.slot);
+  }
+
+  if (first_join_slots.empty()) {
     return false;
   }
+
+  BridgeFilterScan filter;
   initializeFilterScan(filter);
-  filter.term_bindings = std::move(scratch.term_bindings);
+  filter.join_slot = second_join_slots.front();
+  if (!appendTripleTermBindings(second, filter.term_bindings)) {
+    return false;
+  }
+  if (graph_scope.has_value() && graph_scope->binding.has_value()) {
+    filter.term_bindings.push_back(*graph_scope->binding);
+  }
+  if (graph_scope.has_value() && graph_scope->variable.has_value()) {
+    filter.scan.needed_slots |= XPOD_RDF_SLOT_GRAPH;
+    first_join_slots.push_back(XPOD_RDF_SLOT_GRAPH);
+    second_join_slots.push_back(XPOD_RDF_SLOT_GRAPH);
+    first_project_slots.push_back(XPOD_RDF_SLOT_GRAPH);
+  }
+
+  plan.filter_scans.push_back(std::move(filter));
+  plan.descriptor = "xpod scan ?s ?p ?o with join";
+  plan.result_width = plan.output_variables.size();
+  plan.root.kind = BridgeOperationKind::HashJoin;
+  plan.root.scan_indexes = {0, 1};
+  plan.root.join_slot = first_join_slots.front();
+  plan.root.join_slots = {
+      first_join_slots.front(),
+      second_join_slots.front(),
+  };
+  plan.root.join_key_slots = {
+      std::move(first_join_slots),
+      std::move(second_join_slots),
+  };
+  plan.root.scan_project_slots = {
+      std::move(first_project_slots),
+      std::move(second_project_slots),
+  };
   return true;
 }
 
@@ -581,36 +836,12 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
     }
     if (basic->_triples.size() == 2) {
       SparqlTripleSimple second = basic->_triples[1].getSimple();
-      BridgeFilterScan filter;
-      if (!planSubjectFilterTriple(second, filter)) {
+      if (!appendSecondTripleJoin(*plan, first, second, graph_scope) ||
+          !applySelectedProjection(*plan, parsed, first, second, graph_scope)) {
         return std::nullopt;
       }
-      if (graph_scope.has_value() && graph_scope->binding.has_value()) {
-        filter.term_bindings.push_back(*graph_scope->binding);
-      }
-      if (graph_scope.has_value() && graph_scope->variable.has_value()) {
-        filter.scan.needed_slots |= XPOD_RDF_SLOT_GRAPH;
-      }
-      plan->filter_scans.push_back(std::move(filter));
-      plan->descriptor = "xpod scan ?s ?p ?o with subject filter";
-      plan->root.kind = BridgeOperationKind::HashJoin;
-      plan->root.scan_indexes = {0, 1};
-      plan->root.join_slot = XPOD_RDF_SLOT_SUBJECT;
-      plan->root.join_slots = {
-          XPOD_RDF_SLOT_SUBJECT,
-          XPOD_RDF_SLOT_SUBJECT,
-      };
-      if (graph_scope.has_value() && graph_scope->variable.has_value()) {
-        plan->root.join_key_slots = {
-            {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_GRAPH},
-            {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_GRAPH},
-        };
-        plan->root.scan_project_slots = {
-            {XPOD_RDF_SLOT_SUBJECT, XPOD_RDF_SLOT_PREDICATE,
-             XPOD_RDF_SLOT_OBJECT, XPOD_RDF_SLOT_GRAPH},
-            {},
-        };
-      }
+    } else if (!applySelectedProjection(*plan, parsed, first, std::nullopt, graph_scope)) {
+      return std::nullopt;
     }
     return plan;
   } catch (...) {

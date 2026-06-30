@@ -51,13 +51,24 @@ xpod_rdf_status planBridgeParsedQuery(
     PlannerContextHandle planner_context,
     std::string& error_storage,
     BridgeQueryPlan& out_plan) {
-  auto plan = planQleverParsedQueryWithAvailablePlanner(
-      planner_context, parsed);
+  std::optional<BridgeQueryPlan> plan;
+  std::string planner_error;
+  try {
+    plan = planQleverParsedQueryWithAvailablePlanner(planner_context, parsed);
+  } catch (const std::exception& error) {
+    planner_error = error.what();
+  } catch (...) {
+    planner_error = "unknown planner error";
+  }
   if (!plan.has_value()) {
     plan = planParsedQuery(parsed);
   }
   if (!plan.has_value()) {
     error_storage = "unsupported QLever bridge query";
+    if (!planner_error.empty()) {
+      error_storage += "; QLever planner fallback failed earlier: ";
+      error_storage += planner_error;
+    }
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
   out_plan = *plan;
@@ -533,17 +544,10 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
     try {
       native_execution =
           executeQleverParsedQueryWithNativeTree(planner_context, parsed);
-    } catch (const std::exception& error) {
-      error_storage = "failed to execute QLever native tree: ";
-      error_storage += error.what();
-      setResult(out_result, XPOD_RDF_STATUS_BACKEND_ERROR, result_storage,
-                profile_storage, error_storage);
-      return XPOD_RDF_STATUS_BACKEND_ERROR;
+    } catch (const std::exception&) {
+      native_execution = std::nullopt;
     } catch (...) {
-      error_storage = "failed to execute QLever native tree";
-      setResult(out_result, XPOD_RDF_STATUS_BACKEND_ERROR, result_storage,
-                profile_storage, error_storage);
-      return XPOD_RDF_STATUS_BACKEND_ERROR;
+      native_execution = std::nullopt;
     }
     if (native_execution.has_value()) {
       applyBridgeRequestContext(

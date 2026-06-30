@@ -1,3 +1,5 @@
+export const fakeEncodedIriManagerHeader = '#pragma once\nclass EncodedIriManager {};\n';
+
 export const fakeParsedQueryHeader = `
 #pragma once
 #include <string>
@@ -60,6 +62,20 @@ class SparqlTriple {
   TripleComponent s_;
   TripleComponent p_;
   TripleComponent o_;
+};
+class SelectClause {
+ public:
+  bool isAsterisk() const { return asterisk_; }
+  const std::vector<Variable>& getSelectedVariables() const {
+    return selected_;
+  }
+  void setSelected(std::vector<Variable> variables) {
+    asterisk_ = false;
+    selected_ = std::move(variables);
+  }
+ private:
+  bool asterisk_ = true;
+  std::vector<Variable> selected_;
 };
 namespace parsedQuery {
 struct GraphPatternOperation;
@@ -195,12 +211,29 @@ class ParsedQuery {
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
     return query;
   }
+  static ParsedQuery objectSubjectJoinSelect() {
+    ParsedQuery query;
+    parsedQuery::BasicGraphPattern basic;
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?s"}},
+        TripleComponent{Variable{"?p"}},
+        TripleComponent{Variable{"?o"}});
+    basic._triples.emplace_back(
+        TripleComponent{Variable{"?o"}},
+        TripleComponent{Variable{"?p2"}},
+        TripleComponent{Variable{"?tail"}});
+    query.select_clause_.setSelected({Variable{"?s"}, Variable{"?tail"}});
+    query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
+    return query;
+  }
   bool hasSelectClause() const { return select_; }
+  const SelectClause& selectClause() const { return select_clause_; }
   const std::vector<parsedQuery::GraphPatternOperation>& children() const {
     return _rootGraphPattern._graphPatterns;
   }
   parsedQuery::GraphPattern _rootGraphPattern;
   bool select_ = true;
+  SelectClause select_clause_;
 };
 `;
 

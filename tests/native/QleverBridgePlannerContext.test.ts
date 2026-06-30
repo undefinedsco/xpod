@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
+import { fakeEncodedIriManagerHeader, fakeJoinHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeSparqlTripleHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const bridgeSource = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverBridge.cpp');
@@ -169,6 +169,7 @@ class Id {
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Index.h'), '#pragma once\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/EncodedIriManager.h'), fakeEncodedIriManagerHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
 #pragma once
