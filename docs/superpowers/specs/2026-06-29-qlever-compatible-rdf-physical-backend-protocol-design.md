@@ -17,11 +17,13 @@ This spec is the contract. It is not an implementation plan for embedding QLever
 
 Xpod only owns the data-layer protocol. Upper query strategy is QLever-owned.
 
+Product availability is deliberately narrower than the protocol shape: this QLever-compatible native acceleration path is **Cloud Enterprise-only** for now. Local deployments do not expose the QLever-compatible native adapter, and public/open-source cloud configuration stays on `pg-hot-operators`.
+
 In concrete terms:
 
 - Xpod provides QLever-compatible physical access to its existing authority data: term dictionary, permutation scans, counts/distincts/cardinality stats, histogram hints, text/vector candidate sources, source/path scope, ACL/ACR scope, cancellation, snapshots, and profile events.
 - QLever owns SPARQL parsing, logical/physical planning, join ordering, filter placement, lazy/block execution strategy, modifiers, aggregates, text-operator semantics, ranking/top-k/fusion strategy, cache policy, and runtime information.
-- The adapter goal is to make Xpod's PG/SQLite-backed data look like a QLever `Index` / `Permutation` / text source to QLever code. If a missing feature requires strategy, the fix is to patch or embed QLever against this lower protocol, not to recreate that strategy in Xpod.
+- The adapter goal is to make Xpod's Cloud Enterprise PostgreSQL-backed data look like a QLever `Index` / `Permutation` / text source to QLever code. SQLite/PGlite use is limited to conformance tests and benchmark harnesses, not local product exposure. If a missing feature requires strategy, the fix is to patch or embed QLever against this lower protocol, not to recreate that strategy in Xpod.
 - Existing Xpod operation-plan / parsed-BGP bridges are compatibility spikes and conformance harnesses while the lower protocol is being built. They must not keep growing into a parallel QLever planner.
 - Derived indexes may be rebuilt from Xpod facts, but Xpod must not maintain QLever's separate on-disk RDF fact store as a second authority.
 - In an Xpod-backed QLever execution context, QLever's native permutation/text posting files are not data fallbacks because they are not populated. Data must enter through the Xpod physical backend adapter. Original QLever storage calls are only valid in a pure upstream context where no `xpodPhysicalIndex()` has been injected.
@@ -29,6 +31,7 @@ In concrete terms:
 ## Working assumptions
 
 - This is a native-first physical protocol for a PostgreSQL extension / QLever-compatible executor path. TypeScript snippets in this document are IDL-style notation only for tests, benchmark tooling, and non-native fallbacks; they are not the product execution protocol. The primary implementation contract is a C ABI with an internal C++ facade where QLever code is involved.
+- Local deployments do not expose the QLever-compatible native adapter. Any local build/test fixture exists only to validate the Cloud Enterprise protocol and must not become a runtime selector in `config/local.json`.
 - RDF facts remain authoritative in Xpod's existing facts layer: `rdf_terms`, `rdf_quads`, facts covering indexes, and SolidFS/Pod authority files.
 - RDF-3X stats, materialized views, result cache, text index, vector index, path closure, and profile output are derived and rebuildable.
 - The protocol is internal to `SolidRdfEngine` / `PostgresRdfEngine`. It is not a public SPARQL dialect, not a public QLever backend selector, and not a durable Pod model.
@@ -71,8 +74,8 @@ SPARQL / RdfQuery / product search request
       - AccessScopeEvaluator
       - ExecutionProfileSink
   -> physical backend
-      local:  SQLite/PGlite facts + FTS/vector artifacts
-      cloud:  PostgreSQL facts + GIN/vector/native extension when available
+      cloud enterprise: PostgreSQL facts + GIN/vector/native extension when available
+      local fixtures:   SQLite/PGlite only for tests and conformance harnesses
 ```
 
 QLever planner and executor code inside the native path should depend on this protocol, not directly on product model repositories or ad-hoc PG SQL assembled in TypeScript. The TypeScript engine may still call the native executor, collect reports, and run fallback paths, but it is not the protocol owner for the QLever-compatible path.
@@ -726,6 +729,7 @@ The native binding should not expose C++ ABI directly across PostgreSQL or proce
 ## Non-goals
 
 - Do not expose a user-visible `qlever` backend selector.
+- Do not expose the QLever-compatible native adapter in local deployments; this is Cloud Enterprise-only until explicitly revisited.
 - Do not maintain QLever's on-disk RDF index beside PG/SQLite facts.
 - Do not reimplement QLever's upper planner/executor strategies in Xpod.
 - Do not implement SPARQL UPDATE through this protocol in the first version.

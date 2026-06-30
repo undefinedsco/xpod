@@ -6,6 +6,8 @@
 
 **Architecture:** The protocol source of truth is a C ABI header under `native/postgres/rdf_protocol/include/`. TypeScript is used only for tests and validation tooling. The header defines opaque/native-safe value structs, callback tables, scan/search/stats/profile surfaces, and avoids QLever/C++ types at the boundary.
 
+**Product boundary update (2026-07-01):** QLever-compatible native acceleration is **Cloud Enterprise-only**. Local deployments do not expose the QLever-compatible native adapter; local/native tests may compile or execute fixtures only as conformance gates for the Cloud Enterprise protocol, not as a local runtime feature.
+
 **Tech Stack:** C11-compatible ABI header, Vitest for repository tests, Node script for ABI/header checks, existing Bun test runner.
 
 ---

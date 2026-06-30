@@ -12,6 +12,7 @@
 - cloud 默认启用 `pg-hot-operators`：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 由 `PostgresRdfEngine` 内置 PG SQL fast path 提供，`cache.result` 使用表级 query result cache。
 - `pg-custom-index` 不改变 cloud 默认；它要求部署侧 PostgreSQL 安装 `xpod_rdf` native extension 并声明 `index.xpod_rdf_perm`。缺 extension 或缺能力时，`storageStats().pgAcceleration` 必须报告 `fallbackReason=capability-missing` 和 `missingCapabilities`，查询语义回退 RDF-3X / PG SQL baseline。
 - 开源 cloud 不依赖额外数据库扩展；缺少部署侧定制能力时，Pod 读写和查询语义不受影响。
+- QLever-compatible native acceleration 是 **Cloud Enterprise-only**：Local deployments do not expose the QLever-compatible native adapter，public cloud configuration stays on `pg-hot-operators`，本地配置继续使用 `SolidRdfEngine`。
 
 ## Product-grade P0/P1 Backlog
 
