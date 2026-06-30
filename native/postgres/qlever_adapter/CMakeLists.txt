@@ -128,6 +128,11 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
   endfunction()
 
   xpod_qlever_require_overlay_token(
+    "src/engine/Filter.cpp"
+    "physicalFilterResultFromContext"
+    "Xpod Filter bounded-expression overlay")
+
+  xpod_qlever_require_overlay_token(
     "src/engine/TextIndexScanForWord.cpp"
     "textWordResultFromContext"
     "Xpod text-index word overlay")

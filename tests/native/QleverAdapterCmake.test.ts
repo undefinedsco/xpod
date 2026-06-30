@@ -78,6 +78,11 @@ async function writeRequiredQleverConfigureSkeleton(
     patchedQueryPlannerSource,
     'utf8',
   );
+  await writeFile(
+    path.join(qleverSource, 'src/engine/Filter.cpp'),
+    patchedFilterSource,
+    'utf8',
+  );
   await writePatchedLibcxxSources(qleverSource);
 }
 
@@ -105,6 +110,21 @@ const patchedQueryPlannerSource = `
 void xpod_queryplanner_overlay_marker() {
   (void)"xpod::qlever::physicalIndexFromContext(*_qec) != nullptr";
   (void)"xpod::qlever::physicalIndexFromContext(*_qec) == nullptr";
+}
+`;
+
+const patchedFilterSource = `
+#include "engine/Filter.h"
+#include "XpodQleverPhysicalFilterContextBridge.hpp"
+void xpod_filter_overlay_marker() {
+  (void)"physicalFilterResultFromContext";
+}
+`;
+
+const unpatchedFilterSource = `
+#include "engine/Filter.h"
+void unpatched_filter() {
+  (void)"filterIdTable(subRes->sortedBy(), subRes->idTableView())";
 }
 `;
 
@@ -359,6 +379,11 @@ class Operation {
         'utf8',
       );
       await writeFile(
+        path.join(qleverSource, 'src/engine/Filter.cpp'),
+        patchedFilterSource,
+        'utf8',
+      );
+      await writeFile(
         path.join(qleverSource, 'src/engine/TextIndexScanForWord.cpp'),
         patchedTextIndexScanForWordSource,
         'utf8',
@@ -560,6 +585,49 @@ class Permutation {
       }
       expect(output).toContain('QueryPlanner.cpp is not patched with the Xpod physical-index');
       expect(output).toContain('check-qlever-upstream-patches.cjs');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree whose Filter bounded-expression overlay is missing', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-unpatched-filter-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await writeRequiredQleverConfigureSkeleton(
+        qleverSource,
+        'void xpod_overlay_marker() { (void)"materializedScanFromQleverScanSpecAndBlocks"; (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; (void)"sizeEstimateFromQleverScanSpecAndBlocks"; (void)"exactSizeFromQleverScanSpecAndBlocks"; (void)"canUsePhysicalScanSpecAndBlocks"; }\n',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/QueryExecutionContext.h'),
+        patchedQueryExecutionContextHeader,
+        'utf8',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/Filter.cpp'),
+        unpatchedFilterSource,
+        'utf8',
+      );
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('src/engine/Filter.cpp is not patched');
+      expect(output).toContain('Xpod Filter');
+      expect(output).toContain('bounded-expression overlay');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

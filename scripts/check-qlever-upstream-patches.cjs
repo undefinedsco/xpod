@@ -147,6 +147,33 @@ const patchSpecs = [
     ],
     alreadyPatchedMessage: 'already contains the Xpod TextSearchQuery fixed-entity overlay',
   },
+
+  {
+    patchPath: path.join(patchesRoot, 'qlever-filter-physical-bounded-expression.patch'),
+    target: 'src/engine/Filter.cpp',
+    patchTokens: [
+      'XpodQleverPhysicalFilterContextBridge.hpp',
+      'xpod::qlever::physicalFilterResultFromContext',
+      'xpodFilter.status == XPOD_RDF_STATUS_OK',
+      'return std::move(xpodFilter.result);',
+      'filterIdTable(subRes->sortedBy(), subRes->idTableView())',
+    ],
+    anchors: [
+      '#include "engine/Filter.h"',
+      'Filter::computeResult(',
+      'std::shared_ptr<const Result> subRes = _subtree->getResult(true);',
+      'checkCancellation();',
+      'filterIdTable(subRes->sortedBy(), subRes->idTableView())',
+    ],
+    appliedTokens: [
+      'XpodQleverPhysicalFilterContextBridge.hpp',
+      'xpod::qlever::physicalFilterResultFromContext',
+      'xpodFilter.status == XPOD_RDF_STATUS_OK',
+      'return std::move(xpodFilter.result);',
+    ],
+    alreadyPatchedMessage: 'already contains the Xpod Filter bounded-expression overlay',
+  },
+
   {
     patchPath: path.join(patchesRoot, 'qlever-libcxx-normalized-string.patch'),
     target: 'src/parser/NormalizedString.h',

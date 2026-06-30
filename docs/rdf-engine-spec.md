@@ -901,10 +901,9 @@ fallback/correction 行为，再映射到同一套 planner source。
 
 ### QLever-style fusion planner and path handling
 
-QLever-style 能力在 Xpod 中不表示“把 PG/SQLite 放到上游 QLever backend 后面”。正确边界是：
-`SolidRdfEngine` 内部提供统一 logical planner，把 RDF BGP、FTS、vector、path scope 和 ACL/ACR
-视为同一个 query plan 里的 candidate source / constraint，再把 physical operator 下放到 SQLite 或
-PostgreSQL。
+这里要区分两层：公开 `SolidRdfEngine` 可以把 RDF BGP、FTS、vector、path scope 和 ACL/ACR 放进同一个内部 logical plan；但 QLever-compatible native planner/executor 只作为 **Cloud Enterprise-only** 能力接入。local 不提供 upstream-QLever adapter，也不提供 runtime selector。
+
+QLever-style 能力在 Xpod 中不表示“把 PG/SQLite 放到上游 QLever backend 后面”。公开默认边界是：`SolidRdfEngine` 内部 planner 把 RDF/search/path/auth source 统一建模，再把 physical operator 下放到本 profile 可用的 SQLite 或 PostgreSQL 实现；企业版 cloud 可以在同一协议下把 upstream QLever planner/executor 接到 PostgreSQL-backed physical backend。
 
 ```text
 Query / Search Request
@@ -916,8 +915,8 @@ Query / Search Request
       - FolderSemanticSource
       - AclScopeSource
   -> physical operators
-      local:  SQLite covering index / FTS5 / vector artifact
-      cloud:  PostgreSQL btree/GIN/trgm/ltree-like tables / vector backend
+      local/public: SolidRdfEngine 内置 RDF-3X / SQLite-or-PG search operator（非 QLever adapter）
+      cloud enterprise: PostgreSQL-backed physical backend + QLever-compatible native executor
 ```
 
 性能目标不是在 TS 层拼接多个检索结果，而是让 text/vector/path/ACL/RDF 在 planner 内统一 cost、join、

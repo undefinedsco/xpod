@@ -24,6 +24,7 @@
 #include "libqlever/Qlever.h"
 #include "parser/SparqlParser.h"
 
+#include <algorithm>
 #include <exception>
 #include <memory>
 #include <optional>
@@ -528,6 +529,23 @@ inline bool appendParsedPublicModifiers(
   return true;
 }
 
+[[maybe_unused]] inline bool isBridgeTermFilterModifier(
+    const BridgeResultModifier& modifier) {
+  return modifier.kind == BridgeResultModifierKind::EqualTerm ||
+         modifier.kind == BridgeResultModifierKind::NotEqualTerm;
+}
+
+[[maybe_unused]] inline void removeBridgeTermFilterModifiers(
+    BridgeOperationPlan& root) {
+  root.result_modifiers.erase(
+      std::remove_if(root.result_modifiers.begin(), root.result_modifiers.end(),
+                     isBridgeTermFilterModifier),
+      root.result_modifiers.end());
+  for (BridgeOperationPlan& child : root.children) {
+    removeBridgeTermFilterModifiers(child);
+  }
+}
+
 xpod_rdf_status planBridgeParsedQuery(
     ParsedQuery& parsed,
     PlannerContextHandle planner_context,
@@ -567,20 +585,6 @@ xpod_rdf_status planBridgeParsedQuery(
   return XPOD_RDF_STATUS_OK;
 }
 
-inline bool hasBridgeTermFilterModifier(const BridgeOperationPlan& root) {
-  for (const BridgeResultModifier& modifier : root.result_modifiers) {
-    if (modifier.kind == BridgeResultModifierKind::EqualTerm ||
-        modifier.kind == BridgeResultModifierKind::NotEqualTerm) {
-      return true;
-    }
-  }
-  for (const BridgeOperationPlan& child : root.children) {
-    if (hasBridgeTermFilterModifier(child)) {
-      return true;
-    }
-  }
-  return false;
-}
 
 template <typename Planner>
 std::optional<NativeQleverExecution> executeQleverPlannerTree(
@@ -633,9 +637,6 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
     plan->output_variables = *selected;
     plan->result_width = plan->output_variables.size();
   }
-  if (hasBridgeTermFilterModifier(plan->root)) {
-    return std::nullopt;
-  }
   if constexpr (!HasLazyTreeResult<Tree>::value) {
     return std::nullopt;
   } else {
@@ -644,6 +645,7 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
       return std::nullopt;
     }
     IdTable table = materializeQleverResultTable(*result, qlever_result_width);
+    removeBridgeTermFilterModifiers(plan->root);
     if (!plan->root.result_modifiers.empty()) {
       QleverResultWithStatus modified = applyBridgeResultModifiers(
           backend, plan->root,
