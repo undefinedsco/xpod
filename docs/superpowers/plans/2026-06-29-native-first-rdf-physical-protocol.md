@@ -4466,3 +4466,50 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.
+
+
+### Task 109: Map upstream-shaped Filter operations to bounded native modifiers
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a real-operation FILTER regression gate**
+
+The focused operation-plan smoke now constructs an upstream-shaped `Filter` operation over an `IndexScan` child:
+
+```cpp
+Filter(child, sparqlExpression::SparqlExpressionPimpl{"(?o = <urn:o>)"})
+```
+
+The expected bridge output is the child `PermutationScan` plus one ordered `EqualTerm` result modifier on the `?o` output column. The modifier term binds through the physical dictionary and QLever id encoder before execution.
+
+Observed before implementation: the focused smoke failed at the new regression gate because `planQleverOperation(...)` did not recognize `Filter` roots; the parsed fallback was the only bounded-filter path.
+
+- [x] **Step 2: Keep the bounded-filter bridge narrow**
+
+`XpodQleverOperationPlanBridge.hpp` now detects `engine/Filter.h` when present, unwraps the single child plan, reads the public descriptor, and applies the existing bounded equality / inequality descriptor binder. Unsupported expressions still fail closed. The bridge does not evaluate arbitrary SPARQL expressions and does not become a replacement for QLever's expression engine.
+
+The linked real-upstream runtime exposed one important boundary: `QueryExecutionTree::getResult(true)` may already execute QLever's own `Filter` expression over Xpod-provided ids before the bridge can safely normalize expression/value-id semantics. Until that lower expression seam is wired, direct tree execution fails closed when the bridged plan contains `EqualTerm` / `NotEqualTerm` modifiers, letting the parsed/physical fallback execute the bounded filter over the Xpod physical plan instead of returning a false empty result.
+
+`toBridgePhysicalPlan(...)` also refreshes owned text-source byte views after copying text candidate sources, keeping physical plans valid after operation-local source objects move or go out of scope.
+
+- [x] **Step 3: Reassert product boundary**
+
+This is still a Cloud Enterprise-only native seam. Local deployments do not expose the QLever-compatible adapter or runtime selector; local/native tests only compile fixture or patched-upstream gates for the Cloud Enterprise protocol.
+
+- [x] **Step 4: Verify focused behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts --run
+bun test tests/native/QleverOperationPlanBridge.test.ts tests/native/QleverProductBoundary.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally. The real runtime smoke first failed with an empty result for `FILTER(?o != <urn:tail>)` on a real upstream `Filter(IndexScan OPS ...)` tree. Root cause: direct `QueryExecutionTree::getResult(true)` was executing QLever's expression path before the bridge-owned bounded-filter modifier could safely run over Xpod's physical plan. The final gate passes after the direct tree path fails closed for bridge-owned term filters.

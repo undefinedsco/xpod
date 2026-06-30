@@ -525,6 +525,47 @@ class MultiColumnJoin final : public Operation {
 `;
 
 
+export const fakeFilterHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+class QueryExecutionContext;
+class Filter final : public Operation {
+ public:
+  Filter(QueryExecutionContext*,
+         std::shared_ptr<QueryExecutionTree> child,
+         sparqlExpression::SparqlExpressionPimpl expression)
+      : child_(std::move(child)), expression_(std::move(expression)) {}
+  Filter(std::shared_ptr<QueryExecutionTree> child,
+         sparqlExpression::SparqlExpressionPimpl expression)
+      : child_(std::move(child)), expression_(std::move(expression)) {}
+  std::string getDescriptor() const override {
+    return "Filter " + expression_.getDescriptor();
+  }
+  size_t getResultWidth() const override { return child_->getResultWidth(); }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {child_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return child_ == nullptr ? std::vector<ColumnIndex>{}
+                             : child_->resultSortedOn();
+  }
+ private:
+  std::shared_ptr<QueryExecutionTree> child_;
+  sparqlExpression::SparqlExpressionPimpl expression_;
+};
+`;
+
+
 export const fakeOrderByHeader = `
 #pragma once
 #include <memory>

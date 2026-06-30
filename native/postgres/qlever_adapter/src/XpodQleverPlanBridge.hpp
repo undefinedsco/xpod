@@ -1550,6 +1550,9 @@ inline BridgePhysicalPlan toBridgePhysicalPlan(const BridgeQueryPlan& plan) {
   if (!copied_text_sources) {
     physical.text_sources = plan.text_sources;
   }
+  for (BridgeTextCandidateSource& source : physical.text_sources) {
+    source.refreshViews();
+  }
   physical.vector_sources = plan.vector_sources;
   for (const BridgeQueryPlan& child : plan.child_plans) {
     appendChildPhysicalPlan(physical, toBridgePhysicalPlan(child));

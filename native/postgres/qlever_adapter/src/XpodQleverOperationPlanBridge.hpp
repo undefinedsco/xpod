@@ -102,6 +102,13 @@
 #define XPOD_QLEVER_HAS_DISTINCT 0
 #endif
 
+#if __has_include("engine/Filter.h")
+#include "engine/Filter.h"
+#define XPOD_QLEVER_HAS_FILTER 1
+#else
+#define XPOD_QLEVER_HAS_FILTER 0
+#endif
+
 #if __has_include("engine/OrderBy.h")
 #include "engine/OrderBy.h"
 #define XPOD_QLEVER_HAS_ORDER_BY 1
@@ -766,6 +773,32 @@ inline std::optional<BridgeQueryPlan> planDistinctOperation(
 }
 #endif
 
+#if XPOD_QLEVER_HAS_FILTER
+inline std::optional<BridgeQueryPlan> planFilterOperation(Filter& operation) {
+  std::vector<QueryExecutionTree*> children = operation.getChildren();
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(*children[0]);
+  if (!plan.has_value()) {
+    return std::nullopt;
+  }
+
+  std::string descriptor = operation.getDescriptor();
+  constexpr std::string_view prefix = "Filter ";
+  if (descriptor.rfind(prefix, 0) != 0) {
+    return std::nullopt;
+  }
+  std::string_view expression(
+      descriptor.data() + prefix.size(), descriptor.size() - prefix.size());
+  if (!applyNotEqualFilterDescriptor(*plan, expression) &&
+      !applyEqualFilterDescriptor(*plan, expression)) {
+    return std::nullopt;
+  }
+  return plan;
+}
+#endif
+
 #if XPOD_QLEVER_HAS_ORDER_BY
 inline std::optional<BridgeQueryPlan> planOrderByOperation(
     const OrderBy& operation) {
@@ -1193,6 +1226,12 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
   const auto* distinct = dynamic_cast<const Distinct*>(&operation);
   if (distinct != nullptr) {
     return planDistinctOperation(*distinct);
+  }
+#endif
+#if XPOD_QLEVER_HAS_FILTER
+  auto* filter = dynamic_cast<Filter*>(const_cast<Operation*>(&operation));
+  if (filter != nullptr) {
+    return planFilterOperation(*filter);
   }
 #endif
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD

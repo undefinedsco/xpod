@@ -567,6 +567,21 @@ xpod_rdf_status planBridgeParsedQuery(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline bool hasBridgeTermFilterModifier(const BridgeOperationPlan& root) {
+  for (const BridgeResultModifier& modifier : root.result_modifiers) {
+    if (modifier.kind == BridgeResultModifierKind::EqualTerm ||
+        modifier.kind == BridgeResultModifierKind::NotEqualTerm) {
+      return true;
+    }
+  }
+  for (const BridgeOperationPlan& child : root.children) {
+    if (hasBridgeTermFilterModifier(child)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 template <typename Planner>
 std::optional<NativeQleverExecution> executeQleverPlannerTree(
     const xpod::rdf::PhysicalBackend& backend,
@@ -617,6 +632,9 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
   if (selected.has_value()) {
     plan->output_variables = *selected;
     plan->result_width = plan->output_variables.size();
+  }
+  if (hasBridgeTermFilterModifier(plan->root)) {
+    return std::nullopt;
   }
   if constexpr (!HasLazyTreeResult<Tree>::value) {
     return std::nullopt;

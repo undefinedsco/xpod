@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeGroupByHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeMultiColumnJoinHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
+import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeFilterHeader, fakeGroupByHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeMultiColumnJoinHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -249,6 +249,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/MultiColumnJoin.h'), fakeMultiColumnJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OptionalJoin.h'), fakeOptionalJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Filter.h'), fakeFilterHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/GroupBy.h'), fakeGroupByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
@@ -323,6 +324,7 @@ class IndexScan final : public Operation {
 #include "engine/MultiColumnJoin.h"
 #include "engine/OptionalJoin.h"
 #include "engine/Distinct.h"
+#include "engine/Filter.h"
 #include "engine/GroupBy.h"
 #include "engine/OrderBy.h"
 #include "engine/Sort.h"
@@ -343,9 +345,23 @@ static xpod_rdf_status lookup_terms(
     xpod_rdf_status* out_statuses) {
   if (term_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (terms[0].kind != XPOD_RDF_TERM_IRI) return XPOD_RDF_STATUS_BACKEND_ERROR;
-  if (std::string_view(terms[0].value.data, terms[0].value.size) != "urn:entity") return XPOD_RDF_STATUS_BACKEND_ERROR;
-  out_keys[0] = 77;
+  std::string_view value(terms[0].value.data, terms[0].value.size);
+  if (value == "urn:entity") {
+    out_keys[0] = 77;
+  } else if (value == "urn:o") {
+    out_keys[0] = 30;
+  } else {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
   out_statuses[0] = XPOD_RDF_STATUS_OK;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status encode_qlever_id(
+    void*,
+    xpod_rdf_term_key term,
+    uint64_t* out_bits) {
+  *out_bits = term + 1000;
   return XPOD_RDF_STATUS_OK;
 }
 
@@ -687,6 +703,7 @@ int main() {
   backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
   backend.struct_size = sizeof(xpod_rdf_backend_v1);
   backend.lookup_terms = lookup_terms;
+  backend.encode_qlever_id = encode_qlever_id;
   xpod::rdf::PhysicalBackend physical_backend(&backend);
   xpod_rdf_snapshot snapshot = {};
   std::string error;
@@ -698,6 +715,35 @@ int main() {
   if (entity_physical.text_sources.size() != 1) return 56;
   if (entity_physical.text_sources[0].request.required_entities_size != 1) return 57;
   if (entity_physical.text_sources[0].request.required_entities[0] != 77) return 58;
+
+  auto filter_child = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>(
+          TripleComponent{Variable{"?s"}},
+          TripleComponent{Variable{"?p"}},
+          TripleComponent{Variable{"?o"}},
+          Permutation::Enum::SPO,
+          "IndexScan SPO ?s ?p ?o",
+          3,
+          std::vector<ColumnIndex>{0}));
+  Filter filter_operation(
+      filter_child,
+      sparqlExpression::SparqlExpressionPimpl{"(?o = <urn:o>)"});
+  auto filter_plan = xpod::qlever::planQleverOperation(filter_operation);
+  if (!filter_plan.has_value()) return 301;
+  if (filter_plan->root.kind != xpod::qlever::BridgeOperationKind::PermutationScan) return 302;
+  if (filter_plan->root.result_modifiers.size() != 1) return 303;
+  if (filter_plan->root.result_modifiers[0].kind !=
+      xpod::qlever::BridgeResultModifierKind::EqualTerm) return 304;
+  if (filter_plan->root.result_modifiers[0].columns.size() != 1 ||
+      filter_plan->root.result_modifiers[0].columns[0] != 2) return 305;
+  if (filter_plan->modifier_term_bindings.size() != 1) return 306;
+  if (filter_plan->modifier_term_bindings[0].modifier_index != 0) return 307;
+  if (filter_plan->modifier_term_bindings[0].term.kind != XPOD_RDF_TERM_IRI) return 308;
+  if (filter_plan->modifier_term_bindings[0].term.value != "urn:o") return 309;
+  bind_status = xpod::qlever::bindPlanTerms(physical_backend, snapshot, *filter_plan, error);
+  if (bind_status != XPOD_RDF_STATUS_OK) return 310;
+  if (!filter_plan->root.result_modifiers[0].has_term_id_bits) return 311;
+  if (filter_plan->root.result_modifiers[0].term_id_bits != 1030) return 312;
 
   TextIndexScanForEntity variable_entity_scan("native-first");
   const Operation& variable_entity_operation = variable_entity_scan;
