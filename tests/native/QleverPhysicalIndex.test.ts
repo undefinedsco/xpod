@@ -687,6 +687,74 @@ int main() {
     }
   });
 
+  it('fails closed when histogram hints are not in the capability snapshot', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index histogram capability check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-histogram-capability-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_histogram_capability_smoke.cpp');
+      const binary = path.join(root, 'physical_index_histogram_capability_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int histogram_calls;
+};
+
+static xpod_rdf_status histogram_hints(
+    void* user_data,
+    const xpod_rdf_histogram_request*,
+    xpod_rdf_histogram_hint_batch_callback,
+    void*) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->histogram_calls;
+  return XPOD_RDF_STATUS_BACKEND_ERROR;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.histogram_hints = histogram_hints;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  context.capabilities_status = XPOD_RDF_STATUS_OK;
+  context.capabilities.features = XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH;
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  auto result = index.histogramHints({}, XPOD_RDF_SLOT_OBJECT, 8);
+  if (result.status != XPOD_RDF_STATUS_UNSUPPORTED) return 1;
+  if (!result.hints.empty()) return 2;
+  if (state.histogram_calls != 0) return 3;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('exposes text and vector candidate sources through the physical index', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index candidate source check').toBe(true);
 

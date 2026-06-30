@@ -2827,3 +2827,30 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 65: Guard histogram hints with the capability snapshot
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+
+- [x] **Step 1: Write a failing histogram capability smoke**
+
+Add a native physical-index smoke where `PlannerRequestContext.capabilities_status == OK` but `XPOD_RDF_BACKEND_FEATURE_HISTOGRAM_HINTS` is absent. `XpodQleverPhysicalIndex::histogramHints(...)` must return `XPOD_RDF_STATUS_UNSUPPORTED` and must not call backend histogram callbacks.
+
+Expected: FAIL because the histogram seam delegated to the backend callback even when the query capability snapshot said histogram hints were unavailable.
+
+- [x] **Step 2: Add the fail-closed feature guard**
+
+Add a small physical-index feature guard using the existing query capability snapshot. `UNSUPPORTED` capability snapshots retain callback-driven compatibility; explicit OK snapshots without the requested feature fail closed before constructing the backend histogram request.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

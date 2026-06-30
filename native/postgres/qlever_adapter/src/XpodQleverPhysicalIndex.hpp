@@ -454,6 +454,14 @@ class XpodQleverPhysicalIndex {
       TripleKeyPattern pattern,
       uint32_t slots,
       uint32_t max_buckets) const {
+    XpodQleverHistogramHintsResult result = {};
+    xpod_rdf_status capability_status = validateFeatureCapability(
+        XPOD_RDF_BACKEND_FEATURE_HISTOGRAM_HINTS);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      result.status = capability_status;
+      return result;
+    }
+
     xpod_rdf_histogram_request request = {};
     request.snapshot = snapshot();
     request.cancellation = context_.cancellation;
@@ -466,7 +474,6 @@ class XpodQleverPhysicalIndex {
     request.slots = slots;
     request.max_buckets = max_buckets;
 
-    XpodQleverHistogramHintsResult result = {};
     result.status = context_.backend.histogramHints(
         request, collectHistogramHintsBatch, &result, result.stats_version);
     return result;
@@ -497,6 +504,18 @@ class XpodQleverPhysicalIndex {
   }
 
  private:
+  xpod_rdf_status validateFeatureCapability(uint32_t feature) const noexcept {
+    if (context_.capabilities_status == XPOD_RDF_STATUS_UNSUPPORTED) {
+      return XPOD_RDF_STATUS_OK;
+    }
+    if (context_.capabilities_status != XPOD_RDF_STATUS_OK) {
+      return context_.capabilities_status;
+    }
+    return (context_.capabilities.features & feature) != 0
+               ? XPOD_RDF_STATUS_OK
+               : XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
   xpod_rdf_snapshot snapshot() const noexcept {
     return context_.request == nullptr
                ? xpod_rdf_snapshot{}
