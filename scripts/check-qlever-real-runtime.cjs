@@ -200,6 +200,7 @@ function writeSmokeSource(smokeSourcePath) {
 
 struct BackendState {
   int scan_calls = 0;
+  int text_calls = 0;
 };
 
 static xpod_rdf_bytes bytes(const char* value) {
@@ -214,7 +215,7 @@ static xpod_rdf_status get_capabilities(void*, xpod_rdf_backend_capabilities* ou
       XPOD_RDF_PERM_CAP_POSG |
       XPOD_RDF_PERM_CAP_OSPG |
       XPOD_RDF_PERM_CAP_OPSG;
-  out_capabilities->features = 0;
+  out_capabilities->features = XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH;
   out_capabilities->max_batch_size = 64;
   out_capabilities->backend_name = bytes("xpod-real-runtime-smoke");
   out_capabilities->backend_version = bytes("1");
@@ -254,6 +255,8 @@ static xpod_rdf_status resolve_terms(
       out_terms[i].value = bytes("urn:o");
     } else if (keys[i] == 40) {
       out_terms[i].value = bytes("urn:g");
+    } else if (keys[i] == 50) {
+      out_terms[i].value = bytes("urn:text");
     } else {
       std::fprintf(stderr, "unexpected term key: %llu\n", static_cast<unsigned long long>(keys[i]));
       out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
@@ -277,6 +280,49 @@ static xpod_rdf_status count_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_
   out_result->count = 1;
   out_result->confidence = XPOD_RDF_ESTIMATE_EXACT;
   return XPOD_RDF_STATUS_OK;
+}
+
+static bool bytes_equal(xpod_rdf_bytes actual, const char* expected) {
+  size_t length = std::strlen(expected);
+  return actual.size == length &&
+         std::string_view(actual.data, actual.size) == expected;
+}
+
+static xpod_rdf_status estimate_text_search(
+    void*,
+    const xpod_rdf_text_search_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  if (!bytes_equal(request->query, "topic")) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  out_estimate->rows = 1;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status text_search(
+    void* user_data,
+    const xpod_rdf_text_search_request* request,
+    xpod_rdf_candidate_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->text_calls;
+  if (!bytes_equal(request->query, "topic")) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  if (request->required_entities_size != 0) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  xpod_rdf_candidate row = {};
+  row.retrieval_point = 50;
+  row.has_retrieval_point = 1;
+  row.score = 1.0;
+  xpod_rdf_candidate_batch batch = {};
+  batch.rows = &row;
+  batch.row_count = 1;
+  batch.scanned_rows = 1;
+  batch.scorer = bytes("runtime-text-search");
+  return on_batch(callback_user_data, &batch);
 }
 
 static bool matches_pattern(const xpod_rdf_quad_pattern& pattern, const xpod_rdf_quad_key& row) {
@@ -320,6 +366,8 @@ int main() {
   raw_backend.estimate_scan = estimate_scan;
   raw_backend.count_scan = count_scan;
   raw_backend.scan_permutation = scan_permutation;
+  raw_backend.estimate_text_search = estimate_text_search;
+  raw_backend.text_search = text_search;
   raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
   raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;
 
@@ -344,6 +392,24 @@ int main() {
   if (json.find("urn:p") == std::string_view::npos) return 5;
   if (json.find("urn:o") == std::string_view::npos) return 6;
   if (profile.find("xpod-qlever-bridge") == std::string_view::npos) return 7;
+
+  xpod_qlever_adapter_release_result(adapter, &result);
+  xpod_qlever_query_request text_request = {};
+  text_request.sparql = bytes("SELECT * WHERE { ?text ql:contains-word \"topic\" }");
+  xpod_qlever_query_result text_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &text_request, &text_result);
+  std::string_view text_json(text_result.result_json.data, text_result.result_json.size);
+  std::string_view text_profile(text_result.profile_json.data, text_result.profile_json.size);
+  std::string_view text_error(text_result.error_message.data, text_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "text query failed: %.*s\n",
+                 static_cast<int>(text_error.size()), text_error.data());
+    return 8;
+  }
+  if (state.text_calls < 1) return 9;
+  if (text_json.find("urn:text") == std::string_view::npos) return 10;
+  if (text_profile.find("TextSearch") == std::string_view::npos) return 11;
+  xpod_qlever_adapter_release_result(adapter, &text_result);
   xpod_qlever_adapter_destroy(adapter);
   return 0;
 }

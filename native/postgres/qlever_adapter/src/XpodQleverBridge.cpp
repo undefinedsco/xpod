@@ -206,7 +206,6 @@ void writeSparqlJson(
   out << "]}}";
 }
 
-
 void writeScanProfileJson(
     std::ostringstream& out,
     std::string_view kind,
@@ -217,6 +216,87 @@ void writeScanProfileJson(
   out << ",\"descriptor\":";
   writeJsonString(out, descriptor);
   out << ",\"outputRows\":" << output_rows << "}}";
+}
+
+const std::vector<BridgeCandidateOutputColumn>* candidateOutputColumnsForRoot(
+    const BridgePhysicalPlan& plan) noexcept {
+  if (plan.root.kind != BridgeOperationKind::TextSearch ||
+      plan.root.candidate_index >= plan.text_sources.size()) {
+    return nullptr;
+  }
+  return &plan.text_sources[plan.root.candidate_index].output_columns;
+}
+
+xpod_rdf_status candidateRowsToIdTable(
+    xpod::rdf::PhysicalBackend backend,
+    const xpod::rdf::CandidateBuffer& candidates,
+    const std::vector<BridgeCandidateOutputColumn>& columns,
+    IdTable& out_table) {
+  std::vector<Id> row;
+  row.reserve(columns.size());
+  for (const xpod::rdf::CandidateRow& candidate : candidates.rows) {
+    row.clear();
+    xpod_rdf_status status = appendCandidateProjection(
+        backend, candidate, columns, row);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return status;
+    }
+    out_table.push_back(row);
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+xpod_rdf_status writeCandidateSparqlJson(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgeQueryPlan& plan,
+    const BridgePhysicalPlan& physical_plan,
+    const BridgePhysicalResult& physical_result,
+    const xpod_rdf_snapshot& snapshot,
+    std::string& result_storage,
+    std::string& profile_storage,
+    std::string& error_storage) {
+  if (physical_result.kind != BridgePhysicalResultKind::CandidateRows ||
+      !physical_result.candidates.has_value()) {
+    error_storage =
+        "QLever bridge candidate root did not produce candidate rows";
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  const std::vector<BridgeCandidateOutputColumn>* columns =
+      candidateOutputColumnsForRoot(physical_plan);
+  if (columns == nullptr) {
+    error_storage = "unsupported QLever bridge candidate root";
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+  if (plan.output_variables.size() != columns->size()) {
+    error_storage =
+        "QLever bridge candidate columns do not match output variables";
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
+  IdTable output_table = makeQleverIdTable(columns->size());
+  xpod_rdf_status status = candidateRowsToIdTable(
+      backend, physical_result.candidates->candidates, *columns, output_table);
+  if (status != XPOD_RDF_STATUS_OK) {
+    error_storage = "failed to project QLever bridge candidate rows";
+    return status;
+  }
+
+  std::vector<xpod_rdf_term> terms;
+  status = resolveIdTableTerms(
+      backend, output_table, snapshot, terms, error_storage);
+  if (status != XPOD_RDF_STATUS_OK) {
+    return status;
+  }
+
+  std::ostringstream json;
+  writeSparqlJson(json, output_table, terms, plan.output_variables);
+  result_storage = json.str();
+  std::ostringstream profile;
+  writeScanProfileJson(
+      profile, profileKind(plan.root.kind), plan.descriptor,
+      output_table.numRows());
+  profile_storage = profile.str();
+  return XPOD_RDF_STATUS_OK;
 }
 
 [[maybe_unused]] void appendIdTableRows(IdTable& target, const IdTable& source) {
@@ -538,15 +618,24 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
               error_storage);
     return XPOD_RDF_STATUS_OK;
   }
+  BridgePhysicalPlan physical_plan = toBridgePhysicalPlan(plan);
   if (isBridgeCandidateRoot(plan.root.kind)) {
-    error_storage =
-        "QLever bridge query produced candidate rows, not SPARQL RDF rows";
-    setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
-              profile_storage, error_storage);
-    return XPOD_RDF_STATUS_UNSUPPORTED;
+    BridgePhysicalResult candidate_result = executeBridgePhysicalPlan(
+        backend, physical_plan);
+    if (candidate_result.status != XPOD_RDF_STATUS_OK) {
+      error_storage = "Xpod-backed QLever candidate operation failed";
+      setResult(out_result, candidate_result.status, result_storage,
+                profile_storage, error_storage);
+      return candidate_result.status;
+    }
+    xpod_rdf_status candidate_status = writeCandidateSparqlJson(
+        backend, plan, physical_plan, candidate_result, request.snapshot,
+        result_storage, profile_storage, error_storage);
+    setResult(out_result, candidate_status, result_storage, profile_storage,
+              error_storage);
+    return candidate_status;
   }
 
-  BridgePhysicalPlan physical_plan = toBridgePhysicalPlan(plan);
   QleverResultWithStatus result = executeBridgeOperationPlan(
       backend, physical_plan);
   if (result.status != XPOD_RDF_STATUS_OK) {

@@ -93,7 +93,8 @@ describe('QLever native physical operation bridge', () => {
 
     expect(source).toContain('executeBridgeOperationPlan');
     expect(source).toContain('isBridgeCandidateRoot(plan.root.kind)');
-    expect(source).toContain('QLever bridge query produced candidate rows');
+    expect(source).toContain('writeCandidateSparqlJson');
+    expect(source).not.toContain('QLever bridge query produced candidate rows');
     expect(source).not.toContain('collectFilterSubjectKeys');
     expect(source).not.toContain('filterResultBySubject');
   });

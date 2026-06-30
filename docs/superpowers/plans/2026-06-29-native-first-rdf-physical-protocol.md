@@ -3878,3 +3878,39 @@ git diff --check
 ```
 
 Observed: PASS locally. This remains a seam gate over an in-process callback backend, not a production PG dynamic-loader gate or a broad SPARQL conformance suite.
+
+
+### Task 95: Let real QLever text roots reach Xpod TEXT_SEARCH
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/QleverOperationBridge.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a failing runtime-smoke contract**
+
+The real runtime smoke must no longer prove only BGP. It now writes a second probe for `SELECT * WHERE { ?text ql:contains-word "topic" }`, requires the generated C++ smoke to provide `estimate_text_search` / `text_search`, and verifies the backend observes `state.text_calls` and serializes `urn:text`.
+
+Observed before implementation: the generated smoke had no `TEXT_SEARCH` callback and the new contract failed.
+
+- [x] **Step 2: Materialize supported text candidate roots at the SPARQL facade**
+
+The bridge now executes supported `TextSearch` candidate roots through `executeBridgePhysicalPlan(...)`, projects declared candidate output columns with the backend QLever-id encoder, resolves those ids through the dictionary seam, and writes normal SPARQL JSON bindings. Vector roots and unsupported candidate-root shapes still fail closed because they do not yet have a SPARQL projection contract.
+
+Observed before the fix: the linked real runtime failed with `QLever bridge query produced candidate rows, not SPARQL RDF rows`.
+
+- [x] **Step 3: Verify real upstream text execution**
+
+Run:
+
+```bash
+bun test tests/native/QleverRealRuntimeBuildScript.test.ts tests/native/QleverOperationBridge.test.ts tests/native/QleverCandidateOperationBridge.test.ts tests/native/QleverPhysicalTextIndexScanContextBridge.test.ts --run
+bun run check:qlever-upstream-patches -- --qlever-source .test-data/qlever-upstream
+bun run check:qlever-real-adapter --   --qlever-source .test-data/qlever-upstream   --qlever-build-dir .test-data/qlever-full-build   --adapter-build-dir .test-data/qlever-real-adapter-build
+bun run check:qlever-real-runtime --   --qlever-source .test-data/qlever-upstream   --qlever-build-dir .test-data/qlever-full-build   --adapter-build-dir .test-data/qlever-real-adapter-build   --runtime-build-dir .test-data/qlever-real-runtime-build   --skip-prerequisites
+bun run build:ts
+```
+
+Observed: PASS locally. The smoke still uses an in-process callback backend, but it now proves that real upstream QLever text syntax reaches the Xpod `TEXT_SEARCH` physical data source and returns SPARQL JSON through the public adapter query API.

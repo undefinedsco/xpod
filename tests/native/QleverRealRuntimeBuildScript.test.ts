@@ -120,6 +120,37 @@ describe('QLever real upstream runtime smoke script', () => {
     }
   });
 
+  it('writes a real runtime smoke that exercises QLever text search through Xpod TEXT_SEARCH', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-qlever-real-runtime-text-smoke-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      const qleverBuild = path.join(root, 'qlever-build');
+      const adapterBuild = path.join(root, 'adapter-build');
+      const runtimeBuild = path.join(root, 'runtime-build');
+      await mkdir(path.join(qleverSource, 'src'), { recursive: true });
+      await mkdir(qleverBuild, { recursive: true });
+
+      execFileSync('node', [
+        scriptPath,
+        '--qlever-source', qleverSource,
+        '--qlever-build-dir', qleverBuild,
+        '--adapter-build-dir', adapterBuild,
+        '--runtime-build-dir', runtimeBuild,
+        '--skip-prerequisites',
+        '--configure-only',
+      ], { cwd: repoRoot, encoding: 'utf8' });
+
+      const smoke = readFileSync(path.join(runtimeBuild, 'xpod_qlever_real_runtime_smoke.cpp'), 'utf8');
+      expect(smoke).toContain('text_search');
+      expect(smoke).toContain('estimate_text_search');
+      expect(smoke).toContain('ql:contains-word');
+      expect(smoke).toContain('urn:text');
+      expect(smoke).toContain('state.text_calls');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails clearly when the upstream source tree is not supplied', () => {
     let output = '';
     try {
