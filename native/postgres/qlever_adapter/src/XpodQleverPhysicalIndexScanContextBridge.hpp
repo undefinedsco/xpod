@@ -3,6 +3,7 @@
 
 #include "XpodQleverPhysicalIndex.hpp"
 
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -29,6 +30,86 @@ const XpodQleverPhysicalIndex* normalizePhysicalIndexGetterResult(
   } else {
     return &result;
   }
+}
+
+template <typename ScanSpecAndBlocks, typename = void>
+struct HasScanSpecMember : std::false_type {};
+
+template <typename ScanSpecAndBlocks>
+struct HasScanSpecMember<
+    ScanSpecAndBlocks,
+    decltype(void(std::declval<const ScanSpecAndBlocks&>().scanSpec_))>
+    : std::true_type {};
+
+template <typename ScanSpecAndBlocks>
+decltype(auto) scanSpecificationFromScanSpecAndBlocks(
+    const ScanSpecAndBlocks& scan_spec_and_blocks) noexcept {
+  if constexpr (HasScanSpecMember<ScanSpecAndBlocks>::value) {
+    return (scan_spec_and_blocks.scanSpec_);
+  } else {
+    return (scan_spec_and_blocks);
+  }
+}
+
+inline void setQuadSlot(
+    xpod_rdf_quad_key& quad,
+    char slot,
+    xpod_rdf_term_key key) noexcept {
+  switch (slot) {
+    case 'S':
+      quad.subject = key;
+      break;
+    case 'P':
+      quad.predicate = key;
+      break;
+    case 'O':
+      quad.object = key;
+      break;
+    case 'G':
+      quad.graph = key;
+      break;
+    default:
+      break;
+  }
+}
+
+template <typename QleverPermutedTriple>
+xpod_rdf_quad_key quadFromQleverPermutedTriple(
+    Permutation::Enum permutation,
+    const QleverPermutedTriple& triple) noexcept {
+  xpod_rdf_quad_key quad = {};
+  const char* slots = permutationSlots(permutation);
+  setQuadSlot(quad, slots[0], qleverIdToTermKey(triple.col0Id_));
+  setQuadSlot(quad, slots[1], qleverIdToTermKey(triple.col1Id_));
+  setQuadSlot(quad, slots[2], qleverIdToTermKey(triple.col2Id_));
+  setQuadSlot(quad, 'G', qleverIdToTermKey(triple.graphId_));
+  return quad;
+}
+
+template <typename QleverBlockMetadata>
+xpod_rdf_scan_block_metadata blockMetadataFromQlever(
+    Permutation::Enum permutation,
+    const QleverBlockMetadata& block) noexcept {
+  xpod_rdf_scan_block_metadata metadata = {};
+  metadata.block_id = static_cast<uint64_t>(block.blockIndex_);
+  metadata.row_count = static_cast<uint64_t>(block.numRows_);
+  metadata.first_quad =
+      quadFromQleverPermutedTriple(permutation, block.firstTriple_);
+  metadata.last_quad =
+      quadFromQleverPermutedTriple(permutation, block.lastTriple_);
+  return metadata;
+}
+
+template <typename QleverBlockMetadata>
+std::vector<xpod_rdf_scan_block_metadata> blockMetadataFromQlever(
+    Permutation::Enum permutation,
+    const std::vector<QleverBlockMetadata>& blocks) {
+  std::vector<xpod_rdf_scan_block_metadata> result;
+  result.reserve(blocks.size());
+  for (const auto& block : blocks) {
+    result.push_back(blockMetadataFromQlever(permutation, block));
+  }
+  return result;
 }
 
 }  // namespace detail
@@ -62,6 +143,31 @@ QleverLazyScanRangeResult lazyScanRangeFromContext(
       scan_specification, needed_slots);
   return physical_permutation.lazyScanRange(
       scan_spec_and_blocks, blocks, block_metadata_version);
+}
+
+template <typename Context, typename QleverScanSpecAndBlocks,
+          typename QleverBlockMetadata>
+QleverLazyScanRangeResult lazyScanRangeFromQleverScanSpecAndBlocks(
+    const Context& context,
+    Permutation::Enum permutation,
+    const QleverScanSpecAndBlocks& scan_spec_and_blocks,
+    std::optional<std::vector<QleverBlockMetadata>> blocks,
+    uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
+                            XPOD_RDF_SLOT_PREDICATE |
+                            XPOD_RDF_SLOT_OBJECT,
+    xpod_rdf_bytes block_metadata_version = {}) {
+  if (!blocks.has_value()) {
+    return {XPOD_RDF_STATUS_UNSUPPORTED, {}};
+  }
+  const auto& scan_specification =
+      detail::scanSpecificationFromScanSpecAndBlocks(scan_spec_and_blocks);
+  return lazyScanRangeFromContext(
+      context,
+      permutation,
+      scan_specification,
+      detail::blockMetadataFromQlever(permutation, blocks.value()),
+      needed_slots,
+      block_metadata_version);
 }
 
 }  // namespace xpod::qlever

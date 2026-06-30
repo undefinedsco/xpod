@@ -3314,3 +3314,33 @@ bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts --run
 
 Expected: PASS.
 - The remaining gap is applying this bridge inside the real embedded/patched QLever call path instead of calling it from an external smoke.
+
+### Task 81: Add the upstream-shaped `IndexScan::getLazyScan` patch seam
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndexScanContextBridge.hpp`
+- Modify: `tests/native/QleverPhysicalIndexScanContextBridge.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing `IndexScan::getLazyScan`-shaped smoke**
+
+Add a native smoke where a fake upstream `IndexScan::getLazyScan(...)` owns a QLever `ScanSpecAndBlocks`, receives selected `CompressedBlockMetadata`, and calls the Xpod context bridge instead of calling QLever's own permutation files.
+
+Expected: FAIL because the context bridge only accepts a raw `ScanSpecification` plus Xpod block metadata, not QLever's `ScanSpecAndBlocks` and selected `CompressedBlockMetadata` shape.
+
+- [x] **Step 2: Add the minimal conversion seam**
+
+Add `lazyScanRangeFromQleverScanSpecAndBlocks(...)`. It extracts `scanSpec_`, converts QLever selected block metadata into `xpod_rdf_scan_block_metadata`, retrieves the injected physical index from `QueryExecutionContext::xpodPhysicalIndex()`, and delegates to the existing physical lazy range.
+
+This is still a data seam. It does not choose blocks, handle joins, apply modifiers, or rank results; those remain QLever-owned.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts --run
+```
+
+Expected: PASS.
+- The remaining gap is applying the equivalent patch to the real upstream QLever source tree / overlay so `IndexScan::getLazyScan(...)` uses this seam in an embedded build.
