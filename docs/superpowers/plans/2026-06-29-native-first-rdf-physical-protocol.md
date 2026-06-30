@@ -3020,3 +3020,32 @@ bun run check:rdf-protocol-abi
 
 Expected: PASS.
 - No upstream QLever lazy scan consumer yet.
+
+### Task 72: Surface scan block metadata through the QLever physical permutation seam
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing scan-spec block metadata smoke**
+
+Add a native physical-index smoke where `XpodQleverPhysicalPermutation::getMetadataAndBlocks(...)` must accept a QLever-shaped scan spec, build the same scoped `ScanRequest`, and collect block ids, first/last quad keys, row counts, sorted slots, total block count, and metadata version from the lower `scan_block_metadata` callback.
+
+Expected: FAIL because the physical permutation seam has scan-spec size/count methods but no block metadata method.
+
+- [x] **Step 2: Add the minimal metadata collection seam**
+
+Add `XpodQleverMetadataAndBlocksResult`, a scan block metadata batch collector, and `XpodQleverPhysicalPermutation::getMetadataAndBlocks(...)`. The method delegates only to `PhysicalBackend::scanBlockMetadata(...)`; it does not implement lazy scan or block join policy in Xpod.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run -t "block metadata"
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No upstream QLever `lazyScan(...)` consumer yet.

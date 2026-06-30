@@ -1199,6 +1199,142 @@ int main() {
     }
   });
 
+  it('exposes QLever-shaped scan-spec block metadata through the physical permutation seam', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index block metadata check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-block-metadata-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_block_metadata_smoke.cpp');
+      const binary = path.join(root, 'physical_index_block_metadata_smoke');
+      await writeFile(smoke, `
+#include <optional>
+#include "XpodQleverPhysicalIndex.hpp"
+
+class ScanSpecification {
+ public:
+  using T = std::optional<Id>;
+  ScanSpecification(T col0, T col1, T col2)
+      : col0_(col0), col1_(col1), col2_(col2) {}
+  const T& col0Id() const { return col0_; }
+  const T& col1Id() const { return col1_; }
+  const T& col2Id() const { return col2_; }
+ private:
+  T col0_;
+  T col1_;
+  T col2_;
+};
+
+struct BackendState {
+  int block_metadata_calls;
+};
+
+static xpod_rdf_status scan_block_metadata(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_scan_block_metadata_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->block_metadata_calls;
+  if (request->permutation != XPOD_RDF_PERM_POSG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_predicate != 1 || request->pattern.predicate != 22) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern.has_object != 1 || request->pattern.object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT || request->graph_scope.exact_graph != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->source_scope.has_source_node != 1 || request->source_scope.source_node != 55) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->access_scope == nullptr || request->access_scope->mode != XPOD_RDF_ACCESS_READ) return XPOD_RDF_STATUS_BACKEND_ERROR;
+
+  xpod_rdf_scan_block_metadata rows[2] = {};
+  rows[0].block_id = 1001;
+  rows[0].first_quad = {10, 22, 33, 99};
+  rows[0].last_quad = {19, 22, 33, 99};
+  rows[0].row_count = 10;
+  rows[0].sorted_slots = XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  rows[1].block_id = 1002;
+  rows[1].first_quad = {20, 22, 33, 99};
+  rows[1].last_quad = {29, 22, 33, 99};
+  rows[1].row_count = 10;
+  rows[1].sorted_slots = XPOD_RDF_SLOT_PREDICATE | XPOD_RDF_SLOT_OBJECT;
+  static const char version[] = "blocks-v1";
+  xpod_rdf_scan_block_metadata_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 2;
+  batch.total_blocks = 2;
+  batch.metadata_version = {version, 9};
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.scan_block_metadata = scan_block_metadata;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_rdf_access_scope access = {};
+  access.mode = XPOD_RDF_ACCESS_READ;
+  xpod_qlever_query_request request = {};
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  request.graph_scope.exact_graph = 99;
+  request.source_scope.has_source_node = 1;
+  request.source_scope.source_node = 55;
+  request.access_scope = &access;
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+  ScanSpecification spec{Id::fromBits(22), Id::fromBits(33), std::nullopt};
+  auto permutation = index.permutation(Permutation::Enum::POS);
+  auto scan_spec_and_blocks = permutation.getScanSpecAndBlocks(
+      spec,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_GRAPH);
+  if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) return 1;
+
+  auto metadata = permutation.getMetadataAndBlocks(scan_spec_and_blocks);
+  if (metadata.status != XPOD_RDF_STATUS_OK) return 2;
+  if (!metadata.has_metadata) return 3;
+  if (metadata.blocks.size() != 2) return 4;
+  if (metadata.total_blocks != 2) return 5;
+  if (metadata.metadata_version.size != 9) return 6;
+  if (metadata.blocks[0].block_id != 1001) return 7;
+  if (metadata.blocks[1].last_quad.subject != 29) return 8;
+  if (state.block_metadata_calls != 1) return 9;
+
+  xpod_rdf_backend_v1 unsupported_backend = {};
+  unsupported_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  unsupported_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  xpod::rdf::PhysicalBackend unsupported_physical(&unsupported_backend);
+  xpod::qlever::PlannerRequestContext unsupported_context{unsupported_physical, &request, request.cancellation};
+  auto unsupported = xpod::qlever::XpodQleverPhysicalIndex(unsupported_context)
+      .permutation(Permutation::Enum::POS)
+      .getMetadataAndBlocks(scan_spec_and_blocks);
+  if (unsupported.status != XPOD_RDF_STATUS_UNSUPPORTED) return 10;
+
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed for QLever scan specifications with unsupported graph filters', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index scan specification graph filter check').toBe(true);
 

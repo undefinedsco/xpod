@@ -56,6 +56,15 @@ struct XpodQleverScanSizeBoundsResult {
   xpod_rdf_estimate_confidence confidence = XPOD_RDF_ESTIMATE_HEURISTIC;
 };
 
+struct XpodQleverMetadataAndBlocksResult {
+  xpod_rdf_status status = XPOD_RDF_STATUS_OK;
+  bool has_metadata = false;
+  std::vector<xpod_rdf_scan_block_metadata> blocks;
+  uint64_t total_blocks = 0;
+  std::string metadata_version_storage;
+  xpod_rdf_bytes metadata_version = {};
+};
+
 struct XpodQleverDistinctTermsResult {
   xpod_rdf_status status;
   std::vector<xpod_rdf_term_key> terms;
@@ -117,6 +126,31 @@ inline xpod_rdf_status collectHistogramHintsBatch(
   result->stats_version = batch->stats_version;
   result->hints.insert(
       result->hints.end(), batch->rows, batch->rows + batch->row_count);
+  return XPOD_RDF_STATUS_OK;
+}
+
+inline xpod_rdf_status collectScanBlockMetadataBatch(
+    void* callback_user_data,
+    const xpod_rdf_scan_block_metadata_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* result =
+      static_cast<XpodQleverMetadataAndBlocksResult*>(callback_user_data);
+  if (batch->rows != nullptr && batch->row_count > 0) {
+    result->blocks.insert(
+        result->blocks.end(), batch->rows, batch->rows + batch->row_count);
+    result->has_metadata = true;
+  }
+  result->total_blocks = batch->total_blocks;
+  if (batch->metadata_version.data != nullptr &&
+      batch->metadata_version.size > 0) {
+    result->metadata_version_storage.assign(
+        batch->metadata_version.data, batch->metadata_version.size);
+    result->metadata_version = {
+        result->metadata_version_storage.data(),
+        result->metadata_version_storage.size()};
+  }
   return XPOD_RDF_STATUS_OK;
 }
 
@@ -326,6 +360,45 @@ class XpodQleverPhysicalPermutation {
     return count(
         scan_spec_and_blocks.pattern,
         scan_spec_and_blocks.needed_slots);
+  }
+
+  XpodQleverMetadataAndBlocksResult getMetadataAndBlocks(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks) const {
+    XpodQleverMetadataAndBlocksResult result = {};
+    result.status = scan_spec_and_blocks.status;
+    if (result.status != XPOD_RDF_STATUS_OK) {
+      return result;
+    }
+    if (context_.capabilities_status == XPOD_RDF_STATUS_OK &&
+        (context_.capabilities.features &
+         XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA) == 0) {
+      result.status = XPOD_RDF_STATUS_UNSUPPORTED;
+      return result;
+    }
+    if (context_.capabilities_status != XPOD_RDF_STATUS_OK &&
+        context_.capabilities_status != XPOD_RDF_STATUS_UNSUPPORTED) {
+      result.status = context_.capabilities_status;
+      return result;
+    }
+
+    const ScanRequestInput input = makeScanInput(
+        scan_spec_and_blocks.pattern,
+        scan_spec_and_blocks.needed_slots);
+    const xpod_rdf_scan_request request = makeScanRequest(input);
+    xpod_rdf_bytes metadata_version = {};
+    result.status = context_.backend.scanBlockMetadata(
+        request, collectScanBlockMetadataBatch, &result, metadata_version);
+    if (result.metadata_version.size == 0 &&
+        metadata_version.data != nullptr &&
+        metadata_version.size > 0) {
+      result.metadata_version_storage.assign(
+          metadata_version.data, metadata_version.size);
+      result.metadata_version = {
+          result.metadata_version_storage.data(),
+          result.metadata_version_storage.size()};
+    }
+    result.has_metadata = result.has_metadata || !result.blocks.empty();
+    return result;
   }
 
   XpodQleverDistinctTermsResult distinct(
