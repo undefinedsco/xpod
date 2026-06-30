@@ -3511,3 +3511,93 @@ Expected now:
 - CMake configure passes against the real patched source tree.
 - Build advances past missing `gtest/gtest_prod.h`.
 - Build currently stops at QLever's real dependency closure, first at `<absl/types/compare.h>`. This should be solved by consuming QLever's dependency targets / dependency prefix, not by adding broad adapter-local Abseil shims.
+
+### Task 87: Compile the QLever adapter against a real patched upstream source tree
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/CMakeLists.txt`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverIdTableBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationIntrospection.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `tests/native/QleverAdapterCmake.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Lock the real upstream API assumptions in the CMake smoke**
+
+The accepted-source-tree CMake smoke now uses a QLever-shaped `IdTable` constructor that requires `ad_utility::AllocatorWithLimit<Id>` and a patched `QueryExecutionContext` fixture that asserts QLever range backport compile definitions are present. This makes the fake header harness fail when the adapter drifts back to the old single-argument `IdTable(width)` assumption or omits upstream range-mode defines.
+
+Expected: FAIL before the adapter supplies allocator-aware table construction and upstream range-mode compile definitions.
+
+- [x] **Step 2: Mirror QLever compile-mode definitions in adapter CMake**
+
+When `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON`, the adapter still requests C++20, but it now mirrors QLever's compiler-dependent range mode: Clang/AppleClang older than 17 gets `QLEVER_CPP_17 CPP_CXX_CONCEPTS=0`; other C++20 builds get `RANGE_V3_COMBINE_WITH_STD`. This is required because upstream QLever uses range-v3 backports for older Clang standard libraries even when the nominal language standard is C++20.
+
+- [x] **Step 3: Construct QLever IdTables through an allocator-aware helper**
+
+The adapter now creates result and intermediate `IdTable` objects through `makeQleverIdTable(width)`, which supplies a QLever allocator instead of relying on the obsolete one-argument constructor. This aligns the Xpod physical scan and operation bridge with upstream `IdTable{width, allocator}` usage.
+
+- [x] **Step 4: Adjust adapter calls to current upstream public APIs**
+
+`QueryExecutionTree` descriptors are read from the root operation (`getRootOperation()->getDescriptor()`), and child lists for const `Join` planning are obtained through the `Operation` const child accessor instead of calling `Join::getChildren()` directly on a const join. This avoids depending on adapter-local fake APIs that upstream QLever does not expose.
+
+- [x] **Step 5: Run the real-source compile probe**
+
+Run the patched upstream compile probe with QLever's pinned dependency headers:
+
+```bash
+cmake -S native/postgres/qlever_adapter -B .test-data/qlever-real-adapter-build \
+  -DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON \
+  -DXPOD_QLEVER_ADAPTER_BUILD_SHARED=OFF \
+  -DXPOD_QLEVER_SOURCE_DIR=$PWD/.test-data/qlever-upstream \
+  "-DXPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS=$PWD/.test-data/qlever-deps/abseil;$PWD/.test-data/qlever-deps/range-v3/include;$PWD/.test-data/qlever-deps/uriparser/include;$PWD/.test-data/qlever-deps;$PWD/.test-data/qlever-deps/nlohmann-json/include;$PWD/.test-data/qlever-deps/re2;/opt/homebrew/opt/icu4c/include;$PWD/.test-data/qlever-deps/fsst;$PWD/.test-data/qlever-deps/ctre/single-header"
+cmake --build .test-data/qlever-real-adapter-build --target xpod_qlever_adapter -j2
+```
+
+Observed: PASS on the local AppleClang 15 environment for the standalone static adapter library. Full upstream QLever CMake still requires Clang++ >= 16, so this probe intentionally validates the Xpod adapter against patched upstream headers and pinned dependency includes rather than configuring the whole QLever project locally.
+
+Remaining gap: this proves the adapter compiles against real upstream APIs. It does not yet prove a real `QueryPlanner -> QueryExecutionContext -> IndexScan::getLazyScan -> XpodPhysicalIndex -> PG/RDF backend` end-to-end query. That e2e remains the next completion gate for “the whole QLever is connected”.
+
+### Task 88: Execute a planner-produced lazy QLever result through the Xpod physical index
+
+**Files:**
+- Add: `tests/native/QleverPlannerLazyExecution.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a failing planner/lazy execution gate**
+
+Add a native smoke that builds the QLever-enabled adapter against an upstream-shaped fixture where `QueryPlanner` returns a `QueryExecutionTree` rooted at `IndexScan`. The fake `IndexScan::computeResult(true)` must call `getLazyScan(...)`, and the backend must reject ordinary broad scans unless the request carries the selected block metadata from that lazy scan path.
+
+Expected: FAIL before the bridge executes `QueryExecutionTree::getResult(true)`; the old bridge converts the `IndexScan` back into an Xpod `BridgePhysicalPlan` and calls `scan_permutation` without the QLever-selected block metadata.
+
+- [x] **Step 2: Prefer real QLever tree execution when available**
+
+When the upstream-shaped tree exposes `getResult(true)`, the bridge now asks QLever for a lazy result before falling back to the older bridge operation executor. The result table is materialized from either a fully materialized `Result::idTable()` or a lazy `Result::idTables()` chunk stream, then serialized through the existing dictionary resolution and SPARQL JSON boundary.
+
+- [x] **Step 3: Preserve compatibility with reduced fake headers and fallback plans**
+
+The new execution path is SFINAE-gated on the actual `QueryPlanner::createExecutionTree(...)` return type. Fixtures or builds that do not expose `QueryExecutionTree::getResult(true)` still compile and use the existing parsed/operation bridge fallback. Candidate roots remain excluded from the SPARQL JSON path.
+
+- [x] **Step 4: Run target and real-source verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlannerLazyExecution.test.ts --run
+bun test tests/native --run
+cmake -S native/postgres/qlever_adapter -B .test-data/qlever-real-adapter-build \
+  -DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON \
+  -DXPOD_QLEVER_ADAPTER_BUILD_SHARED=OFF \
+  -DXPOD_QLEVER_SOURCE_DIR=$PWD/.test-data/qlever-upstream \
+  "-DXPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS=$PWD/.test-data/qlever-deps/abseil;$PWD/.test-data/qlever-deps/range-v3/include;$PWD/.test-data/qlever-deps/uriparser/include;$PWD/.test-data/qlever-deps;$PWD/.test-data/qlever-deps/nlohmann-json/include;$PWD/.test-data/qlever-deps/re2;/opt/homebrew/opt/icu4c/include;$PWD/.test-data/qlever-deps/fsst;$PWD/.test-data/qlever-deps/ctre/single-header"
+cmake --build .test-data/qlever-real-adapter-build --target xpod_qlever_adapter -j2
+bun run check:rdf-protocol-abi
+bun run build:ts
+git diff --check
+```
+
+Observed: PASS locally. This is the first runtime gate that proves the public adapter can take a planner-produced QLever tree, request lazy execution, and reach the Xpod physical scan seam through `IndexScan::getLazyScan(...)`.
+
+Remaining gap: the runtime gate still uses an upstream-shaped fixture. The real patched upstream QLever source tree currently proves compilation against the same bridge code, but not a full linked upstream QLever server/query execution binary over PG-backed facts. The next gate is either a Linux/Clang>=16 full upstream build or a smaller embedded upstream target that links enough real QLever objects to execute the same query without fake headers.

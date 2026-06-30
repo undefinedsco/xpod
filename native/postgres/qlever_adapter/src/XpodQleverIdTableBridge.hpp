@@ -6,9 +6,16 @@
 #include "XpodQleverValueIdBridge.hpp"
 
 #include <vector>
+#include <type_traits>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
 #include "engine/idTable/IdTable.h"
+#if __has_include("util/AllocatorWithLimit.h")
+#include "util/AllocatorWithLimit.h"
+#define XPOD_QLEVER_HAS_ALLOCATOR_WITH_LIMIT 1
+#else
+#define XPOD_QLEVER_HAS_ALLOCATOR_WITH_LIMIT 0
+#endif
 
 namespace xpod::qlever {
 
@@ -22,8 +29,16 @@ struct QleverIdTableBlocksResult {
   std::vector<IdTable> blocks;
 };
 
+inline IdTable makeQleverIdTable(size_t width) {
+#if XPOD_QLEVER_HAS_ALLOCATOR_WITH_LIMIT
+  return IdTable(width, ad_utility::makeUnlimitedAllocator<Id>());
+#else
+  return IdTable(width);
+#endif
+}
+
 inline IdTable toQleverIdTable(const QleverIdRowBuffer& buffer) {
-  IdTable table(buffer.width);
+  IdTable table = makeQleverIdTable(buffer.width);
   std::vector<Id> row;
   row.reserve(buffer.width);
   if (buffer.width == 0) {
@@ -75,7 +90,7 @@ inline QleverIdTableResult executeScanToQleverIdTable(
   rows.width = 3;
   xpod_rdf_status status = executeScanToQleverIds(backend, input, rows);
   if (status != XPOD_RDF_STATUS_OK) {
-    return {status, IdTable(rows.width)};
+    return {status, makeQleverIdTable(rows.width)};
   }
   return {XPOD_RDF_STATUS_OK, toQleverIdTable(rows)};
 }

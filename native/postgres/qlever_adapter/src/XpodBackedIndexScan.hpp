@@ -86,7 +86,7 @@ class XpodBackedIndexScan {
   QleverIdTableResult execute() const {
     xpod_rdf_status capability_status = validatePermutationCapability();
     if (capability_status != XPOD_RDF_STATUS_OK) {
-      return {capability_status, IdTable(result_width_)};
+      return {capability_status, makeQleverIdTable(result_width_)};
     }
     return executeScanToQleverIdTable(backend_, input_);
   }

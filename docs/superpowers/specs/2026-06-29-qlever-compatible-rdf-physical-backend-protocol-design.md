@@ -729,3 +729,17 @@ The protocol design is accepted when:
 - each surface states correctness constraints and fallback behavior;
 - there are explicit compliance tests for future implementation;
 - no section requires a second RDF fact store or query-time dynamic index creation.
+
+## Current native QLever adapter compile boundary
+
+The QLever-enabled adapter has now been compiled as a standalone static library against a real patched upstream QLever source tree, using QLever's pinned dependency headers for Abseil, range-v3, uriparser, Boost, nlohmann-json, RE2, ICU, FSST, and CTRE. The adapter CMake exposes `XPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS` for those upstream dependency include roots. This is a native build-time input only; it is not a product runtime configuration surface.
+
+The adapter mirrors QLever's compile-mode assumptions at the CMake boundary: QLever mode requests C++20, but Clang/AppleClang older than 17 also receives `QLEVER_CPP_17 CPP_CXX_CONCEPTS=0` because upstream QLever uses range-v3 backports for that compiler family. Other supported C++20 builds receive `RANGE_V3_COMBINE_WITH_STD`.
+
+The adapter also follows upstream `IdTable` construction semantics: result tables and intermediate operation tables are created with an explicit QLever allocator through a local helper rather than the older `IdTable(width)` shape used by early fake headers. Descriptor and child-inspection code uses upstream public APIs (`QueryExecutionTree::getRootOperation()` and `Operation::getChildren() const`) instead of adapter-only fake conveniences.
+
+This compile gate is necessary but not sufficient. It proves that the Xpod native physical adapter currently parses real patched QLever headers and links its own static library against the expected upstream API surface.
+
+The adapter also has a runtime gate for the lower execution handoff: an upstream-shaped `QueryPlanner` fixture returns a `QueryExecutionTree` rooted at `IndexScan`, the bridge calls `QueryExecutionTree::getResult(true)`, the fake `IndexScan` calls its patched `getLazyScan(...)`, and that lazy scan reaches `XpodQleverPhysicalIndex` with QLever-selected block metadata before returning SPARQL JSON bindings. This proves the intended data-interface direction: QLever owns the planner/tree/lazy-result shape, while Xpod supplies the physical dictionary, scan, scope, and candidate-source backend.
+
+The remaining gap is full real-upstream execution. The current local probe compiles the adapter against a real patched QLever source tree, but the runtime query gate still uses upstream-shaped fixtures because the full upstream QLever build requires a supported compiler/toolchain target. The next correctness gate is a linked real-upstream execution binary or Linux/Clang>=16 full build that runs `QueryPlanner -> QueryExecutionTree::getResult(true) -> IndexScan::getLazyScan -> XpodQleverPhysicalIndex -> PG/RDF backend` without fake headers.

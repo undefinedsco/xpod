@@ -134,6 +134,16 @@ class QueryExecutionContext;
 
 namespace xpod::qlever {
 
+inline std::vector<const QueryExecutionTree*> qleverOperationChildren(
+    const Operation& operation) {
+  std::vector<QueryExecutionTree*> mutable_children =
+      const_cast<Operation&>(operation).getChildren();
+  return {
+      mutable_children.begin(),
+      mutable_children.end(),
+  };
+}
+
 inline std::optional<BridgeQueryPlan> planQleverOperation(
     const Operation& operation);
 
@@ -502,7 +512,8 @@ inline std::optional<BridgeQueryPlan> planTextEntityRdfJoinPair(
 
 inline std::optional<BridgeQueryPlan> planTextJoinOperation(
     const Join& join) {
-  std::vector<const QueryExecutionTree*> children = join.getChildren();
+  std::vector<const QueryExecutionTree*> children =
+      qleverOperationChildren(join);
   if (children.size() != 2 || children[0] == nullptr ||
       children[1] == nullptr) {
     return std::nullopt;
@@ -575,7 +586,8 @@ inline bool collectIndexScanLeaves(
   if (join == nullptr) {
     return false;
   }
-  std::vector<const QueryExecutionTree*> children = join->getChildren();
+  std::vector<const QueryExecutionTree*> children =
+      qleverOperationChildren(*join);
   if (children.size() != 2) {
     return false;
   }
@@ -686,7 +698,8 @@ inline std::optional<BridgeQueryPlan> planJoinOperation(const Join& join) {
     return text_plan;
   }
 #endif
-  std::vector<const QueryExecutionTree*> children = join.getChildren();
+  std::vector<const QueryExecutionTree*> children =
+      qleverOperationChildren(join);
   if (children.size() != 2) {
     return std::nullopt;
   }

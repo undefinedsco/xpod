@@ -24,9 +24,12 @@
 #include "parser/SparqlParser.h"
 
 #include <exception>
+#include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace xpod::qlever {
@@ -42,32 +45,22 @@ std::string_view bytesView(xpod_rdf_bytes bytes) noexcept {
   return {bytes.data, bytes.size};
 }
 
-xpod_rdf_status parseBridgeQuery(
-    std::string_view query,
+xpod_rdf_status planBridgeParsedQuery(
+    ParsedQuery& parsed,
     PlannerContextHandle planner_context,
     std::string& error_storage,
     BridgeQueryPlan& out_plan) {
-  try {
-    auto parsed = SparqlParser::parseQuery(nullptr, std::string(query));
-    auto plan = planQleverParsedQueryWithAvailablePlanner(
-        planner_context, parsed);
-    if (!plan.has_value()) {
-      plan = planParsedQuery(parsed);
-    }
-    if (!plan.has_value()) {
-      error_storage = "unsupported QLever bridge query";
-      return XPOD_RDF_STATUS_UNSUPPORTED;
-    }
-    out_plan = *plan;
-    return XPOD_RDF_STATUS_OK;
-  } catch (const std::exception& error) {
-    error_storage = "failed to parse QLever bridge query: ";
-    error_storage += error.what();
-    return XPOD_RDF_STATUS_UNSUPPORTED;
-  } catch (...) {
-    error_storage = "failed to parse QLever bridge query";
+  auto plan = planQleverParsedQueryWithAvailablePlanner(
+      planner_context, parsed);
+  if (!plan.has_value()) {
+    plan = planParsedQuery(parsed);
+  }
+  if (!plan.has_value()) {
+    error_storage = "unsupported QLever bridge query";
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
+  out_plan = *plan;
+  return XPOD_RDF_STATUS_OK;
 }
 
 void setResult(
@@ -226,6 +219,203 @@ void writeScanProfileJson(
   out << ",\"outputRows\":" << output_rows << "}}";
 }
 
+[[maybe_unused]] void appendIdTableRows(IdTable& target, const IdTable& source) {
+  std::vector<Id> row;
+  row.reserve(source.numColumns());
+  for (size_t row_index = 0; row_index < source.numRows(); ++row_index) {
+    row.clear();
+    for (size_t column = 0; column < source.numColumns(); ++column) {
+      row.push_back(source(row_index, column));
+    }
+    target.push_back(row);
+  }
+}
+
+template <typename ResultT, typename = void>
+struct HasIsFullyMaterialized : std::false_type {};
+
+template <typename ResultT>
+struct HasIsFullyMaterialized<
+    ResultT,
+    decltype(void(std::declval<const ResultT&>().isFullyMaterialized()))>
+    : std::true_type {};
+
+template <typename ResultT, typename = void>
+struct HasLazyIdTables : std::false_type {};
+
+template <typename ResultT>
+struct HasLazyIdTables<
+    ResultT,
+    decltype(void(std::declval<const ResultT&>().idTables()))>
+    : std::true_type {};
+
+template <typename ResultT>
+IdTable materializeQleverResultTable(
+    const ResultT& result,
+    size_t result_width) {
+  IdTable table = makeQleverIdTable(result_width);
+  if constexpr (HasIsFullyMaterialized<ResultT>::value) {
+    if (result.isFullyMaterialized()) {
+      appendIdTableRows(table, result.idTable());
+      return table;
+    }
+  }
+  if constexpr (HasLazyIdTables<ResultT>::value) {
+    auto chunks = result.idTables();
+    while (auto chunk = chunks.get()) {
+      appendIdTableRows(table, chunk->idTable_);
+    }
+    return table;
+  }
+  appendIdTableRows(table, result.idTable());
+  return table;
+}
+
+template <typename Tree, typename = void>
+struct HasLazyTreeResult : std::false_type {};
+
+template <typename Tree>
+struct HasLazyTreeResult<
+    Tree,
+    decltype(void(std::declval<const Tree&>().getResult(true)))>
+    : std::true_type {};
+
+struct NativeQleverExecution {
+  BridgeQueryPlan plan;
+  IdTable table;
+
+  NativeQleverExecution(BridgeQueryPlan plan, IdTable table)
+      : plan(std::move(plan)), table(std::move(table)) {}
+};
+
+template <typename Planner>
+std::optional<NativeQleverExecution> executeQleverPlannerTree(
+    Planner& planner,
+    ParsedQuery& parsed) {
+  using Tree = decltype(planner.createExecutionTree(parsed));
+  Tree tree = planner.createExecutionTree(parsed);
+  if (tree.isEmpty()) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(tree);
+  if (!plan.has_value() || isBridgeCandidateRoot(plan->root.kind)) {
+    return std::nullopt;
+  }
+  if constexpr (!HasLazyTreeResult<Tree>::value) {
+    return std::nullopt;
+  } else {
+    auto result = tree.getResult(true);
+    if (result == nullptr) {
+      return std::nullopt;
+    }
+    IdTable table = materializeQleverResultTable(*result, plan->result_width);
+    return NativeQleverExecution{std::move(*plan), std::move(table)};
+  }
+}
+
+#if XPOD_QLEVER_HAS_CANCELLATION_HANDLE
+template <typename Planner, bool IsNativeContextConstructible =
+                                std::is_constructible<
+                                    Planner,
+                                    const PlannerRequestContext*,
+                                    ad_utility::SharedCancellationHandle>::value>
+struct NativeContextQleverExecution {
+  static std::optional<NativeQleverExecution> execute(
+      const PlannerRequestContext* context,
+      ParsedQuery& parsed) {
+    (void)context;
+    (void)parsed;
+    return std::nullopt;
+  }
+};
+
+template <typename Planner>
+struct NativeContextQleverExecution<Planner, true> {
+  static std::optional<NativeQleverExecution> execute(
+      const PlannerRequestContext* context,
+      ParsedQuery& parsed) {
+    if (context == nullptr) {
+      return std::nullopt;
+    }
+    Planner planner(
+        context, detail::makeQleverCancellationHandle(context->cancellation));
+    return executeQleverPlannerTree(planner, parsed);
+  }
+};
+
+template <typename Planner, bool IsContextConstructible =
+                                std::is_constructible<
+                                    Planner,
+                                    QueryExecutionContext*,
+                                    ad_utility::SharedCancellationHandle>::value>
+struct ContextQleverExecution {
+  static std::optional<NativeQleverExecution> execute(
+      QueryExecutionContext* qec,
+      ParsedQuery& parsed) {
+    (void)qec;
+    (void)parsed;
+    return std::nullopt;
+  }
+};
+
+template <typename Planner>
+struct ContextQleverExecution<Planner, true> {
+  static std::optional<NativeQleverExecution> execute(
+      QueryExecutionContext* qec,
+      ParsedQuery& parsed) {
+    if (qec == nullptr) {
+      return std::nullopt;
+    }
+    Planner planner(qec, detail::makeQleverCancellationHandle(nullptr));
+    return executeQleverPlannerTree(planner, parsed);
+  }
+};
+#endif
+
+template <typename Planner, bool IsDefaultConstructible =
+                                std::is_default_constructible<Planner>::value>
+struct DefaultQleverExecution {
+  static std::optional<NativeQleverExecution> execute(ParsedQuery& parsed) {
+    (void)parsed;
+    return std::nullopt;
+  }
+};
+
+template <typename Planner>
+struct DefaultQleverExecution<Planner, true> {
+  static std::optional<NativeQleverExecution> execute(ParsedQuery& parsed) {
+    Planner planner;
+    return executeQleverPlannerTree(planner, parsed);
+  }
+};
+
+std::optional<NativeQleverExecution> executeQleverParsedQueryWithNativeTree(
+    PlannerContextHandle context,
+    ParsedQuery& parsed) {
+  if (!parsed.hasSelectClause()) {
+    return std::nullopt;
+  }
+  (void)context;
+#if XPOD_QLEVER_HAS_CANCELLATION_HANDLE
+  if (context.native != nullptr) {
+    auto native_result =
+        NativeContextQleverExecution<QueryPlanner>::execute(
+            context.native, parsed);
+    if (native_result.has_value()) {
+      return native_result;
+    }
+  }
+  if (context.qec != nullptr) {
+    auto qec_result =
+        ContextQleverExecution<QueryPlanner>::execute(context.qec, parsed);
+    if (qec_result.has_value()) {
+      return qec_result;
+    }
+  }
+#endif
+  return DefaultQleverExecution<QueryPlanner>::execute(parsed);
+}
+
 }  // namespace
 
 xpod_rdf_status executeBridgeQuery(
@@ -254,8 +444,74 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
 
   std::string_view query = bytesView(request.sparql);
   BridgeQueryPlan plan;
-  xpod_rdf_status parse_status = parseBridgeQuery(
-      query, planner_context, error_storage, plan);
+  xpod_rdf_status parse_status = XPOD_RDF_STATUS_OK;
+  try {
+    auto parsed = SparqlParser::parseQuery(nullptr, std::string(query));
+    std::optional<NativeQleverExecution> native_execution;
+    try {
+      native_execution =
+          executeQleverParsedQueryWithNativeTree(planner_context, parsed);
+    } catch (const std::exception& error) {
+      error_storage = "failed to execute QLever native tree: ";
+      error_storage += error.what();
+      setResult(out_result, XPOD_RDF_STATUS_BACKEND_ERROR, result_storage,
+                profile_storage, error_storage);
+      return XPOD_RDF_STATUS_BACKEND_ERROR;
+    } catch (...) {
+      error_storage = "failed to execute QLever native tree";
+      setResult(out_result, XPOD_RDF_STATUS_BACKEND_ERROR, result_storage,
+                profile_storage, error_storage);
+      return XPOD_RDF_STATUS_BACKEND_ERROR;
+    }
+    if (native_execution.has_value()) {
+      applyBridgeRequestContext(
+          native_execution->plan, request.snapshot, request.cancellation,
+          request.graph_scope, request.source_scope, request.access_scope);
+      const IdTable& output_table = native_execution->table;
+      std::vector<xpod_rdf_term> terms;
+      xpod_rdf_status resolve_status = resolveIdTableTerms(
+          backend, output_table, request.snapshot, terms, error_storage);
+      if (resolve_status != XPOD_RDF_STATUS_OK) {
+        setResult(out_result, resolve_status, result_storage, profile_storage,
+                  error_storage);
+        return resolve_status;
+      }
+      if (native_execution->plan.output_variables.size() !=
+          output_table.numColumns()) {
+        error_storage =
+            "QLever native result columns do not match output variables";
+        setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
+                  profile_storage, error_storage);
+        return XPOD_RDF_STATUS_UNSUPPORTED;
+      }
+      std::ostringstream json;
+      writeSparqlJson(
+          json, output_table, terms, native_execution->plan.output_variables);
+      result_storage = json.str();
+      std::ostringstream profile;
+      writeScanProfileJson(
+          profile, profileKind(native_execution->plan.root.kind),
+          native_execution->plan.descriptor, output_table.numRows());
+      profile_storage = profile.str();
+      setResult(out_result, XPOD_RDF_STATUS_OK, result_storage,
+                profile_storage, error_storage);
+      return XPOD_RDF_STATUS_OK;
+    }
+    parse_status = planBridgeParsedQuery(
+        parsed, planner_context, error_storage, plan);
+  } catch (const std::exception& error) {
+    error_storage = "failed to parse QLever bridge query: ";
+    error_storage += error.what();
+    setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
+              profile_storage, error_storage);
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  } catch (...) {
+    error_storage = "failed to parse QLever bridge query";
+    setResult(out_result, XPOD_RDF_STATUS_UNSUPPORTED, result_storage,
+              profile_storage, error_storage);
+    return XPOD_RDF_STATUS_UNSUPPORTED;
+  }
+
   if (parse_status != XPOD_RDF_STATUS_OK) {
     setResult(out_result, parse_status, result_storage, profile_storage,
               error_storage);

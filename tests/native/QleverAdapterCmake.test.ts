@@ -81,6 +81,14 @@ CompressedRelationReader::IdTableGeneratorInputRange IndexScan::getLazyScan(
 const patchedQueryExecutionContextHeader = `
 #pragma once
 #include <gtest/gtest_prod.h>
+#include "global/Id.h"
+#include "util/AllocatorWithLimit.h"
+#if defined(__clang__) && __clang_major__ < 17 && !defined(QLEVER_CPP_17)
+#error "QLever adapter must enable QLEVER_CPP_17 backports for clang older than 17"
+#endif
+#if !defined(QLEVER_CPP_17) && !defined(RANGE_V3_COMBINE_WITH_STD)
+#error "QLever adapter must mirror upstream range backport compile definitions"
+#endif
 namespace xpod { namespace qlever { class XpodQleverPhysicalIndex; } }
 class QueryExecutionContext {
  public:
@@ -88,8 +96,21 @@ class QueryExecutionContext {
   const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
     return nullptr;
   }
+  const ad_utility::AllocatorWithLimit<Id>& getAllocator() const {
+    return allocator_;
+  }
+ private:
+  ad_utility::AllocatorWithLimit<Id> allocator_;
+};
+struct QleverCxx20Probe {
+  auto operator<=>(const QleverCxx20Probe&) const = default;
 };
 `;
+
+const abslDependentQueryExecutionContextHeader = patchedQueryExecutionContextHeader.replace(
+  '#include <gtest/gtest_prod.h>',
+  '#include <gtest/gtest_prod.h>\n#include <absl/types/compare.h>',
+);
 
 describe('native QLever adapter CMake target', () => {
   it('configures and builds the adapter facade as a native library', async () => {
@@ -155,6 +176,9 @@ describe('native QLever adapter CMake target', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-source-present-'));
     try {
       const qleverSource = path.join(root, 'qlever');
+      const dependencyIncludeDir = path.join(root, 'deps', 'include');
+      await mkdir(path.join(dependencyIncludeDir, 'absl/types'), { recursive: true });
+      await writeFile(path.join(dependencyIncludeDir, 'absl/types/compare.h'), '#pragma once\n', 'utf8');
       await mkdir(path.join(qleverSource, 'src/libqlever'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/parser'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
@@ -162,12 +186,37 @@ describe('native QLever adapter CMake target', () => {
       await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
       await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/util/MemorySize'), { recursive: true });
       await writeFile(path.join(qleverSource, 'src/libqlever/Qlever.h'), '#pragma once\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/ParsedQuery.h'), fakeParsedQueryHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlTriple.h'), fakeSparqlTripleHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/parser/SparqlParser.h'), fakePermissiveSparqlParserHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), '#pragma once\nnamespace ad_utility { struct SharedCancellationHandle {}; }\n', 'utf8');
-      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), patchedQueryExecutionContextHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/MemorySize/MemorySize.h'), `
+#pragma once
+namespace ad_utility {
+class MemorySize {
+ public:
+  static MemorySize max() { return {}; }
+};
+}
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/AllocatorWithLimit.h'), `
+#pragma once
+#include "util/MemorySize/MemorySize.h"
+namespace ad_utility {
+template <typename T>
+class AllocatorWithLimit {
+ public:
+  AllocatorWithLimit() = default;
+};
+template <typename T>
+AllocatorWithLimit<T> makeUnlimitedAllocator() {
+  return {};
+}
+}
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), abslDependentQueryExecutionContextHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionTree.h'), fakeQueryExecutionTreeHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Operation.h'), `
 #pragma once
@@ -205,9 +254,10 @@ class Operation {
 #include <cstddef>
 #include <vector>
 #include "global/Id.h"
+#include "util/AllocatorWithLimit.h"
 class IdTable {
  public:
-  explicit IdTable(size_t width) : width_(width) {}
+  IdTable(size_t width, ad_utility::AllocatorWithLimit<Id>) : width_(width) {}
   size_t numColumns() const { return width_; }
   size_t numRows() const { return rows_.size(); }
   void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
@@ -272,6 +322,7 @@ class Permutation {
         '-B', buildDir,
         '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
         `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        `-DXPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS=${dependencyIncludeDir}`,
       ], {
         cwd: repoRoot,
         stdio: 'pipe',

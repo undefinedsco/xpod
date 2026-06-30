@@ -305,7 +305,7 @@ class XpodQleverPhysicalPermutation {
     if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) {
       return {
           scan_spec_and_blocks.status,
-          IdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
+          makeQleverIdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
     }
     return scan(
         scan_spec_and_blocks.pattern,
@@ -319,12 +319,12 @@ class XpodQleverPhysicalPermutation {
     if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) {
       return {
           scan_spec_and_blocks.status,
-          IdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
+          makeQleverIdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
     }
     if (blocks.empty()) {
       return {
           XPOD_RDF_STATUS_OK,
-          IdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
+          makeQleverIdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
     }
 
     ScanRequestInput input = makeSelectedBlockScanInput(
@@ -630,7 +630,7 @@ class XpodQleverPhysicalIndex {
     if (!scanSpecificationGraphFilterSupported(scan_specification)) {
       return {
           XPOD_RDF_STATUS_UNSUPPORTED,
-          IdTable(countNeededSlots(needed_slots))};
+          makeQleverIdTable(countNeededSlots(needed_slots))};
     }
     return scan(
         permutation,

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -20,10 +21,27 @@ struct QleverOperationNodeInfo {
   std::vector<QleverOperationNodeInfo> children;
 };
 
+template <typename Tree>
+auto qleverExecutionTreeDescriptorImpl(Tree& tree, int)
+    -> decltype(tree.getRootOperation(), std::string{}) {
+  auto root = tree.getRootOperation();
+  return root == nullptr ? "" : root->getDescriptor();
+}
+
+template <typename Tree>
+auto qleverExecutionTreeDescriptorImpl(Tree& tree, long)
+    -> decltype(tree.getDescriptor(), std::string{}) {
+  return tree.getDescriptor();
+}
+
+inline std::string qleverExecutionTreeDescriptor(QueryExecutionTree& tree) {
+  return qleverExecutionTreeDescriptorImpl(tree, 0);
+}
+
 inline QleverOperationNodeInfo inspectQleverExecutionTree(
     QueryExecutionTree& tree) {
   QleverOperationNodeInfo info;
-  info.descriptor = tree.getDescriptor();
+  info.descriptor = qleverExecutionTreeDescriptor(tree);
   info.result_width = tree.getResultWidth();
   info.sorted_by = tree.resultSortedOn();
   return info;

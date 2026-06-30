@@ -89,7 +89,7 @@ inline QleverResultWithStatus makeEmptyOperationResult(
     xpod_rdf_status status,
     size_t width = 0,
     std::vector<ColumnIndex> sorted_by = {}) {
-  return toQleverResult({status, IdTable(width)}, std::move(sorted_by));
+  return toQleverResult({status, makeQleverIdTable(width)}, std::move(sorted_by));
 }
 
 
@@ -662,7 +662,7 @@ inline QleverResultWithStatus executeBridgeCandidateHashJoin(
   }
 
   const size_t projected_columns = plan.root.candidate_project_columns.size();
-  IdTable output(scan_result.result.idTable().numColumns() + projected_columns);
+  IdTable output = makeQleverIdTable(scan_result.result.idTable().numColumns() + projected_columns);
   status = joinTableWithCandidateRows(
       backend, scan_result.result.idTable(),
       columnForSlot(
@@ -766,7 +766,7 @@ inline QleverResultWithStatus executeBridgeProjectedHashJoin(
     return left;
   }
 
-  IdTable output(output_width);
+  IdTable output = makeQleverIdTable(output_width);
   xpod_rdf_status status = joinTableWithProjectedScanRows(
       backend, left_scan, left.result.idTable(),
       joinKeySlotsForScan(plan.root, 0),
@@ -845,7 +845,7 @@ inline QleverResultWithStatus executeBridgeHashJoin(
     return left;
   }
 
-  IdTable output(left.result.idTable().numColumns());
+  IdTable output = makeQleverIdTable(left.result.idTable().numColumns());
   xpod_rdf_status status = filterTableByJoinKeys(
       backend, left.result.idTable(),
       columnForSlot(
@@ -872,7 +872,7 @@ inline QleverResultWithStatus applyBridgeLimitOffset(
   }
 
   const IdTable& input = result.result.idTable();
-  IdTable output(input.numColumns());
+  IdTable output = makeQleverIdTable(input.numColumns());
   const size_t row_count = input.numRows();
   const size_t start = root.offset < row_count ? root.offset : row_count;
   size_t end = start + root.limit;
@@ -910,7 +910,7 @@ inline QleverResultWithStatus applyBridgeDistinct(
     }
   }
 
-  IdTable output(input.numColumns());
+  IdTable output = makeQleverIdTable(input.numColumns());
   std::set<std::vector<uint64_t>> seen;
   std::vector<uint64_t> key;
   std::vector<Id> row;
@@ -995,7 +995,7 @@ inline QleverResultWithStatus applyBridgeOrderBy(
     return makeEmptyOperationResult(sort_status, input.numColumns(), {});
   }
 
-  IdTable output(input.numColumns());
+  IdTable output = makeQleverIdTable(input.numColumns());
   std::vector<Id> row;
   row.reserve(input.numColumns());
   for (size_t input_row : row_order) {
@@ -1060,7 +1060,7 @@ inline QleverResultWithStatus applyBridgeInternalSort(
         sort_status, input.numColumns(), result.result.sortedBy());
   }
 
-  IdTable output(input.numColumns());
+  IdTable output = makeQleverIdTable(input.numColumns());
   std::vector<Id> row;
   row.reserve(input.numColumns());
   for (size_t input_row : row_order) {
@@ -1172,7 +1172,7 @@ inline QleverResultWithStatus executeBridgeUnion(
     return right;
   }
 
-  IdTable output(root.column_origins.size());
+  IdTable output = makeQleverIdTable(root.column_origins.size());
   xpod_rdf_status status = appendBridgeUnionRows(
       left.result.idTable(), 0, root.column_origins, output);
   if (status == XPOD_RDF_STATUS_OK) {
@@ -1242,7 +1242,7 @@ inline QleverResultWithStatus executeBridgeCartesianProductJoin(
     inputs.push_back(&child_result.result.idTable());
   }
 
-  IdTable output(output_width);
+  IdTable output = makeQleverIdTable(output_width);
   std::vector<Id> row;
   row.reserve(output_width);
   appendBridgeCartesianProductRows(inputs, 0, row, output);
@@ -1309,7 +1309,7 @@ inline QleverResultWithStatus executeBridgeMinus(
 
   const IdTable& left_table = left.result.idTable();
   const IdTable& right_table = right.result.idTable();
-  IdTable output(left_table.numColumns());
+  IdTable output = makeQleverIdTable(left_table.numColumns());
   std::vector<Id> row;
   row.reserve(left_table.numColumns());
   for (size_t left_row = 0; left_row < left_table.numRows(); ++left_row) {
@@ -1383,7 +1383,7 @@ inline QleverResultWithStatus executeBridgeOptionalJoin(
 
   const IdTable& left_table = left.result.idTable();
   const IdTable& right_table = right.result.idTable();
-  IdTable output(left_table.numColumns() +
+  IdTable output = makeQleverIdTable(left_table.numColumns() +
                  root.right_projection_columns.size());
   xpod_rdf_status status = XPOD_RDF_STATUS_OK;
 
@@ -1500,7 +1500,7 @@ inline QleverResultWithStatus executeBridgeMultiColumnJoin(
     right_rows_by_key[key].push_back(right_row);
   }
 
-  IdTable output(left_table.numColumns() +
+  IdTable output = makeQleverIdTable(left_table.numColumns() +
                  root.right_projection_columns.size());
   for (size_t left_row = 0; left_row < left_table.numRows(); ++left_row) {
     if (!bridgeMultiColumnJoinKey(
@@ -1555,7 +1555,7 @@ inline QleverResultWithStatus executeBridgeGroupBy(
     }
   }
 
-  IdTable output(root.projection_columns.size());
+  IdTable output = makeQleverIdTable(root.projection_columns.size());
   std::set<std::vector<uint64_t>> seen;
   std::vector<uint64_t> key;
   std::vector<Id> row;
@@ -1590,7 +1590,7 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
   QleverResultWithStatus result =
       makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED);
   if (root.kind == BridgeOperationKind::NeutralElement) {
-    IdTable output(0);
+    IdTable output = makeQleverIdTable(0);
     std::vector<Id> row;
     output.push_back(row);
     return applyBridgeResultModifiers(
