@@ -4368,3 +4368,52 @@ git diff --check
 ```
 
 `tests/native` passed with `131 pass`, `0 fail`. The linked runtime smoke passed with expected local linker/runtime warnings only.
+
+
+### Task 107: Accept reversed bounded FILTER operands
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverPlanBridge.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add reversed-operand FILTER regression gates**
+
+The focused plan-bridge smoke now requires a descriptor shaped like:
+
+```sparql
+FILTER("literal-value" = ?o)
+```
+
+to produce the same `EqualTerm` modifier as `FILTER(?o = "literal-value")`: the output column is still `?o`, and the literal still binds through the Xpod physical dictionary.
+
+The linked real-runtime smoke now issues:
+
+```sparql
+SELECT ?s ?o WHERE { ?s ?p ?o FILTER("literal-value" = ?o) } ORDER BY ?s
+```
+
+and requires `urn:literal-s`, the literal value, `Filter`, and `OrderBy` while rejecting `urn:tail`.
+
+Observed before implementation: the focused plan-bridge smoke failed with exit `31` because the filter bridge only accepted a variable on the left side.
+
+- [x] **Step 2: Normalize binary bounded FILTER operands at the binding seam**
+
+`filterVariableAndTerm(...)` now accepts either `?var op constant` or `constant op ?var` for the bounded equality/inequality subset. It still rejects non-bounded shapes such as constant/constant, variable/variable, relational operators, and terms that cannot be parsed as IRI/literal tokens. The executor still receives a column plus a dictionary-bound term id; it never compares raw lexical strings.
+
+This remains a bounded Xpod physical seam for the current linked-runtime gate, not a replacement for QLever's full SPARQL expression evaluator.
+
+- [x] **Step 3: Verify focused and linked runtime behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.

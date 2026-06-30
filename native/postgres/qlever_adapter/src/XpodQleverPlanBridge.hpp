@@ -1182,6 +1182,34 @@ inline std::optional<BridgeTermBinding> filterBindingFromToken(
   return literalFilterBindingFromToken(token);
 }
 
+inline bool filterVariableAndTerm(
+    const BridgeQueryPlan& plan,
+    std::string_view left,
+    std::string_view right,
+    ColumnIndex& column,
+    BridgeTermBinding& term) {
+  auto bind_variable_side =
+      [&](std::string_view variable_token,
+          std::string_view term_token) -> bool {
+    if (variable_token.size() < 2 || variable_token.front() != '?') {
+      return false;
+    }
+    std::string variable(variable_token.substr(1));
+    std::optional<ColumnIndex> maybe_column =
+        outputColumnForVariable(plan.output_variables, variable);
+    std::optional<BridgeTermBinding> maybe_term =
+        filterBindingFromToken(term_token);
+    if (!maybe_column.has_value() || !maybe_term.has_value()) {
+      return false;
+    }
+    column = *maybe_column;
+    term = std::move(*maybe_term);
+    return true;
+  };
+
+  return bind_variable_side(left, right) || bind_variable_side(right, left);
+}
+
 inline bool applyNotEqualFilterDescriptor(
     BridgeQueryPlan& plan,
     std::string_view descriptor) {
@@ -1192,26 +1220,18 @@ inline bool applyNotEqualFilterDescriptor(
   }
   std::string_view left = trimFilterToken(descriptor.substr(0, separator));
   std::string_view right = trimFilterToken(descriptor.substr(separator + 4));
-  if (left.size() < 2 || left.front() != '?') {
-    return false;
-  }
-  std::string variable(left.substr(1));
-  std::optional<ColumnIndex> column =
-      outputColumnForVariable(plan.output_variables, variable);
-  if (!column.has_value()) {
-    return false;
-  }
-  std::optional<BridgeTermBinding> term = filterBindingFromToken(right);
-  if (!term.has_value()) {
+  ColumnIndex column = 0;
+  BridgeTermBinding term;
+  if (!filterVariableAndTerm(plan, left, right, column, term)) {
     return false;
   }
 
   BridgeResultModifier modifier;
   modifier.kind = BridgeResultModifierKind::NotEqualTerm;
-  modifier.columns.push_back(*column);
+  modifier.columns.push_back(column);
   size_t modifier_index = plan.root.result_modifiers.size();
   plan.root.result_modifiers.push_back(std::move(modifier));
-  plan.modifier_term_bindings.push_back({modifier_index, std::move(*term)});
+  plan.modifier_term_bindings.push_back({modifier_index, std::move(term)});
   if (plan.descriptor.find("Filter") == std::string::npos) {
     plan.descriptor += " + Filter";
   }
@@ -1228,26 +1248,18 @@ inline bool applyEqualFilterDescriptor(
   }
   std::string_view left = trimFilterToken(descriptor.substr(0, separator));
   std::string_view right = trimFilterToken(descriptor.substr(separator + 3));
-  if (left.size() < 2 || left.front() != '?') {
-    return false;
-  }
-  std::string variable(left.substr(1));
-  std::optional<ColumnIndex> column =
-      outputColumnForVariable(plan.output_variables, variable);
-  if (!column.has_value()) {
-    return false;
-  }
-  std::optional<BridgeTermBinding> term = filterBindingFromToken(right);
-  if (!term.has_value()) {
+  ColumnIndex column = 0;
+  BridgeTermBinding term;
+  if (!filterVariableAndTerm(plan, left, right, column, term)) {
     return false;
   }
 
   BridgeResultModifier modifier;
   modifier.kind = BridgeResultModifierKind::EqualTerm;
-  modifier.columns.push_back(*column);
+  modifier.columns.push_back(column);
   size_t modifier_index = plan.root.result_modifiers.size();
   plan.root.result_modifiers.push_back(std::move(modifier));
-  plan.modifier_term_bindings.push_back({modifier_index, std::move(*term)});
+  plan.modifier_term_bindings.push_back({modifier_index, std::move(term)});
   if (plan.descriptor.find("Filter") == std::string::npos) {
     plan.descriptor += " + Filter";
   }

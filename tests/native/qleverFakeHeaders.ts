@@ -286,6 +286,12 @@ class ParsedQuery {
         sparqlExpression::SparqlExpressionPimpl{"(?o = \\"literal-value\\")"};
     return query;
   }
+  static ParsedQuery filterLiteralEqualsObjectSelect() {
+    ParsedQuery query = filterObjectNotTailSelect();
+    query._rootGraphPattern._filters[0].expression_ =
+        sparqlExpression::SparqlExpressionPimpl{"(\\"literal-value\\" = ?o)"};
+    return query;
+  }
   static ParsedQuery unsupportedFilterSelect() {
     ParsedQuery query = filterObjectNotTailSelect();
     query._rootGraphPattern._filters[0].expression_ =

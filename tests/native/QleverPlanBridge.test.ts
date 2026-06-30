@@ -661,7 +661,21 @@ int main() {
   if (status != XPOD_RDF_STATUS_OK) return 28;
   if (!literal_plan->root.result_modifiers[0].has_term_id_bits) return 29;
   if (literal_plan->root.result_modifiers[0].term_id_bits != 1080) return 30;
-  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 31;
+
+  auto literal_left_plan = xpod::qlever::planParsedQuery(ParsedQuery::filterLiteralEqualsObjectSelect());
+  if (!literal_left_plan.has_value()) return 31;
+  if (literal_left_plan->root.result_modifiers.size() != 1) return 32;
+  const auto& literal_left_modifier = literal_left_plan->root.result_modifiers[0];
+  if (literal_left_modifier.kind != xpod::qlever::BridgeResultModifierKind::EqualTerm) return 33;
+  if (literal_left_modifier.columns.size() != 1 || literal_left_modifier.columns[0] != 1) return 34;
+  if (literal_left_plan->modifier_term_bindings.size() != 1) return 35;
+  if (literal_left_plan->modifier_term_bindings[0].term.kind != XPOD_RDF_TERM_LITERAL) return 36;
+  if (literal_left_plan->modifier_term_bindings[0].term.value != "literal-value") return 37;
+  status = xpod::qlever::bindPlanTerms(physical, snapshot, *literal_left_plan, error);
+  if (status != XPOD_RDF_STATUS_OK) return 38;
+  if (!literal_left_plan->root.result_modifiers[0].has_term_id_bits) return 39;
+  if (literal_left_plan->root.result_modifiers[0].term_id_bits != 1080) return 40;
+  if (xpod::qlever::planParsedQuery(ParsedQuery::unsupportedFilterSelect()).has_value()) return 41;
   return 0;
 }
 `, 'utf8');

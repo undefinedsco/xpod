@@ -792,6 +792,39 @@ int main() {
   if (literal_filter_profile.find("OrderBy") == std::string_view::npos) return 78;
   xpod_qlever_adapter_release_result(adapter, &literal_filter_result);
 
+  xpod_qlever_query_request literal_left_filter_request = {};
+  literal_left_filter_request.sparql = bytes(
+      "SELECT ?s ?o WHERE { ?s ?p ?o FILTER(\"literal-value\" = ?o) } ORDER BY ?s");
+  xpod_qlever_query_result literal_left_filter_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &literal_left_filter_request, &literal_left_filter_result);
+  std::string_view literal_left_filter_json(
+      literal_left_filter_result.result_json.data, literal_left_filter_result.result_json.size);
+  std::string_view literal_left_filter_profile(
+      literal_left_filter_result.profile_json.data, literal_left_filter_result.profile_json.size);
+  std::string_view literal_left_filter_error(
+      literal_left_filter_result.error_message.data, literal_left_filter_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "literal-left filter query failed: %.*s\n",
+                 static_cast<int>(literal_left_filter_error.size()),
+                 literal_left_filter_error.data());
+    return 79;
+  }
+  if (literal_left_filter_json.find(R"("head":{"vars":["s","o"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "literal-left filter head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(literal_left_filter_json.size()),
+                 literal_left_filter_json.data(),
+                 static_cast<int>(literal_left_filter_profile.size()),
+                 literal_left_filter_profile.data());
+    return 80;
+  }
+  if (literal_left_filter_json.find("urn:literal-s") == std::string_view::npos) return 81;
+  if (literal_left_filter_json.find("literal-value") == std::string_view::npos) return 82;
+  if (literal_left_filter_json.find("urn:tail") != std::string_view::npos) return 83;
+  if (literal_left_filter_profile.find("Filter") == std::string_view::npos) return 84;
+  if (literal_left_filter_profile.find("OrderBy") == std::string_view::npos) return 85;
+  xpod_qlever_adapter_release_result(adapter, &literal_left_filter_result);
+
   xpod_qlever_query_request ask_request = {};
   ask_request.sparql = bytes("ASK { ?s ?p ?o }");
   xpod_qlever_query_result ask_result = {};
