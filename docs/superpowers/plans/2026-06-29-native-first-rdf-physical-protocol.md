@@ -3198,3 +3198,31 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - This is a lower data-protocol seam. Upstream QLever `IndexScan::getLazyScan()` still needs an adapter from this block result to QLever's native generator/runtime metadata.
+
+### Task 77: Adapt lower lazy scan blocks to QLever's native generator range
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/src/XpodQleverLazyScanBridge.hpp`
+- Add: `tests/native/QleverLazyScanBridge.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing generator adapter smoke**
+
+Add a native smoke with a minimal upstream-shaped `CompressedRelationReader::IdTableGeneratorInputRange` stub. The smoke must convert a `QleverIdTableBlocksResult` into that range, read each block via `get()`, and verify `LazyScanMetadata` counters.
+
+Expected: FAIL because lower lazy scan blocks exist but no adapter exposes them as QLever's native generator type.
+
+- [x] **Step 2: Implement the minimal generator adapter**
+
+Add `XpodQleverLazyScanBridge.hpp` with `toQleverLazyScanRange(...)`. It wraps lower `IdTable` blocks in an `ad_utility::InputRangeFromGet<IdTable, CompressedRelationReader::LazyScanMetadata>` implementation when `index/CompressedRelation.h` is available. Non-OK lower statuses return the status and no generator.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverLazyScanBridge.test.ts --run
+```
+
+Expected: PASS.
+- Upstream QLever `IndexScan::getLazyScan()` still needs to call this adapter from the patched/embedded permutation path.
