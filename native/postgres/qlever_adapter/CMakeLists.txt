@@ -163,7 +163,10 @@ if(XPOD_QLEVER_ADAPTER_ENABLE_QLEVER)
   endif()
   target_include_directories(xpod_qlever_adapter PRIVATE "${XPOD_QLEVER_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/src")
   if(XPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS)
-    target_include_directories(xpod_qlever_adapter PRIVATE ${XPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS})
+    target_include_directories(xpod_qlever_adapter
+      SYSTEM
+      PRIVATE
+        ${XPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS})
   endif()
 else()
   target_compile_definitions(xpod_qlever_adapter PRIVATE XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=0)

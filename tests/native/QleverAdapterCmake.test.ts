@@ -439,6 +439,12 @@ class Permutation {
     }
   }, nativeBuildTimeoutMs);
 
+  it('treats upstream dependency include dirs as system headers', () => {
+    const cmake = readFileSync(cmakeLists, 'utf8');
+    expect(cmake).toContain('XPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS');
+    expect(cmake).toMatch(/target_include_directories\(xpod_qlever_adapter\s+SYSTEM\s+PRIVATE\s+\$\{XPOD_QLEVER_DEPENDENCY_INCLUDE_DIRS\}\)/);
+  });
+
   it('rejects a QLever source tree whose IndexScan lazy-scan overlay is missing', async () => {
     expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
 
