@@ -37,6 +37,84 @@ function fileExists(filePath) {
   }
 }
 
+function defaultHomebrewPrefixPath() {
+  if (process.env.XPOD_QLEVER_CMAKE_PREFIX_PATH) {
+    return process.env.XPOD_QLEVER_CMAKE_PREFIX_PATH;
+  }
+  if (process.platform !== 'darwin' || !fileExists('/opt/homebrew')) {
+    return undefined;
+  }
+  return [
+    '/opt/homebrew',
+    '/opt/homebrew/opt/icu4c',
+    '/opt/homebrew/opt/openssl@3',
+    '/opt/homebrew/opt/boost',
+  ].filter(fileExists).join(';') || undefined;
+}
+
+function defaultIcuRoot() {
+  if (process.env.XPOD_QLEVER_ICU_ROOT) {
+    return process.env.XPOD_QLEVER_ICU_ROOT;
+  }
+  const homebrewIcu = '/opt/homebrew/opt/icu4c';
+  return process.platform === 'darwin' && fileExists(homebrewIcu)
+    ? homebrewIcu
+    : undefined;
+}
+
+function hostArchitectureToken() {
+  if (process.arch === 'arm64') return 'arm64';
+  if (process.arch === 'x64') return 'x86_64';
+  return process.arch;
+}
+
+function pkgConfigOutput(args) {
+  return execFileSync('pkg-config', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).trim();
+}
+
+function pkgConfigJemalloc() {
+  try {
+    const flags = pkgConfigOutput(['--libs-only-L', 'jemalloc']);
+    const libdir = pkgConfigOutput(['--variable=libdir', 'jemalloc']);
+    const dylib = path.join(libdir, 'libjemalloc.dylib');
+    if (process.platform === 'darwin' && fileExists(dylib)) {
+      const info = execFileSync('file', [dylib], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (!info.includes(hostArchitectureToken())) {
+        return { flags: undefined, compatible: false };
+      }
+    }
+    return { flags: flags || undefined, compatible: true };
+  } catch {
+    return { flags: undefined, compatible: true };
+  }
+}
+
+function defaultExecutableLinkerFlags(jemalloc) {
+  if (process.env.XPOD_QLEVER_CMAKE_EXE_LINKER_FLAGS) {
+    return process.env.XPOD_QLEVER_CMAKE_EXE_LINKER_FLAGS;
+  }
+  return jemalloc.flags;
+}
+
+function defaultPkgConfigLibdir(jemalloc) {
+  if (process.env.PKG_CONFIG_LIBDIR || jemalloc.compatible) {
+    return undefined;
+  }
+  if (process.platform === 'darwin' && fileExists('/opt/homebrew')) {
+    return [
+      '/opt/homebrew/lib/pkgconfig',
+      '/opt/homebrew/share/pkgconfig',
+    ].join(':');
+  }
+  return undefined;
+}
+
 function defaultCompiler(name) {
   const envName = name === 'C' ? 'XPOD_QLEVER_CMAKE_C_COMPILER' : 'XPOD_QLEVER_CMAKE_CXX_COMPILER';
   if (process.env[envName]) return process.env[envName];
@@ -63,6 +141,11 @@ const dryRun = hasFlag('--dry-run');
 const json = hasFlag('--json');
 const configureOnly = hasFlag('--configure-only');
 const buildOnly = hasFlag('--build-only');
+const jemalloc = pkgConfigJemalloc();
+const pkgConfigLibdir = defaultPkgConfigLibdir(jemalloc);
+const cmakeEnv = pkgConfigLibdir
+  ? { ...process.env, PKG_CONFIG_LIBDIR: pkgConfigLibdir }
+  : process.env;
 
 const patchCheckArgs = [
   process.execPath,
@@ -89,14 +172,20 @@ const configureArgs = [
 ];
 maybeAdd(configureArgs, 'DCMAKE_C_COMPILER', defaultCompiler('C'));
 maybeAdd(configureArgs, 'DCMAKE_CXX_COMPILER', defaultCompiler('CXX'));
-maybeAdd(configureArgs, 'DCMAKE_PREFIX_PATH', process.env.XPOD_QLEVER_CMAKE_PREFIX_PATH);
-maybeAdd(configureArgs, 'DICU_ROOT', process.env.XPOD_QLEVER_ICU_ROOT);
+maybeAdd(configureArgs, 'DCMAKE_PREFIX_PATH', defaultHomebrewPrefixPath());
+maybeAdd(configureArgs, 'DCMAKE_EXE_LINKER_FLAGS', defaultExecutableLinkerFlags(jemalloc));
+maybeAdd(configureArgs, 'DICU_ROOT', defaultIcuRoot());
 maybeAdd(configureArgs, 'DBoost_DIR', process.env.XPOD_QLEVER_BOOST_DIR);
 
 const buildArgs = ['--build', buildDir, '--target', target, `-j${jobs}`];
 
 if (dryRun) {
-  const payload = { patchCheckArgs: patchCheckArgs.slice(1), configureArgs, buildArgs };
+  const payload = {
+    patchCheckArgs: patchCheckArgs.slice(1),
+    configureArgs,
+    buildArgs,
+    configureEnv: pkgConfigLibdir ? { PKG_CONFIG_LIBDIR: pkgConfigLibdir } : {},
+  };
   if (json) {
     process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else {
@@ -114,7 +203,7 @@ if (!fs.existsSync(qleverSource)) {
 try {
   execFileSync(patchCheckArgs[0], patchCheckArgs.slice(1), { cwd: repoRoot, stdio: 'inherit' });
   if (!buildOnly) {
-    execFileSync('cmake', configureArgs, { cwd: repoRoot, stdio: 'inherit' });
+    execFileSync('cmake', configureArgs, { cwd: repoRoot, stdio: 'inherit', env: cmakeEnv });
   }
   if (!configureOnly) {
     execFileSync('cmake', buildArgs, { cwd: repoRoot, stdio: 'inherit' });

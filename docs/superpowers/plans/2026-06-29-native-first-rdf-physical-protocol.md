@@ -3701,3 +3701,50 @@ node scripts/check-qlever-full-engine-build.cjs \
 Observed: PASS locally. The script now reproduces the previous manual full upstream `engine` build with the Xpod lower data seam visible.
 
 Remaining gap: the next gate is still a linked real-upstream query execution binary over `xpod_rdf_backend_v1`; this task only removes the manual CMake command as a source of drift.
+
+### Task 91: Stabilize full-upstream CMake environment probes
+
+**Files:**
+- Modify: `scripts/check-qlever-full-engine-build.cjs`
+- Modify: `tests/native/QleverFullEngineBuildScript.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Reproduce the executable-link environment drift**
+
+Running the full upstream script against `--target qlever-server` on local macOS exposed that the previously reproducible `engine` gate was still relying on pre-existing CMake cache state for executable-link dependencies. Two concrete drift points showed up:
+
+- `pkg-config jemalloc` pointed at an x86_64 `/usr/local/Cellar/jemalloc/...` library while the build target was arm64;
+- clean CMake build directories needed the Homebrew ICU/prefix hints that were already present in the older cache.
+
+This does not complete the real PG-backed QLever runtime path, but it closes a reproducibility gap before the next real linked query probe.
+
+- [x] **Step 2: Add script contract coverage for link dependency discovery**
+
+`QleverFullEngineBuildScript.test.ts` now covers:
+
+- compatible `pkg-config jemalloc` library dirs are passed through as `CMAKE_EXE_LINKER_FLAGS` for executable targets;
+- architecture-incompatible Darwin jemalloc paths are not passed to CMake and the configure environment can quarantine pkg-config to Homebrew arm64 pkg-config roots.
+
+- [x] **Step 3: Make the build script deterministic on local macOS**
+
+`check-qlever-full-engine-build.cjs` now:
+
+- defaults Darwin/Homebrew builds to `CMAKE_PREFIX_PATH=/opt/homebrew;/opt/homebrew/opt/icu4c;/opt/homebrew/opt/openssl@3;/opt/homebrew/opt/boost` when no explicit prefix is supplied;
+- defaults `ICU_ROOT` to `/opt/homebrew/opt/icu4c` when available;
+- inspects `pkg-config jemalloc` output and rejects architecture-incompatible `libjemalloc.dylib` before it reaches the CMake executable linker flags;
+- for incompatible Darwin pkg-config state, runs CMake with `PKG_CONFIG_LIBDIR=/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig` so stale x86_64 `/usr/local` pkg-config entries do not poison fresh configure runs.
+
+- [x] **Step 4: Verify the script gate**
+
+Run:
+
+```bash
+bun test tests/native/QleverFullEngineBuildScript.test.ts --run
+node scripts/check-qlever-full-engine-build.cjs \
+  --qlever-source .test-data/qlever-upstream \
+  --build-dir .test-data/qlever-full-build \
+  --target engine \
+  --jobs 2
+```
+
+Observed: PASS locally. A fresh no-jemalloc `qlever-server` build now gets past ICU and stale x86_64 jemalloc discovery, but the clean build was interrupted by a transient GitHub FetchContent download failure for `nlohmann/json`; this is an external dependency fetch issue, not the Xpod physical data seam. The next product gate remains a real linked query execution path over `xpod_rdf_backend_v1`, not the standalone QLever server binary.
