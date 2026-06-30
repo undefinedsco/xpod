@@ -3049,3 +3049,45 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No upstream QLever `lazyScan(...)` consumer yet.
+
+### Task 73: Carry selected block metadata through native scan requests
+
+**Files:**
+- Modify: `native/postgres/rdf_protocol/include/xpod_rdf_physical_backend.h`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverScanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodBackedIndexScan.hpp`
+- Modify: `scripts/check-rdf-physical-protocol-abi.cjs`
+- Modify: `tests/native/QleverScanBridge.test.ts`
+- Modify: `tests/native/QleverBackedIndexScan.test.ts`
+- Modify: `tests/native/RdfPhysicalBackendProtocolHeader.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write failing selected-block scan request smoke**
+
+Extend the scan bridge smoke so `ScanRequestInput` can carry selected `xpod_rdf_scan_block_metadata` rows and a metadata version into `xpod_rdf_scan_request`.
+
+Expected: FAIL because neither the native request struct nor the C++ scan input carries selected block metadata.
+
+- [x] **Step 2: Add the minimal lower request fields**
+
+Add `block_metadata`, `block_metadata_count`, and `block_metadata_version` to `xpod_rdf_scan_request`, plus matching fields in `ScanRequestInput` and `makeScanRequest(...)`.
+
+- [x] **Step 3: Fail closed without block-restricted scan capability**
+
+Add `XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN` and make `XpodBackedIndexScan` return `UNSUPPORTED` when selected block metadata is present but the backend capability snapshot does not declare support.
+
+This is still only lower protocol plumbing. It enables a future QLever `lazyScan(optBlocks)` adapter to pass prefiltered blocks down safely; it does not implement lazy scan strategy in Xpod.
+
+- [x] **Step 4: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverScanBridge.test.ts --run
+bun test tests/native/QleverBackedIndexScan.test.ts --run
+bun test tests/native/RdfPhysicalBackendProtocolHeader.test.ts --run
+bun run check:rdf-protocol-abi
+```
+
+Expected: PASS.
+- No upstream QLever `lazyScan(...)` consumer yet.

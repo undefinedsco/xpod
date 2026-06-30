@@ -303,6 +303,14 @@ type SlotTermRange = {
   collation: 'unknown' | 'bytewise' | 'database' | 'locale';
 };
 
+type ScanBlockMetadata = {
+  blockId: number;
+  firstQuad: QuadKey;
+  lastQuad: QuadKey;
+  rowCount: number;
+  sortedSlots: Array<'subject' | 'predicate' | 'object' | 'graph'>;
+};
+
 type ScanRequest = {
   snapshot: FactsSnapshot;
   cancellation?: CancellationToken;
@@ -316,6 +324,8 @@ type ScanRequest = {
   offset?: number;
   batchSize?: number;
   neededSlots?: Array<'subject' | 'predicate' | 'object' | 'graph'>;
+  blockMetadata?: ScanBlockMetadata[];
+  blockMetadataVersion?: string;
 };
 
 interface PermutationAccess {
@@ -340,6 +350,7 @@ Required behavior:
 - Capability negotiation must happen before planning or fallback selection. Missing capability data is not proof of support; the adapter must either use a safe fallback or fail closed.
 - QLever-shaped `ScanSpecAndBlocks` adapters may be lightweight. They may expose estimate/count/scan over the same scoped `ScanRequest`, but they must not pretend to support QLever lazy block filtering unless the physical backend returns block metadata with correct snapshot and access-scope semantics.
 - Block metadata is optional capability-gated lower data. When present, it must be generated from the same facts snapshot, graph scope, source scope, access scope, slot ranges, and cancellation semantics as the scan it describes.
+- Block-restricted scans are a separate capability from metadata lookup. When `ScanRequest.blockMetadata` is present, the backend must restrict scanning to those selected blocks for the matching metadata version, or the adapter must fail closed with `UNSUPPORTED`. Ignoring selected blocks would silently turn a QLever lazy/block-prefiltered scan into a broad scan.
 
 ### 3. CardinalityStats
 
@@ -670,7 +681,7 @@ The Xpod-backed scan adapter uses the same capability contract as a lower-protoc
 
 Text and vector candidate operation shells use the same rule for feature bits: an OK capability response without `TEXT_SEARCH` or `VECTOR_SEARCH` fails closed before estimate/search callbacks. This keeps FTS/vector availability in the native data contract that QLever-facing code can plan against.
 
-`XpodQleverPhysicalIndex` is the first native QLever-shaped lower access surface over this protocol. It exposes the query capability snapshot, single and batch dictionary lookup/resolution, QLever id encoding/decoding/comparison, term prefix ranges, access/source scope resolution and estimates, scoped join-fanout estimates, histogram hints, text/vector candidate-source factories, QLever `ScanSpecification`-style col0/col1/col2 mapping into RDF slot patterns, and `permutation(...).estimate(...)` / `permutation(...).scan(...)` / `permutation(...).count(...)` / `permutation(...).distinct(...)` / `permutation(...).estimateDistinct(...)` / `permutation(...).getMetadataAndBlocks(...)` using `PlannerRequestContext`; scan/count/distinct/estimateDistinct/block-metadata, access/source scope, join-fanout, histogram, scan-spec, and candidate-source calls preserve the request snapshot, graph scope, source scope, access scope, cancellation, and backend capability guards. Scan-spec graph filters that cannot yet be represented as Xpod graph scope fail closed instead of broadening results. This is the seam that a patched or embedded QLever `Index`/`Permutation` / text-index path should call. It must not grow SPARQL planning, join planning, modifiers, ranking, or fusion policy.
+`XpodQleverPhysicalIndex` is the first native QLever-shaped lower access surface over this protocol. It exposes the query capability snapshot, single and batch dictionary lookup/resolution, QLever id encoding/decoding/comparison, term prefix ranges, access/source scope resolution and estimates, scoped join-fanout estimates, histogram hints, text/vector candidate-source factories, QLever `ScanSpecification`-style col0/col1/col2 mapping into RDF slot patterns, and `permutation(...).estimate(...)` / `permutation(...).scan(...)` / `permutation(...).count(...)` / `permutation(...).distinct(...)` / `permutation(...).estimateDistinct(...)` / `permutation(...).getMetadataAndBlocks(...)` using `PlannerRequestContext`; scan/count/distinct/estimateDistinct/block-metadata, access/source scope, join-fanout, histogram, scan-spec, and candidate-source calls preserve the request snapshot, graph scope, source scope, access scope, cancellation, and backend capability guards. The underlying scan request can now also carry selected block metadata for future QLever `lazyScan(optBlocks)` integration; `XpodBackedIndexScan` fails closed unless the backend declares `BLOCK_RESTRICTED_SCAN`. Scan-spec graph filters that cannot yet be represented as Xpod graph scope fail closed instead of broadening results. This is the seam that a patched or embedded QLever `Index`/`Permutation` / text-index path should call. It must not grow SPARQL planning, join planning, modifiers, ranking, or fusion policy.
 
 - Build a read-only spike that maps a small QLever-like operator subset to this protocol:
   - term lookup;

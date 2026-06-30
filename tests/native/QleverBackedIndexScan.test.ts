@@ -144,6 +144,14 @@ static xpod_rdf_status scan(
   return on_batch(callback_user_data, &batch);
 }
 
+static xpod_rdf_status get_capabilities_without_block_restricted_scan(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  out_capabilities->features = 0;
+  return XPOD_RDF_STATUS_OK;
+}
+
 int main() {
   ProfileState profile = {};
   xpod_rdf_backend_v1 backend = {};
@@ -194,6 +202,20 @@ int main() {
   if (profile.nodes[0] != 77 || profile.nodes[1] != 77) return 24;
   if (!profile.has_parents[0] || profile.parents[0] != 55) return 25;
   if (profile.output_rows[1] != 1) return 26;
+
+  xpod_rdf_backend_v1 noBlockRestrictedBackend = backend;
+  noBlockRestrictedBackend.get_capabilities =
+      get_capabilities_without_block_restricted_scan;
+  xpod::rdf::PhysicalBackend noBlockRestrictedPhysical(&noBlockRestrictedBackend);
+  xpod::qlever::ScanRequestInput blockInput = {};
+  blockInput.permutation = Permutation::Enum::SPO;
+  xpod_rdf_scan_block_metadata selectedBlock = {};
+  selectedBlock.block_id = 1001;
+  blockInput.block_metadata.push_back(selectedBlock);
+  xpod::qlever::XpodBackedIndexScan blockRestrictedScan(
+      noBlockRestrictedPhysical, blockInput, {}, 3);
+  auto blockRestrictedResult = blockRestrictedScan.execute();
+  if (blockRestrictedResult.status != XPOD_RDF_STATUS_UNSUPPORTED) return 27;
   return 0;
 }
 `, 'utf8');

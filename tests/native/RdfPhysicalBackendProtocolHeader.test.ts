@@ -39,9 +39,13 @@ describe('native RDF physical backend protocol header', () => {
     expect(header).toContain('xpod_rdf_scan_permutation_fn');
     expect(header).toContain('typedef struct xpod_rdf_scan_block_metadata');
     expect(header).toContain('typedef struct xpod_rdf_scan_block_metadata_batch');
+    expect(header).toContain('const xpod_rdf_scan_block_metadata* block_metadata');
+    expect(header).toContain('size_t block_metadata_count');
+    expect(header).toContain('xpod_rdf_bytes block_metadata_version');
     expect(header).toContain('xpod_rdf_scan_block_metadata_fn');
     expect(header).toContain('xpod_rdf_scan_block_metadata_fn scan_block_metadata');
     expect(header).toContain('XPOD_RDF_BACKEND_FEATURE_BLOCK_METADATA');
+    expect(header).toContain('XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN');
     expect(header).toContain('xpod_rdf_source_scope source_scope');
     expect(header).toContain('typedef struct xpod_rdf_resolved_source_scope');
     expect(header).toContain('xpod_rdf_resolve_source_scope_fn');

@@ -73,6 +73,17 @@ int main() {
   subject_range.range.upper_exclusive = 1;
   subject_range.collation = XPOD_RDF_TERM_COLLATION_BYTEWISE;
   input.slot_ranges.push_back(subject_range);
+  xpod_rdf_scan_block_metadata block = {};
+  block.block_id = 1001;
+  block.first_quad = {10, 20, 30, 40};
+  block.last_quad = {19, 20, 30, 40};
+  block.row_count = 10;
+  block.sorted_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE;
+  input.block_metadata.push_back(block);
+  input.block_metadata_version_storage = "blocks-v1";
+  input.block_metadata_version = {
+      input.block_metadata_version_storage.data(),
+      input.block_metadata_version_storage.size()};
 
   xpod_rdf_scan_request request = xpod::qlever::makeScanRequest(input);
   if (request.snapshot.snapshot_token.data != snapshot.snapshot_token.data) return 1;
@@ -96,6 +107,11 @@ int main() {
   if (request.slot_ranges[0].range.lower != 1000 ||
       request.slot_ranges[0].range.upper != 2000) return 15;
   if (request.slot_ranges[0].collation != XPOD_RDF_TERM_COLLATION_BYTEWISE) return 16;
+  if (request.block_metadata_count != 1) return 18;
+  if (request.block_metadata == nullptr) return 19;
+  if (request.block_metadata[0].block_id != 1001) return 20;
+  if (request.block_metadata[0].last_quad.subject != 19) return 21;
+  if (request.block_metadata_version.size != 9) return 22;
   return 0;
 }
 `, 'utf8');

@@ -6,6 +6,7 @@
 #include "XpodQleverScanMaterializer.hpp"
 #include "xpod_rdf_physical_backend.h"
 
+#include <string>
 #include <vector>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
@@ -37,6 +38,9 @@ struct ScanRequestInput {
   uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
                           XPOD_RDF_SLOT_OBJECT;
   std::vector<xpod_rdf_slot_term_range> slot_ranges;
+  std::vector<xpod_rdf_scan_block_metadata> block_metadata;
+  std::string block_metadata_version_storage;
+  xpod_rdf_bytes block_metadata_version = {};
 };
 
 inline xpod_rdf_quad_pattern toXpodQuadPattern(
@@ -74,6 +78,9 @@ inline xpod_rdf_scan_request makeScanRequest(
   request.offset = input.offset;
   request.batch_size = input.batch_size;
   request.needed_slots = input.needed_slots;
+  request.block_metadata = input.block_metadata.data();
+  request.block_metadata_count = input.block_metadata.size();
+  request.block_metadata_version = input.block_metadata_version;
   return request;
 }
 

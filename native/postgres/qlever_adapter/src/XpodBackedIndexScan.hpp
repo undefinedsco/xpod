@@ -129,10 +129,16 @@ class XpodBackedIndexScan {
     if (status != XPOD_RDF_STATUS_OK) {
       return status;
     }
-    return (capabilities.supported_permutations &
-            toXpodPermutationCapability(input_.permutation)) != 0
-               ? XPOD_RDF_STATUS_OK
-               : XPOD_RDF_STATUS_UNSUPPORTED;
+    if ((capabilities.supported_permutations &
+         toXpodPermutationCapability(input_.permutation)) == 0) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    if (!input_.block_metadata.empty() &&
+        (capabilities.features &
+         XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN) == 0) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return XPOD_RDF_STATUS_OK;
   }
 
   const std::vector<ColumnIndex>& effectiveSortedBy() const noexcept {
