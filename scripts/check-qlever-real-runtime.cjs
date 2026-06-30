@@ -1,0 +1,459 @@
+#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+
+const repoRoot = path.resolve(__dirname, '..');
+
+function fail(message, error) {
+  console.error(`[qlever-real-runtime] ${message}`);
+  if (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+  process.exit(1);
+}
+
+function readArg(name) {
+  const index = process.argv.indexOf(name);
+  if (index === -1) return undefined;
+  return process.argv[index + 1];
+}
+
+function hasFlag(name) {
+  return process.argv.includes(name);
+}
+
+function fileExists(filePath) {
+  try {
+    return fs.existsSync(filePath);
+  } catch {
+    return false;
+  }
+}
+
+function splitCommand(command) {
+  const result = [];
+  let token = '';
+  let quote = '';
+  let escaping = false;
+  for (const char of command) {
+    if (escaping) {
+      token += char;
+      escaping = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = '';
+      } else {
+        token += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (token) {
+        result.push(token);
+        token = '';
+      }
+      continue;
+    }
+    token += char;
+  }
+  if (token) result.push(token);
+  return result;
+}
+
+function addExistingDir(dirs, value, baseDir) {
+  if (!value) return;
+  const resolved = path.isAbsolute(value) ? value : path.resolve(baseDir, value);
+  if (fileExists(resolved) && fs.statSync(resolved).isDirectory()) {
+    dirs.add(resolved);
+  }
+}
+
+function dependencyIncludeDirsFromCompileCommands(compileCommandsPath) {
+  if (!fileExists(compileCommandsPath)) {
+    return [];
+  }
+  const parsed = JSON.parse(fs.readFileSync(compileCommandsPath, 'utf8'));
+  const dirs = new Set();
+  for (const entry of parsed) {
+    const baseDir = entry.directory || path.dirname(compileCommandsPath);
+    const tokens = Array.isArray(entry.arguments)
+      ? entry.arguments
+      : splitCommand(String(entry.command || ''));
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (token === '-I' || token === '-isystem' || token === '-iquote' || token === '-idirafter') {
+        addExistingDir(dirs, tokens[i + 1], baseDir);
+        i += 1;
+      } else if (token.startsWith('-I') && token.length > 2) {
+        addExistingDir(dirs, token.slice(2), baseDir);
+      } else if (token.startsWith('-isystem') && token.length > '-isystem'.length) {
+        addExistingDir(dirs, token.slice('-isystem'.length), baseDir);
+      }
+    }
+  }
+  return [...dirs];
+}
+
+function readLinkTokens(linkLinePath) {
+  if (!fileExists(linkLinePath)) {
+    fail(`missing QLever link line: ${linkLinePath}. Run check:qlever-full-engine first.`);
+  }
+  const linkLine = fs.readFileSync(linkLinePath, 'utf8').trim();
+  const tokens = splitCommand(linkLine);
+  if (tokens.length === 0) {
+    fail(`empty QLever link line: ${linkLinePath}`);
+  }
+  const outputIndex = tokens.indexOf('-o');
+  if (outputIndex === -1 || outputIndex + 1 >= tokens.length) {
+    fail(`unsupported QLever link line shape: ${linkLinePath}`);
+  }
+  return { compiler: tokens[0], beforeOutput: tokens.slice(1, outputIndex), afterOutput: tokens.slice(outputIndex + 2) };
+}
+
+function platformCompileArgsFromLinkLine(linkLinePath) {
+  if (!fileExists(linkLinePath)) {
+    return [];
+  }
+  const { beforeOutput } = readLinkTokens(linkLinePath);
+  const args = [];
+  for (let i = 0; i < beforeOutput.length; i += 1) {
+    const token = beforeOutput[i];
+    if ((token === '-arch' || token === '-isysroot') && beforeOutput[i + 1]) {
+      args.push(token, beforeOutput[i + 1]);
+      i += 1;
+    }
+  }
+  return args;
+}
+
+function makeCompileArgs(qleverSource, qleverBuildDir, linkLinePath, smokeSourcePath, smokeObjectPath) {
+  const dependencyIncludeDirs = dependencyIncludeDirsFromCompileCommands(
+    path.join(qleverBuildDir, 'compile_commands.json'),
+  );
+  const args = [
+    ...platformCompileArgsFromLinkLine(linkLinePath),
+    '-std=c++20',
+    '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+    '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+    '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+    '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/src'),
+    '-I', path.join(qleverSource, 'src'),
+  ];
+  for (const dir of dependencyIncludeDirs) {
+    args.push('-isystem', dir);
+  }
+  args.push('-c', smokeSourcePath, '-o', smokeObjectPath);
+  return args;
+}
+
+function homebrewLlvmCxxRuntimeLinkArgs() {
+  if (process.platform !== 'darwin') {
+    return [];
+  }
+  const llvmCxxLib = '/opt/homebrew/opt/llvm/lib/c++';
+  const llvmLib = '/opt/homebrew/opt/llvm/lib';
+  if (!fileExists(llvmCxxLib)) {
+    return [];
+  }
+  const args = [`-L${llvmCxxLib}`, `-Wl,-rpath,${llvmCxxLib}`, '-lc++'];
+  if (fileExists(path.join(llvmLib, 'libunwind.dylib'))) {
+    args.push(`-L${llvmLib}`, `-Wl,-rpath,${llvmLib}`, '-lunwind');
+  }
+  return args;
+}
+
+function makeLinkArgs(linkLinePath, smokeObjectPath, smokeBinaryPath, adapterBuildDir) {
+  const { beforeOutput, afterOutput } = readLinkTokens(linkLinePath);
+  const adapterLib = path.join(adapterBuildDir, 'libxpod_qlever_adapter.a');
+  const prefix = beforeOutput.filter((token) => !token.includes('CMakeFiles/qlever-server.dir'));
+  const libraries = afterOutput.filter((token) => token !== 'lib/libserver.a');
+  return [
+    ...prefix,
+    smokeObjectPath,
+    adapterLib,
+    '-o',
+    smokeBinaryPath,
+    ...libraries,
+    ...homebrewLlvmCxxRuntimeLinkArgs(),
+  ];
+}
+
+function writeSmokeSource(smokeSourcePath) {
+  fs.mkdirSync(path.dirname(smokeSourcePath), { recursive: true });
+  fs.writeFileSync(smokeSourcePath, String.raw`#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string_view>
+
+#include "xpod_qlever_adapter.h"
+
+struct BackendState {
+  int scan_calls = 0;
+};
+
+static xpod_rdf_bytes bytes(const char* value) {
+  return {value, std::strlen(value)};
+}
+
+static xpod_rdf_status get_capabilities(void*, xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations =
+      XPOD_RDF_PERM_CAP_SPOG |
+      XPOD_RDF_PERM_CAP_SOPG |
+      XPOD_RDF_PERM_CAP_PSOG |
+      XPOD_RDF_PERM_CAP_POSG |
+      XPOD_RDF_PERM_CAP_OSPG |
+      XPOD_RDF_PERM_CAP_OPSG;
+  out_capabilities->features = 0;
+  out_capabilities->max_batch_size = 64;
+  out_capabilities->backend_name = bytes("xpod-real-runtime-smoke");
+  out_capabilities->backend_version = bytes("1");
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status encode_qlever_id(void*, xpod_rdf_term_key term, uint64_t* out_bits) {
+  *out_bits = term;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status decode_qlever_id(void*, uint64_t bits, xpod_rdf_term_key* out_term) {
+  *out_term = bits;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status compare_qlever_ids(void*, uint64_t left, uint64_t right, int32_t* out_compare) {
+  *out_compare = left < right ? -1 : (left > right ? 1 : 0);
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status resolve_terms(
+    void*,
+    const xpod_rdf_term_key* keys,
+    size_t key_count,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_term* out_terms,
+    xpod_rdf_status* out_statuses) {
+  for (size_t i = 0; i < key_count; ++i) {
+    out_statuses[i] = XPOD_RDF_STATUS_OK;
+    out_terms[i].kind = XPOD_RDF_TERM_IRI;
+    if (keys[i] == 10) {
+      out_terms[i].value = bytes("urn:s");
+    } else if (keys[i] == 20) {
+      out_terms[i].value = bytes("urn:p");
+    } else if (keys[i] == 30) {
+      out_terms[i].value = bytes("urn:o");
+    } else if (keys[i] == 40) {
+      out_terms[i].value = bytes("urn:g");
+    } else {
+      std::fprintf(stderr, "unexpected term key: %llu\n", static_cast<unsigned long long>(keys[i]));
+      out_statuses[i] = XPOD_RDF_STATUS_NOT_FOUND;
+    }
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_estimate* out_estimate) {
+  out_estimate->rows = 1;
+  out_estimate->distinct_subjects = 1;
+  out_estimate->distinct_predicates = 1;
+  out_estimate->distinct_objects = 1;
+  out_estimate->distinct_graphs = 1;
+  out_estimate->selectivity = 1.0;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status count_scan(void*, const xpod_rdf_scan_request*, xpod_rdf_count_result* out_result) {
+  out_result->count = 1;
+  out_result->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static bool matches_pattern(const xpod_rdf_quad_pattern& pattern, const xpod_rdf_quad_key& row) {
+  return (!pattern.has_subject || pattern.subject == row.subject) &&
+         (!pattern.has_predicate || pattern.predicate == row.predicate) &&
+         (!pattern.has_object || pattern.object == row.object) &&
+         (!pattern.has_graph || pattern.graph == row.graph);
+}
+
+static xpod_rdf_status scan_permutation(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->scan_calls;
+  xpod_rdf_quad_key row = {10, 20, 30, 40};
+  if (!matches_pattern(request->pattern, row)) {
+    xpod_rdf_quad_batch empty = {};
+    return on_batch(callback_user_data, &empty);
+  }
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = &row;
+  batch.row_count = 1;
+  batch.sorted_slots = request->needed_slots;
+  batch.scanned_rows = 1;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state;
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.encode_qlever_id = encode_qlever_id;
+  raw_backend.decode_qlever_id = decode_qlever_id;
+  raw_backend.compare_qlever_ids = compare_qlever_ids;
+  raw_backend.resolve_terms = resolve_terms;
+  raw_backend.estimate_scan = estimate_scan;
+  raw_backend.count_scan = count_scan;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  raw_backend.qlever_term_ordering = XPOD_RDF_QLEVER_TERM_ORDER_PRESERVED;
+
+  xpod_qlever_adapter_config config = {};
+  config.backend = &raw_backend;
+  xpod_qlever_adapter* adapter = nullptr;
+  if (xpod_qlever_adapter_create(&config, &adapter) != XPOD_RDF_STATUS_OK) return 1;
+
+  xpod_qlever_query_request request = {};
+  request.sparql = bytes("SELECT * WHERE { ?s ?p ?o }");
+  xpod_qlever_query_result result = {};
+  xpod_rdf_status status = xpod_qlever_adapter_query_request(adapter, &request, &result);
+  std::string_view json(result.result_json.data, result.result_json.size);
+  std::string_view profile(result.profile_json.data, result.profile_json.size);
+  std::string_view error(result.error_message.data, result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "query failed: %.*s\n", static_cast<int>(error.size()), error.data());
+    return 2;
+  }
+  if (state.scan_calls < 1) return 3;
+  if (json.find("urn:s") == std::string_view::npos) return 4;
+  if (json.find("urn:p") == std::string_view::npos) return 5;
+  if (json.find("urn:o") == std::string_view::npos) return 6;
+  if (profile.find("xpod-qlever-bridge") == std::string_view::npos) return 7;
+  xpod_qlever_adapter_destroy(adapter);
+  return 0;
+}
+`, 'utf8');
+}
+
+const sourceInput = readArg('--qlever-source') || process.env.XPOD_QLEVER_SOURCE_DIR;
+if (!sourceInput) {
+  fail('missing --qlever-source or XPOD_QLEVER_SOURCE_DIR');
+}
+
+const qleverSource = path.resolve(sourceInput);
+const qleverBuildDir = path.resolve(
+  readArg('--qlever-build-dir') || process.env.XPOD_QLEVER_FULL_BUILD_DIR ||
+    path.join(repoRoot, '.test-data/qlever-full-build'),
+);
+const adapterBuildDir = path.resolve(
+  readArg('--adapter-build-dir') || process.env.XPOD_QLEVER_REAL_ADAPTER_BUILD_DIR ||
+    path.join(repoRoot, '.test-data/qlever-real-adapter-build'),
+);
+const runtimeBuildDir = path.resolve(
+  readArg('--runtime-build-dir') || process.env.XPOD_QLEVER_REAL_RUNTIME_BUILD_DIR ||
+    path.join(repoRoot, '.test-data/qlever-real-runtime-build'),
+);
+const jobs = readArg('--jobs') || process.env.XPOD_QLEVER_FULL_ENGINE_JOBS || '2';
+const dryRun = hasFlag('--dry-run');
+const json = hasFlag('--json');
+const configureOnly = hasFlag('--configure-only');
+const buildOnly = hasFlag('--build-only');
+const skipPrerequisites = hasFlag('--skip-prerequisites');
+
+const smokeSourcePath = path.join(runtimeBuildDir, 'xpod_qlever_real_runtime_smoke.cpp');
+const smokeObjectPath = path.join(runtimeBuildDir, 'xpod_qlever_real_runtime_smoke.o');
+const smokeBinaryPath = path.join(runtimeBuildDir, 'xpod_qlever_real_runtime_smoke');
+const linkLinePath = path.join(qleverBuildDir, 'CMakeFiles/qlever-server.dir/link.txt');
+const compiler = fileExists(linkLinePath) ? readLinkTokens(linkLinePath).compiler : 'c++';
+
+const fullEngineArgs = [
+  'scripts/check-qlever-full-engine-build.cjs',
+  '--qlever-source', qleverSource,
+  '--build-dir', qleverBuildDir,
+  '--target', 'engine',
+  '--jobs', jobs,
+];
+const realAdapterArgs = [
+  'scripts/check-qlever-real-adapter-build.cjs',
+  '--qlever-source', qleverSource,
+  '--qlever-build-dir', qleverBuildDir,
+  '--adapter-build-dir', adapterBuildDir,
+  '--jobs', jobs,
+];
+const libraryBuildArgs = [
+  '--build', qleverBuildDir,
+  '--target', 'qlever', 'SortPerformanceEstimator', 'compilationInfo',
+  `-j${jobs}`,
+];
+const compileArgs = makeCompileArgs(qleverSource, qleverBuildDir, linkLinePath, smokeSourcePath, smokeObjectPath);
+const linkArgs = fileExists(linkLinePath)
+  ? makeLinkArgs(linkLinePath, smokeObjectPath, smokeBinaryPath, adapterBuildDir)
+  : [smokeObjectPath, path.join(adapterBuildDir, 'libxpod_qlever_adapter.a'), '-o', smokeBinaryPath];
+const runArgs = [smokeBinaryPath];
+
+if (dryRun) {
+  const payload = {
+    fullEngineArgs,
+    realAdapterArgs,
+    libraryBuildArgs,
+    smokeSourcePath,
+    smokeObjectPath,
+    smokeBinaryPath,
+    compileArgs,
+    linkLinePath,
+    linkArgs,
+    runArgs,
+  };
+  if (json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  } else {
+    console.log('[qlever-real-runtime] full engine:', [process.execPath, ...fullEngineArgs].join(' '));
+    console.log('[qlever-real-runtime] real adapter:', [process.execPath, ...realAdapterArgs].join(' '));
+    console.log('[qlever-real-runtime] libraries:', ['cmake', ...libraryBuildArgs].join(' '));
+    console.log('[qlever-real-runtime] compile:', [compiler, ...compileArgs].join(' '));
+    console.log('[qlever-real-runtime] link:', [compiler, ...linkArgs].join(' '));
+    console.log('[qlever-real-runtime] run:', runArgs.join(' '));
+  }
+  process.exit(0);
+}
+
+if (!fileExists(qleverSource)) {
+  fail(`QLever source tree does not exist: ${qleverSource}`);
+}
+
+try {
+  if (!skipPrerequisites && !buildOnly) {
+    execFileSync(process.execPath, fullEngineArgs, { cwd: repoRoot, stdio: 'inherit' });
+    execFileSync('cmake', libraryBuildArgs, { cwd: repoRoot, stdio: 'inherit' });
+    execFileSync(process.execPath, realAdapterArgs, { cwd: repoRoot, stdio: 'inherit' });
+  }
+  writeSmokeSource(smokeSourcePath);
+  fs.mkdirSync(runtimeBuildDir, { recursive: true });
+  if (!configureOnly) {
+    execFileSync(compiler, compileArgs, { cwd: qleverBuildDir, stdio: 'inherit' });
+    execFileSync(compiler, makeLinkArgs(linkLinePath, smokeObjectPath, smokeBinaryPath, adapterBuildDir), {
+      cwd: qleverBuildDir,
+      stdio: 'inherit',
+    });
+    execFileSync(smokeBinaryPath, [], { cwd: runtimeBuildDir, stdio: 'inherit' });
+  }
+} catch (error) {
+  fail('real upstream QLever runtime smoke failed', error);
+}
+
+console.log(`[qlever-real-runtime] OK: ran ${smokeBinaryPath}`);

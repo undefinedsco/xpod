@@ -135,7 +135,8 @@
     "check:rdf-protocol-abi": "node scripts/check-rdf-physical-protocol-abi.cjs",
     "check:qlever-upstream-patches": "node scripts/check-qlever-upstream-patches.cjs",
     "check:qlever-full-engine": "node scripts/check-qlever-full-engine-build.cjs",
-    "check:qlever-real-adapter": "node scripts/check-qlever-real-adapter-build.cjs"
+    "check:qlever-real-adapter": "node scripts/check-qlever-real-adapter-build.cjs",
+    "check:qlever-real-runtime": "node scripts/check-qlever-real-runtime.cjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.57.0",

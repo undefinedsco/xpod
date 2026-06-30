@@ -3792,3 +3792,87 @@ bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts tests/native/
 ```
 
 Observed: PASS locally. This still does not complete the whole QLever runtime integration, but it removes one more dependency on QLever-owned block metadata for plain non-prefiltered lazy scans.
+
+### Task 93: Let real upstream planning reach the Xpod physical seam
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/patches/qlever-queryplanner-physical-index.patch`
+- Add: `tests/native/QleverUpstreamQueryPlannerPatch.test.ts`
+- Modify: `scripts/check-qlever-upstream-patches.cjs`
+- Modify: `native/postgres/qlever_adapter/CMakeLists.txt`
+- Modify: `tests/native/QleverAdapterCmake.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Lock the upstream planner guard contract**
+
+Add a patch contract requiring the real upstream `QueryPlanner` to tolerate an injected Xpod physical index before QLever-native permutation files are loaded. Without this guard, Xpod-backed execution can fail during planning because QLever sees no native on-disk permutation index even though the data is available through `xpodPhysicalIndex()`.
+
+- [x] **Step 2: Validate the patch in the real-source gates**
+
+Extend the upstream patch validator and QLever-enabled adapter CMake gate so half-patched source trees fail before build or runtime. The source tree must now contain the physical-index planner guard plus the earlier `IndexScan` lazy-scan and text-search overlays.
+
+- [x] **Step 3: Verify planner-source compatibility**
+
+Run:
+
+```bash
+bun test tests/native/QleverUpstreamQueryPlannerPatch.test.ts tests/native/QleverAdapterCmake.test.ts --run
+bun run check:rdf-protocol-abi
+bun run build:ts
+bun test tests/native --run
+bun run test:integration
+```
+
+Observed: PASS locally. This makes real upstream planning able to proceed toward the patched `IndexScan` physical seam in an Xpod-backed context, but it still does not prove a linked real upstream query executable reaches the backend callbacks.
+
+### Task 94: Add a real upstream runtime smoke gate
+
+**Files:**
+- Add: `scripts/check-qlever-real-runtime.cjs`
+- Add: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `package.json`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a failing script contract test**
+
+Add a native test requiring:
+
+- `package.json` exposes `check:qlever-real-runtime`;
+- `--dry-run --json` prints the upstream engine build, required upstream library build, real adapter build, compile, link, and run plan;
+- compile args inherit platform flags such as `-arch` and `-isysroot` from QLever's generated link line;
+- the smoke link step filters out QLever's `libserver.a`, because server executable code is not part of the adapter runtime path;
+- missing source configuration fails with `missing --qlever-source or XPOD_QLEVER_SOURCE_DIR`.
+
+Expected: FAIL before the script and package entry exist.
+
+- [x] **Step 2: Implement the linked real-upstream runtime smoke**
+
+The script now:
+
+- builds the patched upstream `engine` through `check:qlever-full-engine`;
+- builds the upstream library targets the smoke needs (`qlever`, `SortPerformanceEstimator`, `compilationInfo`) without requiring the standalone `qlever-server` executable target;
+- builds the real QLever-enabled Xpod adapter;
+- writes and compiles a small executable that links against real upstream parser/planner/runtime objects and `libxpod_qlever_adapter.a`;
+- executes `SELECT * WHERE { ?s ?p ?o }` through `xpod_qlever_adapter_query_request(...)`;
+- verifies the real execution path reaches `xpod_rdf_backend_v1.scan_permutation` and serializes the expected RDF terms.
+
+- [x] **Step 3: Verify the real runtime gate and full regression set**
+
+Run:
+
+```bash
+bun test tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-runtime -- \
+  --qlever-source .test-data/qlever-upstream \
+  --qlever-build-dir .test-data/qlever-full-build \
+  --adapter-build-dir .test-data/qlever-real-adapter-build \
+  --runtime-build-dir .test-data/qlever-real-runtime-build \
+  --jobs 2
+bun test tests/native --run
+bun run check:rdf-protocol-abi
+bun run build:ts
+bun run test:integration
+git diff --check
+```
+
+Observed: PASS locally. This remains a seam gate over an in-process callback backend, not a production PG dynamic-loader gate or a broad SPARQL conformance suite.

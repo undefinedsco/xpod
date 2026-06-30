@@ -1,0 +1,136 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const repoRoot = path.resolve(__dirname, '../..');
+const scriptPath = path.join(repoRoot, 'scripts/check-qlever-real-runtime.cjs');
+const packageJsonPath = path.join(repoRoot, 'package.json');
+
+describe('QLever real upstream runtime smoke script', () => {
+  it('is exposed as a package script', () => {
+    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { scripts?: Record<string, string> };
+    expect(pkg.scripts?.['check:qlever-real-runtime']).toBe('node scripts/check-qlever-real-runtime.cjs');
+  });
+
+  it('prints a dry-run plan for building and running a real linked upstream smoke binary', () => {
+    expect(existsSync(scriptPath)).toBe(true);
+    const output = execFileSync('node', [
+      scriptPath,
+      '--qlever-source',
+      path.join(repoRoot, '.test-data/qlever-upstream'),
+      '--qlever-build-dir',
+      path.join(repoRoot, '.test-data/qlever-full-build'),
+      '--adapter-build-dir',
+      path.join(repoRoot, '.test-data/qlever-real-adapter-build'),
+      '--runtime-build-dir',
+      path.join(repoRoot, '.test-data/qlever-real-runtime-build'),
+      '--dry-run',
+      '--json',
+    ], { cwd: repoRoot, encoding: 'utf8' });
+
+    const parsed = JSON.parse(output) as {
+      fullEngineArgs: string[];
+      realAdapterArgs: string[];
+      libraryBuildArgs: string[];
+      smokeSourcePath: string;
+      smokeObjectPath: string;
+      smokeBinaryPath: string;
+      compileArgs: string[];
+      linkLinePath: string;
+      runArgs: string[];
+    };
+    expect(parsed.fullEngineArgs).toContain('scripts/check-qlever-full-engine-build.cjs');
+    expect(parsed.fullEngineArgs).toContain('--target');
+    expect(parsed.fullEngineArgs).toContain('engine');
+    expect(parsed.libraryBuildArgs).toEqual(['--build', path.join(repoRoot, '.test-data/qlever-full-build'), '--target', 'qlever', 'SortPerformanceEstimator', 'compilationInfo', '-j2']);
+    expect(parsed.realAdapterArgs).toContain('scripts/check-qlever-real-adapter-build.cjs');
+    expect(parsed.smokeSourcePath).toBe(path.join(repoRoot, '.test-data/qlever-real-runtime-build', 'xpod_qlever_real_runtime_smoke.cpp'));
+    expect(parsed.smokeObjectPath).toBe(path.join(repoRoot, '.test-data/qlever-real-runtime-build', 'xpod_qlever_real_runtime_smoke.o'));
+    expect(parsed.smokeBinaryPath).toBe(path.join(repoRoot, '.test-data/qlever-real-runtime-build', 'xpod_qlever_real_runtime_smoke'));
+    expect(parsed.compileArgs.join('\n')).toContain('-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1');
+    expect(parsed.compileArgs.join('\n')).toContain('native/postgres/qlever_adapter/include');
+    expect(parsed.compileArgs).toContain(path.join(repoRoot, '.test-data/qlever-real-runtime-build', 'xpod_qlever_real_runtime_smoke.cpp'));
+    expect(parsed.linkLinePath).toBe(path.join(repoRoot, '.test-data/qlever-full-build', 'CMakeFiles/qlever-server.dir/link.txt'));
+    expect(parsed.runArgs).toEqual([path.join(repoRoot, '.test-data/qlever-real-runtime-build', 'xpod_qlever_real_runtime_smoke')]);
+  });
+
+  it('carries platform compiler flags from the QLever link line into the smoke compile step', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-qlever-real-runtime-link-flags-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      const qleverBuild = path.join(root, 'qlever-build');
+      await mkdir(path.join(qleverSource, 'src'), { recursive: true });
+      await mkdir(path.join(qleverBuild, 'CMakeFiles/qlever-server.dir'), { recursive: true });
+      await writeFile(
+        path.join(qleverBuild, 'CMakeFiles/qlever-server.dir/link.txt'),
+        'clang++ -arch arm64 -isysroot /native/sdk CMakeFiles/qlever-server.dir/src/ServerMain.cpp.o -o qlever-server lib/libengine.a',
+        'utf8',
+      );
+
+      const output = execFileSync('node', [
+        scriptPath,
+        '--qlever-source', qleverSource,
+        '--qlever-build-dir', qleverBuild,
+        '--adapter-build-dir', path.join(root, 'adapter-build'),
+        '--runtime-build-dir', path.join(root, 'runtime-build'),
+        '--dry-run',
+        '--json',
+      ], { cwd: repoRoot, encoding: 'utf8' });
+      const parsed = JSON.parse(output) as { compileArgs: string[] };
+      expect(parsed.compileArgs).toContain('-arch');
+      expect(parsed.compileArgs).toContain('arm64');
+      expect(parsed.compileArgs).toContain('-isysroot');
+      expect(parsed.compileArgs).toContain('/native/sdk');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not link the server library into the adapter runtime smoke', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xpod-qlever-real-runtime-no-server-lib-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      const qleverBuild = path.join(root, 'qlever-build');
+      await mkdir(path.join(qleverSource, 'src'), { recursive: true });
+      await mkdir(path.join(qleverBuild, 'CMakeFiles/qlever-server.dir'), { recursive: true });
+      await writeFile(
+        path.join(qleverBuild, 'CMakeFiles/qlever-server.dir/link.txt'),
+        'clang++ CMakeFiles/qlever-server.dir/src/ServerMain.cpp.o -o qlever-server lib/libengine.a lib/libserver.a lib/libparser.a',
+        'utf8',
+      );
+
+      const output = execFileSync('node', [
+        scriptPath,
+        '--qlever-source', qleverSource,
+        '--qlever-build-dir', qleverBuild,
+        '--adapter-build-dir', path.join(root, 'adapter-build'),
+        '--runtime-build-dir', path.join(root, 'runtime-build'),
+        '--dry-run',
+        '--json',
+      ], { cwd: repoRoot, encoding: 'utf8' });
+      const parsed = JSON.parse(output) as { linkArgs: string[] };
+      expect(parsed.linkArgs).not.toContain('lib/libserver.a');
+      expect(parsed.linkArgs).toContain('lib/libengine.a');
+      expect(parsed.linkArgs).toContain('lib/libparser.a');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails clearly when the upstream source tree is not supplied', () => {
+    let output = '';
+    try {
+      execFileSync('node', [scriptPath, '--dry-run'], { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe' });
+    } catch (error) {
+      const failure = error as { stdout?: Buffer | string; stderr?: Buffer | string; message?: string };
+      output = [failure.stdout, failure.stderr, failure.message]
+        .filter(Boolean)
+        .map((value) => Buffer.isBuffer(value) ? value.toString('utf8') : String(value))
+        .join('\n');
+    }
+    expect(output).toContain('missing --qlever-source or XPOD_QLEVER_SOURCE_DIR');
+  });
+});
