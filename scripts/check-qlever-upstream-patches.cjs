@@ -67,6 +67,17 @@ function readArg(name) {
   return process.argv[index + 1];
 }
 
+function gitApplyEnvironment(sourceDir) {
+  const ceiling = path.dirname(sourceDir);
+  const existingCeilings = process.env.GIT_CEILING_DIRECTORIES;
+  return {
+    ...process.env,
+    GIT_CEILING_DIRECTORIES: existingCeilings
+      ? `${ceiling}${path.delimiter}${existingCeilings}`
+      : ceiling,
+  };
+}
+
 const qleverSourceInput = readArg('--qlever-source') || process.env.XPOD_QLEVER_SOURCE_DIR;
 const qleverSource = qleverSourceInput ? path.resolve(qleverSourceInput) : '';
 const patchInput = readArg('--patch');
@@ -83,6 +94,7 @@ if (specs.length === 0) {
 }
 
 let checked = 0;
+const gitEnv = gitApplyEnvironment(qleverSource);
 for (const spec of specs) {
   const patchPath = path.resolve(spec.patchPath);
   if (!fs.existsSync(patchPath)) {
@@ -118,12 +130,16 @@ for (const spec of specs) {
       'apply',
       '--check',
       patchPath,
-    ], { cwd: qleverSource, stdio: 'pipe' });
+    ], { cwd: qleverSource, stdio: 'pipe', env: gitEnv });
     if (shouldApply) {
       execFileSync('git', [
         'apply',
         patchPath,
-      ], { cwd: qleverSource, stdio: 'pipe' });
+      ], { cwd: qleverSource, stdio: 'pipe', env: gitEnv });
+      const appliedSource = fs.readFileSync(targetPath, 'utf8');
+      if (!spec.appliedTokens.every((token) => appliedSource.includes(token))) {
+        fail(`QLever upstream patch command completed but ${spec.target} does not contain the expected overlay`);
+      }
     }
   } catch (error) {
     fail(`QLever upstream patch does not apply cleanly: ${path.relative(repoRoot, patchPath)}`, error);

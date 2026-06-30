@@ -87,4 +87,29 @@ describe('QLever upstream QueryExecutionContext patch asset', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('applies when the QLever source tree is nested inside this repository', async () => {
+    const root = path.join(repoRoot, '.test-data', `qlever-qec-nested-${Date.now()}`);
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      const qecPath = path.join(qleverSource, 'src/engine/QueryExecutionContext.h');
+      await mkdir(path.dirname(qecPath), { recursive: true });
+      await writeFile(qecPath, upstreamQueryExecutionContextFixture, 'utf8');
+
+      execFileSync('node', [
+        patchScript,
+        '--qlever-source',
+        qleverSource,
+        '--patch',
+        patchPath,
+        '--apply',
+      ], { stdio: 'pipe' });
+
+      const patched = await readFile(qecPath, 'utf8');
+      expect(patched).toContain('setXpodPhysicalIndex');
+      expect(patched).toContain('xpodPhysicalIndex() const');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

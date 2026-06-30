@@ -80,6 +80,7 @@ CompressedRelationReader::IdTableGeneratorInputRange IndexScan::getLazyScan(
 
 const patchedQueryExecutionContextHeader = `
 #pragma once
+#include <gtest/gtest_prod.h>
 namespace xpod { namespace qlever { class XpodQleverPhysicalIndex; } }
 class QueryExecutionContext {
  public:

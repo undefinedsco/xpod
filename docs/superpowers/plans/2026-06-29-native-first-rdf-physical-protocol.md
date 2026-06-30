@@ -3470,3 +3470,44 @@ node scripts/check-qlever-upstream-patches.cjs --qlever-source <downloaded-curre
 
 Expected: PASS.
 - The remaining gap is compiling a patched upstream QLever source tree and running a real `QueryPlanner -> QueryExecutionContext -> IndexScan::getLazyScan -> XpodPhysicalIndex -> native backend` query. Source patch validation and CMake gating now prevent the known half-wired state.
+
+### Task 86: Make real upstream source probes patch the intended tree
+
+**Files:**
+- Add: `native/postgres/qlever_adapter/src/gtest/gtest_prod.h`
+- Modify: `scripts/check-qlever-upstream-patches.cjs`
+- Modify: `tests/native/QleverUpstreamQueryExecutionContextPatch.test.ts`
+- Modify: `tests/native/QleverAdapterCmake.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Reproduce the nested-source patching bug**
+
+Download a QLever source tarball into `.test-data/qlever-upstream`, run `check-qlever-upstream-patches.cjs --apply`, and verify that `git apply` reports success while the target files remain unmodified. This happens because `git apply` discovers the parent xpod worktree and treats patch paths relative to the xpod repo root.
+
+Expected: FAIL before the fix; the nested-source regression test sees no `setXpodPhysicalIndex` in the target header.
+
+- [x] **Step 2: Isolate Git discovery and post-apply verification**
+
+Set `GIT_CEILING_DIRECTORIES` for patch commands so a nested QLever source tree is treated as its own patch root, not as a child of the xpod worktree. After `--apply`, reread the target file and require the overlay tokens to be present; this turns future skipped patches into hard failures.
+
+- [x] **Step 3: Remove the first production-build-only test dependency**
+
+Real upstream `QueryExecutionContext.h` includes `<gtest/gtest_prod.h>` for `FRIEND_TEST`. The adapter now provides a local `gtest/gtest_prod.h` shim that expands `FRIEND_TEST` to nothing, so standalone adapter builds do not require QLever's test dependency just to parse production headers.
+
+- [x] **Step 4: Run the real-source probe**
+
+Run:
+
+```bash
+curl -L -o .test-data/qlever-upstream.tar.gz https://github.com/ad-freiburg/qlever/archive/refs/heads/master.tar.gz
+tar -xzf .test-data/qlever-upstream.tar.gz -C .test-data/qlever-upstream --strip-components=1
+node scripts/check-qlever-upstream-patches.cjs --qlever-source .test-data/qlever-upstream --apply
+cmake -S native/postgres/qlever_adapter -B .test-data/qlever-real-adapter-build -DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON -DXPOD_QLEVER_SOURCE_DIR=$PWD/.test-data/qlever-upstream
+cmake --build .test-data/qlever-real-adapter-build --target xpod_qlever_adapter -j2
+```
+
+Expected now:
+- Patch application and second validation pass.
+- CMake configure passes against the real patched source tree.
+- Build advances past missing `gtest/gtest_prod.h`.
+- Build currently stops at QLever's real dependency closure, first at `<absl/types/compare.h>`. This should be solved by consuming QLever's dependency targets / dependency prefix, not by adding broad adapter-local Abseil shims.
