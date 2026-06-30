@@ -657,6 +657,35 @@ int main() {
   if (minus_profile.find("Minus") == std::string_view::npos) return 45;
   xpod_qlever_adapter_release_result(adapter, &minus_result);
 
+  xpod_qlever_query_request values_request = {};
+  values_request.sparql = bytes(
+      "SELECT ?s WHERE { VALUES ?s { <urn:s> <urn:o> } ?s ?p ?o } ORDER BY ?s");
+  xpod_qlever_query_result values_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &values_request, &values_result);
+  std::string_view values_json(
+      values_result.result_json.data, values_result.result_json.size);
+  std::string_view values_profile(
+      values_result.profile_json.data, values_result.profile_json.size);
+  std::string_view values_error(
+      values_result.error_message.data, values_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "values query failed: %.*s\n",
+                 static_cast<int>(values_error.size()), values_error.data());
+    return 47;
+  }
+  if (values_json.find(R"("head":{"vars":["s"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "values head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(values_json.size()), values_json.data(),
+                 static_cast<int>(values_profile.size()), values_profile.data());
+    return 48;
+  }
+  if (values_json.find("urn:s") == std::string_view::npos) return 49;
+  if (values_json.find("urn:o") == std::string_view::npos) return 50;
+  if (values_json.find("urn:tail") != std::string_view::npos) return 51;
+  if (values_profile.find("Values") == std::string_view::npos) return 52;
+  if (values_profile.find("OrderBy") == std::string_view::npos) return 53;
+  xpod_qlever_adapter_release_result(adapter, &values_result);
+
   xpod_qlever_adapter_release_result(adapter, &result);
   xpod_qlever_query_request text_request = {};
   text_request.sparql = bytes("SELECT * WHERE { ?text ql:contains-word \"topic\" }");

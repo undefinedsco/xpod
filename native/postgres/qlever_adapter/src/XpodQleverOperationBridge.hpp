@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,6 +24,7 @@ enum class BridgeOperationKind {
   HashJoin,
   TextSearch,
   VectorSearch,
+  Values,
   NeutralElement,
   Union,
   CartesianProductJoin,
@@ -87,6 +89,7 @@ struct BridgeOperationPlan {
   std::vector<std::array<size_t, 2>> matched_columns;
   std::vector<size_t> right_projection_columns;
   std::vector<ColumnIndex> projection_columns;
+  std::vector<std::vector<uint64_t>> value_id_rows;
   std::vector<BridgeOperationPlan> children;
   std::vector<BridgeResultModifier> result_modifiers;
   xpod_rdf_profile_node_key profile_node = 0;
@@ -234,6 +237,8 @@ inline std::string_view profileKind(BridgeOperationKind kind) noexcept {
       return "TextSearch";
     case BridgeOperationKind::VectorSearch:
       return "VectorSearch";
+    case BridgeOperationKind::Values:
+      return "Values";
     case BridgeOperationKind::PermutationScan:
     default:
       return "PermutationScan";

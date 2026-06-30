@@ -4145,3 +4145,45 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally after rebuilding the adapter. This remains a Cloud Enterprise-only native seam gate; local deployments still do not expose the QLever-compatible adapter.
+
+
+### Task 102: Gate real QLever VALUES constraints through the Xpod dictionary
+
+**Files:**
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationExecutor.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a linked upstream VALUES smoke**
+
+The real runtime smoke now exercises:
+
+```sparql
+SELECT ?s WHERE { VALUES ?s { <urn:s> <urn:o> } ?s ?p ?o } ORDER BY ?s
+```
+
+The generated smoke requires a `Values` profile descriptor, requires `urn:s` and `urn:o`, and rejects `urn:tail`. This proves that the VALUES rows constrain the BGP scan instead of only running an unconstrained scan with public projection.
+
+- [x] **Step 2: Materialize supported VALUES rows through the Xpod physical dictionary**
+
+The bridge now supports the safe `VALUES + required BGP` shape in the parsed fallback path. VALUES constants are looked up through `xpod_rdf_backend_v1.lookup_terms(...)`, encoded through `encode_qlever_id`, materialized as a QLever-shaped in-memory table, and then joined with the BGP result. Rows containing terms not present in the Xpod dictionary are skipped; an empty remaining VALUES table becomes a known-empty result. QLever-native vocab is not used in Xpod-backed mode.
+
+This is intentionally still a seam gate. The product capability remains Cloud Enterprise-only; local deployments do not expose the QLever-compatible native adapter or a runtime selector.
+
+- [x] **Step 3: Verify linked upstream VALUES execution**
+
+Run:
+
+```bash
+bun test tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun test tests/native/QleverPlanBridge.test.ts tests/native/QleverOperationPlanBridge.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally after rebuilding the adapter. Running the runtime smoke with a stale `libxpod_qlever_adapter.a` reproduced `unsupported QLever bridge query`; rebuilding the adapter fixed it.

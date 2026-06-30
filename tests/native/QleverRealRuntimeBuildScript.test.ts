@@ -172,6 +172,9 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('optional_profile.find("LimitOffset")');
       expect(smoke).toContain('SELECT ?s WHERE { ?s ?p ?o MINUS { ?s <urn:p2> ?tail } }');
       expect(smoke).toContain('minus_profile.find("Minus")');
+      expect(smoke).toContain('SELECT ?s WHERE { VALUES ?s { <urn:s> <urn:o> } ?s ?p ?o } ORDER BY ?s');
+      expect(smoke).toContain('values_profile.find("Values")');
+      expect(smoke).toContain('values_json.find("urn:tail") != std::string_view::npos');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

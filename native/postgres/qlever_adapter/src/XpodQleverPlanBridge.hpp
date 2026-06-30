@@ -57,6 +57,7 @@ struct BridgeQueryPlan {
   std::vector<BridgeTextCandidateSource> text_sources;
   std::vector<BridgeVectorCandidateSource> vector_sources;
   std::vector<BridgeTextRequiredEntityBinding> text_required_entities;
+  std::vector<std::vector<BridgeTermBinding>> value_rows;
   std::vector<std::string> output_variables;
   std::vector<BridgeQueryPlan> child_plans;
   BridgeOperationPlan root;
@@ -122,6 +123,26 @@ inline std::optional<BridgeTermBinding> literalBindingFromComponent(
     binding.datatype_iri = std::string(suffix.substr(3, suffix.size() - 4));
   }
   return binding;
+}
+
+inline std::optional<BridgeTermBinding> termBindingFromValuesComponent(
+    const TripleComponent& component) {
+  if (component.isIri()) {
+    BridgeTermBinding binding;
+    binding.kind = XPOD_RDF_TERM_IRI;
+    binding.value = iriValueFromComponent(component);
+    return binding;
+  }
+  if (component.isLiteral()) {
+    auto binding = literalBindingFromComponent(
+        component, XPOD_RDF_SLOT_SUBJECT);
+    if (!binding.has_value()) {
+      return std::nullopt;
+    }
+    binding->slot = 0;
+    return binding;
+  }
+  return std::nullopt;
 }
 
 inline bool bindableComponent(
@@ -328,6 +349,58 @@ inline std::string bridgeComponentVariableName(
   return bridgeVariableName(component.getVariable());
 }
 
+inline bool containsOutputVariable(
+    const std::vector<std::string>& variables,
+    const std::string& variable) {
+  for (const std::string& existing : variables) {
+    if (existing == variable) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline std::vector<std::array<size_t, 2>> matchedOutputVariableColumns(
+    const std::vector<std::string>& left_variables,
+    const std::vector<std::string>& right_variables) {
+  std::vector<std::array<size_t, 2>> matched_columns;
+  for (size_t left_column = 0; left_column < left_variables.size();
+       ++left_column) {
+    for (size_t right_column = 0; right_column < right_variables.size();
+         ++right_column) {
+      if (left_variables[left_column] == right_variables[right_column]) {
+        matched_columns.push_back({left_column, right_column});
+        break;
+      }
+    }
+  }
+  return matched_columns;
+}
+
+inline std::vector<size_t> rightProjectionColumns(
+    const std::vector<std::string>& left_variables,
+    const std::vector<std::string>& right_variables) {
+  std::vector<size_t> projection_columns;
+  for (size_t right_column = 0; right_column < right_variables.size();
+       ++right_column) {
+    if (!containsOutputVariable(left_variables, right_variables[right_column])) {
+      projection_columns.push_back(right_column);
+    }
+  }
+  return projection_columns;
+}
+
+inline std::optional<ColumnIndex> outputColumnForVariable(
+    const std::vector<std::string>& variables,
+    const std::string& variable) {
+  for (size_t column = 0; column < variables.size(); ++column) {
+    if (variables[column] == variable) {
+      return static_cast<ColumnIndex>(column);
+    }
+  }
+  return std::nullopt;
+}
+
 inline void appendParsedOutputVariable(
     BridgeQueryPlan& plan,
     const TripleComponent& component,
@@ -385,6 +458,62 @@ inline xpod_rdf_status bindTextRequiredEntities(
   return XPOD_RDF_STATUS_OK;
 }
 
+inline xpod_rdf_status bindValuesRows(
+    const xpod::rdf::PhysicalBackend& backend,
+    const xpod_rdf_snapshot& snapshot,
+    BridgeQueryPlan& plan,
+    std::string& error_storage) {
+  if (plan.value_rows.empty()) {
+    return XPOD_RDF_STATUS_OK;
+  }
+
+  plan.root.value_id_rows.clear();
+  for (const auto& input_row : plan.value_rows) {
+    std::vector<uint64_t> output_ids(input_row.size(), 0);
+    std::vector<xpod_rdf_term> terms;
+    terms.reserve(input_row.size());
+
+    for (const BridgeTermBinding& binding : input_row) {
+      terms.push_back(toNativeTerm(binding));
+    }
+
+    bool skip_row = false;
+    std::vector<xpod_rdf_term_key> keys(terms.size());
+    std::vector<xpod_rdf_status> statuses(terms.size());
+    xpod_rdf_status status = backend.lookupTerms(
+        terms.data(), terms.size(), snapshot, keys.data(), statuses.data());
+    if (status != XPOD_RDF_STATUS_OK) {
+      error_storage = "failed to lookup QLever VALUES constants";
+      return status;
+    }
+
+    for (size_t index = 0; index < statuses.size(); ++index) {
+      if (statuses[index] == XPOD_RDF_STATUS_NOT_FOUND) {
+        skip_row = true;
+        break;
+      }
+      if (statuses[index] != XPOD_RDF_STATUS_OK) {
+        error_storage = "failed to lookup one or more QLever VALUES constants";
+        return statuses[index];
+      }
+      uint64_t bits = 0;
+      status = backend.encodeQleverId(keys[index], bits);
+      if (status != XPOD_RDF_STATUS_OK) {
+        error_storage = "failed to encode QLever VALUES constants";
+        return status;
+      }
+      output_ids[index] = bits;
+    }
+    if (!skip_row) {
+      plan.root.value_id_rows.push_back(std::move(output_ids));
+    }
+  }
+  if (plan.root.value_id_rows.empty()) {
+    plan.known_empty = true;
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
 inline xpod_rdf_status bindPlanTerms(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod_rdf_snapshot& snapshot,
@@ -409,6 +538,10 @@ inline xpod_rdf_status bindPlanTerms(
     }
   }
   status = bindTextRequiredEntities(backend, snapshot, plan, error_storage);
+  if (status != XPOD_RDF_STATUS_OK || plan.known_empty) {
+    return status;
+  }
+  status = bindValuesRows(backend, snapshot, plan, error_storage);
   if (status != XPOD_RDF_STATUS_OK || plan.known_empty) {
     return status;
   }
@@ -806,24 +939,117 @@ inline void appendGraphScopeProjection(
   plan.result_width = plan.output_variables.size();
 }
 
-inline std::optional<BridgeQueryPlan> planParsedQuery(
+inline const parsedQuery::Values* valuesFromOperation(
+    const parsedQuery::GraphPatternOperation& operation) {
+  return std::get_if<parsedQuery::Values>(
+      &static_cast<const parsedQuery::GraphPatternOperationVariant&>(operation));
+}
+
+inline const parsedQuery::GroupGraphPattern* groupFromOperation(
+    const parsedQuery::GraphPatternOperation& operation) {
+  return std::get_if<parsedQuery::GroupGraphPattern>(
+      &static_cast<const parsedQuery::GraphPatternOperationVariant&>(operation));
+}
+
+inline std::optional<BridgeQueryPlan> planValuesOperation(
+    const parsedQuery::Values& values) {
+  const auto& inline_values = values._inlineValues;
+  if (inline_values._variables.empty()) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.root.kind = BridgeOperationKind::Values;
+  plan.descriptor = "Values";
+  plan.output_variables.reserve(inline_values._variables.size());
+  for (const Variable& variable : inline_values._variables) {
+    plan.output_variables.push_back(bridgeVariableName(variable));
+  }
+  plan.result_width = plan.output_variables.size();
+
+  plan.value_rows.reserve(inline_values._values.size());
+  for (const auto& input_row : inline_values._values) {
+    if (input_row.size() != inline_values._variables.size()) {
+      return std::nullopt;
+    }
+    std::vector<BridgeTermBinding> output_row;
+    output_row.reserve(input_row.size());
+    for (const TripleComponent& component : input_row) {
+      if (component.isUndef()) {
+        return std::nullopt;
+      }
+      auto binding = termBindingFromValuesComponent(component);
+      if (!binding.has_value()) {
+        return std::nullopt;
+      }
+      output_row.push_back(std::move(*binding));
+    }
+    plan.value_rows.push_back(std::move(output_row));
+  }
+  return plan;
+}
+
+inline bool applySelectedProjectionByOutputVariables(
+    BridgeQueryPlan& plan,
     const ParsedQuery& parsed) {
-  if (!parsed.hasSelectClause()) {
-    return std::nullopt;
+  std::optional<std::vector<std::string>> selected =
+      selectedVariablesFromParsedQuery(parsed);
+  if (!selected.has_value()) {
+    return true;
   }
-  const auto& children = parsed.children();
-  if (children.size() != 1) {
-    return std::nullopt;
+
+  BridgeResultModifier modifier;
+  modifier.kind = BridgeResultModifierKind::Project;
+  modifier.columns.reserve(selected->size());
+  for (const std::string& variable : *selected) {
+    std::optional<ColumnIndex> column =
+        outputColumnForVariable(plan.output_variables, variable);
+    if (!column.has_value()) {
+      return false;
+    }
+    modifier.columns.push_back(*column);
   }
-  const auto& operation = children.front();
-  std::optional<BridgeGraphScope> graph_scope;
-  const auto* basic = scopedBasicPatternFromOperation(operation, graph_scope);
-  if (basic == nullptr || basic->_triples.empty() || basic->_triples.size() > 2) {
+
+  bool identity_projection =
+      modifier.columns.size() == plan.output_variables.size();
+  if (identity_projection) {
+    for (size_t column = 0; column < modifier.columns.size(); ++column) {
+      if (modifier.columns[column] != column) {
+        identity_projection = false;
+        break;
+      }
+    }
+  }
+  plan.output_variables = std::move(*selected);
+  plan.result_width = plan.output_variables.size();
+  if (!identity_projection) {
+    plan.root.result_modifiers.push_back(std::move(modifier));
+  }
+  return true;
+}
+
+inline bool valuesVariablesAllJoinBGP(
+    const BridgeQueryPlan& values_plan,
+    const BridgeQueryPlan& bgp_plan) {
+  for (const std::string& variable : values_plan.output_variables) {
+    if (!containsOutputVariable(bgp_plan.output_variables, variable)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline std::optional<BridgeQueryPlan> planBasicPatternFallback(
+    const ParsedQuery& parsed,
+    const parsedQuery::BasicGraphPattern& basic,
+    const std::optional<BridgeGraphScope>& graph_scope,
+    bool apply_selected_projection = true) {
+  if (basic._triples.empty() || basic._triples.size() > 2) {
     return std::nullopt;
   }
 
   try {
-    SparqlTripleSimple first = basic->_triples.front().getSimple();
+    SparqlTripleSimple first = basic._triples.front().getSimple();
     auto plan = planSingleTriple(first);
     if (!plan.has_value()) {
       return std::nullopt;
@@ -834,19 +1060,112 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
     if (graph_scope.has_value()) {
       appendGraphScopeProjection(*plan, *graph_scope);
     }
-    if (basic->_triples.size() == 2) {
-      SparqlTripleSimple second = basic->_triples[1].getSimple();
-      if (!appendSecondTripleJoin(*plan, first, second, graph_scope) ||
+    if (basic._triples.size() == 2) {
+      SparqlTripleSimple second = basic._triples[1].getSimple();
+      if (!appendSecondTripleJoin(*plan, first, second, graph_scope)) {
+        return std::nullopt;
+      }
+      if (apply_selected_projection &&
           !applySelectedProjection(*plan, parsed, first, second, graph_scope)) {
         return std::nullopt;
       }
-    } else if (!applySelectedProjection(*plan, parsed, first, std::nullopt, graph_scope)) {
+    } else if (apply_selected_projection &&
+        !applySelectedProjection(*plan, parsed, first, std::nullopt, graph_scope)) {
       return std::nullopt;
     }
     return plan;
   } catch (...) {
     return std::nullopt;
   }
+}
+
+inline std::optional<BridgeQueryPlan> planValuesBasicJoinFallback(
+    const ParsedQuery& parsed,
+    const parsedQuery::Values& values,
+    const parsedQuery::BasicGraphPattern& basic,
+    const std::optional<BridgeGraphScope>& graph_scope) {
+  auto values_plan = planValuesOperation(values);
+  auto bgp_plan = planBasicPatternFallback(
+      parsed, basic, graph_scope, false);
+  if (!values_plan.has_value() || !bgp_plan.has_value() ||
+      !valuesVariablesAllJoinBGP(*values_plan, *bgp_plan)) {
+    return std::nullopt;
+  }
+
+  BridgeQueryPlan plan;
+  plan.descriptor = "Values + " + bgp_plan->descriptor;
+  plan.root.kind = BridgeOperationKind::MultiColumnJoin;
+  plan.root.matched_columns = matchedOutputVariableColumns(
+      values_plan->output_variables, bgp_plan->output_variables);
+  if (plan.root.matched_columns.empty()) {
+    return std::nullopt;
+  }
+  plan.root.right_projection_columns = rightProjectionColumns(
+      values_plan->output_variables, bgp_plan->output_variables);
+  plan.output_variables = values_plan->output_variables;
+  for (size_t column : plan.root.right_projection_columns) {
+    if (column >= bgp_plan->output_variables.size()) {
+      return std::nullopt;
+    }
+    plan.output_variables.push_back(bgp_plan->output_variables[column]);
+  }
+  plan.result_width = plan.output_variables.size();
+  plan.child_plans.push_back(std::move(*values_plan));
+  plan.child_plans.push_back(std::move(*bgp_plan));
+
+  if (!applySelectedProjectionByOutputVariables(plan, parsed)) {
+    return std::nullopt;
+  }
+  return plan;
+}
+
+inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
+    const ParsedQuery& parsed,
+    const std::vector<parsedQuery::GraphPatternOperation>& children,
+    const std::optional<BridgeGraphScope>& graph_scope) {
+  if (children.size() == 1) {
+    const auto* group = groupFromOperation(children.front());
+    if (group != nullptr) {
+      std::optional<BridgeGraphScope> nested_scope = graph_scope;
+      std::optional<BridgeGraphScope> local_scope = graphScopeFromGroup(*group);
+      if (local_scope.has_value()) {
+        if (nested_scope.has_value()) {
+          return std::nullopt;
+        }
+        nested_scope = std::move(local_scope);
+      }
+      return planParsedChildrenFallback(
+          parsed, group->_child._graphPatterns, nested_scope);
+    }
+    const auto* basic = basicPatternFromOperation(children.front());
+    if (basic == nullptr) {
+      return std::nullopt;
+    }
+    return planBasicPatternFallback(parsed, *basic, graph_scope);
+  }
+  if (children.size() == 2) {
+    std::optional<BridgeGraphScope> effective_scope = graph_scope;
+    const parsedQuery::Values* values = valuesFromOperation(children[0]);
+    const auto* basic = basicPatternFromOperation(children[1]);
+    if (values == nullptr || basic == nullptr) {
+      effective_scope = graph_scope;
+      values = valuesFromOperation(children[1]);
+      basic = basicPatternFromOperation(children[0]);
+    }
+    if (values == nullptr || basic == nullptr) {
+      return std::nullopt;
+    }
+    return planValuesBasicJoinFallback(parsed, *values, *basic, effective_scope);
+  }
+  return std::nullopt;
+}
+
+inline std::optional<BridgeQueryPlan> planParsedQuery(
+    const ParsedQuery& parsed) {
+  if (!parsed.hasSelectClause()) {
+    return std::nullopt;
+  }
+  return planParsedChildrenFallback(parsed, parsed.children(), std::nullopt);
 }
 
 inline void offsetBridgeOperationIndexes(

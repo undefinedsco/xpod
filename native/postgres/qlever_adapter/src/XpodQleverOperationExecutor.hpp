@@ -119,6 +119,8 @@ inline xpod_rdf_profile_kind profileEventKind(
       return XPOD_RDF_PROFILE_TEXT_SEARCH;
     case BridgeOperationKind::VectorSearch:
       return XPOD_RDF_PROFILE_VECTOR_SEARCH;
+    case BridgeOperationKind::Values:
+      return XPOD_RDF_PROFILE_MATERIALIZED_RESULT;
     case BridgeOperationKind::PermutationScan:
     default:
       return XPOD_RDF_PROFILE_PERMUTATION_SCAN;
@@ -1174,6 +1176,39 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
     const BridgePhysicalPlan& plan,
     const BridgeOperationPlan& root);
 
+inline QleverResultWithStatus executeBridgeValues(
+    xpod::rdf::PhysicalBackend backend,
+    const BridgeOperationPlan& root) {
+  size_t width = 0;
+  if (!root.value_id_rows.empty()) {
+    width = root.value_id_rows.front().size();
+  }
+  IdTable output = makeQleverIdTable(width);
+  std::vector<Id> row;
+  row.reserve(width);
+
+  emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_RUNNING);
+  for (size_t row_index = 0; row_index < root.value_id_rows.size();
+       ++row_index) {
+    const auto& ids = root.value_id_rows[row_index];
+    if (ids.size() != width) {
+      emitOperationProfileEvent(backend, root, XPOD_RDF_PROFILE_FAILED);
+      return makeEmptyOperationResult(XPOD_RDF_STATUS_UNSUPPORTED, width);
+    }
+    row.clear();
+    for (size_t column = 0; column < width; ++column) {
+      row.push_back(Id::fromBits(ids[column]));
+    }
+    output.push_back(row);
+  }
+
+  emitOperationProfileEvent(
+      backend, root, XPOD_RDF_PROFILE_COMPLETED, output.numRows());
+  return applyBridgeResultModifiers(
+      backend, root, toQleverResult({XPOD_RDF_STATUS_OK, std::move(output)},
+                           root.sorted_by));
+}
+
 inline xpod_rdf_status appendBridgeUnionRows(
     const IdTable& input,
     size_t child_index,
@@ -1656,6 +1691,9 @@ inline QleverResultWithStatus executeBridgeOperationRoot(
     }
     result = executeBridgePhysicalScan(backend, plan.scans[scan_index]);
     return applyBridgeResultModifiers(backend, root, std::move(result));
+  }
+  if (root.kind == BridgeOperationKind::Values) {
+    return executeBridgeValues(backend, root);
   }
   if (root.kind == BridgeOperationKind::HashJoin) {
     result = executeBridgeHashJoin(backend, rooted_plan);

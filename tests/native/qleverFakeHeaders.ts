@@ -2,6 +2,7 @@ export const fakeEncodedIriManagerHeader = '#pragma once\nclass EncodedIriManage
 
 export const fakeParsedQueryHeader = `
 #pragma once
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <variant>
@@ -15,6 +16,7 @@ class Variable {
 };
 class TripleComponent {
  public:
+  class UNDEF {};
   class Iri {
    public:
     explicit Iri(std::string value) : value_(std::move(value)) {}
@@ -32,14 +34,16 @@ class TripleComponent {
   explicit TripleComponent(Variable variable) : kind_(Kind::Variable), variable_(std::move(variable)) {}
   explicit TripleComponent(Iri iri) : kind_(Kind::Iri), iri_(std::move(iri)) {}
   explicit TripleComponent(Literal literal) : kind_(Kind::Literal), literal_(std::move(literal)) {}
+  explicit TripleComponent(UNDEF) : kind_(Kind::Undef) {}
   bool isVariable() const { return kind_ == Kind::Variable; }
   const Variable& getVariable() const { return variable_; }
   bool isIri() const { return kind_ == Kind::Iri; }
   const Iri& getIri() const { return iri_; }
   bool isLiteral() const { return kind_ == Kind::Literal; }
   const Literal& getLiteral() const { return literal_; }
+  bool isUndef() const { return kind_ == Kind::Undef; }
  private:
-  enum class Kind { Variable, Iri, Literal };
+  enum class Kind { Variable, Iri, Literal, Undef };
   Kind kind_ = Kind::Variable;
   Variable variable_{""};
   Iri iri_{""};
@@ -91,6 +95,14 @@ struct GraphPattern {
 struct BasicGraphPattern {
   std::vector<SparqlTriple> _triples;
 };
+struct SparqlValues {
+  std::vector<Variable> _variables;
+  std::vector<std::vector<TripleComponent>> _values;
+};
+struct Values {
+  SparqlValues _inlineValues;
+  size_t _id = static_cast<size_t>(-1);
+};
 struct GroupGraphPattern {
   GraphPattern _child;
   enum class GraphVariableBehaviour { ALL, NAMED };
@@ -103,7 +115,7 @@ struct GroupGraphPattern {
   GroupGraphPattern(GraphPattern child, Variable graphVariable, GraphVariableBehaviour behaviour)
       : _child{std::move(child)}, graphSpec_{GraphVar{std::move(graphVariable), behaviour}} {}
 };
-using GraphPatternOperationVariant = std::variant<BasicGraphPattern, GroupGraphPattern>;
+using GraphPatternOperationVariant = std::variant<BasicGraphPattern, Values, GroupGraphPattern>;
 struct GraphPatternOperation : public GraphPatternOperationVariant {
   using GraphPatternOperationVariant::GraphPatternOperationVariant;
 };

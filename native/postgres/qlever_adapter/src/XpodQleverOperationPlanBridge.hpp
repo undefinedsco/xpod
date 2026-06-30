@@ -293,58 +293,6 @@ inline void appendTextCandidateOutput(
   source.output_columns.push_back(std::move(column));
 }
 
-inline bool containsOutputVariable(
-    const std::vector<std::string>& variables,
-    const std::string& variable) {
-  for (const std::string& existing : variables) {
-    if (existing == variable) {
-      return true;
-    }
-  }
-  return false;
-}
-
-inline std::vector<std::array<size_t, 2>> matchedOutputVariableColumns(
-    const std::vector<std::string>& left_variables,
-    const std::vector<std::string>& right_variables) {
-  std::vector<std::array<size_t, 2>> matched_columns;
-  for (size_t left_column = 0; left_column < left_variables.size();
-       ++left_column) {
-    for (size_t right_column = 0; right_column < right_variables.size();
-         ++right_column) {
-      if (left_variables[left_column] == right_variables[right_column]) {
-        matched_columns.push_back({left_column, right_column});
-        break;
-      }
-    }
-  }
-  return matched_columns;
-}
-
-inline std::vector<size_t> rightProjectionColumns(
-    const std::vector<std::string>& left_variables,
-    const std::vector<std::string>& right_variables) {
-  std::vector<size_t> projection_columns;
-  for (size_t right_column = 0; right_column < right_variables.size();
-       ++right_column) {
-    if (!containsOutputVariable(left_variables, right_variables[right_column])) {
-      projection_columns.push_back(right_column);
-    }
-  }
-  return projection_columns;
-}
-
-inline std::optional<ColumnIndex> outputColumnForVariable(
-    const std::vector<std::string>& variables,
-    const std::string& variable) {
-  for (size_t column = 0; column < variables.size(); ++column) {
-    if (variables[column] == variable) {
-      return static_cast<ColumnIndex>(column);
-    }
-  }
-  return std::nullopt;
-}
-
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD
 inline std::optional<BridgeQueryPlan> planTextIndexScanForWordOperation(
     const TextIndexScanForWord& scan) {
