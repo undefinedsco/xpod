@@ -1,0 +1,17 @@
+diff --git a/src/engine/QueryPlanner.cpp b/src/engine/QueryPlanner.cpp
+--- a/src/engine/QueryPlanner.cpp
++++ b/src/engine/QueryPlanner.cpp
+@@ -5,1 +5,2 @@
++#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+ #include "engine/QueryPlanner.h"
+@@ -711,3 +713,4 @@ void QueryPlanner::indexScanThreeVarsCase(
+   using enum Permutation::Enum;
+-  AD_CONTRACT_CHECK(!_qec || _qec->getIndex().hasAllPermutations(),
++  AD_CONTRACT_CHECK(!_qec || _qec->getIndex().hasAllPermutations() ||
++                    xpod::qlever::physicalIndexFromContext(*_qec) != nullptr,
+                     "With only 2 permutations registered (no -a option), "
+@@ -840,2 +843,3 @@ auto QueryPlanner::seedWithScansAndText(
+-    if (_qec && !_qec->getIndex().hasAllPermutations() &&
++    if (_qec && xpod::qlever::physicalIndexFromContext(*_qec) == nullptr &&
++        !_qec->getIndex().hasAllPermutations() &&
+         node.triple_.getPredicateVariable().has_value()) {

@@ -184,6 +184,32 @@ const patchSpecs = [
     alreadyPatchedMessage: 'already contains the libc++ constant-time compare overlay',
   },
   {
+    patchPath: path.join(patchesRoot, 'qlever-queryplanner-physical-index.patch'),
+    target: 'src/engine/QueryPlanner.cpp',
+    patchTokens: [
+      'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'xpod::qlever::physicalIndexFromContext(*_qec) != nullptr',
+      'xpod::qlever::physicalIndexFromContext(*_qec) == nullptr',
+      'getIndex().hasAllPermutations()',
+    ],
+    anchors: [
+      '#include "engine/QueryPlanner.h"',
+      'QueryPlanner::indexScanThreeVarsCase(',
+      'AD_CONTRACT_CHECK(!_qec || _qec->getIndex().hasAllPermutations(),',
+      'triples should have at most two variables.',
+      'QueryPlanner::seedWithScansAndText(',
+      'node.triple_.getPredicateVariable().has_value()',
+      'The query contains a predicate variable',
+    ],
+    appliedTokens: [
+      'XpodQleverPhysicalIndexScanContextBridge.hpp',
+      'xpod::qlever::physicalIndexFromContext(*_qec) != nullptr',
+      'xpod::qlever::physicalIndexFromContext(*_qec) == nullptr',
+    ],
+    alreadyPatchedMessage: 'already contains the Xpod QueryPlanner physical-index overlay',
+  },
+
+  {
     patchPath: path.join(patchesRoot, 'qlever-queryexecutioncontext-physical-index.patch'),
     target: 'src/engine/QueryExecutionContext.h',
     patchTokens: [

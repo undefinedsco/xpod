@@ -72,6 +72,11 @@ async function writeRequiredQleverConfigureSkeleton(
     patchedTextIndexScanForEntitySource,
     'utf8',
   );
+  await writeFile(
+    path.join(qleverSource, 'src/engine/QueryPlanner.cpp'),
+    patchedQueryPlannerSource,
+    'utf8',
+  );
   await writePatchedLibcxxSources(qleverSource);
 }
 
@@ -90,6 +95,15 @@ const patchedTextIndexScanForEntitySource = `
 void xpod_text_entity_overlay_marker() {
   (void)"textEntityResultFromContext";
   (void)"textEntitySizeEstimateFromContext";
+}
+`;
+
+const patchedQueryPlannerSource = `
+#include "engine/QueryPlanner.h"
+#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+void xpod_queryplanner_overlay_marker() {
+  (void)"xpod::qlever::physicalIndexFromContext(*_qec) != nullptr";
+  (void)"xpod::qlever::physicalIndexFromContext(*_qec) == nullptr";
 }
 `;
 
@@ -335,6 +349,7 @@ class Operation {
 };
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), fakeQueryPlannerHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.cpp'), patchedQueryPlannerSource, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), fakeIndexScanHeader, 'utf8');
       await writeFile(
         path.join(qleverSource, 'src/engine/IndexScan.cpp'),
@@ -500,6 +515,48 @@ class Permutation {
         output = cmakeFailureOutput(error);
       }
       expect(output).toContain('QueryExecutionContext.h is not patched with the Xpod physical-index');
+      expect(output).toContain('check-qlever-upstream-patches.cjs');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree whose QueryPlanner physical-index overlay is missing', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-unpatched-queryplanner-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await writeRequiredQleverConfigureSkeleton(
+        qleverSource,
+        'void xpod_overlay_marker() { (void)"materializedScanFromQleverScanSpecAndBlocks"; (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; (void)"!scanSpecAndBlocksIsPrefiltered_"; (void)"sizeEstimateFromQleverScanSpecAndBlocks"; (void)"exactSizeFromQleverScanSpecAndBlocks"; (void)"canUsePhysicalScanSpecAndBlocks"; }\n',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/QueryExecutionContext.h'),
+        patchedQueryExecutionContextHeader,
+        'utf8',
+      );
+      await writeFile(
+        path.join(qleverSource, 'src/engine/QueryPlanner.cpp'),
+        '#include "engine/QueryPlanner.h"\nvoid unpatched_queryplanner() { (void)"getIndex().hasAllPermutations()"; }\n',
+        'utf8',
+      );
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('QueryPlanner.cpp is not patched with the Xpod physical-index');
       expect(output).toContain('check-qlever-upstream-patches.cjs');
     } finally {
       await rm(root, { recursive: true, force: true });
