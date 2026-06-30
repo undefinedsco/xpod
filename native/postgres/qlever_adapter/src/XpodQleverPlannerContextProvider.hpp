@@ -26,6 +26,21 @@ class XpodQleverPhysicalIndex;
 #define XPOD_QLEVER_HAS_CONTEXT_PHYSICAL_INDEX 0
 #endif
 
+#if __has_include("engine/MaterializedViews.h") && \
+    __has_include("engine/NamedResultCache.h") && \
+    __has_include("engine/SortPerformanceEstimator.h") && \
+    __has_include("index/Index.h") && \
+    __has_include("util/AllocatorWithLimit.h")
+#include "engine/MaterializedViews.h"
+#include "engine/NamedResultCache.h"
+#include "engine/SortPerformanceEstimator.h"
+#include "index/Index.h"
+#include "util/AllocatorWithLimit.h"
+#define XPOD_QLEVER_HAS_OWNED_QEC_DEPS 1
+#else
+#define XPOD_QLEVER_HAS_OWNED_QEC_DEPS 0
+#endif
+
 namespace xpod::qlever {
 
 class QueryPlannerContextProvider {
@@ -59,6 +74,30 @@ struct IsDefaultConstructibleIfComplete : std::false_type {};
 template <typename T>
 struct IsDefaultConstructibleIfComplete<T, true>
     : std::is_default_constructible<T> {};
+
+#if XPOD_QLEVER_HAS_OWNED_QEC_DEPS
+template <typename Context, bool Complete>
+struct IsOwnedQecConstructibleIfComplete : std::false_type {};
+
+template <typename Context>
+struct IsOwnedQecConstructibleIfComplete<Context, true>
+    : std::conjunction<
+          std::is_constructible<Index, ad_utility::AllocatorWithLimit<Id>>,
+          std::is_default_constructible<QueryResultCache>,
+          std::is_default_constructible<NamedResultCache>,
+          std::is_default_constructible<MaterializedViewsManager>,
+          std::is_constructible<
+              Context,
+              std::shared_ptr<const Index>,
+              QueryResultCache*,
+              ad_utility::AllocatorWithLimit<Id>,
+              SortPerformanceEstimator,
+              NamedResultCache*,
+              std::shared_ptr<MaterializedViewsManager>>> {};
+#else
+template <typename Context, bool Complete>
+struct IsOwnedQecConstructibleIfComplete : std::false_type {};
+#endif
 
 template <typename Context, typename = void>
 struct HasXpodPlannerRequestContextSetter : std::false_type {};
@@ -150,8 +189,7 @@ class DefaultPlannerContextProvider<Context, true, true> final
   PlannerContextHandle current(
       const xpod_qlever_query_request& request) override {
     refreshPlannerRequestContext(planner_context_, request);
-    if constexpr (!HasXpodPlannerRequestContextSetter<Context>::value &&
-                  !HasXpodPhysicalIndexSetter<Context>::value) {
+    if constexpr (!HasXpodPhysicalIndexSetter<Context>::value) {
       return {nullptr, &planner_context_};
     }
     XpodPlannerRequestContextApplier<
@@ -170,6 +208,51 @@ class DefaultPlannerContextProvider<Context, true, true> final
   Context context_;
 };
 
+#if XPOD_QLEVER_HAS_OWNED_QEC_DEPS
+template <typename Context>
+class OwnedPlannerContextProvider final : public QueryPlannerContextProvider {
+ public:
+  explicit OwnedPlannerContextProvider(xpod::rdf::PhysicalBackend backend)
+      : planner_context_{backend, nullptr, nullptr},
+        allocator_{ad_utility::makeUnlimitedAllocator<Id>()},
+        index_{std::make_shared<Index>(allocator_)},
+        materialized_views_{std::make_shared<MaterializedViewsManager>()},
+        context_{
+            std::shared_ptr<const Index>{index_},
+            &cache_,
+            allocator_,
+            SortPerformanceEstimator{},
+            &named_cache_,
+            materialized_views_} {}
+
+  PlannerContextHandle current(
+      const xpod_qlever_query_request& request) override {
+    refreshPlannerRequestContext(planner_context_, request);
+    if constexpr (!HasXpodPhysicalIndexSetter<Context>::value) {
+      return {nullptr, &planner_context_};
+    }
+    XpodPlannerRequestContextApplier<
+        Context,
+        HasXpodPlannerRequestContextSetter<Context>::value>::apply(
+            context_, planner_context_);
+    XpodPhysicalIndexApplier<
+        Context,
+        HasXpodPhysicalIndexSetter<Context>::value>::apply(
+            context_, planner_context_);
+    return {&context_, &planner_context_};
+  }
+
+ private:
+  PlannerRequestContext planner_context_;
+  ad_utility::AllocatorWithLimit<Id> allocator_;
+  std::shared_ptr<Index> index_;
+  QueryResultCache cache_;
+  NamedResultCache named_cache_;
+  std::shared_ptr<MaterializedViewsManager> materialized_views_;
+  Context context_;
+};
+#endif
+
 using DefaultQueryExecutionContextProvider = DefaultPlannerContextProvider<
     QueryExecutionContext,
     IsComplete<QueryExecutionContext>::value,
@@ -177,11 +260,22 @@ using DefaultQueryExecutionContextProvider = DefaultPlannerContextProvider<
         QueryExecutionContext,
         IsComplete<QueryExecutionContext>::value>::value>;
 
+using QueryExecutionContextProvider = std::conditional_t<
+    IsOwnedQecConstructibleIfComplete<
+        QueryExecutionContext,
+        IsComplete<QueryExecutionContext>::value>::value,
+#if XPOD_QLEVER_HAS_OWNED_QEC_DEPS
+    OwnedPlannerContextProvider<QueryExecutionContext>,
+#else
+    DefaultQueryExecutionContextProvider,
+#endif
+    DefaultQueryExecutionContextProvider>;
+
 }  // namespace detail
 
 inline std::unique_ptr<QueryPlannerContextProvider>
 createQueryPlannerContextProvider(xpod::rdf::PhysicalBackend backend) {
-  return std::make_unique<detail::DefaultQueryExecutionContextProvider>(
+  return std::make_unique<detail::QueryExecutionContextProvider>(
       backend);
 }
 

@@ -247,6 +247,344 @@ int main() {
     }
   });
 
+  it('does not expose a non-default upstream context without the Xpod physical index hook', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical context provider check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-owned-qec-no-physical-hook-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
+#pragma once
+#include <cstdint>
+using ColumnIndex = uint64_t;
+class Id {
+ public:
+  static Id fromBits(uint64_t bits) { return Id(bits); }
+  uint64_t getBits() const { return bits_; }
+ private:
+  explicit Id(uint64_t bits) : bits_(bits) {}
+  uint64_t bits_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/AllocatorWithLimit.h'), `
+#pragma once
+namespace ad_utility {
+template <typename T>
+class AllocatorWithLimit {};
+template <typename T>
+AllocatorWithLimit<T> makeUnlimitedAllocator() { return {}; }
+}
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Index.h'), `
+#pragma once
+#include "global/Id.h"
+#include "util/AllocatorWithLimit.h"
+class Index {
+ public:
+  explicit Index(ad_utility::AllocatorWithLimit<Id>) {}
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
+#pragma once
+#include <cstddef>
+#include <vector>
+#include "global/Id.h"
+#include "util/AllocatorWithLimit.h"
+class IdTable {
+ public:
+  explicit IdTable(size_t width) : width_(width) {}
+  IdTable(size_t width, ad_utility::AllocatorWithLimit<Id>) : width_(width) {}
+  size_t numColumns() const { return width_; }
+  size_t numRows() const { return rows_.size(); }
+  void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
+  const Id& operator()(size_t row, size_t column) const { return rows_[row][column]; }
+ private:
+  size_t width_;
+  std::vector<std::vector<Id>> rows_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
+#pragma once
+#include <utility>
+#include <vector>
+#include "engine/idTable/IdTable.h"
+#include "global/Id.h"
+#include "index/LocalVocab.h"
+class Result {
+ public:
+  Result(IdTable table, std::vector<ColumnIndex> sortedBy, LocalVocab&&)
+      : table_(std::move(table)), sortedBy_(std::move(sortedBy)) {}
+  const IdTable& idTable() const { return table_; }
+ private:
+  IdTable table_;
+  std::vector<ColumnIndex> sortedBy_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/SortPerformanceEstimator.h'), '#pragma once\nclass SortPerformanceEstimator {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/NamedResultCache.h'), '#pragma once\nclass NamedResultCache {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/MaterializedViews.h'), '#pragma once\nclass MaterializedViewsManager {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
+#pragma once
+#include <memory>
+#include "engine/MaterializedViews.h"
+#include "engine/NamedResultCache.h"
+#include "engine/SortPerformanceEstimator.h"
+#include "index/Index.h"
+#include "util/AllocatorWithLimit.h"
+class QueryResultCache {};
+class QueryExecutionContext {
+ public:
+  QueryExecutionContext() = delete;
+  QueryExecutionContext(
+      std::shared_ptr<const Index>,
+      QueryResultCache*,
+      ad_utility::AllocatorWithLimit<Id>,
+      SortPerformanceEstimator,
+      NamedResultCache*,
+      std::shared_ptr<MaterializedViewsManager>) {}
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'planner_context_provider_owned_qec_no_physical_hook_smoke.cpp');
+      const binary = path.join(root, 'planner_context_provider_owned_qec_no_physical_hook_smoke');
+      await writeFile(smoke, `
+#include "xpod_qlever_adapter.h"
+#include "XpodQleverPlannerContextProvider.hpp"
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  auto provider = xpod::qlever::createQueryPlannerContextProvider(physical);
+
+  xpod_qlever_query_request request = {};
+  auto context = provider->current(request);
+  if (context.qec != nullptr) return 1;
+  if (context.native == nullptr) return 2;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/src'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('constructs a non-default upstream QueryExecutionContext when standard QLever dependencies are available', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical context provider check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-owned-qec-provider-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/util'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
+#pragma once
+#include <cstdint>
+using ColumnIndex = uint64_t;
+class Id {
+ public:
+  static Id fromBits(uint64_t bits) { return Id(bits); }
+  uint64_t getBits() const { return bits_; }
+ private:
+  explicit Id(uint64_t bits) : bits_(bits) {}
+  uint64_t bits_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/util/AllocatorWithLimit.h'), `
+#pragma once
+namespace ad_utility {
+template <typename T>
+class AllocatorWithLimit {};
+template <typename T>
+AllocatorWithLimit<T> makeUnlimitedAllocator() { return {}; }
+}
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+  explicit Permutation(Enum value = Enum::SPO) : value_(value) {}
+  Enum permutation() const { return value_; }
+ private:
+  Enum value_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Index.h'), `
+#pragma once
+#include "global/Id.h"
+#include "util/AllocatorWithLimit.h"
+class Index {
+ public:
+  explicit Index(ad_utility::AllocatorWithLimit<Id>) {}
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
+#pragma once
+#include <cstddef>
+#include <vector>
+#include "global/Id.h"
+#include "util/AllocatorWithLimit.h"
+class IdTable {
+ public:
+  explicit IdTable(size_t width) : width_(width) {}
+  IdTable(size_t width, ad_utility::AllocatorWithLimit<Id>) : width_(width) {}
+  size_t numColumns() const { return width_; }
+  size_t numRows() const { return rows_.size(); }
+  void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
+  const Id& operator()(size_t row, size_t column) const { return rows_[row][column]; }
+ private:
+  size_t width_;
+  std::vector<std::vector<Id>> rows_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
+#pragma once
+#include <utility>
+#include <vector>
+#include "engine/idTable/IdTable.h"
+#include "global/Id.h"
+#include "index/LocalVocab.h"
+class Result {
+ public:
+  Result(IdTable table, std::vector<ColumnIndex> sortedBy, LocalVocab&&)
+      : table_(std::move(table)), sortedBy_(std::move(sortedBy)) {}
+  const IdTable& idTable() const { return table_; }
+ private:
+  IdTable table_;
+  std::vector<ColumnIndex> sortedBy_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/SortPerformanceEstimator.h'), `
+#pragma once
+class SortPerformanceEstimator {};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/NamedResultCache.h'), `
+#pragma once
+class NamedResultCache {};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/MaterializedViews.h'), `
+#pragma once
+class MaterializedViewsManager {};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
+#pragma once
+#include <memory>
+#include "XpodQleverPhysicalIndex.hpp"
+#include "engine/MaterializedViews.h"
+#include "engine/NamedResultCache.h"
+#include "engine/SortPerformanceEstimator.h"
+#include "index/Index.h"
+#include "util/AllocatorWithLimit.h"
+class QueryResultCache {};
+class QueryExecutionContext {
+ public:
+  QueryExecutionContext() = delete;
+  QueryExecutionContext(
+      std::shared_ptr<const Index> index,
+      QueryResultCache* cache,
+      ad_utility::AllocatorWithLimit<Id>,
+      SortPerformanceEstimator,
+      NamedResultCache* named_cache,
+      std::shared_ptr<MaterializedViewsManager> materialized_views)
+      : constructed(index != nullptr && cache != nullptr &&
+                    named_cache != nullptr && materialized_views != nullptr) {}
+  bool constructed = false;
+  bool received_physical_index = false;
+  void setXpodPhysicalIndex(std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
+    received_physical_index = index != nullptr &&
+                              index->context().backend.valid() &&
+                              index->context().request != nullptr;
+  }
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'planner_context_provider_owned_qec_smoke.cpp');
+      const binary = path.join(root, 'planner_context_provider_owned_qec_smoke');
+      await writeFile(smoke, `
+#include "xpod_qlever_adapter.h"
+#include "XpodQleverPlannerContextProvider.hpp"
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.get_capabilities = get_capabilities;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  auto provider = xpod::qlever::createQueryPlannerContextProvider(physical);
+
+  xpod_qlever_query_request request = {};
+  auto context = provider->current(request);
+  if (context.qec == nullptr) return 1;
+  if (context.native == nullptr) return 2;
+  if (!context.qec->constructed) return 3;
+  if (!context.qec->received_physical_index) return 4;
+  if (context.native->request != &request) return 5;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/src'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('feeds an internal planner context into public adapter query execution', async () => {
     expect(hasCxx(), 'c++ compiler is required for native planner context provider check').toBe(true);
 
@@ -267,18 +605,24 @@ int main() {
       await writeFile(path.join(qleverSource, 'src/util/CancellationHandle.h'), '#pragma once\nnamespace ad_utility { struct SharedCancellationHandle {}; }\n', 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
 #pragma once
+#include <memory>
 #include <string_view>
 #include "xpod_qlever_adapter.h"
+#include "XpodQleverPhysicalIndex.hpp"
 #include "XpodQleverPlannerRequestContext.hpp"
 class QueryExecutionContext {
  public:
   bool ready = false;
+  bool received_physical_index = false;
   void setXpodPlannerRequestContext(const xpod::qlever::PlannerRequestContext& context) {
     ready = context.backend.valid() &&
             context.request != nullptr &&
             context.request->access_scope != nullptr &&
             std::string_view(context.request->snapshot.facts_version.data,
                              context.request->snapshot.facts_version.size) == "facts-v1";
+  }
+  void setXpodPhysicalIndex(std::shared_ptr<const xpod::qlever::XpodQleverPhysicalIndex> index) {
+    received_physical_index = index != nullptr && index->context().backend.valid();
   }
 };
 `, 'utf8');
