@@ -9,7 +9,22 @@
 #include <utility>
 
 #if XPOD_QLEVER_ADAPTER_ENABLE_QLEVER
+namespace xpod::qlever {
+class XpodQleverPhysicalIndex;
+}
+
 #include "engine/QueryExecutionContext.h"
+
+#if __has_include("engine/Result.h") && \
+    __has_include("engine/idTable/IdTable.h") && \
+    __has_include("global/Id.h") && \
+    __has_include("index/LocalVocab.h") && \
+    __has_include("index/Permutation.h")
+#include "XpodQleverPhysicalIndex.hpp"
+#define XPOD_QLEVER_HAS_CONTEXT_PHYSICAL_INDEX 1
+#else
+#define XPOD_QLEVER_HAS_CONTEXT_PHYSICAL_INDEX 0
+#endif
 
 namespace xpod::qlever {
 
@@ -54,6 +69,17 @@ struct HasXpodPlannerRequestContextSetter<
     decltype(void(std::declval<Context&>().setXpodPlannerRequestContext(
         std::declval<const PlannerRequestContext&>())))> : std::true_type {};
 
+template <typename Context, typename = void>
+struct HasXpodPhysicalIndexSetter : std::false_type {};
+
+#if XPOD_QLEVER_HAS_CONTEXT_PHYSICAL_INDEX
+template <typename Context>
+struct HasXpodPhysicalIndexSetter<
+    Context,
+    decltype(void(std::declval<Context&>().setXpodPhysicalIndex(
+        std::declval<const XpodQleverPhysicalIndex&>())))> : std::true_type {};
+#endif
+
 template <typename Context, bool HasSetter>
 struct XpodPlannerRequestContextApplier {
   static void apply(
@@ -72,6 +98,28 @@ struct XpodPlannerRequestContextApplier<Context, true> {
     context.setXpodPlannerRequestContext(planner_context);
   }
 };
+
+template <typename Context, bool HasSetter>
+struct XpodPhysicalIndexApplier {
+  static void apply(
+      Context& context,
+      const PlannerRequestContext& planner_context) {
+    (void)context;
+    (void)planner_context;
+  }
+};
+
+#if XPOD_QLEVER_HAS_CONTEXT_PHYSICAL_INDEX
+template <typename Context>
+struct XpodPhysicalIndexApplier<Context, true> {
+  static void apply(
+      Context& context,
+      const PlannerRequestContext& planner_context) {
+    XpodQleverPhysicalIndex index(planner_context);
+    context.setXpodPhysicalIndex(index);
+  }
+};
+#endif
 
 template <typename Context, bool IsComplete, bool IsDefaultConstructible>
 class DefaultPlannerContextProvider final : public QueryPlannerContextProvider {
@@ -101,12 +149,17 @@ class DefaultPlannerContextProvider<Context, true, true> final
   PlannerContextHandle current(
       const xpod_qlever_query_request& request) override {
     refreshPlannerRequestContext(planner_context_, request);
-    if constexpr (!HasXpodPlannerRequestContextSetter<Context>::value) {
+    if constexpr (!HasXpodPlannerRequestContextSetter<Context>::value &&
+                  !HasXpodPhysicalIndexSetter<Context>::value) {
       return {nullptr, &planner_context_};
     }
     XpodPlannerRequestContextApplier<
         Context,
         HasXpodPlannerRequestContextSetter<Context>::value>::apply(
+            context_, planner_context_);
+    XpodPhysicalIndexApplier<
+        Context,
+        HasXpodPhysicalIndexSetter<Context>::value>::apply(
             context_, planner_context_);
     return {&context_, &planner_context_};
   }

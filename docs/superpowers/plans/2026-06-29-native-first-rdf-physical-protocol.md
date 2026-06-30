@@ -3254,3 +3254,33 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run -t "lazy scans to QLever
 
 Expected: PASS.
 - The remaining integration gap is the actual patched/embedded upstream `IndexScan::getLazyScan()` / `Permutation::lazyScan(...)` call path.
+
+### Task 79: Inject the native physical index into QLever planner contexts
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlannerContextProvider.hpp`
+- Modify: `tests/native/QleverExecutorPlannerContextProvider.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing physical-index context smoke**
+
+Add a native planner-context-provider smoke where the fake upstream `QueryExecutionContext` exposes `setXpodPhysicalIndex(...)` but not `setXpodPlannerRequestContext(...)`. The provider must return a `QueryExecutionContext*`, call the setter, and the received `XpodQleverPhysicalIndex` must be able to perform an estimate through the native backend.
+
+Expected: FAIL because the provider only detected `setXpodPlannerRequestContext(...)`, so contexts that accepted the lower physical index directly were ignored.
+
+- [x] **Step 2: Add the minimal physical-index applier**
+
+Detect `setXpodPhysicalIndex(const XpodQleverPhysicalIndex&)` when the upstream header set is rich enough to include `XpodQleverPhysicalIndex.hpp`. When present, construct the lightweight physical index from the refreshed `PlannerRequestContext`, pass it to the upstream context, and return the `QueryExecutionContext*`. Contexts with no Xpod setter still return only the native request handle.
+
+This is still a data-layer handoff. It does not add planning, joins, modifiers, ranking, or cache policy to Xpod; it gives patched or embedded QLever code a native physical index to call from its own planner/executor objects.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverExecutorPlannerContextProvider.test.ts --run -t "physical index"
+```
+
+Expected: PASS.
+- The next gap is patching or embedding QLever `IndexScan::getLazyScan()` / `Permutation::lazyScan(...)` to fetch this physical index and call `lazyScanRange(...)`.

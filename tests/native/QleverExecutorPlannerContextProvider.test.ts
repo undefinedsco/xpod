@@ -97,6 +97,155 @@ int main() {
     }
   });
 
+  it('feeds a physical index into upstream contexts that expose a physical setter', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical context provider check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-qec-physical-provider-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await mkdir(path.join(qleverSource, 'src/engine/idTable'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/engine'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/global'), { recursive: true });
+      await mkdir(path.join(qleverSource, 'src/index'), { recursive: true });
+      await writeFile(path.join(qleverSource, 'src/global/Id.h'), `
+#pragma once
+#include <cstdint>
+using ColumnIndex = uint64_t;
+class Id {
+ public:
+  static Id fromBits(uint64_t bits) { return Id(bits); }
+  uint64_t getBits() const { return bits_; }
+ private:
+  explicit Id(uint64_t bits) : bits_(bits) {}
+  uint64_t bits_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/Permutation.h'), `
+#pragma once
+class Permutation {
+ public:
+  enum struct Enum { PSO, POS, SPO, SOP, OPS, OSP };
+  explicit Permutation(Enum value = Enum::SPO) : value_(value) {}
+  Enum permutation() const { return value_; }
+ private:
+  Enum value_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/index/LocalVocab.h'), '#pragma once\nclass LocalVocab {};\n', 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
+#pragma once
+#include <cstddef>
+#include <vector>
+#include "global/Id.h"
+class IdTable {
+ public:
+  explicit IdTable(size_t width) : width_(width) {}
+  size_t numColumns() const { return width_; }
+  size_t numRows() const { return rows_.size(); }
+  void push_back(const std::vector<Id>& row) { rows_.push_back(row); }
+  const Id& operator()(size_t row, size_t column) const { return rows_[row][column]; }
+ private:
+  size_t width_;
+  std::vector<std::vector<Id>> rows_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Result.h'), `
+#pragma once
+#include <utility>
+#include <vector>
+#include "engine/idTable/IdTable.h"
+#include "global/Id.h"
+#include "index/LocalVocab.h"
+class Result {
+ public:
+  Result(IdTable table, std::vector<ColumnIndex> sortedBy, LocalVocab&&)
+      : table_(std::move(table)), sortedBy_(std::move(sortedBy)) {}
+  const IdTable& idTable() const { return table_; }
+  const std::vector<ColumnIndex>& sortedBy() const { return sortedBy_; }
+ private:
+  IdTable table_;
+  std::vector<ColumnIndex> sortedBy_;
+};
+`, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/QueryExecutionContext.h'), `
+#pragma once
+#include "XpodQleverPhysicalIndex.hpp"
+class QueryExecutionContext {
+ public:
+  bool received_physical_index = false;
+  uint64_t estimated_rows = 0;
+  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex& index) {
+    auto estimate = index.permutation(Permutation::Enum::SPO).estimate();
+    received_physical_index = index.context().backend.valid() &&
+                              index.context().request != nullptr &&
+                              estimate.status == XPOD_RDF_STATUS_OK;
+    estimated_rows = estimate.estimate.rows;
+  }
+};
+`, 'utf8');
+
+      const smoke = path.join(root, 'planner_context_provider_physical_index_smoke.cpp');
+      const binary = path.join(root, 'planner_context_provider_physical_index_smoke');
+      await writeFile(smoke, `
+#include "xpod_qlever_adapter.h"
+#include "XpodQleverPlannerContextProvider.hpp"
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_scan(
+    void*,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 42;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.estimate_scan = estimate_scan;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+  auto provider = xpod::qlever::createQueryPlannerContextProvider(physical);
+
+  xpod_qlever_query_request request = {};
+  auto context = provider->current(request);
+  if (context.qec == nullptr) return 1;
+  if (context.native == nullptr) return 2;
+  if (!context.qec->received_physical_index) return 3;
+  if (context.qec->estimated_rows != 42) return 4;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/src'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('feeds an internal planner context into public adapter query execution', async () => {
     expect(hasCxx(), 'c++ compiler is required for native planner context provider check').toBe(true);
 
