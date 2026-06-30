@@ -361,6 +361,22 @@ class XpodQleverPhysicalPermutation {
     return executeScanToQleverIdTableBlocks(context_.backend, input);
   }
 
+  QleverIdTableBlocksResult lazyScanAll(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks) const {
+    if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) {
+      return {scan_spec_and_blocks.status, {}};
+    }
+    xpod_rdf_status capability_status = validatePermutationScanCapability();
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, {}};
+    }
+
+    ScanRequestInput input = makeScanInput(
+        scan_spec_and_blocks.pattern,
+        scan_spec_and_blocks.needed_slots);
+    return executeScanToQleverIdTableBlocks(context_.backend, input);
+  }
+
 #if __has_include("index/CompressedRelation.h")
   QleverLazyScanRangeResult lazyScanRange(
       const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks,
@@ -368,6 +384,11 @@ class XpodQleverPhysicalPermutation {
       xpod_rdf_bytes block_metadata_version = {}) const {
     return toQleverLazyScanRange(
         lazyScan(scan_spec_and_blocks, blocks, block_metadata_version));
+  }
+
+  QleverLazyScanRangeResult lazyScanRange(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks) const {
+    return toQleverLazyScanRange(lazyScanAll(scan_spec_and_blocks));
   }
 #endif
 
@@ -502,7 +523,7 @@ class XpodQleverPhysicalPermutation {
   }
 
  private:
-  xpod_rdf_status validateSelectedBlockScanCapability() const noexcept {
+  xpod_rdf_status validatePermutationScanCapability() const noexcept {
     if (context_.capabilities_status == XPOD_RDF_STATUS_UNSUPPORTED) {
       return XPOD_RDF_STATUS_OK;
     }
@@ -512,6 +533,15 @@ class XpodQleverPhysicalPermutation {
     if ((context_.capabilities.supported_permutations &
          toXpodPermutationCapability(permutation_)) == 0) {
       return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return XPOD_RDF_STATUS_OK;
+  }
+
+  xpod_rdf_status validateSelectedBlockScanCapability() const noexcept {
+    xpod_rdf_status capability_status = validatePermutationScanCapability();
+    if (capability_status != XPOD_RDF_STATUS_OK ||
+        context_.capabilities_status == XPOD_RDF_STATUS_UNSUPPORTED) {
+      return capability_status;
     }
     if ((context_.capabilities.features &
          XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN) == 0) {

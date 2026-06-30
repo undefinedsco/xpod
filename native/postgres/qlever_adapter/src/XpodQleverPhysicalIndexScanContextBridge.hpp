@@ -189,24 +189,33 @@ QleverLazyScanRangeResult lazyScanRangeFromQleverScanSpecAndBlocks(
     uint32_t needed_slots = XPOD_RDF_SLOT_SUBJECT |
                             XPOD_RDF_SLOT_PREDICATE |
                             XPOD_RDF_SLOT_OBJECT,
-    xpod_rdf_bytes block_metadata_version = {}) {
+    xpod_rdf_bytes block_metadata_version = {},
+    bool allow_unrestricted_when_no_metadata = false) {
   std::vector<xpod_rdf_scan_block_metadata> selected_blocks =
       blocks.has_value()
           ? detail::blockMetadataFromQlever(permutation, blocks.value())
           : detail::blockMetadataFromQleverScanSpecAndBlocks(
                 permutation, scan_spec_and_blocks);
-  if (selected_blocks.empty()) {
-    return {XPOD_RDF_STATUS_UNSUPPORTED, {}};
-  }
   const auto& scan_specification =
       detail::scanSpecificationFromScanSpecAndBlocks(scan_spec_and_blocks);
-  return lazyScanRangeFromContext(
-      context,
-      permutation,
-      scan_specification,
-      selected_blocks,
-      needed_slots,
-      block_metadata_version);
+  const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
+  if (index == nullptr) {
+    return {XPOD_RDF_STATUS_UNSUPPORTED, {}};
+  }
+  auto physical_permutation = index->permutation(permutation);
+  auto physical_scan_spec_and_blocks = physical_permutation.getScanSpecAndBlocks(
+      scan_specification, needed_slots);
+  if (selected_blocks.empty()) {
+    if (blocks.has_value()) {
+      return {XPOD_RDF_STATUS_OK, {}};
+    }
+    if (!allow_unrestricted_when_no_metadata) {
+      return {XPOD_RDF_STATUS_UNSUPPORTED, {}};
+    }
+    return physical_permutation.lazyScanRange(physical_scan_spec_and_blocks);
+  }
+  return physical_permutation.lazyScanRange(
+      physical_scan_spec_and_blocks, selected_blocks, block_metadata_version);
 }
 
 }  // namespace xpod::qlever

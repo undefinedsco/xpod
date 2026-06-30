@@ -12,6 +12,7 @@ const patchSpecs = [
     patchTokens: [
       'XpodQleverPhysicalIndexScanContextBridge.hpp',
       'lazyScanRangeFromQleverScanSpecAndBlocks',
+      '!scanSpecAndBlocksIsPrefiltered_',
       'permutation().lazyScan(',
     ],
     anchors: [
@@ -23,6 +24,7 @@ const patchSpecs = [
     appliedTokens: [
       'XpodQleverPhysicalIndexScanContextBridge.hpp',
       'xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks',
+      '!scanSpecAndBlocksIsPrefiltered_',
       'xpodLazyScan.status == XPOD_RDF_STATUS_OK',
       'permutation().lazyScan(',
     ],

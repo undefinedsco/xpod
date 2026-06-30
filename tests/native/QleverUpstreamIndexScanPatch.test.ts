@@ -77,6 +77,7 @@ describe('QLever upstream IndexScan patch asset', () => {
       const patched = await readFile(indexScanPath, 'utf8');
       expect(patched).toContain('"XpodQleverPhysicalIndexScanContextBridge.hpp"');
       expect(patched).toContain('xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks');
+      expect(patched).toContain('!scanSpecAndBlocksIsPrefiltered_');
       expect(patched).toContain('xpodLazyScan.status == XPOD_RDF_STATUS_OK');
       expect(patched).toContain('permutation().lazyScan(');
     } finally {

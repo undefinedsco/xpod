@@ -289,6 +289,143 @@ int main() {
     }
   }, 30_000);
 
+  it('lets unprefiltered getLazyScan(nullopt) use a broad physical lazy scan when QLever has no block metadata', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index context bridge check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-context-broad-lazy-scan-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'context_broad_lazy_scan_smoke.cpp');
+      const binary = path.join(root, 'context_broad_lazy_scan_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
+
+#include <optional>
+
+using CompressedBlockMetadata = CompressedRelationReader::CompressedBlockMetadata;
+
+class QueryExecutionContext {
+ public:
+  void setXpodPhysicalIndex(const xpod::qlever::XpodQleverPhysicalIndex& index) {
+    index_.emplace(index);
+  }
+  const xpod::qlever::XpodQleverPhysicalIndex* xpodPhysicalIndex() const {
+    return index_.has_value() ? &*index_ : nullptr;
+  }
+ private:
+  std::optional<xpod::qlever::XpodQleverPhysicalIndex> index_;
+};
+
+struct BackendState {
+  int scan_calls;
+  bool saw_unrestricted_scan;
+};
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  out_capabilities->features = 0;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan_permutation(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->scan_calls;
+  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!request->pattern.has_predicate || request->pattern.predicate != 20) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata_count != 0) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  state->saw_unrestricted_scan = true;
+
+  xpod_rdf_quad_key rows[1] = {{101, 20, 303, 404}};
+  xpod_rdf_quad_batch batch = {};
+  batch.rows = rows;
+  batch.row_count = 1;
+  return on_batch(callback_user_data, &batch);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext planner_context{physical, &request, request.cancellation};
+  planner_context.capabilities_status = physical.getCapabilities(planner_context.capabilities);
+
+  QueryExecutionContext qec;
+  qec.setXpodPhysicalIndex(xpod::qlever::XpodQleverPhysicalIndex(planner_context));
+
+  CompressedRelationReader::ScanSpecAndBlocks scan_spec_and_blocks = {};
+  scan_spec_and_blocks.scanSpec_.col1 = Id::fromBits(20);
+  std::optional<std::vector<CompressedBlockMetadata>> no_qlever_blocks =
+      std::nullopt;
+
+  auto broad = xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks(
+      qec,
+      Permutation::Enum::SPO,
+      scan_spec_and_blocks,
+      no_qlever_blocks,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT,
+      xpod_rdf_bytes{},
+      true);
+  if (broad.status != XPOD_RDF_STATUS_OK) return 1;
+  auto table = broad.blocks.get();
+  if (!table.has_value()) return 2;
+  if (table->numColumns() != 2 || table->numRows() != 1) return 3;
+  if ((*table)(0, 0).getBits() != 101 || (*table)(0, 1).getBits() != 303) return 4;
+  if (broad.blocks.get().has_value()) return 5;
+  if (state.scan_calls != 1 || !state.saw_unrestricted_scan) return 6;
+  std::optional<std::vector<CompressedBlockMetadata>> selected_empty_blocks =
+      std::vector<CompressedBlockMetadata>{};
+
+  auto selected_empty = xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks(
+      qec,
+      Permutation::Enum::SPO,
+      scan_spec_and_blocks,
+      selected_empty_blocks,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT,
+      xpod_rdf_bytes{},
+      true);
+  if (selected_empty.status != XPOD_RDF_STATUS_OK) return 7;
+  if (selected_empty.blocks.get().has_value()) return 8;
+  if (state.scan_calls != 1) return 9;
+
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(bridgeHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('gives an upstream IndexScan getLazyScan patch a direct physical-index path', async () => {
     expect(hasCxx(), 'c++ compiler is required for native physical index context bridge check').toBe(true);
 

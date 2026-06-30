@@ -7,13 +7,17 @@ diff --git a/src/engine/IndexScan.cpp b/src/engine/IndexScan.cpp
 +#include "XpodQleverPhysicalIndexScanContextBridge.hpp"
 +
  #include <absl/container/inlined_vector.h>
-@@ -466,4 +467,18 @@
+@@ -466,4 +467,22 @@
    auto filteredBlocks =
        getLimitOffset().isUnconstrained() ? std::move(blocks) : std::nullopt;
 +  auto xpodLazyScan =
 +      xpod::qlever::lazyScanRangeFromQleverScanSpecAndBlocks(
 +          *_executionContext, permutation().permutation(), scanSpecAndBlocks_,
-+          filteredBlocks);
++          filteredBlocks,
++          XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_PREDICATE |
++              XPOD_RDF_SLOT_OBJECT,
++          xpod_rdf_bytes{},
++          !scanSpecAndBlocksIsPrefiltered_);
 +  if (xpodLazyScan.status == XPOD_RDF_STATUS_OK) {
 +    auto lazyScanAllCols = std::move(xpodLazyScan.blocks);
 +    return CompressedRelationReader::IdTableGeneratorInputRange{

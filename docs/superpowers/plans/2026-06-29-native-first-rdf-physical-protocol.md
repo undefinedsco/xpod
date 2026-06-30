@@ -3748,3 +3748,47 @@ node scripts/check-qlever-full-engine-build.cjs \
 ```
 
 Observed: PASS locally. A fresh no-jemalloc `qlever-server` build now gets past ICU and stale x86_64 jemalloc discovery, but the clean build was interrupted by a transient GitHub FetchContent download failure for `nlohmann/json`; this is an external dependency fetch issue, not the Xpod physical data seam. The next product gate remains a real linked query execution path over `xpod_rdf_backend_v1`, not the standalone QLever server binary.
+
+### Task 92: Let unprefiltered upstream lazy scans fall through to broad physical scans
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndexScanContextBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/patches/qlever-indexscan-physical-lazy-scan.patch`
+- Modify: `scripts/check-qlever-upstream-patches.cjs`
+- Modify: `native/postgres/qlever_adapter/CMakeLists.txt`
+- Modify: `tests/native/QleverPhysicalIndexScanContextBridge.test.ts`
+- Modify: `tests/native/QleverUpstreamIndexScanPatch.test.ts`
+- Modify: `tests/native/QleverAdapterCmake.test.ts`
+
+- [x] **Step 1: Write a failing broad-lazy context smoke**
+
+Add a native smoke where QLever calls `getLazyScan(std::nullopt)` for a non-prefiltered scan and the `ScanSpecAndBlocks` view has no QLever block metadata. The smoke requires the bridge to run an unrestricted physical lazy scan with `block_metadata_count = 0`, while an explicit empty selected-block vector remains an empty result and must not broaden into a full scan.
+
+Expected: FAIL because `lazyScanRangeFromQleverScanSpecAndBlocks(...)` previously returned `UNSUPPORTED` whenever no selected or embedded block metadata was present.
+
+- [x] **Step 2: Add an unrestricted physical lazy-scan seam**
+
+Add `XpodQleverPhysicalPermutation::lazyScanAll(...)` plus the matching `lazyScanRange(scanSpecAndBlocks)` overload. This validates the permutation capability and delegates to the same physical scan callback path without selected block metadata. It does not require `BLOCK_RESTRICTED_SCAN`, because no selected-block restriction is being requested.
+
+- [x] **Step 3: Preserve selected-empty semantics in the upstream context bridge**
+
+Extend `lazyScanRangeFromQleverScanSpecAndBlocks(...)` with an explicit `allow_unrestricted_when_no_metadata` flag. The bridge now distinguishes three cases:
+
+- selected blocks present: run the block-restricted physical lazy scan;
+- selected-block vector explicitly empty: return an empty range, not a broad scan;
+- selected blocks absent and no QLever metadata view: run a broad physical lazy scan only when the caller marks the scan as unprefiltered.
+
+- [x] **Step 4: Update the upstream patch and source-tree gate**
+
+The `IndexScan::getLazyScan(...)` overlay passes `!scanSpecAndBlocksIsPrefiltered_` to the bridge after QLever has applied the limit/offset rule to `filteredBlocks`. The patch validator and QLever-enabled adapter CMake gate now require that token so an older lazy-scan overlay cannot silently keep the stricter metadata-only behavior.
+
+- [x] **Step 5: Verify the focused gate**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndexScanContextBridge.test.ts tests/native/QleverUpstreamIndexScanPatch.test.ts tests/native/QleverAdapterCmake.test.ts --run
+```
+
+Observed: PASS locally. This still does not complete the whole QLever runtime integration, but it removes one more dependency on QLever-owned block metadata for plain non-prefiltered lazy scans.

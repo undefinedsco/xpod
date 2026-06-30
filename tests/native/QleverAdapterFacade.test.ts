@@ -11,6 +11,7 @@ const facadeHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/include
 const facadeSource = path.join(repoRoot, 'native/postgres/qlever_adapter/src/xpod_qlever_adapter.cpp');
 const executorHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverExecutor.hpp');
 const executorSource = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverExecutor.cpp');
+const nativeCheckTimeoutMs = 30_000;
 
 function requireCompiler(name: 'c++'): string {
   try {
@@ -83,7 +84,7 @@ describe('native QLever adapter facade', () => {
     const scriptPath = path.join(repoRoot, 'scripts/check-rdf-physical-protocol-abi.cjs');
     const output = execFileSync(process.execPath, [scriptPath], { cwd: repoRoot, encoding: 'utf8' });
     expect(output).toContain('QLever adapter facade');
-  });
+  }, nativeCheckTimeoutMs);
 
   it('delegates C ABI query execution to an internal executor seam', async () => {
     expect(existsSync(executorHeader)).toBe(true);
