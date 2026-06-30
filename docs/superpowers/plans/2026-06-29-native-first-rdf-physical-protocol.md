@@ -2854,3 +2854,49 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run
 
 Expected: PASS.
 - No QLever C++ dependency yet.
+
+### Task 66: Expose scoped join-fanout estimates on the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing join-fanout smoke**
+
+Add a native physical-index smoke so `XpodQleverPhysicalIndex::estimateJoinFanout(...)` must call the backend `estimate_join_fanout` callback with the current query snapshot, graph scope, source scope, access scope, cancellation pointer, RDF slot patterns, and bound-slot mask.
+
+Expected: FAIL because join-fanout estimates existed on the lower `PhysicalBackend`, but not on the QLever-facing physical index surface.
+
+- [x] **Step 2: Add the minimal lower estimate seam**
+
+Add `XpodQleverJoinFanoutEstimateResult` and `XpodQleverPhysicalIndex::estimateJoinFanout(...)`. The method converts `TripleKeyPattern` inputs into native quad patterns, copies request scope from `PlannerRequestContext`, and delegates to `PhysicalBackend::estimateJoinFanout(...)`. It does not add planner policy, join ordering, or a cost model in Xpod.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.
+
+### Task 67: Record the QLever integration ownership boundary
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+- Modify: `docs/superpowers/plans/2026-06-29-native-first-rdf-physical-protocol.md`
+
+- [x] **Step 1: Make the boundary explicit in the spec**
+
+Record that Xpod only owns the data-layer protocol: dictionary, permutation scans, stats, text/vector candidate sources, source/path scope, ACL/ACR scope, cancellation, snapshots, and profile events.
+
+- [x] **Step 2: Assign upper strategy to QLever**
+
+Record that QLever owns SPARQL parsing, logical/physical planning, join ordering, filter placement, lazy/block execution strategy, modifiers, aggregates, text/fusion strategy, cache policy, and runtime information.
+
+- [x] **Step 3: Freeze Xpod planner growth**
+
+Mark current Xpod operation-plan / parsed-BGP bridges as compatibility spikes and conformance harnesses only. New work should patch or embed QLever against the lower protocol instead of growing a parallel QLever planner in Xpod.

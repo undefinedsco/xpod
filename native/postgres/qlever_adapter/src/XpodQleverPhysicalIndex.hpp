@@ -52,6 +52,11 @@ struct XpodQleverDistinctEstimateResult {
   xpod_rdf_estimate estimate;
 };
 
+struct XpodQleverJoinFanoutEstimateResult {
+  xpod_rdf_status status;
+  xpod_rdf_estimate estimate;
+};
+
 struct XpodQleverHistogramHintsResult {
   xpod_rdf_status status;
   std::vector<xpod_rdf_histogram_hint> hints;
@@ -476,6 +481,33 @@ class XpodQleverPhysicalIndex {
 
     result.status = context_.backend.histogramHints(
         request, collectHistogramHintsBatch, &result, result.stats_version);
+    return result;
+  }
+
+  XpodQleverJoinFanoutEstimateResult estimateJoinFanout(
+      const std::vector<TripleKeyPattern>& patterns,
+      uint32_t bound_slots) const {
+    std::vector<xpod_rdf_quad_pattern> request_patterns;
+    request_patterns.reserve(patterns.size());
+    for (const auto& pattern : patterns) {
+      request_patterns.push_back(toXpodQuadPattern(pattern));
+    }
+
+    xpod_rdf_join_fanout_request request = {};
+    request.snapshot = snapshot();
+    request.cancellation = context_.cancellation;
+    request.patterns = request_patterns.data();
+    request.pattern_count = request_patterns.size();
+    request.bound_slots = bound_slots;
+    if (context_.request != nullptr) {
+      request.graph_scope = context_.request->graph_scope;
+      request.source_scope = context_.request->source_scope;
+      request.access_scope = context_.request->access_scope;
+    }
+
+    XpodQleverJoinFanoutEstimateResult result = {};
+    result.status = context_.backend.estimateJoinFanout(
+        request, result.estimate);
     return result;
   }
 

@@ -890,6 +890,8 @@ int main() {
   request.source_scope.has_source_node = 1;
   request.source_scope.source_node = 55;
   request.access_scope = &access;
+  xpod_rdf_cancellation cancellation = {};
+  request.cancellation = &cancellation;
   xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
   xpod::qlever::XpodQleverPhysicalIndex index(context);
 
@@ -1365,6 +1367,111 @@ int main() {
   if (ranges.ranges[0].lower != 10 || ranges.ranges[0].upper != 20) return 4;
   if (ranges.ranges[1].lower != 30 || ranges.ranges[1].upper != 40) return 5;
   if (state.prefix_calls != 1) return 6;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exposes scoped join fanout estimates through the physical index', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index join fanout check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-join-fanout-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_join_fanout_smoke.cpp');
+      const binary = path.join(root, 'physical_index_join_fanout_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int join_fanout_calls;
+};
+
+static bool bytes_equal(xpod_rdf_bytes actual, const char* expected, size_t size) {
+  if (actual.size != size) return false;
+  for (size_t i = 0; i < size; ++i) {
+    if (actual.data[i] != expected[i]) return false;
+  }
+  return true;
+}
+
+static xpod_rdf_status estimate_join_fanout(
+    void* user_data,
+    const xpod_rdf_join_fanout_request* request,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->join_fanout_calls;
+  if (!bytes_equal(request->snapshot.facts_version, "facts", 5)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->cancellation == nullptr) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT || request->graph_scope.exact_graph != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->source_scope.has_source_node != 1 || request->source_scope.source_node != 55) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->access_scope == nullptr || request->access_scope->mode != XPOD_RDF_ACCESS_READ) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->pattern_count != 2) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->bound_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->patterns[0].has_subject != 1 || request->patterns[0].subject != 11) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->patterns[1].has_object != 1 || request->patterns[1].object != 33) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 13;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.estimate_join_fanout = estimate_join_fanout;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_rdf_access_scope access = {};
+  access.mode = XPOD_RDF_ACCESS_READ;
+  xpod_qlever_query_request request = {};
+  request.snapshot.facts_version = {"facts", 5};
+  request.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  request.graph_scope.exact_graph = 99;
+  request.source_scope.has_source_node = 1;
+  request.source_scope.source_node = 55;
+  request.access_scope = &access;
+  xpod_rdf_cancellation cancellation = {};
+  request.cancellation = &cancellation;
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  xpod::qlever::TripleKeyPattern left = {};
+  left.has_subject = true;
+  left.subject = 11;
+  xpod::qlever::TripleKeyPattern right = {};
+  right.has_object = true;
+  right.object = 33;
+  std::vector<xpod::qlever::TripleKeyPattern> patterns{left, right};
+
+  auto result = index.estimateJoinFanout(
+      patterns,
+      XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT);
+  if (result.status != XPOD_RDF_STATUS_OK) return 1;
+  if (result.estimate.rows != 13) return 2;
+  if (result.estimate.confidence != XPOD_RDF_ESTIMATE_FRESH) return 3;
+  if (state.join_fanout_calls != 1) return 4;
   return 0;
 }
 `, 'utf8');

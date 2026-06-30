@@ -13,6 +13,18 @@ The protocol answers one question before any C++/PostgreSQL extension work:
 
 This spec is the contract. It is not an implementation plan for embedding QLever, and it does not make QLever a product dependency.
 
+## Boundary decision
+
+Xpod only owns the data-layer protocol. Upper query strategy is QLever-owned.
+
+In concrete terms:
+
+- Xpod provides QLever-compatible physical access to its existing authority data: term dictionary, permutation scans, counts/distincts/cardinality stats, histogram hints, text/vector candidate sources, source/path scope, ACL/ACR scope, cancellation, snapshots, and profile events.
+- QLever owns SPARQL parsing, logical/physical planning, join ordering, filter placement, lazy/block execution strategy, modifiers, aggregates, text-operator semantics, ranking/top-k/fusion strategy, cache policy, and runtime information.
+- The adapter goal is to make Xpod's PG/SQLite-backed data look like a QLever `Index` / `Permutation` / text source to QLever code. If a missing feature requires strategy, the fix is to patch or embed QLever against this lower protocol, not to recreate that strategy in Xpod.
+- Existing Xpod operation-plan / parsed-BGP bridges are compatibility spikes and conformance harnesses while the lower protocol is being built. They must not keep growing into a parallel QLever planner.
+- Derived indexes may be rebuilt from Xpod facts, but Xpod must not maintain QLever's separate on-disk RDF fact store as a second authority.
+
 ## Working assumptions
 
 - This is a native-first physical protocol for a PostgreSQL extension / QLever-compatible executor path. TypeScript snippets in this document are IDL-style notation only for tests, benchmark tooling, and non-native fallbacks; they are not the product execution protocol. The primary implementation contract is a C ABI with an internal C++ facade where QLever code is involved.
@@ -45,14 +57,10 @@ Implication:
 
 ```text
 SPARQL / RdfQuery / product search request
-  -> logical planner
-      - RdfBgpSource
-      - TextMatchSource
-      - VectorMatchSource
-      - PathScopeSource
-      - AclScopeSource
-      - MaterializedResultSource
-  -> QLever-compatible physical protocol
+  -> QLever parser / planner / executor
+      - QLever decides join order, filters, modifiers, top-k, text/fusion strategy
+      - Xpod does not duplicate those policies
+  -> Xpod QLever-compatible physical protocol
       - TermDictionary
       - PermutationAccess
       - CardinalityStats
@@ -66,7 +74,7 @@ SPARQL / RdfQuery / product search request
       cloud:  PostgreSQL facts + GIN/vector/native extension when available
 ```
 
-Planner and executor code inside the native path should depend on this protocol, not directly on product model repositories or ad-hoc PG SQL assembled in TypeScript. The TypeScript engine may still call the native executor, collect reports, and run fallback paths, but it is not the protocol owner for the QLever-compatible path.
+QLever planner and executor code inside the native path should depend on this protocol, not directly on product model repositories or ad-hoc PG SQL assembled in TypeScript. The TypeScript engine may still call the native executor, collect reports, and run fallback paths, but it is not the protocol owner for the QLever-compatible path.
 
 The protocol has three layers:
 
@@ -655,7 +663,7 @@ The Xpod-backed scan adapter uses the same capability contract as a lower-protoc
 
 Text and vector candidate operation shells use the same rule for feature bits: an OK capability response without `TEXT_SEARCH` or `VECTOR_SEARCH` fails closed before estimate/search callbacks. This keeps FTS/vector availability in the native data contract that QLever-facing code can plan against.
 
-`XpodQleverPhysicalIndex` is the first native QLever-shaped lower access surface over this protocol. It exposes the query capability snapshot, single and batch dictionary lookup/resolution, QLever id encoding/decoding/comparison, term prefix ranges, histogram hints, text/vector candidate-source factories, QLever `ScanSpecification`-style col0/col1/col2 mapping into RDF slot patterns, and `permutation(...).estimate(...)` / `permutation(...).scan(...)` / `permutation(...).count(...)` / `permutation(...).distinct(...)` / `permutation(...).estimateDistinct(...)` using `PlannerRequestContext`; scan/count/distinct/estimateDistinct, histogram, scan-spec, and candidate-source calls preserve the request snapshot, graph scope, source scope, access scope, cancellation, and backend capability guards. Scan-spec graph filters that cannot yet be represented as Xpod graph scope fail closed instead of broadening results. This is the seam that a patched or embedded QLever `Index`/`Permutation` / text-index path should call. It must not grow SPARQL planning, join planning, modifiers, ranking, or fusion policy.
+`XpodQleverPhysicalIndex` is the first native QLever-shaped lower access surface over this protocol. It exposes the query capability snapshot, single and batch dictionary lookup/resolution, QLever id encoding/decoding/comparison, term prefix ranges, scoped join-fanout estimates, histogram hints, text/vector candidate-source factories, QLever `ScanSpecification`-style col0/col1/col2 mapping into RDF slot patterns, and `permutation(...).estimate(...)` / `permutation(...).scan(...)` / `permutation(...).count(...)` / `permutation(...).distinct(...)` / `permutation(...).estimateDistinct(...)` using `PlannerRequestContext`; scan/count/distinct/estimateDistinct, join-fanout, histogram, scan-spec, and candidate-source calls preserve the request snapshot, graph scope, source scope, access scope, cancellation, and backend capability guards. Scan-spec graph filters that cannot yet be represented as Xpod graph scope fail closed instead of broadening results. This is the seam that a patched or embedded QLever `Index`/`Permutation` / text-index path should call. It must not grow SPARQL planning, join planning, modifiers, ranking, or fusion policy.
 
 - Build a read-only spike that maps a small QLever-like operator subset to this protocol:
   - term lookup;
@@ -682,6 +690,7 @@ The native binding should not expose C++ ABI directly across PostgreSQL or proce
 
 - Do not expose a user-visible `qlever` backend selector.
 - Do not maintain QLever's on-disk RDF index beside PG/SQLite facts.
+- Do not reimplement QLever's upper planner/executor strategies in Xpod.
 - Do not implement SPARQL UPDATE through this protocol in the first version.
 - Do not support SERVICE federation through this protocol; cross-provider federation remains outside the hot server path.
 - Do not make text/vector/path retrieval authoritative over RDF facts or SolidFS files.
