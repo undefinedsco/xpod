@@ -303,17 +303,25 @@ int main() {
 
   xpod_qlever_adapter_release_result(adapter, &result);
 
-  xpod_rdf_bytes unsupported_query = {"ASK { ?s ?p ?o }", 16};
-  status = xpod_qlever_adapter_query(adapter, unsupported_query, &result);
-  std::string_view error(result.error_message.data, result.error_message.size);
-  if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 6;
-  if (error.find("unsupported QLever bridge query") == std::string_view::npos) return 7;
+  xpod_rdf_bytes ask_query = {"ASK { ?s ?p ?o }", 16};
+  xpod_qlever_query_request ask_request = {};
+  ask_request.sparql = ask_query;
+  ask_request.snapshot.snapshot_token = {"snap-v1", 7};
+  ask_request.source_scope.local_path_prefix = {"/workspace/docs/", 16};
+  ask_request.access_scope = &access;
+  status = xpod_qlever_adapter_query_request(adapter, &ask_request, &result);
+  std::string_view ask_body(result.result_json.data, result.result_json.size);
+  std::string_view ask_profile(result.profile_json.data, result.profile_json.size);
+  if (status != XPOD_RDF_STATUS_OK) return 6;
+  if (ask_body.find("\\"boolean\\":true") == std::string_view::npos) return 7;
+  if (ask_profile.find("Ask") == std::string_view::npos) return 17;
+  if (ask_profile.find("PermutationScan") == std::string_view::npos) return 18;
 
   xpod_qlever_adapter_release_result(adapter, &result);
 
   xpod_rdf_bytes broken_query = {"BROKEN { ?s ?p ?o }", 20};
   status = xpod_qlever_adapter_query(adapter, broken_query, &result);
-  error = std::string_view(result.error_message.data, result.error_message.size);
+  std::string_view error(result.error_message.data, result.error_message.size);
   if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 13;
   if (error.find("failed to parse QLever bridge query") == std::string_view::npos) return 14;
 

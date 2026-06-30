@@ -187,6 +187,11 @@ void writeEmptySparqlJson(
   out << "[]}}";
 }
 
+void writeAskSparqlJson(std::ostringstream& out, bool result) {
+  out << "{\"engine\":\"xpod-qlever-bridge\",\"head\":{},\"boolean\":"
+      << (result ? "true" : "false") << '}';
+}
+
 void writeSparqlJson(
     std::ostringstream& out,
     const IdTable& table,
@@ -538,7 +543,11 @@ xpod_rdf_status planBridgeParsedQuery(
     planner_error = "unknown planner error";
   }
   if (!plan.has_value()) {
-    plan = planParsedQuery(parsed);
+    if (parsed.hasAskClause()) {
+      plan = planParsedAskQuery(parsed);
+    } else {
+      plan = planParsedQuery(parsed);
+    }
   }
   if (!plan.has_value()) {
     error_storage = "unsupported QLever bridge query";
@@ -549,7 +558,8 @@ xpod_rdf_status planBridgeParsedQuery(
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
   std::optional<BridgeResultModifier> selected_projection;
-  if (!appendParsedPublicModifiers(*plan, parsed, selected_projection)) {
+  if (!parsed.hasAskClause() &&
+      !appendParsedPublicModifiers(*plan, parsed, selected_projection)) {
     error_storage = "unsupported QLever public query modifiers";
     return XPOD_RDF_STATUS_UNSUPPORTED;
   }
@@ -776,9 +786,11 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
   std::string_view query = bytesView(request.sparql);
   BridgeQueryPlan plan;
   xpod_rdf_status parse_status = XPOD_RDF_STATUS_OK;
+  bool is_ask_query = false;
   try {
     EncodedIriManager encoded_iri_manager;
     auto parsed = SparqlParser::parseQuery(&encoded_iri_manager, std::string(query));
+    is_ask_query = parsed.hasAskClause();
     std::optional<NativeQleverExecution> native_execution;
     try {
       native_execution =
@@ -855,7 +867,11 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
   }
   if (plan.known_empty) {
     std::ostringstream json;
-    writeEmptySparqlJson(json, plan.output_variables);
+    if (is_ask_query) {
+      writeAskSparqlJson(json, false);
+    } else {
+      writeEmptySparqlJson(json, plan.output_variables);
+    }
     result_storage = json.str();
     std::ostringstream profile;
     writeScanProfileJson(profile, profileKind(plan.root.kind), plan.descriptor, 0);
@@ -892,6 +908,20 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
   }
 
   const IdTable* output_table = &result.result.idTable();
+
+  if (is_ask_query) {
+    std::ostringstream json;
+    writeAskSparqlJson(json, output_table->numRows() != 0);
+    result_storage = json.str();
+    std::ostringstream profile;
+    writeScanProfileJson(
+        profile, profileKind(plan.root.kind), plan.descriptor,
+        output_table->numRows());
+    profile_storage = profile.str();
+    setResult(out_result, XPOD_RDF_STATUS_OK, result_storage, profile_storage,
+              error_storage);
+    return XPOD_RDF_STATUS_OK;
+  }
 
   std::vector<xpod_rdf_term> terms;
   xpod_rdf_status resolve_status = resolveIdTableTerms(

@@ -4228,3 +4228,45 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed before implementation: the generated smoke test failed first, then the linked runtime smoke failed with exit `58` because `urn:tail` leaked into the result. After the bounded modifier, both focused tests and the linked runtime smoke pass.
+
+
+### Task 104: Let ASK query forms use the Xpod physical seam
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverExecutorFactory.test.ts`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add ASK regression gates**
+
+The focused executor-factory smoke now treats `ASK { ?s ?p ?o }` as supported and requires a SPARQL JSON boolean result. The linked real-runtime smoke also issues the same ASK query and requires `"boolean":true` plus an `Ask` profile marker.
+
+Observed before implementation: the focused smoke failed with status `6` because ASK still returned `XPOD_RDF_STATUS_UNSUPPORTED`.
+
+- [x] **Step 2: Plan ASK over the parsed physical graph pattern**
+
+`planParsedAskQuery(...)` now reuses the parsed graph-pattern fallback with selected projection disabled. The resulting plan keeps the underlying physical rows only long enough to decide whether the ASK result is true, prefixes the profile descriptor with `Ask`, and avoids reading QLever-native vocab/files.
+
+Public SELECT modifiers are intentionally skipped for ASK. This avoids calling real upstream `ParsedQuery::selectClause()` on an ASK clause and keeps the ASK path separate from SELECT projection/order/distinct handling.
+
+- [x] **Step 3: Serialize ASK without resolving row terms**
+
+`executeBridgeQueryWithPlannerContext(...)` records whether the parsed query is ASK. For known-empty plans it serializes `false`; for executed physical plans it serializes `true` iff the produced `IdTable` has at least one row. The adapter does not resolve row term ids for ASK, matching QLever's boolean result semantics and avoiding unnecessary dictionary work.
+
+This remains a Cloud Enterprise-only native seam. Local deployments still do not expose the QLever-compatible adapter or runtime selector.
+
+- [x] **Step 4: Verify focused and linked runtime behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverExecutorFactory.test.ts tests/native/QleverRealRuntimeBuildScript.test.ts tests/native/QleverPlanBridge.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally after rebuilding the adapter.

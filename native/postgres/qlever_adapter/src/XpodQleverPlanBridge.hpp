@@ -1219,7 +1219,8 @@ inline std::optional<BridgeQueryPlan> planValuesBasicJoinFallback(
     const ParsedQuery& parsed,
     const parsedQuery::Values& values,
     const parsedQuery::BasicGraphPattern& basic,
-    const std::optional<BridgeGraphScope>& graph_scope) {
+    const std::optional<BridgeGraphScope>& graph_scope,
+    bool apply_selected_projection = true) {
   auto values_plan = planValuesOperation(values);
   auto bgp_plan = planBasicPatternFallback(
       parsed, basic, graph_scope, false);
@@ -1249,7 +1250,8 @@ inline std::optional<BridgeQueryPlan> planValuesBasicJoinFallback(
   plan.child_plans.push_back(std::move(*values_plan));
   plan.child_plans.push_back(std::move(*bgp_plan));
 
-  if (!applySelectedProjectionByOutputVariables(plan, parsed)) {
+  if (apply_selected_projection &&
+      !applySelectedProjectionByOutputVariables(plan, parsed)) {
     return std::nullopt;
   }
   return plan;
@@ -1258,12 +1260,14 @@ inline std::optional<BridgeQueryPlan> planValuesBasicJoinFallback(
 inline std::optional<BridgeQueryPlan> planParsedGraphPatternFallback(
     const ParsedQuery& parsed,
     const parsedQuery::GraphPattern& graph_pattern,
-    const std::optional<BridgeGraphScope>& graph_scope);
+    const std::optional<BridgeGraphScope>& graph_scope,
+    bool apply_selected_projection = true);
 
 inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
     const ParsedQuery& parsed,
     const std::vector<parsedQuery::GraphPatternOperation>& children,
-    const std::optional<BridgeGraphScope>& graph_scope) {
+    const std::optional<BridgeGraphScope>& graph_scope,
+    bool apply_selected_projection = true) {
   if (children.size() == 1) {
     const auto* group = groupFromOperation(children.front());
     if (group != nullptr) {
@@ -1275,13 +1279,15 @@ inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
         }
         nested_scope = std::move(local_scope);
       }
-      return planParsedGraphPatternFallback(parsed, group->_child, nested_scope);
+      return planParsedGraphPatternFallback(
+          parsed, group->_child, nested_scope, apply_selected_projection);
     }
     const auto* basic = basicPatternFromOperation(children.front());
     if (basic == nullptr) {
       return std::nullopt;
     }
-    return planBasicPatternFallback(parsed, *basic, graph_scope);
+    return planBasicPatternFallback(
+        parsed, *basic, graph_scope, apply_selected_projection);
   }
   if (children.size() == 2) {
     std::optional<BridgeGraphScope> effective_scope = graph_scope;
@@ -1295,7 +1301,8 @@ inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
     if (values == nullptr || basic == nullptr) {
       return std::nullopt;
     }
-    return planValuesBasicJoinFallback(parsed, *values, *basic, effective_scope);
+    return planValuesBasicJoinFallback(
+        parsed, *values, *basic, effective_scope, apply_selected_projection);
   }
   return std::nullopt;
 }
@@ -1303,9 +1310,11 @@ inline std::optional<BridgeQueryPlan> planParsedChildrenFallback(
 inline std::optional<BridgeQueryPlan> planParsedGraphPatternFallback(
     const ParsedQuery& parsed,
     const parsedQuery::GraphPattern& graph_pattern,
-    const std::optional<BridgeGraphScope>& graph_scope) {
+    const std::optional<BridgeGraphScope>& graph_scope,
+    bool apply_selected_projection) {
   auto plan = planParsedChildrenFallback(
-      parsed, graph_pattern._graphPatterns, graph_scope);
+      parsed, graph_pattern._graphPatterns, graph_scope,
+      apply_selected_projection);
   if (!plan.has_value()) {
     return std::nullopt;
   }
@@ -1322,6 +1331,19 @@ inline std::optional<BridgeQueryPlan> planParsedQuery(
   }
   return planParsedGraphPatternFallback(
       parsed, parsed._rootGraphPattern, std::nullopt);
+}
+
+inline std::optional<BridgeQueryPlan> planParsedAskQuery(
+    const ParsedQuery& parsed) {
+  if (!parsed.hasAskClause()) {
+    return std::nullopt;
+  }
+  auto plan = planParsedGraphPatternFallback(
+      parsed, parsed._rootGraphPattern, std::nullopt, false);
+  if (plan.has_value() && plan->descriptor.find("Ask") == std::string::npos) {
+    plan->descriptor = "Ask + " + plan->descriptor;
+  }
+  return plan;
 }
 
 inline void offsetBridgeOperationIndexes(

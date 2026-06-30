@@ -154,6 +154,12 @@ class ParsedQuery {
     query._rootGraphPattern._graphPatterns.emplace_back(std::move(basic));
     return query;
   }
+  static ParsedQuery minimalAsk() {
+    ParsedQuery query = minimalSelect();
+    query.select_ = false;
+    query.ask_ = true;
+    return query;
+  }
   static ParsedQuery graphIriSelect() {
     ParsedQuery query;
     parsedQuery::BasicGraphPattern basic;
@@ -275,12 +281,14 @@ class ParsedQuery {
     return query;
   }
   bool hasSelectClause() const { return select_; }
+  bool hasAskClause() const { return ask_; }
   const SelectClause& selectClause() const { return select_clause_; }
   const std::vector<parsedQuery::GraphPatternOperation>& children() const {
     return _rootGraphPattern._graphPatterns;
   }
   parsedQuery::GraphPattern _rootGraphPattern;
   bool select_ = true;
+  bool ask_ = false;
   SelectClause select_clause_;
 };
 `;
@@ -666,7 +674,7 @@ class IndexScan final : public Operation {
 
 export const fakePermissiveSparqlParserHeader = '#pragma once\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("<urn:type>") != std::string::npos) return ParsedQuery::subjectFilterSelect(); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); return ParsedQuery::minimalSelect(); } };\n';
 
-export const fakeThrowingSparqlParserHeader = '#pragma once\n#include <stdexcept>\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("BROKEN") != std::string::npos) throw std::runtime_error("synthetic parse failure"); if (query.find("<urn:type>") != std::string::npos) return ParsedQuery::subjectFilterSelect(); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); if (query.find("SELECT") != std::string::npos) return ParsedQuery::minimalSelect(); ParsedQuery parsed; parsed.select_ = false; return parsed; } };\n';
+export const fakeThrowingSparqlParserHeader = '#pragma once\n#include <stdexcept>\n#include <string>\n#include "parser/ParsedQuery.h"\nclass SparqlParser { public: static ParsedQuery parseQuery(const void*, std::string query) { if (query.find("BROKEN") != std::string::npos) throw std::runtime_error("synthetic parse failure"); if (query.find("<urn:type>") != std::string::npos) return ParsedQuery::subjectFilterSelect(); if (query.find("<urn:p>") != std::string::npos) return ParsedQuery::predicateIriSelect(); if (query.find("ASK") != std::string::npos) return ParsedQuery::minimalAsk(); if (query.find("SELECT") != std::string::npos) return ParsedQuery::minimalSelect(); ParsedQuery parsed; parsed.select_ = false; return parsed; } };\n';
 
 export const fakeTextIndexScanForWordHeader = `
 #pragma once

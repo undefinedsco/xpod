@@ -715,6 +715,31 @@ int main() {
   if (filter_profile.find("OrderBy") == std::string_view::npos) return 60;
   xpod_qlever_adapter_release_result(adapter, &filter_result);
 
+  xpod_qlever_query_request ask_request = {};
+  ask_request.sparql = bytes("ASK { ?s ?p ?o }");
+  xpod_qlever_query_result ask_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &ask_request, &ask_result);
+  std::string_view ask_json(
+      ask_result.result_json.data, ask_result.result_json.size);
+  std::string_view ask_profile(
+      ask_result.profile_json.data, ask_result.profile_json.size);
+  std::string_view ask_error(
+      ask_result.error_message.data, ask_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "ask query failed: %.*s\n",
+                 static_cast<int>(ask_error.size()), ask_error.data());
+    return 61;
+  }
+  if (ask_json.find(R"("boolean":true)") == std::string_view::npos) {
+    std::fprintf(stderr, "ask boolean mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(ask_json.size()), ask_json.data(),
+                 static_cast<int>(ask_profile.size()), ask_profile.data());
+    return 62;
+  }
+  if (ask_profile.find("Ask") == std::string_view::npos) return 63;
+  if (ask_profile.find("PermutationScan") == std::string_view::npos) return 64;
+  xpod_qlever_adapter_release_result(adapter, &ask_result);
+
   xpod_qlever_adapter_release_result(adapter, &result);
   xpod_qlever_query_request text_request = {};
   text_request.sparql = bytes("SELECT * WHERE { ?text ql:contains-word \"topic\" }");
