@@ -19,29 +19,6 @@ struct QleverTextSizeEstimateResult {
   size_t cost = 0;
 };
 
-inline QleverIdTableResult textCandidatesToQleverTextRecordTable(
-    const xpod::rdf::PhysicalBackend& backend,
-    const xpod::rdf::CandidateBuffer& candidates) {
-  IdTable table = makeQleverIdTable(1);
-  std::vector<Id> row;
-  row.reserve(1);
-  for (const xpod::rdf::CandidateRow& candidate : candidates.rows) {
-    if (!candidate.has_retrieval_point) {
-      return {XPOD_RDF_STATUS_UNSUPPORTED, makeQleverIdTable(1)};
-    }
-    uint64_t bits = 0;
-    xpod_rdf_status status = backend.encodeQleverId(
-        candidate.retrieval_point, bits);
-    if (status != XPOD_RDF_STATUS_OK) {
-      return {status, makeQleverIdTable(1)};
-    }
-    row.clear();
-    row.push_back(Id::fromBits(bits));
-    table.push_back(row);
-  }
-  return {XPOD_RDF_STATUS_OK, std::move(table)};
-}
-
 inline std::string_view stripFixedEntityBrackets(
     std::string_view fixed_entity) noexcept {
   if (fixed_entity.size() >= 2 && fixed_entity.front() == '<' &&
@@ -49,6 +26,14 @@ inline std::string_view stripFixedEntityBrackets(
     return fixed_entity.substr(1, fixed_entity.size() - 2);
   }
   return fixed_entity;
+}
+
+inline Id scoreToQleverId(double score) {
+  if constexpr (requires { Id::makeFromDouble(score); }) {
+    return Id::makeFromDouble(score);
+  } else {
+    return Id::fromBits(static_cast<uint64_t>(score * 1000000));
+  }
 }
 
 inline xpod_rdf_status bindFixedEntity(
@@ -78,8 +63,10 @@ inline xpod_rdf_status bindFixedEntity(
 inline QleverIdTableResult textCandidatesToQleverEntityTable(
     const xpod::rdf::PhysicalBackend& backend,
     const xpod::rdf::CandidateBuffer& candidates,
-    bool has_fixed_entity) {
-  const size_t width = has_fixed_entity ? 1 : 2;
+    bool has_fixed_entity,
+    bool has_score) {
+  const size_t width = (has_fixed_entity ? 1 : 2) +
+                       static_cast<size_t>(has_score);
   IdTable table = makeQleverIdTable(width);
   std::vector<Id> row;
   row.reserve(width);
@@ -104,6 +91,37 @@ inline QleverIdTableResult textCandidatesToQleverEntityTable(
       }
       row.push_back(Id::fromBits(entity_bits));
     }
+    if (has_score) {
+      row.push_back(scoreToQleverId(candidate.score));
+    }
+    table.push_back(row);
+  }
+  return {XPOD_RDF_STATUS_OK, std::move(table)};
+}
+
+inline QleverIdTableResult textCandidatesToQleverTextRecordTable(
+    const xpod::rdf::PhysicalBackend& backend,
+    const xpod::rdf::CandidateBuffer& candidates,
+    bool has_score) {
+  const size_t width = 1 + static_cast<size_t>(has_score);
+  IdTable table = makeQleverIdTable(width);
+  std::vector<Id> row;
+  row.reserve(width);
+  for (const xpod::rdf::CandidateRow& candidate : candidates.rows) {
+    if (!candidate.has_retrieval_point) {
+      return {XPOD_RDF_STATUS_UNSUPPORTED, makeQleverIdTable(width)};
+    }
+    uint64_t bits = 0;
+    xpod_rdf_status status = backend.encodeQleverId(
+        candidate.retrieval_point, bits);
+    if (status != XPOD_RDF_STATUS_OK) {
+      return {status, makeQleverIdTable(width)};
+    }
+    row.clear();
+    row.push_back(Id::fromBits(bits));
+    if (has_score) {
+      row.push_back(scoreToQleverId(candidate.score));
+    }
     table.push_back(row);
   }
   return {XPOD_RDF_STATUS_OK, std::move(table)};
@@ -115,9 +133,10 @@ QleverTextSizeEstimateResult textWordSizeEstimateFromContext(
     std::string_view word,
     bool is_prefix,
     bool has_score) {
-  if (is_prefix || has_score) {
+  if (is_prefix) {
     return {};
   }
+  (void)has_score;
 
   const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
   if (index == nullptr) {
@@ -151,7 +170,7 @@ QleverResultWithStatus textWordResultFromContext(
     bool is_prefix,
     bool has_score,
     std::vector<ColumnIndex> sorted_by = {ColumnIndex{0}}) {
-  if (is_prefix || has_score) {
+  if (is_prefix) {
     return toQleverResult(
         {XPOD_RDF_STATUS_UNSUPPORTED, makeQleverIdTable(
             1 + static_cast<size_t>(is_prefix) +
@@ -176,7 +195,7 @@ QleverResultWithStatus textWordResultFromContext(
   }
 
   QleverIdTableResult table = textCandidatesToQleverTextRecordTable(
-      index->context().backend, candidates.candidates);
+      index->context().backend, candidates.candidates, has_score);
   return toQleverResult(std::move(table), std::move(sorted_by));
 }
 
@@ -187,9 +206,7 @@ QleverTextSizeEstimateResult textEntitySizeEstimateFromContext(
     bool has_fixed_entity,
     std::string_view fixed_entity,
     bool has_score) {
-  if (has_score) {
-    return {};
-  }
+  (void)has_score;
 
   const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
   if (index == nullptr) {
@@ -235,11 +252,6 @@ QleverResultWithStatus textEntityResultFromContext(
   const size_t width =
       1 + static_cast<size_t>(!has_fixed_entity) +
       static_cast<size_t>(has_score);
-  if (has_score) {
-    return toQleverResult(
-        {XPOD_RDF_STATUS_UNSUPPORTED, makeQleverIdTable(width)},
-        std::move(sorted_by));
-  }
 
   const XpodQleverPhysicalIndex* index = physicalIndexFromContext(context);
   if (index == nullptr) {
@@ -269,7 +281,8 @@ QleverResultWithStatus textEntityResultFromContext(
   }
 
   QleverIdTableResult table = textCandidatesToQleverEntityTable(
-      index->context().backend, candidates.candidates, has_fixed_entity);
+      index->context().backend, candidates.candidates, has_fixed_entity,
+      has_score);
   return toQleverResult(std::move(table), std::move(sorted_by));
 }
 

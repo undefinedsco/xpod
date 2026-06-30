@@ -29,6 +29,9 @@ using ColumnIndex = uint64_t;
 class Id {
  public:
   static Id fromBits(uint64_t bits) { return Id(bits); }
+  static Id makeFromDouble(double value) {
+    return Id(static_cast<uint64_t>(value * 1000) + 9000);
+  }
   uint64_t getBits() const { return bits_; }
  private:
   explicit Id(uint64_t bits) : bits_(bits) {}
@@ -247,10 +250,12 @@ static xpod_rdf_status text_search(
   rows[0].has_retrieval_point = 1;
   rows[0].resource_term = request->required_entities_size == 1 ? 77 : 51;
   rows[0].has_resource_term = 1;
+  rows[0].score = 0.75;
   rows[1].retrieval_point = 42;
   rows[1].has_retrieval_point = 1;
   rows[1].resource_term = 52;
   rows[1].has_resource_term = 1;
+  rows[1].score = 0.25;
   xpod_rdf_candidate_batch batch = {};
   batch.rows = rows;
   batch.row_count = request->required_entities_size == 1 ? 1 : 2;
@@ -307,8 +312,13 @@ int main() {
   if (prefix.status != XPOD_RDF_STATUS_UNSUPPORTED) return 8;
   auto score = xpod::qlever::textWordResultFromContext(
       qec, "runtime", false, true, {ColumnIndex{0}});
-  if (score.status != XPOD_RDF_STATUS_UNSUPPORTED) return 9;
-  if (text_search_calls != 1) return 10;
+  if (score.status != XPOD_RDF_STATUS_OK) return 9;
+  if (score.result.idTable().numColumns() != 2) return 10;
+  if (score.result.idTable()(0, 0).getBits() != 1041) return 11;
+  if (score.result.idTable()(0, 1).getBits() != 9750) return 33;
+  if (score.result.idTable()(1, 0).getBits() != 1042) return 34;
+  if (score.result.idTable()(1, 1).getBits() != 9250) return 35;
+  if (text_search_calls != 2) return 36;
 
   xpod_rdf_backend_v1 no_text_backend = raw_backend;
   no_text_backend.get_capabilities = [](void*, xpod_rdf_backend_capabilities* out) {
@@ -320,7 +330,7 @@ int main() {
   no_text_qec.setXpodPhysicalIndex(make_index(no_text_physical, request));
   auto unsupported = xpod::qlever::textWordResultFromContext(
       no_text_qec, "runtime", false, false, {ColumnIndex{0}});
-  if (unsupported.status != XPOD_RDF_STATUS_UNSUPPORTED) return 11;
+  if (unsupported.status != XPOD_RDF_STATUS_UNSUPPORTED) return 37;
   auto entity_estimate = xpod::qlever::textEntitySizeEstimateFromContext(
       qec, "runtime", false, "", false);
   if (entity_estimate.status != XPOD_RDF_STATUS_OK) return 15;
@@ -351,7 +361,11 @@ int main() {
 
   auto entity_score = xpod::qlever::textEntityResultFromContext(
       qec, "runtime", false, "", true, {ColumnIndex{0}});
-  if (entity_score.status != XPOD_RDF_STATUS_UNSUPPORTED) return 31;
+  if (entity_score.status != XPOD_RDF_STATUS_OK) return 31;
+  if (entity_score.result.idTable().numColumns() != 3) return 38;
+  if (entity_score.result.idTable()(0, 0).getBits() != 1041) return 39;
+  if (entity_score.result.idTable()(0, 1).getBits() != 1051) return 40;
+  if (entity_score.result.idTable()(0, 2).getBits() != 9750) return 41;
 
   auto entity_unsupported = xpod::qlever::textEntityResultFromContext(
       no_text_qec, "runtime", false, "", false, {ColumnIndex{0}});
