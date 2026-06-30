@@ -326,18 +326,8 @@ class XpodQleverPhysicalPermutation {
           IdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
     }
 
-    ScanRequestInput input = makeScanInput(
-        scan_spec_and_blocks.pattern,
-        scan_spec_and_blocks.needed_slots);
-    input.block_metadata = blocks;
-    if (block_metadata_version.data != nullptr &&
-        block_metadata_version.size > 0) {
-      input.block_metadata_version_storage.assign(
-          block_metadata_version.data, block_metadata_version.size);
-      input.block_metadata_version = {
-          input.block_metadata_version_storage.data(),
-          input.block_metadata_version_storage.size()};
-    }
+    ScanRequestInput input = makeSelectedBlockScanInput(
+        scan_spec_and_blocks, blocks, block_metadata_version);
 
     return XpodBackedIndexScan(
         context_.backend,
@@ -346,6 +336,28 @@ class XpodQleverPhysicalPermutation {
         countNeededSlots(input.needed_slots),
         physicalPermutationDescriptor(permutation_))
         .execute();
+  }
+
+  QleverIdTableBlocksResult lazyScan(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks,
+      const std::vector<xpod_rdf_scan_block_metadata>& blocks,
+      xpod_rdf_bytes block_metadata_version = {}) const {
+    if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) {
+      return {scan_spec_and_blocks.status, {}};
+    }
+    if (blocks.empty()) {
+      return {XPOD_RDF_STATUS_OK, {}};
+    }
+    xpod_rdf_status capability_status =
+        validateSelectedBlockScanCapability();
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      return {capability_status, {}};
+    }
+
+    ScanRequestInput input = makeSelectedBlockScanInput(
+        scan_spec_and_blocks, blocks, block_metadata_version);
+
+    return executeScanToQleverIdTableBlocks(context_.backend, input);
   }
 
   XpodQleverCountResult count(
@@ -479,6 +491,43 @@ class XpodQleverPhysicalPermutation {
   }
 
  private:
+  xpod_rdf_status validateSelectedBlockScanCapability() const noexcept {
+    if (context_.capabilities_status == XPOD_RDF_STATUS_UNSUPPORTED) {
+      return XPOD_RDF_STATUS_OK;
+    }
+    if (context_.capabilities_status != XPOD_RDF_STATUS_OK) {
+      return context_.capabilities_status;
+    }
+    if ((context_.capabilities.supported_permutations &
+         toXpodPermutationCapability(permutation_)) == 0) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    if ((context_.capabilities.features &
+         XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN) == 0) {
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    return XPOD_RDF_STATUS_OK;
+  }
+
+  ScanRequestInput makeSelectedBlockScanInput(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks,
+      const std::vector<xpod_rdf_scan_block_metadata>& blocks,
+      xpod_rdf_bytes block_metadata_version) const {
+    ScanRequestInput input = makeScanInput(
+        scan_spec_and_blocks.pattern,
+        scan_spec_and_blocks.needed_slots);
+    input.block_metadata = blocks;
+    if (block_metadata_version.data != nullptr &&
+        block_metadata_version.size > 0) {
+      input.block_metadata_version_storage.assign(
+          block_metadata_version.data, block_metadata_version.size);
+      input.block_metadata_version = {
+          input.block_metadata_version_storage.data(),
+          input.block_metadata_version_storage.size()};
+    }
+    return input;
+  }
+
   ScanRequestInput makeScanInput(
       TripleKeyPattern pattern,
       uint32_t needed_slots) const {

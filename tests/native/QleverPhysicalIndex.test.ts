@@ -2229,4 +2229,145 @@ int main() {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('exposes a lower lazy scan seam that preserves backend batch boundaries', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical lazy scan check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-lazy-scan-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_lazy_scan_smoke.cpp');
+      const binary = path.join(root, 'physical_lazy_scan_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int scan_calls;
+  size_t last_block_count;
+  uint64_t last_block_id;
+};
+
+static xpod_rdf_status get_capabilities(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  out_capabilities->features = XPOD_RDF_BACKEND_FEATURE_BLOCK_RESTRICTED_SCAN;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status get_capabilities_without_block_restricted_scan(
+    void*,
+    xpod_rdf_backend_capabilities* out_capabilities) {
+  out_capabilities->supported_permutations = XPOD_RDF_PERM_CAP_SPOG;
+  out_capabilities->features = 0;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status scan_permutation(
+    void* user_data,
+    const xpod_rdf_scan_request* request,
+    xpod_rdf_quad_batch_callback on_batch,
+    void* callback_user_data) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->scan_calls;
+  state->last_block_count = request->block_metadata_count;
+  state->last_block_id = request->block_metadata_count > 0
+      ? request->block_metadata[0].block_id
+      : 0;
+  if (request->permutation != XPOD_RDF_PERM_SPOG) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->needed_slots != (XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata_count != 1) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (request->block_metadata[0].block_id != 7001) return XPOD_RDF_STATUS_BACKEND_ERROR;
+
+  xpod_rdf_quad_key first_rows[1] = {{11, 22, 33, 44}};
+  xpod_rdf_quad_batch first = {first_rows, 1, XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT, 1};
+  xpod_rdf_status status = on_batch(callback_user_data, &first);
+  if (status != XPOD_RDF_STATUS_OK) return status;
+
+  xpod_rdf_quad_key second_rows[2] = {
+    {12, 22, 34, 44},
+    {13, 22, 35, 44},
+  };
+  xpod_rdf_quad_batch second = {second_rows, 2, XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT, 2};
+  return on_batch(callback_user_data, &second);
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.get_capabilities = get_capabilities;
+  raw_backend.scan_permutation = scan_permutation;
+  raw_backend.term_key_encoding = XPOD_RDF_TERM_KEY_ENCODING_QLEVER_VALUE_ID_BITS;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  context.capabilities_status = physical.getCapabilities(context.capabilities);
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+  auto permutation = index.permutation(Permutation::Enum::SPO);
+
+  xpod::qlever::XpodQleverScanSpecAndBlocks scan_spec = {};
+  scan_spec.needed_slots = XPOD_RDF_SLOT_SUBJECT | XPOD_RDF_SLOT_OBJECT;
+  xpod_rdf_scan_block_metadata selected_block = {};
+  selected_block.block_id = 7001;
+
+  auto lazy = permutation.lazyScan(scan_spec, {selected_block});
+  if (lazy.status != XPOD_RDF_STATUS_OK) return 1;
+  if (lazy.blocks.size() != 2) return 2;
+  if (lazy.blocks[0].numColumns() != 2 || lazy.blocks[0].numRows() != 1) return 3;
+  if (lazy.blocks[1].numColumns() != 2 || lazy.blocks[1].numRows() != 2) return 4;
+  if (lazy.blocks[0](0, 0).getBits() != 11) return 5;
+  if (lazy.blocks[0](0, 1).getBits() != 33) return 6;
+  if (lazy.blocks[1](1, 0).getBits() != 13) return 7;
+  if (lazy.blocks[1](1, 1).getBits() != 35) return 8;
+  if (state.scan_calls != 1) return 9;
+  if (state.last_block_count != 1 || state.last_block_id != 7001) return 10;
+
+  auto empty = permutation.lazyScan(scan_spec, {});
+  if (empty.status != XPOD_RDF_STATUS_OK) return 11;
+  if (!empty.blocks.empty()) return 12;
+  if (state.scan_calls != 1) return 13;
+
+  xpod_rdf_backend_v1 no_block_backend = raw_backend;
+  no_block_backend.get_capabilities = get_capabilities_without_block_restricted_scan;
+  xpod::rdf::PhysicalBackend no_block_physical(&no_block_backend);
+  xpod_qlever_query_request no_block_request = {};
+  xpod::qlever::PlannerRequestContext no_block_context{
+      no_block_physical,
+      &no_block_request,
+      no_block_request.cancellation};
+  no_block_context.capabilities_status =
+      no_block_physical.getCapabilities(no_block_context.capabilities);
+  xpod::qlever::XpodQleverPhysicalIndex no_block_index(no_block_context);
+  auto unsupported = no_block_index.permutation(Permutation::Enum::SPO)
+      .lazyScan(scan_spec, {selected_block});
+  if (unsupported.status != XPOD_RDF_STATUS_UNSUPPORTED) return 14;
+  if (!unsupported.blocks.empty()) return 15;
+  if (state.scan_calls != 1) return 16;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

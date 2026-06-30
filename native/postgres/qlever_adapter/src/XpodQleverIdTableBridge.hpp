@@ -17,6 +17,11 @@ struct QleverIdTableResult {
   IdTable table;
 };
 
+struct QleverIdTableBlocksResult {
+  xpod_rdf_status status;
+  std::vector<IdTable> blocks;
+};
+
 inline IdTable toQleverIdTable(const QleverIdRowBuffer& buffer) {
   IdTable table(buffer.width);
   std::vector<Id> row;
@@ -38,6 +43,31 @@ inline IdTable toQleverIdTable(const QleverIdRowBuffer& buffer) {
   return table;
 }
 
+struct ScanToQleverIdTableBlocksState {
+  std::vector<IdTable>* blocks;
+  const xpod::rdf::PhysicalBackend* backend;
+  Permutation::Enum permutation;
+  uint32_t needed_slots;
+};
+
+inline xpod_rdf_status appendQleverIdTableBlockCallback(
+    void* callback_user_data,
+    const xpod_rdf_quad_batch* batch) {
+  if (callback_user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* state = static_cast<ScanToQleverIdTableBlocksState*>(
+      callback_user_data);
+  QleverIdRowBuffer rows;
+  xpod_rdf_status status = appendEncodedBatch(
+      rows, *state->backend, state->permutation, state->needed_slots, *batch);
+  if (status != XPOD_RDF_STATUS_OK) {
+    return status;
+  }
+  state->blocks->push_back(toQleverIdTable(rows));
+  return XPOD_RDF_STATUS_OK;
+}
+
 inline QleverIdTableResult executeScanToQleverIdTable(
     const xpod::rdf::PhysicalBackend& backend,
     const ScanRequestInput& input) {
@@ -48,6 +78,20 @@ inline QleverIdTableResult executeScanToQleverIdTable(
     return {status, IdTable(rows.width)};
   }
   return {XPOD_RDF_STATUS_OK, toQleverIdTable(rows)};
+}
+
+inline QleverIdTableBlocksResult executeScanToQleverIdTableBlocks(
+    const xpod::rdf::PhysicalBackend& backend,
+    const ScanRequestInput& input) {
+  QleverIdTableBlocksResult result = {};
+  ScanToQleverIdTableBlocksState state{
+      &result.blocks, &backend, input.permutation, input.needed_slots};
+  result.status = executeScan(
+      backend, input, appendQleverIdTableBlockCallback, &state);
+  if (result.status != XPOD_RDF_STATUS_OK) {
+    result.blocks.clear();
+  }
+  return result;
 }
 
 }  // namespace xpod::qlever

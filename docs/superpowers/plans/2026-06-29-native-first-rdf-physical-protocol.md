@@ -3157,3 +3157,44 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run -t "maps QLever scan spe
 
 Expected: PASS.
 - Upstream QLever `IndexScan::getLazyScan()` still requires the next `lazyScan(optBlocks)` seam.
+
+### Task 76: Expose a lower lazy scan seam that preserves backend scan batches
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverIdTableBridge.hpp`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing lower lazy scan smoke**
+
+Add a native physical-index smoke where `XpodQleverPhysicalPermutation::lazyScan(...)` must accept a scan spec plus QLever-selected block metadata, pass those blocks into the lower physical scan request, and return one `IdTable` per backend scan batch.
+
+Expected: FAIL because the physical permutation seam can run materialized scans and selected-block scans, but has no lower lazy-scan shape.
+
+- [x] **Step 2: Preserve explicit empty block selections**
+
+Require `lazyScan(scanSpec, {})` to return an empty block list without calling the backend scan. This keeps QLever `optBlocks` semantics: an explicit empty block set means no scan, not a broad scan.
+
+Expected: FAIL until the lazy scan seam distinguishes empty selected blocks from unspecified blocks.
+
+- [x] **Step 3: Fail closed without block-restricted scan capability**
+
+Require selected-block lazy scans to return `UNSUPPORTED` and avoid the backend scan when the query capability snapshot is OK but lacks `BLOCK_RESTRICTED_SCAN`.
+
+Expected: FAIL until the lower lazy path uses the same capability contract as selected-block materialized scans.
+
+- [x] **Step 4: Add the minimal lower lazy seam**
+
+Add `QleverIdTableBlocksResult`, a scan-batch-to-`IdTable` collector, and `XpodQleverPhysicalPermutation::lazyScan(...)`. The method keeps backend callback batch boundaries visible as lower scan blocks and delegates all block selection to QLever-provided metadata. It does not implement QLever's upstream `CompressedRelationReader::IdTableGeneratorInputRange`, located-triples handling, block join policy, or runtime lazy materialization strategy.
+
+- [x] **Step 5: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run
+```
+
+Expected: PASS.
+- This is a lower data-protocol seam. Upstream QLever `IndexScan::getLazyScan()` still needs an adapter from this block result to QLever's native generator/runtime metadata.
