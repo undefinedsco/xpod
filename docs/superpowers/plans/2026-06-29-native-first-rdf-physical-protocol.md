@@ -4065,3 +4065,36 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally after rebuilding the adapter. A stale adapter library reproduced the old projection failure; rebuilding `libxpod_qlever_adapter.a` made the linked smoke pass.
+
+
+### Task 100: Apply public SELECT modifiers on the real QLever direct-tree path
+
+**Files:**
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverBridge.cpp`
+- Modify: `tests/native/QleverRealRuntimeBuildScript.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add a real linked SELECT modifier probe**
+
+The real runtime smoke now issues `SELECT DISTINCT ?s WHERE { ?s ?p ?o } ORDER BY ?s LIMIT 1`. The generated smoke requires a public one-column `?s` result, rejects leaked `urn:o`, and requires the profile descriptor to include `OrderBy` so the gate proves modifier handling instead of only raw scan materialization.
+
+Observed before implementation: the smoke returned both `urn:s` and `urn:o`, and the profile was still the raw `IndexScan SPO ?s ?p ?o`. The direct upstream `QueryExecutionTree::getResult(true)` path was returning the internal execution table without applying public SELECT modifiers.
+
+- [x] **Step 2: Reuse the bridge modifier pipeline for direct native tree results**
+
+`executeQleverPlannerTree(...)` now receives the physical backend explicitly, derives parsed public modifiers from `ParsedQuery` (`ORDER BY`, `DISTINCT`, `LIMIT/OFFSET`, and final selected-variable projection), and applies them through the existing `BridgeResultModifier` executor before SPARQL JSON serialization. This keeps one modifier implementation inside the adapter instead of adding a separate direct-tree sort/distinct/limit path.
+
+The modifier smoke does not require a new scan call because QLever can reuse a cached `IndexScan` result inside the same runtime process. Correctness is asserted on the public JSON head/body and profile descriptor, while the earlier BGP probes still prove that the data entered through `XpodQleverPhysicalIndex`.
+
+- [x] **Step 3: Verify linked upstream modifier execution**
+
+Run:
+
+```bash
+bun test tests/native/QleverRealRuntimeBuildScript.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally. This remains a Cloud Enterprise-only native seam gate; local deployments still do not expose the QLever-compatible adapter.

@@ -401,8 +401,132 @@ struct NativeQleverExecution {
       : plan(std::move(plan)), table(std::move(table)) {}
 };
 
+template <typename ParsedQueryT, typename = void>
+struct HasParsedOrderBy : std::false_type {};
+
+template <typename ParsedQueryT>
+struct HasParsedOrderBy<
+    ParsedQueryT,
+    std::void_t<decltype(std::declval<const ParsedQueryT&>()._orderBy)>>
+    : std::true_type {};
+
+template <typename SelectClauseT, typename = void>
+struct HasSelectDistinct : std::false_type {};
+
+template <typename SelectClauseT>
+struct HasSelectDistinct<
+    SelectClauseT,
+    std::void_t<decltype(std::declval<const SelectClauseT&>().distinct_)>>
+    : std::true_type {};
+
+template <typename ParsedQueryT, typename = void>
+struct HasParsedLimitOffset : std::false_type {};
+
+template <typename ParsedQueryT>
+struct HasParsedLimitOffset<
+    ParsedQueryT,
+    std::void_t<decltype(
+        std::declval<const ParsedQueryT&>()._limitOffset.isUnconstrained())>>
+    : std::true_type {};
+
+template <typename ParsedQueryT>
+inline bool appendParsedOrderByModifier(
+    BridgeQueryPlan& plan,
+    const ParsedQueryT& parsed) {
+  if constexpr (HasParsedOrderBy<ParsedQueryT>::value) {
+    if (parsed._orderBy.empty()) {
+      return true;
+    }
+    BridgeResultModifier modifier;
+    modifier.kind = BridgeResultModifierKind::OrderBy;
+    modifier.columns.reserve(parsed._orderBy.size());
+    modifier.descending.reserve(parsed._orderBy.size());
+    for (const auto& order_key : parsed._orderBy) {
+      std::optional<ColumnIndex> column = outputColumnForVariable(
+          plan.output_variables, bridgeVariableName(order_key.variable_));
+      if (!column.has_value()) {
+        return false;
+      }
+      modifier.columns.push_back(*column);
+      modifier.descending.push_back(order_key.isDescending_);
+    }
+    plan.root.result_modifiers.push_back(std::move(modifier));
+    if (plan.descriptor.find("OrderBy") == std::string::npos) {
+      plan.descriptor += " + OrderBy";
+    }
+  }
+  return true;
+}
+
+template <typename ParsedQueryT>
+inline void appendParsedDistinctModifier(
+    BridgeQueryPlan& plan,
+    const ParsedQueryT& parsed,
+    const std::optional<BridgeResultModifier>& selected_projection) {
+  const auto& select = parsed.selectClause();
+  using SelectClauseT = std::remove_cv_t<std::remove_reference_t<decltype(select)>>;
+  if constexpr (HasSelectDistinct<SelectClauseT>::value) {
+    if (!select.distinct_) {
+      return;
+    }
+    BridgeResultModifier modifier;
+    modifier.kind = BridgeResultModifierKind::Distinct;
+    if (selected_projection.has_value()) {
+      modifier.columns = selected_projection->columns;
+    } else {
+      modifier.columns.reserve(plan.output_variables.size());
+      for (ColumnIndex column = 0; column < plan.output_variables.size();
+           ++column) {
+        modifier.columns.push_back(column);
+      }
+    }
+    plan.root.result_modifiers.push_back(std::move(modifier));
+    if (plan.descriptor.find("Distinct") == std::string::npos) {
+      plan.descriptor += " + Distinct";
+    }
+  }
+}
+
+template <typename ParsedQueryT>
+inline void appendParsedLimitOffsetModifier(
+    BridgeQueryPlan& plan,
+    const ParsedQueryT& parsed) {
+  if constexpr (HasParsedLimitOffset<ParsedQueryT>::value) {
+    if (parsed._limitOffset.isUnconstrained()) {
+      return;
+    }
+    BridgeResultModifier modifier;
+    modifier.kind = BridgeResultModifierKind::LimitOffset;
+    modifier.limit = static_cast<size_t>(parsed._limitOffset.limitOrDefault());
+    modifier.offset = static_cast<size_t>(parsed._limitOffset._offset);
+    plan.root.result_modifiers.push_back(std::move(modifier));
+    if (plan.descriptor.find("LimitOffset") == std::string::npos) {
+      plan.descriptor += " + LimitOffset";
+    }
+  }
+}
+
+template <typename ParsedQueryT>
+inline bool appendParsedPublicModifiers(
+    BridgeQueryPlan& plan,
+    const ParsedQueryT& parsed,
+    std::optional<BridgeResultModifier>& selected_projection) {
+  if (!appendParsedOrderByModifier(plan, parsed)) {
+    return false;
+  }
+  appendParsedDistinctModifier(plan, parsed, selected_projection);
+  appendParsedLimitOffsetModifier(plan, parsed);
+
+  if (selected_projection.has_value()) {
+    plan.root.result_modifiers.push_back(std::move(*selected_projection));
+    selected_projection = std::nullopt;
+  }
+  return true;
+}
+
 template <typename Planner>
 std::optional<NativeQleverExecution> executeQleverPlannerTree(
+    const xpod::rdf::PhysicalBackend& backend,
     Planner& planner,
     ParsedQuery& parsed) {
   using Tree = decltype(planner.createExecutionTree(parsed));
@@ -440,11 +564,16 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
         }
       }
     }
-    plan->output_variables = *selected;
-    plan->result_width = plan->output_variables.size();
     if (!identity_projection) {
       selected_projection = std::move(projection);
     }
+  }
+  if (!appendParsedPublicModifiers(*plan, parsed, selected_projection)) {
+    return std::nullopt;
+  }
+  if (selected.has_value()) {
+    plan->output_variables = *selected;
+    plan->result_width = plan->output_variables.size();
   }
   if constexpr (!HasLazyTreeResult<Tree>::value) {
     return std::nullopt;
@@ -454,13 +583,16 @@ std::optional<NativeQleverExecution> executeQleverPlannerTree(
       return std::nullopt;
     }
     IdTable table = materializeQleverResultTable(*result, qlever_result_width);
-    if (selected_projection.has_value()) {
-      std::optional<IdTable> projected =
-          projectMaterializedTable(table, selected_projection->columns);
-      if (!projected.has_value()) {
+    if (!plan->root.result_modifiers.empty()) {
+      QleverResultWithStatus modified = applyBridgeResultModifiers(
+          backend, plan->root,
+          toQleverResult({XPOD_RDF_STATUS_OK, std::move(table)},
+                         plan->sorted_by));
+      if (modified.status != XPOD_RDF_STATUS_OK) {
         return std::nullopt;
       }
-      table = std::move(*projected);
+      table = materializeQleverResultTable(
+          modified.result, modified.result.idTable().numColumns());
     }
     return NativeQleverExecution{std::move(*plan), std::move(table)};
   }
@@ -474,8 +606,10 @@ template <typename Planner, bool IsNativeContextConstructible =
                                     ad_utility::SharedCancellationHandle>::value>
 struct NativeContextQleverExecution {
   static std::optional<NativeQleverExecution> execute(
+      const xpod::rdf::PhysicalBackend& backend,
       const PlannerRequestContext* context,
       ParsedQuery& parsed) {
+    (void)backend;
     (void)context;
     (void)parsed;
     return std::nullopt;
@@ -485,6 +619,7 @@ struct NativeContextQleverExecution {
 template <typename Planner>
 struct NativeContextQleverExecution<Planner, true> {
   static std::optional<NativeQleverExecution> execute(
+      const xpod::rdf::PhysicalBackend& backend,
       const PlannerRequestContext* context,
       ParsedQuery& parsed) {
     if (context == nullptr) {
@@ -492,7 +627,7 @@ struct NativeContextQleverExecution<Planner, true> {
     }
     Planner planner(
         context, detail::makeQleverCancellationHandle(context->cancellation));
-    return executeQleverPlannerTree(planner, parsed);
+    return executeQleverPlannerTree(backend, planner, parsed);
   }
 };
 
@@ -503,8 +638,10 @@ template <typename Planner, bool IsContextConstructible =
                                     ad_utility::SharedCancellationHandle>::value>
 struct ContextQleverExecution {
   static std::optional<NativeQleverExecution> execute(
+      const xpod::rdf::PhysicalBackend& backend,
       QueryExecutionContext* qec,
       ParsedQuery& parsed) {
+    (void)backend;
     (void)qec;
     (void)parsed;
     return std::nullopt;
@@ -514,13 +651,14 @@ struct ContextQleverExecution {
 template <typename Planner>
 struct ContextQleverExecution<Planner, true> {
   static std::optional<NativeQleverExecution> execute(
+      const xpod::rdf::PhysicalBackend& backend,
       QueryExecutionContext* qec,
       ParsedQuery& parsed) {
     if (qec == nullptr) {
       return std::nullopt;
     }
     Planner planner(qec, detail::makeQleverCancellationHandle(nullptr));
-    return executeQleverPlannerTree(planner, parsed);
+    return executeQleverPlannerTree(backend, planner, parsed);
   }
 };
 #endif
@@ -528,7 +666,10 @@ struct ContextQleverExecution<Planner, true> {
 template <typename Planner, bool IsDefaultConstructible =
                                 std::is_default_constructible<Planner>::value>
 struct DefaultQleverExecution {
-  static std::optional<NativeQleverExecution> execute(ParsedQuery& parsed) {
+  static std::optional<NativeQleverExecution> execute(
+      const xpod::rdf::PhysicalBackend& backend,
+      ParsedQuery& parsed) {
+    (void)backend;
     (void)parsed;
     return std::nullopt;
   }
@@ -536,13 +677,16 @@ struct DefaultQleverExecution {
 
 template <typename Planner>
 struct DefaultQleverExecution<Planner, true> {
-  static std::optional<NativeQleverExecution> execute(ParsedQuery& parsed) {
+  static std::optional<NativeQleverExecution> execute(
+      const xpod::rdf::PhysicalBackend& backend,
+      ParsedQuery& parsed) {
     Planner planner;
-    return executeQleverPlannerTree(planner, parsed);
+    return executeQleverPlannerTree(backend, planner, parsed);
   }
 };
 
 std::optional<NativeQleverExecution> executeQleverParsedQueryWithNativeTree(
+    const xpod::rdf::PhysicalBackend& backend,
     PlannerContextHandle context,
     ParsedQuery& parsed) {
   if (!parsed.hasSelectClause()) {
@@ -553,20 +697,21 @@ std::optional<NativeQleverExecution> executeQleverParsedQueryWithNativeTree(
   if (context.native != nullptr) {
     auto native_result =
         NativeContextQleverExecution<QueryPlanner>::execute(
-            context.native, parsed);
+            backend, context.native, parsed);
     if (native_result.has_value()) {
       return native_result;
     }
   }
   if (context.qec != nullptr) {
     auto qec_result =
-        ContextQleverExecution<QueryPlanner>::execute(context.qec, parsed);
+        ContextQleverExecution<QueryPlanner>::execute(
+            backend, context.qec, parsed);
     if (qec_result.has_value()) {
       return qec_result;
     }
   }
 #endif
-  return DefaultQleverExecution<QueryPlanner>::execute(parsed);
+  return DefaultQleverExecution<QueryPlanner>::execute(backend, parsed);
 }
 
 }  // namespace
@@ -604,7 +749,8 @@ xpod_rdf_status executeBridgeQueryWithPlannerContext(
     std::optional<NativeQleverExecution> native_execution;
     try {
       native_execution =
-          executeQleverParsedQueryWithNativeTree(planner_context, parsed);
+          executeQleverParsedQueryWithNativeTree(
+              backend, planner_context, parsed);
     } catch (const std::exception&) {
       native_execution = std::nullopt;
     } catch (...) {

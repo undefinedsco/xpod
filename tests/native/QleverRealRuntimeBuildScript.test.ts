@@ -160,6 +160,11 @@ describe('QLever real upstream runtime smoke script', () => {
       expect(smoke).toContain('join_scan_calls < 1');
       expect(smoke).toContain('join_estimate_distinct_calls < 1');
       expect(smoke).toContain('"head":{"vars":["s","tail"]}');
+      expect(smoke).toContain('SELECT DISTINCT ?s WHERE { ?s ?p ?o } ORDER BY ?s LIMIT 1');
+      expect(smoke).toContain('modifier_scan_calls');
+      expect(smoke).toContain('modifier_json.find(R"("head":{"vars":["s"]})")');
+      expect(smoke).toContain('modifier_json.find("urn:o") != std::string_view::npos');
+      expect(smoke).toContain('modifier_profile.find("OrderBy")');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

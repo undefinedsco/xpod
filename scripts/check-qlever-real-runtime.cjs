@@ -505,6 +505,41 @@ int main() {
   if (join_estimate_distinct_calls < 1) return 22;
   xpod_qlever_adapter_release_result(adapter, &join_result);
 
+  int scans_before_modifier = state.scan_calls;
+  xpod_qlever_query_request modifier_request = {};
+  modifier_request.sparql = bytes(
+      "SELECT DISTINCT ?s WHERE { ?s ?p ?o } ORDER BY ?s LIMIT 1");
+  xpod_qlever_query_result modifier_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &modifier_request, &modifier_result);
+  std::string_view modifier_json(
+      modifier_result.result_json.data, modifier_result.result_json.size);
+  std::string_view modifier_profile(
+      modifier_result.profile_json.data, modifier_result.profile_json.size);
+  std::string_view modifier_error(
+      modifier_result.error_message.data, modifier_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "modifier query failed: %.*s\n",
+                 static_cast<int>(modifier_error.size()),
+                 modifier_error.data());
+    return 23;
+  }
+  int modifier_scan_calls = state.scan_calls - scans_before_modifier;
+  if (modifier_json.find(R"("head":{"vars":["s"]})") == std::string_view::npos) {
+    std::fprintf(stderr,
+                 "modifier head mismatch scan_calls=%d json=%.*s profile=%.*s\n",
+                 modifier_scan_calls,
+                 static_cast<int>(modifier_json.size()),
+                 modifier_json.data(),
+                 static_cast<int>(modifier_profile.size()),
+                 modifier_profile.data());
+    return 25;
+  }
+  if (modifier_json.find("urn:s") == std::string_view::npos) return 26;
+  if (modifier_json.find("urn:o") != std::string_view::npos) return 27;
+  if (modifier_profile.find("OrderBy") == std::string_view::npos) return 28;
+  xpod_qlever_adapter_release_result(adapter, &modifier_result);
+
   xpod_qlever_adapter_release_result(adapter, &result);
   xpod_qlever_query_request text_request = {};
   text_request.sparql = bytes("SELECT * WHERE { ?text ql:contains-word \"topic\" }");
