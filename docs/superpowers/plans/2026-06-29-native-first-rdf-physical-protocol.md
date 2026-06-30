@@ -3405,3 +3405,31 @@ node scripts/check-qlever-upstream-patches.cjs --qlever-source <downloaded-curre
 
 Expected: PASS.
 - The remaining gap is compiling a patched upstream QLever build with the adapter include path and then running a real `QueryPlanner -> IndexScan::getLazyScan -> XpodPhysicalIndex` query instead of only validating the source overlay.
+
+### Task 84: Gate QLever-enabled adapter builds on the upstream lazy-scan overlay
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/CMakeLists.txt`
+- Modify: `tests/native/QleverAdapterCmake.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing CMake source-tree gate test**
+
+Extend the CMake test so a QLever source tree with all required headers but an unpatched `src/engine/IndexScan.cpp` must fail configure with a clear message pointing at `check-qlever-upstream-patches.cjs`.
+
+Expected: FAIL because the existing CMake gate only checks headers and accepts an unpatched source tree.
+
+- [x] **Step 2: Require the overlay hook in QLever mode**
+
+When `XPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON`, CMake now reads `${XPOD_QLEVER_SOURCE_DIR}/src/engine/IndexScan.cpp` and fails if `lazyScanRangeFromQleverScanSpecAndBlocks` is absent. The accepted-source-tree smoke writes a patched marker, and the adapter target adds the local adapter `src` directory to include paths for QLever-facing bridge headers.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverAdapterCmake.test.ts --run
+```
+
+Expected: PASS.
+- The remaining gap is a real patched upstream QLever compile/e2e; this CMake gate only prevents accidental unpatched source-tree use.

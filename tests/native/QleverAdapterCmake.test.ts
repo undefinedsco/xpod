@@ -30,6 +30,54 @@ function cmakeFailureOutput(error: unknown): string {
     .join('\n');
 }
 
+async function writeRequiredQleverConfigureSkeleton(
+  qleverSource: string,
+  indexScanSource: string,
+): Promise<void> {
+  const requiredHeaders = [
+    'src/libqlever/Qlever.h',
+    'src/parser/SparqlParser.h',
+    'src/parser/ParsedQuery.h',
+    'src/parser/SparqlTriple.h',
+    'src/engine/IndexScan.h',
+    'src/engine/idTable/IdTable.h',
+    'src/engine/Join.h',
+    'src/engine/Operation.h',
+    'src/engine/QueryExecutionContext.h',
+    'src/engine/QueryExecutionTree.h',
+    'src/engine/QueryPlanner.h',
+    'src/engine/Result.h',
+    'src/engine/RuntimeInformation.h',
+    'src/global/Id.h',
+    'src/index/Index.h',
+    'src/index/LocalVocab.h',
+    'src/index/Permutation.h',
+    'src/util/CancellationHandle.h',
+  ];
+  for (const header of requiredHeaders) {
+    const headerPath = path.join(qleverSource, header);
+    await mkdir(path.dirname(headerPath), { recursive: true });
+    await writeFile(headerPath, '#pragma once\n', 'utf8');
+  }
+  const indexScanPath = path.join(qleverSource, 'src/engine/IndexScan.cpp');
+  await mkdir(path.dirname(indexScanPath), { recursive: true });
+  await writeFile(indexScanPath, indexScanSource, 'utf8');
+}
+
+const unpatchedIndexScanSource = `
+#include "engine/IndexScan.h"
+
+CompressedRelationReader::IdTableGeneratorInputRange IndexScan::getLazyScan(
+    std::optional<std::vector<CompressedBlockMetadata>> blocks) const {
+  auto filteredBlocks =
+      getLimitOffset().isUnconstrained() ? std::move(blocks) : std::nullopt;
+  auto lazyScanAllCols = permutation().lazyScan(
+      scanSpecAndBlocks_, filteredBlocks, additionalColumns(),
+      cancellationHandle_, locatedTriplesState(), getLimitOffset());
+  return lazyScanAllCols;
+}
+`;
+
 describe('native QLever adapter CMake target', () => {
   it('configures and builds the adapter facade as a native library', async () => {
     expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
@@ -133,6 +181,11 @@ class Operation {
 `, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/QueryPlanner.h'), fakeQueryPlannerHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/IndexScan.h'), fakeIndexScanHeader, 'utf8');
+      await writeFile(
+        path.join(qleverSource, 'src/engine/IndexScan.cpp'),
+        'void xpod_overlay_marker() { (void)"lazyScanRangeFromQleverScanSpecAndBlocks"; }\n',
+        'utf8',
+      );
       await writeFile(path.join(qleverSource, 'src/engine/Join.h'), fakeJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/idTable/IdTable.h'), `
 #pragma once
@@ -214,6 +267,35 @@ class Permutation {
         cwd: repoRoot,
         stdio: 'pipe',
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, nativeBuildTimeoutMs);
+
+  it('rejects a QLever source tree whose IndexScan lazy-scan overlay is missing', async () => {
+    expect(hasCmake(), 'cmake is required for native adapter build check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-adapter-unpatched-source-'));
+    try {
+      const qleverSource = path.join(root, 'qlever');
+      await writeRequiredQleverConfigureSkeleton(qleverSource, unpatchedIndexScanSource);
+
+      let output = '';
+      try {
+        execFileSync('cmake', [
+          '-S', adapterRoot,
+          '-B', path.join(root, 'build'),
+          '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=ON',
+          `-DXPOD_QLEVER_SOURCE_DIR=${qleverSource}`,
+        ], {
+          cwd: repoRoot,
+          stdio: 'pipe',
+        });
+      } catch (error) {
+        output = cmakeFailureOutput(error);
+      }
+      expect(output).toContain('IndexScan.cpp is not patched with the Xpod lazy-scan overlay');
+      expect(output).toContain('check-qlever-upstream-patches.cjs');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
