@@ -110,8 +110,9 @@ SolidRdfEngine
 - `SolidRdfEngine` 已接入内部 `derivedIndexProfile`：`baseline` 只保留事实层 `RdfQuadIndex` baseline，`rdf3x` 会启用 `Rdf3xIndex` 并维护 projection / graph stats。文件型 `index: { path }` 标准配置默认进入 `rdf3x` profile 并启用 selective primary；`:memory:` 和外部传入的 `RdfQuadIndex` 实例不会隐式创建第二个连接，仍可用显式 `rdf3xIndex + rdf3xPrimary` 进入 primary。query 只有在 RDF-3X 当前可表达的 single-pattern scan/count、required BGP、join count 或 count-only grouped aggregate（可含无 `UNDEF` 且所有变量均由 required BGP 绑定的 tuple VALUES；pattern 只含 exact term、exact term `$in` / `$notIn`、graph prefix、object range、object text contains/endsWith，以及 term-type/language/datatype metadata filter）时，才把 scan / count / join / join count / grouped count 下推到 `Rdf3xIndex`。`SUM/AVG/MIN/MAX` 这类 guarded numeric aggregate 当前先保守走 `RdfQuadIndex` SQL aggregate path，避免历史 SQLite/file-backed RDF-3X numeric aggregate 退化重新进入默认 primary；`Rdf3xIndex` 的 numeric aggregate 能力保留给 shadow comparison 和后续 cost gate。object range 会对 typed numeric literal 走 numeric 语义，对其他 term 走 lexical 语义；object text contains/endsWith 走 `rdf_terms.normalized_text` candidate scan 并用原始 value 复验大小写语义。当前 index-only 只用于 `DISTINCT` term projection、无 graph 变量/graph 约束、无 pagination count 的 join；这种 shape 的 named graph multiplicity 对最终 term 集合无影响，所以可直接利用 facts covering index 执行，其他 shape 仍回到 facts source。OPTIONAL / UNION / dependent join 仍由 query layer 保持控制流语义，但其内部无 group-local `VALUES` 的多 pattern BGP 可走 RDF-3X join。未覆盖 shape 自动保持 `RdfQuadIndex` fallback，不暴露 backend selector。这个边界同样为未来 PostgreSQL 实现保留空间：同一行为契约下，`RdfEngineLike` 的具体实现可以异步落到 PG，而不改变上层 SPARQL / DataAccessor API。
 - `PostgresRdfEngine` 的边界不同：PG facts table 是 baseline authority，PG SQL / RDF-3X planner 只是 fast path。RDF-3X 不能覆盖的 scan/query shape 必须直接基于 PG facts 做后置过滤和执行，或对缺失的 text/vector source 明确报错；不能创建隐藏 SQLite cache，也不能把 unsupported shape 静默丢给另一个持久层。
 - `SolidRdfSparqlEngine` 的 compatibility fallback 已改为显式 opt-in；local/cloud 默认 `DefaultSparqlEngine` 不配置 fallback，因此 server-owned Pod 的 `/-/sparql` 默认不会把 unsupported shape 转给 Comunica。迁移测试、oracle 和外部 source 兼容路径仍可显式传入 `QuintstoreSparqlEngine`。
-- QLever-style capability 是 cloud 更早需要吸收的增强能力，不是 cloud 的替代内核。
-- 对外不暴露 “RDF-3X backend / QLever backend” 选择；即便后续引入 QLever，也只能作为 `SolidRdfEngine` 内部执行层、result table 或 cache layer。
+- QLever-compatible native acceleration 是 **Cloud Enterprise-only** 能力；local 不提供、不预留 runtime selector，也不把测试 fixture 当产品能力。
+- public cloud / open-source cloud 默认仍停留在 PG RDF-3X / `pg-hot-operators` fast path；只有企业版 cloud 才允许把 QLever planner / executor 接到 Xpod physical backend。
+- 对外不暴露 “RDF-3X backend / QLever backend” 选择；即便企业版 cloud 引入 QLever，也只能作为 `SolidRdfEngine` 内部执行层、result table 或 cache layer。
 - 不提供 “Hexastore / RDF-3X / QLever 三选一” 配置；用户和部署只面对一个 `SolidRdfEngine`。
 - 存储不能按 “Hexastore + RDF-3X + QLever 全部常驻叠满” 理解。Pod RDF facts 只有一份权威数据；六排列是 facts 层 `rdf_quads` 的 covering index，RDF-3X 只额外维护 projection stats、graph stats、未来 result table / cache / text-vector 辅助结构。这些派生数据可删除、可重建、可按 local/cloud 资源预算关闭或延迟构建。
 
@@ -119,10 +120,11 @@ SolidRdfEngine
 
 | 部署 | 必备查询内核 | 持久化差异 | QLever-style 能力 |
 | --- | --- | --- | --- |
-| local | `SolidRdfEngine` + RDF-3X target planner/index | SQLite / PGlite、本机可移动索引 | 可延后吸收 vocabulary/text/result-table 思路，不引入额外常驻服务 |
-| cloud | 同一套 `SolidRdfEngine` + RDF-3X target planner/index | PostgreSQL / shared storage、租约、索引生命周期、Pod 迁移 | 更早吸收 result table、query cache、全文/RDF 一体化、高并发执行层 |
+| local | `SolidRdfEngine` + RDF-3X target planner/index | SQLite / PGlite、本机可移动索引 | 不提供 QLever-compatible native adapter；本地 fixture 只用于协议测试 |
+| public cloud / open-source cloud | 同一套 `SolidRdfEngine` + RDF-3X target planner/index | PostgreSQL / shared storage、租约、索引生命周期、Pod 迁移 | 默认 `pg-hot-operators` / PG fast path，不启用 QLever-compatible native adapter |
+| Cloud Enterprise | 同一套 `SolidRdfEngine` + RDF-3X target planner/index | PostgreSQL / shared storage、企业部署插件、受控 native artifact | 可把 QLever planner / executor 接到 Xpod physical backend，但不创建第二套 RDF fact store |
 
-cloud/local 的差异只能体现在持久化、并发控制、租约、索引生命周期和部署形态上；查询语义、planner 能力和对外协议仍由同一个 `SolidRdfEngine` 行为契约约束。这里的 PostgreSQL 版不是 `PgQuintStore` 的复用，而是同一 `RdfEngineLike` 契约下的 RDF facts/index 实现。
+cloud/local 的基础差异只能体现在持久化、并发控制、租约、索引生命周期和部署形态上；查询语义和对外协议仍由同一个 `SolidRdfEngine` 行为契约约束。例外是企业版 cloud 可以启用内部 QLever-compatible native acceleration，但这仍是 `SolidRdfEngine` 内部执行层替换，不是公开 backend。这里的 PostgreSQL 版不是 `PgQuintStore` 的复用，而是同一 `RdfEngineLike` 契约下的 RDF facts/index 实现。
 
 ## 数据权威
 
@@ -245,12 +247,12 @@ Workspace C: file://macbook.local/Users/alice/project/
 | --- | --- | --- | --- |
 | Hexastore | RDF 三元组多排列索引思路 | 只作为历史 `quints` 和 v0 索引的对比参照 | 不是 RDF-3X 的存储格式，不和 Comunica 对等 |
 | RDF-3X | RDF database engine | local/cloud 共同需要的压缩排列索引、projection stats、merge join、join reorder、物理下推内核 | 替换 Comunica 主路径，而不是补在 Comunica 后面 |
-| QLever | RDF/SPARQL engine 的执行层参考 | cloud 更早需要的 result table、全文/RDF 一体化、cache/vocabulary 加速方向；依附同一个 `SolidRdfEngine` 契约 | 不是公开 backend，也不是和 Comunica 协同执行 |
+| QLever | RDF/SPARQL engine 的执行层参考 | Cloud Enterprise-only 的 native acceleration 方向；依附同一个 `SolidRdfEngine` 契约，数据来自 Xpod physical backend | 不是公开 backend，也不是和 Comunica 协同执行 |
 
 Xpod 的方向是用 `SolidRdfEngine` 逐步替换 Comunica 主路径，Comunica 只保留为
 fallback / oracle / 过渡兼容层。`SolidRdfEngine` 自身不能被拆成 local/cloud
-两套语义不同的 engine；RDF-3X target 是两端共同内核，QLever 风格能力
-是 cloud 更迫切、但仍落在同一契约上的执行增强。
+两套语义不同的 engine；RDF-3X target 是两端共同内核，QLever-compatible native acceleration
+只作为 Cloud Enterprise 的内部执行增强，仍落在同一契约上。
 
 分层关系是：
 
@@ -260,7 +262,7 @@ SPARQL / models DSL / app query
        -> 自有 planner / executor / index
             current v0: term-id quad index baseline
             RDF-3X target: compressed permutations + projection stats + merge joins
-            QLever: cloud-first 的 result table、全文/RDF 一体化、cache/vocabulary 思路
+            QLever: Cloud Enterprise-only 的 planner/executor adapter、result table、全文/RDF 一体化、cache/vocabulary 思路
   -> ComunicaCompatibilityEngine 仅在显式配置时作为 oracle / migration / external-source 兼容层
 ```
 
@@ -268,7 +270,7 @@ SPARQL / models DSL / app query
 `SolidRdfEngine` 当前 v0 的 embedded baseline。`RdfQueryExecutor` 不是在
 Comunica 上做增强；它是 `SolidRdfEngine` 内部替换 Comunica 主路径的执行层。
 RDF-3X target 能力是两种部署都要持续内化的共同内核；
-QLever 更像 cloud 侧在更大查询负载、并发和缓存需求下优先接入的内部加速层。
+QLever-compatible native acceleration 只在 Cloud Enterprise 侧接入，用于更大查询负载、并发和缓存需求。
 后续如果接入 QLever 或 RDF-3X 的具体实现，也只能作为 `SolidRdfEngine` 内部执行层替换，
 不能变成对外并列 engine。
 
@@ -1417,7 +1419,7 @@ compare(A, B)
   message/thread/workspace RDF facts 必须在同一个 `RdfQuery` 里执行；plan gate 要求
   `text-search-source`、`vector-search-source` 和 `search-rdf-join` 同时命中。
 - exact distinct slot / tuple 统计已先落为 `RdfQuadIndex.countDistinct(...)` / `countDistinctTuple(...)`，并复用写入/删除失效的 cardinality cache；当前同时服务于安全的单 pattern `COUNT DISTINCT ?var` 下推，以及 planner 在 connected join 上的单 slot 和多 slot distinct fanout 估算。
-- top cardinality 分布已进入 `RdfQuadIndex.cardinalityDistributions()` / `stats()`：按 graph、predicate、predicate/object、subject/predicate 暴露 quad count 和对应 distinct 计数，先作为 RDF-3X 风格 planner/benchmark 可观测统计；这些统计属于 local/cloud 共同 embedded engine 能力，QLever 后续只在 cloud-first 的 result table/cache/全文-RDF 一体化层面继续吸收。
+- top cardinality 分布已进入 `RdfQuadIndex.cardinalityDistributions()` / `stats()`：按 graph、predicate、predicate/object、subject/predicate 暴露 quad count 和对应 distinct 计数，先作为 RDF-3X 风格 planner/benchmark 可观测统计；这些统计属于 local/cloud 共同 embedded engine 能力，QLever-compatible native acceleration 后续只在 Cloud Enterprise 的 result table/cache/全文-RDF 一体化层面继续吸收。
 - literal datatype distribution 已进入 `RdfQuadIndex.stats()`：按 literal datatype 统计字典中的 distinct literal term 数，以及这些 literal 作为 quad object 出现的次数，先作为 planner/benchmark 可观测统计暴露。
 - PG query explain 已把 planner reason 第一版接入 `RdfQueryResult.metrics.explain.planner`：selected path 会区分 materialized result cache、query result cache、native extension、RDF-3X 和 facts fallback；reasons 会记录 cache hit、RDF-3X join order、subject-star、VALUES、aggregate、regex fallback、unsupported capability、runtime scan rows、RDF-3X stale stats 和 slow-query 触发原因；estimate inputs 和 available stats 会暴露 facts exact counts、facts cardinality distributions、literal datatype distribution、RDF-3X projection stats、PG table stats 和当前 query 的 graph / predicate / predicate-object / subject-predicate histogram hints；runtime 字段记录 scanned/joined/returned rows、duration、filter 下推和 index choices，staleStats 字段记录 facts 与 RDF-3X version lag。当前这是慢查询解释和 benchmark gate 的可观测层，后续还要把 histogram / scan rows 真正接入 cost-based cutover。
 - text term document frequency 已进入 `RdfTextIndex.stats()` / `PostgresRdfTextIndex.stats()` / `termDocumentFrequency(...)`：`rdf_text_terms` 物化 normalized token posting，按 term 统计出现过的 source 数、chunk 数和总 occurrences，作为 ranking/planner 可观测统计暴露；`RdfTextIndex.search(...)` / `PostgresRdfTextIndex.search(...)` / `estimateSearchCardinality(...)` 已使用 posting 表缩小候选，并通过 normalized phrase 复验保留 substring / phrase 语义；cardinality estimate 同时支持 workspace、source prefix、source allow/deny 和 source-local window。
