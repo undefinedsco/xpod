@@ -57,6 +57,21 @@ struct XpodQleverJoinFanoutEstimateResult {
   xpod_rdf_estimate estimate;
 };
 
+struct XpodQleverAccessScopeResult {
+  xpod_rdf_status status;
+  xpod_rdf_access_scope scope;
+};
+
+struct XpodQleverScopeEstimateResult {
+  xpod_rdf_status status;
+  xpod_rdf_estimate estimate;
+};
+
+struct XpodQleverResolvedSourceScopeResult {
+  xpod_rdf_status status;
+  xpod_rdf_resolved_source_scope scope;
+};
+
 struct XpodQleverHistogramHintsResult {
   xpod_rdf_status status;
   std::vector<xpod_rdf_histogram_hint> hints;
@@ -508,6 +523,68 @@ class XpodQleverPhysicalIndex {
     XpodQleverJoinFanoutEstimateResult result = {};
     result.status = context_.backend.estimateJoinFanout(
         request, result.estimate);
+    return result;
+  }
+
+  XpodQleverAccessScopeResult resolveAccessScope(
+      xpod_rdf_bytes principal,
+      xpod_rdf_access_mode mode) const {
+    XpodQleverAccessScopeResult result = {};
+    xpod_rdf_status capability_status = validateFeatureCapability(
+        XPOD_RDF_BACKEND_FEATURE_ACCESS_SCOPE);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      result.status = capability_status;
+      return result;
+    }
+
+    result.status = context_.backend.resolveAccessScope(
+        principal, mode, snapshot(), result.scope);
+    return result;
+  }
+
+  XpodQleverScopeEstimateResult estimateAccessScope(
+      const xpod_rdf_access_scope& access_scope,
+      const xpod_rdf_source_scope& source_scope) const {
+    XpodQleverScopeEstimateResult result = {};
+    xpod_rdf_status capability_status = validateFeatureCapability(
+        XPOD_RDF_BACKEND_FEATURE_ACCESS_SCOPE);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      result.status = capability_status;
+      return result;
+    }
+
+    result.status = context_.backend.estimateAccessScope(
+        access_scope, source_scope, result.estimate);
+    return result;
+  }
+
+  XpodQleverScopeEstimateResult estimateSourceScope(
+      const xpod_rdf_source_scope& source_scope) const {
+    XpodQleverScopeEstimateResult result = {};
+    xpod_rdf_status capability_status = validateFeatureCapability(
+        XPOD_RDF_BACKEND_FEATURE_SOURCE_SCOPE);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      result.status = capability_status;
+      return result;
+    }
+
+    result.status = context_.backend.estimateSourceScope(
+        source_scope, snapshot(), result.estimate);
+    return result;
+  }
+
+  XpodQleverResolvedSourceScopeResult resolveSourceScope(
+      const xpod_rdf_source_scope& source_scope) const {
+    XpodQleverResolvedSourceScopeResult result = {};
+    xpod_rdf_status capability_status = validateFeatureCapability(
+        XPOD_RDF_BACKEND_FEATURE_SOURCE_SCOPE);
+    if (capability_status != XPOD_RDF_STATUS_OK) {
+      result.status = capability_status;
+      return result;
+    }
+
+    result.status = context_.backend.resolveSourceScope(
+        source_scope, snapshot(), result.scope);
     return result;
   }
 

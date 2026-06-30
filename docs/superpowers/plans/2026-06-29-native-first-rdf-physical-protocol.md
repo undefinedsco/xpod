@@ -2900,3 +2900,58 @@ Record that QLever owns SPARQL parsing, logical/physical planning, join ordering
 - [x] **Step 3: Freeze Xpod planner growth**
 
 Mark current Xpod operation-plan / parsed-BGP bridges as compatibility spikes and conformance harnesses only. New work should patch or embed QLever against the lower protocol instead of growing a parallel QLever planner in Xpod.
+
+### Task 68: Expose access/source scope utilities on the physical index seam
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Write a failing scope smoke**
+
+Add a native physical-index smoke so `XpodQleverPhysicalIndex` must expose `resolveAccessScope(...)`, `estimateAccessScope(...)`, `estimateSourceScope(...)`, and `resolveSourceScope(...)` over the lower `PhysicalBackend` callbacks using the current query snapshot.
+
+Expected: FAIL because the lower `PhysicalBackend` already had these callbacks, but the QLever-facing physical index surface did not expose them.
+
+- [x] **Step 2: Add the minimal lower scope seam**
+
+Add `XpodQleverAccessScopeResult`, `XpodQleverScopeEstimateResult`, `XpodQleverResolvedSourceScopeResult`, and the four physical-index methods. The methods only delegate lower data-protocol scope resolution/estimation; they do not decide ACL/ACR policy or planner strategy in Xpod.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run -t "access and source scope"
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.
+
+### Task 69: Guard access/source scope utilities with the capability snapshot
+
+**Files:**
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+
+- [x] **Step 1: Write a failing scope capability smoke**
+
+Add a native physical-index smoke where `PlannerRequestContext.capabilities_status == OK` but `XPOD_RDF_BACKEND_FEATURE_ACCESS_SCOPE` and `XPOD_RDF_BACKEND_FEATURE_SOURCE_SCOPE` are absent. Access/source scope utilities must return `XPOD_RDF_STATUS_UNSUPPORTED` and must not call backend scope callbacks.
+
+Expected: FAIL because the new scope seam delegated to backend callbacks even when the query capability snapshot said scope pushdowns were unavailable.
+
+- [x] **Step 2: Add fail-closed feature guards**
+
+Use the existing physical-index feature guard: access-scope resolution/estimate requires `XPOD_RDF_BACKEND_FEATURE_ACCESS_SCOPE`; source-scope resolution/estimate requires `XPOD_RDF_BACKEND_FEATURE_SOURCE_SCOPE`. `UNSUPPORTED` capability snapshots retain callback-driven compatibility.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run -t "scope"
+```
+
+Expected: PASS.
+- No QLever C++ dependency yet.

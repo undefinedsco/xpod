@@ -1495,4 +1495,284 @@ int main() {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('exposes access and source scope resolution through the physical index', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index scope check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-scope-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_scope_smoke.cpp');
+      const binary = path.join(root, 'physical_index_scope_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int resolve_access_calls;
+  int estimate_access_calls;
+  int estimate_source_calls;
+  int resolve_source_calls;
+};
+
+static bool bytes_equal(xpod_rdf_bytes actual, const char* expected, size_t size) {
+  if (actual.size != size) return false;
+  for (size_t i = 0; i < size; ++i) {
+    if (actual.data[i] != expected[i]) return false;
+  }
+  return true;
+}
+
+static xpod_rdf_status resolve_access_scope(
+    void* user_data,
+    const xpod_rdf_bytes* principal,
+    xpod_rdf_access_mode mode,
+    const xpod_rdf_snapshot* snapshot,
+    xpod_rdf_access_scope* out_scope) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->resolve_access_calls;
+  if (!bytes_equal(*principal, "alice", 5)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (mode != XPOD_RDF_ACCESS_READ) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!bytes_equal(snapshot->facts_version, "facts", 5)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  static const xpod_rdf_term_key allowed_graphs[1] = {99};
+  out_scope->principal = *principal;
+  out_scope->mode = mode;
+  out_scope->authorization_model = XPOD_RDF_AUTH_ACP;
+  out_scope->allowed_graphs = allowed_graphs;
+  out_scope->allowed_graphs_size = 1;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_access_scope(
+    void* user_data,
+    const xpod_rdf_access_scope* access_scope,
+    const xpod_rdf_source_scope* source_scope,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_access_calls;
+  if (access_scope->allowed_graphs_size != 1 || access_scope->allowed_graphs[0] != 99) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (source_scope->has_source_node != 1 || source_scope->source_node != 55) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 3;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_FRESH;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_source_scope(
+    void* user_data,
+    const xpod_rdf_source_scope* source_scope,
+    const xpod_rdf_snapshot* snapshot,
+    xpod_rdf_estimate* out_estimate) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_source_calls;
+  if (!bytes_equal(snapshot->facts_version, "facts", 5)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!bytes_equal(source_scope->local_path_prefix, "/workspace/", 11)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  out_estimate->rows = 5;
+  out_estimate->confidence = XPOD_RDF_ESTIMATE_EXACT;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status resolve_source_scope(
+    void* user_data,
+    const xpod_rdf_source_scope* source_scope,
+    const xpod_rdf_snapshot* snapshot,
+    xpod_rdf_resolved_source_scope* out_scope) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->resolve_source_calls;
+  if (!bytes_equal(snapshot->facts_version, "facts", 5)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  if (!bytes_equal(source_scope->local_path_prefix, "/workspace/", 11)) return XPOD_RDF_STATUS_BACKEND_ERROR;
+  static const xpod_rdf_source_node_key source_nodes[2] = {55, 56};
+  out_scope->source_nodes = source_nodes;
+  out_scope->source_nodes_size = 2;
+  out_scope->graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  out_scope->graph_scope.exact_graph = 99;
+  out_scope->scope_version = {"scope-v1", 8};
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.resolve_access_scope = resolve_access_scope;
+  raw_backend.estimate_access_scope = estimate_access_scope;
+  raw_backend.estimate_source_scope = estimate_source_scope;
+  raw_backend.resolve_source_scope = resolve_source_scope;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  request.snapshot.facts_version = {"facts", 5};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  xpod_rdf_source_scope source_scope = {};
+  source_scope.has_source_node = 1;
+  source_scope.source_node = 55;
+  source_scope.local_path_prefix = {"/workspace/", 11};
+
+  auto access = index.resolveAccessScope({"alice", 5}, XPOD_RDF_ACCESS_READ);
+  if (access.status != XPOD_RDF_STATUS_OK) return 1;
+  if (access.scope.mode != XPOD_RDF_ACCESS_READ) return 2;
+  if (access.scope.authorization_model != XPOD_RDF_AUTH_ACP) return 3;
+
+  auto access_estimate = index.estimateAccessScope(access.scope, source_scope);
+  if (access_estimate.status != XPOD_RDF_STATUS_OK) return 4;
+  if (access_estimate.estimate.rows != 3) return 5;
+
+  auto source_estimate = index.estimateSourceScope(source_scope);
+  if (source_estimate.status != XPOD_RDF_STATUS_OK) return 6;
+  if (source_estimate.estimate.rows != 5) return 7;
+
+  auto source = index.resolveSourceScope(source_scope);
+  if (source.status != XPOD_RDF_STATUS_OK) return 8;
+  if (source.scope.source_nodes_size != 2) return 9;
+  if (source.scope.source_nodes[0] != 55 || source.scope.source_nodes[1] != 56) return 10;
+  if (source.scope.graph_scope.kind != XPOD_RDF_GRAPH_SCOPE_EXACT || source.scope.graph_scope.exact_graph != 99) return 11;
+  if (state.resolve_access_calls != 1) return 12;
+  if (state.estimate_access_calls != 1) return 13;
+  if (state.estimate_source_calls != 1) return 14;
+  if (state.resolve_source_calls != 1) return 15;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when scope features are not in the capability snapshot', async () => {
+    expect(hasCxx(), 'c++ compiler is required for native physical index scope capability check').toBe(true);
+
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-qlever-physical-index-scope-capability-'));
+    try {
+      const qleverSource = await writeMinimalQleverHeaders(root);
+      const smoke = path.join(root, 'physical_index_scope_capability_smoke.cpp');
+      const binary = path.join(root, 'physical_index_scope_capability_smoke');
+      await writeFile(smoke, `
+#include "XpodQleverPhysicalIndex.hpp"
+
+struct BackendState {
+  int resolve_access_calls;
+  int estimate_access_calls;
+  int estimate_source_calls;
+  int resolve_source_calls;
+};
+
+static xpod_rdf_status resolve_access_scope(
+    void* user_data,
+    const xpod_rdf_bytes*,
+    xpod_rdf_access_mode,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_access_scope*) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->resolve_access_calls;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_access_scope(
+    void* user_data,
+    const xpod_rdf_access_scope*,
+    const xpod_rdf_source_scope*,
+    xpod_rdf_estimate*) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_access_calls;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status estimate_source_scope(
+    void* user_data,
+    const xpod_rdf_source_scope*,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_estimate*) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->estimate_source_calls;
+  return XPOD_RDF_STATUS_OK;
+}
+
+static xpod_rdf_status resolve_source_scope(
+    void* user_data,
+    const xpod_rdf_source_scope*,
+    const xpod_rdf_snapshot*,
+    xpod_rdf_resolved_source_scope*) {
+  auto* state = static_cast<BackendState*>(user_data);
+  ++state->resolve_source_calls;
+  return XPOD_RDF_STATUS_OK;
+}
+
+int main() {
+  BackendState state = {};
+  xpod_rdf_backend_v1 raw_backend = {};
+  raw_backend.abi_version = XPOD_RDF_PHYSICAL_BACKEND_ABI_VERSION;
+  raw_backend.struct_size = sizeof(xpod_rdf_backend_v1);
+  raw_backend.backend_user_data = &state;
+  raw_backend.resolve_access_scope = resolve_access_scope;
+  raw_backend.estimate_access_scope = estimate_access_scope;
+  raw_backend.estimate_source_scope = estimate_source_scope;
+  raw_backend.resolve_source_scope = resolve_source_scope;
+  xpod::rdf::PhysicalBackend physical(&raw_backend);
+
+  xpod_qlever_query_request request = {};
+  xpod::qlever::PlannerRequestContext context{physical, &request, request.cancellation};
+  context.capabilities_status = XPOD_RDF_STATUS_OK;
+  context.capabilities.features = XPOD_RDF_BACKEND_FEATURE_TEXT_SEARCH;
+  xpod::qlever::XpodQleverPhysicalIndex index(context);
+
+  xpod_rdf_access_scope access_scope = {};
+  xpod_rdf_source_scope source_scope = {};
+
+  auto access = index.resolveAccessScope({"alice", 5}, XPOD_RDF_ACCESS_READ);
+  if (access.status != XPOD_RDF_STATUS_UNSUPPORTED) return 1;
+
+  auto access_estimate = index.estimateAccessScope(access_scope, source_scope);
+  if (access_estimate.status != XPOD_RDF_STATUS_UNSUPPORTED) return 2;
+
+  auto source_estimate = index.estimateSourceScope(source_scope);
+  if (source_estimate.status != XPOD_RDF_STATUS_UNSUPPORTED) return 3;
+
+  auto source = index.resolveSourceScope(source_scope);
+  if (source.status != XPOD_RDF_STATUS_UNSUPPORTED) return 4;
+
+  if (state.resolve_access_calls != 0) return 5;
+  if (state.estimate_access_calls != 0) return 6;
+  if (state.estimate_source_calls != 0) return 7;
+  if (state.resolve_source_calls != 0) return 8;
+  return 0;
+}
+`, 'utf8');
+
+      execFileSync('c++', [
+        '-std=c++17',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        '-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1',
+        '-I', path.dirname(physicalIndexHeader),
+        '-I', path.join(repoRoot, 'native/postgres/rdf_protocol/include'),
+        '-I', path.join(repoRoot, 'native/postgres/qlever_adapter/include'),
+        '-I', path.join(qleverSource, 'src'),
+        smoke,
+        '-o',
+        binary,
+      ], { stdio: 'pipe' });
+      execFileSync(binary, [], { stdio: 'pipe' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
