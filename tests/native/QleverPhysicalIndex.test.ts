@@ -1040,8 +1040,19 @@ int main() {
   if (scan.table.numColumns() != 1) return 4;
   if (scan.table.numRows() != 1) return 5;
   if (scan.table(0, 0).getBits() != 11) return 6;
-  if (state.estimate_calls != 1) return 7;
-  if (state.scan_calls != 1) return 8;
+
+  auto permutation = index.permutation(Permutation::Enum::POS);
+  auto scan_spec_and_blocks = permutation.getScanSpecAndBlocks(
+      spec,
+      XPOD_RDF_SLOT_SUBJECT);
+  if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) return 7;
+  auto direct_scan = permutation.scan(scan_spec_and_blocks);
+  if (direct_scan.status != XPOD_RDF_STATUS_OK) return 8;
+  if (direct_scan.table.numColumns() != 1) return 9;
+  if (direct_scan.table.numRows() != 1) return 10;
+  if (direct_scan.table(0, 0).getBits() != 11) return 11;
+  if (state.estimate_calls != 1) return 12;
+  if (state.scan_calls != 2) return 13;
   return 0;
 }
 `, 'utf8');

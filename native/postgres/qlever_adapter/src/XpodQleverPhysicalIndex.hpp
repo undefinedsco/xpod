@@ -299,6 +299,18 @@ class XpodQleverPhysicalPermutation {
     return makeBackedScan(pattern, needed_slots).execute();
   }
 
+  QleverIdTableResult scan(
+      const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks) const {
+    if (scan_spec_and_blocks.status != XPOD_RDF_STATUS_OK) {
+      return {
+          scan_spec_and_blocks.status,
+          IdTable(countNeededSlots(scan_spec_and_blocks.needed_slots))};
+    }
+    return scan(
+        scan_spec_and_blocks.pattern,
+        scan_spec_and_blocks.needed_slots);
+  }
+
   QleverIdTableResult scanSelectedBlocks(
       const XpodQleverScanSpecAndBlocks& scan_spec_and_blocks,
       const std::vector<xpod_rdf_scan_block_metadata>& blocks,

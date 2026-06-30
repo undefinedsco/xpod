@@ -3127,3 +3127,33 @@ bun test tests/native/QleverPhysicalIndex.test.ts --run -t "selected scan-spec b
 
 Expected: PASS.
 - Upstream QLever `lazyScan(...)` is still not consuming this seam yet.
+
+### Task 75: Mirror upstream `Permutation::scan(ScanSpecAndBlocks)` on the physical seam
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverPhysicalIndex.hpp`
+- Modify: `tests/native/QleverPhysicalIndex.test.ts`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Extend the scan-spec smoke with an upstream-shaped direct scan**
+
+In the existing scan-spec smoke, call `permutation.scan(scanSpecAndBlocks)` after `getScanSpecAndBlocks(...)` and require it to execute through the same physical scan path.
+
+Expected: FAIL because the physical permutation only accepted `TripleKeyPattern`, not `ScanSpecAndBlocks`.
+
+- [x] **Step 2: Add the minimal overload**
+
+Add `XpodQleverPhysicalPermutation::scan(const XpodQleverScanSpecAndBlocks&)`. It fails through the embedded status when scan-spec construction failed; otherwise it delegates to the existing physical pattern scan using the mapped pattern and needed slots.
+
+This mirrors upstream `Permutation::scan(ScanSpecAndBlocks)` for materialized scans. It does not implement lazy/block strategy.
+
+- [x] **Step 3: Run target verification**
+
+Run:
+
+```bash
+bun test tests/native/QleverPhysicalIndex.test.ts --run -t "maps QLever scan specifications"
+```
+
+Expected: PASS.
+- Upstream QLever `IndexScan::getLazyScan()` still requires the next `lazyScan(optBlocks)` seam.
