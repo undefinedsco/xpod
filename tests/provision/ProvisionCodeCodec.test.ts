@@ -23,6 +23,25 @@ describe('ProvisionCodeCodec', () => {
     expect(decoded!.exp).toBe(payload.exp);
   });
 
+  it('encode/decode round-trip with short-lived service access token', () => {
+    const payload = {
+      spUrl: 'https://sp.example.com',
+      serviceAccessToken: 'sat-short-lived-token.signature',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) + 900,
+      nodeId: 'node-1',
+      exp: Math.floor(Date.now() / 1000) + 900,
+    };
+
+    const code = codec.encode(payload);
+    const decoded = codec.decode(code);
+
+    expect(decoded).toBeDefined();
+    expect(decoded!.spUrl).toBe(payload.spUrl);
+    expect(decoded!.serviceToken).toBeUndefined();
+    expect(decoded!.serviceAccessToken).toBe(payload.serviceAccessToken);
+    expect(decoded!.serviceAccessTokenExp).toBe(payload.serviceAccessTokenExp);
+  });
+
   it('encode/decode round-trip with spDomain', () => {
     const payload = {
       spUrl: 'https://sp.example.com',
@@ -75,6 +94,17 @@ describe('ProvisionCodeCodec', () => {
       spUrl: 'https://sp.example.com',
       serviceToken: 'st-xxx',
       exp: Math.floor(Date.now() / 1000) - 1,
+    });
+
+    expect(codec.decode(code)).toBeUndefined();
+  });
+
+  it('rejects expired service access token payload', () => {
+    const code = codec.encode({
+      spUrl: 'https://sp.example.com',
+      serviceAccessToken: 'sat-expired.signature',
+      serviceAccessTokenExp: Math.floor(Date.now() / 1000) - 1,
+      exp: Math.floor(Date.now() / 1000) + 3600,
     });
 
     expect(codec.decode(code)).toBeUndefined();

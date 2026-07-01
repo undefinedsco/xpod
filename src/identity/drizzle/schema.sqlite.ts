@@ -48,7 +48,7 @@ export const edgeNodes = sqliteTable('cluster_node', {
   ipv4: text('ipv4'),                          // IPv4 地址
   publicPort: integer('public_port'),
   publicUrl: text('public_url'),                // SP 的公网地址 (e.g. https://sp.example)
-  serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token (明文)
+  serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token 的 SHA-256 hash
   provisionCodeHash: text('provision_code_hash'), // bind 时用户传入的配对码 (hash)
   internalIp: text('internal_ip'),              // Internal network IP for center nodes
   internalPort: integer('internal_port'),

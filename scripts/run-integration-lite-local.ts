@@ -19,11 +19,13 @@ async function main() {
 
   try {
     console.log('Starting xpod stack...');
-    await stack.start();
+    const liteRuntimeEnv = { XPOD_LOCAL_AUTO_PROVISION: 'false' };
+    await stack.start('local', { env: liteRuntimeEnv });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
     const sharedEnv = {
       ...process.env,
+      ...liteRuntimeEnv,
       CSS_BASE_URL: stack.baseUrl,
       XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
       XPOD_RUN_INTEGRATION_TESTS: 'true',

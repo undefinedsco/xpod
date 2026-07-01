@@ -125,7 +125,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
 
   private async resolveScopedEntries(accountId: string, target: TargetStorage): Promise<WebIdEntry[]> {
     const webIds = await this.resolveCandidateWebIds(accountId);
-    if (target.serviceToken) {
+    if (target.serviceAccessToken) {
       return this.resolveRemoteSpEntries(webIds, target);
     }
 
@@ -183,7 +183,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
   }
 
   private async isResolvableByCurrentSp(webId: string, target: TargetStorage): Promise<boolean> {
-    if (target.serviceToken) {
+    if (target.serviceAccessToken) {
       return (await this.resolveRemoteSpEntries([webId], target)).some((entry) => entry.webId === webId);
     }
     return Boolean(await this.findSpPod(webId, target.storageUrl));
@@ -234,19 +234,19 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
     return {
       storageUrl: ensureTrailingSlash(targetUrl),
       lookupUrl: ensureTrailingSlash(payload.spUrl),
-      serviceToken: payload.serviceToken,
+      serviceAccessToken: payload.serviceAccessToken ?? payload.serviceToken,
     };
   }
 
   private async resolveRemoteSpEntries(webIds: string[], target: TargetStorage): Promise<WebIdEntry[]> {
-    if (!target.lookupUrl || !target.serviceToken || webIds.length === 0) {
+    if (!target.lookupUrl || !target.serviceAccessToken || webIds.length === 0) {
       return [];
     }
 
     const response = await this.fetch(new URL('/provision/webids', target.lookupUrl).toString(), {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${target.serviceToken}`,
+        'Authorization': `Bearer ${target.serviceAccessToken}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
@@ -286,7 +286,7 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
 interface TargetStorage {
   storageUrl: string;
   lookupUrl?: string;
-  serviceToken?: string;
+  serviceAccessToken?: string;
 }
 
 interface RemoteSpWebIdEntry {

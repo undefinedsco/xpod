@@ -15,6 +15,13 @@ export class XpodTestStack {
     const transport = resolveTestRuntimeTransport(options.transport);
     const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
 
+    const env = {
+      // Test stacks are hermetic by default. Individual tests can opt back in by passing
+      // env: { XPOD_LOCAL_AUTO_PROVISION: 'true' } with a mock/local Cloud endpoint.
+      XPOD_LOCAL_AUTO_PROVISION: 'false',
+      ...(options.env ?? {}),
+    };
+
     this.runtime = await startXpodRuntime({
       mode: mode as 'local' | 'cloud',
       open: true,
@@ -22,6 +29,7 @@ export class XpodTestStack {
       envFile: fs.existsSync(envFile) ? envFile : undefined,
       ...portOptions,
       ...options,
+      env,
     });
 
     this.port = this.runtime.ports.gateway ?? 0;

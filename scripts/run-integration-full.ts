@@ -297,6 +297,7 @@ async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHa
     sparqlEndpoint: path.join(runtimeRoot, 'standalone', 'local-standalone.sqlite'),
     identityDbUrl: path.join(runtimeRoot, 'standalone', 'local-standalone-identity.sqlite'),
     env: {
+      XPOD_LOCAL_AUTO_PROVISION: 'false',
       CSS_ALLOWED_HOSTS: 'localhost,host.docker.internal',
       CSS_SEED_CONFIG: path.resolve('config/seed.dev.json'),
     },

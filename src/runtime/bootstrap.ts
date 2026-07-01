@@ -254,6 +254,20 @@ export function buildRuntimeEnv(
     API_HOST: state.bindHost,
     API_SOCKET_PATH: state.sockets.api,
     XPOD_MAIN_PORT: state.ports.gateway !== undefined ? String(state.ports.gateway) : undefined,
+    // Auto-provision may write these during API startup. Include them even when
+    // undefined so RuntimeEnvironmentSession can restore/clear them afterwards.
+    XPOD_NODE_ID: mergedEnv.XPOD_NODE_ID,
+    XPOD_NODE_TOKEN: mergedEnv.XPOD_NODE_TOKEN,
+    XPOD_SERVICE_TOKEN: mergedEnv.XPOD_SERVICE_TOKEN,
+    XPOD_PROVISION_CODE: mergedEnv.XPOD_PROVISION_CODE,
+    XPOD_PROVISION_URL: mergedEnv.XPOD_PROVISION_URL,
+    XPOD_SP_DOMAIN: mergedEnv.XPOD_SP_DOMAIN,
+    XPOD_PUBLIC_URL: mergedEnv.XPOD_PUBLIC_URL,
+    XPOD_LOCAL_SETUP_PATH: mergedEnv.XPOD_LOCAL_SETUP_PATH,
+    XPOD_PROVIDER_ID: mergedEnv.XPOD_PROVIDER_ID,
+    XPOD_CLOUD_API_ENDPOINT: mergedEnv.XPOD_CLOUD_API_ENDPOINT,
+    XPOD_LOCAL_AUTO_PROVISION: mergedEnv.XPOD_LOCAL_AUTO_PROVISION,
+    XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS: mergedEnv.XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS,
     CORS_ORIGINS: new URL(state.baseUrl).origin,
     CSS_LOGGING_LEVEL: state.logLevel,
   };

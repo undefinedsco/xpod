@@ -100,4 +100,67 @@ describe('runtime environment session', () => {
     expect(envStore.CSS_BASE_URL).toBeUndefined();
     expect(envStore.EXISTING_FLAG).toBe('keep-me');
   });
+
+  it('restores Local auto-provision token variables written after session creation', () => {
+    const envStore: Record<string, string | undefined> = {};
+    const platform: RuntimePlatform = {
+      name: 'fake-platform',
+      baseEnv: {},
+      createRuntimeId: (): string => 'platform-id',
+      cwd: (): string => '/sandbox',
+      joinPath: (...segments: string[]): string => path.posix.join(...segments),
+      resolvePath: (...segments: string[]): string => path.posix.resolve(...segments),
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      fileExists: (): boolean => false,
+      readTextFile: (): string => '',
+      writeTextFile: (): void => undefined,
+      ensureDir: (): void => undefined,
+      getEnv: (key: string): string | undefined => envStore[key],
+      setEnv: (key: string, value: string | undefined): void => {
+        if (value === undefined) {
+          delete envStore[key];
+          return;
+        }
+        envStore[key] = value;
+      },
+      fetch: async(): Promise<Response> => new Response(null, { status: 204 }),
+    };
+    const state = {
+      id: 'env-auto-provision',
+      host: nodeRuntimeHost,
+      mode: 'local',
+      transport: 'port',
+      bindHost: '127.0.0.1',
+      runtimeRoot: '/runtime-root',
+      rootFilePath: '/runtime-root/data',
+      sparqlEndpoint: 'sqlite:/runtime-root/quadstore.sqlite',
+      rdfIndexPath: '/runtime-root/rdf-index.sqlite',
+      identityDbUrl: 'sqlite:/runtime-root/identity.sqlite',
+      usageDbUrl: 'sqlite:/runtime-root/usage.sqlite',
+      cssAuthMode: 'acp',
+      apiOpen: false,
+      logLevel: 'warn',
+      baseUrl: 'http://127.0.0.1:5810/',
+      ports: { gateway: 5810, css: 5811, api: 5812 },
+      sockets: {},
+    } as RuntimeBootstrapState;
+
+    const session = createRuntimeEnvironmentSession(state, {
+      mode: 'local',
+      transport: 'port',
+    }, platform);
+
+    envStore.XPOD_NODE_TOKEN = 'node-token-issued-during-start';
+    envStore.XPOD_SERVICE_TOKEN = 'svc-issued-during-start';
+    envStore.XPOD_PROVISION_CODE = 'provision-code-issued-during-start';
+    envStore.XPOD_SP_DOMAIN = 'node-0000.undefineds.co';
+
+    session.restore();
+
+    expect(envStore.XPOD_NODE_TOKEN).toBeUndefined();
+    expect(envStore.XPOD_SERVICE_TOKEN).toBeUndefined();
+    expect(envStore.XPOD_PROVISION_CODE).toBeUndefined();
+    expect(envStore.XPOD_SP_DOMAIN).toBeUndefined();
+  });
+
 });

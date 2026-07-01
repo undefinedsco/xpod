@@ -39,12 +39,25 @@ type TunnelProviderFieldSpec = {
   credentialLabel: string;
 };
 
+type TunnelProfileDraft = TunnelProviderFieldSpec & {
+  id: string;
+  provider: Exclude<TunnelProvider, 'none'>;
+  label: string;
+  publicEndpointUrl: string;
+  credentialConfigured: boolean;
+  configured: boolean;
+};
+
 const ALLOWED_KEYS = [
   'XPOD_DEPLOY_MODE',
   'CSS_ROOT_FILE_PATH',
   'CSS_BASE_URL',
   'XPOD_TUNNEL_PROVIDER',
+  'XPOD_TUNNEL_ACTIVE_PROFILE_ID',
+  'XPOD_TUNNEL_PROFILES',
   'XPOD_TUNNEL_PUBLIC_URL',
+  'CLOUDFLARE_TUNNEL_URL',
+  'SAKURA_TUNNEL_URL',
   'CLOUDFLARE_TUNNEL_TOKEN',
   'SAKURA_TUNNEL_TOKEN',
   'NGROK_AUTHTOKEN',
@@ -85,14 +98,14 @@ const TUNNEL_PROVIDER_FIELDS: Record<Exclude<TunnelProvider, 'none'>, TunnelProv
     credentialLabel: 'ngrok authtoken',
   },
   cloudflare: {
-    publicEndpointKey: 'XPOD_TUNNEL_PUBLIC_URL',
+    publicEndpointKey: 'CLOUDFLARE_TUNNEL_URL',
     publicEndpointLabel: 'Cloudflare Tunnel 公开入口',
     publicEndpointPlaceholder: 'https://example.trycloudflare.com',
     credentialKey: 'CLOUDFLARE_TUNNEL_TOKEN',
     credentialLabel: 'Cloudflare Tunnel Token',
   },
   sakura_frp: {
-    publicEndpointKey: 'XPOD_TUNNEL_PUBLIC_URL',
+    publicEndpointKey: 'SAKURA_TUNNEL_URL',
     publicEndpointLabel: 'Sakura FRP 公开入口 URL',
     publicEndpointPlaceholder: 'https://example.example.com',
     credentialKey: 'SAKURA_TUNNEL_TOKEN',
@@ -110,6 +123,143 @@ const TUNNEL_PROVIDER_FIELDS: Record<Exclude<TunnelProvider, 'none'>, TunnelProv
 function getTunnelProviderFields(provider: TunnelProvider): TunnelProviderFieldSpec | null {
   return provider === 'none' ? null : TUNNEL_PROVIDER_FIELDS[provider];
 }
+
+const TUNNEL_PROFILE_PROVIDERS: Array<Exclude<TunnelProvider, 'none'>> = ['ngrok', 'cloudflare', 'sakura_frp', 'frp'];
+
+function readTunnelProvider(value: string | undefined): TunnelProvider {
+  if (value === 'ngrok' || value === 'cloudflare' || value === 'sakura_frp' || value === 'frp') {
+    return value;
+  }
+  if (value === 'sakura-frp') {
+    return 'sakura_frp';
+  }
+  return 'none';
+}
+
+function getTunnelProfileLabel(provider: Exclude<TunnelProvider, 'none'>): string {
+  switch (provider) {
+    case 'ngrok': return 'ngrok';
+    case 'cloudflare': return 'Cloudflare';
+    case 'sakura_frp': return 'Sakura FRP';
+    case 'frp': return 'FRP';
+  }
+}
+
+function buildTunnelProfileDrafts(
+  env: Record<string, string>,
+  secretIsPresentOrReplacing: (key: string) => boolean,
+): TunnelProfileDraft[] {
+  const drafts: TunnelProfileDraft[] = [];
+  const seen = new Set<string>();
+
+  for (const stored of parseStoredTunnelProfiles(env.XPOD_TUNNEL_PROFILES)) {
+    const fields = TUNNEL_PROVIDER_FIELDS[stored.provider];
+    const credentialKey = stored.credentialEnvKey || fields.credentialKey;
+    const publicEndpointUrl = stored.publicUrl || readLegacyTunnelEndpoint(env, stored.provider, fields);
+    const credentialConfigured = secretIsPresentOrReplacing(credentialKey);
+    drafts.push({
+      id: stored.id,
+      provider: stored.provider,
+      label: stored.label || getTunnelProfileLabel(stored.provider),
+      publicEndpointUrl,
+      credentialConfigured,
+      configured: true,
+      ...fields,
+      credentialKey,
+    });
+    seen.add(stored.id);
+  }
+
+  for (const provider of TUNNEL_PROFILE_PROVIDERS) {
+    if (seen.has(provider)) continue;
+    const fields = TUNNEL_PROVIDER_FIELDS[provider];
+    const publicEndpointUrl = readLegacyTunnelEndpoint(env, provider, fields);
+    const credentialConfigured = secretIsPresentOrReplacing(fields.credentialKey);
+    drafts.push({
+      id: provider,
+      provider,
+      label: getTunnelProfileLabel(provider),
+      publicEndpointUrl,
+      credentialConfigured,
+      configured: Boolean(publicEndpointUrl || credentialConfigured || readTunnelProvider(env.XPOD_TUNNEL_PROVIDER) === provider),
+      ...fields,
+    });
+  }
+
+  return drafts;
+}
+
+type StoredTunnelProfile = {
+  id: string;
+  provider: Exclude<TunnelProvider, 'none'>;
+  label?: string;
+  publicUrl?: string;
+  credentialEnvKey?: string;
+};
+
+function parseStoredTunnelProfiles(value: string | undefined): StoredTunnelProfile[] {
+  if (!value?.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item): StoredTunnelProfile[] => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const record = item as Record<string, unknown>;
+      const id = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : '';
+      const provider = readTunnelProvider(typeof record.provider === 'string' ? record.provider : undefined);
+      if (!id || provider === 'none') return [];
+      return [{
+        id,
+        provider,
+        label: typeof record.label === 'string' ? record.label : undefined,
+        publicUrl: typeof record.publicUrl === 'string' ? record.publicUrl : undefined,
+        credentialEnvKey: typeof record.credentialEnvKey === 'string' ? record.credentialEnvKey : undefined,
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function readLegacyTunnelEndpoint(
+  env: Record<string, string>,
+  provider: Exclude<TunnelProvider, 'none'>,
+  fields: TunnelProviderFieldSpec,
+): string {
+  const legacySharedEndpoint = (provider === 'cloudflare' || provider === 'sakura_frp')
+    ? env.XPOD_TUNNEL_PUBLIC_URL || ''
+    : '';
+  return env[fields.publicEndpointKey] || legacySharedEndpoint || '';
+}
+
+function serializeTunnelProfileDrafts(profiles: TunnelProfileDraft[]): string {
+  const configured = profiles
+    .filter((profile) => profile.configured)
+    .map((profile) => ({
+      id: profile.id,
+      provider: profile.provider,
+      label: profile.label,
+      publicUrl: profile.publicEndpointUrl,
+      credentialEnvKey: profile.credentialKey,
+    }));
+  return configured.length > 0 ? JSON.stringify(configured) : '';
+}
+
+function resolveInitialActiveTunnelProfileId(
+  env: Record<string, string>,
+  legacyTunnelProvider: TunnelProvider,
+  tunnelProfileDrafts: TunnelProfileDraft[],
+): string {
+  const explicitActiveProfileId = env.XPOD_TUNNEL_ACTIVE_PROFILE_ID?.trim();
+  if (explicitActiveProfileId) {
+    return explicitActiveProfileId;
+  }
+  if (legacyTunnelProvider !== 'none') {
+    return legacyTunnelProvider;
+  }
+  return tunnelProfileDrafts.find((profile) => profile.configured)?.id ?? 'none';
+}
+
 
 function isSecretKey(key: string): boolean {
   return SECRET_KEYS.has(key);
@@ -158,9 +308,7 @@ export function SettingsPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const mode: DeployMode = env.XPOD_DEPLOY_MODE === 'standalone' ? 'standalone' : 'local';
-  const tunnelProvider: TunnelProvider = ['none', 'ngrok', 'cloudflare', 'sakura_frp', 'frp'].includes(env.XPOD_TUNNEL_PROVIDER)
-    ? (env.XPOD_TUNNEL_PROVIDER as TunnelProvider)
-    : 'none';
+  const legacyTunnelProvider = readTunnelProvider(env.XPOD_TUNNEL_PROVIDER);
   const httpsMode: HttpsMode = ['none', 'acme', 'manual'].includes(env.XPOD_HTTPS_MODE)
     ? (env.XPOD_HTTPS_MODE as HttpsMode)
     : 'none';
@@ -169,7 +317,6 @@ export function SettingsPage() {
   const hasCloudEndpoint = Boolean(env.XPOD_CLOUD_API_ENDPOINT);
   const isManaged = isLocal && hasCloudEndpoint;
   const managedBaseUrl = ddnsStatus?.baseUrl || env.CSS_BASE_URL || (ddnsStatus?.fqdn ? `https://${ddnsStatus.fqdn}/` : '');
-  const tunnelProviderFields = getTunnelProviderFields(tunnelProvider);
 
   useEffect(() => {
     void loadConfig();
@@ -244,9 +391,38 @@ export function SettingsPage() {
     [secretIsConfigured, secretReplacements],
   );
 
+  const tunnelProfileDrafts = useMemo(
+    () => buildTunnelProfileDrafts(env, secretIsPresentOrReplacing),
+    [env, secretIsPresentOrReplacing],
+  );
+  const activeTunnelProfileId = resolveInitialActiveTunnelProfileId(env, legacyTunnelProvider, tunnelProfileDrafts);
+  const activeTunnelProfile = tunnelProfileDrafts.find((profile) => profile.id === activeTunnelProfileId);
+  const activeTunnelProvider: TunnelProvider = activeTunnelProfile?.provider ?? 'none';
+  const tunnelProviderFields = getTunnelProviderFields(activeTunnelProvider);
+
+  const activateTunnelProfile = (profileId: string): void => {
+    const nextProfile = tunnelProfileDrafts.find((profile) => profile.id === profileId);
+    setEnv((prev) => ({
+      ...prev,
+      XPOD_TUNNEL_ACTIVE_PROFILE_ID: nextProfile ? nextProfile.id : '',
+      XPOD_TUNNEL_PROVIDER: nextProfile?.provider ?? 'none',
+    }));
+  };
+
+  const updateTunnelProfilePublicEndpoint = (profile: TunnelProfileDraft, value: string): void => {
+    const nextProfiles = tunnelProfileDrafts.map((item) => item.id === profile.id
+      ? { ...item, publicEndpointUrl: value, configured: true }
+      : item);
+    setEnv((prev) => ({
+      ...prev,
+      [profile.publicEndpointKey]: value,
+      XPOD_TUNNEL_PROFILES: serializeTunnelProfileDrafts(nextProfiles),
+    }));
+  };
+
   const validationError = useMemo(() => {
     if (tunnelProviderFields) {
-      if (!(env[tunnelProviderFields.publicEndpointKey] || '').trim()) {
+      if (!(activeTunnelProfile?.publicEndpointUrl || '').trim()) {
         return `请填写 ${tunnelProviderFields.publicEndpointLabel}`;
       }
       if (!secretIsPresentOrReplacing(tunnelProviderFields.credentialKey)) {
@@ -254,18 +430,18 @@ export function SettingsPage() {
       }
     }
 
-    if (isManaged && ddnsStatus?.mode === 'tunnel' && tunnelProvider === 'none') {
+    if (isManaged && ddnsStatus?.mode === 'tunnel' && activeTunnelProvider === 'none') {
       return '当前网络不可直连，必须启用一个隧道供应商。';
     }
 
     const baseUrl = (env.CSS_BASE_URL || '').trim();
     const wantsHttps = baseUrl.startsWith('https://');
-    if (!isManaged && wantsHttps && tunnelProvider === 'none' && httpsMode === 'none') {
+    if (!isManaged && wantsHttps && activeTunnelProvider === 'none' && httpsMode === 'none') {
       return '独立部署使用 https:// Base URL 时，需要配置 HTTPS 或启用隧道。';
     }
 
     return '';
-  }, [ddnsStatus?.mode, env, httpsMode, isManaged, tunnelProvider, tunnelProviderFields, secretIsPresentOrReplacing]);
+  }, [activeTunnelProfile?.publicEndpointUrl, activeTunnelProvider, ddnsStatus?.mode, env.CSS_BASE_URL, httpsMode, isManaged, tunnelProviderFields, secretIsPresentOrReplacing]);
 
   const pendingChanges = useMemo(() => {
     const changes: Array<{ key: string; from: string; to: string }> = [];
@@ -304,6 +480,9 @@ export function SettingsPage() {
           patch[key] = env[key];
         }
       }
+      patch.XPOD_TUNNEL_ACTIVE_PROFILE_ID = activeTunnelProvider === 'none' ? '' : activeTunnelProfileId;
+      patch.XPOD_TUNNEL_PROVIDER = activeTunnelProvider;
+      patch.XPOD_TUNNEL_PROFILES = serializeTunnelProfileDrafts(tunnelProfileDrafts);
 
       const success = await updateAdminConfig(patch);
       if (success) {
@@ -427,33 +606,64 @@ export function SettingsPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          {isManaged && ddnsStatus?.mode === 'tunnel' && tunnelProvider === 'none' ? (
+          {isManaged && ddnsStatus?.mode === 'tunnel' && activeTunnelProvider === 'none' ? (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">当前网络不可直连，请启用一个隧道供应商。</div>
           ) : null}
           <div className="space-y-2">
-            <Label>隧道供应商</Label>
-            <Select value={tunnelProvider} onValueChange={(value) => updateEnv('XPOD_TUNNEL_PROVIDER', value)}>
+            <Label>当前生效</Label>
+            <Select value={activeTunnelProfileId} onValueChange={activateTunnelProfile}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">不使用隧道</SelectItem>
-                <SelectItem value="ngrok">ngrok</SelectItem>
-                <SelectItem value="cloudflare">Cloudflare</SelectItem>
-                <SelectItem value="sakura_frp">Sakura FRP</SelectItem>
-                <SelectItem value="frp">FRP</SelectItem>
+                {tunnelProfileDrafts.map((profile) => (
+                  <SelectItem key={profile.id} value={profile.id}>{profile.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">同一时间只启用一个隧道。公网、局域网、本机和 P2P 由状态页判断最优接入。</p>
+            <p className="text-xs text-muted-foreground">可以记录多个隧道配置，但同一时间只启用当前选择的一个。公网、局域网、本机和 P2P 由状态页判断最优接入。</p>
           </div>
 
-          {tunnelProviderFields ? (
-            <div className="space-y-4">
+          <div className="space-y-2">
+            <div className="text-sm font-medium">已记录隧道</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {tunnelProfileDrafts.map((profile) => {
+                const isActive = profile.id === activeTunnelProfileId;
+                return (
+                  <div key={profile.id} className={clsx('rounded-xl border p-3', isActive ? 'border-primary bg-primary/5' : 'border-border')}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium">{profile.label}</span>
+                      <Button
+                        type="button"
+                        variant={isActive ? 'secondary' : 'ghost'}
+                        size="sm"
+                        onClick={() => activateTunnelProfile(profile.id)}
+                        disabled={isActive}
+                      >
+                        {isActive ? '当前生效' : '设为当前'}
+                      </Button>
+                    </div>
+                    <div className="mt-2 break-all font-mono text-xs text-muted-foreground">
+                      {profile.publicEndpointUrl || '未配置入口'}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {profile.credentialConfigured ? '密钥已配置' : '未配置密钥'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {activeTunnelProfile && tunnelProviderFields ? (
+            <div className="space-y-4 rounded-xl border border-border p-4">
+              <div className="text-sm font-medium">编辑当前隧道</div>
               <div className="space-y-1">
                 <div className="text-xs text-muted-foreground">隧道入口 URL</div>
                 <FormField
                   id="tunnelPublicEndpoint"
                   label={tunnelProviderFields.publicEndpointLabel}
-                  value={env[tunnelProviderFields.publicEndpointKey] || ''}
-                  onChange={(value) => updateEnv(tunnelProviderFields.publicEndpointKey, value)}
+                  value={activeTunnelProfile.publicEndpointUrl}
+                  onChange={(value) => updateTunnelProfilePublicEndpoint(activeTunnelProfile, value)}
                   placeholder={tunnelProviderFields.publicEndpointPlaceholder}
                   helper="这是实际数据面入口，不替代上方的稳定资料 URL。"
                 />

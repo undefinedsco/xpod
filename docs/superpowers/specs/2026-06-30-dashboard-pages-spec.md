@@ -371,13 +371,14 @@ sakura_frp
 
 ### Provider form rules
 
-- Use one provider selector.
-- Show only the current provider's fields.
-- Never show all provider forms at once.
-- Validate only the current provider's required fields.
-- Switching provider does not need to delete previous provider config immediately.
-- Saving activates only the selected provider through `XPOD_TUNNEL_PROVIDER`.
-- `none` is an explicit state.
+- Keep a recorded tunnel profile list (`XPOD_TUNNEL_PROFILES`) and an explicit active profile (`XPOD_TUNNEL_ACTIVE_PROFILE_ID`).
+- Only the active profile is launched and reported; inactive profiles are saved for later switching.
+- `XPOD_TUNNEL_PROVIDER` remains a compatibility mirror of the active profile's provider, not the source of all saved profile state.
+- Show only the active profile's editable fields while showing a compact list of all recorded profiles.
+- Never start all provider clients at once.
+- Validate only the active profile's required fields.
+- Switching active profile does not delete previous profile config.
+- `none` is an explicit active state.
 - If `DDNS mode = tunnel` and provider is `none`, show the red warning.
 - If provider is not `none`, do not show “please enable a tunnel” warning.
 - Advanced provider parameters stay hidden behind a provider-specific advanced fold.

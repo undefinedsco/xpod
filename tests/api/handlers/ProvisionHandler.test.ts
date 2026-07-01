@@ -87,7 +87,9 @@ describe('ProvisionHandler', () => {
       const payload = codec.decode(body.provisionCode);
       expect(payload).toBeDefined();
       expect(payload!.spUrl).toBe('https://sp.example.com');
-      expect(payload!.serviceToken).toBe('st-xxx');
+      expect(payload!.serviceToken).toBeUndefined();
+      expect(payload!.serviceAccessToken).toMatch(/^sat-/);
+      expect(payload!.serviceAccessTokenExp).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 15 * 60);
       expect(payload!.nodeId).toBe('node-1');
     });
 
@@ -841,6 +843,7 @@ describe('ProvisionStatusHandler', () => {
     registerProvisionStatusRoute(mockServer, {
       cloudUrl: 'https://id.undefineds.co',
       nodeId: 'abc123',
+      nodeToken: 'nt-old',
       spDomain: 'abc123.undefineds.site',
       cloudBaseUrl: 'https://id.undefineds.co',
       provisionCode: 'test-code',
@@ -875,6 +878,23 @@ describe('ProvisionStatusHandler', () => {
     expect(body.nodeId).toBeUndefined();
   });
 
+  it('should stay unregistered until Cloud has issued a nodeToken', async () => {
+    registerProvisionStatusRoute(mockServer, {
+      cloudUrl: 'https://api.undefineds.co',
+      cloudBaseUrl: 'https://id.undefineds.co',
+      nodeId: 'local-device-id',
+    });
+
+    const response = createMockResponse();
+    await routes['GET /provision/status']({}, response, {});
+
+    expect(response.statusCode).toBe(200);
+    const body = parseResponseBody(response);
+    expect(body.registered).toBe(false);
+    expect(body.nodeId).toBeUndefined();
+    expect(body.provisionCode).toBeUndefined();
+  });
+
   it('should keep registered status readable when no provisionCode has been issued yet', async () => {
     const fetchMock = vi.fn();
 
@@ -882,6 +902,7 @@ describe('ProvisionStatusHandler', () => {
       cloudUrl: 'https://api.undefineds.co',
       cloudBaseUrl: 'https://id.undefineds.co',
       nodeId: 'abc123',
+      nodeToken: 'nt-old',
       serviceToken: 'st-old',
       fetchImpl: fetchMock as any,
     });
@@ -1106,12 +1127,12 @@ describe('ProvisionStatusHandler', () => {
     const response = createMockResponse();
     await routes['GET /provision/status']({}, response, {});
 
-    expect(response.statusCode).toBe(503);
+    expect(response.statusCode).toBe(200);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(parseResponseBody(response)).toMatchObject({
-      registered: true,
-      error: 'provision_refresh_unavailable',
-    });
+    const body = parseResponseBody(response);
+    expect(body.registered).toBe(false);
+    expect(body.provisionCode).toBeUndefined();
+    expect(body.error).toBeUndefined();
   });
 
   it('should not treat malformed self-contained provisionCode as usable when refresh fails', async () => {

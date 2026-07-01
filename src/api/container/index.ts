@@ -16,10 +16,13 @@ import { registerLocalServices } from './local';
 import { registerBusinessToken } from './business-token';
 import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
+import { readLocalProvisionState, resolveLocalSetupPath, resolveLocalSetupProviderId } from '../../provision/LocalProvisionState';
+import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
 const OFFICIAL_CLOUD_IDENTITY_ORIGIN = 'https://id.undefineds.co';
+const OFFICIAL_CLOUD_API_ORIGIN = 'https://api.undefineds.co';
 
 function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
@@ -73,12 +76,33 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
  */
 export function loadConfigFromEnv(): ApiContainerConfig {
   const edition = (process.env.XPOD_EDITION ?? 'local') as 'cloud' | 'local';
+  const rootDir = process.env.CSS_ROOT_FILE_PATH || './data';
+  const localSetupPath = resolveLocalSetupPath(process.env.XPOD_LOCAL_SETUP_PATH, rootDir);
+  const localSetupProviderId = resolveLocalSetupProviderId(process.env.XPOD_PROVIDER_ID);
+  const localSetupState = edition === 'local'
+    ? readLocalProvisionState(localSetupPath, localSetupProviderId)
+    : undefined;
 
   // Port auto-increment: API_PORT = CSS_PORT + 1 if not explicitly set
   const cssPort = parseInt(process.env.CSS_PORT ?? '3000', 10);
   const apiPort = process.env.API_PORT
     ? parseInt(process.env.API_PORT, 10)
     : cssPort + 1;
+
+  const cloudApiEndpoint = process.env.XPOD_CLOUD_API_ENDPOINT
+    ?? localSetupState?.cloudApiUrl
+    ?? OFFICIAL_CLOUD_API_ORIGIN;
+  const nodeId = loadOrGenerateDeviceId(process.env.XPOD_NODE_ID ?? localSetupState?.nodeId);
+  const nodeToken = process.env.XPOD_NODE_TOKEN ?? localSetupState?.nodeToken;
+  const serviceToken = process.env.XPOD_SERVICE_TOKEN ?? localSetupState?.serviceToken;
+  const oidcIssuer = resolveExternalOidcIssuer(process.env)
+    ?? localSetupState?.cloudIdentityUrl
+    ?? (
+      nodeToken
+        ? OFFICIAL_CLOUD_IDENTITY_ORIGIN
+        : undefined
+    );
+  const tunnelProfileState = resolveTunnelProfileState(process.env);
 
   return {
     edition,
@@ -115,19 +139,25 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     },
 
     // Local 托管式：连接 Cloud
-    cloudApiEndpoint: process.env.XPOD_CLOUD_API_ENDPOINT,
-    nodeId: loadOrGenerateDeviceId(process.env.XPOD_NODE_ID),
-    nodeToken: process.env.XPOD_NODE_TOKEN,
+    cloudApiEndpoint,
+    nodeId,
+    nodeToken,
+    serviceToken,
+    provisionCode: process.env.XPOD_PROVISION_CODE ?? localSetupState?.provisionCode,
+    publicUrl: process.env.XPOD_PUBLIC_URL ?? localSetupState?.publicUrl,
+    spDomain: process.env.XPOD_SP_DOMAIN ?? localSetupState?.spDomain,
+    localSetupPath,
+    localSetupProviderId,
 
     // OIDC Issuer (Local 托管式使用 Cloud IdP)
     // 如果配置了 XPOD_NODE_TOKEN，默认使用 Cloud IdP
-    oidcIssuer: resolveExternalOidcIssuer(process.env) ?? (
-      process.env.XPOD_NODE_TOKEN
-        ? OFFICIAL_CLOUD_IDENTITY_ORIGIN
-        : undefined
-    ),
+    oidcIssuer,
 
     // 隧道配置
+    tunnelProvider: tunnelProfileState.activeProvider,
+    tunnelProfiles: tunnelProfileState.profiles,
+    tunnelActiveProfileId: tunnelProfileState.activeProfileId,
+    activeTunnelProfile: tunnelProfileState.activeProfile,
     cloudflareTunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN,
     // Prefer SAKURA_TUNNEL_TOKEN; keep SAKURA_TOKEN for backward compatibility.
     sakuraTunnelToken: process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN,

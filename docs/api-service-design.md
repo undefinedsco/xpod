@@ -97,6 +97,7 @@
 - `https://api.undefineds.co/v1/chat/completions`
 - `https://api.undefineds.co/_matrix/client/versions`
 - `https://api.undefineds.co/.well-known/matrix/client`
+- `https://registry.undefineds.co/nodes/node-0000`
 
 错误入口示例：
 
@@ -106,9 +107,12 @@
 路由原则：
 
 1. `id.*` / `pods.*` 等身份、Pod、Solid 数据域名优先服务 CSS / Solid / OIDC。
-2. `api.*` 域名是对外 API 入口，API 路径在该 host 下保持自己的协议形状；Matrix 这类协议兼容路径仍是 `/_matrix/*`，不额外套 `/api/_matrix/*`。
-3. 内部 API 不受公网 API host 约束，可以使用 `/service/*`、`/provision/*`、loopback 端口或集群内 service 地址，但必须有明确鉴权和调用边界。
-4. 新增对外 API 时，先确认它是暴露在 `api.*` host 下，避免误把 API 挂到 `id.*` 或 `pods.*` 后再靠 path 区分。
+2. `api.*` 域名是通用对外 API 入口，API 路径在该 host 下保持自己的协议形状；Matrix 这类协议兼容路径仍是 `/_matrix/*`，不额外套 `/api/_matrix/*`。
+3. `registry.*` 域名是控制面 registry 入口，承载 node/app/service 等注册与发现 API；它走 API server，不是 Solid Pod 数据面，也不应该被重写到 `id.*`。
+4. 内部 API 不受公网 API host 约束，可以使用 `/service/*`、`/provision/*`、loopback 端口或集群内 service 地址，但必须有明确鉴权和调用边界。
+5. 新增对外 API 时，先确认它是暴露在 `api.*` 或明确的控制面 host（如 `registry.*`）下，避免误把 API 挂到 `id.*` 或 `pods.*` 后再靠 path 区分。
+
+Cloud 模式下 `CSS_ALLOWED_HOSTS` 应使用受控根域通配符，例如 `*.undefineds.co`。它只表示 Xpod/CSS 接受该根域下的入口 host，不替代 OIDC audience、DPoP 或资源权限校验；`api.*` / `registry.*` 仍由 Gateway 先路由到 API server。
 
 ### 3.1 路由总览
 

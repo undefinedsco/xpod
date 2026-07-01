@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi } from 'vitest';
 import { EdgeNodeRepository } from '../../src/identity/drizzle/EdgeNodeRepository';
 
@@ -147,11 +148,11 @@ describe('EdgeNodeRepository', () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(result.nodeId).toBeDefined();
     expect(result.nodeToken).toBeDefined();
-    expect(result.serviceToken).toBeDefined();
+    expect(result.serviceToken).toMatch(/^svc-/);
     expect(result.createdAt).toBeDefined();
   });
 
-  it('registerSpNode 使用传入的 nodeId 和 serviceToken', async () => {
+  it('registerSpNode 使用传入的 nodeId 和 serviceToken，并只保存 hash', async () => {
     const { repo, execute } = createRepo();
     execute.mockResolvedValueOnce({ rows: [] });
 
@@ -164,6 +165,11 @@ describe('EdgeNodeRepository', () => {
     expect(result.nodeId).toBe('my-device-id');
     expect(result.serviceToken).toBe('my-token');
     expect(result.nodeToken).toBeDefined();
+
+    const sqlArg = execute.mock.calls[0]?.[0] as { queryChunks?: unknown[] };
+    const values = sqlArg.queryChunks ?? [];
+    expect(values).toContain(createHash('sha256').update('my-token').digest('hex'));
+    expect(values).not.toContain('my-token');
   });
 
   it('registerSpNode 使用传入的 nodeToken 以避免重复注册时凭证漂移', async () => {
@@ -190,7 +196,7 @@ describe('EdgeNodeRepository', () => {
         id: 'sp-1',
         display_name: 'My NAS',
         public_url: 'https://sp.example.com',
-        service_token_hash: 'st-xxx',
+        service_token_hash: 'hash-xxx',
         last_seen: null,
       }],
     });
@@ -202,7 +208,7 @@ describe('EdgeNodeRepository', () => {
       nodeId: 'sp-1',
       displayName: 'My NAS',
       publicUrl: 'https://sp.example.com',
-      serviceTokenHash: 'st-xxx',
+      serviceTokenHash: 'hash-xxx',
       lastSeen: undefined,
     });
   });

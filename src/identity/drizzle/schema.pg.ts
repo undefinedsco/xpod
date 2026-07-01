@@ -48,7 +48,7 @@ export const edgeNodes = pgTable('cluster_node', {
   ipv4: text('ipv4'),                          // IPv4 地址
   publicPort: pgBigint('public_port', { mode: 'number' }),
   publicUrl: text('public_url'),                // SP 的公网地址 (e.g. https://sp.example)
-  serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token (明文)
+  serviceTokenHash: text('service_token_hash'), // Cloud → SP 回调认证 token 的 SHA-256 hash
   provisionCodeHash: text('provision_code_hash'), // bind 时用户传入的配对码 (hash)
   internalIp: text('internal_ip'),              // Internal network IP
   internalPort: pgBigint('internal_port', { mode: 'number' }),
