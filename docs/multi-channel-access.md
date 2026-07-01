@@ -137,7 +137,7 @@ Local Pod 的可达性由 Cloud 控制面、xpod local runtime、tunnel provider
 
 职责边界：
 
-- xpod local runtime：启动本地 CSS / API，维护 loopback / LAN route，读取用户配置的 `CLOUDFLARE_TUNNEL_TOKEN`、`NGROK_AUTHTOKEN` / `NGROK_URL`、`frpc`、Tailscale 等 provider 配置，并在配置存在时确定性启动对应本机客户端。
+- xpod local runtime：启动本地 CSS / API，维护 loopback / LAN route，读取用户记录的 tunnel profiles（`XPOD_TUNNEL_PROFILES`）和当前 active profile（`XPOD_TUNNEL_ACTIVE_PROFILE_ID`），并只确定性启动当前生效的本机隧道客户端。旧的 `XPOD_TUNNEL_PROVIDER` / `NGROK_URL` / `CLOUDFLARE_TUNNEL_TOKEN` 等 env 仍作为兼容输入。
 - tunnel provider：只负责本机隧道进程，例如 `cloudflared tunnel run --token ... --url http://localhost:5737`、`ngrok http --url https://xxx.ngrok-free.dev http://127.0.0.1:5737` 或 `frpc`；provider 的公网入口是否终止 TLS 必须在 UI / 文档中明确。
 - LocalNetworkManager：做公网 IPv4/IPv6 检测和 DNS/DDNS 同步；没有公网时保持本机/局域网 route 可用，不隐式启停隧道。
 - Cloud 控制面：维护 Cloud-managed `spDomain`、节点心跳、route registry、P2P signaling、显式 relay session；不把 Cloud relay 当默认公网可达承诺。
@@ -155,7 +155,7 @@ ngrok 在 Xpod 中属于 `user-tunnel` provider，不属于 Xpod Cloud 托管数
 - xpod local 只负责启动 `ngrok http ... http://127.0.0.1:<port>`、读取 ngrok agent 暴露的 endpoint，并把它作为 `user-tunnel` route。
 - 免费 `*.ngrok-free.*` dev domain 只能作为 native/debug/临时验收 route；它不是 `node-*.undefineds.co` 的 canonical Solid browser origin。
 - 如果要让普通浏览器/Inrupt SDK 正式访问 `https://node-*.undefineds.co/`，ngrok 侧必须有 custom domain，并由 Cloud 在校验 node 归属后写 DNS CNAME；仅 CNAME 到免费 dev domain 不成立。
-- 同一 local runtime 同时只启用一个 tunnel provider；没有显式 `XPOD_TUNNEL_PROVIDER` 时，当前优先级为 ngrok → Cloudflare → SakuraFRP。
+- 同一 local runtime 可以记录多个 tunnel profile，但同一时间只启用一个 active profile。没有 `XPOD_TUNNEL_ACTIVE_PROFILE_ID` 时，兼容旧逻辑：`XPOD_TUNNEL_PROVIDER` 显式指定优先，否则按 ngrok → Cloudflare → SakuraFRP 推导。
 
 ### Cloudflare provider 边界
 

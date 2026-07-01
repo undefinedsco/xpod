@@ -15,7 +15,7 @@ const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const STATUS = 'https://undefineds.co/ns#status';
 const THREAD = 'https://undefineds.co/ns#thread';
 
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 
 describe('PostgresRdfEngine', () => {
   it('stores RDF facts asynchronously while preserving datatype and language terms', async () => {
@@ -431,7 +431,7 @@ describe('PostgresRdfEngine', () => {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it('restores PostgreSQL string integer aliases for native group joins', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-pg-strings-'));

@@ -18,6 +18,9 @@ export interface LocalTunnelProviderOptions {
   /** Cloudflare Tunnel Token (从环境变量 CLOUDFLARE_TUNNEL_TOKEN 获取) */
   tunnelToken: string;
 
+  /** Active profile public endpoint, shown in status and DDNS diagnostics. */
+  publicUrl?: string;
+
   /** cloudflared 可执行文件路径 (默认 'cloudflared') */
   cloudflaredPath?: string;
 }
@@ -38,6 +41,7 @@ export class LocalTunnelProvider implements TunnelProvider {
   private readonly logger = getLoggerFor(this);
 
   private readonly tunnelToken: string;
+  private readonly publicUrl?: string;
   private readonly cloudflaredPath: string;
 
   private process: ChildProcess | null = null;
@@ -51,6 +55,7 @@ export class LocalTunnelProvider implements TunnelProvider {
 
   constructor(options: LocalTunnelProviderOptions) {
     this.tunnelToken = options.tunnelToken;
+    this.publicUrl = normalizePublicEndpoint(options.publicUrl);
     this.cloudflaredPath = options.cloudflaredPath ?? 'cloudflared';
   }
 
@@ -64,7 +69,7 @@ export class LocalTunnelProvider implements TunnelProvider {
     const config: TunnelConfig = {
       subdomain: 'local', // 占位符，实际域名由 Cloudflare Tunnel 配置决定
       provider: 'cloudflare',
-      endpoint: '', // 实际 endpoint 由 Cloudflare Tunnel 配置决定
+      endpoint: this.publicUrl ?? '', // 实际 endpoint 由 Cloudflare Tunnel 配置决定
       originUrl: `${localProtocol}://127.0.0.1:${options.localPort}`,
       tunnelToken: this.tunnelToken,
     };
@@ -347,5 +352,20 @@ export class LocalTunnelProvider implements TunnelProvider {
    */
   isManagedByUs(): boolean {
     return this.managedByUs;
+  }
+}
+
+function normalizePublicEndpoint(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return undefined;
+    }
+    return url.toString().replace(/\/+$/u, '') + '/';
+  } catch {
+    return value.trim();
   }
 }

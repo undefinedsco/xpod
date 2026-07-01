@@ -50,6 +50,34 @@ function resolveAccessBaseUrl(
   return env.CSS_BASE_URL || ddnsData?.baseUrl || fqdnToHttpsUrl(ddnsData?.fqdn) || fallback;
 }
 
+function resolveActiveTunnelUrl(env: Record<string, string>, provider: string, activeProfileId: string): string {
+  const profileUrl = resolveActiveTunnelProfileUrl(env.XPOD_TUNNEL_PROFILES, activeProfileId);
+  if (profileUrl) return profileUrl;
+
+  switch (provider) {
+    case 'ngrok': return env.NGROK_URL || '未配置';
+    case 'cloudflare': return env.CLOUDFLARE_TUNNEL_URL || env.XPOD_TUNNEL_PUBLIC_URL || '未配置';
+    case 'sakura_frp': return env.SAKURA_TUNNEL_URL || env.XPOD_TUNNEL_PUBLIC_URL || '未配置';
+    case 'frp': return env.FRP_TUNNEL_URL || '未配置';
+    default: return '未配置';
+  }
+}
+
+function resolveActiveTunnelProfileUrl(rawProfiles: string | undefined, activeProfileId: string): string {
+  if (!rawProfiles || !activeProfileId || activeProfileId === 'none') return '';
+  try {
+    const profiles = JSON.parse(rawProfiles) as unknown;
+    if (!Array.isArray(profiles)) return '';
+    const profile = profiles.find((item) => {
+      return item && typeof item === 'object' && !Array.isArray(item) && (item as Record<string, unknown>).id === activeProfileId;
+    }) as Record<string, unknown> | undefined;
+    const publicUrl = typeof profile?.publicUrl === 'string' ? profile.publicUrl.trim() : '';
+    return publicUrl || '';
+  } catch {
+    return '';
+  }
+}
+
 async function loadStatusSnapshot(): Promise<StatusSnapshot> {
   const [servicesData, adminData, configData, ddnsData] = await Promise.all([
     getGatewayStatus(),
@@ -260,8 +288,9 @@ export function StatusPage() {
   const allServicesRunning = cssState === 'healthy' && apiState === 'healthy';
   const env = config?.env ?? {};
   const tunnelProvider = env.XPOD_TUNNEL_PROVIDER || ddnsStatus?.tunnelProvider || 'none';
+  const activeTunnelProfileId = env.XPOD_TUNNEL_ACTIVE_PROFILE_ID || tunnelProvider;
   const baseUrl = resolveAccessBaseUrl(env, ddnsStatus, window.location.origin);
-  const tunnelUrl = env.NGROK_URL || env.XPOD_TUNNEL_PUBLIC_URL || env.FRP_TUNNEL_URL || '未配置';
+  const tunnelUrl = resolveActiveTunnelUrl(env, tunnelProvider, activeTunnelProfileId);
 
   const routes = useMemo<RouteRow[]>(() => {
     const publicState: HealthState = publicIpCheck?.status === 'pass'
@@ -307,7 +336,7 @@ export function StatusPage() {
         detail: 'P2P 只作为免配置备选路径，不作为浏览器默认入口。',
       },
     ];
-  }, [allServicesRunning, baseUrl, ddnsStatus, env.CSS_PORT, publicIpCheck, services, tunnelProvider, tunnelUrl]);
+  }, [activeTunnelProfileId, allServicesRunning, baseUrl, ddnsStatus, env.CSS_PORT, publicIpCheck, services, tunnelProvider, tunnelUrl]);
 
   const overallState: HealthState = !services
     ? 'unknown'
@@ -444,6 +473,7 @@ export function StatusPage() {
           <div className="grid grid-cols-[140px_1fr] gap-2"><span className="text-muted-foreground">baseUrl</span><span className="font-mono break-all">{baseUrl}</span></div>
           <div className="grid grid-cols-[140px_1fr] gap-2"><span className="text-muted-foreground">storage</span><span className="font-mono break-all">{env.CSS_ROOT_FILE_PATH || './data'}</span></div>
           <div className="grid grid-cols-[140px_1fr] gap-2"><span className="text-muted-foreground">provider</span><span>{tunnelProvider}</span></div>
+          <div className="grid grid-cols-[140px_1fr] gap-2"><span className="text-muted-foreground">tunnelProfile</span><span>{activeTunnelProfileId}</span></div>
           <div className="grid grid-cols-[140px_1fr] gap-2"><span className="text-muted-foreground">secrets</span><span>{Object.entries(config?.secrets ?? {}).filter(([, value]) => value.configured).length} 个已配置</span></div>
         </CardContent>
       </Card>

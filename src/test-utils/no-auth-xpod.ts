@@ -25,6 +25,9 @@ export async function startNoAuthXpod(options: NoAuthXpodOptions = {}): Promise<
     rootFilePath: options.rootFilePath,
     sparqlEndpoint: options.sparqlEndpoint,
     logLevel: options.logLevel,
+    env: {
+      XPOD_LOCAL_AUTO_PROVISION: 'false',
+    },
   });
 
   return {

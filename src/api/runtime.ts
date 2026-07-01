@@ -7,6 +7,7 @@ import type { AuthContext } from './auth/AuthContext';
 import { OpenAuthMiddleware } from './middleware/OpenAuthMiddleware';
 import type { RuntimeHost } from '../runtime/host/types';
 import { EmbeddedInngestService, type EmbeddedInngestRuntimeConfig } from './runs/EmbeddedInngestService';
+import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../provision/LocalProvisionState';
 
 export interface StartApiServiceOptions {
   config?: ApiContainerConfig;
@@ -23,6 +24,22 @@ export interface ApiServiceHandle {
   stop: () => Promise<void>;
 }
 
+interface ProvisionNodeResponse {
+  nodeId?: unknown;
+  nodeToken?: unknown;
+  serviceToken?: unknown;
+  provisionCode?: unknown;
+  publicUrl?: unknown;
+  spDomain?: unknown;
+}
+
+const OFFICIAL_CLOUD_API_ORIGIN = 'https://api.undefineds.co';
+const OFFICIAL_CLOUD_IDENTITY_ORIGIN = 'https://id.undefineds.co';
+
+function ensureTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
 function initApiLogger(): void {
   const loggerFactory = new ConfigurableLoggerFactory(process.env.CSS_LOGGING_LEVEL || 'info', {
     fileName: './logs/xpod-%DATE%.log',
@@ -31,13 +48,168 @@ function initApiLogger(): void {
   setGlobalLoggerFactory(loggerFactory);
 }
 
+async function autoProvisionFirstRunLocal(
+  config: ApiContainerConfig,
+  logger: ReturnType<typeof getLoggerFor>,
+): Promise<ApiContainerConfig> {
+  if (
+    config.edition !== 'local'
+    || process.env.XPOD_LOCAL_AUTO_PROVISION === 'false'
+    || (config.nodeToken && config.serviceToken)
+  ) {
+    return config;
+  }
+
+  const cloudApiEndpoint = config.cloudApiEndpoint || OFFICIAL_CLOUD_API_ORIGIN;
+  const nodeId = config.nodeId;
+  const explicitPublicUrl = normalizeUrl(process.env.XPOD_PUBLIC_URL ?? config.publicUrl);
+  const fallbackLocalUrl = normalizeUrl(process.env.CSS_BASE_URL ?? resolveApiBaseUrl(config));
+  if (!nodeId) {
+    return config;
+  }
+
+  const requestBody: Record<string, unknown> = {
+    nodeId,
+    serviceToken: config.serviceToken,
+    domainMode: config.spDomain || !explicitPublicUrl ? 'managed' : 'self-managed',
+    spDomain: config.spDomain,
+  };
+  if (explicitPublicUrl) {
+    requestBody.publicUrl = explicitPublicUrl;
+  }
+  const localPort = readPositiveInteger(process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT);
+  if (localPort) {
+    requestBody.localPort = localPort;
+  }
+  const tunnelToken = process.env.CLOUDFLARE_TUNNEL_TOKEN ?? process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN;
+  if (tunnelToken) {
+    requestBody.tunnelToken = tunnelToken;
+    requestBody.tunnelMode = 'client';
+  }
+
+  try {
+    const endpoint = new URL('/provision/nodes', ensureTrailingSlash(cloudApiEndpoint)).toString();
+    const timeoutMs = readPositiveInteger(process.env.XPOD_LOCAL_AUTO_PROVISION_TIMEOUT_MS) ?? 5_000;
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+      signal: abortController.signal,
+    }).finally(() => clearTimeout(timeout));
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      logger.warn(`First-run Local Cloud registration failed: ${detail || `HTTP ${response.status}`}`);
+      return config;
+    }
+
+    const payload = await response.json().catch(() => undefined) as ProvisionNodeResponse | undefined;
+    if (
+      !payload
+      || typeof payload.nodeId !== 'string'
+      || typeof payload.nodeToken !== 'string'
+      || typeof payload.serviceToken !== 'string'
+      || typeof payload.provisionCode !== 'string'
+    ) {
+      logger.warn('First-run Local Cloud registration returned an incomplete response.');
+      return config;
+    }
+
+    const nodeIdIssued = payload.nodeId;
+    const nodeTokenIssued = payload.nodeToken;
+    const serviceTokenIssued = payload.serviceToken;
+    const provisionCodeIssued = payload.provisionCode;
+    const cloudIdentityUrl = resolveCloudIdentityUrl(config);
+    const nextConfig: ApiContainerConfig = {
+      ...config,
+      cloudApiEndpoint,
+      nodeId: nodeIdIssued,
+      nodeToken: nodeTokenIssued,
+      serviceToken: serviceTokenIssued,
+      provisionCode: provisionCodeIssued,
+      publicUrl: typeof payload.publicUrl === 'string' ? payload.publicUrl : explicitPublicUrl ?? fallbackLocalUrl,
+      spDomain: typeof payload.spDomain === 'string' ? payload.spDomain : config.spDomain,
+      oidcIssuer: config.oidcIssuer ?? cloudIdentityUrl,
+      localSetupPath: config.localSetupPath ?? resolveLocalSetupPath(process.env.XPOD_LOCAL_SETUP_PATH),
+      localSetupProviderId: config.localSetupProviderId ?? resolveLocalSetupProviderId(process.env.XPOD_PROVIDER_ID),
+    };
+
+    process.env.XPOD_NODE_ID = nodeIdIssued;
+    process.env.XPOD_NODE_TOKEN = nodeTokenIssued;
+    process.env.XPOD_SERVICE_TOKEN = serviceTokenIssued;
+    process.env.XPOD_PROVISION_CODE = provisionCodeIssued;
+    if (nextConfig.spDomain) {
+      process.env.XPOD_SP_DOMAIN = nextConfig.spDomain;
+    }
+    if (nextConfig.oidcIssuer) {
+      process.env.XPOD_PROVISION_URL = `${nextConfig.oidcIssuer.replace(/\/+$/u, '')}/.account/?provisionCode=${encodeURIComponent(provisionCodeIssued)}`;
+    }
+
+    upsertLocalProvisionState(nextConfig.localSetupPath!, nextConfig.localSetupProviderId!, {
+      nodeId: nodeIdIssued,
+      nodeToken: nodeTokenIssued,
+      serviceToken: serviceTokenIssued,
+      provisionCode: provisionCodeIssued,
+      publicUrl: nextConfig.publicUrl,
+      spDomain: nextConfig.spDomain,
+      cloudUrl: nextConfig.cloudApiEndpoint,
+      cloudBaseUrl: nextConfig.oidcIssuer,
+    });
+
+    logger.info(`First-run Local Cloud registration completed for ${nodeIdIssued}`);
+    return nextConfig;
+  } catch (error) {
+    logger.warn(`First-run Local Cloud registration failed: ${error}`);
+    return config;
+  }
+}
+
+function resolveCloudIdentityUrl(config: ApiContainerConfig): string | undefined {
+  if (config.oidcIssuer) {
+    return config.oidcIssuer;
+  }
+
+  try {
+    const endpoint = new URL(config.cloudApiEndpoint ?? OFFICIAL_CLOUD_API_ORIGIN);
+    const official = new URL(OFFICIAL_CLOUD_API_ORIGIN);
+    return endpoint.hostname === official.hostname ? OFFICIAL_CLOUD_IDENTITY_ORIGIN : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readPositiveInteger(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeUrl(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  try {
+    return new URL(value.trim()).toString().replace(/\/+$/u, '') + '/';
+  } catch {
+    return value.trim();
+  }
+}
+
 async function registerPrimaryServiceToken(
   container: AwilixContainer<ApiContainerCradle>,
   config: ApiContainerConfig,
   logger: ReturnType<typeof getLoggerFor>,
 ): Promise<void> {
   try {
-    const serviceToken = process.env.XPOD_SERVICE_TOKEN;
+    const serviceToken = config.serviceToken;
     if (!serviceToken || config.edition !== 'cloud') {
       return;
     }
@@ -173,7 +345,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
   }
 
   const baseConfig = options.config ?? loadConfigFromEnv();
-  const config = {
+  let config: ApiContainerConfig = {
     ...baseConfig,
     runtimeHost: options.runtimeHost ?? baseConfig.runtimeHost,
   };
@@ -184,6 +356,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
   }
 
   logger.info(`Starting API Service (edition: ${config.edition})...`);
+  config = await autoProvisionFirstRunLocal(config, logger);
 
   const embeddedInngest = await startEmbeddedInngestService(config, logger);
   const container = createApiContainer({

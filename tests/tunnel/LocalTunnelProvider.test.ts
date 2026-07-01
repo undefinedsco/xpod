@@ -77,6 +77,23 @@ describe('LocalTunnelProvider', () => {
     );
   });
 
+
+  it('uses the active profile public endpoint in setup status', async() => {
+    const provider = new LocalTunnelProvider({
+      tunnelToken: 'cf-token',
+      publicUrl: 'https://home-tunnel.example.com',
+      cloudflaredPath: 'cloudflared-test',
+    });
+
+    const config = await provider.setup({
+      subdomain: 'local',
+      localPort: 5737,
+    });
+
+    expect(config.endpoint).toBe('https://home-tunnel.example.com/');
+    expect(provider.getEndpoint()).toBe('https://home-tunnel.example.com/');
+  });
+
   it('does not treat unrelated cloudflared processes as the managed tunnel', async() => {
     const child = createMockChildProcess();
     spawnMock.mockReturnValue(child);

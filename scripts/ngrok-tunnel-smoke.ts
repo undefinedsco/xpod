@@ -7,6 +7,7 @@ interface CliOptions {
   ngrokUrl?: string;
   ngrokAuthtoken?: string;
   ngrokBin?: string;
+  ngrokAgentApiUrl?: string;
   localPort: number;
   localProtocol: 'http' | 'https';
   timeoutMs: number;
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
     authtoken: options.ngrokAuthtoken,
     url: options.ngrokUrl,
     ngrokPath: options.ngrokBin,
+    agentApiUrl: options.ngrokAgentApiUrl,
     connectTimeoutMs: options.timeoutMs,
   });
 
@@ -156,6 +158,7 @@ function parseArgs(args: string[]): CliOptions {
     ngrokUrl: values.get('ngrok-url') ?? process.env.NGROK_URL,
     ngrokAuthtoken: values.get('ngrok-authtoken') ?? process.env.NGROK_AUTHTOKEN,
     ngrokBin: values.get('ngrok-bin') ?? process.env.NGROK_BIN,
+    ngrokAgentApiUrl: values.get('ngrok-agent-api-url') ?? process.env.NGROK_AGENT_API_URL,
     localPort: readPositiveInt(values.get('local-port') ?? process.env.NGROK_LOCAL_PORT ?? process.env.CSS_PORT) ?? 3000,
     localProtocol: values.get('local-protocol') === 'https' ? 'https' : 'http',
     timeoutMs: readPositiveInt(values.get('timeout-ms')) ?? 30_000,

@@ -73,6 +73,11 @@ describe('upgraded dashboard pages', () => {
     expect(statusPage).toContain('复制状态 JSON');
     expect(statusPage).toContain('lastCheckedAt');
     expect(statusPage).toContain('resolveAccessBaseUrl');
+    expect(statusPage).toContain('resolveActiveTunnelUrl');
+    expect(statusPage).toContain('XPOD_TUNNEL_ACTIVE_PROFILE_ID');
+    expect(statusPage).toContain('XPOD_TUNNEL_PROFILES');
+    expect(statusPage).toContain('CLOUDFLARE_TUNNEL_URL');
+    expect(statusPage).toContain('SAKURA_TUNNEL_URL');
     expect(statusPage).toContain('getPublicIpCheck(resolveAccessBaseUrl(configData?.env ?? {}, ddnsData))');
     expect(statusPage).toContain('serviceRouteState');
     expect(statusPage.indexOf('<ActionNeededCard')).toBeLessThan(statusPage.indexOf('<RouteTable'));
@@ -100,12 +105,23 @@ describe('upgraded dashboard pages', () => {
     expect(adminApi).not.toContain('/service/logs/stream');
   });
 
-  it('upgrades settings with one active tunnel provider, write-only secrets and pending changes', async () => {
+  it('upgrades settings with recorded tunnel profiles, one active profile, write-only secrets and pending changes', async () => {
     const settingsPage = await readRepoFile('ui/src/pages/admin/SettingsPage.tsx');
     const secretField = await readRepoFile('ui/src/components/admin/SecretField.tsx');
 
     expect(settingsPage).toContain("type TunnelProvider = 'none' | 'ngrok' | 'cloudflare' | 'sakura_frp' | 'frp'");
     expect(settingsPage).toContain('TunnelProviderFieldSpec');
+    expect(settingsPage).toContain('TunnelProfileDraft');
+    expect(settingsPage).toContain('tunnelProfileDrafts');
+    expect(settingsPage).toContain('parseStoredTunnelProfiles');
+    expect(settingsPage).toContain('updateTunnelProfilePublicEndpoint');
+    expect(settingsPage).toContain('activeTunnelProfileId');
+    expect(settingsPage).toContain('resolveInitialActiveTunnelProfileId');
+    expect(settingsPage).toContain("tunnelProfileDrafts.find((profile) => profile.configured)?.id ?? 'none'");
+    expect(settingsPage).toContain('XPOD_TUNNEL_ACTIVE_PROFILE_ID');
+    expect(settingsPage).toContain('XPOD_TUNNEL_PROFILES');
+    expect(settingsPage).toContain('CLOUDFLARE_TUNNEL_URL');
+    expect(settingsPage).toContain('SAKURA_TUNNEL_URL');
     expect(settingsPage).toContain('publicEndpointKey');
     expect(settingsPage).toContain('credentialKey');
     expect(settingsPage).toContain('getTunnelProviderFields');
@@ -123,10 +139,13 @@ describe('upgraded dashboard pages', () => {
     expect(settingsPage).toContain('LinX');
     expect(settingsPage).toContain('高级运行时设置');
     expect(settingsPage).toContain('网络访问');
+    expect(settingsPage).toContain('已记录隧道');
+    expect(settingsPage).toContain('当前生效');
+    expect(settingsPage).toContain('设为当前');
     expect(settingsPage).toContain('managedBaseUrl');
     expect(settingsPage).toContain('ddnsStatus?.baseUrl');
     expect(settingsPage).toContain('readOnly={isManaged}');
-    expect(settingsPage.split("isManaged && ddnsStatus?.mode === 'tunnel' && tunnelProvider === 'none'").length - 1).toBeGreaterThanOrEqual(2);
+    expect(settingsPage.split("isManaged && ddnsStatus?.mode === 'tunnel' && activeTunnelProvider === 'none'").length - 1).toBeGreaterThanOrEqual(2);
     expect(settingsPage).not.toContain('ddnsStatus?.fqdn || env.CSS_BASE_URL');
     expect(settingsPage).not.toContain('value={env.CLOUDFLARE_TUNNEL_TOKEN');
     expect(settingsPage).not.toContain('label="ngrok 固定入口"');

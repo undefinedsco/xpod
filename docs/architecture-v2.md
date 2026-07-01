@@ -328,7 +328,7 @@ XPOD_SUBDOMAIN_ENABLED=true      # 提供 DDNS 服务
 
 # === CSS 配置 ===
 CSS_BASE_URL=https://id.undefineds.co
-CSS_ALLOWED_HOSTS=id.undefineds.co,pods.undefineds.co,api.undefineds.co
+CSS_ALLOWED_HOSTS=*.undefineds.co
 CSS_BASE_STORAGE_DOMAIN=undefineds.site
 CSS_PORT=6300
 CSS_SPARQL_ENDPOINT=postgresql://user:pass@host:5432/db

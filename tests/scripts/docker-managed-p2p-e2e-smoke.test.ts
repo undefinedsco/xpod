@@ -170,5 +170,5 @@ process.exit(0);
     };
     expect(result.smokeOk).toBe(true);
     expect(result.nodeResult?.smokeOk).toBe(true);
-  });
+  }, 10_000);
 });

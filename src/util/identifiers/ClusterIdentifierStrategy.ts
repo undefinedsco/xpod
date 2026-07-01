@@ -9,6 +9,8 @@ export interface ClusterIdentifierStrategyOptions {
   /**
    * 允许的额外 host 列表（用于 Docker/容器环境）
    * 可以是数组或逗号分隔的字符串，例如: ['cloud', 'idp'] 或 "cloud,idp,localhost"
+   * 支持一层通配符后缀，例如 "*.undefineds.co" 匹配 "node-0000.undefineds.co"，
+   * 但不匹配 apex "undefineds.co" 或 "undefineds.co.evil.test"。
    */
   allowedHosts?: string[] | string;
 }
@@ -54,7 +56,7 @@ export class ClusterIdentifierStrategy extends BaseIdentifierStrategy {
       : typeof hostsInput === 'string' && hostsInput.length > 0
         ? hostsInput.split(',').map(h => h.trim())
         : [];
-    this.allowedHosts = hostsArray.map(h => h.toLowerCase());
+    this.allowedHosts = hostsArray.map(h => h.toLowerCase()).filter(Boolean);
     this.logger.info(`ClusterIdentifierStrategy initialized: baseUrl=${this.baseUrl}, baseHost=${this.baseHost}, allowedHosts=[${this.allowedHosts.join(', ')}]`);
   }
 
@@ -64,7 +66,7 @@ export class ClusterIdentifierStrategy extends BaseIdentifierStrategy {
       const host = target.hostname.toLowerCase();
 
       // 检查是否在允许的 hosts 列表中
-      if (this.allowedHosts.includes(host)) {
+      if (this.isAllowedHost(host)) {
         this.logger.debug(`supportsIdentifier: ${identifier.path} -> true (allowedHosts match: ${host})`);
         return true;
       }
@@ -88,6 +90,26 @@ export class ClusterIdentifierStrategy extends BaseIdentifierStrategy {
       this.logger.warn(`Failed to parse identifier ${identifier.path}: ${(error as Error).message}`);
       return false;
     }
+  }
+
+  private isAllowedHost(host: string): boolean {
+    return this.allowedHosts.some((allowedHost) => {
+      if (allowedHost === host) {
+        return true;
+      }
+
+      if (!allowedHost.startsWith('*.')) {
+        return false;
+      }
+
+      const suffix = allowedHost.slice(1);
+      if (host.length <= suffix.length || !host.endsWith(suffix)) {
+        return false;
+      }
+
+      const wildcardLabel = host.slice(0, -suffix.length);
+      return wildcardLabel.length > 0 && !wildcardLabel.includes('.');
+    });
   }
 
   public override isRootContainer(identifier: ResourceIdentifier): boolean {

@@ -14,6 +14,7 @@ import type { SubdomainService } from '../../subdomain/SubdomainService';
 import type { SubdomainClient } from '../../subdomain/SubdomainClient';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider } from '../../tunnel/TunnelProvider';
+import type { ActiveTunnelProvider, TunnelProfile } from '../../tunnel/TunnelProfiles';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
@@ -103,8 +104,38 @@ export interface ApiContainerConfig {
   /** 节点 Token (local 托管式，调用 Cloud API 的认证) */
   nodeToken?: string;
 
+  /** Local SP service token（Cloud 回调 Local、Local 服务级 API 的唯一服务凭据） */
+  serviceToken?: string;
+
+  /** 已签发的 provisionCode（Local 首次注册/刷新后持久化恢复） */
+  provisionCode?: string;
+
+  /** Local canonical public URL（通常来自 CSS_BASE_URL，也可从 setup 恢复） */
+  publicUrl?: string;
+
+  /** Cloud 分配或用户指定的 SP 域名 */
+  spDomain?: string;
+
+  /** Local setup/provision 状态文件路径 */
+  localSetupPath?: string;
+
+  /** Local setup/provision 状态文件中的 provider key */
+  localSetupProviderId?: string;
+
   /** OIDC Issuer URL (local 托管式，使用 Cloud IdP) */
   oidcIssuer?: string;
+
+  /** Active tunnel provider after resolving profile selection. */
+  tunnelProvider?: ActiveTunnelProvider;
+
+  /** Recorded tunnel profiles. Only tunnelActiveProfileId/activeTunnelProfile takes effect at runtime. */
+  tunnelProfiles?: TunnelProfile[];
+
+  /** Selected tunnel profile id. */
+  tunnelActiveProfileId?: string;
+
+  /** Selected tunnel profile. */
+  activeTunnelProfile?: TunnelProfile;
 
   /** Cloudflare Tunnel Token (local 托管式/自管式，启动 cloudflared) */
   cloudflareTunnelToken?: string;

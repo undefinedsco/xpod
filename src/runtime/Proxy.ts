@@ -228,13 +228,29 @@ export class GatewayProxy {
     if (!host) {
       return false;
     }
-    if (host.startsWith('api.')) {
+    if (host.startsWith('api.') || host.startsWith('registry.')) {
       return true;
     }
 
-    const configuredHost = this.hostFromUrl(process.env.XPOD_CLOUD_API_ENDPOINT)
-      ?? this.hostFromUrl(process.env.XPOD_PUBLIC_API_URL);
-    return Boolean(configuredHost && host === configuredHost);
+    const configuredHosts = this.configuredApiHosts();
+    return configuredHosts.includes(host);
+  }
+
+  private configuredApiHosts(): string[] {
+    return [
+      process.env.XPOD_CLOUD_API_ENDPOINT,
+      process.env.XPOD_PUBLIC_API_URL,
+      process.env.XPOD_PUBLIC_REGISTRY_URL,
+    ]
+      .flatMap((value) => this.hostsFromUrlList(value))
+      .filter((host): host is string => Boolean(host));
+  }
+
+  private hostsFromUrlList(value: string | undefined): Array<string | undefined> {
+    if (!value) {
+      return [];
+    }
+    return value.split(',').map((entry) => this.hostFromUrl(entry.trim()));
   }
 
   private hostFromUrl(value: string | undefined): string | undefined {

@@ -137,7 +137,11 @@ urn:solid-server:default:variable:xxx
 | frpServerHost | XPOD_FRP_SERVER_HOST | FRP服务器地址 | 可选 | - |
 | frpToken | XPOD_FRP_TOKEN | FRP认证Token | 可选 | - |
 | cloudflareTunnelToken | CLOUDFLARE_TUNNEL_TOKEN | 用户自带 Cloudflare Tunnel token，只在 local runtime 使用 | local:user-tunnel | - |
-| tunnelProvider | XPOD_TUNNEL_PROVIDER | 本机隧道 provider 选择（ngrok/cloudflare/sakura-frp/none） | 可选 | - |
+| tunnelProvider | XPOD_TUNNEL_PROVIDER | 当前生效隧道 provider（兼容旧配置；新配置由 active profile 推导） | local:user-tunnel | none |
+| tunnelActiveProfileId | XPOD_TUNNEL_ACTIVE_PROFILE_ID | 当前生效 tunnel profile id；只能有一个 profile 生效 | local:user-tunnel | - |
+| tunnelProfiles | XPOD_TUNNEL_PROFILES | 已记录 tunnel profiles JSON（只存 provider、publicUrl、credentialEnvKey，不存 secret 值） | local:user-tunnel | - |
+| cloudflareTunnelUrl | CLOUDFLARE_TUNNEL_URL | Cloudflare Tunnel 公开入口；替代旧共享 XPOD_TUNNEL_PUBLIC_URL | local:user-tunnel | - |
+| sakuraTunnelUrl | SAKURA_TUNNEL_URL | Sakura FRP 公开入口；替代旧共享 XPOD_TUNNEL_PUBLIC_URL | local:user-tunnel | - |
 | ngrokAuthToken | NGROK_AUTHTOKEN | ngrok 本机 authtoken，只在 local runtime 使用 | local:user-tunnel | - |
 | ngrokUrl | NGROK_URL | ngrok 固定 dev domain 或 custom domain | local:user-tunnel | - |
 | ngrokPath | NGROK_BIN | ngrok 可执行文件路径 | 可选 | "ngrok" |
@@ -383,6 +387,10 @@ CSS_LOGGING_LEVEL=debug yarn cloud
 | frpProtocol | XPOD_FRP_PROTOCOL | EnvExtractor | "tcp" | - |
 | cloudflareTunnelToken | CLOUDFLARE_TUNNEL_TOKEN | API env | - | - |
 | tunnelProvider | XPOD_TUNNEL_PROVIDER | API env | - | - |
+| tunnelActiveProfileId | XPOD_TUNNEL_ACTIVE_PROFILE_ID | API env | - | - |
+| tunnelProfiles | XPOD_TUNNEL_PROFILES | API env | - | - |
+| cloudflareTunnelUrl | CLOUDFLARE_TUNNEL_URL | API env | - | - |
+| sakuraTunnelUrl | SAKURA_TUNNEL_URL | API env | - | - |
 | ngrokAuthToken | NGROK_AUTHTOKEN | API env | - | - |
 | ngrokUrl | NGROK_URL | API env | - | - |
 | ngrokPath | NGROK_BIN | API env | "ngrok" | - |

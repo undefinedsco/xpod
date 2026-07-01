@@ -23,6 +23,9 @@ export interface SakuraFrpTunnelProviderOptions {
   /** SakuraFRP Token (从环境变量 SAKURA_TUNNEL_TOKEN 获取) */
   token: string;
 
+  /** Active profile public endpoint, shown in status and DDNS diagnostics. */
+  publicUrl?: string;
+
   /** frpc 可执行文件路径 (默认 'frpc') */
   frpcPath?: string;
 
@@ -40,6 +43,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
   private readonly logger = getLoggerFor(this);
 
   private readonly token: string;
+  private readonly publicUrl?: string;
   private readonly frpcPath: string;
   private readonly serverAddr?: string;
 
@@ -53,6 +57,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
 
   constructor(options: SakuraFrpTunnelProviderOptions) {
     this.token = options.token;
+    this.publicUrl = normalizePublicEndpoint(options.publicUrl);
     this.frpcPath = options.frpcPath ?? 'frpc';
     this.serverAddr = options.serverAddr;
   }
@@ -66,7 +71,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     const config: TunnelConfig = {
       subdomain: 'sakura',
       provider: 'sakura-frp',
-      endpoint: '',
+      endpoint: this.publicUrl ?? '',
       tunnelToken: this.token,
     };
 
@@ -81,7 +86,7 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
     const actualConfig = config ?? {
       subdomain: 'sakura',
       provider: 'sakura-frp' as const,
-      endpoint: '',
+      endpoint: this.publicUrl ?? '',
       tunnelToken: this.token,
     };
 
@@ -259,5 +264,20 @@ export class SakuraFrpTunnelProvider implements TunnelProvider {
 
   isManagedByUs(): boolean {
     return this.managedByUs;
+  }
+}
+
+function normalizePublicEndpoint(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return undefined;
+    }
+    return url.toString().replace(/\/+$/u, '') + '/';
+  } catch {
+    return value.trim();
   }
 }

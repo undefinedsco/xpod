@@ -13,6 +13,10 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
     'NGROK_AUTHTOKEN',
     'NGROK_URL',
     'NGROK_BIN',
+    'XPOD_TUNNEL_PROFILES',
+    'XPOD_TUNNEL_ACTIVE_PROFILE_ID',
+    'XPOD_TUNNEL_PROVIDER',
+    'CLOUDFLARE_TUNNEL_TOKEN',
   ] as const;
 
   const saved: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
@@ -60,6 +64,53 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
 
     process.env.CSS_AUTH_MODE = 'wac';
     expect(loadConfigFromEnv().authMode).toBe('acl');
+  });
+
+
+
+  it('loads multiple tunnel profiles and keeps only the selected one active', () => {
+    process.env.XPOD_TUNNEL_PROFILES = JSON.stringify([
+      {
+        id: 'ngrok-dev',
+        provider: 'ngrok',
+        publicUrl: 'https://native.ngrok-free.dev',
+        credentialEnvKey: 'NGROK_AUTHTOKEN',
+      },
+      {
+        id: 'cloudflare-home',
+        provider: 'cloudflare',
+        publicUrl: 'https://home-tunnel.example.com',
+        credentialEnvKey: 'CLOUDFLARE_TUNNEL_TOKEN',
+      },
+    ]);
+    process.env.XPOD_TUNNEL_ACTIVE_PROFILE_ID = 'cloudflare-home';
+    process.env.NGROK_AUTHTOKEN = 'ngrok-token';
+    process.env.CLOUDFLARE_TUNNEL_TOKEN = 'cf-token';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.tunnelProfiles?.map((profile) => profile.id)).toEqual(['ngrok-dev', 'cloudflare-home']);
+    expect(config.tunnelActiveProfileId).toBe('cloudflare-home');
+    expect(config.activeTunnelProfile).toMatchObject({
+      id: 'cloudflare-home',
+      provider: 'cloudflare',
+      publicUrl: 'https://home-tunnel.example.com/',
+    });
+  });
+
+
+  it('keeps legacy tunnel auto-selection when only old ngrok env is configured', () => {
+    process.env.NGROK_URL = 'https://native.ngrok-free.dev';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.tunnelProvider).toBe('ngrok');
+    expect(config.tunnelActiveProfileId).toBe('ngrok');
+    expect(config.activeTunnelProfile).toMatchObject({
+      id: 'ngrok',
+      provider: 'ngrok',
+      publicUrl: 'https://native.ngrok-free.dev/',
+    });
   });
 
   it('reads user-owned tunnel provider credentials from local environment only', () => {

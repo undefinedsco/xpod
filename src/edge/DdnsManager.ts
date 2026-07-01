@@ -22,7 +22,7 @@ export interface DdnsManagerOptions {
   autoAllocate?: boolean;
 
   // Local tunnel provider preference (best-effort hint for Cloud).
-  tunnelProvider?: 'cloudflare' | 'sakura_frp' | 'ngrok' | 'none';
+  tunnelProvider?: 'cloudflare' | 'sakura_frp' | 'ngrok' | 'frp' | 'none';
 }
 
 export class DdnsManager {
@@ -33,7 +33,7 @@ export class DdnsManager {
   private readonly localPort?: number;
   private readonly intervalMs: number;
   private readonly autoAllocate: boolean;
-  private readonly tunnelProvider: 'cloudflare' | 'sakura_frp' | 'ngrok' | 'none';
+  private readonly tunnelProvider: 'cloudflare' | 'sakura_frp' | 'ngrok' | 'frp' | 'none';
 
   private interval?: NodeJS.Timeout;
   private allocated = false;

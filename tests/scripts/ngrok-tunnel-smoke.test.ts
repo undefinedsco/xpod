@@ -82,12 +82,21 @@ describe('ngrok tunnel smoke script', () => {
 
     try {
       await execFileAsync('bun', [
-        'scripts/ngrok-tunnel-smoke.ts',
-        '--test-server',
-        '--ngrok-bin', fakeNgrok,
-        '--local-port', '35076',
-        '--timeout-ms', '1000',
-      ], { cwd: root, timeout: 8_000 });
+      'scripts/ngrok-tunnel-smoke.ts',
+      '--test-server',
+      '--ngrok-bin', fakeNgrok,
+      '--ngrok-agent-api-url', 'http://127.0.0.1:1',
+      '--local-port', '35076',
+      '--timeout-ms', '1000',
+    ], {
+      cwd: root,
+      timeout: 8_000,
+      env: {
+        ...process.env,
+        NGROK_URL: '',
+        NGROK_AUTHTOKEN: '',
+      },
+    });
       throw new Error('expected smoke command to fail');
     } catch (error) {
       const stdout = (error as { stdout?: string }).stdout ?? '';
@@ -104,7 +113,7 @@ describe('ngrok tunnel smoke script', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   it('retries the public endpoint until the ngrok edge routes to the local server', async () => {
     let attempts = 0;
@@ -138,6 +147,7 @@ describe('ngrok tunnel smoke script', () => {
       const { stdout } = await execFileAsync('bun', [
         'scripts/ngrok-tunnel-smoke.ts',
         '--ngrok-bin', fakeNgrok,
+        '--ngrok-agent-api-url', 'http://127.0.0.1:1',
         '--local-port', '35077',
         '--timeout-ms', '5000',
       ], {
@@ -145,6 +155,8 @@ describe('ngrok tunnel smoke script', () => {
         timeout: 8_000,
         env: {
           ...process.env,
+          NGROK_URL: '',
+          NGROK_AUTHTOKEN: '',
           XPOD_FAKE_NGROK_ENDPOINT: `http://127.0.0.1:${proxyPort}`,
         },
       });
@@ -156,7 +168,7 @@ describe('ngrok tunnel smoke script', () => {
       await closeServer(proxy);
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 });
 
 function listen(server: Server): Promise<void> {

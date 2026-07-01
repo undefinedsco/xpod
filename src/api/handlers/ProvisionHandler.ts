@@ -6,15 +6,13 @@
  * POST /provision/nodes  - SP 注册（公开，无需认证）
  *   返回 nodeId、nodeToken、serviceToken、provisionCode（自包含 JWT）
  *
- * provisionCode 是自包含 token，编码了 SP 的 publicUrl 和 serviceToken。
+ * provisionCode 是自包含 token，编码了 SP 的 publicUrl 和短期 serviceAccessToken。
  * CSS 侧的 ProvisionPodCreator 解码后直接回调 SP，不需要查数据库。
  *
  * GET /provision/status  - Local 端 SP 状态查询（公开）
  *   返回 SP 配置状态，供 Linx 查询
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import type { ServerResponse, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
@@ -24,6 +22,8 @@ import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { DnsProvider } from '../../dns/DnsProvider';
 import type { TunnelProvider, TunnelConfig } from '../../tunnel/TunnelProvider';
 import { ProvisionCodeCodec } from '../../provision/ProvisionCodeCodec';
+import { createServiceAccessToken } from '../../provision/ServiceAccessTokenCodec';
+import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../../provision/LocalProvisionState';
 
 export interface ProvisionHandlerOptions {
   repository: EdgeNodeRepository;
@@ -36,10 +36,13 @@ export interface ProvisionHandlerOptions {
   baseStorageDomain?: string;
   /** provisionCode 有效期（秒），默认 24 小时 */
   provisionCodeTtl?: number;
+  /** Cloud → Local 回调 access token 有效期（秒），默认 15 分钟 */
+  serviceAccessTokenTtl?: number;
 }
 
 /** 默认 24 小时 */
 const DEFAULT_TTL = 24 * 60 * 60;
+const DEFAULT_SERVICE_ACCESS_TOKEN_TTL = 15 * 60;
 const PROVISION_STATUS_REFRESH_GRACE_SECONDS = 5 * 60;
 
 export function registerProvisionRoutes(
@@ -49,6 +52,7 @@ export function registerProvisionRoutes(
   const logger = getLoggerFor('ProvisionHandler');
   const { repository, baseUrl, baseStorageDomain } = options;
   const ttl = options.provisionCodeTtl ?? DEFAULT_TTL;
+  const serviceAccessTokenTtl = options.serviceAccessTokenTtl ?? DEFAULT_SERVICE_ACCESS_TOKEN_TTL;
   const codec = new ProvisionCodeCodec(baseUrl);
 
   /**
@@ -178,13 +182,23 @@ export function registerProvisionRoutes(
         });
       }
 
-      // 生成自包含 provisionCode（编码了 SP 信息，CSS 解码后直接回调 SP）
+      // 生成自包含 provisionCode（编码 SP 信息和短期 serviceAccessToken，长期 serviceToken 只保留给 Local 持久化/刷新）
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const accessTtl = Math.min(ttl, serviceAccessTokenTtl);
+      const serviceAccessTokenExp = nowSeconds + accessTtl;
+      const serviceAccessToken = createServiceAccessToken({
+        serviceToken: result.serviceToken,
+        subject: result.nodeId,
+        scopes: ['pod:provision', 'webid:lookup'],
+        expiresAt: serviceAccessTokenExp,
+      });
       const provisionCode = codec.encode({
         spUrl: provisionSpUrl,
-        serviceToken: result.serviceToken,
+        serviceAccessToken,
+        serviceAccessTokenExp,
         nodeId: result.nodeId,
         spDomain,
-        exp: Math.floor(Date.now() / 1000) + ttl,
+        exp: serviceAccessTokenExp,
       });
 
       logger.info(`Registered SP node ${result.nodeId} at ${provisionSpUrl}${spDomain ? `, spDomain: ${spDomain}` : ''}`);
@@ -562,7 +576,7 @@ export function registerProvisionStatusRoute(
   let refreshPromise: Promise<void> | undefined;
 
   server.get('/provision/status', async (_request, response) => {
-    const registered = Boolean(options.nodeId && options.cloudUrl);
+    const registered = Boolean(options.nodeId && options.nodeToken && options.cloudUrl);
 
     const body: Record<string, unknown> = {
       registered,
@@ -640,14 +654,10 @@ export function createLocalSetupProvisionStateWriter(
   setupPath: string | undefined,
   providerId: string | undefined,
 ): ProvisionStatusOptions['persistState'] | undefined {
-  if (!setupPath?.trim() || !providerId?.trim()) {
-    return undefined;
-  }
-
-  const targetPath = path.resolve(setupPath);
-  const targetProviderId = providerId.trim();
+  const targetPath = resolveLocalSetupPath(setupPath);
+  const targetProviderId = resolveLocalSetupProviderId(providerId);
   return async (state): Promise<void> => {
-    upsertLocalSetupFile(targetPath, targetProviderId, state);
+    upsertLocalProvisionState(targetPath, targetProviderId, state);
   };
 }
 
@@ -674,66 +684,6 @@ async function persistProvisionStatusState(
   } catch (error) {
     logger.warn(`Failed to persist refreshed local provision state: ${error}`);
   }
-}
-
-function upsertLocalSetupFile(
-  filePath: string,
-  providerId: string,
-  state: ProvisionStatusStateUpdate,
-): void {
-  const existing = readJsonObjectFile(filePath);
-  const previous = readJsonObject(existing[providerId]);
-  const cloudIdentityUrl = normalizeUrl(state.cloudBaseUrl);
-  const cloudApiUrl = normalizeUrl(state.cloudUrl);
-  const provisionUrl = cloudIdentityUrl
-    ? `${cloudIdentityUrl.replace(/\/+$/u, '')}/.account/?provisionCode=${encodeURIComponent(state.provisionCode)}`
-    : readString(previous.provisionUrl);
-
-  existing[providerId] = {
-    ...previous,
-    nodeId: state.nodeId,
-    nodeToken: state.nodeToken,
-    serviceToken: state.serviceToken,
-    provisionCode: state.provisionCode,
-    publicUrl: normalizeUrl(state.publicUrl),
-    spDomain: readString(state.spDomain),
-    provisionUrl,
-    cloudIdentityUrl,
-    cloudApiUrl,
-    registeredAt: typeof previous.registeredAt === 'number' && Number.isFinite(previous.registeredAt)
-      ? previous.registeredAt
-      : Date.now(),
-  };
-
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(existing, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // Some filesystems do not support chmod; the local runtime can still proceed.
-  }
-}
-
-function readJsonObjectFile(filePath: string): Record<string, unknown> {
-  try {
-    if (!fs.existsSync(filePath)) {
-      return {};
-    }
-
-    return readJsonObject(JSON.parse(fs.readFileSync(filePath, 'utf8')));
-  } catch {
-    return {};
-  }
-}
-
-function readJsonObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 interface ProvisionStatusState {

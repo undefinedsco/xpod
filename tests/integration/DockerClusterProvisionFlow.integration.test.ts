@@ -4,7 +4,7 @@
  * 测试完整的 SP 注册 + Pod Provisioning 流程:
  * 1. SP (Local) 向 Cloud 注册 → 获取 nodeId, nodeToken, serviceToken, provisionCode
  * 2. Cloud 回调 SP 创建 Pod → POST /provision/pods
- * 3. provisionCode 自包含 JWT 可被 Cloud 解码
+ * 3. provisionCode 自包含 JWT 可被 Cloud 解码，且只包含短期 serviceAccessToken
  *
  * 前置条件:
  *   COMPOSE_FILE=docker-compose.cluster.yml docker compose up --build -d
@@ -15,6 +15,7 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
+import { verifyServiceAccessToken } from '../../src/provision/ServiceAccessTokenCodec';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '45');
@@ -242,8 +243,14 @@ suite('Provision Flow (IdP + SP)', () => {
 
       expect(payload).toBeDefined();
       expect(payload!.spUrl).toBe(LOCAL_BASE_URL);
-      expect(payload!.serviceToken).toBe(LOCAL_SERVICE_TOKEN);
-      expect(payload!.serviceToken).toBe(body.serviceToken);
+      expect(body.serviceToken).toBe(LOCAL_SERVICE_TOKEN);
+      expect(payload!.serviceToken).toBeUndefined();
+      expect(payload!.serviceAccessToken).toMatch(/^sat-/);
+      expect(payload!.serviceAccessTokenExp).toBeGreaterThan(Math.floor(Date.now() / 1000));
+      expect(verifyServiceAccessToken(payload!.serviceAccessToken, {
+        serviceToken: LOCAL_SERVICE_TOKEN,
+        requiredScope: 'pod:provision',
+      }).valid).toBe(true);
       expect(payload!.nodeId).toBe(body.nodeId);
       expect(payload!.exp).toBeGreaterThan(Math.floor(Date.now() / 1000));
 
@@ -360,7 +367,7 @@ suite('Provision Flow (IdP + SP)', () => {
   // ==========================================
   describe('End-to-end: Register SP → Create Pod', () => {
     it('should complete full provision flow', async () => {
-      // 1. SP 注册（传入 SP 自己的 serviceToken，Cloud 存储后编码进 provisionCode）
+      // 1. SP 注册（传入 SP 自己的 serviceToken，Cloud 存储 hash，provisionCode 只带短期 access token）
       const registerRes = await fetch(`${CLOUD_BASE_URL}/provision/nodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -387,19 +394,20 @@ suite('Provision Flow (IdP + SP)', () => {
       const codec = new ProvisionCodeCodec(`${CLOUD_BASE_URL}/`);
       const payload = codec.decode(registration.provisionCode);
       expect(payload).toBeDefined();
-      // provisionCode 里的 serviceToken 必须和 SP 的一致
-      expect(payload!.serviceToken).toBe(LOCAL_SERVICE_TOKEN);
+      // provisionCode 不能泄露长期 serviceToken，只能携带短期 serviceAccessToken
+      expect(payload!.serviceToken).toBeUndefined();
+      expect(payload!.serviceAccessToken).toMatch(/^sat-/);
 
       console.log(`  2. provisionCode decoded: spUrl=${payload!.spUrl}`);
 
-      // 3. 用 provisionCode 解码出的 serviceToken 回调 SP 创建 Pod
-      // 这是真实场景：Cloud ProvisionPodCreator 解码 provisionCode → 用里面的 serviceToken 回调 SP
+      // 3. 用 provisionCode 解码出的 serviceAccessToken 回调 SP 创建 Pod
+      // 这是真实场景：Cloud ProvisionPodCreator 解码 provisionCode → 用短期 access token 回调 SP
       const podName = `e2e-${Date.now().toString(36)}`;
       const createRes = await fetch(`${payload!.spUrl}/provision/pods`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${payload!.serviceToken}`,
+          'Authorization': `Bearer ${payload!.serviceAccessToken}`,
         },
         body: JSON.stringify({ podName }),
       });
@@ -412,7 +420,7 @@ suite('Provision Flow (IdP + SP)', () => {
       // 清理（也用 provisionCode 里的 token）
       await fetch(`${payload!.spUrl}/provision/pods/${podName}`, {
         method: 'DELETE',
-        headers: { 'Authorization': `Bearer ${payload!.serviceToken}` },
+        headers: { 'Authorization': `Bearer ${payload!.serviceAccessToken}` },
       });
 
       console.log('  ✓ Full provision flow completed');

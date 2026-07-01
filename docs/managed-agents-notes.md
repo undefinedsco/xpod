@@ -23,6 +23,14 @@
 2. Agent Runtime 应该是无状态的: 接收 command + context refs，执行，事件和结果写回 Pod。
 3. Symphony 以后可以消费 xpod 的 Chat/Task/Run/Message，但不应该决定 xpod 第一阶段的数据模型。
 
+## Local Agent 授权
+
+本机 Agent Runtime 的最小授权闭环不引入独立 Agent JWT。当前最小口径：ChatKit session/thread 携带 `workspace`，Run 继承用户上下文；xpod 本地服务级调用复用既有 `serviceToken` 作为长期根凭据。`serviceToken` 是 `svc-` 前缀的不透明服务凭据，Cloud 注册时只保存 hash，Local 通过配置/本机 setup 持有明文。
+
+Cloud 不把长期 `serviceToken` 写入 `provisionCode`。需要 Cloud 回调 Local 时，Cloud 用长期 `serviceToken` 签发短期 `serviceAccessToken`（`sat-` 前缀），并把 `serviceAccessToken` / `serviceAccessTokenExp` 写入 `provisionCode`；Local 用本机长期 `serviceToken` 做无状态校验。默认有效期 15 分钟，过期后 Local 的 `/provision/status` 负责刷新新的 `provisionCode`。不要在 MVP 阶段新增 `/v1/agents/access-tokens` 或 Agent JWKS。
+
+Local 首次启动时不要求用户手填 `nodeToken` / `serviceToken`。API runtime 会用默认 Cloud API `https://api.undefineds.co` 调用 `/provision/nodes` 注册本机节点，拿到长期 `serviceToken` 后写入本机 setup 文件（默认 `${CSS_ROOT_FILE_PATH}/.xpod-cloud-registration.json`，key 默认 `local`），并在本次启动内立即启用 `/provision/pods` / `/provision/webids`。如果 Cloud 暂不可达，Local 注册请求默认 5 秒超时后放弃，不阻塞启动，状态页保持未注册，下一次启动或刷新路径继续尝试；纯 standalone / hermetic 测试可设置 `XPOD_LOCAL_AUTO_PROVISION=false`。
+
 ## Reconciler / Wake / Runtime 边界
 
 群聊里的 AI 响应不应由 ChatKit、Matrix 或其它协议适配器直接决定。协议层只负责把输入写成共享 `Message` 事实；是否需要 Agent 回应由独立的 `ReconcilerService` 判断。详细边界见 [Reconciler / Wake / Agent Runtime Boundary](reconciler-wake-runtime.md)。

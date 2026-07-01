@@ -81,7 +81,7 @@ export function isServiceAuth(ctx: AuthContext): ctx is ServiceAuthContext {
 }
 
 /**
- * Check if a service auth context has the required scope
+ * Check if a service auth context has the required scope.
  */
 export function hasScope(ctx: AuthContext, scope: string): boolean {
   return ctx.type === 'service' && ctx.scopes.includes(scope);

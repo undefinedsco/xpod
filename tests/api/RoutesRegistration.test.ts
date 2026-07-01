@@ -63,11 +63,11 @@ describe('registerRoutes mode wiring', () => {
 
   function createContainer(
     edition: 'cloud' | 'local',
-    overrides: { inngestRuntimeConfig?: unknown } = {},
+    overrides: { inngestRuntimeConfig?: unknown; config?: Partial<ApiContainerConfig> } = {},
   ): any {
     const services: Record<string, unknown> = {
       apiServer: mockServer,
-      config: { ...baseConfig, edition },
+      config: { ...baseConfig, edition, ...overrides.config },
       nodeRepo: {},
       chatService: {},
       chatKitService: {},
@@ -180,6 +180,24 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['POST /v1/nodes/:nodeId/relay-sessions']).toBeUndefined();
     expect(routes['ALL /api/inngest']).toBeTypeOf('function');
     expect(routes['POST /provision/pods']).toBeUndefined();
+    expect(routes['POST /v1/agents/access-tokens']).toBeUndefined();
+    expect(routes['GET /v1/agents/jwks']).toBeUndefined();
+  });
+
+
+  it('registers Local provision routes from the auto-provisioned config service token', () => {
+    registerRoutes(createContainer('local', {
+      config: {
+        serviceToken: 'svc-issued-by-cloud',
+        nodeId: 'local-node-1',
+        nodeToken: 'node-token-issued-by-cloud',
+      },
+    }));
+
+    expect(routes['POST /provision/pods']).toBeTypeOf('function');
+    expect(routes['GET /provision/pods/:podName']).toBeTypeOf('function');
+    expect(routes['DELETE /provision/pods/:podName']).toBeTypeOf('function');
+    expect(routes['GET /provision/status']).toBeTypeOf('function');
   });
 
   it('does not expose the public Inngest callback route when Inngest is disabled', () => {

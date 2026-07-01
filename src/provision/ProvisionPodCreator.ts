@@ -189,12 +189,16 @@ export class ProvisionPodCreator extends BasePodCreator {
     this.provisionLogger.info(`Provisioning pod on remote SP: ${payload.spUrl}`);
 
     // 2. 回调 SP 创建 Pod
+    const callbackToken = payload.serviceAccessToken ?? payload.serviceToken;
+    if (!callbackToken) {
+      throw new Error('Invalid or expired provisionCode');
+    }
     const callbackUrl = `${payload.spUrl.replace(/\/$/, '')}/provision/pods`;
     const spResponse = await fetch(callbackUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${payload.serviceToken}`,
+        'Authorization': `Bearer ${callbackToken}`,
       },
       body: JSON.stringify({ podName, webId }),
     });

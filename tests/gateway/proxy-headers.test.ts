@@ -230,4 +230,16 @@ describe('GatewayProxy Matrix routing', () => {
       'GET /custom-protocol/status',
     ]));
   });
+
+  it('routes registry host traffic to the API server without rewriting the public host', async () => {
+    const registryHostResponse = await fetch(`http://127.0.0.1:${proxyPort}/nodes/node-0000`, {
+      headers: { 'x-forwarded-host': 'registry.example.com' },
+    });
+
+    expect(await registryHostResponse.text()).toBe('api:/nodes/node-0000');
+    expect(registryHostResponse.headers.get('x-seen-forwarded-host')).toBe('registry.example.com');
+    expect(seenByApi).toEqual(expect.arrayContaining([
+      'GET /nodes/node-0000',
+    ]));
+  });
 });

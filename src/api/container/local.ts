@@ -13,6 +13,8 @@ import { SubdomainClient } from '../../subdomain/SubdomainClient';
 import { LocalTunnelProvider } from '../../tunnel/LocalTunnelProvider';
 import { NgrokTunnelProvider } from '../../tunnel/NgrokTunnelProvider';
 import { SakuraFrpTunnelProvider } from '../../tunnel/SakuraFrpTunnelProvider';
+
+const DEFAULT_CLOUD_API_ENDPOINT = 'https://api.undefineds.co';
 import { CloudflareDnsProvider } from '../../dns/cloudflare/CloudflareDnsProvider';
 import { SubdomainService } from '../../subdomain/SubdomainService';
 import { EdgeNodeDnsCoordinator } from '../../edge/EdgeNodeDnsCoordinator';
@@ -20,6 +22,7 @@ import { EdgeNodeCapabilityDetector } from '../../edge/EdgeNodeCapabilityDetecto
 import { LocalNetworkManager } from '../../edge/LocalNetworkManager';
 import { DdnsManager } from '../../edge/DdnsManager';
 import type { TunnelProvider, TunnelStatus } from '../../tunnel/TunnelProvider';
+import { selectActiveTunnelProfile, type ActiveTunnelProvider, type TunnelProfile } from '../../tunnel/TunnelProfiles';
 import { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
 
 /**
@@ -48,20 +51,22 @@ export function registerLocalServices(
     }).singleton(),
   });
 
-  // 1. 注册 Tunnel Provider。只启用一个 provider；ngrok 是用户自带隧道，不由 Xpod Cloud 托管数据面。
-  const activeTunnelProvider = resolveLocalTunnelProvider({
+  // 1. 注册 Tunnel Provider。可记录多个 profile，但只启用 active profile；ngrok 是用户自带隧道，不由 Xpod Cloud 托管数据面。
+  const activeTunnel = resolveActiveLocalTunnel({
+    config,
     cloudflareTunnelToken,
     sakuraTunnelToken,
     ngrokAuthToken,
     ngrokUrl,
   });
+  const activeTunnelProvider = activeTunnel.provider;
 
   if (activeTunnelProvider === 'ngrok') {
     container.register({
       localTunnelProvider: asFunction(() => {
         return new NgrokTunnelProvider({
           authtoken: ngrokAuthToken,
-          url: ngrokUrl,
+          url: activeTunnel.profile?.publicUrl ?? ngrokUrl,
           ngrokPath,
         });
       }).singleton(),
@@ -72,6 +77,7 @@ export function registerLocalServices(
       localTunnelProvider: asFunction(() => {
         return new LocalTunnelProvider({
           tunnelToken: cloudflareTunnelToken!,
+          publicUrl: activeTunnel.profile?.publicUrl,
         });
       }).singleton(),
     });
@@ -81,6 +87,7 @@ export function registerLocalServices(
       localTunnelProvider: asFunction(() => {
         return new SakuraFrpTunnelProvider({
           token: sakuraTunnelToken!,
+          publicUrl: activeTunnel.profile?.publicUrl,
         });
       }).singleton(),
     });
@@ -165,8 +172,20 @@ export function registerLocalServices(
     // 继续进行后续逻辑，不要 return，因为用户可能既用了自管 DNS 又开启了 Managed Client
   }
 
-  // 独立式：没有配置 Node Token，用户自己管理域名和 IdP
+  // 首次托管式：Cloud endpoint 已配置，但 Cloud 尚未下发 Node Token。
+  // XPOD_NODE_TOKEN 是 Cloud /provision/nodes 返回的持久凭据，不能要求用户手填。
   if (!nodeToken) {
+    const effectiveCloudApiEndpoint = cloudApiEndpoint || DEFAULT_CLOUD_API_ENDPOINT;
+    if (effectiveCloudApiEndpoint) {
+      console.log('[Local] Managed setup pending (waiting for Cloud-issued XPOD_NODE_TOKEN)');
+      console.log(`[Local] Cloud API endpoint: ${effectiveCloudApiEndpoint}`);
+      console.log('[Local] LinX/local setup should persist Cloud-issued nodeId/nodeToken/serviceToken before DDNS starts');
+      if (activeTunnelProvider !== 'none') {
+        console.log(`[Local] Tunnel provider configured for provisioning: ${activeTunnelProvider}`);
+      }
+      return;
+    }
+
     console.log('[Local] Standalone mode (no XPOD_NODE_TOKEN)');
     console.log('[Local] User manages DNS and IdP externally');
     if (activeTunnelProvider !== 'none') {
@@ -176,10 +195,10 @@ export function registerLocalServices(
   }
 
   // 托管式：有 Node Token，连接 Cloud。Node token 是不透明凭据，不能承载用户名/子域名语义。
-  const effectiveCloudApiEndpoint = cloudApiEndpoint || 'https://pods.undefineds.co';
+  const effectiveCloudApiEndpoint = cloudApiEndpoint || DEFAULT_CLOUD_API_ENDPOINT;
   const effectiveLocalPort = parseInt(process.env.XPOD_MAIN_PORT || process.env.CSS_PORT || '3000', 10);
   const managedSubdomain = nodeId || 'auto';
-  const tunnelProviderHint: 'cloudflare' | 'sakura_frp' | 'ngrok' | 'none' = activeTunnelProvider;
+  const tunnelProviderHint: 'cloudflare' | 'sakura_frp' | 'ngrok' | 'frp' | 'none' = activeTunnelProvider;
 
   container.register({
     subdomainClient: asFunction(() => {
@@ -223,13 +242,49 @@ export function registerLocalServices(
 }
 
 
-function resolveLocalTunnelProvider(options: {
+function resolveActiveLocalTunnel(options: {
+  config: ApiContainerConfig;
   cloudflareTunnelToken?: string;
   sakuraTunnelToken?: string;
   ngrokAuthToken?: string;
   ngrokUrl?: string;
-}): 'cloudflare' | 'sakura_frp' | 'ngrok' | 'none' {
-  const explicit = process.env.XPOD_TUNNEL_PROVIDER?.trim().toLowerCase();
+}): { provider: ActiveTunnelProvider; profile?: TunnelProfile } {
+  const configuredState = selectActiveTunnelProfile(
+    options.config.tunnelProfiles ?? [],
+    options.config.tunnelActiveProfileId,
+  );
+  if (configuredState.activeProfile) {
+    return {
+      provider: configuredState.activeProvider,
+      profile: configuredState.activeProfile,
+    };
+  }
+  if (options.config.activeTunnelProfile) {
+    return {
+      provider: options.config.activeTunnelProfile.provider,
+      profile: options.config.activeTunnelProfile,
+    };
+  }
+
+  return {
+    provider: resolveLocalTunnelProvider({
+      explicit: options.config.tunnelProvider ?? process.env.XPOD_TUNNEL_PROVIDER,
+      cloudflareTunnelToken: options.cloudflareTunnelToken,
+      sakuraTunnelToken: options.sakuraTunnelToken,
+      ngrokAuthToken: options.ngrokAuthToken,
+      ngrokUrl: options.ngrokUrl,
+    }),
+  };
+}
+
+function resolveLocalTunnelProvider(options: {
+  explicit?: string;
+  cloudflareTunnelToken?: string;
+  sakuraTunnelToken?: string;
+  ngrokAuthToken?: string;
+  ngrokUrl?: string;
+}): ActiveTunnelProvider {
+  const explicit = options.explicit?.trim().toLowerCase();
   if (explicit) {
     if (explicit === 'cloudflare') {
       return options.cloudflareTunnelToken ? 'cloudflare' : 'none';
@@ -239,6 +294,9 @@ function resolveLocalTunnelProvider(options: {
     }
     if (explicit === 'ngrok') {
       return 'ngrok';
+    }
+    if (explicit === 'frp') {
+      return 'frp';
     }
     return 'none';
   }

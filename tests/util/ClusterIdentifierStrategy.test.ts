@@ -23,6 +23,20 @@ describe('ClusterIdentifierStrategy', () => {
     expect(strategy.supportsIdentifier(identifier('https://fakeclusterexample.com/'))).toBe(false);
   });
 
+  it('accepts wildcard allowed host entries only for matching subdomains', () => {
+    const strategy = new ClusterIdentifierStrategy({
+      baseUrl: 'https://id.undefineds.co/',
+      allowedHosts: '*.undefineds.co',
+    });
+
+    expect(strategy.supportsIdentifier(identifier('https://node-0000.undefineds.co/alice/'))).toBe(true);
+    expect(strategy.supportsIdentifier(identifier('https://registry.undefineds.co/nodes/node-0000'))).toBe(true);
+    expect(strategy.supportsIdentifier(identifier('https://deep.node-0000.undefineds.co/alice/'))).toBe(false);
+    expect(strategy.supportsIdentifier(identifier('https://undefineds.co/'))).toBe(false);
+    expect(strategy.supportsIdentifier(identifier('https://fakeundefineds.co/'))).toBe(false);
+    expect(strategy.supportsIdentifier(identifier('https://undefineds.co.evil.test/'))).toBe(false);
+  });
+
   it('treats path-based pods on the base host as storage roots', () => {
     const strategy = new ClusterIdentifierStrategy({ baseUrl: 'https://cluster.example.com/' });
     expect(strategy.isRootContainer(identifier('https://cluster.example.com/'))).toBe(true);

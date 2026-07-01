@@ -33,6 +33,7 @@ import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeReposito
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
 import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
+import { verifyServiceAccessToken } from '../../provision/ServiceAccessTokenCodec';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
 
@@ -206,7 +207,6 @@ function registerLocalRoutes(
 
   // Admin API (配置管理、重启)
   registerAdminRoutes(server);
-
   // DDNS status (托管式 Local 模式)
   try {
     const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;
@@ -228,13 +228,13 @@ function registerLocalRoutes(
 
   // Pod Provision API (SP 端，供 Cloud 回调创建 Pod)
   try {
+    const config = container.resolve('config') as ApiContainerConfig;
     // rootDir: CSS 数据目录，默认 ./data
     const rootDir = process.env.CSS_ROOT_FILE_PATH || './data';
     // serviceToken 验证：从 SP 配置中读取
-    const expectedServiceToken = process.env.XPOD_SERVICE_TOKEN;
+    const expectedServiceToken = config.serviceToken;
 
     if (expectedServiceToken) {
-      const config = container.resolve('config') as ApiContainerConfig;
       const baseUrl = process.env.CSS_BASE_URL || 'http://localhost:3000/';
       const sparqlEndpoint = process.env.CSS_SPARQL_ENDPOINT || process.env.SPARQL_ENDPOINT;
       const identityDbUrl = process.env.CSS_IDENTITY_DB_URL || process.env.DATABASE_URL;
@@ -252,14 +252,17 @@ function registerLocalRoutes(
 
       registerPodManagementRoutes(server, {
         rootDir,
-        verifyServiceToken: async (token: string) => token === expectedServiceToken,
+        verifyServiceToken: async (token: string) => (
+          token === expectedServiceToken
+          || verifyServiceAccessToken(token, { serviceToken: expectedServiceToken }).valid
+        ),
         provisioningService,
         podLookupRepository: container.resolve('podLookupRepo', { allowUnregistered: true }),
         storageProviderBaseUrl: baseUrl,
       });
       console.log(`[Local] Pod provision routes registered (/provision/pods, /provision/webids, ${provisioningService ? 'css-compatible' : 'directory-only'})`);
     } else {
-      console.log('[Local] Pod provision routes not registered (XPOD_SERVICE_TOKEN not configured)');
+      console.log('[Local] Pod provision routes not registered (serviceToken not configured)');
     }
   } catch (error) {
     console.log(`[Local] Pod provision routes not registered: ${error}`);
@@ -272,16 +275,16 @@ function registerLocalRoutes(
       cloudUrl: config.cloudApiEndpoint,
       nodeId: config.nodeId,
       nodeToken: config.nodeToken,
-      serviceToken: process.env.XPOD_SERVICE_TOKEN,
-      publicUrl: process.env.CSS_BASE_URL,
-      spDomain: process.env.XPOD_SP_DOMAIN,
+      serviceToken: config.serviceToken,
+      publicUrl: process.env.XPOD_PUBLIC_URL ?? config.publicUrl ?? process.env.CSS_BASE_URL,
+      spDomain: process.env.XPOD_SP_DOMAIN ?? config.spDomain,
       localPort: readPositiveInteger(process.env.CSS_PORT ?? process.env.XPOD_PORT ?? process.env.PORT),
       tunnelToken: process.env.CLOUDFLARE_TUNNEL_TOKEN ?? process.env.SAKURA_TUNNEL_TOKEN ?? process.env.SAKURA_TOKEN,
       cloudBaseUrl: config.oidcIssuer || config.cloudApiEndpoint,
-      provisionCode: process.env.XPOD_PROVISION_CODE,
+      provisionCode: process.env.XPOD_PROVISION_CODE ?? config.provisionCode,
       persistState: createLocalSetupProvisionStateWriter(
-        process.env.XPOD_LOCAL_SETUP_PATH,
-        process.env.XPOD_PROVIDER_ID,
+        config.localSetupPath,
+        config.localSetupProviderId,
       ),
     });
     console.log('[Local] Provision status route registered (/provision/status)');

@@ -696,7 +696,8 @@ export class EdgeNodeRepository {
     const nodeId = options.nodeId || randomUUID();
     const nodeToken = options.nodeToken || randomBytes(32).toString('base64url');
     const nodeTokenHash = createHash('sha256').update(nodeToken).digest('hex');
-    const serviceToken = options.serviceToken || randomBytes(32).toString('base64url');
+    const serviceToken = options.serviceToken || `svc-${randomBytes(32).toString('base64url')}`;
+    const serviceTokenHash = createHash('sha256').update(serviceToken).digest('hex');
     const now = new Date();
     const ts = toDbTimestamp(this.db, now);
 
@@ -707,7 +708,7 @@ export class EdgeNodeRepository {
         connectivity_status, created_at, updated_at
       )
       VALUES (
-        ${nodeId}, ${options.displayName ?? null}, ${nodeTokenHash}, ${serviceToken},
+        ${nodeId}, ${options.displayName ?? null}, ${nodeTokenHash}, ${serviceTokenHash},
         'sp', ${options.publicUrl}, 'unknown', ${ts}, ${ts}
       )
       ON CONFLICT (id) DO UPDATE SET

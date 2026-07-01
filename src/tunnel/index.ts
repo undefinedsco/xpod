@@ -19,3 +19,15 @@ export {
   NgrokTunnelProvider,
   type NgrokTunnelProviderOptions,
 } from './NgrokTunnelProvider';
+
+export type {
+  ActiveTunnelProvider,
+  TunnelProfile,
+  TunnelProfileProvider,
+  TunnelProfileState,
+} from './TunnelProfiles';
+
+export {
+  resolveTunnelProfileState,
+  selectActiveTunnelProfile,
+} from './TunnelProfiles';

@@ -67,7 +67,7 @@ export function registerCommonServices(
       }
 
       return new LocalSetupServiceTokenRepository({
-        token: process.env.XPOD_SERVICE_TOKEN,
+        token: config.serviceToken,
         serviceType: 'local',
         serviceId: config.nodeId ?? 'local-1',
         scopes: ['quota:write', 'usage:read', 'account:manage'],
@@ -92,8 +92,8 @@ export function registerCommonServices(
       });
 
       return new MultiAuthenticator({
-        // Order: Solid DPoP → Service Token → Node Token → Client Credentials
-        // ServiceTokenAuthenticator handles 'svc-' prefix, so no ambiguity
+        // Order: Solid DPoP → Service Token → Node Token → Client Credentials.
+        // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [solidAuthenticator, serviceTokenAuthenticator, nodeTokenAuthenticator, clientCredAuthenticator],
       });
     }).singleton(),
