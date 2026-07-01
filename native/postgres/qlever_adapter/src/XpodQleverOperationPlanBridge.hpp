@@ -793,7 +793,10 @@ inline std::optional<BridgeQueryPlan> planFilterOperation(Filter& operation) {
       descriptor.data() + prefix.size(), descriptor.size() - prefix.size());
   if (!applyNotEqualFilterDescriptor(*plan, expression) &&
       !applyEqualFilterDescriptor(*plan, expression)) {
-    return std::nullopt;
+    if (!plan->root.native_result_only) {
+      return std::nullopt;
+    }
+    plan->descriptor = descriptor + " -> " + plan->descriptor;
   }
   return plan;
 }

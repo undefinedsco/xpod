@@ -4554,3 +4554,56 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.
+
+### Task 111: Let upstream QLever apply aggregate HAVING filters
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `docs/rdf-engine-spec.md`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add aggregate HAVING regression gates**
+
+The focused operation-plan smoke now constructs an upstream-shaped `Filter` over a native-result-only aggregate `GroupBy` child:
+
+```cpp
+Filter(
+  GroupBy(child, {}, { Alias{Variable{"?count"}} }),
+  sparqlExpression::SparqlExpressionPimpl{"(COUNT(?o) > 1)"})
+```
+
+The expected bridge metadata keeps the root as `GroupBy`, records the public aggregate output variable `count`, preserves `native_result_only`, and includes `Filter` in the descriptor so runtime/profile output still shows the aggregate filter shape.
+
+The linked real-runtime smoke now issues:
+
+```sparql
+SELECT ?p (COUNT(?o) AS ?count)
+WHERE { ?s ?p ?o }
+GROUP BY ?p
+HAVING(COUNT(?o) > 1)
+ORDER BY ?p
+```
+
+and requires only `urn:p` with count `2`, excluding `urn:p2` with count `1`.
+
+Observed before implementation: the focused smoke failed at the aggregate filter gate (`return 313`, shell exit `57`).
+
+- [x] **Step 2: Keep HAVING evaluation QLever-owned**
+
+`planFilterOperation(...)` still handles only the bounded equality / inequality descriptor subset for normal RDF result trees. Unsupported filter descriptors continue to fail closed unless the child plan is already `native_result_only`; in that aggregate case the bridge only prefixes the descriptor and returns the child metadata. Direct upstream `QueryExecutionTree::getResult(true)` has already executed QLever's aggregate `HAVING` expression, so duplicating it in the bridge would create a second expression/aggregate evaluator.
+
+This does not change the product boundary. QLever-compatible native acceleration remains Cloud Enterprise-only. Local deployments do not expose the QLever-compatible adapter or runtime selector; local/native tests only compile fixture or patched-upstream gates for the Cloud Enterprise protocol.
+
+- [x] **Step 3: Verify focused and linked runtime behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.

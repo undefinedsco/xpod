@@ -986,6 +986,78 @@ int main() {
   }
   xpod_qlever_adapter_release_result(adapter, &count_result);
 
+  xpod_qlever_query_request having_count_request = {};
+  having_count_request.sparql = bytes(
+      "SELECT ?p (COUNT(?o) AS ?count) WHERE { ?s ?p ?o } GROUP BY ?p HAVING(COUNT(?o) > 1) ORDER BY ?p");
+  xpod_qlever_query_result having_count_result = {};
+  status = xpod_qlever_adapter_query_request(
+      adapter, &having_count_request, &having_count_result);
+  std::string_view having_count_json(
+      having_count_result.result_json.data,
+      having_count_result.result_json.size);
+  std::string_view having_count_profile(
+      having_count_result.profile_json.data,
+      having_count_result.profile_json.size);
+  std::string_view having_count_error(
+      having_count_result.error_message.data,
+      having_count_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "having count query failed: %.*s\n",
+                 static_cast<int>(having_count_error.size()),
+                 having_count_error.data());
+    return 105;
+  }
+  if (having_count_json.find(R"("head":{"vars":["p","count"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "having count head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(having_count_json.size()),
+                 having_count_json.data(),
+                 static_cast<int>(having_count_profile.size()),
+                 having_count_profile.data());
+    return 106;
+  }
+  if (having_count_json.find("urn:p") == std::string_view::npos) {
+    std::fprintf(stderr, "having count missing urn:p json=%.*s profile=%.*s\n",
+                 static_cast<int>(having_count_json.size()),
+                 having_count_json.data(),
+                 static_cast<int>(having_count_profile.size()),
+                 having_count_profile.data());
+    return 107;
+  }
+  if (having_count_json.find("urn:p2") != std::string_view::npos) {
+    std::fprintf(stderr, "having count leaked urn:p2 json=%.*s profile=%.*s\n",
+                 static_cast<int>(having_count_json.size()),
+                 having_count_json.data(),
+                 static_cast<int>(having_count_profile.size()),
+                 having_count_profile.data());
+    return 108;
+  }
+  if (having_count_json.find(R"("value":"2")") == std::string_view::npos) {
+    std::fprintf(stderr, "having count missing value 2 json=%.*s profile=%.*s\n",
+                 static_cast<int>(having_count_json.size()),
+                 having_count_json.data(),
+                 static_cast<int>(having_count_profile.size()),
+                 having_count_profile.data());
+    return 109;
+  }
+  if (having_count_json.find("http://www.w3.org/2001/XMLSchema#integer") == std::string_view::npos) {
+    std::fprintf(stderr, "having count missing integer datatype json=%.*s profile=%.*s\n",
+                 static_cast<int>(having_count_json.size()),
+                 having_count_json.data(),
+                 static_cast<int>(having_count_profile.size()),
+                 having_count_profile.data());
+    return 110;
+  }
+  if (having_count_profile.find("Filter") == std::string_view::npos ||
+      having_count_profile.find("GroupBy") == std::string_view::npos) {
+    std::fprintf(stderr, "having count missing Filter/GroupBy profile json=%.*s profile=%.*s\n",
+                 static_cast<int>(having_count_json.size()),
+                 having_count_json.data(),
+                 static_cast<int>(having_count_profile.size()),
+                 having_count_profile.data());
+    return 111;
+  }
+  xpod_qlever_adapter_release_result(adapter, &having_count_result);
+
   xpod_qlever_query_request scalar_count_request = {};
   scalar_count_request.sparql = bytes(
       "SELECT (COUNT(?s) AS ?count) WHERE { ?s ?p ?o }");

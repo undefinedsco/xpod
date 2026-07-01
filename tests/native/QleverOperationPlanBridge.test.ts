@@ -703,6 +703,24 @@ int main() {
       scalar_group_plan->output_variables[0] != "count") return 303;
   if (scalar_group_plan->result_width != 1) return 304;
 
+  auto scalar_group_tree = std::make_shared<QueryExecutionTree>(
+      std::make_shared<GroupBy>(
+          nullptr,
+          group_child,
+          std::vector<Variable>{},
+          GroupBy::Aliases{Alias{Variable{"?count"}}}));
+  Filter aggregate_filter_operation(
+      scalar_group_tree,
+      sparqlExpression::SparqlExpressionPimpl{"(COUNT(?o) > 1)"});
+  auto aggregate_filter_plan =
+      xpod::qlever::planQleverOperation(aggregate_filter_operation);
+  if (!aggregate_filter_plan.has_value()) return 313;
+  if (aggregate_filter_plan->root.kind != xpod::qlever::BridgeOperationKind::GroupBy) return 314;
+  if (!aggregate_filter_plan->root.native_result_only) return 315;
+  if (aggregate_filter_plan->output_variables.size() != 1 ||
+      aggregate_filter_plan->output_variables[0] != "count") return 316;
+  if (aggregate_filter_plan->descriptor.find("Filter") == std::string::npos) return 317;
+
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;
   auto entity_plan = xpod::qlever::planQleverOperation(fixed_entity_operation);
