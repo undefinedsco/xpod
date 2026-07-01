@@ -4607,3 +4607,49 @@ bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream 
 ```
 
 Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.
+
+### Task 112: Let upstream QLever BIND project expression columns
+
+**Files:**
+- Modify: `native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp`
+- Modify: `scripts/check-qlever-real-runtime.cjs`
+- Modify: `tests/native/QleverOperationPlanBridge.test.ts`
+- Modify: `tests/native/qleverFakeHeaders.ts`
+- Modify: `docs/rdf-engine-spec.md`
+- Modify: `docs/superpowers/specs/2026-06-29-qlever-compatible-rdf-physical-backend-protocol-design.md`
+
+- [x] **Step 1: Add BIND regression gates**
+
+The focused operation-plan smoke now constructs an upstream-shaped `Bind` over an `IndexScan` child:
+
+```cpp
+Bind(child, parsedQuery::Bind{SparqlExpressionPimpl{"?s"}, Variable{"?copy"}})
+```
+
+The expected bridge metadata appends public output variable `copy`, increments `result_width`, and keeps `BIND` in the descriptor. The linked real-runtime smoke now issues:
+
+```sparql
+SELECT ?s ?copy WHERE { ?s ?p ?o BIND(?s AS ?copy) } ORDER BY ?s
+```
+
+and requires both `?s` and `?copy` to serialize as `urn:s` for the matching row.
+
+Observed before implementation: the focused smoke failed at the BIND gate (`return 318`, shell exit `62`) because `planQleverOperation(...)` did not recognize upstream `Bind` roots.
+
+- [x] **Step 2: Keep expression execution QLever-owned**
+
+`planBindOperation(...)` unwraps the child plan, appends the target variable from `operation.bind()._target`, records the descriptor, and marks the plan `native_result_only`. Direct upstream `QueryExecutionTree::getResult(true)` executes the BIND expression and produces the extra column. The compatibility fallback executor deliberately does not implement BIND expressions, because doing so would create a second SPARQL expression engine inside Xpod.
+
+This remains a Cloud Enterprise-only native seam. Local deployments do not expose the QLever-compatible adapter or runtime selector; local/native tests only compile fixture or patched-upstream gates for the Cloud Enterprise protocol.
+
+- [x] **Step 3: Verify focused and linked runtime behavior**
+
+Run:
+
+```bash
+bun test tests/native/QleverOperationPlanBridge.test.ts --run
+bun run check:qlever-real-adapter -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --jobs 2
+bun run check:qlever-real-runtime -- --qlever-source .test-data/qlever-upstream --qlever-build-dir .test-data/qlever-full-build --adapter-build-dir .test-data/qlever-real-adapter-build --runtime-build-dir .test-data/qlever-real-runtime-build --skip-prerequisites
+```
+
+Observed: PASS locally. The linked runtime smoke passed with expected local linker/runtime warnings only.

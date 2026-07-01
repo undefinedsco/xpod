@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeFilterHeader, fakeGroupByHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeMultiColumnJoinHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
+import { fakeBindHeader, fakeCartesianProductJoinHeader, fakeDistinctHeader, fakeFilterHeader, fakeGroupByHeader, fakeIndexScanHeader, fakeJoinHeader, fakeLimitOffsetHeader, fakeMinusHeader, fakeMultiColumnJoinHeader, fakeNeutralElementOperationHeader, fakeOptionalJoinHeader, fakeOrderByHeader, fakeParsedQueryHeader, fakeQueryExecutionTreeHeader, fakeQueryPlannerHeader, fakeSortHeader, fakeSparqlTripleHeader, fakeTextIndexScanForWordHeader, fakeTextIndexScanForEntityHeader, fakeTextLimitHeader, fakeUnionHeader } from './qleverFakeHeaders';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const operationPlanHeader = path.join(repoRoot, 'native/postgres/qlever_adapter/src/XpodQleverOperationPlanBridge.hpp');
@@ -250,6 +250,7 @@ class Operation {
       await writeFile(path.join(qleverSource, 'src/engine/OptionalJoin.h'), fakeOptionalJoinHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Distinct.h'), fakeDistinctHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Filter.h'), fakeFilterHeader, 'utf8');
+      await writeFile(path.join(qleverSource, 'src/engine/Bind.h'), fakeBindHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/GroupBy.h'), fakeGroupByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/OrderBy.h'), fakeOrderByHeader, 'utf8');
       await writeFile(path.join(qleverSource, 'src/engine/Sort.h'), fakeSortHeader, 'utf8');
@@ -325,6 +326,7 @@ class IndexScan final : public Operation {
 #include "engine/OptionalJoin.h"
 #include "engine/Distinct.h"
 #include "engine/Filter.h"
+#include "engine/Bind.h"
 #include "engine/GroupBy.h"
 #include "engine/OrderBy.h"
 #include "engine/Sort.h"
@@ -720,6 +722,22 @@ int main() {
   if (aggregate_filter_plan->output_variables.size() != 1 ||
       aggregate_filter_plan->output_variables[0] != "count") return 316;
   if (aggregate_filter_plan->descriptor.find("Filter") == std::string::npos) return 317;
+
+  auto bind_child = std::make_shared<QueryExecutionTree>(
+      std::make_shared<IndexScan>());
+  Bind bind_operation(
+      bind_child,
+      parsedQuery::Bind{
+          sparqlExpression::SparqlExpressionPimpl{"?s"},
+          Variable{"?copy"}});
+  auto bind_plan = xpod::qlever::planQleverOperation(bind_operation);
+  if (!bind_plan.has_value()) return 318;
+  if (bind_plan->output_variables.size() != 3) return 319;
+  if (bind_plan->output_variables[0] != "o" ||
+      bind_plan->output_variables[1] != "s" ||
+      bind_plan->output_variables[2] != "copy") return 320;
+  if (bind_plan->result_width != 3) return 321;
+  if (bind_plan->descriptor.find("BIND") == std::string::npos) return 322;
 
   TextIndexScanForEntity fixed_entity_scan("native-first", "<urn:entity>");
   const Operation& fixed_entity_operation = fixed_entity_scan;

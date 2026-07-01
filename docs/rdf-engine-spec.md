@@ -930,12 +930,13 @@ QLever-compatible 数据层边界单独定义在
 SPO 事实源。
 
 当前 QLever-compatible native seam 已能在 Cloud Enterprise-only 的真实 upstream runtime smoke 中执行
-`GROUP BY COUNT`、`GROUP BY ... HAVING(COUNT(...) > ...)` 和无 group key 的 scalar `COUNT`：
+`BIND(?s AS ?copy)`、`GROUP BY COUNT`、`GROUP BY ... HAVING(COUNT(...) > ...)` 和无 group key 的 scalar `COUNT`：
 patched upstream `GroupBy` 会在 Xpod physical index 注入时跳过 QLever-native permutation/stat
 shortcut，改为聚合 Xpod-backed `IndexScan` / join 结果；aggregate `HAVING` 仍由 upstream QLever
 执行，Xpod 只对 native-result-only 聚合子树保留 `Filter` 元数据，避免重写一套表达式/聚合执行器。
-聚合产生的 QLever inline numeric `Id` 序列化为 typed literal，RDF grouping key 仍经 Xpod term
-dictionary 解析。local 不因此获得 QLever adapter 或 runtime selector。
+`BIND` 表达式同样由 upstream QLever 计算，Xpod 只补输出变量 metadata 以便 serialization；聚合产生的
+QLever inline numeric `Id` 序列化为 typed literal，RDF grouping key 仍经 Xpod term dictionary
+解析。local 不因此获得 QLever adapter 或 runtime selector。
 
 路径处理分两层：
 

@@ -109,6 +109,13 @@
 #define XPOD_QLEVER_HAS_FILTER 0
 #endif
 
+#if __has_include("engine/Bind.h")
+#include "engine/Bind.h"
+#define XPOD_QLEVER_HAS_BIND 1
+#else
+#define XPOD_QLEVER_HAS_BIND 0
+#endif
+
 #if __has_include("engine/OrderBy.h")
 #include "engine/OrderBy.h"
 #define XPOD_QLEVER_HAS_ORDER_BY 1
@@ -802,6 +809,27 @@ inline std::optional<BridgeQueryPlan> planFilterOperation(Filter& operation) {
 }
 #endif
 
+#if XPOD_QLEVER_HAS_BIND
+inline std::optional<BridgeQueryPlan> planBindOperation(Bind& operation) {
+  std::vector<QueryExecutionTree*> children = operation.getChildren();
+  if (children.size() != 1 || children[0] == nullptr) {
+    return std::nullopt;
+  }
+  auto plan = planQleverExecutionTree(*children[0]);
+  if (!plan.has_value()) {
+    return std::nullopt;
+  }
+  if (operation.getResultWidth() != plan->output_variables.size() + 1) {
+    return std::nullopt;
+  }
+  plan->descriptor = operation.getDescriptor() + " -> " + plan->descriptor;
+  plan->output_variables.push_back(bridgeVariableName(operation.bind()._target));
+  plan->result_width = plan->output_variables.size();
+  plan->root.native_result_only = true;
+  return plan;
+}
+#endif
+
 #if XPOD_QLEVER_HAS_ORDER_BY
 inline std::optional<BridgeQueryPlan> planOrderByOperation(
     const OrderBy& operation) {
@@ -1271,6 +1299,12 @@ inline std::optional<BridgeQueryPlan> planQleverOperation(
   auto* filter = dynamic_cast<Filter*>(const_cast<Operation*>(&operation));
   if (filter != nullptr) {
     return planFilterOperation(*filter);
+  }
+#endif
+#if XPOD_QLEVER_HAS_BIND
+  auto* bind = dynamic_cast<Bind*>(const_cast<Operation*>(&operation));
+  if (bind != nullptr) {
+    return planBindOperation(*bind);
   }
 #endif
 #if XPOD_QLEVER_HAS_TEXT_INDEX_SCAN_FOR_WORD

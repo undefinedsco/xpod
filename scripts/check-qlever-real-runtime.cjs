@@ -579,6 +579,48 @@ int main() {
   if (modifier_profile.find("OrderBy") == std::string_view::npos) return 28;
   xpod_qlever_adapter_release_result(adapter, &modifier_result);
 
+  xpod_qlever_query_request bind_request = {};
+  bind_request.sparql = bytes(
+      "SELECT ?s ?copy WHERE { ?s ?p ?o BIND(?s AS ?copy) } ORDER BY ?s");
+  xpod_qlever_query_result bind_result = {};
+  status = xpod_qlever_adapter_query_request(adapter, &bind_request, &bind_result);
+  std::string_view bind_json(
+      bind_result.result_json.data, bind_result.result_json.size);
+  std::string_view bind_profile(
+      bind_result.profile_json.data, bind_result.profile_json.size);
+  std::string_view bind_error(
+      bind_result.error_message.data, bind_result.error_message.size);
+  if (status != XPOD_RDF_STATUS_OK) {
+    std::fprintf(stderr, "bind query failed: %.*s\n",
+                 static_cast<int>(bind_error.size()), bind_error.data());
+    return 112;
+  }
+  if (bind_json.find(R"("head":{"vars":["s","copy"]})") == std::string_view::npos) {
+    std::fprintf(stderr, "bind head mismatch json=%.*s profile=%.*s\n",
+                 static_cast<int>(bind_json.size()), bind_json.data(),
+                 static_cast<int>(bind_profile.size()), bind_profile.data());
+    return 113;
+  }
+  if (bind_json.find(R"("s":{"type":"uri","value":"urn:s"})") == std::string_view::npos) {
+    std::fprintf(stderr, "bind missing s binding json=%.*s profile=%.*s\n",
+                 static_cast<int>(bind_json.size()), bind_json.data(),
+                 static_cast<int>(bind_profile.size()), bind_profile.data());
+    return 114;
+  }
+  if (bind_json.find(R"("copy":{"type":"uri","value":"urn:s"})") == std::string_view::npos) {
+    std::fprintf(stderr, "bind missing copied binding json=%.*s profile=%.*s\n",
+                 static_cast<int>(bind_json.size()), bind_json.data(),
+                 static_cast<int>(bind_profile.size()), bind_profile.data());
+    return 115;
+  }
+  if (bind_profile.find("BIND") == std::string_view::npos) {
+    std::fprintf(stderr, "bind missing BIND profile json=%.*s profile=%.*s\n",
+                 static_cast<int>(bind_json.size()), bind_json.data(),
+                 static_cast<int>(bind_profile.size()), bind_profile.data());
+    return 116;
+  }
+  xpod_qlever_adapter_release_result(adapter, &bind_result);
+
   xpod_qlever_query_request union_request = {};
   union_request.sparql = bytes(
       "SELECT DISTINCT ?x WHERE { { ?x ?p ?o } UNION { ?s ?p2 ?x } } ORDER BY ?x");

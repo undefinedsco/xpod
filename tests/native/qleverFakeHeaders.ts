@@ -119,6 +119,15 @@ struct Values {
   SparqlValues _inlineValues;
   size_t _id = static_cast<size_t>(-1);
 };
+struct Bind {
+  sparqlExpression::SparqlExpressionPimpl _expression;
+  Variable _target;
+  Bind(sparqlExpression::SparqlExpressionPimpl expression, Variable target)
+      : _expression(std::move(expression)), _target(std::move(target)) {}
+  std::string getDescriptor() const {
+    return "BIND (" + _expression.getDescriptor() + " AS " + _target.name() + ")";
+  }
+};
 struct GroupGraphPattern {
   GraphPattern _child;
   enum class GraphVariableBehaviour { ALL, NAMED };
@@ -566,6 +575,49 @@ class Filter final : public Operation {
  private:
   std::shared_ptr<QueryExecutionTree> child_;
   sparqlExpression::SparqlExpressionPimpl expression_;
+};
+`;
+
+export const fakeBindHeader = `
+#pragma once
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#include "engine/Operation.h"
+#include "engine/QueryExecutionTree.h"
+#include "parser/ParsedQuery.h"
+class QueryExecutionContext;
+class Bind final : public Operation {
+ public:
+  Bind(QueryExecutionContext*,
+       std::shared_ptr<QueryExecutionTree> child,
+       parsedQuery::Bind bind)
+      : child_(std::move(child)), bind_(std::move(bind)) {}
+  Bind(std::shared_ptr<QueryExecutionTree> child,
+       parsedQuery::Bind bind)
+      : child_(std::move(child)), bind_(std::move(bind)) {}
+  const parsedQuery::Bind& bind() const { return bind_; }
+  std::string getDescriptor() const override {
+    return bind_.getDescriptor();
+  }
+  size_t getResultWidth() const override {
+    return child_ == nullptr ? 1 : child_->getRootOperation()->getResultWidth() + 1;
+  }
+  std::vector<QueryExecutionTree*> getChildren() override {
+    return {child_.get()};
+  }
+  std::vector<const QueryExecutionTree*> getChildren() const {
+    return {child_.get()};
+  }
+ protected:
+  std::vector<ColumnIndex> resultSortedOn() const override {
+    return child_ == nullptr ? std::vector<ColumnIndex>{}
+                             : child_->resultSortedOn();
+  }
+ private:
+  std::shared_ptr<QueryExecutionTree> child_;
+  parsedQuery::Bind bind_;
 };
 `;
 
