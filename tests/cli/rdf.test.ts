@@ -1,9 +1,18 @@
+import { readFileSync } from 'fs';
+import { spawnSync } from 'child_process';
 import { describe, expect, it } from 'vitest';
 import {
   buildSparqlPatch,
   documentResourceInput,
   resolveSparqlEndpoint,
 } from '../../src/cli/commands/rdf';
+
+function runXpodCli(args: string[]) {
+  return spawnSync('bun', [ 'src/cli/index.ts', ...args ], {
+    cwd: process.cwd(),
+    encoding: 'utf-8',
+  });
+}
 
 describe('rdf command helpers', () => {
   it('strips fragments before fetching or patching the RDF document', () => {
@@ -35,5 +44,22 @@ describe('rdf command helpers', () => {
       .toBe('https://pod.example/alice/-/sparql');
     expect(resolveSparqlEndpoint('https://pod.example/alice/', 'photos/'))
       .toBe('https://pod.example/alice/photos/-/sparql');
+  });
+
+  it('documents rdf query as a --sparql option rather than a positional query', () => {
+    const help = runXpodCli([ 'rdf', 'query', '--help' ]);
+    const output = `${help.stdout}\n${help.stderr}`;
+
+    expect(help.status).toBe(0);
+    expect(output).toContain('--sparql');
+    expect(output).toMatch(/not as a p\s*ositional argument/u);
+  });
+
+  it('keeps xpod-cli agent skill aligned with rdf query syntax', () => {
+    const skill = readFileSync('plugins/xpod-cli/skills/xpod-cli/SKILL.md', 'utf-8');
+
+    expect(skill).toContain('xpod rdf query --sparql');
+    expect(skill).toContain('not');
+    expect(skill).toContain('positional');
   });
 });

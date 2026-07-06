@@ -180,7 +180,11 @@ const queryCommand: CommandModule<object, RdfQueryArgs> = {
   describe: 'Run a read-only SPARQL query against a Pod sidecar endpoint',
   builder: (yargs) =>
     rdfOptions<RdfQueryArgs>(yargs)
-      .option('sparql', { type: 'string', demandOption: true, description: 'SPARQL query or local file path' })
+      .option('sparql', {
+        type: 'string',
+        demandOption: true,
+        description: 'SPARQL query or local file path; pass with --sparql, not as a positional argument',
+      })
       .option('scope', { type: 'string', description: 'Pod-relative container scope. Defaults to the Pod root.' })
       .option('out', { type: 'string', description: 'Write response body to file' }),
   handler: async (argv) => {

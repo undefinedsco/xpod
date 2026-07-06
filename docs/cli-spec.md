@@ -248,6 +248,9 @@ xpod rdf classes [--schema <schema-uri>]
 xpod rdf predicates [--schema <schema-uri>] [--field <field>]
 ```
 
+`xpod rdf query` requires `--sparql`; the SPARQL query is not a positional
+argument.
+
 `rdf classes` and `rdf predicates` may delegate to `udfs` or the models catalog
 for known schemas. The command name stays under `rdf` because RDF defines the
 graph layer; the model registry remains owned by `@undefineds.co/models`.

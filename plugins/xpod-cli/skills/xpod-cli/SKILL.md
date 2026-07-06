@@ -31,6 +31,8 @@ or agent-facing workflows that depend on the CLI.
 - Top-level `xpod config` must not mean Pod, AI, or model configuration. If it
   exists temporarily, it may only alias `xpod server config`.
 - Use `xpod rdf ...` for graph/resource/subject/triple operations.
+  `xpod rdf query` requires `--sparql`; use
+  `xpod rdf query --sparql '<SELECT ...>'`, not a positional query string.
 - Use `xpod obj ...` for model-backed object transport. Its catalog must be
   exported or derived from `@undefineds.co/models`; xpod must not maintain a
   product descriptor table or invent fallback schemas.
