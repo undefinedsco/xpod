@@ -350,6 +350,14 @@ describe('SolidRdfSparqlEngine', () => {
     expect(engine.getMetrics().lastPrimary?.plan).toContain('Native:IndexScan');
     expect(engine.getMetrics().lastPrimary?.indexChoices).toContain('physical POS scan');
     expect(engine.getMetrics().lastPrimary?.scannedRows).toBe(3);
+    expect(engine.getMetrics().lastPrimary?.nativeProfile).toMatchObject({
+      engine: 'native-rdf',
+      root: {
+        kind: 'IndexScan',
+        descriptor: 'physical POS scan',
+        outputRows: 3,
+      },
+    });
   });
 
   it('routes ASK through native SPARQL when the RDF engine exposes it', async () => {

@@ -60,6 +60,7 @@ export interface SolidRdfSparqlPrimaryMetric {
   returnedRows: number;
   plan: string[];
   indexChoices: string[];
+  nativeProfile?: unknown;
 }
 
 export interface SolidRdfSparqlFallbackMetric extends SolidRdfSparqlFallback {
@@ -826,6 +827,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       returnedRows: result.metrics.returnedRows,
       plan: result.metrics.plan,
       indexChoices: result.metrics.indexChoices,
+      nativeProfile: result.metrics.nativeProfile,
     };
   }
 
@@ -953,6 +955,7 @@ function nativeSparqlMetrics(
   return {
     engine: 'solid-rdf',
     plan: ['NativeSparql', envelope.mediaType, ...(rootKind ? [`Native:${rootKind}`] : [])],
+    nativeProfile: envelope.profile,
     scannedRows: profiledRows,
     joinedRows: returnedRows,
     returnedRows,

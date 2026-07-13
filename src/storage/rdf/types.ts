@@ -1159,6 +1159,7 @@ export interface RdfQueryMetrics {
   engine: 'solid-rdf';
   plan: string[];
   explain?: RdfQueryExplain;
+  nativeProfile?: unknown;
   scannedRows: number;
   joinedRows: number;
   returnedRows: number;
