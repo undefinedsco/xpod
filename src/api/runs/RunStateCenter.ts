@@ -19,7 +19,12 @@ import {
 import type { AgentRuntimeConfig, RunnerProtocol, RunnerType } from './AgentRuntimeTypes';
 import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import { InngestRunExecutionBackend } from './InngestRunExecutionBackend';
-import type { RunExecutionBackend } from './RunExecutionBackend';
+import type {
+  RunContextRetriever,
+  RunConversationMessage,
+  RunExecutionBackend,
+  RunRetrievedContext,
+} from './RunExecutionBackend';
 import { isWorkspaceRef } from '../workspace/types';
 import { XpodRunStepType as RunStepType, RunStatus } from './schema';
 import {
@@ -58,6 +63,7 @@ export interface RunStateCenterOptions<TContext = StoreContext> {
   store: ChatKitStore<TContext>;
   enableAgentRuntime?: boolean;
   executionBackend?: RunExecutionBackend;
+  contextRetriever?: RunContextRetriever<TContext>;
 }
 
 /**
@@ -72,12 +78,14 @@ export class RunStateCenter<TContext = StoreContext> {
   private readonly runStore?: RunStore<TContext>;
   private readonly enableAgentRuntime: boolean;
   private readonly executionBackend: RunExecutionBackend;
+  private readonly contextRetriever?: RunContextRetriever<TContext>;
 
   public constructor(options: RunStateCenterOptions<TContext>) {
     this.store = options.store;
     this.runStore = this.resolveRunStore(options.store);
     this.enableAgentRuntime = options.enableAgentRuntime ?? false;
     this.executionBackend = options.executionBackend ?? new InngestRunExecutionBackend();
+    this.contextRetriever = options.contextRetriever;
   }
 
   public getAgentRuntimeConfig(thread: ThreadMetadata, context?: TContext): AgentRuntimeConfig | null {
@@ -163,12 +171,23 @@ export class RunStateCenter<TContext = StoreContext> {
     const assistantState: ActiveAssistant = { item: assistantItem, fullText: '' };
     let runtimeError: string | undefined;
 
+    const conversation = await this.loadConversation(threadRef, userMessage.id, context);
+    const retrievedContext = await this.retrieveRunContext({
+      runId: run.id,
+      threadId: thread.id,
+      prompt,
+      conversation,
+      config: runtimeConfig,
+      context,
+    });
+
     for await (
       const event of this.executionBackend.start({
         runId: run.id,
         threadId: thread.id,
         prompt,
-        conversation: await this.loadConversation(threadRef, userMessage.id, context),
+        conversation,
+        retrievedContext,
         config: runtimeConfig,
         context: context as StoreContext,
       })
@@ -208,6 +227,21 @@ export class RunStateCenter<TContext = StoreContext> {
       runtimeError,
     );
     yield { type: 'item_done', item: finalItem };
+  }
+
+  private async retrieveRunContext(input: {
+    runId: string;
+    threadId: string;
+    prompt: string;
+    conversation: RunConversationMessage[];
+    config: AgentRuntimeConfig;
+    context: TContext;
+  }): Promise<RunRetrievedContext | undefined> {
+    const retrieved = await this.contextRetriever?.retrieve(input);
+    if (!retrieved || retrieved.items.length === 0) {
+      return undefined;
+    }
+    return retrieved;
   }
 
   public async *completeClientToolOutput(input: {
@@ -282,14 +316,26 @@ export class RunStateCenter<TContext = StoreContext> {
       fullText: extractAssistantMessageText(assistantItem.content),
     };
     await this.markRunStarted(run, context);
+    const continuationPrompt = this.buildContinuationPrompt(updatedItem);
+    const conversation = await this.loadConversation(threadRef, String(run.metadata?.userMessageId ?? updatedItem.id), context);
+    const runtimeConfig = this.resolveRuntimeConfigForContinuation(run);
+    const retrievedContext = await this.retrieveRunContext({
+      runId: run.id,
+      threadId: this.extractThreadIdFromRef(threadRef),
+      prompt: continuationPrompt,
+      conversation,
+      config: runtimeConfig,
+      context,
+    });
 
     for await (
       const event of this.executionBackend.start({
         runId: run.id,
         threadId: this.extractThreadIdFromRef(threadRef),
-        prompt: this.buildContinuationPrompt(updatedItem),
-        conversation: await this.loadConversation(threadRef, String(run.metadata?.userMessageId ?? updatedItem.id), context),
-        config: this.resolveRuntimeConfigForContinuation(run),
+        prompt: continuationPrompt,
+        conversation,
+        retrievedContext,
+        config: runtimeConfig,
         continuation: {
           kind: 'client_tool_output',
           itemId: updatedItem.id,

@@ -5,6 +5,7 @@ export interface EmbeddingModelInfo {
   id: string;
   dimension: number;
   maxTokens?: number;
+  maxBatchSize?: number;
 }
 
 /**
@@ -15,6 +16,8 @@ export interface ProviderInfo {
   name: string;
   baseUrl: string;
   proxyUrl?: string;
+  aliases?: string[];
+  defaultEmbeddingModel?: string;
   embeddingModels: EmbeddingModelInfo[];
 }
 
@@ -24,5 +27,6 @@ export interface ProviderInfo {
 export abstract class ProviderRegistry {
   abstract listProviders(): Promise<ProviderInfo[]>;
   abstract getProvider(providerId: string): Promise<ProviderInfo | null>;
+  abstract getEmbeddingModel(providerId: string, modelId: string): Promise<EmbeddingModelInfo | null>;
   abstract getModelDimension(providerId: string, modelId: string): Promise<number | null>;
 }

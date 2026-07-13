@@ -127,6 +127,7 @@
         "@id": "urn:undefineds:xpod:RemoteDataAccessor"
       },
       "presignedRedirectEnabled": true,
+      "textSearchIndexingEnabled": true,
       "rdfFileDataAccessor": {
         "@id": "urn:solid-server:default:FileDataAccessor"
       }
@@ -169,6 +170,27 @@
       "autoBackfill_batchSize": 1000
     },
     {
+      "comment": "PostgreSQL-backed text search index sharing the RDF database.",
+      "@id": "urn:undefineds:xpod:PostgresRdfTextIndex",
+      "@type": "PostgresRdfTextIndex",
+      "options_driver": "pg",
+      "options_connectionString": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
+      "comment": "PostgreSQL-backed vector search index sharing the RDF database.",
+      "@id": "urn:undefineds:xpod:PostgresRdfVectorIndex",
+      "@type": "PostgresRdfVectorIndex",
+      "options_driver": "pg",
+      "options_connectionString": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      },
+      "options_defaultMetric": "cosine"
+    },
+    {
       "comment": "RDF query engine backed by PostgreSQL facts plus PostgreSQL RDF-3X derived stats.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
       "@type": "PostgresRdfEngine",
@@ -177,7 +199,16 @@
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       },
-      "options_autoOpen": true
+      "options_textIndex": {
+        "@id": "urn:undefineds:xpod:PostgresRdfTextIndex"
+      },
+      "options_vectorIndex": {
+        "@id": "urn:undefineds:xpod:PostgresRdfVectorIndex"
+      },
+      "options_rdfAccelerationProfile": "pg-hot-operators",
+      "options_autoOpen": true,
+      "options_maintenanceIntervalMs": 60000,
+      "options_maintenanceSourceBatchSize": 256
     },
     {
       "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",

@@ -13,6 +13,7 @@ import type {
   Rdf3xIndexOptions,
   Rdf3xTriplePattern,
   RdfDerivedIndexProfile,
+  RdfDerivedIndexRefreshOptions,
   RdfDerivedIndexRefreshResult,
   RdfEngineStorageStats,
   RdfIndexPutOptions,
@@ -25,15 +26,20 @@ import type {
   RdfShadowScanResult,
   RdfTextChunkInput,
   RdfTextIndexOptions,
+  RdfTextIndexSyncLike,
   RdfTextSearchOptions,
   RdfTextSearchResult,
   RdfTextSourceInput,
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
   RdfVectorChunkInput,
   RdfVectorIndexOptions,
+  RdfVectorIndexSyncLike,
   RdfVectorSearchOptions,
   RdfVectorSearchResult,
   RdfVectorSourceInput,
   RdfEngineLike,
+  RdfStorageStatsOptions,
 } from './types';
 import { RdfQuadIndex } from './RdfQuadIndex';
 import { Rdf3xIndex } from './Rdf3xIndex';
@@ -43,11 +49,14 @@ import { RdfShadowComparator, diffQuads } from './RdfShadowComparator';
 import { RdfQueryExecutor } from './RdfQueryExecutor';
 import type { RdfQuery, RdfQueryResult } from './types';
 
+type RdfTextIndexInput = RdfTextIndexSyncLike | RdfTextIndexOptions;
+type RdfVectorIndexInput = RdfVectorIndexSyncLike | RdfVectorIndexOptions;
+
 export interface SolidRdfEngineOptions {
   index: RdfQuadIndex | RdfQuadIndexOptions;
   derivedIndexProfile?: RdfDerivedIndexProfile;
-  textIndex?: RdfTextIndex | RdfTextIndexOptions;
-  vectorIndex?: RdfVectorIndex | RdfVectorIndexOptions;
+  textIndex?: RdfTextIndexInput;
+  vectorIndex?: RdfVectorIndexInput;
   rdf3xIndex?: Rdf3xIndex | Rdf3xIndexOptions;
   rdf3xPrimary?: boolean;
   compatibilityStore?: QuintStore;
@@ -56,8 +65,8 @@ export interface SolidRdfEngineOptions {
 
 export class SolidRdfEngine implements RdfEngineLike {
   public readonly index: RdfQuadIndex;
-  public readonly textIndex?: RdfTextIndex;
-  public readonly vectorIndex?: RdfVectorIndex;
+  public readonly textIndex?: RdfTextIndexSyncLike;
+  public readonly vectorIndex?: RdfVectorIndexSyncLike;
   public readonly rdf3xIndex?: Rdf3xIndex;
   public readonly derivedIndexProfile: RdfDerivedIndexProfile;
   private readonly ownsIndex: boolean;
@@ -79,21 +88,21 @@ export class SolidRdfEngine implements RdfEngineLike {
       this.index = new RdfQuadIndex(options.index);
       this.ownsIndex = true;
     }
-    if (options.textIndex instanceof RdfTextIndex) {
-      this.textIndex = options.textIndex;
-      this.ownsTextIndex = false;
-    } else if (isRdfTextIndexOptions(options.textIndex)) {
+    if (isRdfTextIndexOptions(options.textIndex)) {
       this.textIndex = new RdfTextIndex(options.textIndex);
       this.ownsTextIndex = true;
+    } else if (isRdfTextIndexLike(options.textIndex)) {
+      this.textIndex = options.textIndex;
+      this.ownsTextIndex = false;
     } else {
       this.ownsTextIndex = false;
     }
-    if (options.vectorIndex instanceof RdfVectorIndex) {
-      this.vectorIndex = options.vectorIndex;
-      this.ownsVectorIndex = false;
-    } else if (isRdfVectorIndexOptions(options.vectorIndex)) {
+    if (isRdfVectorIndexOptions(options.vectorIndex)) {
       this.vectorIndex = new RdfVectorIndex(options.vectorIndex);
       this.ownsVectorIndex = true;
+    } else if (isRdfVectorIndexLike(options.vectorIndex)) {
+      this.vectorIndex = options.vectorIndex;
+      this.ownsVectorIndex = false;
     } else {
       this.ownsVectorIndex = false;
     }
@@ -170,12 +179,20 @@ export class SolidRdfEngine implements RdfEngineLike {
     return this.index.deleteSource(source);
   }
 
+  public moveSource(oldSource: string, next: RdfSourceInput): number {
+    return this.index.moveSource(oldSource, next);
+  }
+
   public delete(pattern: QuintPattern): number {
     return this.index.delete(pattern);
   }
 
   public applyDelta(deletes: QuintPattern[], inserts: Quad[], options?: RdfIndexPutOptions): { deletedRows: number; insertedRows: number } {
     return this.index.applyDelta(deletes, inserts, options);
+  }
+
+  public rewriteTerms(input: RdfTermRewriteInput): RdfTermRewriteResult {
+    return this.index.rewriteTerms(input);
   }
 
   public scan(query: RdfPatternQuery): RdfQuadIndexScanResult {
@@ -196,9 +213,9 @@ export class SolidRdfEngine implements RdfEngineLike {
     return result;
   }
 
-  public refreshDerivedIndexes(): RdfDerivedIndexRefreshResult {
+  public refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): RdfDerivedIndexRefreshResult {
     const factsDataVersion = this.index.dataVersion();
-    const rdf3x = this.refreshRdf3xDerivedIndex(factsDataVersion);
+    const rdf3x = this.refreshRdf3xDerivedIndex(factsDataVersion, options?.mode === 'full');
     return {
       derivedIndexProfile: this.derivedIndexProfile,
       factsDataVersion,
@@ -292,13 +309,21 @@ export class SolidRdfEngine implements RdfEngineLike {
     }
   }
 
-  public storageStats(): RdfEngineStorageStats {
+  public storageStats(_options?: RdfStorageStatsOptions): RdfEngineStorageStats {
     const facts = this.index.stats();
     const rdf3x = this.rdf3xIndex
-      ? {
-          stats: this.rdf3xIndex.stats(),
-          syncedWithFacts: this.rdf3xIndex.isSyncedWithCurrentQuads(),
-        }
+      ? (() => {
+          const stats = this.rdf3xIndex!.stats();
+          const factsDataVersion = this.index.dataVersion();
+          return {
+            stats,
+            factsDataVersion,
+            rdf3xFactsDataVersion: stats.factsDataVersion,
+            refreshLag: Math.max(0, factsDataVersion - stats.factsDataVersion),
+            syncedWithFacts: stats.factsDataVersion === factsDataVersion,
+            pendingSources: 0,
+          };
+        })()
       : undefined;
     const factsBytes = facts.databaseBytes;
     const derivedBytes = rdf3x?.stats.databaseBytes ?? 0;
@@ -315,14 +340,14 @@ export class SolidRdfEngine implements RdfEngineLike {
     };
   }
 
-  private requireTextIndex(): RdfTextIndex {
+  private requireTextIndex(): RdfTextIndexSyncLike {
     if (!this.textIndex) {
       throw new Error('SolidRdfEngine text index is not configured');
     }
     return this.textIndex;
   }
 
-  private requireVectorIndex(): RdfVectorIndex {
+  private requireVectorIndex(): RdfVectorIndexSyncLike {
     if (!this.vectorIndex) {
       throw new Error('SolidRdfEngine vector index is not configured');
     }
@@ -340,14 +365,17 @@ export class SolidRdfEngine implements RdfEngineLike {
     return Boolean(this.rdf3xPrimary && this.rdf3xIndex?.isSyncedWithCurrentQuads());
   }
 
-  private refreshRdf3xDerivedIndex(factsDataVersion = this.index.dataVersion()): RdfDerivedIndexRefreshResult['rdf3x'] {
+  private refreshRdf3xDerivedIndex(
+    factsDataVersion = this.index.dataVersion(),
+    force = false,
+  ): RdfDerivedIndexRefreshResult['rdf3x'] {
     if (!this.rdf3xIndex) {
       return undefined;
     }
     const dataVersion = factsDataVersion;
     const rdf3xIndex = this.rdf3xIndex;
     const previousFactsDataVersion = rdf3xIndex.factsDataVersion();
-    if (previousFactsDataVersion === dataVersion) {
+    if (!force && previousFactsDataVersion === dataVersion) {
       return {
         refreshed: false,
         previousFactsDataVersion,
@@ -355,7 +383,7 @@ export class SolidRdfEngine implements RdfEngineLike {
         syncedWithFacts: true,
       };
     }
-    const rebuild = rdf3xIndex.rebuildFromCurrentQuads();
+    const rebuild = rdf3xIndex.rebuildFromCurrentQuads({ mode: force ? 'full' : 'auto' });
     return {
       refreshed: true,
       previousFactsDataVersion,
@@ -366,12 +394,26 @@ export class SolidRdfEngine implements RdfEngineLike {
   }
 }
 
-function isRdfTextIndexOptions(input: RdfTextIndex | RdfTextIndexOptions | undefined): input is RdfTextIndexOptions {
-  return input !== undefined && !(input instanceof RdfTextIndex) && typeof input.path === 'string';
+function isRdfTextIndexOptions(input: RdfTextIndexInput | undefined): input is RdfTextIndexOptions {
+  return input !== undefined && typeof (input as RdfTextIndexOptions).path === 'string'
+    && !isRdfTextIndexLike(input);
 }
 
-function isRdfVectorIndexOptions(input: RdfVectorIndex | RdfVectorIndexOptions | undefined): input is RdfVectorIndexOptions {
-  return input !== undefined && !(input instanceof RdfVectorIndex) && typeof input.path === 'string';
+function isRdfTextIndexLike(input: RdfTextIndexInput | undefined): input is RdfTextIndexSyncLike {
+  return input !== undefined
+    && typeof (input as Partial<RdfTextIndexSyncLike>).indexText === 'function'
+    && typeof (input as Partial<RdfTextIndexSyncLike>).search === 'function';
+}
+
+function isRdfVectorIndexOptions(input: RdfVectorIndexInput | undefined): input is RdfVectorIndexOptions {
+  return input !== undefined && typeof (input as RdfVectorIndexOptions).path === 'string'
+    && !isRdfVectorIndexLike(input);
+}
+
+function isRdfVectorIndexLike(input: RdfVectorIndexInput | undefined): input is RdfVectorIndexSyncLike {
+  return input !== undefined
+    && typeof (input as Partial<RdfVectorIndexSyncLike>).indexVector === 'function'
+    && typeof (input as Partial<RdfVectorIndexSyncLike>).search === 'function';
 }
 
 function isRdf3xIndexOptions(input: Rdf3xIndex | Rdf3xIndexOptions | undefined): input is Rdf3xIndexOptions {

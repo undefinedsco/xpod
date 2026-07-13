@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { DataFactory } from 'n3';
 import type { Term } from '@rdfjs/types';
 import type { SqliteDatabase } from '../SqliteRuntime';
-import type { RdfTermKind, RdfTermRow } from './types';
+import type { RdfTermKind, RdfTermRewriteInput, RdfTermRewriteResult, RdfTermRow } from './types';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 
 interface RdfTermIdentity {
@@ -14,6 +14,23 @@ interface RdfTermIdentity {
   normalizedText: string | null;
   numericValue: number | null;
   hash: string;
+}
+
+interface RdfTermRewriteOptions {
+  useTransaction?: boolean;
+}
+
+interface RdfTermUsageRow {
+  graph_id: number;
+  subject_id: number;
+  predicate_id: number;
+  object_id: number;
+  graph_value: string;
+}
+
+interface RdfTermRewriteCandidate {
+  row: Pick<RdfTermRow, 'id' | 'value'>;
+  usages: RdfTermUsageRow[];
 }
 
 export const RDF_TERM_VALUE_HEAD_LENGTH = 256;
@@ -228,6 +245,141 @@ export class RdfTermDictionary {
   public count(): number {
     const row = this.db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_terms').get();
     return row?.count ?? 0;
+  }
+
+  public rewriteNamedNodePrefix(input: RdfTermRewriteInput, options?: RdfTermRewriteOptions): RdfTermRewriteResult {
+    if (!input.oldPrefix || !input.newPrefix || input.oldPrefix === input.newPrefix) {
+      return emptyRewriteResult();
+    }
+
+    const rows = this.db
+      .prepare<Pick<RdfTermRow, 'id' | 'value'>>(`
+        SELECT id, value
+        FROM rdf_terms
+        WHERE kind = 'iri'
+          AND value LIKE ? ESCAPE '\\'
+        ORDER BY id
+      `)
+      .all(`${escapeLikePattern(input.oldPrefix)}%`)
+      .filter((row) => matchesRewriteBoundary(row.value, input.oldPrefix));
+
+    const skippedTerms: RdfTermRewriteResult['skippedTerms'] = [];
+    let rewrittenTerms = 0;
+    const affectedQuadKeys = new Set<string>();
+
+    const update = this.db.prepare(`
+      UPDATE rdf_terms
+      SET value = ?,
+          value_head = ?,
+          hash = ?,
+          normalized_text = ?
+      WHERE id = ?
+    `);
+    const hashConflict = this.db.prepare<RdfTermRow>('SELECT * FROM rdf_terms WHERE hash = ? AND id <> ?');
+    const termUsages = this.db.prepare<RdfTermUsageRow>(`
+      SELECT
+        quad.graph_id,
+        quad.subject_id,
+        quad.predicate_id,
+        quad.object_id,
+        graph.value AS graph_value
+      FROM rdf_quads quad
+      JOIN rdf_terms graph ON graph.id = quad.graph_id
+      WHERE quad.graph_id = ?
+         OR quad.subject_id = ?
+         OR quad.predicate_id = ?
+         OR quad.object_id = ?
+    `);
+
+    const runRewrite = (): void => {
+      if (input.scope !== 'safe_projection' || input.mode !== 'safe') {
+        // The local file-backed engine only has a proven contract for safe projection
+        // rewrites. Other scopes/modes are deliberately reported as skipped instead
+        // of mutating the global term dictionary with incomplete semantics.
+        for (const row of rows) {
+          skippedTerms.push({
+            id: row.id,
+            value: row.value,
+            reason: 'outside_scope',
+          });
+        }
+        return;
+      }
+
+      const candidates: RdfTermRewriteCandidate[] = rows.map((row) => ({
+        row,
+        usages: termUsages.all(row.id, row.id, row.id, row.id),
+      }));
+
+      for (const candidate of candidates) {
+        const { row, usages } = candidate;
+        if (usages.length === 0) {
+          skippedTerms.push({
+            id: row.id,
+            value: row.value,
+            reason: 'outside_scope',
+          });
+          continue;
+        }
+        if (usages.some((usage) => !matchesRewriteBoundary(usage.graph_value, input.oldPrefix))) {
+          skippedTerms.push({
+            id: row.id,
+            value: row.value,
+            reason: 'mixed_usage',
+          });
+          continue;
+        }
+
+        const nextValue = `${input.newPrefix}${row.value.slice(input.oldPrefix.length)}`;
+        const identity = this.identity('iri', nextValue, null, null, nextValue, null);
+        const targetId = this.findId(identity);
+        if (targetId !== undefined && targetId !== row.id) {
+          skippedTerms.push({
+            id: row.id,
+            value: row.value,
+            reason: 'collision_conflict',
+          });
+          continue;
+        }
+        if (hashConflict.get(identity.hash, row.id)) {
+          skippedTerms.push({
+            id: row.id,
+            value: row.value,
+            reason: 'collision_conflict',
+          });
+          continue;
+        }
+
+        update.run(
+          identity.value,
+          identity.valueHead,
+          identity.hash,
+          identity.normalizedText,
+          row.id,
+        );
+        for (const usage of usages) {
+          affectedQuadKeys.add(affectedQuadKey(usage));
+        }
+        rewrittenTerms++;
+      }
+    };
+
+    if (options?.useTransaction === false) {
+      runRewrite();
+    } else {
+      this.db.transaction(runRewrite)();
+    }
+
+    this.termCache.clear();
+    this.idCache.clear();
+
+    return {
+      matchedTerms: rows.length,
+      rewrittenTerms,
+      remappedTerms: 0,
+      skippedTerms,
+      affectedQuads: affectedQuadKeys.size,
+    };
   }
 
   private findId(identity: RdfTermIdentity): number | undefined {
@@ -483,10 +635,33 @@ export function rdfTermValueHead(value: string): string {
   return value.slice(0, RDF_TERM_VALUE_HEAD_LENGTH);
 }
 
+export function matchesRewriteBoundary(value: string, oldPrefix: string): boolean {
+  if (!oldPrefix) {
+    return false;
+  }
+  return value === oldPrefix
+    || value.startsWith(`${oldPrefix}#`)
+    || (oldPrefix.endsWith('/') && value.startsWith(oldPrefix));
+}
+
 function normalizeSearchText(value: string): string {
   return value.toLowerCase();
 }
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+function emptyRewriteResult(): RdfTermRewriteResult {
+  return {
+    matchedTerms: 0,
+    rewrittenTerms: 0,
+    remappedTerms: 0,
+    skippedTerms: [],
+    affectedQuads: 0,
+  };
+}
+
+function affectedQuadKey(row: Pick<RdfTermUsageRow, 'graph_id' | 'subject_id' | 'predicate_id' | 'object_id'>): string {
+  return `${row.graph_id}\u001f${row.subject_id}\u001f${row.predicate_id}\u001f${row.object_id}`;
 }

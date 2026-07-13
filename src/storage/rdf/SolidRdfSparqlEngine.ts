@@ -1,13 +1,31 @@
 import { ArrayIterator } from 'asynciterator';
+import { createHash } from 'node:crypto';
 import type { AsyncIterator } from 'asynciterator';
 import type { DefaultGraph, Quad, Quad_Object, Term, Variable } from '@rdfjs/types';
 import { DataFactory as RdfDataFactory } from 'rdf-data-factory';
-import { termToId } from 'n3';
-import type { SparqlEngine } from '../sparql/SubgraphQueryEngine';
+import { Parser as N3Parser, termToId } from 'n3';
+import type { SparqlEngine, SparqlVoidOptions } from '../sparql/SubgraphQueryEngine';
 import type { QuintPattern } from '../quint/types';
-import { DisabledSparqlFeatureError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
+import { DisabledSparqlFeatureError, NativeSparqlExecutionError, RdfSparqlAdapter, UnsupportedSparqlQueryError } from './RdfSparqlAdapter';
 import type { ShadowRdfQuintStore } from './ShadowRdfQuintStore';
-import type { RdfBindingRow, RdfEngineLike, RdfQueryResult, RdfQueryTermPattern } from './types';
+import type {
+  RdfBindingRow,
+  RdfEngineLike,
+  RdfQuery,
+  RdfQueryMaterializedResultOptions,
+  RdfNativeSparqlResult,
+  RdfQueryPattern,
+  RdfQueryResult,
+  RdfQueryTermPattern,
+} from './types';
+import {
+  applyRdfAccessScope,
+  filterRdfAccessGraphs,
+  isRestrictiveRdfAccessScope,
+  rdfAccessGraphAllowed,
+  RdfAccessMode,
+  type RdfAccessScope,
+} from './RdfAccessScope';
 
 export interface SolidRdfSparqlEngineOptions {
   rdfEngine: RdfEngineLike;
@@ -15,6 +33,7 @@ export interface SolidRdfSparqlEngineOptions {
   shadowStore?: ShadowRdfQuintStore;
   enablePrimary?: boolean;
   onFallback?: (reason: SolidRdfSparqlFallback) => void;
+  autoMaterializeProductViews?: boolean;
 }
 
 export interface SolidRdfSparqlFallback {
@@ -75,6 +94,84 @@ interface MutableOperationCount {
 }
 
 const rdfDataFactory = new RdfDataFactory();
+const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
+const DCT_CREATED = 'http://purl.org/dc/terms/created';
+const DCT_TITLE = 'http://purl.org/dc/terms/title';
+const SIOC_HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
+const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
+const SIOC_HAS_PARENT = 'http://rdfs.org/sioc/ns#has_parent';
+const SIOC_THREAD = 'http://rdfs.org/sioc/ns#Thread';
+const MEETING_MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
+const MEETING_LONG_CHAT = 'http://www.w3.org/ns/pim/meeting#LongChat';
+const FOAF_AGENT = 'http://xmlns.com/foaf/0.1/Agent';
+const VCARD_INDIVIDUAL = 'http://www.w3.org/2006/vcard/ns#Individual';
+const SCHEMA_CREATIVE_WORK = 'http://schema.org/CreativeWork';
+const SCHEMA_PROPERTY_VALUE = 'http://schema.org/PropertyValue';
+const UDFS_TASK = 'https://undefineds.co/ns#Task';
+const UDFS_RUN = 'https://undefineds.co/ns#Run';
+const UDFS_RUN_STEP = 'https://undefineds.co/ns#RunStep';
+const UDFS_SCHEDULE = 'https://undefineds.co/ns#Schedule';
+const UDFS_SESSION = 'https://undefineds.co/ns#Session';
+const UDFS_ISSUE = 'https://undefineds.co/ns#Issue';
+const UDFS_LAST_MESSAGE = 'https://undefineds.co/ns#lastMessage';
+const UDFS_STATUS = 'https://undefineds.co/ns#status';
+const UDFS_MESSAGE_STATUS = 'https://undefineds.co/ns#messageStatus';
+const UDFS_WORKSPACE = 'https://undefineds.co/ns#workspace';
+const UDFS_RUN_RELATION = 'https://undefineds.co/ns#run';
+const UDFS_TASK_RELATION = 'https://undefineds.co/ns#task';
+const UDFS_IN_THREAD = 'https://undefineds.co/ns#inThread';
+const UDFS_NEXT_RUN_AT = 'https://undefineds.co/ns#nextRunAt';
+const UDFS_LEASE_OWNER = 'https://undefineds.co/ns#leaseOwner';
+const UDFS_SESSION_STATUS = 'https://undefineds.co/ns#sessionStatus';
+const UDFS_CONVERSATION = 'https://undefineds.co/ns#conversation';
+const UDFS_TOKEN_USAGE = 'https://undefineds.co/ns#tokenUsage';
+const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
+const UDFS_SCORE = 'https://undefineds.co/ns#score';
+const XPOD_AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
+const XPOD_AI_MODEL = 'https://vocab.xpod.dev/ai#Model';
+const XPOD_AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
+const XPOD_CREDENTIAL = 'https://vocab.xpod.dev/credential#Credential';
+const XPOD_CREDENTIAL_PROVIDER = 'https://vocab.xpod.dev/credential#provider';
+const XPOD_CREDENTIAL_FAIL_COUNT = 'https://vocab.xpod.dev/credential#failCount';
+const PRODUCT_VIEW_MATERIALIZED_VERSION = 'v1';
+
+const SETTINGS_RESOURCE_TYPE_VIEWS = new Map<string, string>([
+  [XPOD_AI_PROVIDER, 'ai-providers'],
+  [XPOD_AI_MODEL, 'ai-models'],
+  [XPOD_CREDENTIAL, 'credentials'],
+]);
+
+const PRODUCT_RESOURCE_TYPE_VIEWS = new Map<string, string>([
+  [MEETING_LONG_CHAT, 'chats'],
+  [MEETING_MESSAGE, 'messages'],
+  [SIOC_THREAD, 'threads'],
+  [UDFS_TASK, 'tasks'],
+  [UDFS_RUN, 'runs'],
+  [UDFS_RUN_STEP, 'run-steps'],
+  [UDFS_SCHEDULE, 'schedules'],
+  [UDFS_SESSION, 'sessions'],
+  [UDFS_ISSUE, 'issues'],
+  [FOAF_AGENT, 'agents'],
+  [VCARD_INDIVIDUAL, 'contacts'],
+  [SCHEMA_CREATIVE_WORK, 'favorites'],
+  [SCHEMA_PROPERTY_VALUE, 'settings'],
+]);
+
+const PRODUCT_RELATION_PREDICATE_VIEWS = new Map<string, string>([
+  [DCT_CREATED, 'created-timeline'],
+  [DCT_TITLE, 'title-hydration'],
+  [SIOC_HAS_PARENT, 'threads-by-chat'],
+  [UDFS_LAST_MESSAGE, 'chat-latest-message'],
+  [UDFS_STATUS, 'status-index'],
+  [UDFS_MESSAGE_STATUS, 'message-status-index'],
+  [UDFS_WORKSPACE, 'runs-by-workspace'],
+  [UDFS_RUN_RELATION, 'steps-by-run'],
+  [UDFS_TASK_RELATION, 'runs-by-task'],
+  [UDFS_IN_THREAD, 'runs-by-thread'],
+  [UDFS_NEXT_RUN_AT, 'schedules-by-due-time'],
+  [UDFS_LEASE_OWNER, 'runs-by-lease-owner'],
+  [UDFS_SESSION_STATUS, 'sessions-by-status'],
+]);
 
 export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly adapter = new RdfSparqlAdapter();
@@ -83,6 +180,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
   private readonly shadowStore?: ShadowRdfQuintStore;
   private readonly enablePrimary: boolean;
   private readonly onFallback?: (reason: SolidRdfSparqlFallback) => void;
+  private readonly autoMaterializeProductViews: boolean;
   private readonly operationCounts = new Map<SolidRdfSparqlOperation, MutableOperationCount>();
   private lastPrimary?: SolidRdfSparqlPrimaryMetric;
   private lastFallback?: SolidRdfSparqlFallbackMetric;
@@ -93,86 +191,106 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     shadowStore?: ShadowRdfQuintStore,
     enablePrimary = true,
     onFallback?: (reason: SolidRdfSparqlFallback) => void,
+    autoMaterializeProductViews = true,
   ) {
     this.rdfEngine = rdfEngine;
     this.fallback = fallback;
     this.shadowStore = shadowStore;
     this.enablePrimary = enablePrimary;
     this.onFallback = onFallback;
+    this.autoMaterializeProductViews = autoMaterializeProductViews;
   }
 
-  public async queryBindings(query: string, basePath: string): Promise<BindingsStream> {
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<BindingsStream> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryBindings', 'primary disabled', (fallback) => fallback.queryBindings(query, basePath));
+      return this.fallbackWith('queryBindings', 'primary disabled', (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
+      const native = await this.executeNativeSelectPrimary(query, basePath, 'queryBindings', start, accessScope);
+      if (native) {
+        return this.bindingsStream(native.result, native.variables);
+      }
       const compiled = this.adapter.compile(query, basePath);
       if (compiled.queryType !== 'SELECT') {
-        return this.fallbackWith('queryBindings', `compiled ${compiled.queryType} cannot produce bindings`, (fallback) => fallback.queryBindings(query, basePath));
+        return this.fallbackWith('queryBindings', `compiled ${compiled.queryType} cannot produce bindings`, (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope);
       }
-      const result = await this.rdfEngine.query(compiled.query);
+      const selectedQuery = this.applyMaterializedQuerySelector('queryBindings', compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(selectedQuery, accessScope));
       this.recordPrimary('queryBindings', start, result);
       return this.bindingsStream(result, compiled.variables);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBindings', fallbackReason(error), (fallback) => fallback.queryBindings(query, basePath));
+      return this.fallbackWith('queryBindings', fallbackReason(error), (fallback) => fallback.queryBindings(query, basePath, accessScope), accessScope, error);
     }
   }
 
-  public async queryBoolean(query: string, basePath: string): Promise<boolean> {
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryBoolean', 'primary disabled', (fallback) => fallback.queryBoolean(query, basePath));
+      return this.fallbackWith('queryBoolean', 'primary disabled', (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
+      const native = await this.executeNativeBooleanPrimary(query, basePath, 'queryBoolean', start, accessScope);
+      if (native !== undefined) {
+        return native;
+      }
       const compiled = this.adapter.compile(query, basePath);
       if (compiled.queryType !== 'ASK') {
-        return this.fallbackWith('queryBoolean', `compiled ${compiled.queryType} cannot produce boolean`, (fallback) => fallback.queryBoolean(query, basePath));
+        return this.fallbackWith('queryBoolean', `compiled ${compiled.queryType} cannot produce boolean`, (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope);
       }
-      const result = await this.rdfEngine.query(compiled.query);
+      const selectedQuery = this.applyMaterializedQuerySelector('queryBoolean', compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(selectedQuery, accessScope));
       this.recordPrimary('queryBoolean', start, result);
       return result.bindings.length > 0;
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryBoolean', fallbackReason(error), (fallback) => fallback.queryBoolean(query, basePath));
+      return this.fallbackWith('queryBoolean', fallbackReason(error), (fallback) => fallback.queryBoolean(query, basePath, accessScope), accessScope, error);
     }
   }
 
-  public async queryQuads(query: string, basePath: string): Promise<any> {
+  public async queryQuads(
+    query: string,
+    basePath: string,
+    accessScope?: RdfAccessScope,
+  ): Promise<AsyncIterator<Quad>> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryQuads', 'primary disabled', (fallback) => fallback.queryQuads(query, basePath));
+      return this.fallbackWith('queryQuads', 'primary disabled', (fallback) => fallback.queryQuads(query, basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
-      const quads = await this.executeQuadsPrimary(query, basePath, 'queryQuads', start);
+      const quads = await this.executeQuadsPrimary(query, basePath, 'queryQuads', start, accessScope);
       return new ArrayIterator(quads);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryQuads', fallbackReason(error), (fallback) => fallback.queryQuads(query, basePath));
+      return this.fallbackWith('queryQuads', fallbackReason(error), (fallback) => fallback.queryQuads(query, basePath, accessScope), accessScope, error);
     }
   }
 
-  public async queryVoid(query: string, basePath: string): Promise<void> {
+  public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('queryVoid', 'primary disabled', (fallback) => fallback.queryVoid(query, basePath));
+      return this.fallbackWith('queryVoid', 'primary disabled', (fallback) => fallback.queryVoid(query, basePath, accessScope, options), accessScope);
     }
 
     const start = Date.now();
     try {
+      const native = await this.executeNativeVoidPrimary(query, basePath, 'queryVoid', start, accessScope, options);
+      if (native) {
+        return undefined;
+      }
       const delta = this.adapter.compileUpdateDelta(query, basePath, {
         defaultGraph: implicitUpdateDefaultGraph(basePath),
       });
@@ -181,24 +299,29 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       let computedInserts = 0;
       for (const operation of delta.operations) {
         if (operation.type === 'delete') {
+          this.assertUpdateQuadsAllowedByAccessScope(operation.quads, basePath, accessScope);
           deletedRows += (await this.rdfEngine.applyDelta(operation.quads.map(quadToPattern), [])).deletedRows;
         } else if (operation.type === 'insert') {
+          this.assertUpdateQuadsAllowedByAccessScope(operation.quads, basePath, accessScope);
           await this.rdfEngine.applyDelta([], operation.quads);
         } else if (operation.type === 'insertDeleteWhere') {
-          const result = await this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const deletes = this.adapter.materializeDeleteWhere(operation.deletes, result.bindings);
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
+          this.assertUpdateQuadsAllowedByAccessScope([...deletes, ...inserts], basePath, accessScope);
           computedDeletes += deletes.length;
           computedInserts += inserts.length;
           deletedRows += (await this.rdfEngine.applyDelta(deletes.map(quadToPattern), inserts)).deletedRows;
         } else if (operation.type === 'insertWhere') {
-          const result = await this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const inserts = this.adapter.materializeDeleteWhere(operation.inserts, result.bindings);
+          this.assertUpdateQuadsAllowedByAccessScope(inserts, basePath, accessScope);
           computedInserts += inserts.length;
           await this.rdfEngine.applyDelta([], inserts);
         } else {
-          const result = await this.rdfEngine.query(operation.query);
+          const result = await this.rdfEngine.query(applyRdfAccessScope(operation.query, accessScope));
           const quads = this.adapter.materializeDeleteWhere(operation.template, result.bindings);
+          this.assertUpdateQuadsAllowedByAccessScope(quads, basePath, accessScope);
           computedDeletes += quads.length;
           deletedRows += (await this.rdfEngine.applyDelta(quads.map(quadToPattern), [])).deletedRows;
         }
@@ -222,16 +345,16 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('queryVoid', fallbackReason(error), (fallback) => fallback.queryVoid(query, basePath));
+      return this.fallbackWith('queryVoid', fallbackReason(error), (fallback) => fallback.queryVoid(query, basePath, accessScope, options), accessScope, error);
     }
   }
 
-  public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
+  public async constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('constructGraph', 'primary disabled', (fallback) => fallback.constructGraph(graph, basePath));
+      return this.fallbackWith('constructGraph', 'primary disabled', (fallback) => fallback.constructGraph(graph, basePath, accessScope), accessScope);
     }
-    if (!graph.startsWith(basePath)) {
+    if (!graph.startsWith(basePath) || (accessScope && !rdfAccessGraphAllowed(graph, accessScope))) {
       return new ArrayIterator([] as Quad[]);
     }
 
@@ -240,27 +363,27 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       const quads = await this.executeConstructPrimary(`
         CONSTRUCT { ?s ?p ?o }
         WHERE { GRAPH <${escapeIri(graph)}> { ?s ?p ?o } }
-      `, basePath, 'constructGraph', start);
+      `, basePath, 'constructGraph', start, accessScope);
       return new ArrayIterator(quads);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('constructGraph', fallbackReason(error), (fallback) => fallback.constructGraph(graph, basePath));
+      return this.fallbackWith('constructGraph', fallbackReason(error), (fallback) => fallback.constructGraph(graph, basePath, accessScope), accessScope, error);
     }
   }
 
-  public async listGraphs(basePath: string): Promise<Set<string>> {
+  public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
     await this.ensureReady();
     if (!this.enablePrimary) {
-      return this.fallbackWith('listGraphs', 'primary disabled', (fallback) => fallback.listGraphs(basePath));
+      return this.fallbackWith('listGraphs', 'primary disabled', (fallback) => fallback.listGraphs(basePath, accessScope), accessScope);
     }
 
     const start = Date.now();
     try {
       const result = await this.executeSelectPrimary(`
         SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }
-      `, basePath, 'listGraphs', start);
+      `, basePath, 'listGraphs', start, accessScope);
       const graphs = new Set<string>();
       for (const binding of result.bindings) {
         const graph = binding.g;
@@ -268,12 +391,12 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
           graphs.add(graph.value);
         }
       }
-      return graphs;
+      return filterRdfAccessGraphs(graphs, accessScope);
     } catch (error) {
       if (error instanceof DisabledSparqlFeatureError) {
         throw error;
       }
-      return this.fallbackWith('listGraphs', fallbackReason(error), (fallback) => fallback.listGraphs(basePath));
+      return this.fallbackWith('listGraphs', fallbackReason(error), (fallback) => fallback.listGraphs(basePath, accessScope), accessScope, error);
     }
   }
 
@@ -338,6 +461,29 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     return iterator;
   }
 
+  private applyMaterializedQuerySelector(
+    operation: 'queryBindings' | 'queryBoolean',
+    query: RdfQuery,
+  ): RdfQuery {
+    if (query.cache?.materialized || !this.autoMaterializeProductViews) {
+      return query;
+    }
+    const materialized = defaultMaterializedQuerySelector(
+      operation,
+      query,
+    );
+    if (!materialized) {
+      return query;
+    }
+    return {
+      ...query,
+      cache: {
+        ...query.cache,
+        materialized,
+      },
+    };
+  }
+
   private bindings(binding: RdfBindingRow, variables: string[]): RdfBindings {
     const entries: [Variable, Term][] = variables
       .map((variableName) => {
@@ -352,9 +498,26 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     operation: SolidRdfSparqlOperation,
     reason: string,
     run: (fallback: SparqlEngine) => Promise<T>,
+    accessScope?: RdfAccessScope,
+    cause?: unknown,
   ): Promise<T> {
+    const embeddedReason = embeddedUnsupportedReason(reason);
+    if (cause instanceof NativeSparqlExecutionError) {
+      throw cause;
+    }
+    const inherited = cause instanceof UnsupportedSparqlQueryError
+      ? {
+          code: cause.code,
+          capability: cause.capability,
+          hint: cause.hint,
+          correction: cause.correction,
+        }
+      : undefined;
+    if (isRestrictiveRdfAccessScope(accessScope)) {
+      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation} inside ACL/ACR-restricted scope: ${embeddedReason}`, inherited);
+    }
     if (!this.fallback) {
-      throw new UnsupportedSparqlQueryError(`No compatibility SPARQL fallback configured for ${operation}: ${reason}`);
+      throw new UnsupportedSparqlQueryError(`Embedded SPARQL engine cannot execute ${operation}: ${embeddedReason}`, inherited);
     }
     this.onFallback?.({ operation, reason });
     const start = Date.now();
@@ -376,14 +539,41 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<RdfQueryResult> {
+    const native = await this.executeNativeSelectPrimary(query, basePath, operation, start, accessScope);
+    if (native) {
+      return native.result;
+    }
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType !== 'SELECT') {
       throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce bindings`);
     }
-    const result = await this.rdfEngine.query(compiled.query);
+    const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
     this.recordPrimary(operation, start, result);
     return result;
+  }
+
+  private assertUpdateQuadsAllowedByAccessScope(
+    quads: readonly Quad[],
+    basePath: string,
+    accessScope?: RdfAccessScope,
+  ): void {
+    if (!isWriteAccessScope(accessScope) || !isRestrictiveRdfAccessScope(accessScope)) {
+      return;
+    }
+    for (const quad of quads) {
+      const graph = quad.graph.termType === 'DefaultGraph' ? basePath : quad.graph.value;
+      if (!rdfAccessGraphAllowed(graph, accessScope)) {
+        throw new UnsupportedSparqlQueryError(
+          `Embedded SPARQL engine cannot execute queryVoid: update target graph is outside the authorized RDF access scope: ${graph}`,
+          {
+            capability: 'sparql.update.access_scope',
+            hint: 'Authorize the target graph for this write, or split the update so each write target is inside the granted graph scope.',
+          },
+        );
+      }
+    }
   }
 
   private async executeConstructPrimary(
@@ -391,12 +581,17 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<Quad[]> {
+    const native = await this.executeNativeGraphPrimary(query, basePath, operation, start, accessScope);
+    if (native) {
+      return native;
+    }
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType !== 'CONSTRUCT' || !compiled.constructTemplate) {
       throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce quads`);
     }
-    const result = await this.rdfEngine.query(compiled.query);
+    const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
     const quads = this.adapter.materializeConstruct(compiled.constructTemplate, result.bindings, rdfDataFactory.defaultGraph() as Term);
     this.recordPrimary(operation, start, {
       ...result,
@@ -415,10 +610,15 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<Quad[]> {
+    const native = await this.executeNativeGraphPrimary(query, basePath, operation, start, accessScope);
+    if (native) {
+      return native;
+    }
     const compiled = this.adapter.compile(query, basePath);
     if (compiled.queryType === 'CONSTRUCT' && compiled.constructTemplate) {
-      const result = await this.rdfEngine.query(compiled.query);
+      const result = await this.rdfEngine.query(applyRdfAccessScope(compiled.query, accessScope));
       const quads = this.adapter.materializeConstruct(compiled.constructTemplate, result.bindings, rdfDataFactory.defaultGraph() as Term);
       this.recordPrimary(operation, start, {
         ...result,
@@ -432,7 +632,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       return quads;
     }
     if (compiled.queryType === 'DESCRIBE' && compiled.describeTargets) {
-      return this.executeDescribePrimary(compiled.query, compiled.describeTargets, basePath, operation, start);
+      return this.executeDescribePrimary(compiled.query, compiled.describeTargets, basePath, operation, start, accessScope);
     }
     throw new UnsupportedSparqlQueryError(`compiled ${compiled.queryType} cannot produce quads`);
   }
@@ -443,8 +643,9 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     basePath: string,
     operation: SolidRdfSparqlOperation,
     start: number,
+    accessScope?: RdfAccessScope,
   ): Promise<Quad[]> {
-    const seed = await this.rdfEngine.query(query);
+    const seed = await this.rdfEngine.query(applyRdfAccessScope(query, accessScope));
     const quads: Quad[] = [];
     const seen = new Set<string>();
 
@@ -454,7 +655,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
         if (!subject || subject.termType !== 'NamedNode') {
           continue;
         }
-        const describe = await this.rdfEngine.query({
+        const describe = await this.rdfEngine.query(applyRdfAccessScope({
           patterns: [
             {
               subject,
@@ -464,7 +665,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
             },
           ],
           select: ['p', 'o'],
-        });
+        }, accessScope));
         for (const row of describe.bindings) {
           const predicate = row.p;
           const object = row.o;
@@ -490,6 +691,123 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
       },
     });
     return quads;
+  }
+
+  private async executeNativeVoidPrimary(
+    query: string,
+    basePath: string,
+    operation: SolidRdfSparqlOperation,
+    start: number,
+    accessScope?: RdfAccessScope,
+    options?: SparqlVoidOptions,
+  ): Promise<boolean> {
+    const envelope = await this.runNativeSparql(query, basePath, operation, 'application/sparql-results+json', accessScope, options);
+    if (!envelope) {
+      return false;
+    }
+    this.recordPrimary(operation, start, {
+      bindings: [],
+      metrics: nativeSparqlMetrics(envelope, 0, Date.now() - start),
+    });
+    return true;
+  }
+
+  private async executeNativeSelectPrimary(
+    query: string,
+    basePath: string,
+    operation: SolidRdfSparqlOperation,
+    start: number,
+    accessScope?: RdfAccessScope,
+  ): Promise<{ result: RdfQueryResult; variables: string[] } | undefined> {
+    const envelope = await this.runNativeSparql(query, basePath, operation, 'application/sparql-results+json', accessScope);
+    if (!envelope) {
+      return undefined;
+    }
+    const parsed = parseNativeSparqlJsonResult(envelope, Date.now() - start);
+    if (!parsed.result) {
+      throw new UnsupportedSparqlQueryError('native SPARQL result did not contain SELECT bindings');
+    }
+    this.recordPrimary(operation, start, parsed.result);
+    return {
+      result: parsed.result,
+      variables: parsed.variables,
+    };
+  }
+
+  private async executeNativeBooleanPrimary(
+    query: string,
+    basePath: string,
+    operation: SolidRdfSparqlOperation,
+    start: number,
+    accessScope?: RdfAccessScope,
+  ): Promise<boolean | undefined> {
+    const envelope = await this.runNativeSparql(query, basePath, operation, 'application/sparql-results+json', accessScope);
+    if (!envelope) {
+      return undefined;
+    }
+    const parsed = parseNativeSparqlJsonResult(envelope, Date.now() - start);
+    if (parsed.boolean === undefined) {
+      throw new UnsupportedSparqlQueryError('native SPARQL result did not contain ASK boolean');
+    }
+    const result: RdfQueryResult = {
+      bindings: parsed.boolean ? [{}] : [],
+      metrics: nativeSparqlMetrics(envelope, parsed.boolean ? 1 : 0, Date.now() - start),
+    };
+    this.recordPrimary(operation, start, result);
+    return parsed.boolean;
+  }
+
+  private async executeNativeGraphPrimary(
+    query: string,
+    basePath: string,
+    operation: SolidRdfSparqlOperation,
+    start: number,
+    accessScope?: RdfAccessScope,
+  ): Promise<Quad[] | undefined> {
+    const envelope = await this.runNativeSparql(query, basePath, operation, 'application/n-triples', accessScope);
+    if (!envelope) {
+      return undefined;
+    }
+    const quads = parseNativeGraphResult(envelope);
+    this.recordPrimary(operation, start, {
+      bindings: [],
+      metrics: nativeSparqlMetrics(envelope, quads.length, Date.now() - start),
+    });
+    return quads;
+  }
+
+  private async runNativeSparql(
+    query: string,
+    basePath: string,
+    operation: SolidRdfSparqlOperation,
+    acceptMediaType: string,
+    accessScope?: RdfAccessScope,
+    options?: SparqlVoidOptions,
+  ): Promise<RdfNativeSparqlResult | undefined> {
+    if (typeof this.rdfEngine.sparqlQuery !== 'function') {
+      return undefined;
+    }
+    this.adapter.assertServerOwnedNativeQuery(query, basePath);
+    const result = await this.rdfEngine.sparqlQuery(query, {
+      basePath,
+      operation,
+      acceptMediaType,
+      accessScope,
+      ...(options?.loadDocument ? { loadDocument: options.loadDocument } : {}),
+    });
+    if (result.status === 'ok') {
+      return result;
+    }
+    if (result.status === 'error') {
+      throw new NativeSparqlExecutionError(result.error || 'native SPARQL engine returned error status');
+    }
+    throw new UnsupportedSparqlQueryError(
+      `native SPARQL engine returned ${result.status}${result.error ? `: ${result.error}` : ''}`,
+      {
+        capability: 'sparql.native',
+        hint: 'Run the query through a native SPARQL engine that can access the current Pod scope, or disable the native SPARQL path for this engine.',
+      },
+    );
   }
 
   private recordPrimary(
@@ -537,6 +855,112 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     return created;
   }
 
+}
+
+function parseNativeSparqlJsonResult(
+  envelope: RdfNativeSparqlResult,
+  durationMs: number,
+): { result?: RdfQueryResult; variables: string[]; boolean?: boolean } {
+  const payload = JSON.parse(envelope.body) as {
+    head?: { vars?: string[] };
+    boolean?: boolean;
+    results?: { bindings?: Array<Record<string, unknown>> };
+  };
+  const variables = payload.head?.vars ?? [];
+  if (typeof payload.boolean === 'boolean') {
+    return { variables, boolean: payload.boolean };
+  }
+  const bindings = (payload.results?.bindings ?? []).map((row) => nativeSparqlBindingRow(row));
+  return {
+    variables,
+    result: {
+      bindings,
+      metrics: nativeSparqlMetrics(envelope, bindings.length, durationMs),
+    },
+  };
+}
+
+function nativeSparqlBindingRow(row: Record<string, unknown>): RdfBindingRow {
+  const binding: RdfBindingRow = {};
+  for (const [variable, value] of Object.entries(row)) {
+    const term = nativeSparqlJsonTerm(value);
+    if (term) {
+      binding[variable] = term;
+    }
+  }
+  return binding;
+}
+
+function nativeSparqlJsonTerm(value: unknown): Term | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const term = value as {
+    type?: string;
+    value?: string;
+    datatype?: string;
+    'xml:lang'?: string;
+  };
+  if (typeof term.value !== 'string') {
+    return undefined;
+  }
+  if (term.type === 'uri') {
+    return rdfDataFactory.namedNode(term.value);
+  }
+  if (term.type === 'bnode') {
+    return rdfDataFactory.blankNode(term.value);
+  }
+  if (term.type === 'literal' || term.type === 'typed-literal') {
+    if (term['xml:lang']) {
+      return rdfDataFactory.literal(term.value, term['xml:lang']);
+    }
+    if (term.datatype) {
+      return rdfDataFactory.literal(term.value, rdfDataFactory.namedNode(term.datatype));
+    }
+    return rdfDataFactory.literal(term.value);
+  }
+  return undefined;
+}
+
+function parseNativeGraphResult(envelope: RdfNativeSparqlResult): Quad[] {
+  const mediaType = envelope.mediaType.toLowerCase();
+  const parser = new N3Parser({
+    format: mediaType.includes('n-quads')
+      ? 'N-Quads'
+      : mediaType.includes('turtle')
+        ? 'Turtle'
+        : 'N-Triples',
+  });
+  return parser.parse(envelope.body) as unknown as Quad[];
+}
+
+function nativeSparqlMetrics(
+  envelope: RdfNativeSparqlResult,
+  returnedRows: number,
+  durationMs: number,
+): RdfQueryResult['metrics'] {
+  const profile = envelope.profile && typeof envelope.profile === 'object'
+    ? envelope.profile as { root?: unknown }
+    : undefined;
+  const root = profile?.root && typeof profile.root === 'object'
+    ? profile.root as { kind?: unknown; descriptor?: unknown; outputRows?: unknown }
+    : undefined;
+  const rootKind = typeof root?.kind === 'string' ? root.kind : undefined;
+  const descriptor = typeof root?.descriptor === 'string' ? root.descriptor : undefined;
+  const profiledRows = typeof root?.outputRows === 'number' && Number.isFinite(root.outputRows)
+    ? root.outputRows
+    : returnedRows;
+  return {
+    engine: 'solid-rdf',
+    plan: ['NativeSparql', envelope.mediaType, ...(rootKind ? [`Native:${rootKind}`] : [])],
+    scannedRows: profiledRows,
+    joinedRows: returnedRows,
+    returnedRows,
+    durationMs,
+    indexChoices: ['native-sparql', ...(descriptor ? [descriptor] : [])],
+    filtersApplied: 0,
+    filtersPushedDown: 0,
+  };
 }
 
 class RdfBindings extends Map<Variable, Term> {
@@ -590,6 +1014,17 @@ function isQuadObjectTerm(term: Term | undefined): term is Quad_Object {
   );
 }
 
+function isWriteAccessScope(scope?: RdfAccessScope): scope is RdfAccessScope {
+  return Boolean(
+    scope
+      && (
+        scope.mode === RdfAccessMode.APPEND
+        || scope.mode === RdfAccessMode.DELETE
+        || scope.mode === RdfAccessMode.WRITE
+      ),
+  );
+}
+
 function fallbackReason(error: unknown): string {
   if (error instanceof UnsupportedSparqlQueryError) {
     return error.message;
@@ -598,6 +1033,12 @@ function fallbackReason(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+function embeddedUnsupportedReason(reason: string): string {
+  return reason
+    .replace(/\s+fallback to compatibility engine\b/gi, ' is not supported by the embedded RDF engine')
+    .replace(/\bis handled by the compatibility engine\b/gi, 'is not supported by the embedded RDF engine');
 }
 
 function operationCountSnapshot(
@@ -618,6 +1059,357 @@ function operationCountSnapshot(
 
 function ratio(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : numerator / denominator;
+}
+
+function defaultMaterializedQuerySelector(
+  operation: 'queryBindings' | 'queryBoolean',
+  query: RdfQuery,
+): RdfQueryMaterializedResultOptions | undefined {
+  if (operation !== 'queryBindings') {
+    return undefined;
+  }
+  if (hasSearchSources(query)) {
+    return undefined;
+  }
+  return statsProductViewMaterializedResult(query)
+    ?? threadHistoryMaterializedResult(query)
+    ?? settingsProductViewMaterializedResult(query)
+    ?? agentContextMaterializedResult(query)
+    ?? stableProductViewMaterializedResult(query);
+}
+
+function statsProductViewMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = statsProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/stats/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function statsProductView(query: RdfQuery): string | undefined {
+  if (!hasStatsShape(query) || !hasProductGraphScope(query)) {
+    return undefined;
+  }
+
+  const predicates = new Set<string>();
+  const hasType = new Set<string>();
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (!predicate) {
+      continue;
+    }
+    predicates.add(predicate);
+    if (predicate === RDF_TYPE) {
+      const type = namedNodeValue(pattern.object);
+      if (type) {
+        hasType.add(type);
+      }
+    }
+  }
+
+  if (predicates.has(XPOD_AI_IS_PROVIDED_BY) && predicates.has(XPOD_CREDENTIAL_PROVIDER)) {
+    return predicates.has(XPOD_CREDENTIAL_FAIL_COUNT)
+      ? 'provider-credential-failures'
+      : 'provider-credential-counts';
+  }
+
+  if (predicates.has(SIOC_HAS_CONTAINER) || predicates.has(SIOC_HAS_MEMBER)) {
+    return predicates.has(UDFS_SCORE)
+      ? 'message-score-by-thread'
+      : 'message-count-by-thread';
+  }
+
+  if (predicates.has(UDFS_STATUS) && predicates.has(UDFS_PRIORITY)) {
+    return 'run-priority-summary';
+  }
+
+  const views = new Set<string>();
+  for (const type of hasType) {
+    const view = SETTINGS_RESOURCE_TYPE_VIEWS.get(type) ?? PRODUCT_RESOURCE_TYPE_VIEWS.get(type);
+    if (view) {
+      views.add(view);
+    }
+  }
+  for (const predicate of predicates) {
+    const view = PRODUCT_RELATION_PREDICATE_VIEWS.get(predicate);
+    if (view) {
+      views.add(view);
+    }
+  }
+
+  if (views.size === 0) {
+    return undefined;
+  }
+  return `${[...views].sort().join('+')}-${statsAggregateKind(query)}`;
+}
+
+function hasStatsShape(query: RdfQuery): boolean {
+  return queryAggregates(query).length > 0
+    || (query.groupBy?.length ?? 0) > 0
+    || (query.having?.length ?? 0) > 0;
+}
+
+function statsAggregateKind(query: RdfQuery): string {
+  const aggregates = queryAggregates(query);
+  const aggregateKind = aggregates.every((aggregate) => aggregate.type === 'count')
+    ? 'counts'
+    : 'numeric-summary';
+  return (query.groupBy?.length ?? 0) > 0 ? `grouped-${aggregateKind}` : aggregateKind;
+}
+
+function queryAggregates(query: RdfQuery): NonNullable<RdfQuery['aggregates']> {
+  return query.aggregates && query.aggregates.length > 0
+    ? query.aggregates
+    : query.aggregate
+      ? [query.aggregate]
+      : [];
+}
+
+function threadHistoryMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const threadIri = threadHistoryQueryThreadIri(query);
+  if (!threadIri) {
+    return undefined;
+  }
+  return {
+    key: `chatkit/thread-history/${shortHash(threadIri)}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function threadHistoryQueryThreadIri(query: RdfQuery): string | undefined {
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (predicate !== SIOC_HAS_CONTAINER && predicate !== SIOC_HAS_MEMBER) {
+      continue;
+    }
+    const object = namedNodeValue(pattern.object);
+    if (object) {
+      return object;
+    }
+  }
+  return undefined;
+}
+
+function settingsProductViewMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = settingsProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/settings/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function settingsProductView(query: RdfQuery): string | undefined {
+  const typeViews = new Set<string>();
+  let hasModelProviderLink = false;
+  let hasCredentialProviderLink = false;
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (predicate === RDF_TYPE) {
+      const typeView = SETTINGS_RESOURCE_TYPE_VIEWS.get(namedNodeValue(pattern.object) ?? '');
+      if (typeView) {
+        typeViews.add(typeView);
+      }
+      continue;
+    }
+    if (predicate === XPOD_AI_IS_PROVIDED_BY) {
+      hasModelProviderLink = true;
+      continue;
+    }
+    if (predicate === XPOD_CREDENTIAL_PROVIDER) {
+      hasCredentialProviderLink = true;
+    }
+  }
+
+  if (hasModelProviderLink && hasCredentialProviderLink) {
+    return 'provider-model-credentials';
+  }
+
+  if (typeViews.size === 0) {
+    return undefined;
+  }
+
+  return [...typeViews].sort().join('+');
+}
+
+function agentContextMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = agentContextProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/agent-context/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function agentContextProductView(query: RdfQuery): string | undefined {
+  if (!query.patterns.some(isProductGraphScoped)) {
+    return undefined;
+  }
+
+  const types = new Set<string>();
+  const predicates = new Set<string>();
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (!predicate) {
+      continue;
+    }
+    predicates.add(predicate);
+    if (predicate === RDF_TYPE) {
+      const type = namedNodeValue(pattern.object);
+      if (type) {
+        types.add(type);
+      }
+    }
+  }
+
+  if (
+    types.has(UDFS_SESSION)
+    && types.has(MEETING_LONG_CHAT)
+    && types.has(SIOC_THREAD)
+    && predicates.has(UDFS_SESSION_STATUS)
+    && predicates.has(UDFS_CONVERSATION)
+    && predicates.has(UDFS_IN_THREAD)
+  ) {
+    return predicates.has(UDFS_TOKEN_USAGE)
+      ? 'active-session-thread-usage'
+      : 'active-session-thread-hydration';
+  }
+
+  return undefined;
+}
+
+function stableProductViewMaterializedResult(query: RdfQuery): RdfQueryMaterializedResultOptions | undefined {
+  const view = stableProductView(query);
+  if (!view) {
+    return undefined;
+  }
+  return {
+    key: `models/product-views/${view}/${shortHash(stableQueryFingerprint(query))}`,
+    version: PRODUCT_VIEW_MATERIALIZED_VERSION,
+  };
+}
+
+function stableProductView(query: RdfQuery): string | undefined {
+  const views = new Set<string>();
+
+  for (const pattern of query.patterns) {
+    const predicate = namedNodeValue(pattern.predicate);
+    if (predicate === RDF_TYPE) {
+      const typeView = PRODUCT_RESOURCE_TYPE_VIEWS.get(namedNodeValue(pattern.object) ?? '');
+      if (typeView) {
+        views.add(typeView);
+      }
+      continue;
+    }
+
+    const predicateView = isProductGraphScoped(pattern)
+      ? PRODUCT_RELATION_PREDICATE_VIEWS.get(predicate ?? '')
+      : undefined;
+    if (predicateView) {
+      views.add(predicateView);
+    }
+  }
+
+  if (views.size === 0) {
+    return undefined;
+  }
+
+  return [...views].sort().join('+');
+}
+
+function hasSearchSources(query: RdfQuery): boolean {
+  return (query.textSearch?.length ?? 0) > 0
+    || (query.vectorSearch?.length ?? 0) > 0;
+}
+
+function isProductGraphScoped(pattern: RdfQueryPattern): boolean {
+  const graph = namedNodeValue(pattern.graph) ?? graphPrefixValue(pattern.graph);
+  return Boolean(graph && isProductGraphPath(graph));
+}
+
+function hasProductGraphScope(query: RdfQuery): boolean {
+  if (query.patterns.some(isProductGraphScoped)) {
+    return true;
+  }
+  const graphVariables = new Set(query.patterns
+    .map((pattern) => variableValue(pattern.graph))
+    .filter((variable): variable is string => Boolean(variable)));
+  if (graphVariables.size === 0) {
+    return false;
+  }
+  return (query.filters ?? []).some((filter) => (
+    graphVariables.has(filter.variable)
+      && filter.operator === '$startsWith'
+      && filter.operand === 'stringValue'
+      && typeof filter.value === 'string'
+      && isProductGraphPath(filter.value)
+  ));
+}
+
+function isProductGraphPath(graph: string): boolean {
+  return graph.includes('/.data/chat/')
+    || graph.includes('/.data/task/')
+    || graph.includes('/.data/sessions/')
+    || graph.includes('/.data/agents/')
+    || graph.includes('/.data/approvals/')
+    || graph.includes('/.data/audits/')
+    || graph.includes('/.data/issues/')
+    || graph.includes('/settings/');
+}
+
+function graphPrefixValue(term: RdfQueryTermPattern | undefined): string | undefined {
+  if (!term || typeof term !== 'object' || 'variable' in term || 'termType' in term) {
+    return undefined;
+  }
+  return '$startsWith' in term && typeof term.$startsWith === 'string'
+    ? term.$startsWith
+    : undefined;
+}
+
+function namedNodeValue(term: RdfQueryTermPattern | undefined): string | undefined {
+  if (!term || typeof term !== 'object' || 'variable' in term || !('termType' in term)) {
+    return undefined;
+  }
+  return term.termType === 'NamedNode' ? term.value : undefined;
+}
+
+function variableValue(term: RdfQueryTermPattern | undefined): string | undefined {
+  if (!term || typeof term !== 'object' || !('variable' in term)) {
+    return undefined;
+  }
+  return term.variable;
+}
+
+function stableQueryFingerprint(query: RdfQuery): string {
+  const { cache: _cache, ...rest } = query;
+  return stableStringify(rest);
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => typeof entry !== 'function' && entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`).join(',')}}`;
+}
+
+function shortHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
 }
 
 function implicitUpdateDefaultGraph(basePath: string): string | undefined {

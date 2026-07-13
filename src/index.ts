@@ -20,6 +20,12 @@ export type {
   RdfPatternQuery,
   RdfQuadIndexOptions,
   RdfQuadIndexScanResult,
+  RdfTextIndexLike,
+  RdfTextIndexOptions,
+  RdfTextIndexSyncLike,
+  RdfVectorIndexLike,
+  RdfVectorIndexOptions,
+  RdfVectorIndexSyncLike,
   RdfShadowBackfillOptions,
   RdfShadowBackfillResult,
   RdfShadowDiff,
@@ -27,12 +33,16 @@ export type {
   RdfSourceInput,
 } from './storage/rdf/types';
 export type { RdfSparqlCompileResult } from './storage/rdf/RdfSparqlAdapter';
+export type { RdfAccessScope } from './storage/rdf/RdfAccessScope';
 export type { ShadowRdfQuintStoreOptions } from './storage/rdf/ShadowRdfQuintStore';
 export type {
   SolidRdfSparqlEngineOptions,
   SolidRdfSparqlFallback,
 } from './storage/rdf/SolidRdfSparqlEngine';
 export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
+export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextIndex';
+export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
+export * from './document';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';
@@ -78,6 +88,10 @@ import { PgQuintStore } from './storage/quint/PgQuintStore';
 import { QuintStore } from './storage/quint/types';
 import { RdfQuadIndex } from './storage/rdf/RdfQuadIndex';
 import { Rdf3xIndex } from './storage/rdf/Rdf3xIndex';
+import { RdfTextIndex } from './storage/rdf/RdfTextIndex';
+import { RdfVectorIndex } from './storage/rdf/RdfVectorIndex';
+import { PostgresRdfTextIndex } from './storage/rdf/PostgresRdfTextIndex';
+import { PostgresRdfVectorIndex } from './storage/rdf/PostgresRdfVectorIndex';
 import { RdfSparqlAdapter } from './storage/rdf/RdfSparqlAdapter';
 import { RdfTermDictionary } from './storage/rdf/RdfTermDictionary';
 import { ShadowRdfQuintStore } from './storage/rdf/ShadowRdfQuintStore';
@@ -114,6 +128,7 @@ import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
+import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
 
 export * from './api/reconciler';
 export * from './edge/reachability';
@@ -206,6 +221,10 @@ export {
   RdfTermDictionary,
   RdfQuadIndex,
   Rdf3xIndex,
+  RdfTextIndex,
+  RdfVectorIndex,
+  PostgresRdfTextIndex,
+  PostgresRdfVectorIndex,
   RdfSparqlAdapter,
   ShadowRdfQuintStore,
   SolidRdfEngine,
@@ -242,4 +261,6 @@ export {
   ProvisionPodCreator,
   ProvisionCodeCodec,
   LocalPodProvisioningService,
+  // SolidFS recovery exports
+  SqliteSolidFsSyncJournal,
 };

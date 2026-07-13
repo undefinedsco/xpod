@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { Readable } from 'stream';
 import { getLoggerFor } from 'global-logger-factory';
 import arrayifyStream from 'arrayify-stream';
@@ -26,6 +28,7 @@ import type {
   ResourceIdentifier,
   Guarded,
   DataAccessor,
+  FileIdentifierMapper,
 } from '@solid/community-server';
 import {
   RdfSparqlAdapter,
@@ -37,18 +40,27 @@ import {
   isRdfDocumentPath,
   rdfContentTypeForPath,
 } from '../rdf/RdfContentTypes';
+import { createRdfEntityTextChunks } from '../rdf/RdfTextProjection';
 import { RdfQuadIndex } from '../rdf/RdfQuadIndex';
 import { serializeRdfXml } from '../rdf/RdfXmlSerializer';
 import { SolidRdfEngine } from '../rdf/SolidRdfEngine';
+import { rdfAccessGraphAllowed, type RdfAccessScope } from '../rdf/RdfAccessScope';
 import type {
   RdfBindingRow,
   RdfQuery,
   RdfQueryPattern,
   RdfQueryTermPattern,
   RdfSourceInput,
+  RdfTextChunkInput,
+  RdfTextSourceInput,
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
+  RdfVectorChunkInput,
+  RdfVectorSourceInput,
   RdfValuesBindingSource,
 } from '../rdf/types';
 import { metadataRequestContext } from '../MetadataRequestContext';
+import type { SolidFsChange, SolidFsManifest } from '../../solidfs/types';
 
 export interface LocalRdfDocument {
   data: Guarded<Readable>;
@@ -67,6 +79,12 @@ export interface LocalRdfIndexAccessor {
     options?: LocalRdfSyncOptions,
   ): Promise<void>;
   deleteLocalRdfIndex(identifier: ResourceIdentifier): Promise<void>;
+  moveLocalRdfIndex?(
+    previousIdentifier: ResourceIdentifier,
+    nextIdentifier: ResourceIdentifier,
+    options?: LocalRdfMoveOptions,
+  ): Promise<number>;
+  rewriteTerms?(input: RdfTermRewriteInput): Promise<RdfTermRewriteResult> | RdfTermRewriteResult;
 }
 
 export interface LocalRdfSyncOptions {
@@ -74,6 +92,10 @@ export interface LocalRdfSyncOptions {
   workspace?: string;
   localPath?: string;
   sourceVersion?: string;
+}
+
+export interface LocalRdfMoveOptions extends LocalRdfSyncOptions {
+  previousSource?: string;
 }
 
 export interface SourceScopedStructuredRdfAccessor {
@@ -84,6 +106,26 @@ export interface SourceScopedStructuredRdfAccessor {
     source: RdfSourceInput,
   ): Promise<void>;
   deleteRdfSourceDocument(identifier: ResourceIdentifier): Promise<void>;
+  moveRdfSourceDocument?(oldSource: string, next: RdfSourceInput): Promise<number>;
+  indexTextSource?(source: RdfTextSourceInput, text: string, chunks?: RdfTextChunkInput[]): Promise<void>;
+  deleteTextSource?(source: string): Promise<number>;
+  indexVectorSource?(source: RdfVectorSourceInput, chunks: RdfVectorChunkInput[]): Promise<void>;
+  deleteVectorSource?(source: string): Promise<number>;
+}
+
+export interface LocalRdfAuthorityJournalOperation {
+  id: string;
+}
+
+export interface LocalRdfAuthorityJournal {
+  recordLocalCommitted(
+    change: SolidFsChange,
+    workspace: SolidFsManifest,
+    txId?: string,
+  ): Promise<LocalRdfAuthorityJournalOperation>;
+  markDone(id: string): Promise<void>;
+  markRetryableFailure(id: string, error: unknown): Promise<void>;
+  markReconcileRequired(id: string, reason: string): Promise<void>;
 }
 
 interface LocalRdfGraphState {
@@ -96,6 +138,18 @@ interface LocalRdfAuthorityPatch {
   previousQuads: Quad[];
   previousExists: boolean;
   nextQuads: Quad[];
+}
+
+interface LocalRdfAuthorityJournalPatch {
+  patch: LocalRdfAuthorityPatch;
+  operation: LocalRdfAuthorityJournalOperation;
+}
+
+interface LocalRdfAuthorityJournalPatchDraft {
+  patch: LocalRdfAuthorityPatch;
+  change: SolidFsChange;
+  workspace: SolidFsManifest;
+  txId?: string;
 }
 
 /**
@@ -115,8 +169,11 @@ export class MixDataAccessor implements DataAccessor {
   private readonly structuredDataAccessor: DataAccessor;
   private readonly unstructuredDataAccessor: DataAccessor;
   private readonly rdfFileDataAccessor: DataAccessor;
+  private readonly rdfFileMapper?: FileIdentifierMapper;
+  private readonly localRdfAuthorityJournal?: LocalRdfAuthorityJournal;
   private readonly presignedRedirectEnabled: boolean;
   private readonly mirrorContainersToUnstructured: boolean;
+  private readonly textSearchIndexingEnabled: boolean;
 
   constructor(
     structuredDataAccessor: DataAccessor,
@@ -124,12 +181,18 @@ export class MixDataAccessor implements DataAccessor {
     presignedRedirectEnabled = false,
     mirrorContainersToUnstructured = true,
     rdfFileDataAccessor: DataAccessor = unstructuredDataAccessor,
+    textSearchIndexingEnabled = false,
+    rdfFileMapper?: FileIdentifierMapper,
+    localRdfAuthorityJournal?: LocalRdfAuthorityJournal,
   ) {
     this.structuredDataAccessor = structuredDataAccessor;
     this.unstructuredDataAccessor = unstructuredDataAccessor;
     this.rdfFileDataAccessor = rdfFileDataAccessor;
+    this.rdfFileMapper = rdfFileMapper;
+    this.localRdfAuthorityJournal = localRdfAuthorityJournal;
     this.presignedRedirectEnabled = presignedRedirectEnabled;
     this.mirrorContainersToUnstructured = mirrorContainersToUnstructured;
+    this.textSearchIndexingEnabled = textSearchIndexingEnabled;
   }
 
   /**
@@ -284,6 +347,7 @@ export class MixDataAccessor implements DataAccessor {
     // can operate on real files; remove that mirror together with the index.
     if (this.isLocalMirroredRdf(identifier, metadata)) {
       await this.deleteRdfFileResourceIfPresent(identifier);
+      await this.deleteSearchIndexes(identifier);
     } else if (this.isUnstructured(metadata)) {
       await this.deleteUnstructuredResourceIfPresent(identifier);
     }
@@ -300,12 +364,21 @@ export class MixDataAccessor implements DataAccessor {
    * rebuild the structured RDF index. The structured accessor decides whether
    * unsupported shapes have an explicitly configured compatibility path.
    */
-  public async executeSparqlUpdate(query: string, baseIri?: string): Promise<void> {
+  public async executeSparqlUpdate(
+    query: string,
+    baseIri?: string,
+    accessScope?: RdfAccessScope,
+  ): Promise<void> {
     if (baseIri) {
       const identifier = { path: baseIri };
       if (await this.shouldApplyLocalRdfSparqlUpdate(identifier)) {
         try {
-          const writtenIdentifiers = await this.executeLocalRdfSparqlUpdate(query, identifier, new Set([identifier.path]));
+          const writtenIdentifiers = await this.executeLocalRdfSparqlUpdate(
+            query,
+            identifier,
+            new Set([identifier.path]),
+            accessScope,
+          );
           for (const writtenIdentifier of writtenIdentifiers) {
             this.invalidateMetadataCache(writtenIdentifier);
           }
@@ -349,6 +422,7 @@ export class MixDataAccessor implements DataAccessor {
     query: string,
     identifier: ResourceIdentifier,
     localRdfAuthorityIris: ReadonlySet<string>,
+    accessScope?: RdfAccessScope,
   ): Promise<ResourceIdentifier[]> {
     const parsed = new SparqlParser({ baseIRI: identifier.path }).parse(query);
     const delta = this.rdfSparqlAdapter.compileUpdateDelta(parsed, this.parentContainer(identifier).path, {
@@ -357,7 +431,12 @@ export class MixDataAccessor implements DataAccessor {
     const writableGraphIris = this.localRdfDeltaWriteGraphIris(delta.operations, localRdfAuthorityIris);
     const graphStates = await this.loadLocalRdfDeltaGraphs(delta.operations, writableGraphIris, localRdfAuthorityIris);
     const graphQuads = new Map([...graphStates].map(([ graphIri, state ]) => [graphIri, state.quads]));
-    const nextQuadsByGraph = this.applyLocalRdfDelta(graphQuads, delta.operations, writableGraphIris);
+    const nextQuadsByGraph = this.applyLocalRdfDelta(
+      graphQuads,
+      delta.operations,
+      writableGraphIris,
+      accessScope,
+    );
     const patches = writableGraphIris.map((graphIri): LocalRdfAuthorityPatch => {
       const previous = graphStates.get(graphIri);
       return {
@@ -375,13 +454,16 @@ export class MixDataAccessor implements DataAccessor {
     graphQuads: Map<string, Quad[]>,
     operations: RdfSparqlUpdateDeltaOperation[],
     writableGraphIris: string[],
+    accessScope?: RdfAccessScope,
   ): Map<string, Quad[]> {
     const writableGraphs = new Set(writableGraphIris);
     const byGraph = new Map<string, Map<string, Quad>>();
     for (const [ graphIri, quads ] of graphQuads) {
       byGraph.set(graphIri, new Map(quads.map((quad) => [this.quadKey(quad), quad])));
     }
-    const currentQuads = (): Quad[] => [...byGraph.values()].flatMap((quads) => [...quads.values()]);
+    const currentQuads = (): Quad[] => [...byGraph.entries()]
+      .filter(([ graphIri ]) => !accessScope || rdfAccessGraphAllowed(graphIri, accessScope))
+      .flatMap(([, quads ]) => [...quads.values()]);
     const writableQuads = (graphIri: string): Map<string, Quad> => {
       let quads = byGraph.get(graphIri);
       if (!quads) {
@@ -841,26 +923,129 @@ export class MixDataAccessor implements DataAccessor {
 
   private async writeLocalRdfAuthorityPatches(patches: LocalRdfAuthorityPatch[]): Promise<void> {
     const applied: LocalRdfAuthorityPatch[] = [];
+    const journalPatches: LocalRdfAuthorityJournalPatch[] = [];
+    const journalDrafts = await this.prepareLocalRdfAuthorityJournalPatches(patches);
     try {
-      for (const patch of patches) {
-        let localAuthorityWritten = false;
-        try {
-          const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
-          await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
-          localAuthorityWritten = true;
-          await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
-          applied.push(patch);
-        } catch (error) {
-          if (localAuthorityWritten) {
-            applied.push(patch);
-          }
-          throw error;
+      for (let index = 0; index < patches.length; index += 1) {
+        const patch = patches[index];
+        const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
+        await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
+        applied.push(patch);
+        const operation = await this.recordLocalRdfAuthorityJournalPatch(journalDrafts[index]);
+        if (operation) {
+          journalPatches.push({ patch, operation });
         }
       }
+
+      for (const patch of applied) {
+        const authorityQuads = patch.nextQuads.map((quad) => this.toDefaultGraphQuad(quad));
+        await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+        await this.syncTextSearchIndex(
+          patch.identifier,
+          await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
+          {},
+          authorityQuads,
+        );
+      }
+
+      for (const journalPatch of journalPatches) {
+        await this.localRdfAuthorityJournal?.markDone(journalPatch.operation.id);
+      }
     } catch (error) {
+      await this.markLocalRdfAuthorityJournalFailure(journalPatches, error);
       await this.rollbackLocalRdfAuthorityPatches(applied);
       throw error;
     }
+  }
+
+  private async prepareLocalRdfAuthorityJournalPatches(
+    patches: LocalRdfAuthorityPatch[],
+  ): Promise<LocalRdfAuthorityJournalPatchDraft[]> {
+    if (!this.localRdfAuthorityJournal || !this.rdfFileMapper || patches.length === 0) {
+      return [];
+    }
+
+    const mapped = await Promise.all(patches.map(async (patch) => ({
+      patch,
+      link: await this.rdfFileMapper!.mapUrlToFilePath(patch.identifier, false, this.localRdfContentType(patch.identifier)),
+    })));
+    const workspace = this.localRdfPatchWorkspace(
+      mapped.map(({ patch }) => patch.identifier.path),
+      mapped.map(({ link }) => link.filePath),
+    );
+    const txId = localRdfPatchTxId(workspace, mapped.map(({ patch, link }) => ({
+      path: this.localRdfPatchRelativePath(patch.identifier.path, workspace.workspace, link.filePath, workspace.cwd),
+      resource: patch.identifier.path,
+      sourcePath: link.filePath,
+      type: patch.previousExists ? 'updated' : 'created',
+    })));
+
+    return mapped.map(({ patch, link }): LocalRdfAuthorityJournalPatchDraft => ({
+      patch,
+      workspace,
+      txId,
+      change: {
+        path: this.localRdfPatchRelativePath(patch.identifier.path, workspace.workspace, link.filePath, workspace.cwd),
+        resource: patch.identifier.path,
+        source: 'filesystem',
+        sourcePath: link.filePath,
+        contentType: this.localRdfContentType(patch.identifier),
+        projection: 'direct',
+        type: patch.previousExists ? 'updated' : 'created',
+      },
+    }));
+  }
+
+  private async recordLocalRdfAuthorityJournalPatch(
+    draft: LocalRdfAuthorityJournalPatchDraft | undefined,
+  ): Promise<LocalRdfAuthorityJournalOperation | undefined> {
+    if (!draft || !this.localRdfAuthorityJournal) {
+      return undefined;
+    }
+    return this.localRdfAuthorityJournal.recordLocalCommitted(draft.change, draft.workspace, draft.txId);
+  }
+
+  private async markLocalRdfAuthorityJournalFailure(
+    journalPatches: LocalRdfAuthorityJournalPatch[],
+    error: unknown,
+  ): Promise<void> {
+    if (!this.localRdfAuthorityJournal || journalPatches.length === 0) {
+      return;
+    }
+    const message = `Local RDF authority patch did not complete; rollback/reconcile required: ${error instanceof Error ? error.message : String(error)}`;
+    for (const journalPatch of journalPatches) {
+      try {
+        await this.localRdfAuthorityJournal.markRetryableFailure(journalPatch.operation.id, error);
+        await this.localRdfAuthorityJournal.markReconcileRequired(journalPatch.operation.id, message);
+      } catch (journalError) {
+        this.logger.warn(`Failed to update local RDF authority journal for ${journalPatch.patch.identifier.path}: ${journalError instanceof Error ? journalError.message : String(journalError)}`);
+      }
+    }
+  }
+
+  private localRdfPatchWorkspace(
+    resourcePaths: string[],
+    filePaths: string[],
+  ): SolidFsManifest {
+    const workspace = commonHttpContainer(resourcePaths) ?? this.parentContainer({ path: resourcePaths[0] }).path;
+    const cwd = commonDirectory(filePaths);
+    return {
+      workspace,
+      cwd,
+      projection: 'direct',
+      entries: [],
+    };
+  }
+
+  private localRdfPatchRelativePath(
+    identifierPath: string,
+    workspace: string,
+    filePath: string,
+    cwd: string,
+  ): string {
+    const relative = this.relativePathFromWorkspace(identifierPath, workspace)
+      ?? path.relative(cwd, filePath).split(path.sep).join('/');
+    return relative && relative.length > 0 ? relative : path.basename(filePath);
   }
 
   private async rollbackLocalRdfAuthorityPatches(patches: LocalRdfAuthorityPatch[]): Promise<void> {
@@ -871,9 +1056,16 @@ export class MixDataAccessor implements DataAccessor {
           const authorityQuads = patch.previousQuads.map((quad) => this.toDefaultGraphQuad(quad));
           await this.writeLocalRdfAuthority(patch.identifier, authorityQuads);
           await this.writeStructuredRdfIndex(patch.identifier, authorityQuads, new RepresentationMetadata(patch.identifier));
+          await this.syncTextSearchIndex(
+            patch.identifier,
+            await this.serializeQuadsForLocalFile(patch.identifier, authorityQuads),
+            {},
+            authorityQuads,
+          );
         } else {
           await this.deleteRdfFileResourceIfPresent(patch.identifier);
           await this.deleteLocalRdfIndex(patch.identifier);
+          await this.deleteSearchIndexes(patch.identifier);
         }
         this.invalidateMetadataCache(patch.identifier);
       } catch (rollbackError) {
@@ -932,6 +1124,10 @@ export class MixDataAccessor implements DataAccessor {
       ...options,
       contentType: localContentType,
     });
+    await this.syncTextSearchIndex(identifier, text, {
+      ...options,
+      contentType: localContentType,
+    }, quads);
     this.invalidateMetadataCache(identifier);
   }
 
@@ -943,12 +1139,34 @@ export class MixDataAccessor implements DataAccessor {
       } else {
         await this.structuredDataAccessor.deleteResource(identifier);
       }
+      await this.deleteSearchIndexes(identifier);
       this.invalidateMetadataCache(identifier);
     } catch (error) {
       if (!NotFoundHttpError.isInstance(error)) {
         throw error;
       }
     }
+  }
+
+  public async moveLocalRdfIndex(
+    previousIdentifier: ResourceIdentifier,
+    nextIdentifier: ResourceIdentifier,
+    options: LocalRdfMoveOptions = {},
+  ): Promise<number> {
+    const sourceScopedAccessor = this.sourceScopedStructuredAccessor();
+    if (!sourceScopedAccessor?.moveRdfSourceDocument) {
+      return 0;
+    }
+
+    const moved = await sourceScopedAccessor.moveRdfSourceDocument(
+      options.previousSource ?? previousIdentifier.path,
+      this.rdfSourceInput(nextIdentifier, options),
+    );
+    if (moved > 0) {
+      this.invalidateMetadataCache(previousIdentifier);
+      this.invalidateMetadataCache(nextIdentifier);
+    }
+    return moved;
   }
 
   private async writeRdfDocument(
@@ -961,17 +1179,20 @@ export class MixDataAccessor implements DataAccessor {
     addResourceMetadata(structuredMetadata, false);
     updateModifiedDate(structuredMetadata);
     await this.ensureRdfFileParentContainers(identifier);
+    const text = await this.serializeQuadsForLocalFile(identifier, quads);
 
     await this.rdfFileDataAccessor.writeDocument(
       identifier,
-      guardStream(Readable.from([ await this.serializeQuadsForLocalFile(identifier, quads) ])),
+      guardStream(Readable.from([ text ])),
       this.createLocalRdfMetadata(identifier, metadata),
     );
 
     try {
       await this.writeStructuredRdfIndex(identifier, quads, structuredMetadata);
+      await this.syncTextSearchIndex(identifier, text, {}, quads);
     } catch (error) {
       await this.deleteRdfFileResourceIfPresent(identifier);
+      await this.deleteSearchIndexes(identifier);
       throw error;
     }
   }
@@ -1017,11 +1238,13 @@ export class MixDataAccessor implements DataAccessor {
     }
 
     await this.ensureRdfFileParentContainers(identifier);
+    const text = await this.serializeQuadsForLocalFile(identifier, quads);
     await this.rdfFileDataAccessor.writeDocument(
       identifier,
-      guardStream(Readable.from([ await this.serializeQuadsForLocalFile(identifier, quads) ])),
+      guardStream(Readable.from([ text ])),
       this.createLocalRdfMetadata(identifier, metadata),
     );
+    await this.syncTextSearchIndex(identifier, text, {}, quads);
   }
 
   private async getLocalRdfMetadata(
@@ -1077,6 +1300,35 @@ export class MixDataAccessor implements DataAccessor {
       return accessor as SourceScopedStructuredRdfAccessor;
     }
     return undefined;
+  }
+
+  private async syncTextSearchIndex(
+    identifier: ResourceIdentifier,
+    text: string,
+    options: LocalRdfSyncOptions & { contentType?: string } = {},
+    quads?: Quad[],
+  ): Promise<void> {
+    if (!this.textSearchIndexingEnabled || !this.isByLineRdfIdentifier(identifier)) {
+      return;
+    }
+    const accessor = this.sourceScopedStructuredAccessor();
+    if (!accessor?.indexTextSource) {
+      return;
+    }
+    const source = this.rdfSourceInput(identifier, options);
+    await accessor.indexTextSource(
+      source,
+      text,
+      quads ? createRdfEntityTextChunks(source, quads) : undefined,
+    );
+  }
+
+  private async deleteSearchIndexes(identifier: ResourceIdentifier): Promise<void> {
+    if (!this.textSearchIndexingEnabled || !this.isByLineRdfIdentifier(identifier)) {
+      return;
+    }
+    const accessor = this.sourceScopedStructuredAccessor();
+    await accessor?.deleteTextSource?.(identifier.path);
   }
 
   private rdfSourceInput(
@@ -1323,4 +1575,88 @@ export class MixDataAccessor implements DataAccessor {
     cache.delete(trimmed);
     cache.delete(withSlash);
   }
+}
+
+function localRdfPatchTxId(
+  manifest: SolidFsManifest,
+  changes: Array<Pick<SolidFsChange, 'path' | 'resource' | 'sourcePath' | 'type'>>,
+): string | undefined {
+  if (changes.length <= 1) {
+    return undefined;
+  }
+
+  const digest = createHash('sha256')
+    .update(JSON.stringify({
+      workspace: manifest.workspace,
+      projection: manifest.projection,
+      cwd: manifest.cwd,
+      changes,
+      nonce: randomUUID(),
+    }))
+    .digest('hex')
+    .slice(0, 32);
+  return `solidfs_tx_${digest}`;
+}
+
+function commonHttpContainer(resourcePaths: string[]): string | undefined {
+  const urls: URL[] = [];
+  for (const resourcePath of resourcePaths) {
+    try {
+      const url = new URL(resourcePath);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        return undefined;
+      }
+      url.hash = '';
+      url.search = '';
+      urls.push(url);
+    } catch {
+      return undefined;
+    }
+  }
+  if (urls.length === 0) {
+    return undefined;
+  }
+  const origin = urls[0].origin;
+  if (!urls.every((url) => url.origin === origin)) {
+    return undefined;
+  }
+
+  const parentSegments = urls.map((url) => {
+    const parts = url.pathname.replace(/\/+$/u, '').split('/').filter(Boolean);
+    parts.pop();
+    return parts;
+  });
+  const common: string[] = [];
+  const first = parentSegments[0];
+  for (let index = 0; index < first.length; index += 1) {
+    const value = first[index];
+    if (!parentSegments.every((segments) => segments[index] === value)) {
+      break;
+    }
+    common.push(value);
+  }
+
+  const workspace = new URL(urls[0].href);
+  workspace.pathname = `/${common.join('/')}${common.length > 0 ? '/' : ''}`;
+  workspace.hash = '';
+  workspace.search = '';
+  return workspace.href;
+}
+
+function commonDirectory(filePaths: string[]): string {
+  if (filePaths.length === 0) {
+    return process.cwd();
+  }
+  const directories = filePaths.map((filePath) => path.resolve(path.dirname(filePath)).split(path.sep));
+  const first = directories[0];
+  const common: string[] = [];
+  for (let index = 0; index < first.length; index += 1) {
+    const value = first[index];
+    if (!directories.every((segments) => segments[index] === value)) {
+      break;
+    }
+    common.push(value);
+  }
+  const joined = common.join(path.sep);
+  return joined.length > 0 ? joined : path.parse(path.resolve(filePaths[0])).root;
 }

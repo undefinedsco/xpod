@@ -1,0 +1,1031 @@
+# RDF Performance Report and Data Migration Plan
+
+记录当前 RDF-3X / PostgreSQL RDF baseline 的性能结论、已验证边界和数据迁移计划。本文档描述公开仓库已经落到代码和 benchmark 的能力：`baseline`、`pg-result-cache`、`pg-hot-operators`、可选 `pg-custom-index` capability probe，以及表级 query result cache / PG SQL fast path。
+
+## Current Decision
+
+- 默认查询内核：`SolidRdfEngine` / `PostgresRdfEngine` 自有 RDF engine。
+- 默认索引 profile：`rdf3x`。
+- 事实源：SolidFS 权威文件和 RDF facts 表；RDF-3X derived stats / query cache 都是可删除、可重建的派生数据。
+- 不提供用户可见的物理 backend selector。
+- PostgreSQL acceleration profile 包含公开实现：`baseline | pg-result-cache | pg-hot-operators | pg-custom-index`。
+- cloud 默认启用 `pg-hot-operators`：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 由 `PostgresRdfEngine` 内置 PG SQL fast path 提供，`cache.result` 使用表级 query result cache。
+- `pg-custom-index` 不改变 cloud 默认；它要求部署侧 PostgreSQL 安装 `xpod_rdf` native extension 并声明 `index.xpod_rdf_perm`。缺 extension 或缺能力时，`storageStats().pgAcceleration` 必须报告 `fallbackReason=capability-missing` 和 `missingCapabilities`，查询语义回退 RDF-3X / PG SQL baseline。
+- 开源 cloud 不依赖额外数据库扩展；缺少部署侧定制能力时，Pod 读写和查询语义不受影响。
+- vendor-neutral native SPARQL ABI 定义可替换 planner/executor 的互操作边界；默认 profile 和 `SolidRdfEngine` 语义不依赖具体供应商实现。
+- 公开 `xpod_rdf` extension 通过 capability probe 和 SQL ABI 提供独立的 PostgreSQL custom index/operator 路径；该路径保持可选，并在能力缺失或 shape 不支持时回退公开 baseline。
+
+## Product-grade P0/P1 Backlog
+
+P0 是 cloud 默认可上线路径必须满足的能力；P1 是性能、运维体验或可选 custom-index
+增强，不阻塞开源默认路径。
+
+| Priority | Item | Status | Evidence / Exit criteria |
+| --- | --- | --- | --- |
+| P0 | Cloud default 不依赖 PostgreSQL native extension | Done | 默认 profile 为 `pg-hot-operators`；缺 `xpod_rdf` 时 `pg-custom-index` 只能 fallback，不影响 Pod 读写和查询语义。 |
+| P0 | 36k oversized PGlite correctness/capacity gate | Done | `--targetQuads=36000 --caseProfile=extreme` baseline 与 `pg-hot-operators` 均通过，seed `45656` quads、plan matched、planner stats refreshed。 |
+| P0 | 真实 PG medium/extreme baseline / hot / custom consistency gate | Done | 2026-06-09 PG17 rerun 覆盖 `--concurrency=4`，三种 profile 均 plan matched 且 planner stats refreshed；custom 只作为可观测/局部收益证据。 |
+| P0 | Numeric aggregate 不无条件切到 RDF-3X/native | Done | SQLite/file-backed 默认保留 `RdfQuadIndex` SQL aggregate path；PG high-fanout grouped numeric 保持 RDF-3X/native shape gate，不把低基数 facts cutover 泛化。 |
+| P0 | 真实 PG COPY stream bulk ingest | Done | `PgPoolExecutor.copyFromRows()` 已为 real `pg` client 接入 COPY FROM STDIN staging path；PGlite / fake pg pool 不暴露 capability 时继续走 staging/UNNEST fallback；benchmark report 已记录 seed ingest wall-clock 与 `bulkLoad.copyFromRows` counters。2026-06-09 disposable PG17 已修复 graph-prefix range 的 collation 问题，medium/default `10,448` quads seed 命中 quad COPY（10,446 COPY rows，849ms）且完整 benchmark 退出 0；medium/extreme `45,656` quads seed 命中 term+quad COPY（65,166 COPY rows，3,734ms）且完整 benchmark 退出 0。 |
+| P0 | `large=1_000_000` / 更高并发真实 PG release gate | Done | 2026-06-09 disposable PG17 `pg-hot-operators` large gate 通过：seed `1,001,024` quads，COPY rows `1,446,309`，fallback `0`，`--concurrency=4` matched，planner stats refreshed，first query `2,986 ms`，warm steady p95 `2,310 ms`，storage total/facts ratio `1.81x`；`bun run benchmark:rdf-models:pg:gate -- --root=.test-data/rdf-pg-large-real-hot-20260609 --rdfAccelerationProfile=pg-hot-operators` matched。 |
+| P0 | Profile / models / ACL/ACR smoke gate | Done | `bun run test:rdf:access-smoke` 覆盖 profile 匿名读取、models/profile/ACL/ACR benchmark seed、WebACL/ACP graph access scope、RDF stats cache-scope filter，以及 PG result/materialized cache 的 principal/access-scope 隔离和 ACL/ACR invalidation。cloud/standalone Docker profile GET 仍由 `bun run test:integration:full` 覆盖。 |
+| P1 | Extension-level ordered top-N early-stop | Done | TS 侧接入可选 `join.required_bgp.order_page.topn.native` capability 和 `xpod_rdf.bgp_order_page(...)` ABI；支持的 top-N shape 收窄为单排序变量，且 ORDER BY 变量必须在 project 中，planner 选择 order-aware permutation。能力激活时 plan 必须暴露对应 native operator marker；能力缺失或 shape 不支持时回退 RDF-3X ordered join。公开 `two_pattern_bgp_value_order_page` benchmark 的 facts/btree p95 为 `5.531ms`，`xpod_rdf` operator p95 为 `5.393ms`；该证据只支持受限 shape 的性能相当，不支持默认 cutover 或“所有 ordered page 更快”的结论。 |
+| P1 | Graph-prefix grouped count / count distinct native cost gate | Done | 当前部分 graph-prefix native/custom case 仍慢于 RDF-3X / btree baseline，不能默认 cutover；mock extension 回归已锁住 graph-prefix COUNT DISTINCT 和 grouped count 继续走 RDF-3X + `GraphPrefixMembershipFilter`，并通过 planner explain 分别暴露 `cost-cutover-count-distinct-native-regression` / `cost-cutover-group-count-native-regression`。 |
+| P1 | PG text/vector persistent backend | Done | `PostgresRdfTextIndex` / `PostgresRdfVectorIndex` 已把 text source、chunk、posting、vector component 持久化到 PG/PGlite，并通过 `PostgresRdfEngine.options_textIndex/options_vectorIndex` 接入 cloud 配置；`MixDataAccessor`、SolidFS syncer、`RdfSearchIndexingService` 和 Run context retrieval 已接到同一产品边界。 |
+| P1 | Benchmark report ingest 到 dashboard | Done | `RdfBenchmarkReportCatalog` 会从受控 `.test-data/rdf-*` / `rdf-engine` report 目录读取 `models-*.json`，抽取 seed、profile、plan/concurrency gate、COPY ingest、refresh、cold/warm p50/p95 和 storage ratio 摘要；`RdfStorageStatsService.snapshot()` 将 `benchmarkReports` 带给 `/v1/rdf/stats` 与 `/api/admin/rdf/stats`，dashboard RDF 页展示最近 report 表，不再只能看 live `storageStats()`。 |
+
+
+## 2026-06 Product-grade acceleration slice
+
+本 slice 吸收 RDF database 的通用执行层经验，不新增公开 backend，也不把数据迁移到第二套事实源。
+现有 facts / RDF-3X baseline 仍是对比基线；新增能力全部按 derived/rebuildable 处理。
+
+| Item | Status | Storage / migration note | Verification gate |
+| --- | --- | --- | --- |
+| n-column materialized views | Implemented | 新增 `rdf_materialized_views` / `rdf_materialized_view_cells`；只存 query binding 派生行，按 `facts_data_version` 版本化，不需要业务数据迁移。 | `tests/storage/rdf/PostgresRdfEngine.test.ts` 的 materialized view case 覆盖 build、inactive rebuild、atomic activate、scope 隔离和 query join。 |
+| entity-aware text index | Implemented | `rdf_text_entities` 是 chunk -> RDF entity/predicate mention bridge；source re-index 会删除旧 mentions 后重写。SQLite/PG text index 都支持。 | `RdfTextIndex.test.ts` 与 `PostgresRdfTextIndex.test.ts` 覆盖 text+entity、entity-only、all-entities 和 stale mention 删除。 |
+| autocomplete/schema explorer | Implemented | 无新增 durable schema；直接从 facts / term dictionary / cardinality 统计读取。 | `PostgresRdfEngine.test.ts` schema explorer case 覆盖 query、graphPrefix、graphs/predicates/classes/terms。 |
+| versioned rebuild + atomic cutover | Implemented | Materialized view 可先 `activate:false` 构建新 facts version，确认后 `activateMaterializedView` 单事务切换 active build。旧 active 在 cutover 前继续服务。 | 同 materialized view case 验证 cutover 前后 query 结果。 |
+| bounded path search | Implemented | 无新增存储；BFS 直接读 facts，受 `maxDepth` / `maxPaths` / graphPrefix / predicate whitelist 限制。 | `PostgresRdfEngine.test.ts` bounded path case 覆盖 out/in、predicate、graph-prefix 和 depth limit。 |
+| W3C compliance/deviation gate | Implemented | `docs/rdf-sparql-compliance-gate.json` 作为机器可读 manifest；不是运行时事实。 | `RdfComplianceGate.test.ts` 校验 manifest 与 `sparqlCorrectionForCapability`，`bun run test:w3c` 作为目标子集 gate。 |
+| GeoSPARQL deferred policy | Implemented | 不建 spatial index，不扩展 facts schema。 | manifest 和 correction 均要求 `route_external_executor`，直到有具体产品 workload。 |
+
+迁移判断：
+
+- 这批改动不要求从业务数据迁移内容；新增 PG tables/indexes 都是 `CREATE TABLE/INDEX IF NOT EXISTS` 的派生结构。
+- 如果已有本地/测试索引状态不可信，可以直接删除 RDF index 派生库或执行现有 reset/rebuild 流程，从 SolidFS/RDF facts 重建。
+- materialized view 和 text/vector/search cache 都不得被当作事实源；schema/version 不兼容时可以清空重建。
+- 发布验证必须同时跑 targeted tests、`bun run build:ts --pretty false` 和 `bun run test:w3c`。若只跑窄 case，不能声明完整 W3C/deviation gate 已完成。
+
+## Benchmark Evidence
+
+### SQLite / File-backed RDF-3X
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models -- --scale=medium --iterations=3 --out=.test-data/rdf-performance-report
+```
+
+运行时间：2026-06-04 本地机器。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| target quads | 10000 |
+| seed quads | 10066 |
+| synthetic messages | 2500 |
+| synthetic pods | 1 |
+| iterations | 3 |
+| shadow backfilled rows | 10066 |
+| shadow backfill duration | 338 ms |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| old TEXT `QuintStore` vs term-id `SolidRdfEngine` matched | true |
+| ordered matched | true |
+| baseline plan matched | true |
+| shadow plan matched | true |
+| shadow performance matched | true |
+| shadow space matched | true |
+| `SolidRdfEngine` vs `Rdf3xIndex` matched | true |
+| RDF-3X ordered matched | true |
+| RDF-3X plan matched | true |
+| RDF-3X skipped scan cases | 0 |
+| RDF-3X skipped join cases | 0 |
+
+Generated report files:
+
+- `.test-data/rdf-performance-report/models-baseline-2026-06-03T18-43-18-151Z-71082-8c016955-6b73-43b0-a4ce-827fc9be7614.json`
+- `.test-data/rdf-performance-report/models-shadow-2026-06-03T18-43-18-151Z-71082-8c016955-6b73-43b0-a4ce-827fc9be7614.json`
+- `.test-data/rdf-performance-report/models-rdf3x-shadow-2026-06-03T18-43-18-151Z-71082-8c016955-6b73-43b0-a4ce-827fc9be7614.json`
+
+## Storage Profile
+
+本次 medium seed 下的 RDF storage profile：
+
+| Space | Bytes | Notes |
+| --- | ---: | --- |
+| facts bytes | 5754880 | `rdf_terms`、`rdf_quads`、source table 和 facts covering indexes |
+| facts table bytes | 2269184 | tables only |
+| facts index bytes | 3485696 | includes current covering indexes |
+| RDF-3X derived bytes | 1036288 | projection / graph stats，no duplicated six fact-copy tables |
+| total bytes | 6791168 | facts + derived |
+| total / facts ratio | 1.18x | current default profile |
+
+RDF-3X stats:
+
+| Item | Value |
+| --- | ---: |
+| membership count | 10066 |
+| unique triples | 10066 |
+| graph count | 38 |
+| pair projection rows | 50360 |
+| term projection rows | 7583 |
+| total projection rows | 57943 |
+
+结论：当前实现不是“再额外存一套六排列事实副本”。六排列扫描复用 facts 层 covering indexes，RDF-3X derived space 主要是 projection / graph stats，本次 total/facts 约 1.18x。
+
+## Latency Findings
+
+### Scan Cases
+
+22 个 scan case 全部正确、plan matched。常见 graph-scoped / predicate-object / exact id 查询在 medium seed 下 p95 大多在 0-4 ms。
+
+代表性 case：
+
+| Case | Baseline p95 | RDF-3X p95 | Scanned Rows | Notes |
+| --- | ---: | ---: | ---: | --- |
+| list messages by thread | 2 ms | 3 ms | 2503 | graph prefix + predicate |
+| latest message | 3 ms | 3 ms | 2504 | graph prefix + order by object desc |
+| search message literals | 4 ms | 4 ms | 2500 | graph prefix + literal contains |
+| latest run | 2 ms | 0 ms | 4 | task run date bucket |
+| acl graph prefix scoped query | 0 ms | 3 ms | 4 | ACL-style graph prefix |
+
+结论：scan path 没有明显退化，主要收益不是来自简单 scan，而是来自多 pattern join、count 和后续 cache/operator 下沉。
+
+### Join / Query Cases
+
+7 个 join/query case 全部正确、plan matched，RDF-3X 对大结果 join/count 有明显收益：
+
+| Case | Baseline p95 | RDF-3X p95 | Improvement | Notes |
+| --- | ---: | ---: | ---: | --- |
+| latest message by thread query | 3372 ms | 33 ms | 102x | 2-pattern BGP + order/limit |
+| message join count distinct | 1539 ms | 96 ms | 16x | count + distinct over message/thread |
+| next queued run by workspace query | 4 ms | 5 ms | 0.8x | tiny result set, noise level |
+| message count by thread with having | 3 ms | 5 ms | 0.6x | small grouped count |
+| message score by thread numeric aggregate | 4 ms | 2006 ms | regression | historical RDF-3X numeric aggregate plan is not ready as unconditional fast path |
+
+结论：
+
+- RDF-3X 作为默认 profile 是合理的，因为核心 chat/message 逆向关系和 count distinct 从秒级降到几十毫秒。
+- numeric aggregate 不能直接按“所有 aggregate 都更快”宣传。当前第一版 cutover 已让 SQLite/file-backed `RdfQueryExecutor` 对 `SUM/AVG/MIN/MAX` 回到 `RdfQuadIndex` SQL aggregate path；`Rdf3xIndex` 仍保留 numeric aggregate 能力用于 shadow/后续 cost gate。
+- Product-grade P0 不应该先做新存储；应先巩固已经证明有收益的大 BGP join、count distinct、result cache，再处理 numeric aggregate。
+
+2026-06-09 targeted rerun 只选 local/SQLite models 的两个 numeric aggregate case，
+使用当前 `default` seed（10448 quads）和 3 次迭代：
+
+| Case | Index p95 | RDF-3X shadow p95 | Ratio | Decision |
+| --- | ---: | ---: | ---: | --- |
+| queued run priority numeric aggregate | 4 ms | 2 ms | 0.50x | 低风险，但收益不构成单独 cutover 理由 |
+| message score by thread numeric aggregate | 607 ms | 539 ms | 0.89x | 不再退化，但两条路径都偏慢 |
+
+这证明当前 RDF-3X numeric aggregate 已经不是历史 2 秒级退化状态，但还不足以作为默认
+cutover：收益不稳定，且高 fanout grouped numeric 仍暴露出 500ms 级尾延迟。SQLite/file-backed
+默认继续走 `RdfQuadIndex` SQL aggregate path；重新打开 RDF-3X numeric path 前必须先有
+基于真实 workload 的 cost gate，并把 high-fanout grouped numeric 的 p95 降到发布阈值内。
+
+### Historical PostgreSQL / PGlite Baseline Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --out=.test-data/rdf-pg-debug
+```
+
+运行时间：2026-06-04 本地机器。该记录保留为历史 smoke；当前 seed 已扩展为
+`9` quads/message，并新增 `--caseProfile=extreme` gate。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | small |
+| target quads | 48 |
+| seed quads | 114 |
+| scan cases | 19 |
+| query cases | 9 |
+| iterations | 1 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| PG/PGlite models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| query result cache disabled for benchmark | true |
+| PG acceleration profile | `baseline` |
+
+本次 PG/PGlite small gate 不是性能容量结论，只证明 PostgreSQL facts/RDF-3X baseline 能跑同一组 models query case，且不会用 result cache 掩盖实际执行路径。`queued run priority numeric aggregate` 已下推到 `PostgresRdf3xJoinAggregate`，`message score by thread numeric aggregate` 已下推到 `PostgresRdf3xGroupAggregate`，都不再走 `PostgresFactsQuery` fallback。
+
+### Historical PostgreSQL / PGlite Hot-operator Profile Smoke
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --scale=small --iterations=1 --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-hot-small
+```
+
+运行时间：2026-06-04 本地机器。该记录保留为历史 smoke，不代表新增 extreme
+profile 或 native extension 的性能结论。
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| PGlite models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| PG acceleration profile | `pg-hot-operators` |
+| PG acceleration provider | `engine-sql` |
+| PG acceleration enabled | true |
+| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `join.values`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+
+本次 smoke 覆盖 114 quads、19 个 scan case 和 8 个 query case；physical plan 中出现
+`XpodRdfPgHotOperator(scan.graph_prefix)` 15 次、`scan.exact_graph` 2 次、
+`join.required_bgp` 7 次、`aggregate.count` 3 次、`aggregate.numeric` 2 次。该结果证明
+`pg-hot-operators` profile 已能在开源实现中启用 PG SQL hot operator
+路径；benchmark CLI 会校验请求的 acceleration profile 已实际 enabled，避免 fallback 后
+仅因 correctness 通过而误判为 acceleration 验收通过。它仍不是 medium/real-PG 性能容量结论。
+`join.values` 是后续补入的 PG SQL hot operator：它把单/多 pattern BGP 上的完整 term
+tuple `VALUES` source 编译成 term-id inline relation join，避免回到 JS facts binding join。
+上表中的 smoke 计数尚未重跑 VALUES 专项 benchmark，不能把它当成 `join.values` 性能结论。
+
+### PostgreSQL / PGlite Extreme Baseline Smoke
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-extreme-pglite-native-smoke
+```
+
+运行时间：2026-06-06 本地 PGlite。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| case profile | extreme |
+| target quads | 10000 |
+| seed quads | 19483 |
+| scan cases | 2 |
+| query cases | 10 |
+| iterations | 1 |
+| warmup iterations | 0 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| PGlite models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| acceleration profile | `baseline` |
+| full scale seed | true |
+| total / facts ratio | 1.41x |
+
+该 smoke 证明 extreme case set 自身可复跑，并覆盖高 fanout message/thread、8-pattern
+star BGP、large VALUES、COUNT DISTINCT、grouped count / grouped numeric aggregate 和
+graph-prefix scan；同时新增 `native-stress.ttl` exact graph，用来让 `pg-custom-index`
+发布 gate 必须命中 native extension operator。PGlite 仍不能证明 native extension
+性能，只证明这组 case 在无 extension baseline 下语义和 plan gate 成立。
+
+### PostgreSQL / PG17 Extreme Custom-index Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@localhost:55433/xpod_models_base --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --caseProfile=extreme --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-extreme-real-baseline-native-cases
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@localhost:55433/xpod_models_custom --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --caseProfile=extreme --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-extreme-real-custom-native-cases-2
+```
+
+运行时间：2026-06-06 本地 PostgreSQL 17 Docker，`xpod_models_custom`
+预先安装最新版 `xpod_rdf` extension。
+
+通过情况：
+
+| Gate | Baseline | `pg-custom-index` |
+| --- | --- | --- |
+| seed quads | 19483 | 19483 |
+| scan cases | 2 | 2 |
+| query cases | 10 | 10 |
+| plan matched | true | true |
+| `rdf3x.syncedWithFacts` | true | true |
+| acceleration matched request | true | true |
+| native extension plan hits | n/a | 5 |
+| total / facts ratio | 1.41x | 1.25x |
+
+Warm p95：
+
+| Case | Baseline p95 | `pg-custom-index` p95 | Ratio | Path |
+| --- | ---: | ---: | ---: | --- |
+| month message score range scan | 13 ms | 16 ms | 1.23x | PG SQL graph-prefix |
+| month message text scan | 15 ms | 15 ms | 1.00x | PG SQL graph-prefix |
+| message eight-pattern star query | 142 ms | 186 ms | 1.31x | PG SQL graph-prefix |
+| message large VALUES thread query | 26 ms | 32 ms | 1.23x | PG SQL graph-prefix |
+| message count distinct thread query | 11 ms | 15 ms | 1.36x | PG SQL graph-prefix |
+| message grouped count by thread query | 6 ms | 10 ms | 1.67x | PG SQL graph-prefix |
+| message grouped numeric aggregate by thread query | 46 ms | 73 ms | 1.59x | PG SQL graph-prefix |
+| native exact graph eight-pattern join query | 66 ms | 49 ms | 0.74x | `join.required_bgp.native` |
+| native exact graph VALUES thread query | 14 ms | 15 ms | 1.07x | `join.values.limit.native` |
+| native exact graph count distinct thread query | 6 ms | 3 ms | 0.50x | `aggregate.bgp_count` |
+| native exact graph grouped count by thread query | 4 ms | 3 ms | 0.75x | `aggregate.bgp_group_count` |
+| native exact graph grouped numeric aggregate by thread query | 14 ms | 6 ms | 0.43x | `aggregate.bgp_numeric` |
+
+结论：这组运行发生在 graph-prefix native 下推接线前；原先的 extreme case 不够证明
+custom index，因为全是 graph-prefix product shape，实际只走
+`XpodRdfPgHotOperator(...)`。新增 exact-graph native gate 后，`pg-custom-index`
+能在 5 个 case 中命中 extension operator；BGP count、grouped count、grouped
+numeric aggregate 和 8-pattern exact graph join 已经比 RDF-3X / btree baseline 快，
+VALUES native 仍接近持平略慢。后续已补 bounded graph-prefix native 下推，但需要在
+真实 PG native 环境重新 benchmark 后，才能把常规 Pod 日期桶查询算入 custom-index
+收益。
+
+#### 36k Oversized Extreme Rerun
+
+运行时间：2026-06-07 本地 PostgreSQL 17 Docker，`--scale=medium
+--syntheticMessages=3000 --iterations=1 --warmupIterations=0 --caseProfile=extreme`。
+这组比默认 medium smoke 的 `19483` quads 更重，用来回答 native/custom-index
+是否只是小 case 偶然变快。
+
+| Gate | Baseline | `pg-custom-index` |
+| --- | ---: | ---: |
+| seed quads | 36475 | 36475 |
+| query cases | 10 | 10 |
+| plan matched | true | true |
+| `rdf3x.syncedWithFacts` | true | true |
+| native extension plan hits | 0 | 5 |
+| total / facts ratio | 1.40x | 1.24x |
+
+Single-run p95：
+
+| Case | Baseline p95 | `pg-custom-index` p95 | Ratio | Path |
+| --- | ---: | ---: | ---: | --- |
+| message eight-pattern star query | 233 ms | 335 ms | 1.44x | PG SQL graph-prefix |
+| message large VALUES thread query | 46 ms | 57 ms | 1.24x | PG SQL graph-prefix |
+| message count distinct thread query | 22 ms | 27 ms | 1.23x | PG SQL graph-prefix |
+| message grouped count by thread query | 8 ms | 14 ms | 1.75x | PG SQL graph-prefix |
+| message grouped numeric aggregate by thread query | 70 ms | 95 ms | 1.36x | PG SQL graph-prefix |
+| native exact graph eight-pattern join query | 63 ms | 50 ms | 0.79x | `join.required_bgp.native` |
+| native exact graph VALUES thread query | 13 ms | 19 ms | 1.46x | `join.values.limit.native` |
+| native exact graph count distinct thread query | 3 ms | 3 ms | 1.00x | `aggregate.bgp_count` |
+| native exact graph grouped count by thread query | 3 ms | 6 ms | 2.00x | `aggregate.bgp_group_count` |
+| native exact graph grouped numeric aggregate by thread query | 16 ms | 9 ms | 0.56x | `aggregate.bgp_numeric` |
+
+结论：36k seed 下 native exact graph 仍能稳定命中 5 个 extension operator，
+8-pattern join 和 grouped numeric aggregate 继续变快；VALUES 和 grouped count
+仍不是 cutover 依据。这组运行里的 graph-prefix product cases 仍在下推接线前，
+因此 `pg-custom-index` profile 下变慢是旧实现承担 shadow custom index 写入/维护成本、
+但查询仍走 PG SQL hot path 的结果。P0 cutover 不能只看 profile 是否启用，必须按
+query shape 区分：exact graph native shape 可继续推进；bounded graph-prefix shape
+已补 native values/aggregate 路径，但性能结论要等真实 PG native rerun。
+
+#### Graph-prefix Slot-filter PG17 Rerun
+
+运行时间：2026-06-07 本地 PostgreSQL 17 Alpine Docker，`--scale=medium
+--iterations=1 --warmupIterations=0 --caseProfile=extreme
+--rdfAccelerationProfile=pg-custom-index`。这组用于验证 bounded graph-prefix 不再通过
+pattern-local hidden `VALUES` 做笛卡尔展开，而是通过 `join.slot_filter.native`
+作为 slot-level allowed-set 过滤。
+
+命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@localhost:55433/xpod_graph_prefix_slot_filter_medium --allowPgWrites --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-graph-prefix-slot-filter-medium
+```
+
+报告：
+
+- `.test-data/rdf-pg-graph-prefix-slot-filter-medium/models-postgres-2026-06-06T19-58-08-780Z-47626-e4efbcd5-1e7c-4d78-97ef-527e50900215.json`
+
+Gate：
+
+| Gate | Result |
+| --- | ---: |
+| seed quads | 19483 |
+| query cases | 10 |
+| plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| pg acceleration enabled | true |
+| missing capabilities | none |
+| native extension plan hits | 11 |
+| total / facts ratio | 1.25x |
+
+Single-run p95 对比同规模历史 baseline / 旧 graph-prefix native：
+
+| Case | Baseline p95 | 旧 native p95 | slot-filter native p95 | 结论 |
+| --- | ---: | ---: | ---: | --- |
+| message count distinct thread query | 14 ms | 20 ms | 20 ms | 仍慢于 baseline |
+| message grouped count by thread query | 7 ms | 15 ms | 12 ms | 修掉部分退化，仍慢于 baseline |
+| message grouped numeric aggregate by thread query | 47 ms | 94 ms | 28 ms | 明显优于 baseline |
+| native exact graph count distinct thread query | 6 ms | 3 ms | 3 ms | exact graph native 继续稳定 |
+| native exact graph grouped count by thread query | 5 ms | 3 ms | 3 ms | exact graph native 继续稳定 |
+| native exact graph grouped numeric aggregate by thread query | 16 ms | 8 ms | 7 ms | exact graph native 继续稳定 |
+
+结论：`PostgresRdfNativeGraphPrefixValues(...)` 已替换为
+`PostgresRdfNativeGraphPrefixSlotFilter(...)`，active operators 包含
+`join.slot_filter.native`。这修复了旧实现把多个 graph-prefix filter 编成
+hidden tuple `VALUES` 后产生 `29x29` / `29x29x29` 组合成本的问题；graph-prefix
+grouped numeric aggregate 已从 94ms 降到 28ms。`COUNT DISTINCT` 和 grouped count
+仍没有超过 RDF-3X / btree baseline，不能作为默认 cutover 依据。
+
+同时尝试 `--scale=large`（目标 `1_000_000` quads）时，benchmark 长时间停在
+逐条 `INSERT INTO rdf_quads ... ON CONFLICT` seed 阶段；`--syntheticMessages=10000`
+的约 100k seed 在 `pg-custom-index` 下同样主要消耗在写入阶段。这个失败点是
+benchmark 工具 / bulk-load 策略问题，不是 native operator 查询语义失败。正式 large
+gate 前需要把 disposable benchmark 改成 bulk insert 后统一建 custom indexes，或显式
+拆分 write amplification 和 warm query benchmark。后续第一版先把 PG facts 写入改成
+批量 term upsert + 批量 quad upsert；当前又进一步换成数组 staging / `UNNEST` bulk
+insert，并覆盖 dirty queue upsert；大批 `rdf_quads` 会先写入 transaction-local temp
+staging table，再一次性 upsert 到 facts。这一历史记录仍保留，用来说明 large gate 需要重跑，
+不能沿用当时逐条写入阶段的耗时结论。
+
+### PostgreSQL / PGlite Medium RDF-3X Baseline Rerun
+
+这组重跑把 `--rdfAccelerationProfile=baseline` 明确定义为 PG RDF-3X baseline。benchmark
+脚本在 PG 路径中设置 `queryResultCacheEnabled: false`，因此结果不会被 result cache
+掩盖。它回答的是：在同一套 PostgresRdfEngine / RDF-3X facts + derived stats 上，
+`pg-hot-operators` 相对 RDF-3X baseline 的增量是多少。
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --scale=medium --iterations=3 --warmupIterations=1 --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-rdf3x-baseline-rerun
+bun run benchmark:rdf-models:pg -- --scale=medium --iterations=3 --warmupIterations=1 --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-hot-vs-rdf3x-rerun
+```
+
+运行时间：2026-06-04 本地 PGlite。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| target quads | 10000 |
+| seed quads | 10066 |
+| scan cases | 22 |
+| query cases | 8 |
+| iterations | 3 |
+| warmup iterations | 1 |
+
+通过情况：
+
+| Gate | RDF-3X baseline | `pg-hot-operators` |
+| --- | --- | --- |
+| plan matched | true | true |
+| `rdf3x.syncedWithFacts` | true | true |
+| acceleration profile | `baseline` | `pg-hot-operators` |
+| acceleration enabled | false | true |
+| acceleration matched request | true | true |
+| active operators | none | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `join.values`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+| facts bytes | 22487040 | 22487040 |
+| derived bytes | 8691712 | 8691712 |
+| total / facts ratio | 1.39x | 1.39x |
+
+Query p95 对比：
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 | Ratio |
+| --- | ---: | ---: | ---: |
+| latest message by thread query | 36 ms | 30 ms | 1.20x |
+| next queued run by workspace query | 13 ms | 11 ms | 1.18x |
+| run steps by run query | 6 ms | 5 ms | 1.20x |
+| task materialization active due query | 17 ms | 15 ms | 1.13x |
+| message count by thread with having | 7 ms | 6 ms | 1.17x |
+| queued run priority numeric aggregate | 4 ms | 4 ms | 1.00x |
+| message score by thread numeric aggregate | 9 ms | 8 ms | 1.13x |
+| message join count distinct | 12 ms | 13 ms | 0.92x |
+
+Representative scan p95:
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 |
+| --- | ---: | ---: |
+| list messages by thread | 7 ms | 9 ms |
+| latest message | 3 ms | 3 ms |
+| search message literals | 13 ms | 13 ms |
+| latest run | 2 ms | 2 ms |
+| acl graph prefix scoped query | 2 ms | 2 ms |
+
+结论：以 RDF-3X 作为 baseline 后，当前 `pg-hot-operators` 是 product profile / capability
+标记和部署边界的完成，不是已经产生数量级性能收益的新执行引擎。PGlite medium 上
+它相对 RDF-3X baseline 的 query p95 大多在 0.92x-1.20x 之间，存储比完全一致。
+因此后续更强查询执行器的价值必须继续用 RDF-3X baseline 做对照，不能再用旧 TEXT
+baseline 来宣传收益。
+
+本次尝试重跑 real PostgreSQL disposable benchmark 时，Docker VM 中 `postgres:17-alpine`
+初始化 WAL 失败：`No space left on device`。没有执行 `docker system prune` 这类会清理用户
+Docker 缓存的操作；真实 PG rerun 需要在 Docker 空间释放后补跑。
+
+### Real PostgreSQL / Disposable Medium Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --out=.test-data/rdf-pg-real-medium-warmup
+```
+
+运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| target quads | 10000 |
+| seed quads | 10066 |
+| scan cases | 22 |
+| query cases | 8 |
+| iterations | 3 |
+| warmup iterations | 1 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| real PG models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| query result cache disabled for benchmark | true |
+| PG acceleration profile | `baseline` |
+| cold report | `.test-data/rdf-pg-real-medium/models-postgres-2026-06-03T19-43-00-499Z-79511-61ee15df-e22c-4400-8176-9df6b8aeb5bb.json` |
+| warm steady-state report | `.test-data/rdf-pg-existing-warmup/models-postgres-existing-warmup-1780517362264.json` |
+
+真实 PG storage profile：
+
+| Space | Bytes | Notes |
+| --- | ---: | --- |
+| facts bytes | 22503424 | PG facts tables + facts covering indexes |
+| RDF-3X derived bytes | 8724480 | projection / graph stats + derived indexes |
+| total bytes | 31227904 | facts + derived |
+| total / facts ratio | 1.39x | PG baseline profile |
+
+真实 PG warm steady-state representative p95：
+
+| Case | p95 | Notes |
+| --- | ---: | --- |
+| list messages by thread | 7 ms | scan, graph prefix + predicate |
+| latest message | 3 ms | scan + order/limit |
+| search message literals | 6 ms | text contains source-membership path |
+| next queued run by workspace query | 11 ms | tiny 3-pattern scheduler query |
+| task materialization active due query | 23 ms | tiny 3-pattern scheduler query |
+| message score by thread numeric aggregate | 16 ms | numeric aggregate PG SQL path |
+| latest message by thread query | 17 ms | large 2-pattern message join, SQL self-join stays in PG |
+| message join count distinct | 8 ms | large count-distinct join, PG SQL count path |
+
+冷启动说明：同一批数据在未区分 warmup 的首次 disposable PG run 中，`latest message by thread query` 曾记录 `2600 ms`，`message join count distinct` 曾记录 `1674 ms`。随后对同一 seeded PG 执行 `refreshDerivedIndexes()` 后会同步 `ANALYZE` facts / RDF-3X stats 表，benchmark 也会先跑 warmup 再采样，两个 case 分别稳定到 `17 ms` 和 `8 ms`。因此旧秒级结果归类为 cold-start / planner stats artifact，不能再作为 steady-state 结论，但必须保留为冷启动观测项。PostgreSQL `refreshDerivedIndexes()` 的返回值会暴露 `plannerStats.analyzedTables`，运维和 benchmark 需要把它作为 stats refresh 已执行的证据。
+
+结论：真实 PG medium gate 已证明 schema、refresh、planner gate、numeric aggregate 下推和 warm steady-state 性能都可用。当前 PG baseline 可以作为 cloud RDF-3X 的默认正确性和性能底座；下一步 product-grade acceleration 不应重做事实存储，而应继续补 hot operators、result cache 策略、并发和更大数据量 gate，把冷启动、统计刷新和 query cache 生命周期纳入运维指标。
+
+### Real PostgreSQL / Hot-operator Profile Gate
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-hot-real-medium
+```
+
+运行时间：2026-06-04，本机 `postgres:17-alpine` disposable container。
+
+输入规模：
+
+| Item | Value |
+| --- | ---: |
+| scale | medium |
+| target quads | 10000 |
+| seed quads | 10066 |
+| scan cases | 22 |
+| query cases | 8 |
+| iterations | 3 |
+| warmup iterations | 1 |
+
+通过情况：
+
+| Gate | Result |
+| --- | --- |
+| real PG models plan matched | true |
+| `rdf3x.syncedWithFacts` | true |
+| PG acceleration profile | `pg-hot-operators` |
+| PG acceleration provider | `engine-sql` |
+| PG acceleration enabled | true |
+| active operators | `scan.exact_graph`, `scan.graph_prefix`, `scan.term_in`, `join.required_bgp`, `join.values`, `aggregate.count`, `aggregate.numeric`, `cache.result` |
+
+真实 PG hot-profile storage profile：
+
+| Space | Bytes | Notes |
+| --- | ---: | --- |
+| facts bytes | 22487040 | PG facts tables + facts covering indexes |
+| derived bytes | 8658944 | RDF-3X projection / graph stats + query cache table/index |
+| total / facts ratio | 1.39x | same storage profile class as PG baseline |
+
+真实 PG hot-profile warm steady-state representative p95：
+
+| Case | p95 | Notes |
+| --- | ---: | --- |
+| latest message by thread query | 35 ms | large 2-pattern message join |
+| next queued run by workspace query | 20 ms | scheduler query |
+| task materialization active due query | 23 ms | scheduler query |
+| message count by thread with having | 26 ms | grouped count |
+| queued run priority numeric aggregate | 9 ms | non-grouped numeric aggregate |
+| message score by thread numeric aggregate | 15 ms | grouped numeric aggregate |
+| message join count distinct | 15 ms | large count-distinct join |
+
+physical plan 中出现 `XpodRdfPgHotOperator(scan.graph_prefix)` 18 次、`scan.exact_graph`
+2 次、`join.required_bgp` 7 次、`aggregate.count` 3 次、`aggregate.numeric` 2 次。`join.values`
+为后续补入，尚未包含在这次 real PG 计数里。该 gate
+证明 cloud 默认 `pg-hot-operators` profile 在真实 PostgreSQL 上可启用并保持同一套 models
+plan correctness；当前 hot profile 复用 PG SQL fast path，所以它是 profile/metrics/部署
+边界的 product-grade 化，不是额外数据库扩展的性能结论。
+
+### Real PostgreSQL / Extreme RDF-3X vs Hot-operators vs Native Extension Rerun
+
+执行命令：
+
+```bash
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:<port>/xpod_rdf_base_20260609 --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --concurrency=4 --caseProfile=extreme --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-real-extreme-rerun-baseline-20260609
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:<port>/xpod_rdf_hot_20260609 --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --concurrency=4 --caseProfile=extreme --rdfAccelerationProfile=pg-hot-operators --out=.test-data/rdf-pg-real-extreme-rerun-hot-20260609
+bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=postgres://postgres:postgres@127.0.0.1:<port>/xpod_rdf_custom_20260609 --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1 --concurrency=4 --caseProfile=extreme --rdfAccelerationProfile=pg-custom-index --out=.test-data/rdf-pg-real-extreme-rerun-custom-20260609
+```
+
+运行时间：2026-06-09，本机 disposable `postgres:17-alpine` 容器，PG data dir
+挂载 tmpfs。baseline / hot 容器不安装 `xpod_rdf`；custom 容器加载公开构建的
+Linux ARM64 musl artifact，并通过 `CREATE EXTENSION xpod_rdf` 激活真实
+custom-index/operator path。`postgres:17-bookworm` 使用 glibc，缺少
+`libc.musl-aarch64.so.1`，不能加载该 artifact，因此 real-extension gate 使用
+`postgres:17-alpine`。宿主机绝对路径和仓库位置不属于本公开性能报告。
+
+报告：
+
+- `.test-data/rdf-pg-real-extreme-rerun-baseline-20260609/models-postgres-2026-06-08T18-14-07-149Z-80770-5992b4c7-5a2c-4f72-a30c-867e370d60d9.json`
+- `.test-data/rdf-pg-real-extreme-rerun-hot-20260609/models-postgres-2026-06-08T18-15-28-754Z-80918-d1fbcef6-d872-43f3-89a2-35aff1e38c6c.json`
+- `.test-data/rdf-pg-real-extreme-rerun-custom-20260609/models-postgres-2026-06-08T18-31-31-907Z-83184-f59aa130-adb6-4b7e-b3a8-289f8dabe2aa.json`
+
+Gate：
+
+| Gate | RDF-3X baseline | `pg-hot-operators` | `pg-custom-index` |
+| --- | ---: | ---: | ---: |
+| seed quads | 19664 | 19664 | 19664 |
+| scan cases | 2 | 2 | 2 |
+| query cases | 11 | 11 | 11 |
+| iterations / warmup | 3 / 1 | 3 / 1 | 3 / 1 |
+| concurrency lanes | 4 | 4 | 4 |
+| plan matched | true | true | true |
+| concurrency gate matched | true | true | true |
+| `rdf3x.syncedWithFacts` | true | true | true |
+| planner stats refreshed | true | true | true |
+| native extension plan hits | 0 | 0 | 13 |
+| facts bytes | 32907264 | 32907264 | 45572096 |
+| derived bytes | 24760787 | 29848019 | 29822437 |
+| total / facts ratio | 1.75x | 1.91x | 1.65x |
+
+Warm p95：
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 | `pg-custom-index` p95 | Custom conclusion |
+| --- | ---: | ---: | ---: | --- |
+| month message score range scan | 26 ms | 18 ms | 34 ms | custom slower; keep SQL/RDF-3X |
+| month message text scan | 23 ms | 21 ms | 49 ms | custom slower; keep SQL/RDF-3X |
+| message eight-pattern star query | 175 ms | 139 ms | 248 ms | graph-prefix star still worse through native path |
+| message large VALUES thread query | 28 ms | 30 ms | 52 ms | native VALUES slower |
+| message count distinct thread query | 13 ms | 19 ms | 26 ms | native count distinct slower |
+| message grouped count by thread query | 15 ms | 20 ms | 25 ms | native grouped count slower |
+| message grouped numeric aggregate by thread query | 63 ms | 67 ms | 51 ms | native numeric aggregate wins |
+| native exact graph eight-pattern join query | 66 ms | 62 ms | 34 ms | native exact-graph star wins |
+| native exact graph ordered-page query | 18 ms | 23 ms | 14 ms | native ordered-page wrapper wins, but not yet extension-level top-N early-stop |
+| native exact graph VALUES thread query | 17 ms | 23 ms | 21 ms | still slower than RDF-3X baseline |
+| native exact graph count distinct thread query | 5 ms | 4 ms | 6 ms | slower than baseline/hot |
+| native exact graph grouped count by thread query | 6 ms | 5 ms | 7 ms | slower than baseline/hot |
+| native exact graph grouped numeric aggregate by thread query | 15 ms | 15 ms | 8 ms | native numeric aggregate wins |
+
+并发一致性 gate：
+
+| Case | RDF-3X baseline p95 | `pg-hot-operators` p95 | `pg-custom-index` p95 | Matched |
+| --- | ---: | ---: | ---: | --- |
+| message eight-pattern star query | 316 ms | 380 ms | 505 ms | true |
+| message large VALUES thread query | 70 ms | 62 ms | 92 ms | true |
+| message count distinct thread query | 25 ms | 27 ms | 38 ms | true |
+| message grouped count by thread query | 12 ms | 11 ms | 28 ms | true |
+
+结论：真实 PG medium/extreme 下，公开 `pg-hot-operators` profile 能保持 correctness、
+plan gate 和并发一致性，并对 graph-prefix scan、8-pattern subject-star BGP、exact-graph
+count 有局部收益；但 grouped count、count distinct、VALUES 和 ordered-page 仍不能只因
+hot marker 存在就作为默认 cutover 胜出。真实 `xpod_rdf` native extension 已可加载并命中
+13 个 native operator marker，exact-graph star、exact-graph ordered page、grouped numeric
+aggregate 有明确收益；但 graph-prefix scan、graph-prefix star、VALUES、count distinct、
+grouped count 和并发 graph-prefix case 都慢于 RDF-3X / btree baseline。因此
+`pg-custom-index` 不能因为 capability 存在就默认接管查询，必须继续按 query shape 和 cost gate
+选择性切入。`pg-hot-operators` 的 total/facts ratio 为 `1.91x`，native custom run 在当前
+delayed-index build 后为 `1.65x`，但 custom facts bytes 包含 extension shadow indexes，
+不能和 baseline 的 facts bytes 直接等价理解。
+
+## PostgreSQL Status
+
+`PostgresRdfEngine` 当前已有：
+
+- PG facts table 作为 baseline authority。
+- RDF-3X stats / BGP join path。
+- grouped count / grouped and non-grouped numeric aggregate PG SQL path。
+- query result cache by facts data version。
+- facts histogram stats：`storageStats().facts` 在 PG 与 SQLite/file-backed engine 上都暴露
+  literal datatype、graph、predicate、predicate/object、subject/predicate 热点分布，供
+  cost model、慢查询 explain 和 skew benchmark 使用；PG `metrics.explain.planner`
+  已先把 selected path、路径选择原因、估算输入和可用统计暴露出来，并把当前 query exact
+  graph / predicate / predicate-object / subject-predicate 命中的 histogram 条目作为
+  `histogramHints` 和 `histogram-*` reason 暴露出来。该 hint 使用短 TTL 的 facts-version
+  snapshot，cache hit 路径不会额外拉 histogram；PG grouped numeric aggregate 已补第一版
+  cost cutover：native numeric operator 未命中、没有 graph-prefix fanout、且所有 RDF-3X join
+  source 都是低基数配置类数据时才走 facts path，并在 plan/explain 中标记
+  `PostgresNumericAggregateFactsCutover(...)` / `numeric-aggregate-cost-cutover`。高 fanout
+  exact graph 和 graph-prefix grouped numeric aggregate 保持 RDF-3X / native path，避免 facts
+  path 逐 binding materialize。后续仍需把 histogram 继续接入更多 native/RDF-3X/facts 的
+  cost-based cutover。
+- query template cache by value-stripped query AST；当前是 bounded in-memory derived metadata，
+  `storageStats().queryTemplateCache` 暴露 entry/hit/miss/eviction/ttl/bytes，query plan 标记
+  `PostgresQueryTemplateCacheHit(...)` / `PostgresQueryTemplateCacheMiss(...)`；RDF-3X SQL
+  编译路径会把 compiled SQL physical shape 绑定到同一个 template entry，plan 标记
+  `PostgresCompiledSqlTemplateHit(...)` / `PostgresCompiledSqlTemplateMiss(...)`，
+  `storageStats().queryTemplateCache` 暴露 compiled SQL shape 数量和 hit/miss/eviction；第一版不跨
+  不同 join order 强行复用，避免改变 cost 决策；template cache 按 idle TTL 和 max entries
+  淘汰，template bytes 纳入 `storageStats().derivedBytes`，并会被 PG 统一
+  `derivedCacheMaxBytes` bytes guard 约束；template TTL、entry count 和 bytes 淘汰会同步计入
+  `storageStats().derivedCache.evictions`。
+- materialized result cache by explicit business view key：`RdfQuery.cache.materialized`
+  写入独立 `rdf_materialized_result_cache`，绑定 facts version、query shape、结构化 access
+  scope、query template key、TTL、max entries 和 payload bytes quota；新写入行会记录并校验
+  `template_key`，命中 / 写入 plan 标记 `PostgresMaterializedResultTemplate(...)`，
+  `metrics.explain.cache.materialized.templateKey` 也会暴露同一模板 key；命中时 plan 标记
+  `PostgresMaterializedResultHit`，并且不再重复写普通 result cache。PG models benchmark 已补 latest-message、thread-context、run-steps、
+  due-schedule 和 provider/model/credential 5 个 warm-path materialized case，要求 warmup 后命中
+  `PostgresMaterializedResultHit` / `PostgresQueryTemplateCacheHit`。`storageStats().materializedResultCache`
+  暴露 entry/scope/payload/table/index space 统计。
+- structured query explain：PG `RdfQueryResult.metrics.explain` 已输出 engine、facts data version、
+  derived profile、template/result/materialized cache 状态、结构化 access scope，以及
+  acceleration profile / fallback / unsupported capability 摘要；`metrics.explain.planner`
+  会把 `materialized-result-cache` / `query-result-cache` / `native-extension` / `rdf3x` /
+  `facts` 的 selected path、选择原因、估算输入、query-specific histogram hints、
+  runtime scan/join/return rows、RDF-3X stale facts version、slow-query 触发原因和
+  rejected capabilities 暴露给慢查询分析。`storageStats().slowQueries` 会保留 bounded
+  process-local 最近慢查询快照，包含 query/cache key、selected path、reason、runtime、
+  stale stats、cache scope 摘要和 acceleration 摘要；该快照不写入 Pod/RDF durable 状态。
+  原有 `metrics.plan` 字符串仍用于 benchmark gate 和人工 trace。
+- `rdf_query_result_cache.scope_hash` 记录 normalized cache scope 的摘要；结构化 access scope 会把
+  principal、base path、mode、authorization model、permission version 以及 allow/deny graph
+  列表纳入独立 `scope_hash` 维度，普通 result cache identity 是
+  `query_shape cache_key + scope_hash + facts_data_version`，materialized result cache identity 是
+  `materialized_key + scope_hash + facts_data_version`，cache table 中保留可观测的 scope 元信息，
+  并持久化 `scope_allowed_graph_urls` / `scope_denied_graph_urls` / `scope_denied_graph_prefixes`；
+  PG engine 提供 exact scope invalidation 入口。`rdf_access_control_overrides` 会从 WebACL
+  `acl:accessTo` / `acl:default` 和 ACP `acp:accessControl` / `acp:apply` 派生 access-control
+  source 实际影响的 resource target；`.acl` / `.acr` source 或 graph 写入已从全表清理收敛为
+  resource override target + graph scope overlap 失效，没有显式 target 时才回退 affected basePath：
+  无 allow-list 的旧/宽 scope 仍按 basePath overlap 保守删除，有 graph scope 的行按
+  allow/deny/prefix 与 affected base path 重叠删除；已知 sourceVersion 会与 cache
+  scope_permission_version 对齐，只清对应权限版本和未版本化 cache，版本未知时仍全版本保守删除，会同时清 PG result cache
+  和 materialized result cache 的相关 scope；写入只推进 facts version，旧 facts version cache 不会命中，但不再由写入路径
+  全表删除。result/materialized cache 现在同时按 facts version、TTL、max entries 和 payload
+  bytes quota 淘汰，三类可重建 cache 还支持可选 `derivedCacheMaxBytes` 统一 bytes guard；
+  result/materialized cache 另外支持 `derivedCacheScopeMaxBytes`，按 access scope + facts
+  version 做共享 payload guard，并按 cache key + scope + facts version 精确删除超预算 row，
+  不会把 template cache 纳入访问 scope 预算。`storageStats()`
+  暴露 `entryCount`、`scopeCount`、`payloadBytes`、`maxPayloadBytes`、table/index bytes，
+  `accessControlOverrides` 暴露 override index entry/bytes，
+  以及 `derivedCache.cacheBytes` / `maxCacheBytes` / `maxScopeBytes` / `largestScopeBytes` /
+  `cachePressure` / `largestScopePressure` / `scopeEntries` top access-scope drill-down。
+  `scopeEntries` 会按 payload bytes 排序展示 principal、basePath、mode、authorization model、
+  permission version、facts version、result/materialized payload 和 entry count，便于定位哪个
+  用户/权限范围在制造 cache pressure。`storageStats({ cacheScope })` 支持
+  `query` 跨 scope hash/principal/basePath/mode/auth model/permission version 模糊匹配，
+  也支持 principal/basePath/mode/auth model/permission version 精确过滤和有上限的
+  `limit`。`derivedCache.evictions` 第一版提供进程内压力
+  观测，按 `factsVersion`、`ttl`、`maxEntries`、`payloadBytes`、`scopeBytes`、
+  `totalBytes`、`templateTtl`、`templateMaxEntries`、`templateBytes` 聚合可重建 cache 的
+  淘汰原因；该计数不写入 Pod/RDF durable 状态。dashboard RDF 页已展示 result/materialized
+  scope count、最大 scope、top scope 明细、scope 搜索、payload bytes、table/index bytes 和 eviction breakdown。
+  sourceVersion / permissionVersion 版本过滤已接入更精确失效；后续把 eviction telemetry 接入慢查询 drill-down。
+- `refreshDerivedIndexes()` 返回 PG planner stats refresh 结果，能证明迁移/维护动作已 `ANALYZE` facts 与 RDF-3X stats 表；PG 默认会优先消费 durable dirty graph / pair / term projection key，只重算受写入影响的 RDF-3X projection rows。PG facts 侧另有 `rdf_dirty_sources` source-level queue：带 source 的 put/replace/delete 会登记待维护 source，显式 refresh 成功后 drain queue，并在 `rdf3x.sourceQueue` 中报告 pending/drained source 数。`maintainDerivedIndexes()` 通过同库 `rdf_maintenance_leases` 包住显式 refresh，避免多 xpod worker 同时维护；cloud 配置通过 `options_maintenanceIntervalMs=60000` 启动后台循环。`refreshDerivedIndexes({ mode: 'full' })` 是显式 repair path；dirty 信息缺失时不会把 stats 误标为 synced，而是回退全量 rebuild。
+- `rdfAccelerationProfile` capability probe 暴露公开 profile：`baseline`、`pg-result-cache`、`pg-hot-operators`、`pg-custom-index`。
+- `pg-hot-operators` engine-sql provider：scan / graph prefix / term-in / required BGP join / VALUES join / count / numeric aggregate 走已验证的 PG SQL fast path，并在 metrics plan 中标记 `XpodRdfPgHotOperator(...)`。
+- `pg-custom-index` provider：启动时探测 `xpod_rdf.version()` / `xpod_rdf.capabilities()`，只有 `pg_extension` 里存在 `xpod_rdf` 时才把 native-only capability 标记为 `extension`；满足 `index.xpod_rdf_perm` 后创建六个 shadow custom permutation indexes，并把 `perm_index_stats(regclass)` JSON 投影到 `storageStats().pgAcceleration.customIndexes`；schema-local SQL ABI 只能声明 `cache.result`。
+- `pg-custom-index` native executor：当 extension 声明 `index.xpod_rdf_perm.scan_any` 时，单 pattern exact / `$in` leading-prefix scan 会下沉到 `xpod_rdf.perm_index_scan_any(...)`，再 JOIN `rdf_quads` 做 heap recheck；当 extension 额外声明 `index.xpod_rdf_perm.scan_any.limit` 且 scan 没有显式 order 时，limited scan 会标记为 native early-stop 候选；bounded graph-prefix pattern 会先从真实 facts graph ids 展开候选，再作为 `join.slot_filter.native` slot-level allowed-set 传入 native BGP / aggregate ABI，避免把 filter 编成 tuple `VALUES` 并引入笛卡尔组合成本；当 extension 同时声明 `index.xpod_rdf_perm.count_any` 时，单 pattern、非 DISTINCT、无 group/order/pagination/values 的 scalar `COUNT` 会下沉到 `xpod_rdf.perm_index_count_any(...)`；当 extension 声明 `index.xpod_rdf_perm.distinct_any` 时，单 pattern、单投影变量、无 order/group/values 的 `DISTINCT` 会下沉到 `xpod_rdf.perm_index_distinct_any(...)`；当 extension 声明 `join.required_bgp.native` 时，2..8 pattern、最多 8 变量、无 VALUES/ORDER/GROUP/aggregate/distinct 的 required BGP 会下沉到 `xpod_rdf.bgp_join(...)`；当 extension 声明 `join.required_bgp.order_page.topn.native` 时，ORDER BY 变量必须在 project 中，xpod 会调用 `xpod_rdf.bgp_order_page(rdf_quads, rdf_terms, indexes, constants, variableSlots, outputSlots, orderSlots, orderDesc, limit, offset)`，由 extension 内部完成 ordered top-N；只有旧 `join.required_bgp.order_page.native` 时继续用 `xpod_rdf.bgp_join(...)` 行流 + 外层 `rdf_terms` ORDER/LIMIT wrapper，语义正确但不是 extension-level top-N early-stop；当 extension 声明 `join.subject_star` 时，3..8 pattern 共享同一 subject 的 required BGP 会使用同一 `xpod_rdf.bgp_join(...)` ABI 并额外标记 `PostgresRdfNativeCustomIndexSubjectStarJoin(...)`，缺能力时回退 generic native BGP；当 extension 声明 `join.values.native` / `join.values.limit.native` 时，受限 required BGP + 用户 tuple `VALUES` source 会下沉到 `xpod_rdf.values_join(...)`，用户 `VALUES` 保留 tuple multiplicity，graph-prefix 只作为 slot filter 不参与 multiplicity；当 extension 声明 `aggregate.bgp_count` 时，2..8 pattern、最多 8 变量、无 GROUP/ORDER/HAVING/pagination 的 `COUNT(*)` / `COUNT(?x)` / `COUNT DISTINCT ?x` 会下沉到 `xpod_rdf.bgp_count(...)`，并支持用户 VALUES source 与 graph-prefix slot filter；当 extension 声明 `aggregate.subject_star_count` 时，subject-star scalar count 会使用同一 `xpod_rdf.bgp_count(...)` ABI 并额外标记 `PostgresRdfNativeCustomIndexSubjectStarCount(...)`，缺能力时回退 generic native BGP count；当 extension 声明 `aggregate.bgp_group_count` 时，1..8 pattern、最多 8 变量、GROUP BY 1..8 变量、COUNT / COUNT DISTINCT 聚合会下沉到 `xpod_rdf.bgp_group_count(...)`，HAVING / ORDER / LIMIT 在返回分组行后由 xpod 做语义收尾；当 extension 声明 `aggregate.bgp_numeric` 时，1..8 pattern、GROUP BY 最多 8 变量、同一个 numeric 变量上的非 DISTINCT `SUM/AVG/MIN/MAX` 和非 DISTINCT `COUNT` 会下沉到 `xpod_rdf.bgp_numeric_aggregate(...)`，只接受该 numeric slot 的 `isNumeric`/`$termType:numeric` guard，HAVING / ORDER / LIMIT 仍由 xpod 对 native grouped rows 做语义收尾。metrics plan 分别标记 `XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any)` / `XpodRdfExtensionOperator(index.xpod_rdf_perm.scan_any.limit)` / `XpodRdfExtensionOperator(index.xpod_rdf_perm.count_any)` / `XpodRdfExtensionOperator(index.xpod_rdf_perm.distinct_any)` / `XpodRdfExtensionOperator(join.required_bgp.native)` / `XpodRdfExtensionOperator(join.required_bgp.order_page.native)` / `XpodRdfExtensionOperator(join.required_bgp.order_page.topn.native)` / `XpodRdfExtensionOperator(join.slot_filter.native)` / `XpodRdfExtensionOperator(join.subject_star)` / `XpodRdfExtensionOperator(join.values.native|join.values.limit.native)` / `XpodRdfExtensionOperator(aggregate.bgp_count)` / `XpodRdfExtensionOperator(aggregate.subject_star_count)` / `XpodRdfExtensionOperator(aggregate.bgp_group_count)` / `XpodRdfExtensionOperator(aggregate.bgp_numeric)`；内部 graph-prefix plan 会额外标记 `PostgresRdfNativeGraphPrefixSlotFilter(...)`，ordered-page plan 会额外标记 `PostgresRdfNativeCustomIndexBgpOrderPage(...)`，top-N ordered-page plan 额外标记 `PostgresRdfNativeCustomIndexBgpOrderPageTopN(...)`，subject-star plan 会额外标记 `PostgresRdfNativeCustomIndexSubjectStarJoin(...)` / `PostgresRdfNativeCustomIndexSubjectStarCount(...)`，limited scan 会额外标记 `PostgresRdfNativeCustomIndexScanAnyLimit(...)`。能力缺失或遇到 graph-prefix 展开超限、VALUES Cartesian 超限、range/text/excluded/id-set、DISTINCT numeric aggregate、多 numeric variable、非 projected order variable 等不支持 shape 时回退 RDF-3X / PG SQL。
+- `storageStats().pgAcceleration.capabilityProviders` 会按 capability 标记实际来源；`pg-hot-operators` 当前来自 `engine-sql`，`pg-custom-index` 的 custom/native capability 只能来自 `extension`。
+- API 运维观测入口第一版已接上 `GET /v1/rdf/stats` 和 dashboard 只读代理
+  `GET /api/admin/rdf/stats`：cloud + PostgreSQL SPARQL endpoint
+  下由 API 侧 transient `PostgresRdfEngine.storageStats()` 返回 facts bytes、derived bytes、
+  cache bytes、facts data version、RDF-3X facts data version、refresh lag、synced boolean、
+  PG acceleration capability、cache scope 统计和 `slowQueries` 最近慢查询快照；local / 非
+  PostgreSQL endpoint 返回 `available=false`，避免 API 进程并发打开 CSS
+  sqlite RDF index。版本化端点需要普通 API 鉴权，service caller 需要 `usage:read` scope；
+  dashboard RDF 页通过 `/api/admin/rdf/stats` 展示 refresh lag、cache/storage、PG acceleration
+  和最近慢查询快照。两个 stats 入口都支持 `cacheScopeQuery`、`cacheScopePrincipal`、
+  `cacheScopeBasePath`、`cacheScopeMode`、`cacheScopeAuthorizationModel`、
+  `cacheScopePermissionVersion` 和 `cacheScopeLimit` query 参数，用于服务端过滤
+  `derivedCache.scopeEntries`，避免 dashboard 只在默认 top-N 上二次过滤。
+- `bun run benchmark:rdf-models:pg` PGlite benchmark gate，对齐 SQLite models benchmark 的 deterministic seed 和 query cases；默认 PG query cases 会覆盖消息流 latest-message、keyset page、Agent thread context、run state center、run steps、Task/Run/Thread/RunStep detail hydration、SessionManager hydration、audit approval trace、task materialization、AI credential selection、AI config/model selection、vector store/indexed-file metadata、provider/model/credential、profile/access-control、approval-grant、contact/favorite 等业务查询，并会在通用业务查询外额外跑 5 个 materialized warm-path case。普通 query 仍强制 bypass result cache，避免把 engine baseline 测成 cache hit；`--caseProfile=extreme` 已覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、graph-prefix scan，以及 5 个 exact-graph native custom-index gate。
+- 2026-06-08 UNNEST bulk-write 后重跑 PGlite medium/extreme baseline：
+  `bun run benchmark:rdf-models:pg -- --scale=medium --iterations=1 --warmupIterations=0 --caseProfile=extreme --rdfAccelerationProfile=baseline --out=.test-data/rdf-pg-prefix-cutover-fixed`
+  通过。seed `19664` quads，2 个 scan case、11 个 query case 全部 plan matched，
+  `rdf3x.syncedWithFacts=true`，facts bytes `35315712`，derived bytes `31435882`，
+  total/facts ratio `1.89x`。graph-prefix grouped numeric aggregate 不能因为小 source
+  estimate 切到 facts path，否则会把多图 prefix fanout 放大成慢查询；gate 保持验收
+  `PostgresRdf3xGroupAggregate`，最终复跑该 case 没有 slow-query 标记。2026-06-09
+  进一步把 facts cutover 限定到所有 source 都低于阈值的配置类聚合；high-fanout
+  exact-graph grouped numeric aggregate 在 baseline 下同样留在 `PostgresRdf3xGroupAggregate`
+  或在 custom-index profile 下命中 native `aggregate.bgp_numeric`。
+- PG models benchmark 现在把 seed 后的 `refreshDerivedIndexes()` / planner stats refresh
+  作为 gate：report 必须包含 `refresh.rdf3x.plannerStats.analyzedTables`，summary 会输出
+  `planner stats refreshed` 和 analyzed table 列表；缺失时命令退出非 0，避免 large /
+  real-PG benchmark 在未 `ANALYZE` facts / RDF-3X stats 表时被误判为 steady-state。
+- `bun run benchmark:rdf-models:pg -- --driver=pg ... --allowPgWrites` 真实 PG disposable benchmark gate；历史 medium gate 已覆盖 10066 quads、22 个 scan case 和 8 个 query case；2026-06-06 PG17 extreme gate 已覆盖 19483 quads、2 个 scan case 和 10 个 query case，并要求 `pg-custom-index` + `extreme/all` 至少命中一次 `XpodRdfExtensionOperator(...)`；2026-06-09 真实 PG17 medium/extreme baseline vs `pg-hot-operators` vs `pg-custom-index` rerun 覆盖 19664 quads、2 个 scan case、11 个 query case、`--concurrency=4` consistency gate，三者均 plan matched 且 planner stats refreshed；custom run 命中 13 个 native extension operator marker，但只证明 shape 可观测和局部收益，不证明默认全量 cutover。
+- 2026-06-09 PGlite 36k oversized smoke 已补目标规模 gate：
+  `bun run benchmark:rdf-models:pg -- --scale=medium --targetQuads=36000 --iterations=1 --warmupIterations=0 --caseProfile=extreme --rdfAccelerationProfile=baseline`
+  和同参数 `--rdfAccelerationProfile=pg-hot-operators` 均通过。两次 seed 都为 `45656`
+  quads、2 个 scan case、11 个 query case、`full scale seed=true`、plan matched、
+  concurrency gate matched、`rdf3x.syncedWithFacts=true`、planner stats refreshed，storage
+  total/facts ratio 均为 `1.95x`。baseline refresh `1903ms`、first query after refresh
+  `550ms`、warm steady p50/p95 `319/319ms`；`pg-hot-operators` refresh `1757ms`、first query
+  after refresh `555ms`、warm steady p50/p95 `385/385ms`，active operators 为
+  `scan.exact_graph`、`scan.graph_prefix`、`scan.term_in`、`join.required_bgp`、`join.values`、
+  `aggregate.count`、`aggregate.numeric`、`cache.result`。这证明 36k 级 P0 shape 的
+  PGlite correctness / capacity gate 已可重复执行，但不证明 `pg-hot-operators` 在 PGlite
+  上有性能收益，也不能替代真实 PG release benchmark。
+
+仍需继续跟踪：
+
+- 更大数据量 / 真实 PG 高并发 benchmark gate 已有第一版 release evidence；当前已有 `caseProfile=extreme` 覆盖高 fanout message/thread、8-pattern star BGP、large VALUES、`COUNT DISTINCT`、grouped count / grouped numeric aggregate、大范围日期桶 graph prefix，以及 exact-graph native gate，并已补 36k PGlite oversized correctness/capacity smoke。custom-index write amplification 已有第一版缓解：真实 PG + `pg-custom-index` benchmark 默认延迟创建 native permutation indexes，facts 写入内部已使用数组 staging / `UNNEST` 批量 dirty queue upsert，大批 term dictionary / `rdf_quads` 会通过 transaction-local temp staging table 再 upsert 到 facts，seed 完成后显式 `ensurePgCustomIndexes()`；2026-06-09 已补 real `pg` client 的 optional COPY FROM STDIN staging capability，PGlite / fake pg pool 保持 UNNEST fallback，单测覆盖 term/quad staging COPY path 和 fallback path；benchmark report 已补 seed ingest duration 与 COPY counters，disposable PG17 已证明 medium/default 10,448 quads 命中 quad COPY 且完整 benchmark 退出 0、medium/extreme 45,656 quads 命中 term+quad COPY 且完整 benchmark 退出 0。原 query min-row gate 失败根因是 real PG 文本 collation 下 `prefix + \uffff` 上界不能作为 graph-prefix 范围判断，已改为 `COLLATE "C"` 的 value_head 粗筛加 `starts_with(value, prefix)` 精确判断；PG models benchmark 已补 `--concurrency=N` consistency gate，会用串行基线对消息分页、任务调度 keyset、settings keyset、provider/model/credential ordered join 的并发复跑做 plan / row count / checksum / ordered checksum 验收，并强制验收 seed 后 planner stats refresh；dashboard 已能读取 benchmark report artifact，把 warm steady-state p50/p95、cold first query、COPY ingest、refresh 和 storage ratio 与 live `storageStats()` 放在同一 RDF 页面；2026-06-09 已用真实 PG17 `--concurrency=4` 跑过 medium/extreme baseline、公开 hot profile 与 custom profile并通过一致性 gate；同日 large/default `pg-hot-operators` release gate 生成 `1,001,024` quads，COPY fallback `0`，plan/concurrency matched，warm p95 `2,310 ms`，storage ratio `1.81x`，report 位于 `.test-data/rdf-pg-large-real-hot-20260609/models-postgres-2026-06-09T08-54-23-852Z-27181-383b697d-dd99-4d65-949e-e9ee90c620af.json`。
+- bounded graph-prefix BGP / aggregate native 下推已接线并完成真实 PG17 rerun；slot-filter 修复了 hidden VALUES 笛卡尔成本，但 `COUNT DISTINCT` 和 grouped count 仍未超过 RDF-3X / btree baseline，不能作为 cutover 依据。低基数配置类 grouped numeric aggregate 已有 facts cost cutover；message / high-fanout grouped numeric aggregate 保持 RDF-3X/native，避免把 facts path 当成通用优化。planner explain 第一版已能在 capability 激活但 native 未选中时记录 `rejectedNativeOperators`，区分 `shape-gate` 和低基数 grouped numeric 的 cost cutover；mock extension 回归已覆盖 graph-prefix COUNT DISTINCT 和 grouped count：即使 `aggregate.bgp_count` / `aggregate.bgp_group_count` active，也必须分别保持 `PostgresRdf3xJoinCount` / `PostgresRdf3xGroupCount` + `GraphPrefixMembershipFilter`，并在 explain 中标记 `cost-cutover-count-distinct-native-regression` / `cost-cutover-group-count-native-regression`。subject-star 第一版已落地为 local/PG plan marker 和 models benchmark gate，真实 PG17 baseline / hot-profile p95 已证明公开 profile 下 subject-star marker 可观测且语义稳定；native `join.subject_star` / `aggregate.subject_star_count` 已接到非 grouped row stream / scalar count gate，并在缺专用 capability 时回退 generic native BGP / BGP count；grouped count / grouped numeric subject-star 第一版复用现有 native aggregate ABI，并输出 `PostgresRdfNativeCustomIndexSubjectStarGroupCount(...)` / `PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(...)` 专用 marker；2026-06-09 带 `xpod_rdf` extension 的真实 PG p95 显示 exact-graph star 和 grouped numeric aggregate 有收益，但 graph-prefix star、count distinct、grouped count 仍退化，因此 native grouped/numeric 进入默认 cutover 前还必须挂 shape/cost gate。
+- `pg-custom-index` 的 native scan limit early-stop 已有单测 gate：无显式 order 的 limited scan 要求 `index.xpod_rdf_perm.scan_any.limit` active，并标记 `PostgresRdfNativeCustomIndexScanAnyLimit(...)`。ordered-page join 保留两级公开 capability gate：`join.required_bgp.order_page.topn.native` 调用 `xpod_rdf.bgp_order_page(...)` 并标记 `PostgresRdfNativeCustomIndexBgpOrderPageTopN(...)`；只有 `join.required_bgp.order_page.native` 时使用 `xpod_rdf.bgp_join(...)` 行流加外层 order/page 语义收尾；两项能力都缺失时回退 RDF-3X ordered join。shape gate 限定单排序变量、projected order 和 order-aware permutation。公开 rerun 中 exact-graph ordered-page wrapper 的 baseline / hot / custom p95 分别为 `18ms` / `23ms` / `14ms`，其 report artifact 已列于本节上方；独立 extension benchmark case `two_pattern_bgp_value_order_page` 记录的 facts/btree 与 `xpod_rdf` operator p95 分别为 `5.531ms` / `5.393ms`。这些证据只支持受限 shape 的局部收益，不支持默认 cloud cutover 或“所有 ordered-page shape 更快”的结论；不支持的 shape 继续按 capability/cost gate 回退。VALUES join 已完成受限形状接线并能命中 native operator，但当前 real PG extreme 仍存在慢于 RDF-3X / btree baseline 的 case。
+- text / vector candidate generation 与 RDF structured join 的本地和 PG 第一版已接到
+  `bun run benchmark:rdf-models -- --scale=small --iterations=1 --caseProfile=fusion`。
+  2026-06-08 smoke seed `548` quads，baseline `queryCases=1`，`agent context text vector fusion query`
+  返回 `2` 行，plan 同时包含 `TextSearch(...)`、`VectorSearch(...)` 和 3 个 RDF
+  `IndexScan(...)`，并包含 numeric `Bind(?fusionScore:=...)` 和 `Sort`；结果按
+  `fusionScore DESC` rerank，`indexChoices` 包含 `text-chunk` / `vector-chunk` / `GSPO`，
+  plan matched。RDF-3X shadow 对 search source join 明确 skipped。PG fusion gate
+  也已接入：`bun run benchmark:rdf-models:pg -- --scale=small --iterations=1
+  --warmupIterations=0 --caseProfile=fusion` 会给 `PostgresRdfEngine` 配置 in-process
+  `RdfTextIndex` / `RdfVectorIndex` 并 seed 同一批 chunks；2026-06-08 smoke 返回 `2`
+  行、`queryCases=1`、plan matched，physical plan 显示
+  `PostgresFactsScan(...)`、`TextSearch(...)`、`VectorSearch(...)`、
+  `PostgresFactsBind(?fusionScore:=...)` 和 `PostgresFactsSort(desc:fusionScore,asc:message)`。
+  这证明 PG 已能执行 fusion 语义，但第一版仍是 PG facts fallback，不是 RDF-3X/native
+  search-source 下推；权限候选过滤已先落到 `applyRdfAccessScope` 投影 search source
+  allow/deny 条件这层，后续重点是产品 Agent context 调用和 PG text/vector
+  持久化/外部后端替换。
+- ACL/ACR 写路径已经接入 resource override target + graph scope overlap 的精确 cache invalidation；
+  WebACL/ACP target triples 会进入 `rdf_access_control_overrides`，使同一 `.acr` 容器下的显式
+  `acp:apply` 不再误删 sibling graph-scoped cache；sourceVersion / permissionVersion
+  也已接入更细粒度失效，已知版本只清对应 permissionVersion 和未版本化 cache，版本未知时保守清理。
+  materialized result 已在
+  `SolidRdfSparqlEngine` 边界为 ChatKit thread history / Managed Run conversation assembly
+  自动生成 `chatkit/thread-history/<thread>/<query>` key；业务统计页这类
+  aggregate/groupBy/having 查询会按 message/thread、run priority、provider credential 等稳定
+  形状自动生成 `models/stats/<view>/<query>` key；settings Provider/Model/Credential
+  product-view 查询会按类型列表或 provider-model-credential 关系 join 自动生成
+  `models/settings/<view>/<query>` key；chat/thread/message、task/run/schedule/session/agent
+  等稳定产品读视图会按共享 RDF 类型和产品 graph-scoped relation/status/timeline 谓词自动生成
+  `models/product-views/<view>/<query>` key；active session + chat/thread 这类非 thread-history
+  Agent context hydration 查询会自动生成 `models/agent-context/<view>/<query>` key。
+  自由 text/vector search / fusion query 暂不自动物化，
+  避免按用户输入制造过宽 cache key 空间；RDF 运维统计页走 `storageStats()`，不进入 query
+  result materialized cache；auth/cache scope 的 dashboard 首版已能看
+  entry/scope/payload/eviction/top scope drill-down，并能按 principal/base/version 搜索 scope；
+  后续仍缺更大数据量 benchmark。
+- ChatKit thread history 的产品读路径已从手写 SPARQL 收回到 models/drizzle-solid
+  `Message.thread` 查询，Managed Run 组装 conversation / thread items 时不再绕过 shared model
+  入口；SPARQL 边界 selector 会识别 `sioc:has_container` / `sioc:has_member` thread-history
+  形状并挂 materialized key。AI provider/settings 读路径仍走 models/drizzle-solid，SPARQL 边界
+  selector 会识别 `ai:Provider` / `ai:Model` / `cred:Credential` 类型列表和
+  `ai:isProvidedBy` + `cred:provider` 关系 join，避免为这类产品路径手写 SPARQL。shared
+  query/repository 层后续只需要继续覆盖其他高频产品查询。
+- SQLite/file-backed `Rdf3xIndex` 已补第一版 dirty projection refresh：`rdf_quads` trigger 记录 graph / pair / term dirty key，默认 `refreshDerivedIndexes()` 只重算受影响 projection row，显式 `mode: 'full'` 仍保留全量 repair。PG 已补第一版 source-level dirty queue，并通过 `maintainDerivedIndexes()` / `rdf_maintenance_leases` 接到后台维护入口；未完成的是更大数据量下的 refresh benchmark、按 source 批量调度策略优化和运维面板。
+- 冷启动 stats refresh / warm steady-state 的自动化运维指标第一版已接入 benchmark report：
+  `runRdfModelsPostgresBenchmark()` 会输出 `coldStartBenchmark`，区分 startup/open duration、
+  stats refresh 后首轮 query duration，以及同一 query 的 warm steady-state p50/p95；CLI summary
+  会直接打印这三段。`GET /v1/rdf/stats` 和 dashboard RDF 页暴露的是 live
+  `storageStats()` 口径：engine lifecycle startup/open duration、phase timings、ready/open
+  timestamp、`rdf3x.refreshLag`、pending source、auth/cache scope、cache eviction breakdown、top
+  scope drill-down 和 process-local `slowQueries` 快照；慢查询条目已带 derived cache pressure /
+  eviction 摘要，`metrics.explain` 已有第一版查询级 runtime/stale/slow 结构化观测。refresh 后首轮
+  query 与 warm steady-state p50/p95 属于 benchmark report，不伪装成实时状态；如果后续要进
+  dashboard，应先定义稳定的 benchmark report ingest/retention 来源。
+
+因此 cloud 当前可以把 PG RDF-3X baseline 当作默认正确性和 warm steady-state 性能底座，并用 `pg-hot-operators` 打开已验证的 PG SQL hot operator 与 repeated-query cache acceleration。真实 PG medium benchmark 显示 baseline 对 scan、scheduler 查询、numeric aggregate、大 fanout message join/count 的 warm steady-state 都已可用；cloud product-grade 性能发布仍应把这两个大 message case 作为 release-blocking performance gate，同时单独记录冷启动首轮耗时，避免 planner stats 或连接预热噪声被误判为稳态性能。
+## Migration Strategy
+
+### Principle
+
+这次不做复杂在线动态索引迁移。RDF facts 和 derived index 都可从权威数据重建，因此允许清空 RDF 索引数据后重建。
+
+迁移必须保护非 RDF 业务表：
+
+- 账号、OIDC、client credentials、session、quota、billing、AI gateway 等非 RDF 数据不能被清理。
+- R2 / COS blob 不是 RDF derived index，除非明确全量重置 Pod 内容，否则不清理。
+- `rdf_query_result_cache` 可随时删除。
+- `rdf_materialized_result_cache` 可随时删除。
+- `rdf3x_*` derived stats 可随时删除。
+- `rdf_query_result_cache.scope_hash` / `scope_shape` / access-scope columns，以及
+  `rdf_materialized_result_cache` 的 materialized shape / scope columns 都是派生观测字段；
+  旧行可用 `legacy` 默认值，清 cache 后会自然重建。
+
+### Data Classes
+
+| Data | Migration Action |
+| --- | --- |
+| SolidFS authority files | 保留；作为重建 facts 的输入 |
+| `rdf_terms` / `rdf_quads` / `rdf_sources` | schema/profile 不兼容时清空并重建 |
+| `rdf3x_*` stats | 清空并通过 `refreshDerivedIndexes()` 重建 |
+| `rdf_query_result_cache` | 清空；写入后按 facts version 自然重建 |
+| `rdf_materialized_result_cache` | 清空；业务 query 再次执行后按 facts version / scope 自然重建 |
+| old TEXT `quints` compatibility store | 只作为迁移源或 oracle，不作为新默认查询事实 |
+| R2 / COS objects | 默认不动；当前如果确认无业务数据，可跳过 |
+| identity / auth / quota tables | 不动 |
+
+### Local Migration
+
+适用于本地 SQLite / file-backed engine。
+
+1. 停止 xpod 进程，避免写入竞争。
+2. 保留 workspace / SolidFS 文件。
+3. 删除本地 RDF index 数据库或让 schema version guard 自动重建。
+4. 启动 xpod。
+5. bootstrap / journal replay 扫描 SolidFS 权威文件，按 source 调用 `replaceSource(...)` 回填 facts。
+6. 运行 `refreshDerivedIndexes()` 重建 RDF-3X stats。
+7. 跑 `bun run benchmark:rdf-models -- --scale=small --iterations=1` 做本地 smoke；发布前跑 medium。
+
+### Cloud Migration
+
+适用于 PostgreSQL-backed xpod cloud。
+
+1. 进入维护窗口，暂停写请求、Agent run 调度和后台 index refresh。
+2. 备份 PG schema 或至少备份待清理表：
+   - `rdf_terms`
+   - `rdf_quads`
+   - `rdf_sources`
+   - `rdf_index_metadata`
+   - `rdf3x_*`
+   - `rdf_query_result_cache`
+   - `rdf_materialized_result_cache`
+3. 确认清理 scope 只包含 xpod cloud RDF 表，不包含 ai-gateway 或其他服务 schema。
+4. 先 dry-run RDF-only reset，确认脚本只列出 RDF facts / RDF-3X / query cache / metadata 表：
+
+   ```bash
+   bun run ops:rdf:reset:pg -- --connectionString=<cloud-xpod-pg-url>
+   ```
+
+5. 清理 RDF derived/cache：
+
+   ```bash
+   bun run ops:rdf:reset:pg -- --connectionString=<cloud-xpod-pg-url> --execute --confirm=RESET_XPOD_RDF_DERIVED
+   ```
+
+6. 如果 facts schema 也不兼容或现网数据可丢，继续清理 facts。这个模式会额外 truncate
+   `rdf_quads` / `rdf_sources` / `rdf_terms`，并重置 facts `data_version`：
+
+   ```bash
+   bun run ops:rdf:reset:pg -- --connectionString=<cloud-xpod-pg-url> --includeFacts --execute --confirm=RESET_XPOD_RDF_FACTS
+   ```
+
+   该脚本只触碰 xpod RDF 表，不能用于清理 identity、auth、quota、billing、AI gateway 或 R2/COS。
+7. 启动新版本 xpod，执行 Pod bootstrap / SolidFS replay。
+8. 执行 `refreshDerivedIndexes()`，直到 `storageStats().rdf3x.syncedWithFacts=true` 且
+   `storageStats().rdf3x.refreshLag=0`，并确认 refresh 返回值包含
+   `plannerStats.analyzedTables`。
+9. 跑 smoke：
+   - `bun run test:rdf:access-smoke`
+   - GET WebID profile from the deployed cloud URL
+   - list chat/task
+   - load message by id
+   - run/task scheduler query
+   - SPARQL graph prefix query
+10. 检查 `storageStats().queryResultCache.scopeCount` 和
+    `storageStats().materializedResultCache.scopeCount` 能随不同 principal / workspace cache
+    scope 增长，确认 result/materialized cache 没有跨 scope 复用。
+11. 打开写流量。
+12. 观察 p95、500、401、index refresh duration、storage ratio、cache entry/scope ratio。
+
+### Rollback
+
+如果新索引导致 correctness 或 auth 查询异常：
+
+1. 关闭写流量。
+2. 切回上一版镜像。
+3. 如果只清了 derived/cache：直接启动旧版，让旧版使用 facts。
+4. 如果 facts 已清空：从备份恢复 RDF 表，或重新从 SolidFS 权威文件回填。
+5. 清空 query result cache 和 materialized result cache，避免 facts version 不一致造成误判。
+
+## Operational Gates
+
+上线前必须满足：
+
+- `bun run build:ts` 通过。
+- `bun run test:integration` 通过。
+- `bun run benchmark:rdf-models -- --scale=medium --iterations=3` 通过。
+- `bun run benchmark:rdf-models:pg -- --scale=small --iterations=1` 通过。
+- `bun run benchmark:rdf-models:pg -- --driver=pg --connectionString=<disposable-empty-pg> --allowPgWrites --scale=medium --iterations=3 --warmupIterations=1` 通过；cloud 性能发布必须同时记录 warm steady-state p95 和 cold first-run 观测，且 `latest message by thread query` / `message join count distinct` warm p95 不能回到秒级。
+- 显式传入 `--rdfAccelerationProfile=<profile>` 的 PG benchmark 必须显示
+  `pg acceleration matched request: true`；非 baseline profile fallback 时命令必须非零退出。
+- `storageStats().totalToFactsRatio` 可接受；当前 medium 参考值为 SQLite/file-backed 1.18x、真实 PG 1.39x。
+- `rdf3x.syncedWithFacts=true` 且 `rdf3x.refreshLag=0`。
+- profile / schema version 不一致时重建逻辑可重复执行。
+- `bun run test:rdf:access-smoke` 通过：profile 匿名读取不能回 401；models/profile/ACL/ACR
+  benchmark seed 必须返回数据；SPARQL graph access scope 必须过滤被 deny 的 graph；PG
+  result/materialized cache 必须按 Alice/Bob 或 structured access scope 产生隔离 entry，并且
+  ACL/ACR 写入能失效相关 cache。
+- cloud 部署后再用真实 URL GET WebID profile，确认部署配置没有把本地 profile smoke 重新变成
+  401。
+
+## Open Follow-ups
+
+- 若要重新打开 SQLite/file-backed RDF-3X numeric aggregate path，需要先补 cost gate 和 high-fanout
+  grouped numeric 发布阈值；当前 P0 默认保持 `RdfQuadIndex` SQL aggregate path。
+- 如需在 RDF dashboard 展示 refresh 后首轮 / warm steady-state p50/p95，先设计 benchmark report
+  ingest/retention；当前 dashboard 已覆盖 live lifecycle startup/open drill-down。

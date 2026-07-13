@@ -7,12 +7,14 @@ import { SqliteQuintStore } from '../../../src/storage/quint';
 import { QuintstoreSparqlEngine } from '../../../src/storage/sparql/CompatibilitySparqlEngine';
 import {
   DisabledSparqlFeatureError,
+  NativeSparqlExecutionError,
   RdfQuadIndex,
   ShadowRdfQuintStore,
   SolidRdfEngine,
   SolidRdfSparqlEngine,
   UnsupportedSparqlQueryError,
   type RdfEngineLike,
+  type RdfAccessScope,
   type RdfQuery,
   type RdfQueryResult,
 } from '../../../src/storage/rdf';
@@ -24,10 +26,27 @@ const BASE = 'https://pod.example/alice/';
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 const CONTENT = 'http://rdfs.org/sioc/ns#content';
+const HAS_CONTAINER = 'http://rdfs.org/sioc/ns#has_container';
 const HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
+const MEETING_LONG_CHAT = 'http://www.w3.org/ns/pim/meeting#LongChat';
+const SIOC_THREAD = 'http://rdfs.org/sioc/ns#Thread';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
+const UDFS_LAST_MESSAGE = 'https://undefineds.co/ns#lastMessage';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
+const UDFS_SESSION = 'https://undefineds.co/ns#Session';
+const UDFS_SCHEDULE = 'https://undefineds.co/ns#Schedule';
+const UDFS_STATUS = 'https://undefineds.co/ns#status';
+const UDFS_NEXT_RUN_AT = 'https://undefineds.co/ns#nextRunAt';
+const UDFS_SESSION_STATUS = 'https://undefineds.co/ns#sessionStatus';
+const UDFS_CONVERSATION = 'https://undefineds.co/ns#conversation';
+const UDFS_IN_THREAD = 'https://undefineds.co/ns#inThread';
+const UDFS_TOKEN_USAGE = 'https://undefineds.co/ns#tokenUsage';
+const AI_PROVIDER = 'https://vocab.xpod.dev/ai#Provider';
+const AI_BASE_URL = 'https://vocab.xpod.dev/ai#baseUrl';
+const AI_IS_PROVIDED_BY = 'https://vocab.xpod.dev/ai#isProvidedBy';
+const CREDENTIAL_PROVIDER = 'https://vocab.xpod.dev/credential#provider';
+const CREDENTIAL_FAIL_COUNT = 'https://vocab.xpod.dev/credential#failCount';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 
 describe('SolidRdfSparqlEngine', () => {
@@ -136,6 +155,104 @@ describe('SolidRdfSparqlEngine', () => {
     expect(() => engine.assertFallbackBudget()).not.toThrow();
   });
 
+  it('filters RDF queries with ACL/ACR graph access scope', async () => {
+    const privateGraph = 'https://pod.example/alice/.data/private/secrets.ttl';
+    rdfEngine.put([
+      quad(
+        namedNode(`${privateGraph}#secret`),
+        namedNode(CONTENT),
+        literal('secret'),
+        namedNode(privateGraph),
+      ),
+      quad(
+        namedNode(`${privateGraph}#secret`),
+        namedNode(RDF_TYPE),
+        namedNode(MESSAGE),
+        namedNode(privateGraph),
+      ),
+    ]);
+
+    const accessScope: RdfAccessScope = {
+      basePath: BASE,
+      mode: 'read',
+      principal: 'https://pod.example/bob#me',
+      deniedGraphUrls: [privateGraph],
+      version: 'test-deny-private',
+    };
+
+    const stream = await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+      ORDER BY ?content
+    `, BASE, accessScope);
+    const results = await arrayFromStream(stream);
+
+    expect(results.map((binding) => binding.get('content')?.value)).toEqual(['hello']);
+    await expect(engine.queryBoolean(`
+      ASK {
+        ?message <${CONTENT}> "secret" .
+      }
+    `, BASE, accessScope)).resolves.toBe(false);
+
+    const constructStream = await engine.queryQuads(`
+      CONSTRUCT { ?message <${CONTENT}> ?content }
+      WHERE { ?message <${CONTENT}> ?content }
+    `, BASE, accessScope);
+    const constructed = await arrayFromStream(constructStream);
+    expect(constructed.map((resultQuad) => resultQuad.object.value)).toEqual(['hello']);
+
+    const privateConstruct = await engine.constructGraph(privateGraph, BASE, accessScope);
+    await expect(arrayFromStream(privateConstruct)).resolves.toEqual([]);
+
+    const graphs = await engine.listGraphs(BASE, accessScope);
+    expect(graphs.has(privateGraph)).toBe(false);
+  });
+
+  it('does not use compatibility fallback when ACL/ACR graph scope is restrictive', async () => {
+    await engine.close();
+    const fallbackStub = {
+      queryBindings: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      queryQuads: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      queryBoolean: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      queryVoid: vi.fn(async () => undefined),
+      constructGraph: vi.fn(async () => {
+        throw new Error('fallback should not be used with ACL/ACR restrictions');
+      }),
+      listGraphs: vi.fn(async () => new Set<string>()),
+      close: vi.fn(async () => undefined),
+    };
+    engine = new SolidRdfSparqlEngine(rdfEngine, fallbackStub, undefined, false);
+
+    let restrictedError: unknown;
+    try {
+      await engine.queryBindings(`
+        SELECT ?message WHERE {
+          ?message <${CONTENT}> ?content .
+        }
+      `, BASE, {
+        basePath: BASE,
+        mode: 'read',
+        deniedGraphUrls: ['https://pod.example/alice/.data/private/secrets.ttl'],
+      });
+    } catch (error) {
+      restrictedError = error;
+    }
+    expect(restrictedError).toBeInstanceOf(UnsupportedSparqlQueryError);
+    expect((restrictedError as Error).message).toMatch(/Embedded SPARQL engine cannot execute queryBindings inside ACL\/ACR-restricted scope/);
+    expect(restrictedError).toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.query.shape',
+    });
+    expect(fallbackStub.queryBindings).not.toHaveBeenCalled();
+  });
+
   it('awaits async RDF engine implementations on the primary path', async () => {
     const asyncEngine = new AsyncRdfEngineFake({
       bindings: [
@@ -174,6 +291,472 @@ describe('SolidRdfSparqlEngine', () => {
       returnedRows: 1,
       plan: ['AsyncRdfEngineFake'],
     });
+  });
+
+  it('routes SELECT through native SPARQL when the RDF engine exposes it', async () => {
+    const nativeEngine = new NativeSparqlEngineFake({
+      status: 'ok',
+      mediaType: 'application/sparql-results+json',
+      body: JSON.stringify({
+        head: { vars: ['message', 'content'] },
+        results: {
+          bindings: [
+            {
+              message: {
+                type: 'uri',
+                value: 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_native',
+              },
+              content: { type: 'literal', value: 'native hello' },
+            },
+          ],
+        },
+      }),
+      profile: {
+        engine: 'native-rdf',
+        root: {
+          kind: 'IndexScan',
+          descriptor: 'physical POS scan',
+          outputRows: 3,
+        },
+      },
+    });
+    engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike);
+    const query = `
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+      }
+    `;
+
+    const stream = await engine.queryBindings(query, BASE);
+    const results = await arrayFromStream(stream);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].get('message')?.value).toBe('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl#msg_native');
+    expect(results[0].get('content')?.value).toBe('native hello');
+    expect(nativeEngine.sparqlQueries[0]).toMatchObject({
+      query,
+      options: {
+        basePath: BASE,
+        operation: 'queryBindings',
+        acceptMediaType: 'application/sparql-results+json',
+      },
+    });
+    expect(nativeEngine.calls).toEqual(['sparqlQuery']);
+    expect(engine.getMetrics().lastPrimary).toMatchObject({
+      operation: 'queryBindings',
+      returnedRows: 1,
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('NativeSparql');
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('Native:IndexScan');
+    expect(engine.getMetrics().lastPrimary?.indexChoices).toContain('physical POS scan');
+    expect(engine.getMetrics().lastPrimary?.scannedRows).toBe(3);
+  });
+
+  it('routes ASK through native SPARQL when the RDF engine exposes it', async () => {
+    const nativeEngine = new NativeSparqlEngineFake({
+      status: 'ok',
+      mediaType: 'application/sparql-results+json',
+      body: JSON.stringify({
+        head: {},
+        boolean: true,
+      }),
+    });
+    engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike);
+    const query = 'ASK { ?s ?p ?o }';
+
+    await expect(engine.queryBoolean(query, BASE)).resolves.toBe(true);
+    expect(nativeEngine.sparqlQueries[0]).toMatchObject({
+      query,
+      options: {
+        basePath: BASE,
+        operation: 'queryBoolean',
+        acceptMediaType: 'application/sparql-results+json',
+      },
+    });
+    expect(nativeEngine.calls).toEqual(['sparqlQuery']);
+  });
+
+  it('routes CONSTRUCT through native SPARQL and parses graph result bodies', async () => {
+    const nativeEngine = new NativeSparqlEngineFake({
+      status: 'ok',
+      mediaType: 'application/n-triples',
+      body: '<https://pod.example/alice/s> <https://pod.example/alice/p> "native graph" .\n',
+    });
+    engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike);
+    const query = 'CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }';
+
+    const quads = await arrayFromStream(await engine.queryQuads(query, BASE));
+
+    expect(quads).toHaveLength(1);
+    const result = quads[0] as ReturnType<typeof quad>;
+    expect(result.subject.value).toBe('https://pod.example/alice/s');
+    expect(result.predicate.value).toBe('https://pod.example/alice/p');
+    expect(result.object.value).toBe('native graph');
+    expect(nativeEngine.sparqlQueries[0]).toMatchObject({
+      query,
+      options: {
+        basePath: BASE,
+        operation: 'queryQuads',
+        acceptMediaType: 'application/n-triples',
+      },
+    });
+    expect(nativeEngine.calls).toEqual(['sparqlQuery']);
+  });
+
+  it('routes SPARQL UPDATE through native SPARQL when the RDF engine exposes it', async () => {
+    const nativeEngine = new NativeSparqlEngineFake({
+      status: 'ok',
+      mediaType: 'application/sparql-results+json',
+      body: JSON.stringify({ inserted: 1, deleted: 0 }),
+    });
+    engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike);
+    const query = `
+      INSERT DATA {
+        <https://pod.example/alice/s> <https://pod.example/alice/p> "update" .
+      }
+    `;
+
+    await engine.queryVoid(query, `${BASE}.data/native/update.ttl`);
+
+    expect(nativeEngine.sparqlQueries[0]).toMatchObject({
+      query,
+      options: {
+        basePath: `${BASE}.data/native/update.ttl`,
+        operation: 'queryVoid',
+        acceptMediaType: 'application/sparql-results+json',
+      },
+    });
+    expect(nativeEngine.calls).toEqual(['sparqlQuery']);
+    expect(engine.getMetrics().lastPrimary).toMatchObject({
+      operation: 'queryVoid',
+      returnedRows: 0,
+    });
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('NativeSparql');
+  });
+
+  it('does not fall back when native SPARQL returns an execution error', async () => {
+    const nativeEngine = new NativeSparqlEngineFake({
+      status: 'error',
+      mediaType: 'application/sparql-results+json',
+      body: '',
+      error: 'adapter-create-failed',
+    });
+    const fallbackSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike, fallback);
+
+    await expect(engine.queryVoid('INSERT DATA { <https://s> <https://p> <https://o> }', BASE))
+      .rejects.toThrow(NativeSparqlExecutionError);
+
+    expect(fallbackSpy).not.toHaveBeenCalled();
+    expect(nativeEngine.calls).toEqual(['sparqlQuery']);
+  });
+
+  it('adds a materialized cache key for ChatKit thread history queries', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+    const thread = 'https://pod.example/alice/.data/chat/default/index.ttl#thread_1';
+
+    await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${HAS_CONTAINER}> <${thread}> .
+        ?message <${CONTENT}> ?content .
+      }
+      ORDER BY ?message
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^chatkit\/thread-history\/[a-f0-9]{16}\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for settings provider list product views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?provider ?baseUrl WHERE {
+        ?provider <${RDF_TYPE}> <${AI_PROVIDER}> .
+        ?provider <${AI_BASE_URL}> ?baseUrl .
+      }
+      ORDER BY ?provider
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/settings\/ai-providers\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for provider model credential product joins', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+    const provider = 'https://pod.example/alice/settings/providers/anthropic.ttl';
+
+    await engine.queryBindings(`
+      SELECT ?model ?credential WHERE {
+        ?model <${AI_IS_PROVIDED_BY}> <${provider}> .
+        ?credential <${CREDENTIAL_PROVIDER}> <${provider}> .
+      }
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/settings\/provider-model-credentials\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for chat hydration product views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?chat ?message WHERE {
+        GRAPH <https://pod.example/alice/.data/chat/default/index.ttl> {
+          ?chat <${RDF_TYPE}> <${MEETING_LONG_CHAT}> .
+          ?chat <${UDFS_LAST_MESSAGE}> ?message .
+        }
+      }
+      LIMIT 10
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/product-views\/chat-latest-message\+chats\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for task scheduler product views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?schedule ?nextRunAt WHERE {
+        GRAPH ?graph {
+          ?schedule <${RDF_TYPE}> <${UDFS_SCHEDULE}> .
+          ?schedule <${UDFS_STATUS}> "active" .
+          ?schedule <${UDFS_NEXT_RUN_AT}> ?nextRunAt .
+        }
+        FILTER(STRSTARTS(STR(?graph), "https://pod.example/alice/.data/task/default/"))
+      }
+      ORDER BY ?nextRunAt
+      LIMIT 20
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/product-views\/schedules\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for message aggregate stats views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?thread (COUNT(?message) AS ?count) WHERE {
+        GRAPH ?graph {
+          ?message <${HAS_MEMBER}> ?thread .
+        }
+        FILTER(STRSTARTS(STR(?graph), "https://pod.example/alice/.data/chat/default/"))
+      }
+      GROUP BY ?thread
+      HAVING (?count > 2)
+      ORDER BY DESC(?count)
+      LIMIT 10
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/stats\/message-count-by-thread\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for provider credential aggregate stats views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?provider (COUNT(?credential) AS ?credentialCount) (SUM(?failCount) AS ?failCountTotal) WHERE {
+        GRAPH <https://pod.example/alice/settings/providers/anthropic.ttl> {
+          ?model <${AI_IS_PROVIDED_BY}> ?provider .
+        }
+        GRAPH <https://pod.example/alice/settings/credentials.ttl> {
+          ?credential <${CREDENTIAL_PROVIDER}> ?provider .
+          ?credential <${CREDENTIAL_FAIL_COUNT}> ?failCount .
+        }
+        FILTER(isNumeric(?failCount))
+      }
+      GROUP BY ?provider
+      ORDER BY DESC(?failCountTotal)
+      LIMIT 10
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/stats\/provider-credential-failures\/[a-f0-9]{16}$/);
+  });
+
+  it('adds a materialized cache key for agent context session hydration views', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine);
+
+    await engine.queryBindings(`
+      SELECT ?session ?chat ?thread ?tokenUsage WHERE {
+        GRAPH ?sessionGraph {
+          ?session <${RDF_TYPE}> <${UDFS_SESSION}> .
+          ?session <${UDFS_SESSION_STATUS}> "active" .
+          ?session <${UDFS_CONVERSATION}> ?chat .
+          ?session <${UDFS_IN_THREAD}> ?thread .
+          ?session <${UDFS_TOKEN_USAGE}> ?tokenUsage .
+        }
+        GRAPH <https://pod.example/alice/.data/chat/default/index.ttl> {
+          ?chat <${RDF_TYPE}> <${MEETING_LONG_CHAT}> .
+          ?thread <${RDF_TYPE}> <${SIOC_THREAD}> .
+        }
+        FILTER(STRSTARTS(STR(?sessionGraph), "https://pod.example/alice/.data/sessions/"))
+      }
+      ORDER BY DESC(?tokenUsage)
+      LIMIT 5
+    `, BASE);
+
+    const materialized = asyncEngine.queries[0]?.cache?.materialized;
+    expect(materialized).toMatchObject({ version: 'v1' });
+    expect(typeof materialized).toBe('object');
+    expect((materialized as { key: string }).key).toMatch(/^models\/agent-context\/active-session-thread-usage\/[a-f0-9]{16}$/);
+  });
+
+  it('can disable automatic materialized cache key selection', async () => {
+    const asyncEngine = new AsyncRdfEngineFake({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['AsyncRdfEngineFake'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 1,
+        indexChoices: ['fake'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(asyncEngine, undefined, undefined, true, undefined, false);
+    const thread = 'https://pod.example/alice/.data/chat/default/index.ttl#thread_1';
+
+    await engine.queryBindings(`
+      SELECT ?message ?content WHERE {
+        ?message <${HAS_CONTAINER}> <${thread}> .
+        ?message <${CONTENT}> ?content .
+      }
+    `, BASE);
+
+    expect(asyncEngine.queries[0]?.cache?.materialized).toBeUndefined();
   });
 
   it('scopes implicit default graph reads exactly for resource base paths', async () => {
@@ -3934,6 +4517,47 @@ describe('SolidRdfSparqlEngine', () => {
     });
   });
 
+  it('rejects static embedded updates outside an explicit write access scope', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const allowedGraph = 'https://pod.example/alice/.data/public/allowed.ttl';
+    const deniedGraph = 'https://pod.example/alice/.data/private/denied.ttl';
+    await expect(engine.queryVoid(`
+      INSERT DATA {
+        GRAPH <${deniedGraph}> {
+          <${deniedGraph}#msg_denied> <${CONTENT}> "blocked" .
+        }
+      }
+    `, BASE, {
+      basePath: BASE,
+      mode: 'write',
+      principal: 'https://pod.example/alice#me',
+      allowedGraphUrls: [allowedGraph],
+      version: 'write-scope-public-only',
+    })).rejects.toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.update.access_scope',
+    });
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${deniedGraph}> {
+          <${deniedGraph}#msg_denied> <${CONTENT}> "blocked" .
+        }
+      }
+    `, BASE)).resolves.toBe(false);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+  });
+
   it('applies DELETE WHERE on the embedded update delta path', async () => {
     const onFallback = vi.fn();
     const voidSpy = vi.spyOn(fallback, 'queryVoid');
@@ -4026,7 +4650,7 @@ describe('SolidRdfSparqlEngine', () => {
       INSERT DATA {
         <${containerBase}#msg_container_default_graph> <${CONTENT}> "container default graph" .
       }
-    `, containerBase)).rejects.toThrow('No compatibility SPARQL fallback configured for queryVoid');
+    `, containerBase)).rejects.toThrow('Embedded SPARQL engine cannot execute queryVoid');
 
     await expect(engine.queryBoolean(`
       ASK {
@@ -4399,6 +5023,52 @@ describe('SolidRdfSparqlEngine', () => {
       }
     `, BASE)).resolves.toBe(true);
 
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(voidSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects materialized embedded update targets outside an explicit write access scope', async () => {
+    const onFallback = vi.fn();
+    const voidSpy = vi.spyOn(fallback, 'queryVoid');
+    engine = new SolidRdfSparqlEngine(
+      rdfEngine,
+      fallback,
+      undefined,
+      true,
+      onFallback,
+    );
+
+    const allowedGraph = 'https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl';
+    const deniedGraph = 'https://pod.example/alice/.data/private/denied.ttl';
+    await expect(engine.queryVoid(`
+      INSERT {
+        GRAPH <${deniedGraph}> {
+          ?message <${CONTENT}> "blocked materialized write" .
+        }
+      }
+      WHERE {
+        GRAPH <${allowedGraph}> {
+          ?message a <${MESSAGE}> .
+        }
+      }
+    `, BASE, {
+      basePath: BASE,
+      mode: 'write',
+      principal: 'https://pod.example/alice#me',
+      allowedGraphUrls: [allowedGraph],
+      version: 'write-scope-chat-only',
+    })).rejects.toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.update.access_scope',
+    });
+
+    await expect(engine.queryBoolean(`
+      ASK {
+        GRAPH <${deniedGraph}> {
+          ?message <${CONTENT}> "blocked materialized write" .
+        }
+      }
+    `, BASE)).resolves.toBe(false);
     expect(onFallback).not.toHaveBeenCalled();
     expect(voidSpy).not.toHaveBeenCalled();
   });
@@ -5393,6 +6063,26 @@ describe('SolidRdfSparqlEngine', () => {
     });
   });
 
+  it('rejects external SERVICE federation before invoking native SPARQL', async () => {
+    const nativeEngine = new NativeSparqlEngineFake({
+      status: 'ok',
+      mediaType: 'application/sparql-results+json',
+      body: JSON.stringify({ head: { vars: [] }, results: { bindings: [] } }),
+    });
+    engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike);
+
+    await expect(engine.queryBindings(`
+      SELECT * WHERE {
+        SERVICE <https://remote.example/sparql> {
+          ?s ?p ?o .
+        }
+      }
+    `, BASE)).rejects.toThrow(DisabledSparqlFeatureError);
+
+    expect(nativeEngine.calls).toEqual([]);
+    expect(nativeEngine.sparqlQueries).toEqual([]);
+  });
+
   it('falls back unsupported queryVoid and unsupported queryQuads to the compatibility engine', async () => {
     const voidSpy = vi.spyOn(fallback, 'queryVoid');
     const quadSpy = vi.spyOn(fallback, 'queryQuads');
@@ -5442,13 +6132,28 @@ describe('SolidRdfSparqlEngine', () => {
       onFallback,
     );
 
-    await expect(engine.queryQuads(`
-      DESCRIBE ?message WHERE {
-        OPTIONAL {
-          ?message a <${MESSAGE}> .
+    let unsupportedError: unknown;
+    try {
+      await engine.queryBindings(`
+        SELECT ?message WHERE {
+          {
+            SELECT ?message WHERE {
+              ?message a <${MESSAGE}> .
+            }
+          }
         }
-      }
-    `, BASE)).rejects.toThrow(UnsupportedSparqlQueryError);
+      `, BASE);
+    } catch (error) {
+      unsupportedError = error;
+    }
+    expect(unsupportedError).toBeInstanceOf(UnsupportedSparqlQueryError);
+    expect((unsupportedError as Error).message).toMatch(/Embedded SPARQL engine cannot execute queryBindings: .*not supported by the embedded RDF engine/);
+    expect((unsupportedError as Error).message).not.toMatch(/compatibility fallback|fallback to compatibility engine/i);
+    expect(unsupportedError).toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability: 'sparql.query.subquery',
+      hint: expect.stringContaining('Flatten the subquery'),
+    });
 
     expect(onFallback).not.toHaveBeenCalled();
     expect(engine.getMetrics()).toEqual({
@@ -5588,6 +6293,7 @@ describe('SolidRdfSparqlEngine', () => {
 
 class AsyncRdfEngineFake implements RdfEngineLike {
   public readonly calls: string[] = [];
+  public readonly queries: RdfQuery[] = [];
 
   public constructor(private readonly result: RdfQueryResult) {}
 
@@ -5627,16 +6333,19 @@ class AsyncRdfEngineFake implements RdfEngineLike {
     return {
       quads: [],
       metrics: {
+        engine: 'solid-rdf',
         indexChoice: 'fake',
         queryPlan: ['fake'],
-        scannedRows: 0,
         matchedRows: 0,
+        returnedRows: 0,
+        durationMs: 0,
       },
     };
   }
 
-  public async query(_query: RdfQuery): Promise<RdfQueryResult> {
+  public async query(query: RdfQuery): Promise<RdfQueryResult> {
     this.calls.push('query');
+    this.queries.push(query);
     return this.result;
   }
 
@@ -5656,12 +6365,19 @@ class AsyncRdfEngineFake implements RdfEngineLike {
         quadCount: 0,
         termCount: 0,
         sourceCount: 0,
+        graphCount: 0,
         databaseBytes: 0,
         tableBytes: 0,
         indexBytes: 0,
-        dataVersion: 0,
-        index: {},
-        tables: {},
+        spaceObjects: [],
+        serializedTermTextBytes: 0,
+        literalDatatypeDistribution: [],
+        cardinalityDistributions: {
+          predicates: [],
+          graphs: [],
+          predicateObjects: [],
+          subjectPredicates: [],
+        },
       },
       factsBytes: 0,
       derivedBytes: 0,
@@ -5669,5 +6385,47 @@ class AsyncRdfEngineFake implements RdfEngineLike {
       derivedToFactsRatio: 1,
       totalToFactsRatio: 1,
     };
+  }
+}
+
+interface NativeSparqlFakeResult {
+  status: 'ok' | 'unsupported' | 'error';
+  mediaType: string;
+  body: string;
+  profile?: unknown;
+  error?: string;
+}
+
+class NativeSparqlEngineFake extends AsyncRdfEngineFake {
+  public readonly sparqlQueries: Array<{
+    query: string;
+    options: Record<string, unknown>;
+  }> = [];
+
+  public constructor(private readonly nativeResult: NativeSparqlFakeResult) {
+    super({
+      bindings: [],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['should-not-query'],
+        scannedRows: 0,
+        joinedRows: 0,
+        returnedRows: 0,
+        durationMs: 0,
+        indexChoices: [],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+  }
+
+  public async sparqlQuery(query: string, options: Record<string, unknown>): Promise<NativeSparqlFakeResult> {
+    this.calls.push('sparqlQuery');
+    this.sparqlQueries.push({ query, options });
+    return this.nativeResult;
+  }
+
+  public override async query(): Promise<RdfQueryResult> {
+    throw new Error('TS planner path should not run when native SPARQL is available');
   }
 }

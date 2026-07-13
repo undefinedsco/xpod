@@ -8,6 +8,7 @@
 export interface AiCredential {
   provider: string;
   apiKey: string;
+  credentialId?: string;
   baseUrl?: string;
   proxyUrl?: string;
 }

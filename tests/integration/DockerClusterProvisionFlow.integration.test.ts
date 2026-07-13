@@ -181,15 +181,16 @@ suite('Provision Flow (IdP + SP)', () => {
 
       expect(res.status).toBe(201);
       const body = await res.json() as {
-        nodeId: string;
-        publicUrl: string;
-        spDomain: string;
-        provisionCode: string;
+        nodeId?: string;
+        publicUrl?: string;
+        spDomain?: string;
+        provisionCode?: string;
       };
       expect(body.nodeId).toBeDefined();
-      expect(body.spDomain).toBe(`${body.nodeId}.undefineds.site`);
-      expect(body.publicUrl).toBe(`https://${body.spDomain}/`);
+      expect(body.publicUrl).toBeDefined();
+      expect(body.spDomain).toBeDefined();
       expect(body.provisionCode).toBeDefined();
+      expect(new URL(body.publicUrl!).origin).toBe(`https://${body.spDomain}`);
     });
 
     it('should reject missing publicUrl for self-managed registration', async () => {

@@ -3,9 +3,9 @@
  *
  * Two auth channels:
  * 1. Session (via @inrupt/solid-client-authn-node) — for Pod operations (drizzle-solid)
- * 2. API Key (sk-xxx format) — for xpod API calls (LLM proxy, etc.)
+ * 2. CSS client credentials wrapper (sk-xxx format) — for xpod API calls (LLM proxy, etc.)
  *
- * The API key is derived from client_id:client_secret and used by xpod's
+ * The wrapper is derived from client_id:client_secret and used by xpod's
  * ClientCredentialsAuthenticator to authenticate API requests.
  */
 
@@ -15,13 +15,13 @@ export { Session } from '@inrupt/solid-client-authn-node';
 
 export interface PodAuth {
   session: Session;   // For Pod operations (drizzle-solid)
-  apiKey: string;     // For xpod API calls (sk-xxx format)
+  apiKey: string;     // For xpod API calls (sk-base64(client_id:client_secret) format)
 }
 
 /**
  * Authenticate with the Pod server.
  *
- * Returns both a Session (for Pod CRUD) and an API key (for xpod API).
+ * Returns both a Session (for Pod CRUD) and a client credentials wrapper (for xpod API).
  */
 export async function authenticate(
   clientId: string,
@@ -41,7 +41,7 @@ export async function authenticate(
     throw new Error('Failed to authenticate with Pod');
   }
 
-  // 2. Generate API key for xpod API calls
+  // 2. Generate OpenAI-compatible credentials wrapper for xpod API calls.
   // Format: sk-base64(client_id:client_secret)
   const credentials = `${clientId}:${clientSecret}`;
   const base64 = Buffer.from(credentials, 'utf-8').toString('base64');

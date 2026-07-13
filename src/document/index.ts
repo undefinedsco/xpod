@@ -3,9 +3,13 @@
  */
 
 // 接口
-export * from './DocumentParser';
+export * from './DocumentReader';
 export * from './Chunker';
 
 // 实现
-export * from './JinaDocumentParser';
+export * from './JinaReader';
 export * from './HeadingChunker';
+export * from './ReaderPolicy';
+export * from './ReaderAiConfig';
+export * from './L0SourceSummary';
+export * from './PaddleOcrReader';

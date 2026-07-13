@@ -277,8 +277,8 @@ CSS_INTERNAL_URL=http://localhost:3000  # 内网地址
 
 ### Phase 1: 基础架构
 - [x] 创建 `api-server/` 目录结构
-- [x] 实现鉴权中间件 (Solid Token + API Key)
-- [x] 实现 API Key 数据模型和管理 API
+- [x] 实现鉴权中间件 (Solid Token + CSS client credentials wrapper + Service Token)
+- [x] 废弃 Xpod 自建 API Key 数据模型和管理 API，改为透传 CSS client credentials
 
 ### Phase 2: 迁移现有 API
 - [x] 迁移 `/api/signal/*`

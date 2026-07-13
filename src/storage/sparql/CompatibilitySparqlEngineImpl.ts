@@ -2,8 +2,9 @@ import type { Quad, Variable } from '@rdfjs/types';
 import type { AsyncIterator } from 'asynciterator';
 import { ComunicaQuintEngine } from './ComunicaQuintEngine';
 import { QuintEngine } from './QuintEngine';
-import type { SparqlEngine } from './SubgraphQueryEngine';
+import type { SparqlEngine, SparqlVoidOptions } from './SubgraphQueryEngine';
 import type { QuintStore } from '../quint/types';
+import { isRestrictiveRdfAccessScope, type RdfAccessScope } from '../rdf/RdfAccessScope';
 
 /**
  * @deprecated Compatibility wrapper preserved for older call sites.
@@ -17,28 +18,28 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
     this.delegate = new QuintstoreSparqlEngine(store);
   }
 
-  public async queryBindings(query: string, basePath: string): Promise<any> {
-    return this.delegate.queryBindings(query, basePath);
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return this.delegate.queryBindings(query, basePath, accessScope);
   }
 
-  public async queryQuads(query: string, basePath: string): Promise<any> {
-    return this.delegate.queryQuads(query, basePath);
+  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return this.delegate.queryQuads(query, basePath, accessScope);
   }
 
-  public async queryBoolean(query: string, basePath: string): Promise<boolean> {
-    return this.delegate.queryBoolean(query, basePath);
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
+    return this.delegate.queryBoolean(query, basePath, accessScope);
   }
 
-  public async queryVoid(query: string, basePath: string): Promise<void> {
-    await this.delegate.queryVoid(query, basePath);
+  public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void> {
+    await this.delegate.queryVoid(query, basePath, accessScope, options);
   }
 
-  public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
-    return this.delegate.constructGraph(graph, basePath);
+  public async constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>> {
+    return this.delegate.constructGraph(graph, basePath, accessScope);
   }
 
-  public async listGraphs(basePath: string): Promise<Set<string>> {
-    return this.delegate.listGraphs(basePath);
+  public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    return this.delegate.listGraphs(basePath, accessScope);
   }
 
   public async close(): Promise<void> {
@@ -60,7 +61,8 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
     this.ready = this.store.open();
   }
 
-  public async queryBindings(query: string, basePath: string): Promise<any> {
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    assertCompatibilityAccessScope(accessScope, 'queryBindings');
     await this.ready;
     return this.engine.queryBindings(query, {
       baseIRI: basePath,
@@ -68,7 +70,8 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
     });
   }
 
-  public async queryQuads(query: string, basePath: string): Promise<any> {
+  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    assertCompatibilityAccessScope(accessScope, 'queryQuads');
     await this.ready;
     return this.engine.queryQuads(query, {
       baseIRI: basePath,
@@ -76,7 +79,8 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
     });
   }
 
-  public async queryBoolean(query: string, basePath: string): Promise<boolean> {
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
+    assertCompatibilityAccessScope(accessScope, 'queryBoolean');
     await this.ready;
     return this.engine.queryBoolean(query, {
       baseIRI: basePath,
@@ -84,7 +88,8 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
     });
   }
 
-  public async queryVoid(query: string, basePath: string): Promise<void> {
+  public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void> {
+    assertCompatibilityAccessScope(accessScope, 'queryVoid');
     await this.ready;
     return this.engine.queryVoid(query, {
       baseIRI: basePath,
@@ -92,7 +97,8 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
     });
   }
 
-  public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
+  public async constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>> {
+    assertCompatibilityAccessScope(accessScope, 'constructGraph');
     await this.ready;
     const constructQuery = `CONSTRUCT { ?s ?p ?o } WHERE { GRAPH <${graph}> { ?s ?p ?o } }`;
     return this.engine.queryQuads(constructQuery, {
@@ -101,7 +107,8 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
     }) as unknown as AsyncIterator<Quad>;
   }
 
-  public async listGraphs(basePath: string): Promise<Set<string>> {
+  public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    assertCompatibilityAccessScope(accessScope, 'listGraphs');
     await this.ready;
     const graphs = new Set<string>();
     const query = 'SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }';
@@ -129,5 +136,11 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
 
   public async close(): Promise<void> {
     await this.store.close();
+  }
+}
+
+function assertCompatibilityAccessScope(accessScope: RdfAccessScope | undefined, operation: string): void {
+  if (isRestrictiveRdfAccessScope(accessScope)) {
+    throw new Error(`Compatibility SPARQL engine cannot safely execute ${operation} with ACL/ACR graph restrictions`);
   }
 }

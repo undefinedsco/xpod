@@ -236,11 +236,19 @@ describe('startApiService background services', () => {
       start: vi.fn().mockResolvedValue(undefined),
       stop: vi.fn().mockResolvedValue(undefined),
     };
+    const runExecutionBackend = {
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const rdfEngine = {
+      close: vi.fn().mockResolvedValue(undefined),
+    };
     const serviceTokenRepo = {
       registerToken: vi.fn(),
     };
     const services: Record<string, unknown> = {
       apiServer,
+      runExecutionBackend,
+      rdfEngine,
       serviceTokenRepo,
       localNetworkManager,
       ddnsManager,
@@ -286,5 +294,7 @@ describe('startApiService background services', () => {
 
     expect(localTunnelProvider.stop).toHaveBeenCalledTimes(1);
     expect(apiServer.stop).toHaveBeenCalledTimes(1);
+    expect(runExecutionBackend.close).toHaveBeenCalledTimes(1);
+    expect(rdfEngine.close).toHaveBeenCalledTimes(1);
   });
 });

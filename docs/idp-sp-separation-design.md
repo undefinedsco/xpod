@@ -1,5 +1,11 @@
 # IdP/SP 分离架构设计 (子域名版)
 
+> Historical note: 本文是早期 IdP/SP 分离草案，不是当前实现依据。
+> 当前权威口径见 `docs/architecture-v2.md`：WebID Profile 是 CSS 原生
+> Pod 资源；SP/storage 关系从 profile `solid:storage`、CSS account Pod
+> facts 和 `cluster_node.pod_base_urls` 解析，不再维护 `webid_profiles` /
+> `local_nodes` 这类并行身份表。
+
 ## 架构概述
 
 ### DNS 配置

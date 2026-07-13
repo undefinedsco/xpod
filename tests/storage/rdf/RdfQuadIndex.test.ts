@@ -61,6 +61,183 @@ describe('RdfQuadIndex', () => {
     expect(index.stats().termCount).toBeGreaterThan(4);
   });
 
+  it('rewrites safe named-node URI terms without rewriting quad rows', () => {
+    const index = new RdfQuadIndex({ path: ':memory:' });
+    index.open();
+    index.replaceSource([
+      quad(
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://schema.org/name'),
+        literal('Demo'),
+        namedNode('https://pod.example/old/data.ttl'),
+      ),
+    ], {
+      source: 'https://pod.example/old/data.ttl',
+      workspace: 'https://pod.example/',
+      localPath: 'old/data.ttl',
+      contentType: 'text/turtle',
+    });
+
+    const before = index.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } });
+    expect(before.quads).toHaveLength(1);
+
+    const beforeVersion = index.dataVersion();
+    const result = index.rewriteTerms({
+      oldPrefix: 'https://pod.example/old/',
+      newPrefix: 'https://pod.example/new/',
+      scope: 'safe_projection',
+      mode: 'safe',
+    });
+
+    expect(result).toMatchObject({ matchedTerms: 2, rewrittenTerms: 2, remappedTerms: 0, affectedQuads: 1 });
+    expect(index.dataVersion()).toBe(beforeVersion + 1);
+    expect(index.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } }).quads).toHaveLength(0);
+    const after = index.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl') } });
+    expect(after.quads).toHaveLength(1);
+    expect(after.quads[0].subject.value).toBe('https://pod.example/new/data.ttl#this');
+    index.close();
+  });
+
+  it('rewrites exact resource moves without matching sibling resource prefixes', () => {
+    index.multiPut([
+      quad(
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://schema.org/name'),
+        literal('Move me'),
+        namedNode('https://pod.example/old/data.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/old/data.ttl.bak#this'),
+        namedNode('https://schema.org/name'),
+        literal('Do not move me'),
+        namedNode('https://pod.example/old/data.ttl.bak'),
+      ),
+    ]);
+
+    const result = index.rewriteTerms({
+      oldPrefix: 'https://pod.example/old/data.ttl',
+      newPrefix: 'https://pod.example/new/data.ttl',
+      scope: 'safe_projection',
+      mode: 'safe',
+    });
+
+    expect(result).toMatchObject({
+      matchedTerms: 2,
+      rewrittenTerms: 2,
+      remappedTerms: 0,
+      affectedQuads: 1,
+    });
+    expect(index.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl') } }).quads).toHaveLength(1);
+    const sibling = index.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl.bak') } });
+    expect(sibling.quads).toHaveLength(1);
+    expect(sibling.quads[0].subject.value).toBe('https://pod.example/old/data.ttl.bak#this');
+    expect(index.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl.bak') } }).quads).toHaveLength(0);
+  });
+
+  it('does not rewrite or bump data version when the new prefix is empty', () => {
+    index.multiPut([
+      quad(
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://schema.org/name'),
+        literal('Stay put'),
+        namedNode('https://pod.example/old/data.ttl'),
+      ),
+    ]);
+    const beforeVersion = index.dataVersion();
+
+    const result = index.rewriteTerms({
+      oldPrefix: 'https://pod.example/old/data.ttl',
+      newPrefix: '',
+      scope: 'safe_projection',
+      mode: 'safe',
+    });
+
+    expect(result).toMatchObject({
+      matchedTerms: 0,
+      rewrittenTerms: 0,
+      remappedTerms: 0,
+      affectedQuads: 0,
+      skippedTerms: [],
+    });
+    expect(index.dataVersion()).toBe(beforeVersion);
+    expect(index.scan({ pattern: { graph: namedNode('https://pod.example/old/data.ttl') } }).quads).toHaveLength(1);
+  });
+
+  it('moveSource moves source metadata so deletes by the new source remove original quads', () => {
+    index.replaceSource([
+      quad(
+        namedNode('https://pod.example/projects/demo/old/data.ttl#this'),
+        namedNode('https://schema.org/name'),
+        literal('Moved document'),
+        namedNode('https://pod.example/projects/demo/old/data.ttl'),
+      ),
+    ], {
+      source: 'https://pod.example/projects/demo/old/data.ttl',
+      workspace: 'https://pod.example/projects/demo/',
+      localPath: 'old/data.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'old-version',
+    });
+
+    const moved = index.moveSource('https://pod.example/projects/demo/old/data.ttl', {
+      source: 'https://pod.example/projects/demo/new/data.ttl',
+      workspace: 'https://pod.example/projects/demo/',
+      localPath: 'new/data.ttl',
+      contentType: 'text/turtle',
+      sourceVersion: 'new-version',
+    });
+
+    expect(moved).toBeGreaterThan(0);
+    expect(index.deleteSource('https://pod.example/projects/demo/old/data.ttl')).toBe(0);
+    expect(index.deleteSource('https://pod.example/projects/demo/new/data.ttl')).toBe(1);
+    expect(index.scan({ pattern: { graph: namedNode('https://pod.example/projects/demo/old/data.ttl') } }).quads).toHaveLength(0);
+  });
+
+  it('rewrites safe named-node URI terms without contaminating shared terms outside the moving graph', () => {
+    index.multiPut([
+      quad(
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://schema.org/name'),
+        literal('Demo'),
+        namedNode('https://pod.example/old/data.ttl'),
+      ),
+      quad(
+        namedNode('https://pod.example/notes/other.ttl#note'),
+        namedNode('https://schema.org/about'),
+        namedNode('https://pod.example/old/data.ttl#this'),
+        namedNode('https://pod.example/notes/other.ttl'),
+      ),
+    ]);
+
+    const result = index.rewriteTerms({
+      oldPrefix: 'https://pod.example/old/',
+      newPrefix: 'https://pod.example/new/',
+      scope: 'safe_projection',
+      mode: 'safe',
+    });
+
+    expect(result).toMatchObject({
+      matchedTerms: 2,
+      rewrittenTerms: 1,
+      remappedTerms: 0,
+      affectedQuads: 1,
+    });
+    expect(result.skippedTerms).toEqual([
+      expect.objectContaining({
+        value: 'https://pod.example/old/data.ttl#this',
+        reason: expect.stringMatching(/^(mixed_usage|outside_scope)$/),
+      }),
+    ]);
+
+    const movingGraph = index.scan({ pattern: { graph: namedNode('https://pod.example/new/data.ttl') } });
+    expect(movingGraph.quads).toHaveLength(1);
+    expect(movingGraph.quads[0].subject.value).toBe('https://pod.example/old/data.ttl#this');
+
+    const unrelatedGraph = index.scan({ pattern: { graph: namedNode('https://pod.example/notes/other.ttl') } });
+    expect(unrelatedGraph.quads).toHaveLength(1);
+    expect(unrelatedGraph.quads[0].object.value).toBe('https://pod.example/old/data.ttl#this');
+  });
+
   it('applies mixed RDF deltas in one facts data version step', () => {
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
     const content = namedNode('http://rdfs.org/sioc/ns#content');

@@ -1,3 +1,4 @@
+export { RdfPage } from './RdfPage';
 export { AdminLayout } from './AdminLayout';
 export { StatusPage } from './StatusPage';
 export { LogsPage } from './LogsPage';

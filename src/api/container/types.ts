@@ -24,13 +24,17 @@ import type { PodChatKitStore } from '../chatkit/pod-store';
 import type { RuntimeHost } from '../../runtime/host/types';
 import type { ProviderRegistry, EmbeddingService } from '../../ai/service';
 import type { VectorService } from '../service/VectorService';
+import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
+import type { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import type { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
+import type { RunContextRetriever } from '../runs/RunExecutionBackend';
 import type { EmbeddedInngestRuntimeConfig } from '../runs/EmbeddedInngestService';
 import type { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import type { TaskAuthBindingService, TaskService, InngestTaskScheduler } from '../tasks';
 import type { PodMatrixStore } from '../matrix';
 import type { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import type { AuthMode } from '../../authorization/AuthMode';
+import type { RdfEngineLike } from '../../storage/rdf';
 
 /**
  * 容器配置
@@ -59,6 +63,12 @@ export interface ApiContainerConfig {
 
   /** 数据库连接 URL */
   databaseUrl: string;
+
+  /** RDF/SPARQL facts database connection URL. */
+  sparqlEndpoint?: string;
+
+  /** Route SPARQL reads through an installed native SPARQL provider. */
+  rdfNativeSparqlEnabled?: boolean;
 
   /** Redis connection URL, used by embedded infrastructure such as Inngest in cloud mode. */
   redisUrl?: string;
@@ -187,6 +197,9 @@ export interface ApiContainerCradle {
   chatKitAiProvider: AiProvider;
   inngestRuntimeConfig: EmbeddedInngestRuntimeConfig | undefined;
   runAuthContextRegistry: RunAuthContextRegistry;
+  rdfEngine: RdfEngineLike | undefined;
+  runContextRetriever: RunContextRetriever<StoreContext> | undefined;
+  rdfSearchIndexingService: RdfSearchIndexingService | undefined;
   runExecutionBackend: InngestRunExecutionBackend;
   taskAuthBindingService: TaskAuthBindingService<StoreContext>;
   taskService: TaskService<StoreContext>;
@@ -198,6 +211,7 @@ export interface ApiContainerCradle {
   providerRegistry: ProviderRegistry;
   embeddingService: EmbeddingService;
   vectorService: VectorService;
+  rdfStorageStatsService: RdfStorageStatsService;
 
   // Cloud 模式: 身份服务
   ddnsRepo?: DdnsRepository;

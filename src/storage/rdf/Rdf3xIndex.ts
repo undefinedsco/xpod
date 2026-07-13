@@ -5,9 +5,13 @@ import type { Quad, Term } from '@rdfjs/types';
 import { createSqliteRuntime, type SqliteDatabase } from '../SqliteRuntime';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
+import { rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
 import {
   RDF3X_DERIVED_INDEXES,
   RDF3X_DERIVED_TABLES,
+  RDF3X_DIRTY_GRAPH_TABLE,
+  RDF3X_DIRTY_PAIR_TABLE,
+  RDF3X_DIRTY_TERM_TABLE,
   RDF3X_GRAPH_PROJECTION_TABLE,
   RDF3X_PAIR_PROJECTION_TABLE_BY_NAME,
   RDF3X_TERM_PROJECTION_TABLE_BY_NAME,
@@ -86,6 +90,16 @@ interface Rdf3xQuadIdRow {
   subject_id: number;
   predicate_id: number;
   object_id: number;
+}
+
+interface Rdf3xDirtyProjectionStats {
+  graphs: number;
+  pairs: number;
+  terms: number;
+}
+
+interface Rdf3xRebuildOptions {
+  mode?: 'full' | 'auto';
 }
 
 interface Rdf3xJoinSource {
@@ -241,13 +255,28 @@ export class Rdf3xIndex {
 
   public clear(): void {
     this.clearRdf3xTables();
+    this.clearDirtyProjectionTables();
     this.setFactsDataVersion(0);
   }
 
-  public rebuildFromCurrentQuads(): Rdf3xRebuildResult {
+  public rebuildFromCurrentQuads(options?: Rdf3xRebuildOptions): Rdf3xRebuildResult {
     const start = Date.now();
-    const db = this.requireDb();
     const factsDataVersion = this.currentFactsDataVersion();
+    if (options?.mode === 'auto') {
+      const dirty = this.dirtyProjectionStats();
+      if (dirty.graphs > 0 || dirty.pairs > 0 || dirty.terms > 0) {
+        return this.refreshDirtyProjectionTables(start, factsDataVersion, dirty);
+      }
+      if (this.factsDataVersion() !== factsDataVersion) {
+        return this.rebuildAllProjectionTables(start, factsDataVersion);
+      }
+    }
+
+    return this.rebuildAllProjectionTables(start, factsDataVersion);
+  }
+
+  private rebuildAllProjectionTables(start: number, factsDataVersion: number): Rdf3xRebuildResult {
+    const db = this.requireDb();
     const scannedQuads = db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count ?? 0;
 
     db.transaction(() => {
@@ -261,17 +290,55 @@ export class Rdf3xIndex {
       }
       this.rebuildGraphProjection();
 
+      this.clearDirtyProjectionTables();
       this.setFactsDataVersion(factsDataVersion);
     })();
 
     const stats = this.stats();
     return {
+      mode: 'full',
       scannedQuads,
       uniqueTriples: stats.uniqueTriples,
       memberships: stats.membershipCount,
       projectionRows: pairProjectionRowTotal(stats.pairProjectionRows) + termProjectionRowTotal(stats.termProjectionRows),
       factsDataVersion,
       durationMs: Date.now() - start,
+    };
+  }
+
+  private refreshDirtyProjectionTables(
+    start: number,
+    factsDataVersion: number,
+    dirty: Rdf3xDirtyProjectionStats,
+  ): Rdf3xRebuildResult {
+    const scannedQuads = this.countDirtyProjectionQuads();
+
+    this.requireDb().transaction(() => {
+      for (const projection of PAIR_PROJECTIONS) {
+        this.refreshDirtyPairProjection(projection);
+      }
+
+      for (const projection of TERM_PROJECTIONS) {
+        this.refreshDirtyTermProjection(projection);
+      }
+
+      this.refreshDirtyGraphProjection();
+      this.clearDirtyProjectionTables();
+      this.setFactsDataVersion(factsDataVersion);
+    })();
+
+    const stats = this.stats();
+    return {
+      mode: 'incremental',
+      scannedQuads,
+      uniqueTriples: stats.uniqueTriples,
+      memberships: stats.membershipCount,
+      projectionRows: pairProjectionRowTotal(stats.pairProjectionRows) + termProjectionRowTotal(stats.termProjectionRows),
+      factsDataVersion,
+      durationMs: Date.now() - start,
+      dirtyGraphs: dirty.graphs,
+      dirtyPairs: dirty.pairs,
+      dirtyTerms: dirty.terms,
     };
   }
 
@@ -961,6 +1028,23 @@ export class Rdf3xIndex {
         membership_count INTEGER NOT NULL
       ) WITHOUT ROWID;
 
+      CREATE TABLE IF NOT EXISTS ${RDF3X_DIRTY_GRAPH_TABLE} (
+        graph_id INTEGER NOT NULL PRIMARY KEY
+      ) WITHOUT ROWID;
+
+      CREATE TABLE IF NOT EXISTS ${RDF3X_DIRTY_PAIR_TABLE} (
+        name TEXT NOT NULL,
+        left_id INTEGER NOT NULL,
+        right_id INTEGER NOT NULL,
+        PRIMARY KEY (name, left_id, right_id)
+      ) WITHOUT ROWID;
+
+      CREATE TABLE IF NOT EXISTS ${RDF3X_DIRTY_TERM_TABLE} (
+        name TEXT NOT NULL,
+        term_id INTEGER NOT NULL,
+        PRIMARY KEY (name, term_id)
+      ) WITHOUT ROWID;
+
       CREATE TABLE IF NOT EXISTS rdf3x_metadata (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -969,7 +1053,37 @@ export class Rdf3xIndex {
       ${pairProjectionTables}
       ${termProjectionTables}
     `);
+    this.initializeDirtyTrackingTriggers();
     this.setMetadataValue('schema_version', String(RDF3X_INDEX_SCHEMA_VERSION));
+  }
+
+  private initializeDirtyTrackingTriggers(): void {
+    const db = this.requireDb();
+    const factsTable = db.prepare<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'rdf_quads'").get();
+    if (!factsTable) {
+      return;
+    }
+
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS rdf3x_dirty_quads_insert
+      AFTER INSERT ON rdf_quads
+      BEGIN
+        ${dirtyProjectionStatements('NEW')}
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS rdf3x_dirty_quads_delete
+      AFTER DELETE ON rdf_quads
+      BEGIN
+        ${dirtyProjectionStatements('OLD')}
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS rdf3x_dirty_quads_update
+      AFTER UPDATE OF graph_id, subject_id, predicate_id, object_id ON rdf_quads
+      BEGIN
+        ${dirtyProjectionStatements('OLD')}
+        ${dirtyProjectionStatements('NEW')}
+      END;
+    `);
   }
 
   private dropMaterializedFactCopies(): void {
@@ -1004,6 +1118,14 @@ export class Rdf3xIndex {
       ...TERM_PROJECTIONS.map((projection) => `DELETE FROM ${projection.table};`),
       `DELETE FROM ${GRAPH_PROJECTION_TABLE};`,
     ].join('\n'));
+  }
+
+  private clearDirtyProjectionTables(): void {
+    this.requireDb().exec(`
+      DELETE FROM ${RDF3X_DIRTY_GRAPH_TABLE};
+      DELETE FROM ${RDF3X_DIRTY_PAIR_TABLE};
+      DELETE FROM ${RDF3X_DIRTY_TERM_TABLE};
+    `);
   }
 
   private prepareSchemaVersion(): void {
@@ -1060,6 +1182,43 @@ export class Rdf3xIndex {
     `).run(key, value);
   }
 
+  private dirtyProjectionStats(): Rdf3xDirtyProjectionStats {
+    return {
+      graphs: this.rowCount(RDF3X_DIRTY_GRAPH_TABLE),
+      pairs: this.rowCount(RDF3X_DIRTY_PAIR_TABLE),
+      terms: this.rowCount(RDF3X_DIRTY_TERM_TABLE),
+    };
+  }
+
+  private countDirtyProjectionQuads(): number {
+    return this.requireDb().prepare<{ count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM ${RDF_FACTS_TABLE} q
+      WHERE EXISTS (
+        SELECT 1
+        FROM ${RDF3X_DIRTY_GRAPH_TABLE} dirty_graph
+        WHERE dirty_graph.graph_id = q.graph_id
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${RDF3X_DIRTY_PAIR_TABLE} dirty_pair
+        WHERE (dirty_pair.name = 'SP' AND dirty_pair.left_id = q.subject_id AND dirty_pair.right_id = q.predicate_id)
+           OR (dirty_pair.name = 'SO' AND dirty_pair.left_id = q.subject_id AND dirty_pair.right_id = q.object_id)
+           OR (dirty_pair.name = 'PS' AND dirty_pair.left_id = q.predicate_id AND dirty_pair.right_id = q.subject_id)
+           OR (dirty_pair.name = 'PO' AND dirty_pair.left_id = q.predicate_id AND dirty_pair.right_id = q.object_id)
+           OR (dirty_pair.name = 'OS' AND dirty_pair.left_id = q.object_id AND dirty_pair.right_id = q.subject_id)
+           OR (dirty_pair.name = 'OP' AND dirty_pair.left_id = q.object_id AND dirty_pair.right_id = q.predicate_id)
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM ${RDF3X_DIRTY_TERM_TABLE} dirty_term
+        WHERE (dirty_term.name = 'S' AND dirty_term.term_id = q.subject_id)
+           OR (dirty_term.name = 'P' AND dirty_term.term_id = q.predicate_id)
+           OR (dirty_term.name = 'O' AND dirty_term.term_id = q.object_id)
+      )
+    `).get()?.count ?? 0;
+  }
+
   private rebuildPairProjection(projection: Rdf3xPairProjection): void {
     const [left, right] = projection.columns;
     this.requireDb().prepare(`
@@ -1101,6 +1260,66 @@ export class Rdf3xIndex {
     `).run();
   }
 
+  private refreshDirtyPairProjection(projection: Rdf3xPairProjection): void {
+    const [left, right] = projection.columns;
+    const db = this.requireDb();
+    db.prepare(`
+      DELETE FROM ${projection.table}
+      WHERE EXISTS (
+        SELECT 1
+        FROM ${RDF3X_DIRTY_PAIR_TABLE} dirty
+        WHERE dirty.name = ?
+          AND dirty.left_id = ${projection.table}.${left}
+          AND dirty.right_id = ${projection.table}.${right}
+      )
+    `).run(projection.name);
+    db.prepare(`
+      INSERT INTO ${projection.table} (
+        ${left},
+        ${right},
+        triple_count,
+        membership_count,
+        min_${projection.remainder},
+        max_${projection.remainder}
+      )
+      SELECT
+        triple.${left},
+        triple.${right},
+        triple.triple_count,
+        COALESCE(member.membership_count, 0) AS membership_count,
+        triple.min_remainder,
+        triple.max_remainder
+      FROM (
+        SELECT
+          q.${left},
+          q.${right},
+          COUNT(DISTINCT q.${projection.remainder}) AS triple_count,
+          MIN(q.${projection.remainder}) AS min_remainder,
+          MAX(q.${projection.remainder}) AS max_remainder
+        FROM ${RDF_FACTS_TABLE} q
+        JOIN ${RDF3X_DIRTY_PAIR_TABLE} dirty
+          ON dirty.name = ?
+         AND dirty.left_id = q.${left}
+         AND dirty.right_id = q.${right}
+        GROUP BY q.${left}, q.${right}
+      ) triple
+      LEFT JOIN (
+        SELECT
+          q.${left},
+          q.${right},
+          COUNT(*) AS membership_count
+        FROM ${RDF_FACTS_TABLE} q
+        JOIN ${RDF3X_DIRTY_PAIR_TABLE} dirty
+          ON dirty.name = ?
+         AND dirty.left_id = q.${left}
+         AND dirty.right_id = q.${right}
+        GROUP BY q.${left}, q.${right}
+      ) member
+        ON member.${left} = triple.${left}
+       AND member.${right} = triple.${right}
+    `).run(projection.name, projection.name);
+  }
+
   private rebuildTermProjection(projection: Rdf3xTermProjection): void {
     this.requireDb().prepare(`
       INSERT INTO ${projection.table} (
@@ -1133,6 +1352,57 @@ export class Rdf3xIndex {
     `).run();
   }
 
+  private refreshDirtyTermProjection(projection: Rdf3xTermProjection): void {
+    const db = this.requireDb();
+    db.prepare(`
+      DELETE FROM ${projection.table}
+      WHERE EXISTS (
+        SELECT 1
+        FROM ${RDF3X_DIRTY_TERM_TABLE} dirty
+        WHERE dirty.name = ?
+          AND dirty.term_id = ${projection.table}.${projection.column}
+      )
+    `).run(projection.name);
+    db.prepare(`
+      INSERT INTO ${projection.table} (
+        ${projection.column},
+        triple_count,
+        membership_count
+      )
+      SELECT
+        triple.${projection.column},
+        triple.triple_count,
+        COALESCE(member.membership_count, 0) AS membership_count
+      FROM (
+        SELECT
+          distinct_triples.${projection.column},
+          COUNT(*) AS triple_count
+        FROM (
+          SELECT DISTINCT
+            q.subject_id,
+            q.predicate_id,
+            q.object_id
+          FROM ${RDF_FACTS_TABLE} q
+          JOIN ${RDF3X_DIRTY_TERM_TABLE} dirty
+            ON dirty.name = ?
+           AND dirty.term_id = q.${projection.column}
+        ) distinct_triples
+        GROUP BY distinct_triples.${projection.column}
+      ) triple
+      LEFT JOIN (
+        SELECT
+          q.${projection.column},
+          COUNT(*) AS membership_count
+        FROM ${RDF_FACTS_TABLE} q
+        JOIN ${RDF3X_DIRTY_TERM_TABLE} dirty
+          ON dirty.name = ?
+         AND dirty.term_id = q.${projection.column}
+        GROUP BY q.${projection.column}
+      ) member
+        ON member.${projection.column} = triple.${projection.column}
+    `).run(projection.name, projection.name);
+  }
+
   private rebuildGraphProjection(): void {
     this.requireDb().prepare(`
       INSERT INTO ${GRAPH_PROJECTION_TABLE} (
@@ -1144,6 +1414,30 @@ export class Rdf3xIndex {
         COUNT(*) AS membership_count
       FROM ${RDF_FACTS_TABLE}
       GROUP BY graph_id
+    `).run();
+  }
+
+  private refreshDirtyGraphProjection(): void {
+    const db = this.requireDb();
+    db.exec(`
+      DELETE FROM ${GRAPH_PROJECTION_TABLE}
+      WHERE graph_id IN (
+        SELECT graph_id
+        FROM ${RDF3X_DIRTY_GRAPH_TABLE}
+      );
+    `);
+    db.prepare(`
+      INSERT INTO ${GRAPH_PROJECTION_TABLE} (
+        graph_id,
+        membership_count
+      )
+      SELECT
+        q.graph_id,
+        COUNT(*) AS membership_count
+      FROM ${RDF_FACTS_TABLE} q
+      JOIN ${RDF3X_DIRTY_GRAPH_TABLE} dirty
+        ON dirty.graph_id = q.graph_id
+      GROUP BY q.graph_id
     `).run();
   }
 
@@ -1436,6 +1730,7 @@ export class Rdf3xIndex {
     const indexOnly = this.canUseIndexOnlyJoin(sources, options);
     const queryPlan: string[] = [
       `Rdf3xJoinBGP(${patterns.length})`,
+      ...rdfSubjectStarJoinPlanMarker('SubjectStarJoin', patterns),
       `Rdf3xJoinOrder(${orderedSources.map((source) => `?${source.inputIndex}:${source.estimate.indexChoice}`).join('>')})`,
       ...(indexOnly ? ['Rdf3xIndexOnlyJoin'] : []),
     ];
@@ -3316,6 +3611,28 @@ function requiredTerm(termMap: Map<number, Term>, id: number): Term {
     throw new Error(`RDF term not found while reading RDF-3X index: ${id}`);
   }
   return term;
+}
+
+function dirtyProjectionStatements(prefix: 'NEW' | 'OLD'): string {
+  return `
+    INSERT OR IGNORE INTO ${RDF3X_DIRTY_GRAPH_TABLE} (graph_id)
+    VALUES (${prefix}.graph_id);
+
+    INSERT OR IGNORE INTO ${RDF3X_DIRTY_PAIR_TABLE} (name, left_id, right_id)
+    VALUES
+      ('SP', ${prefix}.subject_id, ${prefix}.predicate_id),
+      ('SO', ${prefix}.subject_id, ${prefix}.object_id),
+      ('PS', ${prefix}.predicate_id, ${prefix}.subject_id),
+      ('PO', ${prefix}.predicate_id, ${prefix}.object_id),
+      ('OS', ${prefix}.object_id, ${prefix}.subject_id),
+      ('OP', ${prefix}.object_id, ${prefix}.predicate_id);
+
+    INSERT OR IGNORE INTO ${RDF3X_DIRTY_TERM_TABLE} (name, term_id)
+    VALUES
+      ('S', ${prefix}.subject_id),
+      ('P', ${prefix}.predicate_id),
+      ('O', ${prefix}.object_id);
+  `;
 }
 
 function isRdfTerm(value: unknown): value is Term {

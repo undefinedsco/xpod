@@ -7,6 +7,7 @@ import type { QueryOptions, QuintPattern, TermOperators } from '../quint/types';
 import { isTerm } from '../quint/types';
 import { RdfTermDictionary, rdfTermValueHead } from './RdfTermDictionary';
 import { dropRdf3xDerivedSchemaObjects } from './Rdf3xSchema';
+import { rdfSubjectStarJoinPlanMarker } from './RdfJoinShape';
 import type {
   RdfCardinalityEstimate,
   RdfCardinalityDistributions,
@@ -29,10 +30,13 @@ import type {
   RdfQuadIndexScanResult,
   RdfQuadScanOptions,
   RdfQuadRow,
+  RdfPatternQuery,
   RdfQueryAggregate,
   RdfSourceInput,
   RdfSourceRow,
   RdfTermKind,
+  RdfTermRewriteInput,
+  RdfTermRewriteResult,
 } from './types';
 import { isRdfNumericDatatype, rdfNumericValue } from './RdfTermSemantics';
 
@@ -76,6 +80,17 @@ const TERM_COLUMN: Record<PatternKey, IndexedColumn> = {
 
 const TERM_KEYS: PatternKey[] = ['graph', 'subject', 'predicate', 'object'];
 const TERM_IN_JOIN_THRESHOLD = 64;
+
+function emptyTermRewriteResult(): RdfTermRewriteResult {
+  return {
+    matchedTerms: 0,
+    rewrittenTerms: 0,
+    remappedTerms: 0,
+    skippedTerms: [],
+    affectedQuads: 0,
+  };
+}
+
 export class RdfQuadIndex {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
@@ -143,6 +158,45 @@ export class RdfQuadIndex {
     return result;
   }
 
+  public moveSource(oldSource: string, next: RdfSourceInput): number {
+    const db = this.requireDb();
+    let affectedRows = 0;
+    db.transaction(() => {
+      const oldRow = db
+        .prepare<RdfSourceRow>('SELECT * FROM rdf_sources WHERE source = ?')
+        .get(oldSource);
+      if (!oldRow) {
+        return;
+      }
+
+      const sourceQuadCount = db
+        .prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads WHERE source_file_id = ?')
+        .get(oldRow.id)?.count ?? 0;
+      const targetRow = db
+        .prepare<RdfSourceRow>('SELECT * FROM rdf_sources WHERE source = ?')
+        .get(next.source);
+
+      if (!targetRow || targetRow.id === oldRow.id) {
+        this.updateSourceRow(oldRow.id, next);
+        affectedRows = Math.max(sourceQuadCount, 1);
+        return;
+      }
+
+      const movedQuads = db
+        .prepare('UPDATE rdf_quads SET source_file_id = ? WHERE source_file_id = ?')
+        .run(targetRow.id, oldRow.id).changes;
+      this.updateSourceRow(targetRow.id, next);
+      db.prepare('DELETE FROM rdf_sources WHERE id = ?').run(oldRow.id);
+      affectedRows = Math.max(movedQuads, sourceQuadCount, 1);
+    })();
+
+    if (affectedRows > 0) {
+      this.cardinalityCache.clear();
+      this.bumpDataVersion();
+    }
+    return affectedRows;
+  }
+
   private deleteSourceInternal(source: string): number {
     const db = this.requireDb();
     const row = db
@@ -152,9 +206,12 @@ export class RdfQuadIndex {
       return 0;
     }
 
-    const result = db.prepare('DELETE FROM rdf_quads WHERE source_file_id = ?').run(row.id);
+    const deletedRows = db
+      .prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads WHERE source_file_id = ?')
+      .get(row.id)?.count ?? 0;
+    db.prepare('DELETE FROM rdf_quads WHERE source_file_id = ?').run(row.id);
     db.prepare('DELETE FROM rdf_sources WHERE id = ?').run(row.id);
-    return result.changes;
+    return deletedRows;
   }
 
   public multiPut(quads: Quad[], options?: RdfIndexPutOptions): void {
@@ -236,17 +293,36 @@ export class RdfQuadIndex {
     };
   }
 
+  public rewriteTerms(input: RdfTermRewriteInput): RdfTermRewriteResult {
+    const db = this.requireDb();
+    const dictionary = this.requireDictionary();
+    let result = emptyTermRewriteResult();
+    db.transaction(() => {
+      result = dictionary.rewriteNamedNodePrefix(input, { useTransaction: false });
+      if (result.rewrittenTerms > 0 || result.remappedTerms > 0) {
+        this.bumpDataVersion();
+      }
+    })();
+    if (result.rewrittenTerms > 0 || result.remappedTerms > 0) {
+      this.cardinalityCache.clear();
+    }
+    return result;
+  }
+
   private deleteInternal(pattern: QuintPattern): number {
     const db = this.requireDb();
     const { joins, whereClause, params } = this.buildWhereClause(pattern, false);
     if (!whereClause) {
-      const result = db.prepare('DELETE FROM rdf_quads').run();
-      return result.changes;
+      const deletedRows = db.prepare<{ count: number }>('SELECT COUNT(*) AS count FROM rdf_quads').get()?.count ?? 0;
+      db.prepare('DELETE FROM rdf_quads').run();
+      return deletedRows;
     }
+    const deletedRows = db.prepare<{ count: number }>(`SELECT COUNT(*) AS count FROM rdf_quads${joins}${whereClause}`).get(...params)?.count ?? 0;
     const sql = joins
       ? `DELETE FROM rdf_quads WHERE rowid IN (SELECT rdf_quads.rowid FROM rdf_quads${joins}${whereClause})`
       : `DELETE FROM rdf_quads${whereClause}`;
-    return db.prepare(sql).run(...params).changes;
+    db.prepare(sql).run(...params);
+    return deletedRows;
   }
 
   public dataVersion(): number {
@@ -256,7 +332,10 @@ export class RdfQuadIndex {
     return Number(row?.value ?? 0) || 0;
   }
 
-  public scan(pattern: QuintPattern, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
+  public scan(pattern: QuintPattern | RdfPatternQuery, options?: RdfQuadScanOptions): RdfQuadIndexScanResult {
+    if (isRdfPatternQueryInput(pattern)) {
+      return this.scanInternal(pattern.pattern, options ?? pattern.options as RdfQuadScanOptions | undefined);
+    }
     return this.scanInternal(pattern, options);
   }
 
@@ -566,7 +645,10 @@ export class RdfQuadIndex {
     const joins: string[] = [];
     const conditions: string[] = [];
     const params: unknown[] = [];
-    const queryPlan: string[] = [`JoinBGP(${patterns.length})`];
+    const queryPlan: string[] = [
+      `JoinBGP(${patterns.length})`,
+      ...rdfSubjectStarJoinPlanMarker('SubjectStarJoin', patterns),
+    ];
     const variableColumns = new Map<string, string>();
     const variableAliases = new Map<string, string>();
     const indexChoices: string[] = [];
@@ -1409,6 +1491,26 @@ export class RdfQuadIndex {
       throw new Error(`Failed to upsert RDF source: ${source.source}`);
     }
     return row.id;
+  }
+
+  private updateSourceRow(id: number, source: RdfSourceInput): void {
+    this.requireDb().prepare(`
+      UPDATE rdf_sources
+      SET source = ?,
+          workspace = ?,
+          local_path = ?,
+          content_type = ?,
+          last_indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          source_version = ?
+      WHERE id = ?
+    `).run(
+      source.source,
+      source.workspace,
+      source.localPath ?? null,
+      source.contentType ?? null,
+      source.sourceVersion ?? null,
+      id,
+    );
   }
 
   private buildWhereClause(
@@ -2340,6 +2442,12 @@ export class RdfQuadIndex {
     }
     return this.dictionary;
   }
+}
+
+function isRdfPatternQueryInput(input: QuintPattern | RdfPatternQuery): input is RdfPatternQuery {
+  return input !== null
+    && typeof input === 'object'
+    && 'pattern' in input;
 }
 
 function sumSpaceObjects(objects: RdfIndexSpaceObject[], kind: RdfIndexSpaceObject['kind']): number {

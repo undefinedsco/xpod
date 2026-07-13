@@ -41,10 +41,14 @@ export {
 } from '../runs/AgentRuntimeTypes';
 export { type WorkspaceRef } from '../workspace/types';
 export {
+  type RunContextRetrievalInput,
+  type RunContextRetriever,
   type RunConversationMessage,
   type RunExecutionBackend,
   type RunExecutionInput,
   type RunEnqueueResult,
+  type RunRetrievedContext,
+  type RunRetrievedContextItem,
 } from '../runs/RunExecutionBackend';
 export {
   Run,
@@ -70,6 +74,11 @@ export {
   type XpodRunRequestedEventData,
 } from '../runs/InngestRunExecutionBackend';
 export { PiAgentRuntimeDriver, type PiAgentRuntimeDriverOptions } from '../runs/PiAgentRuntimeDriver';
+export {
+  RdfRunContextRetriever,
+  type RdfRunContextEmbedding,
+  type RdfRunContextRetrieverOptions,
+} from '../runs/RdfRunContextRetriever';
 
 // AI Provider
 export { VercelAiProvider, type VercelAiProviderOptions } from './ai-provider';

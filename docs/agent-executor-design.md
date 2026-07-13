@@ -1,5 +1,14 @@
 # Agent Executor 架构设计
 
+> **状态：历史设计 / 非当前主线。** 本文保留早期 Agent Executor 方案，
+> 用于追踪 credential 和 provider 设计演进。当前主线已经收敛为
+> Managed Agent Runtime + `Run` 状态中心；reader / embedding 等外部能力通过
+> [Extension Runtime and Credential Resolution](extension-runtime-and-credential-resolution.md)
+> 的 `ExecutionContext`、`CredentialResolver` 和 `ExtensionRuntime` 调用。
+> 持久化仍以 `@undefineds.co/models` 的 Provider / Model / Credential 资源为准；
+> 业务配置和 Run 记录只保存 provider/model/`credentialId`，原始 `apiKey` 只允许
+> 在执行时由 resolver 读取进内存。
+
 ## 概述
 
 Agent Executor 是一个统一的 AI Agent 执行框架，支持多种 AI 提供商和认证方式。
@@ -104,6 +113,12 @@ pod:/
 - **Schema**: `@undefineds.co/models` - 定义 `credentialResource` / `aiProviderResource` / `aiModelResource`
 - **Reader**: `src/ai/service/CredentialReaderImpl.ts` - 从 Pod 读取凭证
 - **文档**: `docs/credential-schema.md` - 完整 Schema 定义
+
+注意：`CredentialReaderImpl` 是底层 Pod credential 读取器，不是 extension / Agent
+调用边界。新代码不应把它散落到 provider adapter 里直接读取 secret；应由 host/runtime
+构造 `PodCredentialResolver`，再把 resolver 注入 `ExtensionRuntime` 或具体 Agent runtime。
+这样 session 来自 cloud、local、Desktop、CLI 或 delegated executor 时，执行层都只依赖归一化后的
+`ExecutionContext`。
 
 ## 认证方式
 
@@ -320,6 +335,9 @@ const credential = await credentialReader.getAiCredential(
 
 // credential: { provider, apiKey, baseUrl?, proxyUrl? }
 ```
+
+上面返回的 `apiKey` 只能在当前执行调用内使用；不要写入 Run、cache、index metadata 或日志。
+普通配置读取 API 应返回 provider/model/`credentialId`，而不是返回原始密钥。
 
 ### AgentExecutorFactory 工厂
 

@@ -2,57 +2,46 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { DataFactory } from 'n3';
-import type { Quad } from '@rdfjs/types';
 import { SqliteQuintStore } from '../src/storage/quint';
 import {
+  RDF_MODELS_BENCHMARK_POD,
   RdfQuadIndex,
   Rdf3xIndex,
   ShadowRdfQuintStore,
   SolidRdfEngine,
+  buildRdfModelsBenchmarkSeed,
   defaultSyntheticMessagesForRdfModelsScale,
   runRdfModelsBenchmark,
   runRdfModelsRdf3xShadowBenchmark,
   runRdfModelsShadowBenchmark,
-  rdfModelsBenchmarkScaleSatisfied,
+  rdfModelsBenchmarkTargetSatisfied,
   rdfModelsBenchmarkSyntheticPodCount,
   rdfModelsBenchmarkScaleTargetQuads,
+  rdfModelsBenchmarkProfileRequiresSearchFusion,
+  syntheticMessagesForRdfModelsTargetQuads,
+  type RdfBenchmarkCaseProfile,
   type RdfBenchmarkScale,
   type RdfEngineStorageStats,
+  seedRdfModelsSearchFusionIndexes,
 } from '../src/storage/rdf';
-
-const { namedNode, literal, quad } = DataFactory;
-
-const POD = 'https://pod.example/alice';
-const DATA = `${POD}/.data`;
-const SETTINGS = `${POD}/settings`;
-
-const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
-const DCT_CREATED = 'http://purl.org/dc/terms/created';
-const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
-const DCT_TITLE = 'http://purl.org/dc/terms/title';
-const SIOC_CONTENT = 'http://rdfs.org/sioc/ns#content';
-const SIOC_HAS_MEMBER = 'http://rdfs.org/sioc/ns#has_member';
-const SIOC = 'http://rdfs.org/sioc/ns#';
-const MEETING = 'http://www.w3.org/ns/pim/meeting#';
-const UDFS = 'https://undefineds.co/ns#';
-const FOAF_AGENT = 'http://xmlns.com/foaf/0.1/Agent';
-const VCARD_INDIVIDUAL = 'http://www.w3.org/2006/vcard/ns#Individual';
-const SCHEMA_CREATIVE_WORK = 'http://schema.org/CreativeWork';
-const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 
 interface CliOptions {
   outDir: string;
   scale: RdfBenchmarkScale;
+  targetQuads: number;
+  targetQuadsOverridden: boolean;
   iterations: number;
   syntheticMessages: number;
   syntheticMessagesOverridden: boolean;
   syntheticPodCount: number;
+  caseProfile: RdfBenchmarkCaseProfile;
 }
 
 interface BenchmarkPaths {
   compatibilityDb: string;
   indexDb: string;
+  textIndexDb: string;
+  vectorIndexDb: string;
   baselineReport: string;
   shadowReport: string;
   rdf3xShadowReport: string;
@@ -72,7 +61,7 @@ async function main(): Promise<void> {
   try {
     await shadowStore.open();
 
-    const seedQuads = buildSeedQuads(options);
+    const seedQuads = buildRdfModelsBenchmarkSeed(options);
     await compatibilityStore.multiPut(seedQuads);
     const backfill = await shadowStore.backfillShadowIndex({
       clear: true,
@@ -81,21 +70,35 @@ async function main(): Promise<void> {
 
     const rdf3xIndex = new Rdf3xIndex({ path: paths.indexDb });
     rdf3xIndex.open();
+    const searchFusion = rdfModelsBenchmarkProfileRequiresSearchFusion(options.caseProfile);
     const engine = new SolidRdfEngine({
       index: shadowStore.index,
       rdf3xIndex,
+      ...(searchFusion
+        ? {
+            textIndex: { path: paths.textIndexDb },
+            vectorIndex: { path: paths.vectorIndexDb },
+          }
+        : {}),
     });
+    if (searchFusion) {
+      engine.open();
+      await seedRdfModelsSearchFusionIndexes(engine);
+    }
     const baseline = runRdfModelsBenchmark(engine, {
       scale: options.scale,
       iterations: options.iterations,
+      caseProfile: options.caseProfile,
     });
     const shadow = await runRdfModelsShadowBenchmark(engine, compatibilityStore, {
       scale: options.scale,
       iterations: options.iterations,
+      caseProfile: options.caseProfile,
     });
     const rdf3xShadow = runRdfModelsRdf3xShadowBenchmark(engine, {
       scale: options.scale,
       iterations: options.iterations,
+      caseProfile: options.caseProfile,
     });
 
     await writeJson(paths.baselineReport, {
@@ -115,8 +118,8 @@ async function main(): Promise<void> {
       options,
       paths,
       seedQuadCount: seedQuads.length,
-      targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
-      fullScale: rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length),
+      targetQuadCount: options.targetQuads,
+      fullScale: rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuads.length),
       syntheticPodCount: options.syntheticPodCount,
       backfilledRows: backfill.indexedRows,
       baselineCases: baseline.cases.length,
@@ -161,7 +164,7 @@ async function main(): Promise<void> {
       || !rdf3xShadow.planMatched
       || !shadow.performanceMatched
       || !shadow.spaceMatched
-      || !rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuads.length)
+      || !rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuads.length)
     ) {
       process.exitCode = 1;
     }
@@ -173,8 +176,10 @@ async function main(): Promise<void> {
 function parseArgs(args: string[]): CliOptions {
   let outDir = path.join(process.cwd(), '.test-data', 'rdf-engine');
   let scale: RdfBenchmarkScale = 'medium';
+  let targetQuads: number | undefined;
   let iterations = 3;
   let syntheticMessages: number | undefined;
+  let caseProfile: RdfBenchmarkCaseProfile = 'default';
 
   for (const arg of args) {
     if (arg.startsWith('--out=')) {
@@ -189,12 +194,24 @@ function parseArgs(args: string[]): CliOptions {
       scale = value;
       continue;
     }
+    if (arg.startsWith('--targetQuads=')) {
+      targetQuads = positiveInteger(arg.slice('--targetQuads='.length), '--targetQuads');
+      continue;
+    }
     if (arg.startsWith('--iterations=')) {
       iterations = positiveInteger(arg.slice('--iterations='.length), '--iterations');
       continue;
     }
     if (arg.startsWith('--syntheticMessages=')) {
       syntheticMessages = positiveInteger(arg.slice('--syntheticMessages='.length), '--syntheticMessages');
+      continue;
+    }
+    if (arg.startsWith('--caseProfile=')) {
+      const value = arg.slice('--caseProfile='.length);
+      if (!isRdfBenchmarkCaseProfile(value)) {
+        throw new Error(`Unsupported --caseProfile value: ${value}`);
+      }
+      caseProfile = value;
       continue;
     }
     if (arg === '--help' || arg === '-h') {
@@ -204,13 +221,21 @@ function parseArgs(args: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
+  const resolvedTargetQuads = targetQuads ?? rdfModelsBenchmarkScaleTargetQuads(scale);
   return {
     outDir,
     scale,
+    targetQuads: resolvedTargetQuads,
+    targetQuadsOverridden: targetQuads !== undefined,
     iterations,
-    syntheticMessages: syntheticMessages ?? defaultSyntheticMessagesForRdfModelsScale(scale),
+    syntheticMessages: syntheticMessages ?? (
+      targetQuads !== undefined
+        ? syntheticMessagesForRdfModelsTargetQuads(resolvedTargetQuads)
+        : defaultSyntheticMessagesForRdfModelsScale(scale)
+    ),
     syntheticMessagesOverridden: syntheticMessages !== undefined,
     syntheticPodCount: rdfModelsBenchmarkSyntheticPodCount(scale),
+    caseProfile,
   };
 }
 
@@ -222,157 +247,22 @@ function positiveInteger(raw: string, name: string): number {
   return value;
 }
 
+function isRdfBenchmarkCaseProfile(value: string): value is RdfBenchmarkCaseProfile {
+  return value === 'default' || value === 'extreme' || value === 'fusion' || value === 'all';
+}
+
 function createBenchmarkPaths(outDir: string): BenchmarkPaths {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const runId = `${stamp}-${process.pid}-${randomUUID()}`;
   return {
     compatibilityDb: path.join(outDir, `rdf-models-compat-${runId}.sqlite`),
     indexDb: path.join(outDir, `rdf-models-index-${runId}.sqlite`),
+    textIndexDb: path.join(outDir, `rdf-models-text-${runId}.sqlite`),
+    vectorIndexDb: path.join(outDir, `rdf-models-vector-${runId}.sqlite`),
     baselineReport: path.join(outDir, `models-baseline-${runId}.json`),
     shadowReport: path.join(outDir, `models-shadow-${runId}.json`),
     rdf3xShadowReport: path.join(outDir, `models-rdf3x-shadow-${runId}.json`),
   };
-}
-
-function buildSeedQuads(options: CliOptions): Quad[] {
-  const quads: Quad[] = [];
-
-  seedChatTaskThreadRunProviderQuads(quads);
-  seedAgentContactFavoriteQuads(quads);
-  seedCanonicalMessages(quads);
-  seedSyntheticMessages(quads, options.syntheticMessages, options.syntheticPodCount);
-
-  return quads;
-}
-
-function seedChatTaskThreadRunProviderQuads(quads: Quad[]): void {
-  const chatGraph = `${DATA}/chat/default/index.ttl`;
-  const chat = `${chatGraph}#this`;
-  const thread = `${chatGraph}#thread_1`;
-  const taskGraph = `${DATA}/task/index.ttl`;
-  const task = `${taskGraph}#default`;
-  const taskThreadGraph = `${DATA}/task/default/index.ttl`;
-  const taskThread = `${taskThreadGraph}#thread_1`;
-  const scheduleGraph = `${DATA}/task/default/2026/05/18/schedules.ttl`;
-  const runGraph = `${DATA}/task/default/2026/05/18/runs.ttl`;
-  const run = `${runGraph}#run_1`;
-  const workspace = 'file://macbook.local/Users/alice/project/';
-  const provider = `${SETTINGS}/providers/anthropic.ttl`;
-  const credentialGraph = `${SETTINGS}/credentials.ttl`;
-  const credential = `${credentialGraph}#anthropic-default`;
-
-  quads.push(
-    q(chat, RDF_TYPE, iri(`${MEETING}LongChat`), chatGraph),
-    q(chat, DCT_TITLE, literal('Default chat'), chatGraph),
-    q(chat, DCT_MODIFIED, literal('2026-05-18T00:00:00.000Z'), chatGraph),
-    q(thread, RDF_TYPE, iri(`${SIOC}Thread`), chatGraph),
-    q(thread, DCT_CREATED, literal('2026-05-18T00:00:01.000Z'), chatGraph),
-    q(thread, `${UDFS}workspace`, iri(workspace), chatGraph),
-    q(task, RDF_TYPE, iri(`${UDFS}Task`), taskGraph),
-    q(task, `${UDFS}status`, literal('active'), taskGraph),
-    q(task, `${UDFS}workspace`, iri(workspace), taskGraph),
-    q(taskThread, RDF_TYPE, iri(`${SIOC}Thread`), taskThreadGraph),
-    q(taskThread, DCT_CREATED, literal('2026-05-18T00:30:00.000Z'), taskThreadGraph),
-    q(`${scheduleGraph}#schedule_1`, RDF_TYPE, iri(`${UDFS}Schedule`), scheduleGraph),
-    q(`${scheduleGraph}#schedule_1`, `${UDFS}status`, literal('active'), scheduleGraph),
-    q(`${scheduleGraph}#schedule_1`, `${UDFS}nextRunAt`, literal('2026-05-18T01:00:00.000Z'), scheduleGraph),
-    q(run, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
-    q(run, DCT_CREATED, literal('2026-05-18T01:00:00.000Z'), runGraph),
-    q(run, `${UDFS}status`, literal('queued'), runGraph),
-    q(run, `${UDFS}workspace`, iri(workspace), runGraph),
-    q(run, `${UDFS}priority`, literal('10', iri(XSD_INTEGER)), runGraph),
-    q(`${runGraph}#run_2`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
-    q(`${runGraph}#run_2`, DCT_CREATED, literal('2026-05-18T01:05:00.000Z'), runGraph),
-    q(`${runGraph}#run_2`, `${UDFS}status`, literal('queued'), runGraph),
-    q(`${runGraph}#run_2`, `${UDFS}workspace`, iri(workspace), runGraph),
-    q(`${runGraph}#run_2`, `${UDFS}priority`, literal('2', iri(XSD_INTEGER)), runGraph),
-    q(`${runGraph}#run_3`, RDF_TYPE, iri(`${UDFS}Run`), runGraph),
-    q(`${runGraph}#run_3`, DCT_CREATED, literal('2026-05-18T01:10:00.000Z'), runGraph),
-    q(`${runGraph}#run_3`, `${UDFS}status`, literal('running'), runGraph),
-    q(`${runGraph}#run_3`, `${UDFS}workspace`, iri(workspace), runGraph),
-    q(`${runGraph}#run_3`, `${UDFS}priority`, literal('8', iri(XSD_INTEGER)), runGraph),
-    q(`${runGraph}#step_1`, RDF_TYPE, iri(`${UDFS}RunStep`), runGraph),
-    q(`${runGraph}#step_1`, `${UDFS}run`, iri(run), runGraph),
-    q(`${runGraph}#step_2`, RDF_TYPE, iri(`${UDFS}RunStep`), runGraph),
-    q(`${runGraph}#step_2`, `${UDFS}run`, iri(run), runGraph),
-    q(provider, RDF_TYPE, iri(`${UDFS}Provider`), provider),
-    q(provider, `${UDFS}displayName`, literal('Anthropic'), provider),
-    q(`${provider}#claude-sonnet-4`, RDF_TYPE, iri(`${UDFS}Model`), provider),
-    q(`${provider}#claude-sonnet-4`, `${UDFS}isProvidedBy`, iri(provider), provider),
-    q(credential, RDF_TYPE, iri(`${UDFS}Credential`), credentialGraph),
-    q(credential, `${UDFS}provider`, iri(provider), credentialGraph),
-  );
-}
-
-function seedAgentContactFavoriteQuads(quads: Quad[]): void {
-  const agentGraph = `${DATA}/agents/secretary.ttl`;
-  const agent = `${agentGraph}#this`;
-  const contactGraph = `${DATA}/contacts/secretary.ttl`;
-  const contact = contactGraph;
-  const favoriteGraph = `${DATA}/favorites/2026/05/18.ttl`;
-  const favorite = `${favoriteGraph}#favorite_1`;
-  const chat = `${DATA}/chat/default/index.ttl#this`;
-
-  quads.push(
-    q(agent, RDF_TYPE, iri(FOAF_AGENT), agentGraph),
-    q(agent, `${UDFS}provider`, literal('anthropic'), agentGraph),
-    q(agent, `${UDFS}model`, literal('claude-sonnet-4'), agentGraph),
-    q(contact, RDF_TYPE, iri(VCARD_INDIVIDUAL), contactGraph),
-    q(contact, `${UDFS}contactType`, literal('agent'), contactGraph),
-    q(contact, `${UDFS}favorite`, literal('true'), contactGraph),
-    q(favorite, RDF_TYPE, iri(SCHEMA_CREATIVE_WORK), favoriteGraph),
-    q(favorite, `${UDFS}favoriteTarget`, iri(chat), favoriteGraph),
-    q(favorite, `${UDFS}favoredAt`, literal('2026-05-18T02:00:00.000Z'), favoriteGraph),
-  );
-}
-
-function seedCanonicalMessages(quads: Quad[]): void {
-  const thread = `${DATA}/chat/default/index.ttl#thread_1`;
-  const graph = `${DATA}/chat/default/2026/05/18/messages.ttl`;
-  const scores = ['2', '10', '4'];
-
-  for (let index = 0; index < 3; index += 1) {
-    const message = `${graph}#msg_${index + 1}`;
-    const timestamp = `2026-05-18T00:0${index + 1}:00.000Z`;
-    quads.push(
-      q(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
-      q(message, SIOC_HAS_MEMBER, iri(thread), graph),
-      q(message, DCT_CREATED, literal(timestamp), graph),
-      q(message, DCT_MODIFIED, literal(timestamp), graph),
-      q(message, `${UDFS}score`, literal(scores[index], namedNode(XSD_INTEGER)), graph),
-      q(message, SIOC_CONTENT, literal(`canonical message ${index + 1}`), graph),
-    );
-  }
-
-}
-
-function seedSyntheticMessages(quads: Quad[], count: number, podCount: number): void {
-  const syntheticPodCount = Math.max(1, Math.floor(podCount));
-  for (let index = 0; index < count; index += 1) {
-    const podIndex = index % syntheticPodCount;
-    const pod = podIndex === 0 ? POD : `https://pod.example/synthetic-${podIndex}`;
-    const data = `${pod}/.data`;
-    const thread = `${data}/chat/default/index.ttl#thread_1`;
-    const dayNumber = (index % 28) + 1;
-    const day = String(dayNumber).padStart(2, '0');
-    const graph = `${data}/chat/default/2026/05/${day}/messages.ttl`;
-    const message = `${graph}#synthetic_${index}`;
-    const timestamp = new Date(Date.UTC(2026, 4, dayNumber, 12, 0, index)).toISOString();
-    quads.push(
-      q(message, RDF_TYPE, iri(`${MEETING}Message`), graph),
-      q(message, SIOC_HAS_MEMBER, iri(thread), graph),
-      q(message, DCT_CREATED, literal(timestamp), graph),
-      q(message, SIOC_CONTENT, literal(`synthetic searchable message ${index}`), graph),
-    );
-  }
-}
-
-function q(subject: string, predicate: string, object: ReturnType<typeof iri> | ReturnType<typeof literal>, graph: string): Quad {
-  return quad(namedNode(subject), namedNode(predicate), object, namedNode(graph));
-}
-
-function iri(value: string): ReturnType<typeof namedNode> {
-  return namedNode(value);
 }
 
 function seedSummary(
@@ -381,15 +271,18 @@ function seedSummary(
   backfill: { scannedRows: number; indexedRows: number; batchCount: number; durationMs: number },
 ): Record<string, unknown> {
   return {
-    pod: POD,
+    pod: RDF_MODELS_BENCHMARK_POD,
     scale: options.scale,
     iterations: options.iterations,
+    targetQuads: options.targetQuads,
+    targetQuadsOverridden: options.targetQuadsOverridden,
     syntheticMessages: options.syntheticMessages,
     syntheticMessagesOverridden: options.syntheticMessagesOverridden,
     syntheticPodCount: options.syntheticPodCount,
+    caseProfile: options.caseProfile,
     seedQuadCount,
-    targetQuadCount: rdfModelsBenchmarkScaleTargetQuads(options.scale),
-    fullScale: rdfModelsBenchmarkScaleSatisfied(options.scale, seedQuadCount),
+    targetQuadCount: options.targetQuads,
+    fullScale: rdfModelsBenchmarkTargetSatisfied(options.targetQuads, seedQuadCount),
     backfill,
   };
 }
@@ -438,13 +331,15 @@ function printSummary(summary: {
 }): void {
   console.log('RDF models benchmark complete');
   console.log(`  scale: ${summary.options.scale}`);
+  console.log(`  target quads overridden: ${summary.options.targetQuadsOverridden}`);
   console.log(`  iterations: ${summary.options.iterations}`);
+  console.log(`  case profile: ${summary.options.caseProfile}`);
   console.log(`  seed quads: ${summary.seedQuadCount}`);
   console.log(`  target quads: ${summary.targetQuadCount}`);
   console.log(`  full scale seed: ${summary.fullScale}`);
   console.log(`  synthetic pods: ${summary.syntheticPodCount}`);
   if (summary.options.syntheticMessagesOverridden && !summary.fullScale) {
-    console.error('  syntheticMessages override is below the selected scale target');
+    console.error('  syntheticMessages override is below the selected target quads');
   }
   console.log(`  backfilled rows: ${summary.backfilledRows}`);
   console.log(`  baseline cases: ${summary.baselineCases}`);
@@ -502,8 +397,11 @@ function printHelp(): void {
 
 Options:
   --scale=small|medium|large       Select benchmark case scale. Default: medium
+  --targetQuads=N                  Override seed/full-scale gate target and default synthetic message count
   --iterations=N                   Iterations per case. Default: 3
   --syntheticMessages=N            Override generated message count for storage-size tests
+  --caseProfile=VALUE              default|extreme|fusion|all. Default: default
+                                   fusion is local-only and seeds derived text/vector indexes
   --out=PATH                       Output directory. Default: .test-data/rdf-engine
 `);
 }

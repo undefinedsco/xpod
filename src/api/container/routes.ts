@@ -29,6 +29,7 @@ import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, register
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
+import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
@@ -95,6 +96,7 @@ function registerSharedRoutes(
   const clientReconcilerCoordinator = container.resolve('clientReconcilerCoordinator');
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
+  const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const config = container.resolve('config') as ApiContainerConfig;
 
   registerEdgeNodeSignalRoutes(server, {
@@ -118,6 +120,9 @@ function registerSharedRoutes(
     backend: runExecutionBackend,
     taskScheduler: inngestTaskScheduler,
     runtimeConfig: inngestRuntimeConfig,
+  });
+  registerRdfStatsRoutes(server, {
+    rdfStorageStatsService,
   });
 
   // Quota & Usage API (Business 对接)

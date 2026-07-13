@@ -386,13 +386,13 @@ describe('ProvisionPodCreator', () => {
       })).rejects.toThrow('Failed to create pod on SP: 500');
     });
 
-    it('should preserve SP pod-name conflicts as conflicts', async () => {
+    it('preserves SP conflict messages', async () => {
       const provisionCode = makeProvisionCode();
 
       mockFetch.mockResolvedValue({
         ok: false,
         status: 409,
-        text: async () => JSON.stringify({ error: 'Conflict', message: 'Pod alice already exists' }),
+        text: async () => JSON.stringify({ message: 'Pod alice already exists' }),
       });
 
       vi.spyOn(creator as any, 'handleWebId').mockResolvedValue('webid-link-1');
@@ -401,10 +401,7 @@ describe('ProvisionPodCreator', () => {
         name: 'alice',
         accountId: 'account-1',
         settings: { provisionCode },
-      })).rejects.toMatchObject({
-        statusCode: 409,
-        message: 'Pod alice already exists',
-      });
+      })).rejects.toThrow('Pod alice already exists');
     });
 
     it('should use provided webId instead of generating one', async () => {

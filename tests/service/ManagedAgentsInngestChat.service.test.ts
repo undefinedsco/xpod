@@ -35,7 +35,7 @@ const {
   disposeMock,
   sessionManagerInMemoryMock,
   sessionManagerCreateMock,
-} = vi.hoisted(() => {
+} = (() => {
   const replaceMessagesMock = vi.fn();
   const promptMock = vi.fn(async () => undefined);
   const subscribeMock = vi.fn(() => () => undefined);
@@ -142,7 +142,7 @@ const {
     sessionManagerInMemoryMock,
     sessionManagerCreateMock,
   };
-});
+})();
 
 class RecordingInngestClient {
   public sent: unknown[] = [];
@@ -341,6 +341,76 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(driver.inputs[0].config.workspace).toBe(workspaceRef);
     expect(assistantText(events)).toBe(`workspace:${workspaceRef}:hello managed agents`);
     expect(events.some((event) => event.type === 'thread.item.done' && event.item?.type === 'assistant_message')).toBe(true);
+  });
+
+  it('retrieves product context before starting a Chat Agent Run', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const driver = new WorkspaceAgentDriver();
+    const backend = new InngestRunExecutionBackend({
+      client: new RecordingInngestClient() as any,
+      runtimeDriver: driver,
+      executeInline: true,
+    });
+    const contextRetriever = {
+      retrieve: vi.fn(async (input: any) => ({
+        query: input.prompt,
+        items: [
+          {
+            kind: 'text_chunk',
+            source: `${workspaceRef}/notes.md`,
+            text: 'remember the launch checklist',
+            score: 0.91,
+          },
+        ],
+        plan: ['TextSearch', 'VectorSearch', 'RdfJoin'],
+      })),
+    };
+    const service = new ChatKitService<StoreContext>({
+      store,
+      enableAgentRuntime: true,
+      runExecutionBackend: backend,
+      contextRetriever,
+    });
+
+    const result = await service.process(JSON.stringify({
+      type: 'threads.create',
+      params: {
+        workspace: workspaceRef,
+        input: {
+          content: [{ type: 'input_text', text: 'what should I check?' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'codex', protocol: 'acp' },
+        },
+      },
+    }), { userId: 'u1' });
+
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of result.type === 'streaming' ? result.stream() : []) {
+      chunks.push(chunk);
+    }
+    expect(parseSseDataLines(chunks).length).toBeGreaterThan(0);
+
+    expect(contextRetriever.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'what should I check?',
+      conversation: [],
+      config: expect.objectContaining({ workspace: workspaceRef }),
+      context: { userId: 'u1' },
+    }));
+    expect(driver.inputs[0].retrievedContext).toEqual({
+      query: 'what should I check?',
+      items: [
+        {
+          kind: 'text_chunk',
+          source: `${workspaceRef}/notes.md`,
+          text: 'remember the launch checklist',
+          score: 0.91,
+        },
+      ],
+      plan: ['TextSearch', 'VectorSearch', 'RdfJoin'],
+    });
   });
 
   it('does not start the pending inline runtime twice for duplicate callbacks', async () => {
@@ -1309,10 +1379,23 @@ describe('Managed Agents Inngest Chat backend', () => {
       durableDelivery: false,
       executeInline: true,
     });
+    const contextRetriever = {
+      retrieve: vi.fn(async (input: any) => ({
+        query: input.prompt,
+        items: [
+          {
+            kind: 'text_chunk',
+            source: `${workspaceRef}/tool-context.md`,
+            text: `context for ${input.prompt}`,
+          },
+        ],
+      })),
+    };
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: backend,
+      contextRetriever,
     });
     const context = { userId: 'u1' };
 
@@ -1411,10 +1494,23 @@ describe('Managed Agents Inngest Chat backend', () => {
       durableDelivery: false,
       executeInline: true,
     });
+    const contextRetriever = {
+      retrieve: vi.fn(async (input: any) => ({
+        query: input.prompt,
+        items: [
+          {
+            kind: 'text_chunk',
+            source: `${workspaceRef}/tool-context.md`,
+            text: `context for ${input.prompt}`,
+          },
+        ],
+      })),
+    };
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: backend,
+      contextRetriever,
     });
     const context = { userId: 'u1' };
 
@@ -1464,6 +1560,17 @@ describe('Managed Agents Inngest Chat backend', () => {
       kind: 'client_tool_output',
       itemId: toolItem.id,
     });
+    expect(driver.inputs[1].retrievedContext).toEqual({
+      query: expect.stringContaining('Continue the previous run after client tool output.'),
+      items: [
+        {
+          kind: 'text_chunk',
+          source: `${workspaceRef}/tool-context.md`,
+          text: expect.stringContaining('selected README.md'),
+        },
+      ],
+    });
+    expect(contextRetriever.retrieve).toHaveBeenCalledTimes(2);
     expect(assistantText(continuedEvents)).toBe(`resumed:${toolItem.id}`);
     expect((await store.loadRun(runId, context)).status).toBe(RunStatus.COMPLETED);
     const steps = await store.loadRunSteps(runId, context);
@@ -1657,6 +1764,110 @@ describe('Managed Agents Inngest Chat backend', () => {
         source: 'rpc',
       });
       expect(disposeMock).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalProvider === undefined) delete process.env.DEFAULT_PROVIDER;
+      else process.env.DEFAULT_PROVIDER = originalProvider;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalModel === undefined) delete process.env.DEFAULT_MODEL;
+      else process.env.DEFAULT_MODEL = originalModel;
+    }
+  });
+
+  it('projects retrieved Run context into the pi session before the current prompt', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalProvider = process.env.DEFAULT_PROVIDER;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalModel = process.env.DEFAULT_MODEL;
+    try {
+      process.env.DEFAULT_API_KEY = 'sk-test';
+      process.env.DEFAULT_PROVIDER = 'openai';
+      process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
+      process.env.DEFAULT_MODEL = 'gpt-test';
+
+      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+      const events: AgentRuntimeEvent[] = [];
+      for await (
+        const event of driver.start({
+          runId: 'run_retrieved_context',
+          threadId: 'thread_retrieved_context',
+          prompt: 'current prompt',
+          conversation: [
+            { role: 'user', text: 'previous user', createdAt: 10 },
+          ],
+          retrievedContext: {
+            query: 'current prompt',
+            items: [
+              {
+                kind: 'text_chunk',
+                source: 'file://localhost/workspace/notes.md',
+                heading: 'Launch',
+                text: 'Launch checklist lives in notes.md',
+                score: 0.87,
+                metadata: {
+                  untrustedContext: true,
+                  sourceKey: 'source-node:notes',
+                  retrievalPointKey: 'file-chunk:notes.md#launch',
+                  retrievalKind: 'file-chunk',
+                  entityProvenance: [{
+                    entity: 'https://pod.example/alice/.data/task/default/index.ttl#this',
+                    predicate: 'https://schema.org/about',
+                    value: 'Launch checklist lives in notes.md',
+                    policyRole: 'searchableText',
+                    occurrences: 1,
+                  }],
+                },
+              },
+              {
+                kind: 'rdf_literal',
+                source: 'https://pod.example/alice/.data/task/default/index.ttl#this',
+                text: 'Task priority is high',
+              },
+            ],
+          },
+          config: {
+            workspace: workspaceRef,
+            runner: { type: 'codex', protocol: 'acp' },
+          },
+        })
+      ) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([]);
+      expect(replaceMessagesMock).toHaveBeenCalledWith([
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'previous user' }],
+          timestamp: 10_000,
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: expect.stringContaining('Relevant context retrieved from the user workspace and Pod'),
+          }],
+          timestamp: expect.any(Number),
+        },
+      ]);
+      const contextText = replaceMessagesMock.mock.calls[0][0][1].content[0].text;
+      expect(contextText).toContain('kind=text_chunk');
+      expect(contextText).toContain('UNTRUSTED_CONTEXT');
+      expect(contextText).toContain('score=0.8700');
+      expect(contextText).toContain('source=file://localhost/workspace/notes.md');
+      expect(contextText).toContain('sourceKey=source-node:notes');
+      expect(contextText).toContain('retrievalPoint=file-chunk:notes.md#launch');
+      expect(contextText).toContain('retrievalKind=file-chunk');
+      expect(contextText).toContain('entity=https://pod.example/alice/.data/task/default/index.ttl#this');
+      expect(contextText).toContain('predicate=https://schema.org/about');
+      expect(contextText).toContain('Launch checklist lives in notes.md');
+      expect(contextText).toContain('Task priority is high');
+      expect(promptMock).toHaveBeenCalledWith('current prompt', {
+        expandPromptTemplates: false,
+        source: 'rpc',
+      });
     } finally {
       if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
       else process.env.DEFAULT_API_KEY = originalKey;

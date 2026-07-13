@@ -13,6 +13,8 @@ import { CredentialStatus, ServiceType } from '../../src/credential/schema/types
 import type { StoreContext } from '../../src/api/chatkit/store';
 import { Provider } from '../../src/ai/schema/provider';
 import { Model } from '../../src/ai/schema/model';
+import { AIConfig } from '../../src/ai/schema/config';
+import { aiConfigModelRef } from '@undefineds.co/models';
 
 // Mock Session
 vi.mock('@inrupt/solid-client-authn-node', () => ({
@@ -127,6 +129,7 @@ describe('PodChatKitStore AI Config Operations', () => {
       findById: vi.fn().mockImplementation((table: any, id: string) => {
         if (table === Provider) return Promise.resolve(findProvider(id));
         if (table === Model) return Promise.resolve(findModel(id));
+        if (table === AIConfig) return Promise.resolve(undefined);
         return Promise.resolve(mockCredentials.find((cred) => cred.id === id));
       }),
       updateById: vi.fn().mockResolvedValue(undefined),
@@ -344,6 +347,72 @@ describe('PodChatKitStore AI Config Operations', () => {
       expect(config!.baseUrl).toBe('https://api.openai.com/v1');
     });
 
+    it('should return configured embedding model from Pod AI config', async () => {
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === AIConfig && id === 'config') {
+          return Promise.resolve({
+            id: 'config',
+            embeddingModel: aiConfigModelRef('openai', 'text-embedding-3-small'),
+          });
+        }
+        if (table === Provider) return Promise.resolve(mockProviders[0]);
+        if (table === Model) return Promise.resolve(mockModels.find((model) => model.id === id));
+        return Promise.resolve(mockCredentials.find((cred) => cred.id === id));
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toBeDefined();
+      expect(config!.embeddingModel).toBe('text-embedding-3-small');
+    });
+
+    it('should use DashScope text-embedding-v4 as the default embedding model when no AIConfig is stored', async () => {
+      const credentials = [{
+        ...mockCredentials[0],
+        id: 'cred-dashscope',
+        provider: 'http://localhost:3000/test/settings/providers/dashscope.ttl',
+        apiKey: 'dashscope-key',
+      }];
+      const providers = [{
+        id: 'dashscope',
+        displayName: 'DashScope',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        proxyUrl: null,
+        '@id': 'http://localhost:3000/test/settings/providers/dashscope.ttl',
+      }];
+
+      let selectCallIndex = 0;
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => {
+          selectCallIndex++;
+          if (selectCallIndex === 1) {
+            return {
+              where: vi.fn().mockResolvedValue(credentials),
+            };
+          }
+          return Promise.resolve(providers);
+        }),
+      }));
+      mockDb.findByIri = vi.fn().mockImplementation((table: any, iri: string) => {
+        if (table === Provider) {
+          return Promise.resolve(providers.find((provider) => iri === provider['@id'] || iri.endsWith('/settings/providers/dashscope.ttl')));
+        }
+        return Promise.resolve(undefined);
+      });
+      mockDb.findById = vi.fn().mockImplementation((table: any, id: string) => {
+        if (table === AIConfig && id === 'config') return Promise.resolve(undefined);
+        if (table === Provider) return Promise.resolve(providers.find((provider) => id === provider.id || id.endsWith('/settings/providers/dashscope.ttl')));
+        return Promise.resolve(credentials.find((cred) => cred.id === id));
+      });
+
+      const config = await store.getAiConfig(mockContext);
+
+      expect(config).toBeDefined();
+      expect(config!.providerId).toBe('dashscope');
+      expect(config!.embeddingModel).toBe('text-embedding-v4');
+      expect(config!.baseUrl).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
+    });
+
     it('should select the default credential before storage order', async () => {
       const credentials = [
         {
@@ -473,6 +542,68 @@ describe('PodChatKitStore AI Config Operations', () => {
 
       const config = await store.getAiConfig(mockContext);
       expect(config).toBeUndefined();
+    });
+  });
+
+  describe('getReaderConfig', () => {
+    it('should select reader model and credential from Pod provider settings', async () => {
+      mockDb.select = vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation((table: any) => {
+          if (table === Provider) {
+            return Promise.resolve([
+              {
+                id: 'paddleocr',
+                displayName: 'PaddleOCR',
+                baseUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
+                defaultModel: 'http://localhost:3000/test/settings/providers/paddleocr.ttl#pp-ocrv6',
+              },
+            ]);
+          }
+          if (table === Model) {
+            return Promise.resolve([
+              {
+                id: 'paddleocr.ttl#pp-ocrv6',
+                displayName: 'PP-OCRv6',
+                modelType: 'reader',
+                isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+                status: 'active',
+              },
+              {
+                id: 'paddleocr.ttl#chat-model',
+                displayName: 'Chat-looking model',
+                modelType: 'chat',
+                isProvidedBy: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+                status: 'active',
+              },
+            ]);
+          }
+          return {
+            where: vi.fn().mockResolvedValue([
+              {
+                id: 'cred_reader',
+                provider: 'http://localhost:3000/test/settings/providers/paddleocr.ttl',
+                service: ServiceType.AI,
+                status: CredentialStatus.ACTIVE,
+                apiKey: 'paddle-token',
+                isDefault: true,
+              },
+            ]),
+          };
+        }),
+      }));
+
+      const config = await store.getReaderConfig(mockContext, 'paddleocr');
+
+      expect(config).toEqual({
+        providerId: 'paddleocr',
+        providerDisplayName: 'PaddleOCR',
+        baseUrl: 'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs',
+        proxyUrl: undefined,
+        model: 'pp-ocrv6',
+        modelDisplayName: 'PP-OCRv6',
+        modelType: 'reader',
+        credentialId: 'cred_reader',
+      });
     });
   });
 

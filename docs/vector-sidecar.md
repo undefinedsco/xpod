@@ -1,5 +1,14 @@
 # Vector Search (/-/search)
 
+> **状态：历史设计 / 非当前主线。** 本文保留早期 `/-/search` sidecar
+> 方案，便于追踪架构演进。当前主线以
+> [RDF Engine Spec](rdf-engine-spec.md) 的 `RdfTextIndex` / `RdfVectorIndex`
+> 与 [Progressive Semantic Index](progressive-semantic-index.md) 为准：
+> text/vector 都是 RDF engine 的派生索引，embedding provider / model /
+> credential 复用用户 Pod 的 AI config；原始密钥通过
+> [Extension Runtime and Credential Resolution](extension-runtime-and-credential-resolution.md)
+> 的 `CredentialResolver` just-in-time 解析，不进入索引、Run record 或 cache。
+
 为 Xpod 提供语义搜索能力，采用极简设计。
 
 ## 架构概览

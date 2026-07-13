@@ -1,12 +1,13 @@
 import type { ComponentType } from 'react';
 import { NavLink } from 'react-router-dom';
 import { clsx } from 'clsx';
-import { FileText, LayoutDashboard, Settings } from 'lucide-react';
+import { Database, FileText, LayoutDashboard, Settings } from 'lucide-react';
 
-export type AdminPage = 'status' | 'logs' | 'settings';
+export type AdminPage = 'status' | 'rdf' | 'logs' | 'settings';
 
 const items: Array<{ id: AdminPage; label: string; to: string; icon: ComponentType<{ className?: string }> }> = [
   { id: 'status', label: '状态', to: '/status', icon: LayoutDashboard },
+  { id: 'rdf', label: 'RDF', to: '/rdf', icon: Database },
   { id: 'logs', label: '日志', to: '/logs', icon: FileText },
   { id: 'settings', label: '设置', to: '/settings', icon: Settings },
 ];
@@ -48,7 +49,7 @@ export function Sidebar() {
 export function MobileDashboardNav() {
   return (
     <nav className="sm:hidden border-t border-border bg-layout-sidebar px-2 py-2">
-      <div className="grid grid-cols-3 gap-1">
+      <div className="grid grid-cols-4 gap-1">
         {items.map((it) => {
           const Icon = it.icon;
           return (

@@ -298,6 +298,22 @@ async function stopBackgroundServices(container: AwilixContainer<ApiContainerCra
   }
 }
 
+async function stopApiRuntimeServices(container: AwilixContainer<ApiContainerCradle>): Promise<void> {
+  try {
+    const runExecutionBackend = container.resolve('runExecutionBackend', { allowUnregistered: true });
+    await runExecutionBackend?.close?.();
+  } catch {
+    // ignore shutdown errors
+  }
+
+  try {
+    const rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
+    await rdfEngine?.close?.();
+  } catch {
+    // ignore shutdown errors
+  }
+}
+
 function resolveApiBaseUrl(config: ApiContainerConfig): string {
   if (process.env.XPOD_API_BASE_URL) {
     return process.env.XPOD_API_BASE_URL;
@@ -386,6 +402,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
       logger.info('Stopping API Service...');
       await stopBackgroundServices(container);
       await server.stop();
+      await stopApiRuntimeServices(container);
       await embeddedInngest.service.stop();
     },
   };

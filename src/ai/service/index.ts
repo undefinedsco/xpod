@@ -12,4 +12,5 @@ export * from './CredentialReader';
 export * from './CredentialReaderImpl';
 export * from './ProviderRegistry';
 export * from './ProviderRegistryImpl';
+export * from './defaultEmbeddingProfile';
 export * from './DefaultAiConfigService';

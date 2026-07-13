@@ -565,8 +565,8 @@ export class JournaledSolidFsSyncer implements SolidFsSyncer {
     return this.syncer.shouldTrackPath?.(relativePath) ?? isLineAddressableRdfPath(relativePath);
   }
 
-  public async sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown): Promise<void> {
-    const op = await this.journal.recordLocalCommitted(change, workspace);
+  public async sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown, txId?: string): Promise<void> {
+    const op = await this.journal.recordLocalCommitted(change, workspace, txId);
     if (op.stage === 'done') {
       return;
     }
@@ -629,9 +629,9 @@ export class WorkspaceJournaledSolidFsSyncer implements SolidFsSyncer {
     await journal.compact();
   }
 
-  public async sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown): Promise<void> {
+  public async sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown, txId?: string): Promise<void> {
     const journal = this.journalFor(workspace);
-    const op = await journal.recordLocalCommitted(change, workspace);
+    const op = await journal.recordLocalCommitted(change, workspace, txId);
     if (op.stage === 'done') {
       return;
     }
@@ -725,6 +725,7 @@ function normalizeChange(change: SolidFsChange): SolidFsChange {
   return {
     ...change,
     path: change.path.split(/[\\/]+/u).join(path.sep),
+    previousPath: change.previousPath?.split(/[\\/]+/u).join(path.sep),
   };
 }
 
@@ -733,8 +734,12 @@ function operationId(workspace: string, change: SolidFsChange, afterHash?: strin
     .update(JSON.stringify({
       workspace,
       path: change.path,
+      previousPath: change.previousPath,
+      prefix: change.prefix,
+      previousPrefix: change.previousPrefix,
       type: change.type,
       resource: change.resource,
+      previousResource: change.previousResource,
       source: change.source,
       sourcePath: change.sourcePath,
       projection: change.projection,

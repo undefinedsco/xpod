@@ -18,6 +18,44 @@ const { namedNode, literal } = DataFactory;
 describe('RdfSparqlAdapter', () => {
   const adapter = new RdfSparqlAdapter();
 
+  function expectUnsupported(
+    action: () => unknown,
+    capability: string,
+    hint: string | RegExp,
+  ): void {
+    let thrown: unknown;
+    try {
+      action();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(UnsupportedSparqlQueryError);
+    expect(thrown).toMatchObject({
+      code: 'rdf.sparql.unsupported_query_shape',
+      capability,
+    });
+    const error = thrown as UnsupportedSparqlQueryError;
+    expect(error.hint).toMatch(hint);
+    expect(error.correction).toMatchObject({
+      capability,
+      primaryAction: expect.any(String),
+      target: expect.any(String),
+    });
+    expect(error.correction.availableActions.length).toBeGreaterThan(0);
+  }
+
+  it('normalizes legacy compatibility fallback wording on unsupported errors', () => {
+    const directFallback = new UnsupportedSparqlQueryError('Subqueries fallback to compatibility engine');
+    expect(directFallback.message).toBe('Subqueries is not supported by the embedded RDF engine');
+    expect(directFallback.message).not.toMatch(/compatibility|fallback/i);
+    expect(directFallback.capability).toBe('sparql.query.subquery');
+
+    const missingFallback = new UnsupportedSparqlQueryError('No compatibility SPARQL fallback configured for queryBindings: unsupported shape');
+    expect(missingFallback.message).toBe('Embedded SPARQL engine cannot execute queryBindings: Query shape is not supported by the embedded RDF engine');
+    expect(missingFallback.message).not.toMatch(/compatibility|fallback/i);
+  });
+
   it('compiles SELECT BGP, filters, ordering, and pagination into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?content WHERE {
@@ -4120,6 +4158,98 @@ describe('RdfSparqlAdapter', () => {
         }
       }
     `, BASE)).toThrow(UnsupportedSparqlQueryError);
+  });
+
+  it('reports specific capabilities and rewrite hints for unsupported query shapes', () => {
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?message WHERE {
+        {
+          SELECT ?message WHERE {
+            ?message a <${MESSAGE}> .
+          }
+        }
+      }
+    `, BASE), 'sparql.query.subquery', /Flatten the subquery/);
+
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?content WHERE {
+        ?message <${HAS_MEMBER}>* ?thread .
+      }
+    `, BASE), 'sparql.query.property_path', /explicit predicate patterns/);
+
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?message WHERE {
+        VALUES ?message { <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1> }
+      }
+    `, BASE), 'sparql.query.values', /Bind VALUES variables/);
+
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?label WHERE {
+        BIND(CONCAT(?missing, "x") AS ?label)
+      }
+    `, BASE), 'sparql.query.bind', /Order BIND expressions/);
+
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?message WHERE {
+        ?message a <${MESSAGE}> .
+        MINUS {
+          ?other <${CONTENT}> ?content .
+        }
+      }
+    `, BASE), 'sparql.query.minus', /Make MINUS share/);
+
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?message WHERE {
+        ?message a <${MESSAGE}> .
+        FILTER EXISTS {
+          ?other <${CONTENT}> ?content .
+        }
+      }
+    `, BASE), 'sparql.query.exists', /FILTER EXISTS/);
+
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?thread (SUM(?message) AS ?total) WHERE {
+        ?message <${HAS_MEMBER}> ?thread .
+      }
+      GROUP BY ?thread
+    `, BASE), 'sparql.query.aggregate', /supported grouped aggregate/);
+
+    expectUnsupported(() => adapter.compile(`
+      SELECT ?thread (COUNT(?message) AS ?count) WHERE {
+        ?message <${HAS_MEMBER}> ?thread .
+      }
+      GROUP BY ?thread
+      HAVING (?thread > 1)
+    `, BASE), 'sparql.query.having', /HAVING/);
+
+    const groupedWildcard = new Parser({ baseIRI: BASE }).parse(`
+      SELECT ?thread (COUNT(?message) AS ?count) WHERE {
+        ?message <${HAS_MEMBER}> ?thread .
+      }
+      GROUP BY ?thread
+    `) as any;
+    groupedWildcard.variables = [new Wildcard()];
+    expectUnsupported(
+      () => adapter.compile(groupedWildcard, BASE),
+      'sparql.query.wildcard_projection',
+      /Project explicit variables/,
+    );
+
+    expectUnsupported(() => adapter.compile(`
+      DESCRIBE ?message WHERE {
+        OPTIONAL {
+          ?message a <${MESSAGE}> .
+        }
+      }
+    `, BASE), 'sparql.query.describe', /Describe explicit IRIs/);
+
+    expectUnsupported(() => adapter.compile(`
+      PREFIX ex: <https://example.com/function/>
+      SELECT ?message WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(ex:unsupported(?content))
+      }
+    `, BASE), 'sparql.query.function', /supported XPath string functions/);
   });
 
   it('rejects SERVICE federation instead of treating it as a compatibility fallback', () => {

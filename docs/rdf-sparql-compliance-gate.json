@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "name": "xpod-embedded-sparql-compliance-gate",
+  "gateCommand": "bun run test:w3c",
+  "policy": {
+    "serverOwnedPodFallback": "disabled-by-default",
+    "unsupportedStatus": "explicit-error-with-correction",
+    "geoSparql": "deferred-until-product-need"
+  },
+  "w3cTargetSubset": [
+    "select-bgp",
+    "ask",
+    "construct-basic",
+    "describe-controlled",
+    "optional",
+    "values",
+    "values-undef",
+    "bind",
+    "union-controlled",
+    "minus",
+    "filter-exists",
+    "filter-not-exists",
+    "order-limit-offset",
+    "from-default-graph",
+    "from-named-graph",
+    "fixed-length-property-path",
+    "group-by-count",
+    "having-simple-comparison",
+    "insert-data-scoped",
+    "delete-data-scoped",
+    "delete-insert-where-local-graphs"
+  ],
+  "deviations": [
+    {
+      "capability": "sparql.federation.service",
+      "status": "disabled",
+      "reason": "Server-owned Pod queries must not fetch or join untrusted remote endpoints inside the embedded engine.",
+      "primaryAction": "route_external_executor"
+    },
+    {
+      "capability": "sparql.query.subquery",
+      "status": "unsupported-explicit",
+      "reason": "Subqueries require materialized intermediate planning before they are safe as a product-grade embedded path.",
+      "primaryAction": "materialize_intermediate"
+    },
+    {
+      "capability": "sparql.query.rdf_star",
+      "status": "unsupported-explicit",
+      "reason": "RDF-star annotations should be materialized as ordinary RDF resources or reification before querying.",
+      "primaryAction": "materialize_intermediate"
+    },
+    {
+      "capability": "sparql.geosparql",
+      "status": "deferred-product-need",
+      "reason": "GeoSPARQL is not part of current Xpod product workloads; add it only with a concrete product query and benchmark.",
+      "primaryAction": "route_external_executor"
+    }
+  ]
+}

@@ -7,16 +7,23 @@ import type {
   RdfVectorDistanceMetric,
   RdfSearchCardinalityEstimate,
   RdfVectorIndexOptions,
+  RdfVectorIndexSyncLike,
   RdfVectorIndexStats,
   RdfVectorModelDistribution,
   RdfVectorSearchOrder,
   RdfVectorSearchOptions,
   RdfVectorSearchResult,
   RdfVectorSourceInput,
+  RdfVectorScoreComponents,
+  RdfVectorSummaryLifecycleEntry,
+  RdfVectorSummaryLifecycleOptions,
+  RdfVectorSummaryMetadata,
 } from './types';
+import { appendRdfSearchSourceFilters } from './RdfSearchSourceFilter';
 
 interface RdfVectorSourceRow {
   id: number;
+  source_key: string;
   source: string;
   workspace: string;
   local_path: string | null;
@@ -26,14 +33,14 @@ interface RdfVectorSourceRow {
   updated_at: string;
 }
 
-interface RdfVectorScoredChunkRow extends RdfVectorChunkRow {
+export interface RdfVectorScoredChunkRow extends RdfVectorChunkRow {
   dot_product: number;
   vector_score: number;
   vector_distance: number | null;
   vector_distance_squared: number | null;
 }
 
-export class RdfVectorIndex {
+export class RdfVectorIndex implements RdfVectorIndexSyncLike {
   private readonly sqliteRuntime = createSqliteRuntime();
   private db: SqliteDatabase | null = null;
 
@@ -79,12 +86,18 @@ export class RdfVectorIndex {
         start_offset,
         end_offset,
         embedding_json,
+        summary_metadata,
         dimensions,
         magnitude,
+        provider,
         model,
+        model_version,
+        input_kind,
+        input_hash,
+        projection_policy_version,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     `);
     const insertComponent = db.prepare(`
       INSERT INTO rdf_vector_components (
@@ -97,14 +110,60 @@ export class RdfVectorIndex {
     `);
 
     db.transaction(() => {
-      db.prepare(`
+      if (chunks.length === 0) {
+        db.prepare(`
+          DELETE FROM rdf_vector_components
+          WHERE chunk_id IN (
+            SELECT id FROM rdf_vector_chunks WHERE source_id = ?
+          )
+        `).run(sourceId);
+        db.prepare('DELETE FROM rdf_vector_chunks WHERE source_id = ?').run(sourceId);
+        return;
+      }
+      const deleteComponents = db.prepare(`
         DELETE FROM rdf_vector_components
         WHERE chunk_id IN (
-          SELECT id FROM rdf_vector_chunks WHERE source_id = ?
+          SELECT id FROM rdf_vector_chunks
+          WHERE source_id = ?
+            AND provider = ?
+            AND model = ?
+            AND model_version = ?
+            AND input_kind = ?
+            AND projection_policy_version = ?
         )
-      `).run(sourceId);
-      db.prepare('DELETE FROM rdf_vector_chunks WHERE source_id = ?').run(sourceId);
+      `);
+      const deleteChunks = db.prepare(`
+        DELETE FROM rdf_vector_chunks
+        WHERE source_id = ?
+          AND provider = ?
+          AND model = ?
+          AND model_version = ?
+          AND input_kind = ?
+          AND projection_policy_version = ?
+      `);
+      const deletedIdentities = new Set<string>();
       for (const chunk of chunks) {
+        const identity = normalizeVectorIdentity(chunk);
+        const identityKey = vectorIdentityKey(identity);
+        if (!deletedIdentities.has(identityKey)) {
+          deleteComponents.run(
+            sourceId,
+            identity.provider,
+            identity.model,
+            identity.modelVersion,
+            identity.inputKind,
+            identity.projectionPolicyVersion,
+          );
+          deleteChunks.run(
+            sourceId,
+            identity.provider,
+            identity.model,
+            identity.modelVersion,
+            identity.inputKind,
+            identity.projectionPolicyVersion,
+          );
+          deletedIdentities.add(identityKey);
+        }
         const embedding = normalizeEmbedding(chunk.embedding);
         const result = insertChunk.run(
           sourceId,
@@ -117,9 +176,15 @@ export class RdfVectorIndex {
           chunk.startOffset,
           chunk.endOffset,
           JSON.stringify(embedding),
+          chunk.summaryMetadata ? JSON.stringify(chunk.summaryMetadata) : null,
           embedding.length,
           vectorMagnitude(embedding),
-          chunk.model ?? '',
+          identity.provider,
+          identity.model,
+          identity.modelVersion,
+          identity.inputKind,
+          chunk.inputHash ?? '',
+          identity.projectionPolicyVersion,
         );
         insertVectorComponents(insertComponent, Number(result.lastInsertRowid), embedding);
       }
@@ -163,8 +228,66 @@ export class RdfVectorIndex {
       .map((row) => {
         const rowEmbedding = parseEmbedding(row.embedding_json);
         const distance = scoredVectorDistance(row, metric);
-        return this.toSearchResult(row, rowEmbedding, vectorScore(distance, metric), distance);
+        return this.toSearchResult(row, rowEmbedding, metric, vectorMagnitude(embedding), vectorScore(distance, metric), distance);
       });
+  }
+
+  public summaryLifecycle(options: RdfVectorSummaryLifecycleOptions = {}): RdfVectorSummaryLifecycleEntry[] {
+    const params: unknown[] = [];
+    const conditions = ['chunk.summary_metadata IS NOT NULL'];
+    if (options.workspace) {
+      conditions.push('source.workspace = ?');
+      params.push(options.workspace);
+    }
+    appendRdfSearchSourceFilters(options, conditions, params);
+    appendVectorIdentityFilters(options, conditions, params);
+
+    const limitSql = options.limit === undefined ? '' : 'LIMIT ?';
+    if (options.limit !== undefined) {
+      params.push(Math.max(0, options.limit));
+    }
+
+    const rows = this.requireDb().prepare<RdfVectorChunkRow>(`
+      SELECT
+        chunk.id,
+        chunk.source_id,
+        source.source_key,
+        source.source,
+        source.workspace,
+        source.local_path,
+        source.content_type,
+        source.source_version,
+        source.source_hash,
+        chunk.chunk_key,
+        chunk.ordinal,
+        chunk.level,
+        chunk.heading,
+        chunk.path,
+        chunk.content,
+        chunk.start_offset,
+        chunk.end_offset,
+        chunk.embedding_json,
+        chunk.summary_metadata,
+        chunk.dimensions,
+        chunk.magnitude,
+        chunk.provider,
+        chunk.model,
+        chunk.model_version,
+        chunk.input_kind,
+        chunk.input_hash,
+        chunk.projection_policy_version,
+        chunk.updated_at
+      FROM rdf_vector_chunks chunk
+      JOIN rdf_vector_sources source ON source.id = chunk.source_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY source.source ASC, chunk.ordinal ASC, chunk.chunk_key ASC
+      ${limitSql}
+    `).all(...params);
+
+    return rows.flatMap((row) => {
+      const entry = toSummaryLifecycleEntry(row);
+      return entry ? [entry] : [];
+    });
   }
 
   public estimateSearchCardinality(options: RdfVectorSearchOptions): RdfSearchCardinalityEstimate {
@@ -203,18 +326,8 @@ export class RdfVectorIndex {
       conditions.push('source.workspace = ?');
       params.push(options.workspace);
     }
-    if (options.source) {
-      conditions.push('source.source = ?');
-      params.push(options.source);
-    }
-    if (options.sourcePrefix) {
-      conditions.push('source.source >= ? AND source.source < ?');
-      params.push(options.sourcePrefix, `${options.sourcePrefix}\uffff`);
-    }
-    if (options.model !== undefined) {
-      conditions.push('chunk.model = ?');
-      params.push(options.model);
-    }
+    appendRdfSearchSourceFilters(options, conditions, params);
+    appendVectorIdentityFilters(options, conditions, params);
 
     const rows = this.requireDb().prepare<{ count: number }>(`
       SELECT COUNT(*) AS count
@@ -243,7 +356,11 @@ export class RdfVectorIndex {
 
   public modelDistribution(): RdfVectorModelDistribution[] {
     const rows = this.requireDb().prepare<{
+      provider: string;
       model: string;
+      model_version: string;
+      input_kind: string;
+      projection_policy_version: string;
       dimensions: number;
       source_count: number;
       chunk_count: number;
@@ -252,7 +369,11 @@ export class RdfVectorIndex {
       average_magnitude: number | null;
     }>(`
       SELECT
+        chunk.provider,
         chunk.model,
+        chunk.model_version,
+        chunk.input_kind,
+        chunk.projection_policy_version,
         chunk.dimensions,
         COUNT(DISTINCT chunk.source_id) AS source_count,
         COUNT(*) AS chunk_count,
@@ -260,12 +381,16 @@ export class RdfVectorIndex {
         MAX(chunk.magnitude) AS max_magnitude,
         AVG(chunk.magnitude) AS average_magnitude
       FROM rdf_vector_chunks chunk
-      GROUP BY chunk.model, chunk.dimensions
-      ORDER BY chunk_count DESC, source_count DESC, chunk.model ASC, chunk.dimensions ASC
+      GROUP BY chunk.provider, chunk.model, chunk.model_version, chunk.input_kind, chunk.projection_policy_version, chunk.dimensions
+      ORDER BY chunk_count DESC, source_count DESC, chunk.provider ASC, chunk.model ASC, chunk.model_version ASC, chunk.input_kind ASC, chunk.projection_policy_version ASC, chunk.dimensions ASC
     `).all();
 
     return rows.map((row) => ({
+      provider: row.provider || undefined,
       model: row.model,
+      modelVersion: row.model_version || undefined,
+      inputKind: row.input_kind || undefined,
+      projectionPolicyVersion: row.projection_policy_version || undefined,
       dimensions: row.dimensions,
       sourceCount: row.source_count,
       chunkCount: row.chunk_count,
@@ -279,6 +404,7 @@ export class RdfVectorIndex {
     this.requireDb().exec(`
       CREATE TABLE IF NOT EXISTS rdf_vector_sources (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_key TEXT,
         source TEXT NOT NULL UNIQUE,
         workspace TEXT NOT NULL,
         local_path TEXT,
@@ -300,11 +426,26 @@ export class RdfVectorIndex {
         start_offset INTEGER NOT NULL,
         end_offset INTEGER NOT NULL,
         embedding_json TEXT NOT NULL,
+        summary_metadata TEXT,
         dimensions INTEGER NOT NULL,
         magnitude REAL NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL,
+        model_version TEXT NOT NULL DEFAULT '',
+        input_kind TEXT NOT NULL DEFAULT '',
+        input_hash TEXT NOT NULL DEFAULT '',
+        projection_policy_version TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-        UNIQUE (source_id, chunk_key),
+        UNIQUE (
+          source_id,
+          chunk_key,
+          provider,
+          model,
+          model_version,
+          input_kind,
+          projection_policy_version,
+          input_hash
+        ),
         FOREIGN KEY (source_id) REFERENCES rdf_vector_sources(id)
       );
 
@@ -320,10 +461,181 @@ export class RdfVectorIndex {
       CREATE INDEX IF NOT EXISTS rdf_vector_sources_workspace ON rdf_vector_sources(workspace);
       CREATE INDEX IF NOT EXISTS rdf_vector_sources_source ON rdf_vector_sources(source);
       CREATE INDEX IF NOT EXISTS rdf_vector_chunks_source ON rdf_vector_chunks(source_id, ordinal);
-      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_model_dimensions ON rdf_vector_chunks(model, dimensions);
       CREATE INDEX IF NOT EXISTS rdf_vector_components_dimension ON rdf_vector_components(dimension, chunk_id);
     `);
+    this.ensureSourceKeyColumn();
+    this.ensureVectorIdentityColumns();
     this.backfillVectorComponents();
+  }
+
+  private ensureSourceKeyColumn(): void {
+    const db = this.requireDb();
+    const columns = db.prepare<{ name: string }>('PRAGMA table_info(rdf_vector_sources)').all();
+    if (!columns.some((column) => column.name === 'source_key')) {
+      db.exec('ALTER TABLE rdf_vector_sources ADD COLUMN source_key TEXT');
+    }
+    db.exec('UPDATE rdf_vector_sources SET source_key = source WHERE source_key IS NULL OR source_key = \'\';');
+  }
+
+  private ensureVectorIdentityColumns(): void {
+    const db = this.requireDb();
+    const columns = db.prepare<{ name: string }>('PRAGMA table_info(rdf_vector_chunks)').all();
+    const names = new Set(columns.map((column) => column.name));
+    for (const [name, definition] of [
+      ['provider', 'TEXT NOT NULL DEFAULT \'\''],
+      ['model_version', 'TEXT NOT NULL DEFAULT \'\''],
+      ['input_kind', 'TEXT NOT NULL DEFAULT \'\''],
+      ['input_hash', 'TEXT NOT NULL DEFAULT \'\''],
+      ['projection_policy_version', 'TEXT NOT NULL DEFAULT \'\''],
+      ['summary_metadata', 'TEXT'],
+    ] as const) {
+      if (!names.has(name)) {
+        db.exec(`ALTER TABLE rdf_vector_chunks ADD COLUMN ${name} ${definition}`);
+      }
+    }
+    db.exec(`
+      UPDATE rdf_vector_chunks
+      SET
+        provider = COALESCE(provider, ''),
+        model_version = COALESCE(model_version, ''),
+        input_kind = COALESCE(input_kind, ''),
+        input_hash = COALESCE(input_hash, ''),
+        projection_policy_version = COALESCE(projection_policy_version, '')
+    `);
+    this.ensureVectorChunkIdentityUniqueConstraint();
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_model_dimensions
+      ON rdf_vector_chunks(provider, model, model_version, input_kind, projection_policy_version, dimensions)
+    `);
+  }
+
+  private ensureVectorChunkIdentityUniqueConstraint(): void {
+    const db = this.requireDb();
+    const indexes = db.prepare<{ name: string; unique: number }>('PRAGMA index_list(rdf_vector_chunks)').all();
+    const hasLegacyUnique = indexes.some((index) => {
+      if (!index.unique) {
+        return false;
+      }
+      const columns = db.prepare<{ name: string }>(`PRAGMA index_info(${sqliteStringLiteral(index.name)})`).all();
+      return columns.map((column) => column.name).join(',') === 'source_id,chunk_key';
+    });
+    if (!hasLegacyUnique) {
+      return;
+    }
+
+    db.exec(`
+      ALTER TABLE rdf_vector_components RENAME TO rdf_vector_components_legacy_unique;
+      ALTER TABLE rdf_vector_chunks RENAME TO rdf_vector_chunks_legacy_unique;
+
+      CREATE TABLE rdf_vector_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        chunk_key TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        level INTEGER NOT NULL,
+        heading TEXT,
+        path TEXT,
+        content TEXT NOT NULL,
+        start_offset INTEGER NOT NULL,
+        end_offset INTEGER NOT NULL,
+        embedding_json TEXT NOT NULL,
+        summary_metadata TEXT,
+        dimensions INTEGER NOT NULL,
+        magnitude REAL NOT NULL,
+        provider TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL,
+        model_version TEXT NOT NULL DEFAULT '',
+        input_kind TEXT NOT NULL DEFAULT '',
+        input_hash TEXT NOT NULL DEFAULT '',
+        projection_policy_version TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        UNIQUE (
+          source_id,
+          chunk_key,
+          provider,
+          model,
+          model_version,
+          input_kind,
+          projection_policy_version,
+          input_hash
+        ),
+        FOREIGN KEY (source_id) REFERENCES rdf_vector_sources(id)
+      );
+
+      CREATE TABLE rdf_vector_components (
+        chunk_id INTEGER NOT NULL,
+        dimension INTEGER NOT NULL,
+        value REAL NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        PRIMARY KEY (chunk_id, dimension),
+        FOREIGN KEY (chunk_id) REFERENCES rdf_vector_chunks(id)
+      );
+
+      INSERT INTO rdf_vector_chunks (
+        id,
+        source_id,
+        chunk_key,
+        ordinal,
+        level,
+        heading,
+        path,
+        content,
+        start_offset,
+        end_offset,
+        embedding_json,
+        summary_metadata,
+        dimensions,
+        magnitude,
+        provider,
+        model,
+        model_version,
+        input_kind,
+        input_hash,
+        projection_policy_version,
+        updated_at
+      )
+      SELECT
+        id,
+        source_id,
+        chunk_key,
+        ordinal,
+        level,
+        heading,
+        path,
+        content,
+        start_offset,
+        end_offset,
+        embedding_json,
+        NULL AS summary_metadata,
+        dimensions,
+        magnitude,
+        COALESCE(provider, ''),
+        model,
+        COALESCE(model_version, ''),
+        COALESCE(input_kind, ''),
+        COALESCE(input_hash, ''),
+        COALESCE(projection_policy_version, ''),
+        updated_at
+      FROM rdf_vector_chunks_legacy_unique;
+
+      INSERT INTO rdf_vector_components (
+        chunk_id,
+        dimension,
+        value,
+        updated_at
+      )
+      SELECT
+        chunk_id,
+        dimension,
+        value,
+        updated_at
+      FROM rdf_vector_components_legacy_unique;
+
+      DROP TABLE rdf_vector_components_legacy_unique;
+      DROP TABLE rdf_vector_chunks_legacy_unique;
+      CREATE INDEX IF NOT EXISTS rdf_vector_chunks_source ON rdf_vector_chunks(source_id, ordinal);
+      CREATE INDEX IF NOT EXISTS rdf_vector_components_dimension ON rdf_vector_components(dimension, chunk_id);
+    `);
   }
 
   private backfillVectorComponents(): void {
@@ -371,6 +683,7 @@ export class RdfVectorIndex {
     const db = this.requireDb();
     db.prepare(`
       INSERT INTO rdf_vector_sources (
+        source_key,
         source,
         workspace,
         local_path,
@@ -379,9 +692,10 @@ export class RdfVectorIndex {
         source_hash,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       ON CONFLICT (source)
       DO UPDATE SET
+        source_key = COALESCE(excluded.source_key, rdf_vector_sources.source_key, excluded.source),
         workspace = excluded.workspace,
         local_path = excluded.local_path,
         content_type = excluded.content_type,
@@ -389,6 +703,7 @@ export class RdfVectorIndex {
         source_hash = excluded.source_hash,
         updated_at = excluded.updated_at
     `).run(
+      source.sourceKey ?? source.source,
       source.source,
       source.workspace,
       source.localPath ?? null,
@@ -416,8 +731,10 @@ export class RdfVectorIndex {
   }
 
   private toSearchResult(
-    row: RdfVectorChunkRow,
+    row: RdfVectorScoredChunkRow,
     embedding: number[],
+    metric: RdfVectorDistanceMetric,
+    queryMagnitude: number,
     score: number,
     distance: number,
   ): RdfVectorSearchResult {
@@ -428,7 +745,9 @@ export class RdfVectorIndex {
       contentType: row.content_type ?? undefined,
       sourceVersion: row.source_version ?? undefined,
       sourceHash: row.source_hash ?? undefined,
+      sourceKey: row.source_key || row.source,
       chunkKey: row.chunk_key,
+      retrievalPointKey: row.chunk_key,
       ordinal: row.ordinal,
       level: row.level,
       heading: row.heading ?? undefined,
@@ -437,7 +756,14 @@ export class RdfVectorIndex {
       startOffset: row.start_offset,
       endOffset: row.end_offset,
       embedding,
+      provider: row.provider || undefined,
       model: row.model || undefined,
+      modelVersion: row.model_version || undefined,
+      inputKind: row.input_kind || undefined,
+      inputHash: row.input_hash || undefined,
+      projectionPolicyVersion: row.projection_policy_version || undefined,
+      summaryMetadata: parseSummaryMetadata(row.summary_metadata),
+      scoreComponents: vectorScoreComponents(row, metric, queryMagnitude, score, distance),
       score,
       distance,
     };
@@ -451,11 +777,34 @@ export class RdfVectorIndex {
   }
 }
 
-function normalizeEmbedding(embedding: number[]): number[] {
+export function vectorScoreComponents(
+  row: Pick<RdfVectorScoredChunkRow, 'dimensions' | 'dot_product' | 'magnitude' | 'vector_distance_squared'>,
+  metric: RdfVectorDistanceMetric,
+  queryMagnitude: number,
+  score: number,
+  distance: number,
+  backend?: 'component' | 'pg-vector',
+): RdfVectorScoreComponents {
+  const distanceSquared = row.vector_distance_squared ?? undefined;
+  return {
+    sourceType: 'vector',
+    ...(backend ? { backend } : {}),
+    metric,
+    dimensions: row.dimensions,
+    score,
+    distance,
+    dotProduct: row.dot_product,
+    queryMagnitude,
+    candidateMagnitude: row.magnitude,
+    ...(distanceSquared !== undefined ? { distanceSquared } : {}),
+  };
+}
+
+export function normalizeEmbedding(embedding: number[]): number[] {
   return embedding.filter((value) => Number.isFinite(value));
 }
 
-function parseEmbedding(value: string): number[] {
+export function parseEmbedding(value: string): number[] {
   try {
     const parsed = JSON.parse(value);
     return Array.isArray(parsed) ? normalizeEmbedding(parsed) : [];
@@ -464,11 +813,11 @@ function parseEmbedding(value: string): number[] {
   }
 }
 
-function vectorMagnitude(embedding: number[]): number {
+export function vectorMagnitude(embedding: number[]): number {
   return Math.sqrt(embedding.reduce((sum, value) => sum + value * value, 0));
 }
 
-function vectorScore(distance: number, metric: RdfVectorDistanceMetric): number {
+export function vectorScore(distance: number, metric: RdfVectorDistanceMetric): number {
   if (!Number.isFinite(distance)) {
     return Number.NEGATIVE_INFINITY;
   }
@@ -478,7 +827,7 @@ function vectorScore(distance: number, metric: RdfVectorDistanceMetric): number 
   return -distance;
 }
 
-function scoredVectorDistance(row: RdfVectorScoredChunkRow, metric: RdfVectorDistanceMetric): number {
+export function scoredVectorDistance(row: RdfVectorScoredChunkRow, metric: RdfVectorDistanceMetric): number {
   if (metric === 'euclidean') {
     const squared = row.vector_distance_squared ?? Number.POSITIVE_INFINITY;
     const stableSquared = Math.abs(squared) < 1e-12 ? 0 : squared;
@@ -495,13 +844,13 @@ function dotProduct(left: number[], right: number[]): number {
   return sum;
 }
 
-function insertVectorComponents(insertComponent: { run(...params: unknown[]): unknown }, chunkId: number, embedding: number[]): void {
+export function insertVectorComponents(insertComponent: { run(...params: unknown[]): unknown }, chunkId: number, embedding: number[]): void {
   for (let dimension = 0; dimension < embedding.length; dimension++) {
     insertComponent.run(chunkId, dimension, embedding[dimension]);
   }
 }
 
-function parsePath(value: string | null): string[] {
+export function parsePath(value: string | null): string[] {
   if (!value) {
     return [];
   }
@@ -511,6 +860,136 @@ function parsePath(value: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+export function parseSummaryMetadata(value: string | null): RdfVectorSummaryMetadata | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (
+      !parsed ||
+      parsed.status !== 'summarized' ||
+      typeof parsed.provider !== 'string' ||
+      typeof parsed.model !== 'string' ||
+      typeof parsed.promptVersion !== 'string' ||
+      typeof parsed.originalChars !== 'number' ||
+      typeof parsed.summaryChars !== 'number' ||
+      typeof parsed.rounds !== 'number'
+    ) {
+      return undefined;
+    }
+    return {
+      status: 'summarized',
+      provider: parsed.provider,
+      model: parsed.model,
+      promptVersion: parsed.promptVersion,
+      ...(typeof parsed.sourceHash === 'string' ? { sourceHash: parsed.sourceHash } : {}),
+      originalChars: parsed.originalChars,
+      summaryChars: parsed.summaryChars,
+      rounds: parsed.rounds,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+interface NormalizedVectorIdentity {
+  provider: string;
+  model: string;
+  modelVersion: string;
+  inputKind: string;
+  projectionPolicyVersion: string;
+}
+
+function normalizeVectorIdentity(chunk: RdfVectorChunkInput): NormalizedVectorIdentity {
+  return {
+    provider: chunk.provider ?? '',
+    model: chunk.model ?? '',
+    modelVersion: chunk.modelVersion ?? '',
+    inputKind: chunk.inputKind ?? '',
+    projectionPolicyVersion: chunk.projectionPolicyVersion ?? '',
+  };
+}
+
+function vectorIdentityKey(identity: NormalizedVectorIdentity): string {
+  return [
+    identity.provider,
+    identity.model,
+    identity.modelVersion,
+    identity.inputKind,
+    identity.projectionPolicyVersion,
+  ].join('\u0000');
+}
+
+function sqliteStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, '\'\'')}'`;
+}
+
+function appendVectorIdentityFilters(
+  options: RdfVectorSearchOptions | RdfVectorSummaryLifecycleOptions,
+  conditions: string[],
+  params: unknown[],
+): void {
+  if (options.provider !== undefined) {
+    conditions.push('chunk.provider = ?');
+    params.push(options.provider);
+  }
+  if (options.model !== undefined) {
+    conditions.push('chunk.model = ?');
+    params.push(options.model);
+  }
+  if (options.modelVersion !== undefined) {
+    conditions.push('chunk.model_version = ?');
+    params.push(options.modelVersion);
+  }
+  if (options.inputKind !== undefined) {
+    conditions.push('chunk.input_kind = ?');
+    params.push(options.inputKind);
+  }
+  if (options.inputHash !== undefined) {
+    conditions.push('chunk.input_hash = ?');
+    params.push(options.inputHash);
+  }
+  if (options.projectionPolicyVersion !== undefined) {
+    conditions.push('chunk.projection_policy_version = ?');
+    params.push(options.projectionPolicyVersion);
+  }
+}
+
+function toSummaryLifecycleEntry(row: RdfVectorChunkRow): RdfVectorSummaryLifecycleEntry | undefined {
+  const summaryMetadata = parseSummaryMetadata(row.summary_metadata);
+  if (!summaryMetadata) {
+    return undefined;
+  }
+
+  return {
+    source: row.source,
+    workspace: row.workspace,
+    localPath: row.local_path ?? undefined,
+    contentType: row.content_type ?? undefined,
+    sourceVersion: row.source_version ?? undefined,
+    sourceHash: row.source_hash ?? undefined,
+    sourceKey: row.source_key || row.source,
+    chunkKey: row.chunk_key,
+    retrievalPointKey: row.chunk_key,
+    ordinal: row.ordinal,
+    level: row.level,
+    heading: row.heading ?? undefined,
+    path: parsePath(row.path),
+    content: row.content,
+    startOffset: row.start_offset,
+    endOffset: row.end_offset,
+    provider: row.provider || undefined,
+    model: row.model || undefined,
+    modelVersion: row.model_version || undefined,
+    inputKind: row.input_kind || undefined,
+    inputHash: row.input_hash || undefined,
+    projectionPolicyVersion: row.projection_policy_version || undefined,
+    summaryMetadata,
+    updatedAt: row.updated_at,
+  };
 }
 
 function buildVectorScoredRowsQuery(
@@ -579,18 +1058,8 @@ function buildVectorScoredBaseQuery(
     conditions.push('source.workspace = ?');
     params.push(options.workspace);
   }
-  if (options.source) {
-    conditions.push('source.source = ?');
-    params.push(options.source);
-  }
-  if (options.sourcePrefix) {
-    conditions.push('source.source >= ? AND source.source < ?');
-    params.push(options.sourcePrefix, `${options.sourcePrefix}\uffff`);
-  }
-  if (options.model !== undefined) {
-    conditions.push('chunk.model = ?');
-    params.push(options.model);
-  }
+  appendRdfSearchSourceFilters(options, conditions, params);
+  appendVectorIdentityFilters(options, conditions, params);
 
   const thresholdWhere = options.threshold === undefined
     ? ''
@@ -605,6 +1074,7 @@ function buildVectorScoredBaseQuery(
         SELECT
           chunk.id,
           chunk.source_id,
+          source.source_key,
           source.source,
           source.workspace,
           source.local_path,
@@ -620,9 +1090,15 @@ function buildVectorScoredBaseQuery(
           chunk.start_offset,
           chunk.end_offset,
           chunk.embedding_json,
+          chunk.summary_metadata,
           chunk.dimensions,
           chunk.magnitude,
+          chunk.provider,
           chunk.model,
+          chunk.model_version,
+          chunk.input_kind,
+          chunk.input_hash,
+          chunk.projection_policy_version,
           chunk.updated_at,
           SUM(component.value * query_vector.value) AS dot_product
         FROM rdf_vector_chunks chunk
@@ -640,7 +1116,7 @@ function buildVectorScoredBaseQuery(
   };
 }
 
-function buildVectorOrderClause(
+export function buildVectorOrderClause(
   metric: RdfVectorDistanceMetric,
   orderBy: RdfVectorSearchOrder[] | undefined,
 ): string {
@@ -689,7 +1165,7 @@ function buildVectorWindowClause(limit: number | undefined, offset: number | und
   return { sql: 'LIMIT -1 OFFSET ?', params: [Math.max(0, offset ?? 0)] };
 }
 
-function vectorScoreSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
+export function vectorScoreSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
   switch (metric) {
     case 'cosine':
       return `dot_product / (${sqlNumber(queryMagnitude)} * magnitude)`;
@@ -704,7 +1180,7 @@ function vectorScoreSql(metric: RdfVectorDistanceMetric, queryMagnitude: number)
   }
 }
 
-function vectorDistanceSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
+export function vectorDistanceSql(metric: RdfVectorDistanceMetric, queryMagnitude: number): string {
   switch (metric) {
     case 'cosine':
       return `1 - (${vectorScoreSql(metric, queryMagnitude)})`;
@@ -719,11 +1195,11 @@ function vectorDistanceSql(metric: RdfVectorDistanceMetric, queryMagnitude: numb
   }
 }
 
-function vectorSquaredDistanceSql(queryMagnitude: number): string {
+export function vectorSquaredDistanceSql(queryMagnitude: number): string {
   return `(${sqlNumber(queryMagnitude * queryMagnitude)} + magnitude * magnitude - 2 * dot_product)`;
 }
 
-function vectorThresholdSql(metric: RdfVectorDistanceMetric, queryMagnitude: number, threshold: number): string {
+export function vectorThresholdSql(metric: RdfVectorDistanceMetric, queryMagnitude: number, threshold: number): string {
   if (!Number.isFinite(threshold)) {
     return threshold === Number.NEGATIVE_INFINITY ? '1 = 1' : '1 = 0';
   }
@@ -743,7 +1219,7 @@ function vectorThresholdSql(metric: RdfVectorDistanceMetric, queryMagnitude: num
   }
 }
 
-function applyResultWindow(rows: number, offset: number | undefined, limit: number | undefined): number {
+export function applyResultWindow(rows: number, offset: number | undefined, limit: number | undefined): number {
   const start = Math.max(0, offset ?? 0);
   if (rows <= start) {
     return 0;
@@ -759,7 +1235,7 @@ function sqlInteger(value: number): string {
   return String(value);
 }
 
-function sqlNumber(value: number): string {
+export function sqlNumber(value: number): string {
   if (!Number.isFinite(value)) {
     throw new Error(`Invalid RDF vector SQL number: ${value}`);
   }

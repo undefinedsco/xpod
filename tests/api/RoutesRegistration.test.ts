@@ -63,7 +63,11 @@ describe('registerRoutes mode wiring', () => {
 
   function createContainer(
     edition: 'cloud' | 'local',
-    overrides: { inngestRuntimeConfig?: unknown; config?: Partial<ApiContainerConfig> } = {},
+    overrides: {
+      inngestRuntimeConfig?: unknown;
+      rdfStorageStatsService?: unknown;
+      config?: Partial<ApiContainerConfig>;
+    } = {},
   ): any {
     const services: Record<string, unknown> = {
       apiServer: mockServer,
@@ -93,6 +97,14 @@ describe('registerRoutes mode wiring', () => {
         eventKey: 'test-event-key',
         signingKey: 'signkey-test',
         functionEndpoint: 'http://xpod-api:3001/api/inngest',
+      },
+      rdfStorageStatsService: overrides.rdfStorageStatsService ?? {
+        snapshot: vi.fn().mockResolvedValue({
+          available: false,
+          engine: 'unsupported',
+          generatedAt: '2026-06-09T00:00:00.000Z',
+          reason: 'not-cloud',
+        }),
       },
       db: {},
       podLookupRepo: {},
@@ -127,6 +139,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['GET /v1/runs/:runId']).toBeTypeOf('function');
     expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
+    expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
+    expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();
@@ -163,6 +177,8 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /:username/profile/card']).toBeUndefined();
     expect(routes['POST /v1/tasks']).toBeUndefined();
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
+    expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
+    expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();
@@ -211,5 +227,39 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['ALL /api/inngest']).toBeUndefined();
     expect(routes['ALL /api/inngest/*path']).toBeUndefined();
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
+  });
+
+  it('wires RDF stats routes to the container stats service', async () => {
+    const rdfStorageStatsService = {
+      snapshot: vi.fn().mockResolvedValue({
+        available: true,
+        engine: 'postgres-rdf',
+        generatedAt: '2026-06-09T00:00:00.000Z',
+        stats: {
+          factsBytes: 10,
+          derivedBytes: 4,
+          totalBytes: 14,
+          totalToFactsRatio: 1.4,
+          derivedToFactsRatio: 0.4,
+        },
+      }),
+    };
+    registerRoutes(createContainer('cloud', { rdfStorageStatsService }));
+
+    const response = {
+      statusCode: 0,
+      setHeader: vi.fn(),
+      end: vi.fn(),
+    };
+    await routes['GET /api/admin/rdf/stats'](
+      { url: '/api/admin/rdf/stats?cacheScopeQuery=ops', headers: {} },
+      response,
+      {},
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(rdfStorageStatsService.snapshot).toHaveBeenCalledWith({
+      cacheScope: { query: 'ops' },
+    });
   });
 });

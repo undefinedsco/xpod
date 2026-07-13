@@ -9,5 +9,6 @@ export abstract class CredentialReader {
     providerId: string,
     authenticatedFetch: typeof fetch,
     webId?: string,
+    options?: { credentialId?: string },
   ): Promise<AiCredential | null>;
 }

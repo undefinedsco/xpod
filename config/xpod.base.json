@@ -206,6 +206,9 @@
       "authorizer": {
         "@id": "urn:solid-server:default:Authorizer"
       },
+      "updateAuthority": {
+        "@id": "urn:undefineds:xpod:MixDataAccessor"
+      },
       "options_identityDbUrl": {
         "@id": "urn:solid-server:default:variable:identityDbUrl",
         "@type": "Variable"

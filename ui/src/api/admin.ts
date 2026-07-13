@@ -54,6 +54,322 @@ export interface PublicIpCheckResult {
 
 const API_BASE = '/api/admin';
 
+export type RdfStatsSnapshot =
+  | {
+      available: true;
+      engine: 'postgres-rdf';
+      generatedAt: string;
+      stats: RdfStorageStats;
+      benchmarkReports?: RdfBenchmarkReportCatalogSnapshot;
+    }
+  | {
+      available: false;
+      engine: 'postgres-rdf' | 'unsupported';
+      generatedAt: string;
+      reason: 'not-cloud' | 'missing-sparql-endpoint' | 'unsupported-sparql-endpoint';
+      benchmarkReports?: RdfBenchmarkReportCatalogSnapshot;
+    };
+
+export interface RdfBenchmarkReportCatalogSnapshot {
+  roots: string[];
+  reportCount: number;
+  skippedFiles: number;
+  errors: Array<{
+    path: string;
+    message: string;
+  }>;
+  reports: RdfBenchmarkReportSummary[];
+}
+
+export interface RdfBenchmarkReportSummary {
+  id: string;
+  path: string;
+  generatedAt: string;
+  engine: string;
+  driver?: string;
+  scale?: string;
+  caseProfile?: string;
+  rdfAccelerationProfile?: string;
+  seedQuadCount?: number;
+  targetQuadCount?: number;
+  fullScale?: boolean;
+  iterations?: number;
+  warmupIterations?: number;
+  concurrency?: number;
+  planMatched?: boolean;
+  failedPlanCases: string[];
+  concurrencyMatched?: boolean;
+  failedConcurrencyCases: string[];
+  ingestDurationMs?: number;
+  copyRows?: number;
+  copyFallbacks?: number;
+  refreshDurationMs?: number;
+  plannerStatsDurationMs?: number;
+  plannerStatsAnalyzedTables?: string[];
+  coldStartDurationMs?: number;
+  firstQueryDurationMs?: number;
+  warmP50DurationMs?: number;
+  warmP95DurationMs?: number;
+  storageFactsBytes?: number;
+  storageDerivedBytes?: number;
+  storageTotalBytes?: number;
+  storageTotalToFactsRatio?: number;
+  pgAccelerationEnabled?: boolean;
+  pgAccelerationFallbackReason?: string;
+  pgActiveOperators: string[];
+}
+
+export interface RdfStorageStats {
+  factsBytes: number;
+  derivedBytes: number;
+  totalBytes: number;
+  totalToFactsRatio: number;
+  derivedToFactsRatio: number;
+  lifecycle?: {
+    status: 'closed' | 'opening' | 'ready' | 'failed';
+    driver?: string;
+    openCount: number;
+    lastOpenStartedAt?: string;
+    lastReadyAt?: string;
+    lastOpenDurationMs?: number;
+    lastOpenFailedAt?: string;
+    lastOpenError?: string;
+    coldStart?: {
+      startedAt: string;
+      readyAt: string;
+      durationMs: number;
+      phases: Array<{
+        name: string;
+        durationMs: number;
+      }>;
+      customIndexDeferred: boolean;
+      maintenanceEnabled: boolean;
+      ownsTextIndex: boolean;
+      ownsVectorIndex: boolean;
+    };
+  };
+  rdf3x?: {
+    factsDataVersion: number;
+    rdf3xFactsDataVersion: number;
+    refreshLag: number;
+    syncedWithFacts: boolean;
+    pendingSources: number;
+  };
+  derivedCache?: {
+    cacheBytes: number;
+    maxCacheBytes: number;
+    cachePressure: number;
+    maxScopeBytes: number;
+    scopeVersionCount: number;
+    scopeEntries: RdfDerivedCacheScopeEntry[];
+    largestScopeBytes: number;
+    largestScopePressure: number;
+    largestScopeHash?: string;
+    largestScopeFactsDataVersion?: number;
+    evictionCount: number;
+    evictions: RdfDerivedCacheEvictionStats;
+    queryResultPayloadBytes: number;
+    materializedResultPayloadBytes: number;
+    queryTemplateBytes: number;
+  };
+  queryResultCache?: RdfCacheStats;
+  materializedResultCache?: RdfCacheStats;
+  queryTemplateCache?: {
+    entryCount: number;
+    maxEntries: number;
+    hitCount: number;
+    missCount: number;
+    evictionCount: number;
+    totalBytes: number;
+  };
+  slowQueries?: {
+    entryCount: number;
+    maxEntries: number;
+    entries: RdfSlowQueryEntry[];
+  };
+  pgAcceleration?: {
+    profile: string;
+    requested: boolean;
+    available: boolean;
+    enabled: boolean;
+    provider?: string;
+    version?: string;
+    capabilities: string[];
+    capabilityProviders?: Record<string, string>;
+    requiredCapabilities: string[];
+    fallbackReason?: string;
+    fallbackDetail?: string;
+    activeOperators?: string[];
+    missingCapabilities?: string[];
+    customIndexes?: Array<{
+      name: string;
+      permutation: string;
+      columns: string[];
+      stats?: Record<string, unknown>;
+      error?: string;
+    }>;
+  };
+}
+
+export interface RdfStatsOptions {
+  cacheScopeQuery?: string;
+  cacheScopePrincipal?: string;
+  cacheScopeBasePath?: string;
+  cacheScopeMode?: string;
+  cacheScopeAuthorizationModel?: string;
+  cacheScopePermissionVersion?: string;
+  cacheScopeLimit?: number;
+}
+
+export interface RdfDerivedCacheScopeEntry {
+  scopeHash: string;
+  factsDataVersion: number;
+  payloadBytes: number;
+  queryResultPayloadBytes: number;
+  materializedResultPayloadBytes: number;
+  queryResultEntries: number;
+  materializedResultEntries: number;
+  scopeShape?: string;
+  principal?: string;
+  basePath?: string;
+  mode?: string;
+  authorizationModel?: string;
+  permissionVersion?: string;
+}
+
+export interface RdfDerivedCacheEvictionStats {
+  factsVersion: number;
+  ttl: number;
+  maxEntries: number;
+  payloadBytes: number;
+  scopeBytes: number;
+  totalBytes: number;
+  templateTtl: number;
+  templateMaxEntries: number;
+  templateBytes: number;
+}
+
+export interface RdfCacheStats {
+  entryCount: number;
+  scopeCount: number;
+  maxEntries: number;
+  ttlMs: number;
+  hitCount: number;
+  missCount: number;
+  refreshCount: number;
+  storeCount: number;
+  bypassCount: number;
+  disabledCount: number;
+  payloadBytes: number;
+  maxPayloadBytes: number;
+  tableBytes: number;
+  indexBytes: number;
+  totalBytes: number;
+}
+
+export interface RdfSlowQueryEntry {
+  generatedAt: string;
+  queryKey: string;
+  templateKey?: string;
+  selectedPath: string;
+  reasons: string[];
+  runtime: {
+    durationMs: number;
+    scannedRows: number;
+    joinedRows: number;
+    returnedRows: number;
+    filtersApplied: number;
+    filtersPushedDown: number;
+    indexChoices: string[];
+    planSize: number;
+  };
+  slowQuery: {
+    durationMs: number;
+    thresholdMs: number;
+    scannedRows: number;
+    scannedRowsThreshold: number;
+    scanAmplification: number;
+    reasons: string[];
+  };
+  staleStats?: {
+    factsDataVersion: number;
+    rdf3xFactsDataVersion: number;
+    stale: boolean;
+    lag: number;
+  };
+  histogramHints?: RdfPlannerHistogramHint[];
+  rejectedNativeOperators?: RdfPlannerNativeOperatorRejection[];
+  derivedCache: RdfSlowQueryDerivedCache;
+  cache: {
+    templateStatus?: string;
+    resultStatus?: string;
+    materializedStatus?: string;
+    result?: RdfSlowQueryCacheExplain;
+    materialized?: RdfSlowQueryCacheExplain;
+    scopeHash: string;
+    scopeBasePath: string | null;
+    scopePrincipal: string | null;
+  };
+  acceleration: {
+    profile: string;
+    requested: boolean;
+    enabled: boolean;
+    provider?: string;
+    fallbackReason?: string;
+    activeOperators?: string[];
+    unsupportedCapabilities?: string[];
+  };
+}
+
+export interface RdfPlannerCardinalityTerm {
+  value: string;
+  kind: string;
+  datatype?: string;
+  language?: string;
+}
+
+export interface RdfPlannerHistogramHint {
+  kind: 'graph' | 'predicate' | 'predicate-object' | 'subject-predicate';
+  patternIndex: number;
+  quadCount: number;
+  graphCount?: number;
+  distinctSubjects?: number;
+  distinctPredicates?: number;
+  distinctObjects?: number;
+  subject?: RdfPlannerCardinalityTerm;
+  predicate?: RdfPlannerCardinalityTerm;
+  object?: RdfPlannerCardinalityTerm;
+  graph?: RdfPlannerCardinalityTerm;
+}
+
+export interface RdfPlannerNativeOperatorRejection {
+  capability: string;
+  reason: string;
+}
+
+export interface RdfSlowQueryDerivedCache {
+  cacheBytes: number;
+  maxCacheBytes: number;
+  cachePressure: number;
+  largestScopeBytes: number;
+  largestScopePressure: number;
+  largestScopeHash?: string;
+  largestScopeFactsDataVersion?: number;
+  evictionCount: number;
+  evictions: RdfDerivedCacheEvictionStats;
+}
+
+export interface RdfSlowQueryCacheExplain {
+  status: string;
+  key?: string;
+  templateKey?: string;
+  factsDataVersion?: number;
+  ttlMs?: number;
+  maxEntries?: number;
+  maxBytes?: number;
+  stored?: boolean;
+}
+
 /**
  * 获取 xpod 状态
  */
@@ -142,6 +458,38 @@ export async function getGatewayStatus(): Promise<ServiceState[] | null> {
     console.error('Failed to get gateway status:', e);
   }
   return null;
+}
+
+export async function getRdfStats(options: RdfStatsOptions = {}): Promise<RdfStatsSnapshot | null> {
+  try {
+    const params = rdfStatsSearchParams(options);
+    const query = params.toString();
+    const res = await fetch(`${API_BASE}/rdf/stats${query ? `?${query}` : ''}`);
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch (e) {
+    console.error('Failed to get RDF stats:', e);
+  }
+  return null;
+}
+
+function rdfStatsSearchParams(options: RdfStatsOptions): URLSearchParams {
+  const params = new URLSearchParams();
+  appendParam(params, 'cacheScopeQuery', options.cacheScopeQuery);
+  appendParam(params, 'cacheScopePrincipal', options.cacheScopePrincipal);
+  appendParam(params, 'cacheScopeBasePath', options.cacheScopeBasePath);
+  appendParam(params, 'cacheScopeMode', options.cacheScopeMode);
+  appendParam(params, 'cacheScopeAuthorizationModel', options.cacheScopeAuthorizationModel);
+  appendParam(params, 'cacheScopePermissionVersion', options.cacheScopePermissionVersion);
+  appendParam(params, 'cacheScopeLimit', options.cacheScopeLimit);
+  return params;
+}
+
+function appendParam(params: URLSearchParams, name: string, value: string | number | undefined): void {
+  if (value !== undefined && value !== '') {
+    params.set(name, String(value));
+  }
 }
 
 /**

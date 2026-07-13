@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildApiChildEnv, buildCssArgs, buildCssChildEnv, createCssChildRuntimeConfig } from '../../src/runtime/css-process';
+import {
+  buildApiChildEnv,
+  buildCssArgs,
+  buildCssChildEnv,
+  createCssChildRuntimeConfig,
+} from '../../src/runtime/css-process';
 
 const ACP_AUTH_IMPORTS = [
   'css:config/ldp/authorization/acp.json',
@@ -389,5 +394,17 @@ describe('CSS child process env and args', () => {
 
     expect(env.oidcIssuer).toBe('https://id.undefineds.co/');
     expect(env.CSS_TOKEN_ENDPOINT).toBe('https://id.undefineds.co/.oidc/token');
+  });
+
+  it('preserves an explicitly configured native SPARQL setting for the API child', () => {
+    const env = buildApiChildEnv({
+      apiPort: 3002,
+      mainPort: 3000,
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+      baseEnv: { XPOD_RDF_NATIVE_SPARQL_ENABLED: 'true' },
+    });
+
+    expect(env.XPOD_RDF_NATIVE_SPARQL_ENABLED).toBe('true');
   });
 });

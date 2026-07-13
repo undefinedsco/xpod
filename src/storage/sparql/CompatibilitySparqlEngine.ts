@@ -1,7 +1,8 @@
 import type { Quad } from '@rdfjs/types';
 import type { AsyncIterator } from 'asynciterator';
-import type { SparqlEngine } from './SubgraphQueryEngine';
+import type { SparqlEngine, SparqlVoidOptions } from './SubgraphQueryEngine';
 import type { QuintStore } from '../quint/types';
+import type { RdfAccessScope } from '../rdf/RdfAccessScope';
 
 type CompatibilityModule = typeof import('./CompatibilitySparqlEngineImpl');
 
@@ -24,28 +25,28 @@ export class QuadstoreSparqlEngine implements SparqlEngine {
       .then(({ QuadstoreSparqlEngine }) => new QuadstoreSparqlEngine(endpoint));
   }
 
-  public async queryBindings(query: string, basePath: string): Promise<any> {
-    return (await this.delegate).queryBindings(query, basePath);
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return (await this.delegate).queryBindings(query, basePath, accessScope);
   }
 
-  public async queryQuads(query: string, basePath: string): Promise<any> {
-    return (await this.delegate).queryQuads(query, basePath);
+  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return (await this.delegate).queryQuads(query, basePath, accessScope);
   }
 
-  public async queryBoolean(query: string, basePath: string): Promise<boolean> {
-    return (await this.delegate).queryBoolean(query, basePath);
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
+    return (await this.delegate).queryBoolean(query, basePath, accessScope);
   }
 
-  public async queryVoid(query: string, basePath: string): Promise<void> {
-    await (await this.delegate).queryVoid(query, basePath);
+  public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void> {
+    await (await this.delegate).queryVoid(query, basePath, accessScope, options);
   }
 
-  public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
-    return (await this.delegate).constructGraph(graph, basePath);
+  public async constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>> {
+    return (await this.delegate).constructGraph(graph, basePath, accessScope);
   }
 
-  public async listGraphs(basePath: string): Promise<Set<string>> {
-    return (await this.delegate).listGraphs(basePath);
+  public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    return (await this.delegate).listGraphs(basePath, accessScope);
   }
 
   public async close(): Promise<void> {
@@ -64,28 +65,28 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
       .then(({ QuintstoreSparqlEngine }) => new QuintstoreSparqlEngine(store));
   }
 
-  public async queryBindings(query: string, basePath: string): Promise<any> {
-    return (await this.delegate).queryBindings(query, basePath);
+  public async queryBindings(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return (await this.delegate).queryBindings(query, basePath, accessScope);
   }
 
-  public async queryQuads(query: string, basePath: string): Promise<any> {
-    return (await this.delegate).queryQuads(query, basePath);
+  public async queryQuads(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<any> {
+    return (await this.delegate).queryQuads(query, basePath, accessScope);
   }
 
-  public async queryBoolean(query: string, basePath: string): Promise<boolean> {
-    return (await this.delegate).queryBoolean(query, basePath);
+  public async queryBoolean(query: string, basePath: string, accessScope?: RdfAccessScope): Promise<boolean> {
+    return (await this.delegate).queryBoolean(query, basePath, accessScope);
   }
 
-  public async queryVoid(query: string, basePath: string): Promise<void> {
-    await (await this.delegate).queryVoid(query, basePath);
+  public async queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void> {
+    await (await this.delegate).queryVoid(query, basePath, accessScope);
   }
 
-  public async constructGraph(graph: string, basePath: string): Promise<AsyncIterator<Quad>> {
-    return (await this.delegate).constructGraph(graph, basePath);
+  public async constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>> {
+    return (await this.delegate).constructGraph(graph, basePath, accessScope);
   }
 
-  public async listGraphs(basePath: string): Promise<Set<string>> {
-    return (await this.delegate).listGraphs(basePath);
+  public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    return (await this.delegate).listGraphs(basePath, accessScope);
   }
 
   public async close(): Promise<void> {

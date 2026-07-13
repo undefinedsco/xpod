@@ -2,7 +2,7 @@ export type SolidFsProjection = 'direct' | 'copy' | 'hydrated-object';
 export type SolidFsEntrySource = 'filesystem' | 'pod-http' | 'object';
 
 export type SolidFsEntryState = 'clean' | 'dirty' | 'committed' | 'conflict';
-export type SolidFsChangeType = 'created' | 'updated' | 'deleted';
+export type SolidFsChangeType = 'created' | 'updated' | 'deleted' | 'moved' | 'moved_prefix';
 
 export interface SolidFsRunRef {
   id?: string;
@@ -51,12 +51,22 @@ export interface SolidFsManifestEntry {
 export interface SolidFsChange {
   path: string;
   resource?: string;
+  /** Previous local path for move operations. */
+  previousPath?: string;
+  /** Previous Solid resource URI for move operations. */
+  previousResource?: string;
+  /** Prefix source for moved_prefix operations. P1 only; P0 writers should not emit it. */
+  previousPrefix?: string;
+  /** Prefix target for moved_prefix operations. P1 only; P0 writers should not emit it. */
+  prefix?: string;
   source: SolidFsEntrySource;
   sourcePath: string;
   contentType?: string;
   projection: SolidFsProjection;
   type: SolidFsChangeType;
   sourceVersion?: string;
+  contentHash?: string;
+  projectionHints?: Record<string, unknown>;
 }
 
 export interface SolidFsManifest {
@@ -117,7 +127,7 @@ export interface SolidFsSyncer {
   shouldTrack?(input: SolidFsPrepareInput): boolean;
   shouldTrackPath?(relativePath: string): boolean;
   initializeWorkspace?(workspace: SolidFsManifest, context?: unknown): Promise<void>;
-  sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown): Promise<void>;
+  sync(change: SolidFsChange, workspace: SolidFsManifest, context?: unknown, txId?: string): Promise<void>;
 }
 
 export interface SolidFsHydrateInput {

@@ -57,6 +57,26 @@ describe('ProviderRegistryImpl', () => {
       expect(provider).not.toBeNull();
       expect(provider!.baseUrl).toBe('http://localhost:11434/v1');
     });
+    it('should return DashScope provider with the cheap default embedding model', async () => {
+      const provider = await registry.getProvider('dashscope');
+
+      expect(provider).not.toBeNull();
+      expect(provider!.baseUrl).toBe('https://dashscope.aliyuncs.com/compatible-mode/v1');
+      expect(provider!.embeddingModels).toContainEqual(expect.objectContaining({
+        id: 'text-embedding-v4',
+        dimension: 1024,
+        maxTokens: 8192,
+        maxBatchSize: 10,
+      }));
+    });
+
+    it('should resolve qwen as a DashScope provider alias', async () => {
+      const provider = await registry.getProvider('qwen');
+
+      expect(provider).not.toBeNull();
+      expect(provider!.id).toBe('dashscope');
+      expect(provider!.embeddingModels.map((model) => model.id)).toContain('text-embedding-v4');
+    });
   });
 
   describe('getModelDimension', () => {
@@ -94,6 +114,10 @@ describe('ProviderRegistryImpl', () => {
       const dimension = await registry.getModelDimension('voyage', 'voyage-3');
 
       expect(dimension).toBe(1024);
+    });
+    it('should return DashScope text-embedding-v4 dimension through aliases', async () => {
+      await expect(registry.getModelDimension('dashscope', 'text-embedding-v4')).resolves.toBe(1024);
+      await expect(registry.getModelDimension('qwen', 'text-embedding-v4')).resolves.toBe(1024);
     });
 
     it('should return ollama model dimension', async () => {

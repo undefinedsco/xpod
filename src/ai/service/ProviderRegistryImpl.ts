@@ -5,12 +5,23 @@
  */
 
 import { ProviderRegistry } from './ProviderRegistry';
-import type { ProviderInfo } from './ProviderRegistry';
+import type { EmbeddingModelInfo, ProviderInfo } from './ProviderRegistry';
+import { DEFAULT_EMBEDDING_BASE_URL, DEFAULT_EMBEDDING_MODEL_ID, DEFAULT_EMBEDDING_PROVIDER_ID } from './defaultEmbeddingProfile';
 
 /**
  * 默认供应商配置
  */
 const DEFAULT_PROVIDERS: ProviderInfo[] = [
+  {
+    id: DEFAULT_EMBEDDING_PROVIDER_ID,
+    name: 'DashScope',
+    baseUrl: DEFAULT_EMBEDDING_BASE_URL,
+    aliases: ['qwen', 'alibaba', 'dashscope-cn'],
+    defaultEmbeddingModel: DEFAULT_EMBEDDING_MODEL_ID,
+    embeddingModels: [
+      { id: DEFAULT_EMBEDDING_MODEL_ID, dimension: 1024, maxTokens: 8192, maxBatchSize: 10 },
+    ],
+  },
   {
     id: 'openai',
     name: 'OpenAI',
@@ -89,12 +100,17 @@ const DEFAULT_PROVIDERS: ProviderInfo[] = [
 
 export class ProviderRegistryImpl extends ProviderRegistry {
   private providers: Map<string, ProviderInfo>;
+  private aliases: Map<string, string>;
 
   constructor() {
     super();
     this.providers = new Map();
+    this.aliases = new Map();
     for (const provider of DEFAULT_PROVIDERS) {
       this.providers.set(provider.id, provider);
+      for (const alias of provider.aliases ?? []) {
+        this.aliases.set(alias, provider.id);
+      }
     }
   }
 
@@ -103,14 +119,23 @@ export class ProviderRegistryImpl extends ProviderRegistry {
   }
 
   public override async getProvider(providerId: string): Promise<ProviderInfo | null> {
-    return this.providers.get(providerId) ?? null;
+    return this.providers.get(this.normalizeProviderId(providerId)) ?? null;
+  }
+
+  public override async getEmbeddingModel(providerId: string, modelId: string): Promise<EmbeddingModelInfo | null> {
+    const provider = await this.getProvider(providerId);
+    if (!provider) return null;
+
+    return provider.embeddingModels.find((model) => model.id === modelId) ?? null;
   }
 
   public override async getModelDimension(providerId: string, modelId: string): Promise<number | null> {
-    const provider = this.providers.get(providerId);
-    if (!provider) return null;
-
-    const model = provider.embeddingModels.find((m) => m.id === modelId);
+    const model = await this.getEmbeddingModel(providerId, modelId);
     return model?.dimension ?? null;
+  }
+
+  private normalizeProviderId(providerId: string): string {
+    const normalized = providerId.trim().toLowerCase();
+    return this.aliases.get(normalized) ?? normalized;
   }
 }

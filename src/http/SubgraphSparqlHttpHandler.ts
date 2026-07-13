@@ -13,6 +13,7 @@ import {
 } from '@solid/community-server';
 import { PERMISSIONS } from '@solidlab/policy-engine';
 import type {
+  Credentials,
   CredentialsExtractor,
   PermissionReader,
   Authorizer,
@@ -33,10 +34,19 @@ import type {
   UpdateOperation,
 } from 'sparqljs';
 import { SubgraphQueryEngine } from '../storage/sparql/SubgraphQueryEngine';
-import { DisabledSparqlFeatureError, UnsupportedSparqlQueryError } from '../storage/rdf/RdfSparqlAdapter';
+import type { SparqlLoadDocumentOptions, SparqlVoidOptions } from '../storage/sparql/SubgraphQueryEngine';
+import {
+  DisabledSparqlFeatureError,
+  NativeSparqlExecutionError,
+  UnsupportedSparqlQueryError,
+  sparqlCorrectionForCapability,
+} from '../storage/rdf/RdfSparqlAdapter';
+import type { SparqlCorrection } from '../storage/rdf/RdfSparqlAdapter';
+import type { RdfAccessScope } from '../storage/rdf/RdfAccessScope';
 import { getIdentityDatabase } from '../identity/drizzle/db';
 import { PodLookupRepository } from '../identity/drizzle/PodLookupRepository';
 import { UsageRepository } from '../storage/quota/UsageRepository';
+import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
@@ -67,6 +77,39 @@ type UsageContext = {
   podId: string;
 };
 
+interface SparqlErrorResponse {
+  error: {
+    code: string;
+    message: string;
+    capability?: string;
+    hint?: string;
+    correction?: SparqlCorrection;
+  };
+}
+
+interface UpdateAccessPlan {
+  hasInsert: boolean;
+  hasDelete: boolean;
+  needsReadScope: boolean;
+  readTargets: Set<string>;
+  writeTargets: Map<string, Set<string>>;
+  loadDocuments: LoadDocumentPlan[];
+  clearGraphs: string[];
+  graphCopies: GraphCopyPlan[];
+}
+
+interface LoadDocumentPlan {
+  sourceUri: string;
+  targetGraph: string;
+  silent?: boolean;
+}
+
+interface GraphCopyPlan {
+  operation: 'add' | 'copy' | 'move';
+  sourceGraph: string;
+  targetGraph: string;
+}
+
 export class SubgraphSparqlHttpHandler extends HttpHandler {
   protected readonly logger = getLoggerFor(this);
   private readonly engine: SubgraphQueryEngine;
@@ -77,6 +120,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   private readonly podLookup?: PodLookupRepository;
   private readonly usageRepo?: UsageRepository;
   private readonly defaultBandwidthLimit?: number | null;
+  private readonly updateAuthority?: MixDataAccessor;
   private readonly generator = new Generator();
 
   private static readonly XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
@@ -87,6 +131,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     permissionReader: PermissionReader,
     authorizer: Authorizer,
     options: SubgraphSparqlHttpHandlerOptions = {},
+    updateAuthority?: MixDataAccessor,
   ) {
     super();
     this.engine = queryEngine;
@@ -95,6 +140,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     this.authorizer = authorizer;
     this.sidecarPath = options.sidecarPath ?? '/-/sparql';
     this.defaultBandwidthLimit = this.normalizeLimit(options.defaultAccountBandwidthLimitBps);
+    this.updateAuthority = updateAuthority;
 
     // Identity DB is used for pod lookup (to resolve accountId/podId from URL)
     if (options.identityDbUrl) {
@@ -176,17 +222,48 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         const errorName = error.name || error.constructor.name || 'HttpError';
         const errorMessage = error.message || 'No message';
         this.logger.error(`SPARQL sidecar error ${error.statusCode} (${this.getRequestId(request)}): ${errorName} - ${errorMessage}`);
-        this.sendErrorResponse(response, error.statusCode, errorMessage);
+        this.sendErrorResponse(request, response, error.statusCode, errorMessage, {
+          error: {
+            code: `http.${error.statusCode}`,
+            message: errorMessage,
+          },
+        });
         return;
       }
       if (error instanceof DisabledSparqlFeatureError) {
         this.logger.warn(`SPARQL sidecar disabled feature (${this.getRequestId(request)}): ${error.message}`);
-        this.sendErrorResponse(response, 403, error.message);
+        this.sendErrorResponse(request, response, 403, error.message, {
+          error: {
+            code: 'rdf.sparql.disabled_feature',
+            message: error.message,
+            capability: 'sparql.federation.service',
+            hint: 'Disable SERVICE federation for server-owned Pod queries, or execute it from a trusted client-side/federated query layer.',
+            correction: sparqlCorrectionForCapability('sparql.federation.service'),
+          },
+        });
         return;
       }
       if (error instanceof UnsupportedSparqlQueryError) {
         this.logger.warn(`SPARQL sidecar unsupported query (${this.getRequestId(request)}): ${error.message}`);
-        this.sendErrorResponse(response, 400, error.message);
+        this.sendErrorResponse(request, response, 400, error.message, {
+          error: {
+            code: error.code,
+            message: error.message,
+            capability: error.capability,
+            hint: error.hint,
+            correction: error.correction,
+          },
+        });
+        return;
+      }
+      if (error instanceof NativeSparqlExecutionError) {
+        this.logger.error(`SPARQL sidecar native execution error (${this.getRequestId(request)}): ${error.message}`);
+        this.sendErrorResponse(request, response, 500, error.message, {
+          error: {
+            code: error.code,
+            message: error.message,
+          },
+        });
         return;
       }
       // Re-throw unknown errors for CSS error handling
@@ -195,21 +272,38 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
-  private sendErrorResponse(response: HttpResponse, statusCode: number, message: string): void {
+  private sendErrorResponse(
+    request: HttpRequest,
+    response: HttpResponse,
+    statusCode: number,
+    message: string,
+    jsonPayload: SparqlErrorResponse,
+  ): void {
     response.statusCode = statusCode;
+    if (this.acceptsJson(request)) {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+      response.end(JSON.stringify(jsonPayload));
+      return;
+    }
     response.setHeader('Content-Type', 'text/plain; charset=utf-8');
     response.end(message);
   }
 
+  private acceptsJson(request: HttpRequest): boolean {
+    const accept = request.headers.accept;
+    const values = Array.isArray(accept) ? accept : [ accept ];
+    return values.some(value => typeof value === 'string' && /\bapplication\/json\b/i.test(value));
+  }
+
   private async executeSelect(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
+    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
 
     let vars: string[] = [];
     const results: Record<string, unknown>[] = [];
     const seenVars = new Set<string>();
 
     try {
-      const bindingsStream: any = await this.engine.queryBindings(query, baseUrl);
+      const bindingsStream: any = await this.engine.queryBindings(query, baseUrl, accessScope);
       const metadata = typeof bindingsStream.metadata === 'function' ? await bindingsStream.metadata() : undefined;
       vars = metadata?.variables?.map((variable: Variable): string => variable.value) ?? [];
 
@@ -253,8 +347,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeAsk(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
-    const result = await this.engine.queryBoolean(query, baseUrl);
+    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
+    const result = await this.engine.queryBoolean(query, baseUrl, accessScope);
     const payload = {
       head: {},
       boolean: result,
@@ -263,8 +357,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
   }
 
   private async executeConstruct(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
-    const quadStream = await this.engine.queryQuads(query, baseUrl);
+    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
+    const quadStream = await this.engine.queryQuads(query, baseUrl, accessScope);
     const writer = new Writer({ format: 'N-Quads' });
 
     for await (const quad of quadStream) {
@@ -289,20 +383,76 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       throw new MethodNotAllowedHttpError([ 'POST' ]);
     }
 
-    const { hasInsert, hasDelete } = this.inspectUpdateGraphs(parsed, queryRequest.baseUrl);
+    const accessPlan = this.inspectUpdateGraphs(parsed, queryRequest.baseUrl);
     const modes: string[] = [];
-    if (hasInsert) {
+    if (accessPlan.needsReadScope) {
+      modes.push(PERMISSIONS.Read);
+    }
+    if (accessPlan.hasInsert) {
       modes.push(PERMISSIONS.Append);
     }
-    if (hasDelete) {
+    if (accessPlan.hasDelete) {
       modes.push(PERMISSIONS.Delete);
     }
-    await this.authorizeFor(queryRequest.baseUrl, request, modes);
+    const credentials = await this.authorizeFor(queryRequest.baseUrl, request, modes);
 
-    const rewritten = this.rewriteDefaultGraphUpdates(parsed, queryRequest.baseUrl);
+    for (const source of accessPlan.readTargets) {
+      if (source === queryRequest.baseUrl) {
+        continue;
+      }
+      await this.authorizeIdentifier(source, credentials, [ PERMISSIONS.Read ]);
+    }
+
+    for (const [ graph, graphModes ] of accessPlan.writeTargets) {
+      const resourceUrl = this.resourceUrlForGraphValue(graph);
+      if (resourceUrl === queryRequest.baseUrl) {
+        continue;
+      }
+      await this.authorizeIdentifier(resourceUrl, credentials, [...graphModes]);
+    }
+
+    const readAccessScope = accessPlan.needsReadScope
+      ? await this.resolveReadAccessScopeForCredentials(queryRequest.baseUrl, credentials)
+      : undefined;
+
+    const loadDocumentPlan = accessPlan.loadDocuments[0];
+    const clearGraph = accessPlan.clearGraphs[0];
+    const graphCopyPlan = accessPlan.graphCopies[0];
+    let nativeOptions: SparqlVoidOptions | undefined;
+    if (loadDocumentPlan) {
+      try {
+        nativeOptions = { loadDocument: await this.readLoadDocument(loadDocumentPlan, queryRequest.baseUrl, readAccessScope) };
+      } catch (error) {
+        if (!loadDocumentPlan.silent) {
+          throw error;
+        }
+      }
+    }
+    const rewritten = loadDocumentPlan
+      ? this.updateAuthority && nativeOptions?.loadDocument
+        ? this.rewriteLoadedDocumentUpdate(loadDocumentPlan, nativeOptions.loadDocument)
+        : this.rewriteLoadUpdate(loadDocumentPlan)
+      : clearGraph
+        ? this.rewriteClearGraphUpdate(clearGraph)
+        : graphCopyPlan
+          ? this.rewriteGraphCopyUpdate(graphCopyPlan)
+      : this.rewriteDefaultGraphUpdates(parsed, queryRequest.baseUrl);
     this.logger.verbose(`[SubgraphSPARQL] Rewritten Query: ${rewritten}`);
 
-    await this.engine.queryVoid(rewritten, queryRequest.baseUrl);
+    const skippedSilentAuthorityLoad = Boolean(
+      this.updateAuthority && loadDocumentPlan?.silent && !nativeOptions?.loadDocument,
+    );
+    if (!skippedSilentAuthorityLoad) {
+      if (this.updateAuthority) {
+        await this.updateAuthority.executeSparqlUpdate(
+          rewritten,
+          queryRequest.baseUrl,
+          readAccessScope,
+        );
+      } else {
+        await this.engine.queryVoid(rewritten, queryRequest.baseUrl, readAccessScope, nativeOptions);
+      }
+    }
     await this.refreshUsage(queryRequest.baseUrl);
 
     response.statusCode = 204;
@@ -415,48 +565,176 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     return Math.trunc(value);
   }
 
-  private async authorizeFor(basePath: string, request: HttpRequest, modes: string[]): Promise<void> {
-    if (modes.length === 0) {
-      return;
+  private async resolveReadAccessScope(baseUrl: string, request: HttpRequest): Promise<RdfAccessScope> {
+    const credentials = await this.authorizeFor(baseUrl, request, [ PERMISSIONS.Read ]);
+    return this.resolveReadAccessScopeForCredentials(baseUrl, credentials);
+  }
+
+  private async resolveReadAccessScopeForCredentials(baseUrl: string, credentials: Credentials): Promise<RdfAccessScope> {
+    const graphs = await this.engine.listGraphs(baseUrl);
+    const deniedGraphUrls: string[] = [];
+
+    for (const graph of graphs) {
+      const resourceUrl = this.resourceUrlForGraphValue(graph);
+      if (!resourceUrl.startsWith(baseUrl)) {
+        continue;
+      }
+      const allowed = await this.canAuthorizeFor(resourceUrl, credentials, [ PERMISSIONS.Read ]);
+      if (!allowed) {
+        deniedGraphUrls.push(graph);
+      }
     }
+    deniedGraphUrls.sort();
+
+    return {
+      basePath: baseUrl,
+      mode: 'read',
+      principal: credentials.agent?.webId ?? credentials.client?.clientId ?? 'anonymous',
+      ...(deniedGraphUrls.length > 0 ? { deniedGraphUrls } : {}),
+      version: deniedGraphUrls.length > 0
+        ? `graphs:${graphs.size}:denied:${deniedGraphUrls.join(',')}`
+        : `graphs:${graphs.size}:inherited`,
+    };
+  }
+
+  private async authorizeFor(basePath: string, request: HttpRequest, modes: string[]): Promise<Credentials> {
+    if (modes.length === 0) {
+      return this.credentialsExtractor.handleSafe(request);
+    }
+    const credentials = await this.credentialsExtractor.handleSafe(request);
+    await this.authorizeIdentifier(basePath, credentials, modes);
+    return credentials;
+  }
+
+  private async canAuthorizeFor(basePath: string, credentials: Credentials, modes: string[]): Promise<boolean> {
+    try {
+      await this.authorizeIdentifier(basePath, credentials, modes);
+      return true;
+    } catch (error) {
+      this.logger.debug(`ACL/ACR graph denied for ${basePath}: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  private async authorizeIdentifier(basePath: string, credentials: Credentials, modes: string[]): Promise<void> {
     const identifier = { path: basePath } satisfies ResourceIdentifier;
     const requestedModes = new IdentifierSetMultiMap<string>();
     for (const mode of modes) {
       requestedModes.add(identifier, mode);
     }
-    const credentials = await this.credentialsExtractor.handleSafe(request);
     const availablePermissions = await this.permissionReader.handleSafe({ credentials, requestedModes });
     await this.authorizer.handleSafe({ credentials, requestedModes, availablePermissions });
   }
 
-  private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): { hasInsert: boolean; hasDelete: boolean } {
-    let hasInsert = false;
-    let hasDelete = false;
+  private inspectUpdateGraphs(update: SparqlUpdate, basePath: string): UpdateAccessPlan {
+    const plan: UpdateAccessPlan = {
+      hasInsert: false,
+      hasDelete: false,
+      needsReadScope: false,
+      readTargets: new Set(),
+      writeTargets: new Map(),
+      loadDocuments: [],
+      clearGraphs: [],
+      graphCopies: [],
+    };
     for (const operation of update.updates ?? []) {
+      if (this.isLoadOperation(operation)) {
+        if ((update.updates?.length ?? 0) !== 1) {
+          throw new BadRequestHttpError('SPARQL LOAD cannot be mixed with other update operations on the /-/sparql endpoint.');
+        }
+        plan.hasInsert = true;
+        plan.needsReadScope = true;
+        const sourceUri = this.assertGraphTermInScope(operation.source, basePath);
+        if (!sourceUri) {
+          throw new BadRequestHttpError('SPARQL LOAD source must be an explicit in-pod IRI.');
+        }
+        const targetGraph = operation.destination
+          ? this.assertGraphTermInScope(operation.destination, basePath)
+          : basePath;
+        plan.readTargets.add(sourceUri);
+        this.addWriteTarget(plan, targetGraph ?? basePath, [ PERMISSIONS.Append ]);
+        plan.loadDocuments.push({
+          sourceUri,
+          targetGraph: targetGraph ?? basePath,
+          ...((operation as { silent?: boolean }).silent ? { silent: true } : {}),
+        });
+        continue;
+      }
+
+      if (this.isClearGraphOperation(operation) || this.isDropGraphOperation(operation)) {
+        if ((update.updates?.length ?? 0) !== 1) {
+          throw new BadRequestHttpError('SPARQL graph deletion operations cannot be mixed with other update operations on the /-/sparql endpoint.');
+        }
+        plan.hasDelete = true;
+        plan.needsReadScope = true;
+        const graph = this.assertGraphInScope(operation.graph, basePath) ?? basePath;
+        this.addWriteTarget(plan, graph, [ PERMISSIONS.Delete ]);
+        plan.clearGraphs.push(graph);
+        continue;
+      }
+
+      if (this.isGraphCopyOperation(operation)) {
+        if ((update.updates?.length ?? 0) !== 1) {
+          throw new BadRequestHttpError('SPARQL graph copy operations cannot be mixed with other update operations on the /-/sparql endpoint.');
+        }
+        const sourceGraph = this.assertGraphInScope(operation.source, basePath) ?? basePath;
+        const targetGraph = this.assertGraphInScope(operation.destination, basePath) ?? basePath;
+        plan.hasInsert = true;
+        plan.needsReadScope = true;
+        plan.readTargets.add(sourceGraph);
+        if (operation.type === 'add') {
+          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Append ]);
+        } else if (operation.type === 'copy') {
+          plan.hasDelete = true;
+          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Delete, PERMISSIONS.Append ]);
+        } else {
+          plan.hasDelete = true;
+          this.addWriteTarget(plan, targetGraph, [ PERMISSIONS.Delete, PERMISSIONS.Append ]);
+          this.addWriteTarget(plan, sourceGraph, [ PERMISSIONS.Delete ]);
+        }
+        plan.graphCopies.push({ operation: operation.type, sourceGraph, targetGraph });
+        continue;
+      }
+
+      if (this.isCreateGraphOperation(operation)) {
+        plan.hasInsert = true;
+        const graph = this.assertGraphInScope(operation.graph, basePath) ?? basePath;
+        this.addWriteTarget(plan, graph, [ PERMISSIONS.Append ]);
+        continue;
+      }
+
       if (!this.isInsertDeleteOperation(operation)) {
         throw new BadRequestHttpError('SPARQL update management operations are not supported.');
       }
 
       if (operation.updateType === 'insert' ||
         (operation.updateType === 'insertdelete' && (operation.insert?.length ?? 0) > 0)) {
-        hasInsert = true;
+        plan.hasInsert = true;
       }
 
       if (operation.updateType === 'delete' || operation.updateType === 'deletewhere' ||
         (operation.updateType === 'insertdelete' && (operation.delete?.length ?? 0) > 0)) {
-        hasDelete = true;
+        plan.hasDelete = true;
       }
+
+      const defaultGraph = operation.graph
+        ? this.assertGraphInScope(operation.graph, basePath) ?? basePath
+        : basePath;
 
       if (operation.graph) {
         this.assertGraphInScope(operation.graph, basePath);
       }
 
       if (operation.updateType === 'insert' || operation.updateType === 'insertdelete') {
-        this.inspectQuads(operation.insert ?? [], basePath);
+        this.inspectQuads(operation.insert ?? [], basePath, defaultGraph, plan, [ PERMISSIONS.Append ]);
       }
 
       if (operation.updateType === 'delete' || operation.updateType === 'insertdelete' || operation.updateType === 'deletewhere') {
-        this.inspectQuads(operation.delete ?? [], basePath);
+        this.inspectQuads(operation.delete ?? [], basePath, defaultGraph, plan, [ PERMISSIONS.Delete ]);
+      }
+
+      if (operation.updateType === 'insertdelete' || operation.updateType === 'deletewhere') {
+        plan.needsReadScope = true;
       }
 
       if (operation.updateType === 'insertdelete') {
@@ -471,13 +749,24 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         }
       }
     }
-    return { hasInsert, hasDelete };
+    return plan;
   }
 
-  private inspectQuads(quads: SparqlQuads[], basePath: string): void {
+  private inspectQuads(
+    quads: SparqlQuads[],
+    basePath: string,
+    defaultGraph: string,
+    plan: UpdateAccessPlan,
+    modes: string[],
+  ): void {
     for (const quad of quads) {
       if (quad.type === 'graph') {
-        this.assertGraphTermInScope(quad.name, basePath);
+        const graph = this.assertGraphTermInScope(quad.name, basePath);
+        if (graph) {
+          this.addWriteTarget(plan, graph, modes);
+        }
+      } else {
+        this.addWriteTarget(plan, defaultGraph, modes);
       }
     }
   }
@@ -494,48 +783,105 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
-  private assertGraphInScope(graph: SparqlGraphOrDefault | SparqlIriTerm, basePath: string): void {
+  private assertGraphInScope(graph: SparqlGraphOrDefault | SparqlIriTerm, basePath: string): string | undefined {
     if ('default' in graph && graph.default) {
-      return;
+      return undefined;
     }
     if ('name' in graph) {
       const name = graph.name;
       if (name) {
-        this.assertGraphTermInScope(name, basePath);
+        return this.assertGraphTermInScope(name, basePath);
       }
     } else if ('value' in graph) {
-      this.assertGraphTermInScope(graph, basePath);
+      return this.assertGraphTermInScope(graph, basePath);
     }
+    return undefined;
   }
 
-  private assertGraphTermInScope(term: SparqlTerm, basePath: string): void {
+  private assertGraphTermInScope(term: SparqlTerm, basePath: string): string | undefined {
     if (!term) {
-      return;
+      return undefined;
     }
     if (term.termType === 'Variable') {
       throw new BadRequestHttpError('Graph IRIs must be explicit when using the /-/sparql update endpoint.');
     }
     if (term.termType === 'NamedNode') {
-      // Graph can be either basePath or prefix:basePath (e.g., meta:http://...)
-      // Extract the path part after optional prefix (anything before first colon that's not part of http:)
       const graphValue = term.value;
-      let pathPart = graphValue;
-      
-      // Check if it has a prefix like "meta:" or "acl:" (not "http:" or "https:")
-      const prefixMatch = graphValue.match(/^([a-z]+):(?!\/\/)/i);
-      if (prefixMatch) {
-        pathPart = graphValue.slice(prefixMatch[0].length);
-      }
-      
+      const pathPart = this.resourceUrlForGraphValue(graphValue);
       if (!pathPart.startsWith(basePath)) {
         throw new BadRequestHttpError(`Graph ${term.value} is outside of ${basePath}.`);
       }
-      return;
+      return graphValue;
     }
     if ((term as any).default === true) {
-      return;
+      return undefined;
     }
     throw new BadRequestHttpError('Unsupported graph target in SPARQL update.');
+  }
+
+  private addWriteTarget(plan: UpdateAccessPlan, graph: string, modes: string[]): void {
+    const existing = plan.writeTargets.get(graph) ?? new Set<string>();
+    for (const mode of modes) {
+      existing.add(mode);
+    }
+    plan.writeTargets.set(graph, existing);
+  }
+
+  private async readLoadDocument(
+    plan: LoadDocumentPlan,
+    basePath: string,
+    accessScope?: RdfAccessScope,
+  ): Promise<SparqlLoadDocumentOptions> {
+    const quads = await this.engine.constructGraph(plan.sourceUri, basePath, accessScope);
+    const lines: string[] = [];
+    for await (const quad of quads as AsyncIterable<RdfQuad>) {
+      lines.push([
+        SubgraphSparqlHttpHandler.termToNQuads(quad.subject),
+        SubgraphSparqlHttpHandler.termToNQuads(quad.predicate),
+        SubgraphSparqlHttpHandler.termToNQuads(quad.object),
+        '.',
+      ].join(' '));
+    }
+    return {
+      sourceUri: plan.sourceUri,
+      body: lines.length > 0 ? `${lines.join('\n')}\n` : '',
+      mediaType: 'application/n-triples',
+    };
+  }
+
+  private rewriteLoadUpdate(plan: LoadDocumentPlan): string {
+    return `LOAD ${plan.silent ? 'SILENT ' : ''}<${plan.sourceUri}> INTO GRAPH <${plan.targetGraph}>`;
+  }
+
+  private rewriteLoadedDocumentUpdate(
+    plan: LoadDocumentPlan,
+    document: SparqlLoadDocumentOptions,
+  ): string {
+    return `INSERT DATA { GRAPH <${plan.targetGraph}> {\n${document.body}\n} }`;
+  }
+
+  private rewriteClearGraphUpdate(graph: string): string {
+    return `DELETE WHERE { GRAPH <${graph}> { ?s ?p ?o } }`;
+  }
+
+  private rewriteGraphCopyUpdate(plan: GraphCopyPlan): string {
+    if (plan.sourceGraph === plan.targetGraph) {
+      return `CREATE SILENT GRAPH <${plan.targetGraph}>`;
+    }
+    const insert = `INSERT { GRAPH <${plan.targetGraph}> { ?s ?p ?o } } WHERE { GRAPH <${plan.sourceGraph}> { ?s ?p ?o } }`;
+    if (plan.operation === 'add') {
+      return insert;
+    }
+    const clearTarget = this.rewriteClearGraphUpdate(plan.targetGraph);
+    if (plan.operation === 'copy') {
+      return `${clearTarget}; ${insert}`;
+    }
+    return `${clearTarget}; ${insert}; ${this.rewriteClearGraphUpdate(plan.sourceGraph)}`;
+  }
+
+  private resourceUrlForGraphValue(graphValue: string): string {
+    const prefixMatch = graphValue.match(/^([a-z][a-z0-9-]*):(?!\/\/)/i);
+    return prefixMatch ? graphValue.slice(prefixMatch[0].length) : graphValue;
   }
 
   /**
@@ -779,11 +1125,38 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       .replace(/\r/g, '\\r')
       .replace(/\t/g, '\\t')
       .replace(/\f/g, '\\f')
-      .replace(/\b/g, '\\b');
+      .replace(/\u0008/g, '\\b');
   }
 
   private isInsertDeleteOperation(operation: SparqlUpdate['updates'][number]): operation is SparqlInsertDeleteOperation {
     return typeof (operation as SparqlInsertDeleteOperation).updateType === 'string';
+  }
+
+  private isLoadOperation(
+    operation: SparqlUpdate['updates'][number],
+  ): operation is SparqlUpdate['updates'][number] & { type: 'load'; source: SparqlIriTerm; destination?: SparqlIriTerm } {
+    const candidate = operation as { type?: string; source?: SparqlTerm; destination?: SparqlTerm };
+    return candidate.type === 'load' &&
+      candidate.source?.termType === 'NamedNode' &&
+      (!candidate.destination || candidate.destination.termType === 'NamedNode');
+  }
+
+  private isClearGraphOperation(operation: SparqlUpdate['updates'][number]): operation is SparqlUpdate['updates'][number] & { type: 'clear'; graph: SparqlGraphOrDefault | SparqlIriTerm } {
+    return (operation as { type?: string }).type === 'clear' && 'graph' in operation;
+  }
+
+  private isDropGraphOperation(operation: SparqlUpdate['updates'][number]): operation is SparqlUpdate['updates'][number] & { type: 'drop'; graph: SparqlGraphOrDefault | SparqlIriTerm } {
+    return (operation as { type?: string }).type === 'drop' && 'graph' in operation;
+  }
+
+  private isGraphCopyOperation(operation: SparqlUpdate['updates'][number]): operation is SparqlUpdate['updates'][number] & { type: 'add' | 'copy' | 'move'; source: SparqlGraphOrDefault | SparqlIriTerm; destination: SparqlGraphOrDefault | SparqlIriTerm } {
+    const candidate = operation as { type?: string };
+    return (candidate.type === 'add' || candidate.type === 'copy' || candidate.type === 'move') &&
+      'source' in operation && 'destination' in operation;
+  }
+
+  private isCreateGraphOperation(operation: SparqlUpdate['updates'][number]): operation is SparqlUpdate['updates'][number] & { type: 'create'; graph: SparqlGraphOrDefault | SparqlIriTerm } {
+    return (operation as { type?: string }).type === 'create' && 'graph' in operation;
   }
 
   private getRequestId(request: HttpRequest): string {

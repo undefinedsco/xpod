@@ -14,7 +14,12 @@ import {
   toThreadRef,
 } from '../chatkit/types';
 import type { AgentRuntimeConfig, AgentRuntimeEvent, RunnerProtocol, RunnerType } from './AgentRuntimeTypes';
-import type { RunExecutionBackend, RunExecutionInput } from './RunExecutionBackend';
+import type {
+  RunContextRetriever,
+  RunExecutionBackend,
+  RunExecutionInput,
+  RunRetrievedContext,
+} from './RunExecutionBackend';
 import { RunStatus, XpodRunStepType as RunStepType } from './schema';
 import {
   canClaimRun,
@@ -34,6 +39,7 @@ export interface ManagedRunWorkerOptions<TContext = StoreContext> {
   runtimeDriver: RunExecutionBackend;
   leaseOwner?: string;
   leaseDurationSeconds?: number;
+  contextRetriever?: RunContextRetriever<TContext>;
 }
 
 export interface ManagedRunExecutionResult {
@@ -67,12 +73,14 @@ export class ManagedRunWorker<TContext = StoreContext> {
   private readonly runtimeDriver: RunExecutionBackend;
   private readonly leaseOwner: string;
   private readonly leaseDurationSeconds: number;
+  private readonly contextRetriever?: RunContextRetriever<TContext>;
 
   public constructor(options: ManagedRunWorkerOptions<TContext>) {
     this.store = options.store;
     this.runtimeDriver = options.runtimeDriver;
     this.leaseOwner = options.leaseOwner ?? `worker-${Math.random().toString(36).slice(2)}`;
     this.leaseDurationSeconds = options.leaseDurationSeconds ?? 300;
+    this.contextRetriever = options.contextRetriever;
   }
 
   public async executeRun(runId: string, context: TContext): Promise<ManagedRunExecutionResult> {
@@ -95,12 +103,24 @@ export class ManagedRunWorker<TContext = StoreContext> {
     let fullText = '';
     let runtimeError: string | undefined;
 
+    const prompt = run.prompt ?? '';
+    const conversation = await this.loadConversation(threadRef, userMessage.id, context);
+    const retrievedContext = await this.retrieveRunContext({
+      runId: run.id,
+      threadId: thread.id,
+      prompt,
+      conversation,
+      config: runtimeConfig,
+      context,
+    });
+
     for await (
       const event of this.runtimeDriver.start({
         runId: run.id,
         threadId: thread.id,
-        prompt: run.prompt ?? '',
-        conversation: await this.loadConversation(threadRef, userMessage.id, context),
+        prompt,
+        conversation,
+        retrievedContext,
         config: runtimeConfig,
         authBindingId: this.authBindingIdFromRun(run),
         context: context as StoreContext,
@@ -144,6 +164,21 @@ export class ManagedRunWorker<TContext = StoreContext> {
     const finalStatus = runtimeError ? RunStatus.FAILED : RunStatus.COMPLETED;
     await this.finishRun(run, finalStatus, context, runtimeError);
     return { runId, status: finalStatus };
+  }
+
+  private async retrieveRunContext(input: {
+    runId: string;
+    threadId: string;
+    prompt: string;
+    conversation: RunExecutionInput['conversation'];
+    config: AgentRuntimeConfig;
+    context: TContext;
+  }): Promise<RunRetrievedContext | undefined> {
+    const retrieved = await this.contextRetriever?.retrieve(input);
+    if (!retrieved || retrieved.items.length === 0) {
+      return undefined;
+    }
+    return retrieved;
   }
 
   private async claimRun(runId: string, context: TContext): Promise<boolean> {
@@ -213,11 +248,22 @@ export class ManagedRunWorker<TContext = StoreContext> {
 
   public async loadExecutionInput(runId: string, context: TContext): Promise<RunExecutionInput> {
     const loaded = await this.loadRunInput(runId, context);
+    const prompt = loaded.run.prompt ?? '';
+    const conversation = await this.loadConversation(loaded.threadRef, loaded.userMessage.id, context);
+    const retrievedContext = await this.retrieveRunContext({
+      runId: loaded.run.id,
+      threadId: loaded.thread.id,
+      prompt,
+      conversation,
+      config: loaded.runtimeConfig,
+      context,
+    });
     return {
       runId: loaded.run.id,
       threadId: loaded.thread.id,
-      prompt: loaded.run.prompt ?? '',
-      conversation: await this.loadConversation(loaded.threadRef, loaded.userMessage.id, context),
+      prompt,
+      conversation,
+      retrievedContext,
       config: loaded.runtimeConfig,
       authBindingId: this.authBindingIdFromRun(loaded.run),
       context: context as StoreContext,

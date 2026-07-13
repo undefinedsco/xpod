@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { DataFactory, termToId } from 'n3';
 import {
+  applyRdfAccessScope,
   RdfQuadIndex,
   SolidRdfEngine,
   rdfVar,
@@ -17,6 +18,7 @@ const SIOC_THREAD = 'http://rdfs.org/sioc/ns#Thread';
 const MEETING_MESSAGE = 'http://www.w3.org/ns/pim/meeting#Message';
 const UDFS_PRIORITY = 'https://undefineds.co/ns#priority';
 const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
+const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 
 describe('RdfQueryExecutor', () => {
   let index: RdfQuadIndex;
@@ -1438,6 +1440,306 @@ describe('RdfQueryExecutor', () => {
     expect(result.bindings).toHaveLength(1);
     expect(result.bindings[0].contentSlice.value).toBe('ello');
     expect(result.metrics.plan).toContain('Bind(?start:=2,?length:=STRLEN(?content),?contentSlice:=SUBSTR(STR(?content),?start,?length))');
+  });
+
+  it('evaluates numeric BIND expressions and orders numeric literals by value', () => {
+    const result = engine.query({
+      patterns: [],
+      values: [
+        {
+          variables: ['item', 'textScore', 'vectorScore'],
+          rows: [
+            {
+              item: namedNode('https://pod.example/alice/.data/search.ttl#low'),
+              textScore: literal('10', namedNode(XSD_DECIMAL)),
+              vectorScore: literal('0', namedNode(XSD_DECIMAL)),
+            },
+            {
+              item: namedNode('https://pod.example/alice/.data/search.ttl#high'),
+              textScore: literal('2', namedNode(XSD_DECIMAL)),
+              vectorScore: literal('20', namedNode(XSD_DECIMAL)),
+            },
+          ],
+        },
+      ],
+      binds: [
+        {
+          variable: 'fusionScore',
+          expression: {
+            type: 'add',
+            expressions: [
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                  { type: 'term', term: literal('0.4', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+                  { type: 'term', term: literal('0.6', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      select: ['item', 'fusionScore'],
+      orderBy: [{ variable: 'fusionScore', direction: 'desc' }],
+    });
+
+    expect(result.bindings.map((binding) => termToId(binding.item as any))).toEqual([
+      'https://pod.example/alice/.data/search.ttl#high',
+      'https://pod.example/alice/.data/search.ttl#low',
+    ]);
+    expect(result.bindings.map((binding) => binding.fusionScore.value)).toEqual(['12.8', '4']);
+    expect(result.metrics.plan).toContain(
+      'Bind(?fusionScore:=((NUM(?textScore)*0.4)+(NUM(?vectorScore)*0.6)))',
+    );
+    expect(result.metrics.plan).toContain('Sort');
+  });
+
+  it('describes fusion rank inputs when BIND combines text and vector scores', async () => {
+    const searchEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const source = namedNode('https://pod.example/alice/projects/demo/fusion.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      searchEngine.put([
+        quad(source, namedNode(RDF_TYPE), docType, source),
+      ]);
+      searchEngine.indexTextSource({
+        source: source.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'fusion.md',
+        contentType: 'text/markdown',
+      }, '# Fusion\n\nManaged runtime approvals.\n');
+      searchEngine.indexVectorSource({
+        source: source.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'fusion.md',
+        contentType: 'text/markdown',
+      }, [
+        {
+          chunkKey: 'fusion',
+          ordinal: 0,
+          level: 1,
+          content: 'Managed runtime approvals.',
+          startOffset: 0,
+          endOffset: 26,
+          embedding: [1, 0],
+          model: 'test-embed',
+        },
+      ]);
+
+      const result = searchEngine.query({
+        textSearch: [
+          {
+            query: 'managed runtime',
+            scope: {
+              workspace: 'https://pod.example/alice/projects/demo/',
+              allowedSources: [source.value],
+            },
+            source: 'source',
+            content: 'textSnippet',
+            score: 'textScore',
+          },
+        ],
+        vectorSearch: [
+          {
+            embedding: [1, 0],
+            vectorModel: 'test-embed',
+            scope: {
+              workspace: 'https://pod.example/alice/projects/demo/',
+              allowedSources: [source.value],
+            },
+            source: 'source',
+            content: 'vectorSnippet',
+            score: 'vectorScore',
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        binds: [
+          {
+            variable: 'fusionScore',
+            expression: {
+              type: 'add',
+              expressions: [
+                {
+                  type: 'multiply',
+                  expressions: [
+                    { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                    { type: 'term', term: literal('0.55', namedNode(XSD_DECIMAL)) },
+                  ],
+                },
+                {
+                  type: 'multiply',
+                  expressions: [
+                    { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+                    { type: 'term', term: literal('0.45', namedNode(XSD_DECIMAL)) },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+        select: ['source', 'fusionScore'],
+        orderBy: [
+          { variable: 'fusionScore', direction: 'desc' },
+          { variable: 'source' },
+        ],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.metrics.plan).toContain('FusionRankInputs(text:?textScore,vector:?vectorScore,output:?fusionScore)');
+      expect(result.metrics.plan).toContain('FusionRankWeights(text:0.55,vector:0.45,output:?fusionScore)');
+      expect(result.metrics.plan).toContain('FusionRankTieBreaker(asc:?source)');
+      expect(result.metrics.plan).toContain('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
+      expect(result.metrics.plan.some((entry) => entry.startsWith('SourceEstimate(PathScopeSource#'))).toBe(true);
+      expect(result.metrics.plan.some((entry) => entry.startsWith('SourceEstimate(AclScopeSource#'))).toBe(true);
+    } finally {
+      await searchEngine.close();
+    }
+  });
+
+  it('filters unauthorized candidates before final fusion ranking', async () => {
+    const searchEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const publicSource = namedNode('https://pod.example/alice/.data/public/fusion.md');
+    const privateSource = namedNode('https://pod.example/alice/.data/private/fusion.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      searchEngine.put([
+        quad(publicSource, namedNode(RDF_TYPE), docType, publicSource),
+        quad(privateSource, namedNode(RDF_TYPE), docType, privateSource),
+      ]);
+      searchEngine.indexTextSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/fusion.md',
+        contentType: 'text/markdown',
+      }, '# Public\n\nManaged runtime approvals.\n');
+      searchEngine.indexTextSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/fusion.md',
+        contentType: 'text/markdown',
+      }, '# Private managed runtime\n\nManaged runtime managed runtime managed runtime approvals.\n');
+      searchEngine.indexVectorSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/fusion.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'public',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime approvals.',
+        startOffset: 0,
+        endOffset: 26,
+        embedding: [0.1, 1],
+        model: 'test-embed',
+      }]);
+      searchEngine.indexVectorSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/fusion.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'private',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime approvals with private high score.',
+        startOffset: 0,
+        endOffset: 49,
+        embedding: [1, 0],
+        model: 'test-embed',
+      }]);
+
+      const result = searchEngine.query(applyRdfAccessScope({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'textSnippet',
+          score: 'textScore',
+        }],
+        vectorSearch: [{
+          embedding: [1, 0],
+          vectorModel: 'test-embed',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'vectorSnippet',
+          score: 'vectorScore',
+        }],
+        patterns: [{
+          graph: rdfVar('source'),
+          subject: rdfVar('source'),
+          predicate: namedNode(RDF_TYPE),
+          object: docType,
+        }],
+        binds: [{
+          variable: 'fusionScore',
+          expression: {
+            type: 'add',
+            expressions: [
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'textScore' } },
+                  { type: 'term', term: literal('0.55', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+              {
+                type: 'multiply',
+                expressions: [
+                  { type: 'numericValue', expression: { type: 'variable', variable: 'vectorScore' } },
+                  { type: 'term', term: literal('0.45', namedNode(XSD_DECIMAL)) },
+                ],
+              },
+            ],
+          },
+        }],
+        select: ['source', 'fusionScore'],
+        orderBy: [
+          { variable: 'fusionScore', direction: 'desc' },
+          { variable: 'source' },
+        ],
+        limit: 1,
+      }, {
+        basePath: 'https://pod.example/alice/.data/',
+        mode: 'read',
+        principal: 'https://id.example/alice/profile/card#me',
+        allowedGraphUrls: [publicSource.value],
+        deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+        version: 'acl-v1',
+      }));
+
+      expect(result.bindings.map((binding) => termToId(binding.source as any))).toEqual([publicSource.value]);
+      expect(result.metrics.plan).toContain('FusionHardFiltersBeforeRank(path,acl,output:?fusionScore)');
+      expect(result.metrics.plan).toContain('AclScopeSource(base-path:https://pod.example/alice/.data/ allowed:1 denied-prefix:1)');
+    } finally {
+      await searchEngine.close();
+    }
   });
 
   it('evaluates optional BIND expressions inside OPTIONAL joins', () => {
@@ -4141,6 +4443,7 @@ describe('RdfQueryExecutor', () => {
             content: 'snippet',
             heading: 'heading',
             score: 'score',
+            scoreComponents: 'scoreComponents',
           },
         ],
         patterns: [
@@ -4151,7 +4454,7 @@ describe('RdfQueryExecutor', () => {
             object: rdfVar('type'),
           },
         ],
-        select: ['source', 'type', 'chunk', 'snippet', 'heading', 'score'],
+        select: ['source', 'type', 'chunk', 'snippet', 'heading', 'score', 'scoreComponents'],
       });
 
       expect(result.bindings).toHaveLength(1);
@@ -4161,10 +4464,459 @@ describe('RdfQueryExecutor', () => {
       expect(result.bindings[0].snippet.value).toContain('Managed runtime');
       expect(result.bindings[0].heading.value).toBe('Runbook');
       expect(result.bindings[0].score.value).toBe('1');
+      expect(JSON.parse(result.bindings[0].scoreComponents.value)).toMatchObject({
+        sourceType: 'text',
+        algorithm: 'occurrence-heading-boost',
+        normalizedQuery: 'managed runtime',
+        occurrenceScore: 1,
+      });
       expect(result.metrics.plan.some((entry) => entry.startsWith('TextSearch('))).toBe(true);
       expect(result.metrics.plan).toContain(`IndexScan(graph:?source,subject:?source,predicate:${RDF_TYPE},object:?type)`);
     } finally {
       await textEngine.close();
+    }
+  });
+
+  it('filters file text-search hits by entity mentions before RDF joins', async () => {
+    const textEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const task = namedNode('https://pod.example/alice/.data/tasks/default.ttl#task_1');
+    const matchingSource = namedNode('https://pod.example/alice/projects/demo/matching.md');
+    const wrongEntitySource = namedNode('https://pod.example/alice/projects/demo/wrong-entity.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      textEngine.put([
+        quad(matchingSource, namedNode(RDF_TYPE), docType, matchingSource),
+        quad(wrongEntitySource, namedNode(RDF_TYPE), docType, wrongEntitySource),
+      ]);
+      textEngine.indexTextSource({
+        source: matchingSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'matching.md',
+        contentType: 'text/markdown',
+      }, '', [{
+        chunkKey: 'matching-task',
+        ordinal: 0,
+        level: 1,
+        heading: 'Matching',
+        path: ['Matching'],
+        content: 'Managed runtime handoff mentions the task.',
+        startOffset: 0,
+        endOffset: 43,
+        entities: [{ entity: task.value, predicate: 'https://schema.org/about' }],
+      }]);
+      textEngine.indexTextSource({
+        source: wrongEntitySource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'wrong-entity.md',
+        contentType: 'text/markdown',
+      }, '', [{
+        chunkKey: 'wrong-task',
+        ordinal: 0,
+        level: 1,
+        heading: 'Wrong',
+        path: ['Wrong'],
+        content: 'Managed runtime handoff mentions another task.',
+        startOffset: 0,
+        endOffset: 46,
+        entities: [{ entity: 'https://pod.example/alice/.data/tasks/default.ttl#task_2' }],
+      }]);
+
+      const result = textEngine.query({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          entities: [task.value],
+          source: 'source',
+          content: 'snippet',
+        }],
+        patterns: [{
+          graph: rdfVar('source'),
+          subject: rdfVar('source'),
+          predicate: namedNode(RDF_TYPE),
+          object: docType,
+        }],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.bindings.map((binding) => binding.source.value)).toEqual([matchingSource.value]);
+      expect(result.metrics.plan).toContain('TextSearch("managed runtime"@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet entities:1)');
+      expect(result.metrics.indexChoices).toContain('text-chunk');
+    } finally {
+      await textEngine.close();
+    }
+  });
+
+  it('filters text-search candidates by local path subtree scope', async () => {
+    const textEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const docsSource = namedNode('https://pod.example/alice/projects/demo/docs/runbook.md');
+    const archiveSource = namedNode('https://pod.example/alice/projects/demo/archive/runbook.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      textEngine.put([
+        quad(docsSource, namedNode(RDF_TYPE), docType, docsSource),
+        quad(archiveSource, namedNode(RDF_TYPE), docType, archiveSource),
+      ]);
+      textEngine.indexTextSource({
+        source: docsSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'docs/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Docs\n\nManaged runtime subtree marker.\n');
+      textEngine.indexTextSource({
+        source: archiveSource.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'archive/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Archive\n\nManaged runtime subtree marker.\n');
+
+      const result = textEngine.query({
+        textSearch: [
+          {
+            query: 'managed runtime subtree',
+            scope: {
+              workspace: 'https://pod.example/alice/projects/demo/',
+              localPathPrefix: 'docs/',
+            } as any,
+            source: 'source',
+            localPath: 'localPath',
+            content: 'snippet',
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        select: ['source', 'localPath', 'snippet'],
+      });
+
+      expect(result.bindings.map((binding) => binding.localPath.value)).toEqual(['docs/runbook.md']);
+      expect(result.metrics.plan).toContain('PathScopeSource(workspace:https://pod.example/alice/projects/demo/,local-path-prefix:docs/)');
+    } finally {
+      await textEngine.close();
+    }
+  });
+
+  it('binds text-search source and retrieval-point provenance for Agent context projection', async () => {
+    const textEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const task = namedNode('https://pod.example/alice/.data/tasks/default.ttl#task_1');
+    const source = namedNode('https://pod.example/alice/projects/demo/context.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      textEngine.put([
+        quad(source, namedNode(RDF_TYPE), docType, source),
+      ]);
+      textEngine.indexTextSource({
+        source: source.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'context.md',
+        contentType: 'text/markdown',
+        sourceKey: 'source-node:context',
+      }, '', [{
+        chunkKey: 'context-task',
+        ordinal: 0,
+        level: 1,
+        heading: 'Context',
+        path: ['Context'],
+        content: 'Managed runtime handoff mentions the task.',
+        startOffset: 0,
+        endOffset: 43,
+        retrievalKind: 'file-chunk',
+        entities: [{
+          entity: task.value,
+          predicate: 'https://schema.org/about',
+          value: 'Managed runtime handoff mentions the task.',
+          policyRole: 'searchableText',
+          occurrences: 1,
+        }],
+      }]);
+
+      const result = textEngine.query({
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+          source: 'source',
+          content: 'snippet',
+          sourceKey: 'sourceKey',
+          retrievalPoint: 'retrievalPointKey',
+          retrievalKind: 'retrievalKind',
+          entityProvenance: 'entityProvenance',
+        } as any],
+        patterns: [{
+          graph: rdfVar('source'),
+          subject: rdfVar('source'),
+          predicate: namedNode(RDF_TYPE),
+          object: docType,
+        }],
+        select: ['source', 'snippet', 'sourceKey', 'retrievalPointKey', 'retrievalKind', 'entityProvenance'],
+      });
+
+      expect(result.bindings).toHaveLength(1);
+      expect(result.bindings[0].sourceKey.value).toBe('source-node:context');
+      expect(result.bindings[0].retrievalPointKey.value).toBe('context-task');
+      expect(result.bindings[0].retrievalKind.value).toBe('file-chunk');
+      expect(JSON.parse(result.bindings[0].entityProvenance.value)).toEqual([{
+        entity: task.value,
+        predicate: 'https://schema.org/about',
+        value: 'Managed runtime handoff mentions the task.',
+        policyRole: 'searchableText',
+        occurrences: 1,
+      }]);
+    } finally {
+      await textEngine.close();
+    }
+  });
+
+  it('filters text and vector search candidates through RDF access scope', async () => {
+    const searchEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const publicSource = namedNode('https://pod.example/alice/.data/public/runbook.md');
+    const privateSource = namedNode('https://pod.example/alice/.data/private/runbook.md');
+    const accessScope = {
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read' as const,
+      principal: 'https://id.example/alice/profile/card#me',
+      allowedGraphUrls: [publicSource.value],
+      deniedGraphPrefixes: ['https://pod.example/alice/.data/private/'],
+      version: 'acl-v1',
+    };
+
+    try {
+      searchEngine.indexTextSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Public\n\nManaged runtime handoff.\n');
+      searchEngine.indexTextSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Private\n\nManaged runtime handoff.\n');
+      searchEngine.indexVectorSource({
+        source: publicSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/runbook.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'public',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime handoff.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [1, 0],
+        model: 'test-embedding',
+      }]);
+      searchEngine.indexVectorSource({
+        source: privateSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/private/runbook.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'private',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime handoff.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [1, 0],
+        model: 'test-embedding',
+      }]);
+
+      const text = searchEngine.query(applyRdfAccessScope({
+        patterns: [],
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        select: ['source', 'snippet'],
+      }, accessScope));
+      expect(text.bindings.map((binding) => binding.source.value)).toEqual([publicSource.value]);
+      expect(text.metrics.scannedRows).toBe(1);
+      expect(text.metrics.plan).toContain('PathScopeSource(workspace:https://pod.example/alice/,prefix:https://pod.example/alice/.data/)');
+      expect(text.metrics.plan).toContain('AclScopeSource(base-path:https://pod.example/alice/.data/ allowed:1 denied-prefix:1)');
+
+      const vector = searchEngine.query(applyRdfAccessScope({
+        patterns: [],
+        vectorSearch: [{
+          embedding: [1, 0],
+          vectorModel: 'test-embedding',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'snippet',
+        }],
+        select: ['source', 'snippet'],
+      }, accessScope));
+      expect(vector.bindings.map((binding) => binding.source.value)).toEqual([publicSource.value]);
+      expect(vector.metrics.scannedRows).toBe(1);
+    } finally {
+      await searchEngine.close();
+    }
+  });
+
+  it('applies basePath-only RDF access scope to graph pattern variables', () => {
+    const inScopeGraph = namedNode('https://pod.example/alice/.data/public/notes.ttl');
+    const outOfScopeGraph = namedNode('https://pod.example/alice/public/notes.ttl');
+    engine.put([
+      quad(
+        namedNode(`${inScopeGraph.value}#note`),
+        namedNode('https://schema.org/name'),
+        literal('in scope'),
+        inScopeGraph,
+      ),
+      quad(
+        namedNode(`${outOfScopeGraph.value}#note`),
+        namedNode('https://schema.org/name'),
+        literal('out of scope'),
+        outOfScopeGraph,
+      ),
+    ]);
+
+    const result = engine.query(applyRdfAccessScope({
+      patterns: [{
+        graph: rdfVar('graph'),
+        subject: rdfVar('subject'),
+        predicate: namedNode('https://schema.org/name'),
+        object: rdfVar('name'),
+      }],
+      select: ['graph', 'name'],
+      orderBy: [{ variable: 'graph' }],
+    }, {
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read',
+      principal: 'https://id.example/alice/profile/card#me',
+      version: 'acl-v1',
+    }));
+
+    expect(result.bindings.map((binding) => ({
+      graph: binding.graph.value,
+      name: binding.name.value,
+    }))).toEqual([
+      {
+        graph: inScopeGraph.value,
+        name: 'in scope',
+      },
+    ]);
+  });
+
+  it('applies basePath-only RDF access scope to text and vector search candidates', async () => {
+    const searchEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      vectorIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const inScopeSource = namedNode('https://pod.example/alice/.data/public/runbook.md');
+    const outOfScopeSource = namedNode('https://pod.example/alice/public/runbook.md');
+    const accessScope = {
+      basePath: 'https://pod.example/alice/.data/',
+      mode: 'read' as const,
+      principal: 'https://id.example/alice/profile/card#me',
+      version: 'acl-v1',
+    };
+
+    try {
+      searchEngine.indexTextSource({
+        source: inScopeSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/runbook.md',
+        contentType: 'text/markdown',
+      }, '# In scope\n\nManaged runtime handoff.\n');
+      searchEngine.indexTextSource({
+        source: outOfScopeSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: 'public/runbook.md',
+        contentType: 'text/markdown',
+      }, '# Out of scope\n\nManaged runtime handoff.\n');
+      searchEngine.indexVectorSource({
+        source: inScopeSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: '.data/public/runbook.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'in-scope',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime handoff.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [1, 0],
+        model: 'test-embedding',
+      }]);
+      searchEngine.indexVectorSource({
+        source: outOfScopeSource.value,
+        workspace: 'https://pod.example/alice/',
+        localPath: 'public/runbook.md',
+        contentType: 'text/markdown',
+      }, [{
+        chunkKey: 'out-of-scope',
+        ordinal: 0,
+        level: 1,
+        content: 'Managed runtime handoff.',
+        startOffset: 0,
+        endOffset: 24,
+        embedding: [1, 0],
+        model: 'test-embedding',
+      }]);
+
+      const text = searchEngine.query(applyRdfAccessScope({
+        patterns: [],
+        textSearch: [{
+          query: 'managed runtime',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'snippet',
+          orderBy: [{ field: 'source' }],
+        }],
+        select: ['source', 'snippet'],
+      }, accessScope));
+      expect(text.bindings.map((binding) => binding.source.value)).toEqual([inScopeSource.value]);
+      expect(text.metrics.plan).toContain('PathScopeSource(workspace:https://pod.example/alice/,prefix:https://pod.example/alice/.data/)');
+      expect(text.metrics.plan).toContain('AclScopeSource(base-path:https://pod.example/alice/.data/)');
+
+      const vector = searchEngine.query(applyRdfAccessScope({
+        patterns: [],
+        vectorSearch: [{
+          embedding: [1, 0],
+          vectorModel: 'test-embedding',
+          scope: { workspace: 'https://pod.example/alice/' },
+          source: 'source',
+          content: 'snippet',
+          orderBy: [{ field: 'source' }],
+        }],
+        select: ['source', 'snippet'],
+      }, accessScope));
+      expect(vector.bindings.map((binding) => binding.source.value)).toEqual([inScopeSource.value]);
+      expect(vector.metrics.plan).toContain('PathScopeSource(workspace:https://pod.example/alice/,prefix:https://pod.example/alice/.data/)');
+      expect(vector.metrics.plan).toContain('AclScopeSource(base-path:https://pod.example/alice/.data/)');
+    } finally {
+      await searchEngine.close();
     }
   });
 
@@ -4280,6 +5032,11 @@ describe('RdfQueryExecutor', () => {
 
       expect(sourceWindow.bindings).toEqual([]);
       expect(sourceWindow.metrics.plan).toContain('TextSearch("managed runtime"@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet limit:1)');
+      expect(sourceWindow.metrics.plan).toContain('TextMatchSource("managed runtime"@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet limit:1)');
+      expect(sourceWindow.metrics.plan).toContain('TopKPushdown(TextSearch limit:1)');
+      expect(sourceWindow.metrics.plan).toContain('NoTsFullMaterialize(TextSearch)');
+      expect(sourceWindow.metrics.plan.some((entry) => /^SourceEstimate\(TextMatchSource#0 rows:\d+ cost:\d+ selectivity:0\.\d+ topk:source-local/.test(entry))).toBe(true);
+      expect(sourceWindow.metrics.plan.some((entry) => /^SourceEstimate\(RdfBgpSource#0 rows:\d+ cost:\d+ selectivity:/.test(entry))).toBe(true);
 
       textEngine.put([
         quad(highScore, namedNode(RDF_TYPE), docType, highScore),
@@ -4310,6 +5067,7 @@ describe('RdfQueryExecutor', () => {
       expect(termToId(joinedWindow.bindings[0].source as any)).toBe(highScore.value);
       expect(joinedWindow.metrics.plan).toContain('Limit');
       expect(joinedWindow.metrics.plan.some((entry) => entry.includes('limit:1'))).toBe(false);
+      expect(joinedWindow.metrics.plan.some((entry) => entry.startsWith('TopKPushdown('))).toBe(false);
     } finally {
       await textEngine.close();
     }
@@ -4428,6 +5186,55 @@ describe('RdfQueryExecutor', () => {
       expect(result.bindings).toHaveLength(1);
       expect(termToId(result.bindings[0].source as any)).toBe(selected.value);
       expect(result.metrics.plan).toContain('TextSearch("managed runtime"@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet limit:1 order:source:desc)');
+      expect(result.metrics.plan).toContain('TopKPushdown(TextSearch limit:1 order:source:desc)');
+      expect(result.metrics.plan).toContain('NoTsFullMaterialize(TextSearch)');
+    } finally {
+      await textEngine.close();
+    }
+  });
+
+  it('reports per-source text cap pushdown in the query plan', async () => {
+    const textEngine = new SolidRdfEngine({
+      index: { path: ':memory:' },
+      textIndex: { path: ':memory:' },
+      autoOpen: true,
+    });
+    const source = namedNode('https://pod.example/alice/projects/demo/capped.md');
+    const docType = namedNode('https://schema.org/DigitalDocument');
+
+    try {
+      textEngine.put([
+        quad(source, namedNode(RDF_TYPE), docType, source),
+      ]);
+      textEngine.indexTextSource({
+        source: source.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'capped.md',
+        contentType: 'text/markdown',
+      }, '# A\n\nManaged runtime.\n\n# B\n\nManaged runtime again.\n');
+
+      const result = textEngine.query({
+        textSearch: [
+          {
+            query: 'managed runtime',
+            scope: { workspace: 'https://pod.example/alice/projects/demo/' },
+            source: 'source',
+            content: 'snippet',
+            perSourceLimit: 1,
+          },
+        ],
+        patterns: [
+          {
+            graph: rdfVar('source'),
+            subject: rdfVar('source'),
+            predicate: namedNode(RDF_TYPE),
+            object: docType,
+          },
+        ],
+        select: ['source', 'snippet'],
+      });
+
+      expect(result.metrics.plan).toContain('PerSourceCap(TextSearch per-source:1)');
     } finally {
       await textEngine.close();
     }
@@ -4460,6 +5267,7 @@ describe('RdfQueryExecutor', () => {
         quad(source, namedNode('https://schema.org/name'), literal('Design Notes'), source),
       ]);
       vectorEngine.indexVectorSource({
+        sourceKey: 'source-node:design',
         source: source.value,
         workspace: 'https://pod.example/alice/projects/demo/',
         localPath: 'design.md',
@@ -4475,7 +5283,37 @@ describe('RdfQueryExecutor', () => {
           startOffset: 0,
           endOffset: 36,
           embedding: [1, 0, 0],
+          provider: 'dashscope',
           model: 'test-embed',
+          modelVersion: '2026-06',
+          inputKind: 'semantic',
+          inputHash: 'sha256:semantic-design',
+          projectionPolicyVersion: 'p2-vector-policy',
+        },
+      ]);
+      vectorEngine.indexVectorSource({
+        sourceKey: 'source-node:design',
+        source: source.value,
+        workspace: 'https://pod.example/alice/projects/demo/',
+        localPath: 'design.md',
+        contentType: 'text/markdown',
+      }, [
+        {
+          chunkKey: 'overview',
+          ordinal: 0,
+          level: 1,
+          heading: 'Overview',
+          path: ['Overview'],
+          content: 'Wrong provider duplicate.',
+          startOffset: 0,
+          endOffset: 25,
+          embedding: [1, 0, 0],
+          provider: 'openai',
+          model: 'test-embed',
+          modelVersion: '2026-06',
+          inputKind: 'semantic',
+          inputHash: 'sha256:semantic-design-openai',
+          projectionPolicyVersion: 'p2-vector-policy',
         },
       ]);
 
@@ -4483,7 +5321,11 @@ describe('RdfQueryExecutor', () => {
         vectorSearch: [
           {
             embedding: [0.95, 0.05, 0],
+            vectorProvider: 'dashscope',
             vectorModel: 'test-embed',
+            vectorModelVersion: '2026-06',
+            vectorInputKind: 'semantic',
+            vectorProjectionPolicyVersion: 'p2-vector-policy',
             scope: { workspace: 'https://pod.example/alice/projects/demo/' },
             source: 'source',
             chunk: 'chunk',
@@ -4491,7 +5333,15 @@ describe('RdfQueryExecutor', () => {
             heading: 'heading',
             score: 'score',
             distance: 'distance',
+            scoreComponents: 'scoreComponents',
             model: 'model',
+            provider: 'provider',
+            modelVersion: 'modelVersion',
+            inputKind: 'inputKind',
+            inputHash: 'inputHash',
+            projectionPolicyVersion: 'projectionPolicyVersion',
+            sourceKey: 'sourceKey',
+            retrievalPoint: 'retrievalPointKey',
           },
         ],
         patterns: [
@@ -4502,7 +5352,24 @@ describe('RdfQueryExecutor', () => {
             object: rdfVar('type'),
           },
         ],
-        select: ['source', 'type', 'chunk', 'snippet', 'heading', 'score', 'distance', 'model'],
+        select: [
+          'source',
+          'type',
+          'chunk',
+          'snippet',
+          'heading',
+          'score',
+          'distance',
+          'scoreComponents',
+          'provider',
+          'model',
+          'modelVersion',
+          'inputKind',
+          'inputHash',
+          'projectionPolicyVersion',
+          'sourceKey',
+          'retrievalPointKey',
+        ],
       });
 
       expect(result.bindings).toHaveLength(1);
@@ -4513,7 +5380,20 @@ describe('RdfQueryExecutor', () => {
       expect(result.bindings[0].heading.value).toBe('Overview');
       expect(result.bindings[0].score.value).toMatch(/^0\./);
       expect(result.bindings[0].distance.value).toMatch(/^0\./);
+      expect(JSON.parse(result.bindings[0].scoreComponents.value)).toMatchObject({
+        sourceType: 'vector',
+        metric: 'cosine',
+        dimensions: 3,
+        dotProduct: 0.95,
+      });
+      expect(result.bindings[0].provider.value).toBe('dashscope');
       expect(result.bindings[0].model.value).toBe('test-embed');
+      expect(result.bindings[0].modelVersion.value).toBe('2026-06');
+      expect(result.bindings[0].inputKind.value).toBe('semantic');
+      expect(result.bindings[0].inputHash.value).toBe('sha256:semantic-design');
+      expect(result.bindings[0].projectionPolicyVersion.value).toBe('p2-vector-policy');
+      expect(result.bindings[0].sourceKey.value).toBe('source-node:design');
+      expect(result.bindings[0].retrievalPointKey.value).toBe('overview');
       expect(result.metrics.plan.some((entry) => entry.startsWith('VectorSearch('))).toBe(true);
       expect(result.metrics.indexChoices).toContain('vector-chunk');
       expect(result.metrics.plan).toContain(`IndexScan(graph:?source,subject:?source,predicate:${RDF_TYPE},object:?type)`);
@@ -4680,6 +5560,12 @@ describe('RdfQueryExecutor', () => {
 
       expect(sourceWindow.bindings).toEqual([]);
       expect(sourceWindow.metrics.plan).toContain('VectorSearch(cosine:2d@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet limit:1)');
+      expect(sourceWindow.metrics.plan).toContain('VectorMatchSource(cosine:2d@workspace:https://pod.example/alice/projects/demo/ source:?source,content:?snippet limit:1)');
+      expect(sourceWindow.metrics.plan).toContain('PathScopeSource(workspace:https://pod.example/alice/projects/demo/)');
+      expect(sourceWindow.metrics.plan).toContain('TopKPushdown(VectorSearch limit:1)');
+      expect(sourceWindow.metrics.plan).toContain('NoTsFullMaterialize(VectorSearch)');
+      expect(sourceWindow.metrics.plan.some((entry) => /^SourceEstimate\(VectorMatchSource#0 rows:\d+ cost:\d+ selectivity:0\.\d+ topk:source-local/.test(entry))).toBe(true);
+      expect(sourceWindow.metrics.plan.some((entry) => /^SourceEstimate\(RdfBgpSource#0 rows:\d+ cost:\d+ selectivity:/.test(entry))).toBe(true);
 
       vectorEngine.put([
         quad(highScore, namedNode(RDF_TYPE), docType, highScore),
@@ -4711,6 +5597,7 @@ describe('RdfQueryExecutor', () => {
       expect(termToId(joinedWindow.bindings[0].source as any)).toBe(highScore.value);
       expect(joinedWindow.metrics.plan).toContain('Limit');
       expect(joinedWindow.metrics.plan.some((entry) => entry.includes('limit:1'))).toBe(false);
+      expect(joinedWindow.metrics.plan.some((entry) => entry.startsWith('TopKPushdown(VectorSearch'))).toBe(false);
     } finally {
       await vectorEngine.close();
     }
@@ -4856,6 +5743,7 @@ describe('RdfQueryExecutor', () => {
       expect(result.bindings).toHaveLength(1);
       expect(termToId(result.bindings[0].chunk as any)).toBe(`${source.value}#chunk-far-first`);
       expect(result.metrics.plan).toContain('VectorSearch(cosine:2d@workspace:https://pod.example/alice/projects/demo/ source:?source,chunk:?chunk,content:?snippet limit:1 order:ordinal:asc)');
+      expect(result.metrics.plan).toContain('TopKPushdown(VectorSearch limit:1 order:ordinal:asc)');
     } finally {
       await vectorEngine.close();
     }
