@@ -4,23 +4,34 @@ import type { Term } from '@rdfjs/types';
 import {
   buildCloudReplacementTopology,
   CLOUD_REPLACEMENT_GROUP_WEIGHTS,
+  CLOUD_REPLACEMENT_THRESHOLDS,
+  calculateCloudReplacementThroughput,
+  calculateCloudReplacementThroughputRatio,
+  calculateCloudReplacementWeightedP95Ratio,
   canonicalCloudReplacementDigests,
   canonicalCloudReplacementRow,
   canonicalCloudReplacementTerm,
   cloudReplacementWorkloads,
   compareCloudReplacementCase,
   createCloudReplacementSampleIdentitySource,
+  decideCloudReplacement,
   measureCloudReplacementCase,
   measureCloudReplacementConcurrency,
+  renderCloudReplacementJson,
+  renderCloudReplacementMarkdown,
+  sanitizeCloudReplacementEnvironment,
   type CloudReplacementBinding,
   type CloudReplacementCacheMode,
   type CloudReplacementConcurrency,
   type CloudReplacementCorrectness,
+  type CloudReplacementDecisionInput,
   type CloudReplacementEngineAdapter,
   type CloudReplacementEngineId,
   type CloudReplacementExecution,
   type CloudReplacementLatency,
   type CloudReplacementPgDiagnostics,
+  type CloudReplacementRecommendation,
+  type CloudReplacementReport,
   type CloudReplacementSampleIdentitySource,
   type CloudReplacementWorkload,
   type CloudReplacementWorkloadGroup,
@@ -1800,5 +1811,538 @@ describe('cloud replacement benchmark', () => {
     expect(buildCloudReplacementTopology(2.9)).toHaveLength(140);
     expect(buildCloudReplacementTopology(0)).toHaveLength(70);
     expect(buildCloudReplacementTopology(-2)).toHaveLength(70);
+  });
+
+  const passingDecisionInput: CloudReplacementDecisionInput = {
+    correctnessPassed: true,
+    criticalShortP95Ratios: [ 1.05, 1.10 ],
+    weightedP95Ratio: 0.75,
+    throughputRatio: 1.30,
+    largeCaseSpeedups: [ 1.60, 2.10 ],
+    errorRate: 0,
+    memoryLimitRatio: 0.70,
+    tempDiskLimitRatio: 0.10,
+  };
+
+  const minimalCloudReplacementReport = (): CloudReplacementReport => ({
+    environment: {
+      database: 'xpod_benchmark',
+      postgresVersion: '17.5',
+      engineCommit: 'abc123',
+    },
+    targetFacts: 1,
+    actualFacts: 1,
+    correctnessFailures: [],
+    cases: [],
+    concurrency: [],
+    indexBuildAndStorage: {
+      rdf3x: { buildMs: 1, storageBytes: 1 },
+      qlever: { buildMs: 1, storageBytes: 1 },
+    },
+    resourceDiagnostics: {
+      rdf3x: {
+        sharedBlocksRead: null,
+        sharedBlocksHit: null,
+        tempBytes: null,
+        memoryPeakBytes: null,
+        memoryLimitBytes: null,
+        diagnosticsUnavailable: [],
+      },
+      qlever: {
+        sharedBlocksRead: null,
+        sharedBlocksHit: null,
+        tempBytes: null,
+        memoryPeakBytes: null,
+        memoryLimitBytes: null,
+        diagnosticsUnavailable: [],
+      },
+    },
+    decision: decideCloudReplacement(passingDecisionInput),
+  });
+
+  it('freezes the predeclared Cloud replacement thresholds', () => {
+    expect(CLOUD_REPLACEMENT_THRESHOLDS).toEqual({
+      maxCriticalShortP95Ratio: 1.20,
+      maxWeightedP95Ratio: 0.80,
+      minThroughputRatio: 1.25,
+      minLargeCaseSpeedup: 1.50,
+      minLargeWinningCases: 2,
+      maxMemoryLimitRatio: 0.85,
+      maxTempDiskLimitRatio: 0.20,
+      maxErrorRate: 0,
+    });
+    expect(Object.isFrozen(CLOUD_REPLACEMENT_THRESHOLDS)).toBe(true);
+  });
+
+  it('returns the three predeclared replacement outcomes in gate order', () => {
+    expect(decideCloudReplacement(passingDecisionInput).recommendation).toBe('replace');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      criticalShortP95Ratios: [ 1.25 ],
+    }).recommendation).toBe('selective-routing-candidate');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      correctnessPassed: false,
+    }).recommendation).toBe('retain-rdf3x');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      errorRate: 0.01,
+    }).recommendation).toBe('retain-rdf3x');
+    expectTypeOf<CloudReplacementRecommendation>()
+      .toEqualTypeOf<'replace' | 'retain-rdf3x' | 'selective-routing-candidate'>();
+  });
+
+  it('exposes every replacement gate and an isolated observed input', () => {
+    const decision = decideCloudReplacement(passingDecisionInput);
+
+    expect(decision.passed).toEqual({
+      correctness: true,
+      criticalShortP95: true,
+      weightedP95: true,
+      throughput: true,
+      aggregatePerformance: true,
+      largeCases: true,
+      errorRate: true,
+      memoryLimit: true,
+      tempDiskLimit: true,
+      resources: true,
+      all: true,
+    });
+    expect(decision.observed).toEqual(passingDecisionInput);
+    expect(decision.observed).not.toBe(passingDecisionInput);
+    expect(decision.observed.criticalShortP95Ratios)
+      .not.toBe(passingDecisionInput.criticalShortP95Ratios);
+    expect(decision.observed.largeCaseSpeedups).not.toBe(passingDecisionInput.largeCaseSpeedups);
+  });
+
+  it('accepts either weighted p95 or throughput for the aggregate performance gate', () => {
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      throughputRatio: 1,
+    }).recommendation).toBe('replace');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      weightedP95Ratio: 1,
+    }).recommendation).toBe('replace');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      weightedP95Ratio: 1,
+      throughputRatio: 1,
+    }).recommendation).toBe('selective-routing-candidate');
+  });
+
+  it('fails closed when critical short evidence or resource diagnostics are unknown', () => {
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      criticalShortP95Ratios: [],
+      largeCaseSpeedups: [],
+    }).recommendation).toBe('retain-rdf3x');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      criticalShortP95Ratios: [],
+    }).recommendation).toBe('selective-routing-candidate');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      memoryLimitRatio: null,
+      tempDiskLimitRatio: null,
+    }).recommendation).toBe('selective-routing-candidate');
+    expect(decideCloudReplacement({
+      ...passingDecisionInput,
+      largeCaseSpeedups: [ 1.49, 1.50 ],
+      memoryLimitRatio: null,
+    }).recommendation).toBe('retain-rdf3x');
+  });
+
+  it.each([
+    [ 'critical short NaN', { criticalShortP95Ratios: [ Number.NaN ] } ],
+    [ 'critical short infinity', { criticalShortP95Ratios: [ Number.POSITIVE_INFINITY ] } ],
+    [ 'weighted p95 negative', { weightedP95Ratio: -1 } ],
+    [ 'throughput infinity', { throughputRatio: Number.POSITIVE_INFINITY } ],
+    [ 'large speedup negative', { largeCaseSpeedups: [ -1 ] } ],
+    [ 'memory NaN', { memoryLimitRatio: Number.NaN } ],
+    [ 'temporary disk infinity', { tempDiskLimitRatio: Number.POSITIVE_INFINITY } ],
+  ])('rejects invalid decision ratio: %s', (_name, invalid) => {
+    expect(() => decideCloudReplacement({
+      ...passingDecisionInput,
+      ...invalid,
+    })).toThrow('must be finite and non-negative');
+  });
+
+  it.each([ Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01 ])(
+    'rejects error rate outside the finite [0, 1] interval: %s',
+    (errorRate) => {
+      expect(() => decideCloudReplacement({
+        ...passingDecisionInput,
+        errorRate,
+      })).toThrow('Cloud replacement errorRate must be finite and between 0 and 1');
+    },
+  );
+
+  it('weights p95 ratios equally within each predeclared workload group', () => {
+    const weighted = calculateCloudReplacementWeightedP95Ratio([
+      { group: 'short', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+      { group: 'short', rdf3xP95Ms: 10, qleverP95Ms: 10 },
+      { group: 'large', rdf3xP95Ms: 20, qleverP95Ms: 10 },
+      { group: 'authorization', rdf3xP95Ms: 4, qleverP95Ms: 2 },
+    ]);
+
+    expect(weighted).toBeCloseTo(0.65, 10);
+  });
+
+  it('rejects incomplete or invalid weighted p95 evidence', () => {
+    expect(() => calculateCloudReplacementWeightedP95Ratio([
+      { group: 'short', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+    ])).toThrow('requires at least one case for group large');
+    expect(() => calculateCloudReplacementWeightedP95Ratio([
+      { group: 'short', rdf3xP95Ms: 0, qleverP95Ms: 0 },
+      { group: 'large', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+      { group: 'authorization', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+    ])).toThrow('rdf3xP95Ms denominator must be finite and positive');
+    expect(() => calculateCloudReplacementWeightedP95Ratio([
+      { group: 'short', rdf3xP95Ms: 10, qleverP95Ms: Number.NaN },
+      { group: 'large', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+      { group: 'authorization', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+    ])).toThrow('qleverP95Ms must be finite and non-negative');
+    expect(() => calculateCloudReplacementWeightedP95Ratio([
+      { group: 'short', rdf3xP95Ms: Number.MIN_VALUE, qleverP95Ms: 1 },
+      { group: 'large', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+      { group: 'authorization', rdf3xP95Ms: 10, qleverP95Ms: 5 },
+    ])).toThrow('weighted p95 case ratio must be finite and non-negative');
+  });
+
+  it('computes throughput from total completed operations and total measured seconds', () => {
+    const rdf3x = [
+      { completed: 20, elapsedMs: 1_000 },
+      { completed: 40, elapsedMs: 3_000 },
+    ];
+    const qlever = [
+      { completed: 50, elapsedMs: 1_000 },
+      { completed: 100, elapsedMs: 3_000 },
+    ];
+
+    expect(calculateCloudReplacementThroughput(rdf3x)).toBe(15);
+    expect(calculateCloudReplacementThroughput(qlever)).toBe(37.5);
+    expect(calculateCloudReplacementThroughputRatio(rdf3x, qlever)).toBe(2.5);
+  });
+
+  it('rejects invalid throughput measurements and a zero baseline', () => {
+    expect(() => calculateCloudReplacementThroughput([]))
+      .toThrow('requires at least one measurement');
+    expect(() => calculateCloudReplacementThroughput([ { completed: 1, elapsedMs: 0 } ]))
+      .toThrow('elapsedMs denominator must be finite and positive');
+    expect(() => calculateCloudReplacementThroughput([
+      { completed: Number.POSITIVE_INFINITY, elapsedMs: 1 },
+    ])).toThrow('completed must be a finite non-negative integer');
+    expect(() => calculateCloudReplacementThroughputRatio(
+      [ { completed: 0, elapsedMs: 1_000 } ],
+      [ { completed: 1, elapsedMs: 1_000 } ],
+    )).toThrow('RDF3X throughput denominator must be finite and positive');
+    expect(() => calculateCloudReplacementThroughput([
+      { completed: Number.MAX_SAFE_INTEGER, elapsedMs: Number.MIN_VALUE },
+    ])).toThrow('calculated throughput must be finite and non-negative');
+    expect(() => calculateCloudReplacementThroughputRatio(
+      [ { completed: 1, elapsedMs: 1e303 } ],
+      [ { completed: 1, elapsedMs: 1e-297 } ],
+    )).toThrow('throughput ratio must be finite and non-negative');
+  });
+
+  it('redacts connection URLs and correctly decodes the database identity', () => {
+    const sanitized = sanitizeCloudReplacementEnvironment({
+      connectionString: 'postgres://user:secret@db.example/xpod%20benchmark?sslmode=require#private',
+      postgresVersion: '17.5',
+      engineCommit: 'abc123',
+    });
+
+    expect(sanitized).toEqual({
+      database: 'xpod benchmark',
+      postgresVersion: '17.5',
+      engineCommit: 'abc123',
+    });
+    expect(JSON.stringify(sanitized)).not.toMatch(/secret|db\.example|user|sslmode|private/u);
+    expect(Object.keys(sanitized).sort()).toEqual([ 'database', 'engineCommit', 'postgresVersion' ]);
+    expect(() => sanitizeCloudReplacementEnvironment({
+      connectionString: 'postgres://user:secret@db.example/',
+      postgresVersion: '17.5',
+      engineCommit: 'abc123',
+    })).toThrow('Cloud replacement connection URL requires a database path');
+  });
+
+  it.each([
+    'access_token',
+    'accessToken',
+    'refresh_token',
+    'refreshToken',
+    'client_secret',
+    'clientSecret',
+    'api_key',
+    'apiKey',
+    'secret_key',
+    'secretKey',
+    'private_key',
+    'privateKey',
+  ])('rejects credential report key %s', (key) => {
+    const report = {
+      ...minimalCloudReplacementReport(),
+      [key]: 'sensitive-value',
+    } as unknown as CloudReplacementReport;
+
+    expect(() => renderCloudReplacementJson(report))
+      .toThrow('Cloud replacement report contains credential fields');
+    expect(() => renderCloudReplacementMarkdown(report))
+      .toThrow('Cloud replacement report contains credential fields');
+  });
+
+  it.each([
+    'access_token=sensitive-value',
+    'accessToken=sensitive-value',
+    'refresh_token: sensitive-value',
+    'refreshToken: sensitive-value',
+    'client_secret=sensitive-value',
+    'clientSecret=sensitive-value',
+    'api_key=sensitive-value',
+    'apiKey=sensitive-value',
+    'secret_key=sensitive-value',
+    'secretKey=sensitive-value',
+    'private_key=sensitive-value',
+    'privateKey=sensitive-value',
+    'password=sensitive-value',
+    'passwd=sensitive-value',
+    'token=sensitive-value',
+    'secret=sensitive-value',
+    'credential=sensitive-value',
+    'credentials=sensitive-value',
+    'Authorization: Bearer header.payload.signature',
+  ])('rejects credential-bearing report text %s', (credentialText) => {
+    const report = {
+      ...minimalCloudReplacementReport(),
+      correctnessFailures: [ credentialText ],
+    };
+
+    expect(() => renderCloudReplacementJson(report))
+      .toThrow('Cloud replacement report contains credential-bearing text');
+    expect(() => renderCloudReplacementMarkdown(report))
+      .toThrow('Cloud replacement report contains credential-bearing text');
+  });
+
+  it.each([
+    'query=point-lookup',
+    'hash=multiset-digest',
+    'authorization: denied by scope',
+    'cacheKey=point-lookup',
+    'key=subject-order',
+  ])('renders benign report text assignment %s', (benignText) => {
+    const report = {
+      ...minimalCloudReplacementReport(),
+      correctnessFailures: [ benignText ],
+    };
+
+    expect(JSON.parse(renderCloudReplacementJson(report))).toMatchObject({
+      correctnessFailures: [ benignText ],
+    });
+    expect(renderCloudReplacementMarkdown(report)).toContain(benignText);
+  });
+
+  it('escapes HTML and preserves an escaped pipe inside Markdown tables', () => {
+    const html = '<img src=x onerror=alert(1)>';
+    const report: CloudReplacementReport = {
+      ...minimalCloudReplacementReport(),
+      correctnessFailures: [ html, 'Tom & <Admin>' ],
+      cases: [
+        {
+          id: String.raw`left\|right`,
+          group: 'short',
+          correctnessFailures: [ html ],
+          rdf3x: { fallbackReason: null, coldMs: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1 },
+          qlever: { fallbackReason: null, coldMs: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1 },
+        },
+      ],
+    };
+
+    const markdown = renderCloudReplacementMarkdown(report);
+
+    expect(markdown).not.toContain('<img');
+    expect(markdown).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(markdown).toContain('Tom &amp; &lt;Admin&gt;');
+    expect(markdown).toContain(String.raw`left\\\|right`);
+    expect(markdown).not.toContain('&amp;lt;');
+  });
+
+  it('renders complete sanitized JSON and Markdown reports with one recommendation', () => {
+    const report: CloudReplacementReport = {
+      environment: sanitizeCloudReplacementEnvironment({
+        connectionString: 'postgres://user:secret@db.example/xpod_benchmark?sslmode=require#private',
+        postgresVersion: '17.5',
+        engineCommit: 'abc123',
+      }),
+      targetFacts: 10_000_000,
+      actualFacts: 10_000_128,
+      correctnessFailures: [ 'large-mismatch' ],
+      cases: [
+        {
+          id: 'point-lookup',
+          group: 'short',
+          correctnessFailures: [],
+          rdf3x: {
+            fallbackReason: null,
+            coldMs: 12,
+            p50Ms: 4,
+            p95Ms: 8,
+            p99Ms: 10,
+          },
+          qlever: {
+            fallbackReason: null,
+            coldMs: 9,
+            p50Ms: 3,
+            p95Ms: 6,
+            p99Ms: 7,
+          },
+        },
+      ],
+      concurrency: [
+        {
+          caseId: 'point-lookup',
+          engine: 'qlever',
+          concurrency: 8,
+          completed: 800,
+          errors: 0,
+          elapsedMs: 10_000,
+          throughputPerSecond: 80,
+        },
+      ],
+      indexBuildAndStorage: {
+        rdf3x: { buildMs: 12_000, storageBytes: 400_000_000 },
+        qlever: { buildMs: 9_000, storageBytes: 350_000_000 },
+      },
+      resourceDiagnostics: {
+        rdf3x: {
+          sharedBlocksRead: 100,
+          sharedBlocksHit: 10_000,
+          tempBytes: 0,
+          memoryPeakBytes: 400_000_000,
+          memoryLimitBytes: 1_000_000_000,
+          diagnosticsUnavailable: [],
+        },
+        qlever: {
+          sharedBlocksRead: 80,
+          sharedBlocksHit: 12_000,
+          tempBytes: 10_000_000,
+          memoryPeakBytes: 700_000_000,
+          memoryLimitBytes: 1_000_000_000,
+          diagnosticsUnavailable: [ 'cpu-time' ],
+        },
+      },
+      decision: decideCloudReplacement(passingDecisionInput),
+    };
+
+    const json = renderCloudReplacementJson(report);
+    const markdown = renderCloudReplacementMarkdown(report);
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+    const countRecommendationKeys = (value: unknown): number => {
+      if (Array.isArray(value)) {
+        return value.reduce((count, entry) => count + countRecommendationKeys(entry), 0);
+      }
+      if (!value || typeof value !== 'object') {
+        return 0;
+      }
+      return Object.entries(value).reduce((count, [ key, entry ]) =>
+        count + (key === 'recommendation' ? 1 : 0) + countRecommendationKeys(entry), 0);
+    };
+
+    expect(parsed).toMatchObject({
+      environment: { database: 'xpod_benchmark', postgresVersion: '17.5', engineCommit: 'abc123' },
+      targetFacts: 10_000_000,
+      actualFacts: 10_000_128,
+      correctnessFailures: [ 'large-mismatch' ],
+      decision: {
+        recommendation: 'replace',
+        passed: { correctness: true, all: true },
+      },
+    });
+    expect(countRecommendationKeys(parsed)).toBe(1);
+    expect(markdown.match(/recommendation/giu)).toHaveLength(1);
+    for (const expected of [
+      'xpod_benchmark',
+      '17.5',
+      'abc123',
+      '10,000,000',
+      '10,000,128',
+      'large-mismatch',
+      'point-lookup',
+      'cold',
+      'p50',
+      'p95',
+      'p99',
+      '80',
+      '12,000',
+      '400,000,000',
+      'sharedBlocksRead',
+      'cpu-time',
+      'criticalShortP95',
+      'aggregatePerformance',
+      'replace',
+    ]) {
+      expect(markdown).toContain(expected);
+    }
+    expect(`${json}\n${markdown}`).not.toMatch(
+      /secret|db\.example|user|sslmode|private|connectionString/iu,
+    );
+  });
+
+  it('rejects raw connection fields and credential-bearing report strings', () => {
+    const report = {
+      environment: {
+        database: 'xpod_benchmark',
+        postgresVersion: '17.5',
+        engineCommit: 'abc123',
+        connectionString: 'postgres://user:secret@db.example/xpod_benchmark',
+      },
+      targetFacts: 1,
+      actualFacts: 1,
+      correctnessFailures: [],
+      cases: [],
+      concurrency: [],
+      indexBuildAndStorage: {
+        rdf3x: { buildMs: 1, storageBytes: 1 },
+        qlever: { buildMs: 1, storageBytes: 1 },
+      },
+      resourceDiagnostics: {
+        rdf3x: {
+          sharedBlocksRead: null,
+          sharedBlocksHit: null,
+          tempBytes: null,
+          memoryPeakBytes: null,
+          memoryLimitBytes: null,
+          diagnosticsUnavailable: [],
+        },
+        qlever: {
+          sharedBlocksRead: null,
+          sharedBlocksHit: null,
+          tempBytes: null,
+          memoryPeakBytes: null,
+          memoryLimitBytes: null,
+          diagnosticsUnavailable: [],
+        },
+      },
+      decision: decideCloudReplacement(passingDecisionInput),
+    } as unknown as CloudReplacementReport;
+
+    expect(() => renderCloudReplacementJson(report))
+      .toThrow('Cloud replacement report environment must contain only sanitized fields');
+    expect(() => renderCloudReplacementMarkdown({
+      ...report,
+      environment: {
+        database: 'xpod_benchmark',
+        postgresVersion: '17.5',
+        engineCommit: 'postgres://user:secret@db.example/xpod_benchmark',
+      },
+    })).toThrow('Cloud replacement report contains credential-bearing text');
+    expect(() => renderCloudReplacementJson({
+      ...report,
+      environment: {
+        database: 'xpod_benchmark',
+        postgresVersion: '17.5',
+        engineCommit: 'postgres://db.example/xpod_benchmark',
+      },
+    })).toThrow('Cloud replacement report contains credential-bearing text');
   });
 });

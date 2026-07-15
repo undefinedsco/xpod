@@ -543,6 +543,726 @@ export const CLOUD_REPLACEMENT_GROUP_WEIGHTS = Object.freeze({
   authorization: 0.10,
 });
 
+export const CLOUD_REPLACEMENT_THRESHOLDS = Object.freeze({
+  maxCriticalShortP95Ratio: 1.20,
+  maxWeightedP95Ratio: 0.80,
+  minThroughputRatio: 1.25,
+  minLargeCaseSpeedup: 1.50,
+  minLargeWinningCases: 2,
+  maxMemoryLimitRatio: 0.85,
+  maxTempDiskLimitRatio: 0.20,
+  maxErrorRate: 0,
+});
+
+export interface CloudReplacementDecisionInput {
+  correctnessPassed: boolean;
+  criticalShortP95Ratios: number[];
+  weightedP95Ratio: number;
+  throughputRatio: number;
+  largeCaseSpeedups: number[];
+  errorRate: number;
+  memoryLimitRatio: number | null;
+  tempDiskLimitRatio: number | null;
+}
+
+export type CloudReplacementRecommendation =
+  | 'replace'
+  | 'retain-rdf3x'
+  | 'selective-routing-candidate';
+
+export interface CloudReplacementDecisionPassed {
+  correctness: boolean;
+  criticalShortP95: boolean;
+  weightedP95: boolean;
+  throughput: boolean;
+  aggregatePerformance: boolean;
+  largeCases: boolean;
+  errorRate: boolean;
+  memoryLimit: boolean;
+  tempDiskLimit: boolean;
+  resources: boolean;
+  all: boolean;
+}
+
+export interface CloudReplacementDecision {
+  recommendation: CloudReplacementRecommendation;
+  passed: CloudReplacementDecisionPassed;
+  observed: CloudReplacementDecisionInput;
+}
+
+export interface CloudReplacementP95Comparison {
+  group: CloudReplacementWorkloadGroup;
+  rdf3xP95Ms: number;
+  qleverP95Ms: number;
+}
+
+export interface CloudReplacementThroughputMeasurement {
+  completed: number;
+  elapsedMs: number;
+}
+
+export interface CloudReplacementEnvironmentInput {
+  connectionString: string;
+  postgresVersion: string;
+  engineCommit: string;
+}
+
+export interface CloudReplacementEnvironment {
+  database: string;
+  postgresVersion: string;
+  engineCommit: string;
+}
+
+export interface CloudReplacementReportEngineCase {
+  fallbackReason: string | null;
+  coldMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+}
+
+export interface CloudReplacementReportCase {
+  id: string;
+  group: CloudReplacementWorkloadGroup;
+  correctnessFailures: string[];
+  rdf3x: CloudReplacementReportEngineCase;
+  qlever: CloudReplacementReportEngineCase;
+}
+
+export interface CloudReplacementReportConcurrency {
+  caseId: string;
+  engine: CloudReplacementEngineId;
+  concurrency: 1 | 8 | 32;
+  completed: number;
+  errors: number;
+  elapsedMs: number;
+  throughputPerSecond: number;
+}
+
+export interface CloudReplacementIndexBuildAndStorage {
+  buildMs: number;
+  storageBytes: number;
+}
+
+export interface CloudReplacementReport {
+  environment: CloudReplacementEnvironment;
+  targetFacts: number;
+  actualFacts: number;
+  correctnessFailures: string[];
+  cases: CloudReplacementReportCase[];
+  concurrency: CloudReplacementReportConcurrency[];
+  indexBuildAndStorage: Record<CloudReplacementEngineId, CloudReplacementIndexBuildAndStorage>;
+  resourceDiagnostics: Record<CloudReplacementEngineId, CloudReplacementPgDiagnostics>;
+  decision: CloudReplacementDecision;
+}
+
+export function decideCloudReplacement(
+  input: CloudReplacementDecisionInput,
+): CloudReplacementDecision {
+  if (typeof input.correctnessPassed !== 'boolean') {
+    throw new Error('Cloud replacement correctnessPassed must be boolean');
+  }
+  assertCloudReplacementRatioArray(
+    input.criticalShortP95Ratios,
+    'criticalShortP95Ratios',
+  );
+  assertCloudReplacementFiniteNonNegative(input.weightedP95Ratio, 'weightedP95Ratio');
+  assertCloudReplacementFiniteNonNegative(input.throughputRatio, 'throughputRatio');
+  assertCloudReplacementRatioArray(input.largeCaseSpeedups, 'largeCaseSpeedups');
+  if (!Number.isFinite(input.errorRate) || input.errorRate < 0 || input.errorRate > 1) {
+    throw new Error('Cloud replacement errorRate must be finite and between 0 and 1');
+  }
+  assertCloudReplacementNullableRatio(input.memoryLimitRatio, 'memoryLimitRatio');
+  assertCloudReplacementNullableRatio(input.tempDiskLimitRatio, 'tempDiskLimitRatio');
+
+  const observed: CloudReplacementDecisionInput = {
+    ...input,
+    criticalShortP95Ratios: [ ...input.criticalShortP95Ratios ],
+    largeCaseSpeedups: [ ...input.largeCaseSpeedups ],
+  };
+  const criticalShortP95 = observed.criticalShortP95Ratios.length > 0 &&
+    observed.criticalShortP95Ratios.every((ratio) =>
+      ratio <= CLOUD_REPLACEMENT_THRESHOLDS.maxCriticalShortP95Ratio);
+  const weightedP95 = observed.weightedP95Ratio <=
+    CLOUD_REPLACEMENT_THRESHOLDS.maxWeightedP95Ratio;
+  const throughput = observed.throughputRatio >=
+    CLOUD_REPLACEMENT_THRESHOLDS.minThroughputRatio;
+  const aggregatePerformance = weightedP95 || throughput;
+  const largeCases = observed.largeCaseSpeedups.filter((speedup) =>
+    speedup >= CLOUD_REPLACEMENT_THRESHOLDS.minLargeCaseSpeedup).length >=
+    CLOUD_REPLACEMENT_THRESHOLDS.minLargeWinningCases;
+  const errorRate = observed.errorRate <= CLOUD_REPLACEMENT_THRESHOLDS.maxErrorRate;
+  const memoryLimit = observed.memoryLimitRatio !== null &&
+    observed.memoryLimitRatio <= CLOUD_REPLACEMENT_THRESHOLDS.maxMemoryLimitRatio;
+  const tempDiskLimit = observed.tempDiskLimitRatio !== null &&
+    observed.tempDiskLimitRatio <= CLOUD_REPLACEMENT_THRESHOLDS.maxTempDiskLimitRatio;
+  const resources = memoryLimit && tempDiskLimit;
+  const all = observed.correctnessPassed && criticalShortP95 && aggregatePerformance &&
+    largeCases && errorRate && resources;
+  const passed: CloudReplacementDecisionPassed = {
+    correctness: observed.correctnessPassed,
+    criticalShortP95,
+    weightedP95,
+    throughput,
+    aggregatePerformance,
+    largeCases,
+    errorRate,
+    memoryLimit,
+    tempDiskLimit,
+    resources,
+    all,
+  };
+
+  let recommendation: CloudReplacementRecommendation = 'retain-rdf3x';
+  if (observed.correctnessPassed && errorRate) {
+    if (all) {
+      recommendation = 'replace';
+    } else if (largeCases && (!criticalShortP95 || !aggregatePerformance || !resources)) {
+      recommendation = 'selective-routing-candidate';
+    }
+  }
+
+  return { recommendation, passed, observed };
+}
+
+export function calculateCloudReplacementWeightedP95Ratio(
+  comparisons: readonly CloudReplacementP95Comparison[],
+): number {
+  const groups = Object.keys(CLOUD_REPLACEMENT_GROUP_WEIGHTS) as CloudReplacementWorkloadGroup[];
+  for (const comparison of comparisons) {
+    if (!groups.includes(comparison.group)) {
+      throw new Error(`Unknown Cloud replacement workload group: ${comparison.group}`);
+    }
+  }
+
+  const ratio = groups.reduce((weightedRatio, group) => {
+    const cases = comparisons.filter((comparison) => comparison.group === group);
+    if (cases.length === 0) {
+      throw new Error(`Cloud replacement weighted p95 requires at least one case for group ${group}`);
+    }
+    const groupRatio = cases.reduce((total, comparison) => {
+      assertCloudReplacementFinitePositiveDenominator(
+        comparison.rdf3xP95Ms,
+        'rdf3xP95Ms',
+      );
+      assertCloudReplacementFiniteNonNegative(comparison.qleverP95Ms, 'qleverP95Ms');
+      const caseRatio = comparison.qleverP95Ms / comparison.rdf3xP95Ms;
+      assertCloudReplacementFiniteNonNegative(caseRatio, 'weighted p95 case ratio');
+      return total + caseRatio;
+    }, 0) / cases.length;
+    return weightedRatio + CLOUD_REPLACEMENT_GROUP_WEIGHTS[group] * groupRatio;
+  }, 0);
+  assertCloudReplacementFiniteNonNegative(ratio, 'weighted p95 ratio');
+  return ratio;
+}
+
+export function calculateCloudReplacementThroughput(
+  measurements: readonly CloudReplacementThroughputMeasurement[],
+): number {
+  if (measurements.length === 0) {
+    throw new Error('Cloud replacement throughput requires at least one measurement');
+  }
+  let completed = 0;
+  let elapsedMs = 0;
+  for (const measurement of measurements) {
+    if (!Number.isFinite(measurement.completed) || !Number.isInteger(measurement.completed) ||
+      measurement.completed < 0) {
+      throw new Error('Cloud replacement throughput completed must be a finite non-negative integer');
+    }
+    assertCloudReplacementFinitePositiveDenominator(measurement.elapsedMs, 'elapsedMs');
+    completed += measurement.completed;
+    elapsedMs += measurement.elapsedMs;
+  }
+  assertCloudReplacementFiniteNonNegative(completed, 'throughput completed total');
+  assertCloudReplacementFinitePositiveDenominator(elapsedMs, 'elapsedMs total');
+  const throughput = completed / (elapsedMs / 1_000);
+  assertCloudReplacementFiniteNonNegative(throughput, 'calculated throughput');
+  return throughput;
+}
+
+export function calculateCloudReplacementThroughputRatio(
+  rdf3xMeasurements: readonly CloudReplacementThroughputMeasurement[],
+  qleverMeasurements: readonly CloudReplacementThroughputMeasurement[],
+): number {
+  const rdf3xThroughput = calculateCloudReplacementThroughput(rdf3xMeasurements);
+  const qleverThroughput = calculateCloudReplacementThroughput(qleverMeasurements);
+  assertCloudReplacementFinitePositiveDenominator(rdf3xThroughput, 'RDF3X throughput');
+  const ratio = qleverThroughput / rdf3xThroughput;
+  assertCloudReplacementFiniteNonNegative(ratio, 'throughput ratio');
+  return ratio;
+}
+
+export function sanitizeCloudReplacementEnvironment(
+  input: CloudReplacementEnvironmentInput,
+): CloudReplacementEnvironment {
+  const url = new URL(input.connectionString);
+  if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') {
+    throw new Error('Cloud replacement connection URL must use postgres or postgresql');
+  }
+  const encodedDatabase = url.pathname.replace(/^\/+/, '');
+  if (encodedDatabase.length === 0) {
+    throw new Error('Cloud replacement connection URL requires a database path');
+  }
+  const database = decodeURIComponent(encodedDatabase);
+  if (database.length === 0) {
+    throw new Error('Cloud replacement connection URL requires a database path');
+  }
+  return {
+    database,
+    postgresVersion: input.postgresVersion,
+    engineCommit: input.engineCommit,
+  };
+}
+
+export function renderCloudReplacementJson(report: CloudReplacementReport): string {
+  return JSON.stringify(normalizeCloudReplacementReport(report), null, 2);
+}
+
+export function renderCloudReplacementMarkdown(report: CloudReplacementReport): string {
+  const normalized = normalizeCloudReplacementReport(report);
+  const lines = [
+    '# Cloud RDF Replacement Benchmark',
+    '',
+    '## Environment',
+    '',
+    `- Database: ${cloudReplacementMarkdownText(normalized.environment.database)}`,
+    `- PostgreSQL: ${cloudReplacementMarkdownText(normalized.environment.postgresVersion)}`,
+    `- Engine commit: ${cloudReplacementMarkdownText(normalized.environment.engineCommit)}`,
+    '',
+    '## Dataset',
+    '',
+    `- Target facts: ${cloudReplacementReportNumber(normalized.targetFacts)}`,
+    `- Actual facts: ${cloudReplacementReportNumber(normalized.actualFacts)}`,
+    '',
+    '## Correctness failures',
+    '',
+    ...(normalized.correctnessFailures.length > 0
+      ? normalized.correctnessFailures.map((failure) =>
+        `- ${cloudReplacementMarkdownText(failure)}`)
+      : [ '- None' ]),
+    '',
+    '## Case latency',
+    '',
+    '| Case | Group | Engine | cold (ms) | p50 (ms) | p95 (ms) | p99 (ms) | Fallback | Correctness failures |',
+    '| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |',
+  ];
+
+  for (const benchmarkCase of normalized.cases) {
+    for (const engine of [ 'rdf3x', 'qlever' ] as const) {
+      const result = benchmarkCase[engine];
+      lines.push([
+        cloudReplacementMarkdownText(benchmarkCase.id),
+        benchmarkCase.group,
+        engine,
+        cloudReplacementReportNumber(result.coldMs),
+        cloudReplacementReportNumber(result.p50Ms),
+        cloudReplacementReportNumber(result.p95Ms),
+        cloudReplacementReportNumber(result.p99Ms),
+        cloudReplacementMarkdownText(result.fallbackReason ?? 'none'),
+        cloudReplacementMarkdownText(benchmarkCase.correctnessFailures.join(', ') || 'none'),
+      ].join(' | ').replace(/^/u, '| ').replace(/$/u, ' |'));
+    }
+  }
+
+  lines.push(
+    '',
+    '## Concurrency throughput',
+    '',
+    '| Case | Engine | Concurrency | Completed | Errors | Measured (ms) | Throughput (ops/s) |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: |',
+    ...normalized.concurrency.map((measurement) => [
+      cloudReplacementMarkdownText(measurement.caseId),
+      measurement.engine,
+      measurement.concurrency,
+      cloudReplacementReportNumber(measurement.completed),
+      cloudReplacementReportNumber(measurement.errors),
+      cloudReplacementReportNumber(measurement.elapsedMs),
+      cloudReplacementReportNumber(measurement.throughputPerSecond),
+    ].join(' | ').replace(/^/u, '| ').replace(/$/u, ' |')),
+    '',
+    '## Index build and storage',
+    '',
+    '| Engine | Build (ms) | Storage (bytes) |',
+    '| --- | ---: | ---: |',
+    ...([ 'rdf3x', 'qlever' ] as const).map((engine) => {
+      const metric = normalized.indexBuildAndStorage[engine];
+      return `| ${engine} | ${cloudReplacementReportNumber(metric.buildMs)} | ` +
+        `${cloudReplacementReportNumber(metric.storageBytes)} |`;
+    }),
+    '',
+    '## Resource diagnostics',
+    '',
+    '| Engine | sharedBlocksRead | sharedBlocksHit | tempBytes | memoryPeakBytes | memoryLimitBytes | Unavailable |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | --- |',
+    ...([ 'rdf3x', 'qlever' ] as const).map((engine) => {
+      const diagnostics = normalized.resourceDiagnostics[engine];
+      return [
+        engine,
+        cloudReplacementNullableReportNumber(diagnostics.sharedBlocksRead),
+        cloudReplacementNullableReportNumber(diagnostics.sharedBlocksHit),
+        cloudReplacementNullableReportNumber(diagnostics.tempBytes),
+        cloudReplacementNullableReportNumber(diagnostics.memoryPeakBytes),
+        cloudReplacementNullableReportNumber(diagnostics.memoryLimitBytes),
+        cloudReplacementMarkdownText(diagnostics.diagnosticsUnavailable.join(', ') || 'none'),
+      ].join(' | ').replace(/^/u, '| ').replace(/$/u, ' |');
+    }),
+    '',
+    '## Gates',
+    '',
+    '| Gate | Passed | Observed | Threshold |',
+    '| --- | --- | --- | --- |',
+    ...cloudReplacementGateRows(normalized.decision),
+    '',
+    '## Decision',
+    '',
+    `- Recommendation: ${normalized.decision.recommendation}`,
+    '',
+  );
+  return lines.join('\n');
+}
+
+function assertCloudReplacementRatioArray(value: number[], name: string): void {
+  if (!Array.isArray(value)) {
+    throw new Error(`Cloud replacement ${name} must be an array`);
+  }
+  value.forEach((ratio, index) =>
+    assertCloudReplacementFiniteNonNegative(ratio, `${name}[${index}]`));
+}
+
+function assertCloudReplacementNullableRatio(value: number | null, name: string): void {
+  if (value !== null) {
+    assertCloudReplacementFiniteNonNegative(value, name);
+  }
+}
+
+function assertCloudReplacementFiniteNonNegative(value: number, name: string): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`Cloud replacement ${name} must be finite and non-negative`);
+  }
+}
+
+function assertCloudReplacementFinitePositiveDenominator(value: number, name: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Cloud replacement ${name} denominator must be finite and positive`);
+  }
+}
+
+function normalizeCloudReplacementReport(report: CloudReplacementReport): CloudReplacementReport {
+  const environment = normalizeCloudReplacementReportEnvironment(report.environment);
+  assertCloudReplacementReportHasNoCredentialKeys(report);
+  const normalized: CloudReplacementReport = {
+    environment,
+    targetFacts: cloudReplacementReportInteger(report.targetFacts, 'targetFacts'),
+    actualFacts: cloudReplacementReportInteger(report.actualFacts, 'actualFacts'),
+    correctnessFailures: cloudReplacementReportStrings(
+      report.correctnessFailures,
+      'correctnessFailures',
+    ),
+    cases: report.cases.map((benchmarkCase, index) => ({
+      id: cloudReplacementReportText(benchmarkCase.id, `cases[${index}].id`),
+      group: cloudReplacementReportGroup(benchmarkCase.group),
+      correctnessFailures: cloudReplacementReportStrings(
+        benchmarkCase.correctnessFailures,
+        `cases[${index}].correctnessFailures`,
+      ),
+      rdf3x: normalizeCloudReplacementReportEngineCase(
+        benchmarkCase.rdf3x,
+        `cases[${index}].rdf3x`,
+      ),
+      qlever: normalizeCloudReplacementReportEngineCase(
+        benchmarkCase.qlever,
+        `cases[${index}].qlever`,
+      ),
+    })),
+    concurrency: report.concurrency.map((measurement, index) => ({
+      caseId: cloudReplacementReportText(
+        measurement.caseId,
+        `concurrency[${index}].caseId`,
+      ),
+      engine: cloudReplacementReportEngine(measurement.engine),
+      concurrency: cloudReplacementReportConcurrency(measurement.concurrency),
+      completed: cloudReplacementReportInteger(
+        measurement.completed,
+        `concurrency[${index}].completed`,
+      ),
+      errors: cloudReplacementReportInteger(
+        measurement.errors,
+        `concurrency[${index}].errors`,
+      ),
+      elapsedMs: cloudReplacementReportNumberValue(
+        measurement.elapsedMs,
+        `concurrency[${index}].elapsedMs`,
+      ),
+      throughputPerSecond: cloudReplacementReportNumberValue(
+        measurement.throughputPerSecond,
+        `concurrency[${index}].throughputPerSecond`,
+      ),
+    })),
+    indexBuildAndStorage: {
+      rdf3x: normalizeCloudReplacementIndexBuildAndStorage(
+        report.indexBuildAndStorage.rdf3x,
+        'indexBuildAndStorage.rdf3x',
+      ),
+      qlever: normalizeCloudReplacementIndexBuildAndStorage(
+        report.indexBuildAndStorage.qlever,
+        'indexBuildAndStorage.qlever',
+      ),
+    },
+    resourceDiagnostics: {
+      rdf3x: normalizeCloudReplacementDiagnostics(
+        report.resourceDiagnostics.rdf3x,
+        'resourceDiagnostics.rdf3x',
+      ),
+      qlever: normalizeCloudReplacementDiagnostics(
+        report.resourceDiagnostics.qlever,
+        'resourceDiagnostics.qlever',
+      ),
+    },
+    decision: decideCloudReplacement(report.decision.observed),
+  };
+  assertCloudReplacementReportHasNoCredentialText(normalized);
+  return normalized;
+}
+
+function normalizeCloudReplacementReportEnvironment(
+  environment: CloudReplacementEnvironment,
+): CloudReplacementEnvironment {
+  if (!environment || typeof environment !== 'object') {
+    throw new Error('Cloud replacement report environment must contain only sanitized fields');
+  }
+  const expected = [ 'database', 'engineCommit', 'postgresVersion' ];
+  const actual = Object.keys(environment).sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error('Cloud replacement report environment must contain only sanitized fields');
+  }
+  return {
+    database: cloudReplacementReportText(environment.database, 'environment.database'),
+    postgresVersion: cloudReplacementReportText(
+      environment.postgresVersion,
+      'environment.postgresVersion',
+    ),
+    engineCommit: cloudReplacementReportText(environment.engineCommit, 'environment.engineCommit'),
+  };
+}
+
+function normalizeCloudReplacementReportEngineCase(
+  result: CloudReplacementReportEngineCase,
+  path: string,
+): CloudReplacementReportEngineCase {
+  return {
+    fallbackReason: result.fallbackReason === null
+      ? null
+      : cloudReplacementReportText(result.fallbackReason, `${path}.fallbackReason`),
+    coldMs: cloudReplacementReportNumberValue(result.coldMs, `${path}.coldMs`),
+    p50Ms: cloudReplacementReportNumberValue(result.p50Ms, `${path}.p50Ms`),
+    p95Ms: cloudReplacementReportNumberValue(result.p95Ms, `${path}.p95Ms`),
+    p99Ms: cloudReplacementReportNumberValue(result.p99Ms, `${path}.p99Ms`),
+  };
+}
+
+function normalizeCloudReplacementIndexBuildAndStorage(
+  metric: CloudReplacementIndexBuildAndStorage,
+  path: string,
+): CloudReplacementIndexBuildAndStorage {
+  return {
+    buildMs: cloudReplacementReportNumberValue(metric.buildMs, `${path}.buildMs`),
+    storageBytes: cloudReplacementReportInteger(metric.storageBytes, `${path}.storageBytes`),
+  };
+}
+
+function normalizeCloudReplacementDiagnostics(
+  diagnostics: CloudReplacementPgDiagnostics,
+  path: string,
+): CloudReplacementPgDiagnostics {
+  return {
+    sharedBlocksRead: cloudReplacementNullableReportNumberValue(
+      diagnostics.sharedBlocksRead,
+      `${path}.sharedBlocksRead`,
+    ),
+    sharedBlocksHit: cloudReplacementNullableReportNumberValue(
+      diagnostics.sharedBlocksHit,
+      `${path}.sharedBlocksHit`,
+    ),
+    tempBytes: cloudReplacementNullableReportNumberValue(
+      diagnostics.tempBytes,
+      `${path}.tempBytes`,
+    ),
+    memoryPeakBytes: cloudReplacementNullableReportNumberValue(
+      diagnostics.memoryPeakBytes,
+      `${path}.memoryPeakBytes`,
+    ),
+    memoryLimitBytes: cloudReplacementNullableReportNumberValue(
+      diagnostics.memoryLimitBytes,
+      `${path}.memoryLimitBytes`,
+    ),
+    diagnosticsUnavailable: cloudReplacementReportStrings(
+      diagnostics.diagnosticsUnavailable,
+      `${path}.diagnosticsUnavailable`,
+    ),
+  };
+}
+
+function cloudReplacementReportGroup(value: CloudReplacementWorkloadGroup): CloudReplacementWorkloadGroup {
+  if (![ 'short', 'large', 'authorization' ].includes(value)) {
+    throw new Error(`Invalid Cloud replacement report workload group: ${value}`);
+  }
+  return value;
+}
+
+function cloudReplacementReportEngine(value: CloudReplacementEngineId): CloudReplacementEngineId {
+  if (value !== 'rdf3x' && value !== 'qlever') {
+    throw new Error(`Invalid Cloud replacement report engine: ${value}`);
+  }
+  return value;
+}
+
+function cloudReplacementReportConcurrency(value: 1 | 8 | 32): 1 | 8 | 32 {
+  if (value !== 1 && value !== 8 && value !== 32) {
+    throw new Error(`Invalid Cloud replacement report concurrency: ${value}`);
+  }
+  return value;
+}
+
+function cloudReplacementReportText(value: string, path: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Cloud replacement report ${path} must be a non-empty string`);
+  }
+  return value;
+}
+
+function cloudReplacementReportStrings(value: string[], path: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Cloud replacement report ${path} must be an array`);
+  }
+  return value.map((entry, index) =>
+    cloudReplacementReportText(entry, `${path}[${index}]`));
+}
+
+function cloudReplacementReportNumberValue(value: number, path: string): number {
+  assertCloudReplacementFiniteNonNegative(value, `report ${path}`);
+  return value;
+}
+
+function cloudReplacementReportInteger(value: number, path: string): number {
+  if (!Number.isInteger(value)) {
+    throw new Error(`Cloud replacement report ${path} must be a non-negative integer`);
+  }
+  return cloudReplacementReportNumberValue(value, path);
+}
+
+function cloudReplacementNullableReportNumberValue(
+  value: number | null,
+  path: string,
+): number | null {
+  return value === null ? null : cloudReplacementReportNumberValue(value, path);
+}
+
+function assertCloudReplacementReportHasNoCredentialKeys(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(assertCloudReplacementReportHasNoCredentialKeys);
+    return;
+  }
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+  for (const [ key, entry ] of Object.entries(value)) {
+    if (cloudReplacementCredentialKey(key)) {
+      throw new Error('Cloud replacement report contains credential fields');
+    }
+    assertCloudReplacementReportHasNoCredentialKeys(entry);
+  }
+}
+
+function cloudReplacementCredentialKey(key: string): boolean {
+  return /^(?:connectionString|host|hostname|user|username|password|passwd|authorization|token|secret|credential|credentials|query|hash)$/iu.test(key) ||
+    /(?:^|[_-])(?:token|secret|key)s?$/iu.test(key) ||
+    /(?:Token|Secret|Key)s?$/u.test(key);
+}
+
+function cloudReplacementCredentialAssignmentKey(key: string): boolean {
+  return /^(?:password|passwd|token|secret|credentials?|access[_-]?token|refresh[_-]?token|(?:client|private|api)[_-]?(?:secret|key)|secret[_-]?key)$/iu.test(key);
+}
+
+function cloudReplacementTextHasCredentialAssignment(value: string): boolean {
+  const assignments = value.matchAll(
+    /(?:^|[^A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*\S+/gu,
+  );
+  return Array.from(assignments).some((match) =>
+    cloudReplacementCredentialAssignmentKey(match[1] ?? ''));
+}
+
+function assertCloudReplacementReportHasNoCredentialText(value: unknown): void {
+  if (typeof value === 'string') {
+    const credentialUrl = /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+(?::[^\s/@]*)?@/iu;
+    const bearerHeader = /\bauthorization\s*:\s*bearer\s+\S+/iu;
+    const postgresUrl = /\bpostgres(?:ql)?:\/\//iu;
+    if (credentialUrl.test(value) || bearerHeader.test(value) || postgresUrl.test(value) ||
+      cloudReplacementTextHasCredentialAssignment(value)) {
+      throw new Error('Cloud replacement report contains credential-bearing text');
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach(assertCloudReplacementReportHasNoCredentialText);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(assertCloudReplacementReportHasNoCredentialText);
+  }
+}
+
+function cloudReplacementGateRows(decision: CloudReplacementDecision): string[] {
+  const observed: Record<keyof CloudReplacementDecisionPassed, string> = {
+    correctness: String(decision.observed.correctnessPassed),
+    criticalShortP95: decision.observed.criticalShortP95Ratios.join(', '),
+    weightedP95: String(decision.observed.weightedP95Ratio),
+    throughput: String(decision.observed.throughputRatio),
+    aggregatePerformance: `p95=${decision.observed.weightedP95Ratio}, throughput=${decision.observed.throughputRatio}`,
+    largeCases: decision.observed.largeCaseSpeedups.join(', '),
+    errorRate: String(decision.observed.errorRate),
+    memoryLimit: String(decision.observed.memoryLimitRatio),
+    tempDiskLimit: String(decision.observed.tempDiskLimitRatio),
+    resources: `memory=${decision.observed.memoryLimitRatio}, temp=${decision.observed.tempDiskLimitRatio}`,
+    all: '-',
+  };
+  const threshold: Record<keyof CloudReplacementDecisionPassed, string> = {
+    correctness: 'true',
+    criticalShortP95: `non-empty; each <= ${CLOUD_REPLACEMENT_THRESHOLDS.maxCriticalShortP95Ratio}`,
+    weightedP95: `<= ${CLOUD_REPLACEMENT_THRESHOLDS.maxWeightedP95Ratio}`,
+    throughput: `>= ${CLOUD_REPLACEMENT_THRESHOLDS.minThroughputRatio}`,
+    aggregatePerformance: 'weightedP95 OR throughput',
+    largeCases: `>= ${CLOUD_REPLACEMENT_THRESHOLDS.minLargeWinningCases} at ` +
+      `>= ${CLOUD_REPLACEMENT_THRESHOLDS.minLargeCaseSpeedup}x`,
+    errorRate: `<= ${CLOUD_REPLACEMENT_THRESHOLDS.maxErrorRate}`,
+    memoryLimit: `non-null; <= ${CLOUD_REPLACEMENT_THRESHOLDS.maxMemoryLimitRatio}`,
+    tempDiskLimit: `non-null; <= ${CLOUD_REPLACEMENT_THRESHOLDS.maxTempDiskLimitRatio}`,
+    resources: 'memoryLimit AND tempDiskLimit',
+    all: 'all replacement gates',
+  };
+  return (Object.keys(decision.passed) as Array<keyof CloudReplacementDecisionPassed>)
+    .map((gate) => `| ${gate} | ${decision.passed[gate] ? 'pass' : 'fail'} | ` +
+      `${cloudReplacementMarkdownText(observed[gate])} | ` +
+      `${cloudReplacementMarkdownText(threshold[gate])} |`);
+}
+
+function cloudReplacementReportNumber(value: number): string {
+  return value.toLocaleString('en-US', { maximumFractionDigits: 12 });
+}
+
+function cloudReplacementNullableReportNumber(value: number | null): string {
+  return value === null ? 'unknown' : cloudReplacementReportNumber(value);
+}
+
+function cloudReplacementMarkdownText(value: string): string {
+  return value
+    .replace(/\\/gu, '\\\\')
+    .replace(/\|/gu, '\\|')
+    .replace(/&/gu, '&amp;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;')
+    .replace(/[\r\n]+/gu, ' ');
+}
+
 const SPARQL_PREFIXES = [
   'PREFIX sioc: <http://rdfs.org/sioc/ns#>',
   'PREFIX dct: <http://purl.org/dc/terms/>',
