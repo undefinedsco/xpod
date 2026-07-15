@@ -33,6 +33,7 @@ export interface CloudReplacementExecution {
   multisetDigest: string;
   fallbackReason: string | null;
   physicalPlan: string[];
+  queryElapsedMs: number | null;
 }
 
 export interface CloudReplacementEngineAdapter<
@@ -42,6 +43,7 @@ export interface CloudReplacementEngineAdapter<
   execute(
     workload: CloudReplacementWorkload,
     sampleIdentity?: string,
+    signal?: AbortSignal,
   ): Promise<CloudReplacementExecution>;
 }
 
@@ -52,6 +54,72 @@ export interface CloudReplacementCorrectness {
   failures: string[];
   rdf3x: CloudReplacementExecution;
   qlever: CloudReplacementExecution;
+}
+
+export type CloudReplacementCacheMode = 'off' | 'production';
+
+export interface CloudReplacementSampleIdentitySource {
+  next(engine: CloudReplacementEngineId): string;
+}
+
+type CloudReplacementCacheMeasurementOptions =
+  | {
+    cacheMode: 'off';
+    identitySource: CloudReplacementSampleIdentitySource;
+  }
+  | {
+    cacheMode: 'production';
+    identitySource?: CloudReplacementSampleIdentitySource;
+  };
+
+export function createCloudReplacementSampleIdentitySource(
+  namespace: string,
+): CloudReplacementSampleIdentitySource {
+  if (namespace.length === 0 || /[\r\n]/u.test(namespace)) {
+    throw new Error(
+      'Cloud replacement sample identity namespace must be non-empty and contain no newlines',
+    );
+  }
+  let counter = 0;
+  return {
+    next(engine) {
+      const identity = `# xpod-benchmark-sample:${namespace}:${engine}:${counter}`;
+      counter += 1;
+      return identity;
+    },
+  };
+}
+
+export interface CloudReplacementLatency {
+  cacheMode: CloudReplacementCacheMode;
+  /**
+   * First timed execution after the caller prepared cold state for this run.
+   * This helper does not clear PostgreSQL shared buffers or other database caches.
+   */
+  coldMs: number;
+  samplesMs: number[];
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+}
+
+export interface CloudReplacementConcurrency {
+  cacheMode: CloudReplacementCacheMode;
+  concurrency: 1 | 8 | 32;
+  durationMs: number;
+  elapsedMs: number;
+  completed: number;
+  errors: number;
+  throughputPerSecond: number;
+}
+
+export interface CloudReplacementPgDiagnostics {
+  sharedBlocksRead: number | null;
+  sharedBlocksHit: number | null;
+  tempBytes: number | null;
+  memoryPeakBytes: number | null;
+  memoryLimitBytes: number | null;
+  diagnosticsUnavailable: string[];
 }
 
 export type CloudReplacementBinding = Readonly<
@@ -230,6 +298,243 @@ function assertCloudReplacementAdapterIdentity(
       `Cloud replacement adapter configuration error: expected ${expected} at ${expected} position, received ${adapter.id}`,
     );
   }
+}
+
+export async function measureCloudReplacementCase(
+  workload: CloudReplacementWorkload,
+  rdf3xAdapter: CloudReplacementEngineAdapter<'rdf3x'>,
+  qleverAdapter: CloudReplacementEngineAdapter<'qlever'>,
+  options: {
+    warmupIterations: number;
+    iterations: number;
+    coldFirstEngine: CloudReplacementEngineId;
+    operationTimeoutMs: number;
+  } & CloudReplacementCacheMeasurementOptions,
+): Promise<{
+  rdf3x: CloudReplacementLatency;
+  qlever: CloudReplacementLatency;
+}> {
+  assertCloudReplacementAdapterIdentity('rdf3x', rdf3xAdapter);
+  assertCloudReplacementAdapterIdentity('qlever', qleverAdapter);
+
+  const warmupIterations = cloudReplacementIterationCount(
+    options.warmupIterations,
+    'warmupIterations',
+  );
+  const iterations = cloudReplacementIterationCount(options.iterations, 'iterations');
+  const operationTimeoutMs = cloudReplacementOperationTimeout(options.operationTimeoutMs);
+  const identitySource = cloudReplacementIdentitySource(options.cacheMode, options.identitySource);
+  const cold = { rdf3x: 0, qlever: 0 };
+  const samples = { rdf3x: [] as number[], qlever: [] as number[] };
+
+  const execute = async (
+    adapter: CloudReplacementEngineAdapter,
+  ): Promise<number> => {
+    const sampleIdentity = identitySource?.next(adapter.id);
+    const execution = await executeCloudReplacementWithTimeout(
+      adapter,
+      workload,
+      sampleIdentity,
+      operationTimeoutMs,
+    );
+    if (execution.queryElapsedMs === null || !Number.isFinite(execution.queryElapsedMs) ||
+      execution.queryElapsedMs < 0) {
+      throw new Error(
+        'Cloud replacement latency execution requires finite non-negative queryElapsedMs',
+      );
+    }
+    return execution.queryElapsedMs;
+  };
+
+  const executeRound = async (
+    round: number,
+    phase: 'cold' | 'warmup' | 'measured',
+  ): Promise<void> => {
+    const coldOrder: readonly [
+      CloudReplacementEngineAdapter,
+      CloudReplacementEngineAdapter,
+    ] = options.coldFirstEngine === 'rdf3x'
+      ? [ rdf3xAdapter, qleverAdapter ]
+      : [ qleverAdapter, rdf3xAdapter ];
+    const adapters = round % 2 === 0 ? coldOrder : [ coldOrder[1], coldOrder[0] ];
+    for (const adapter of adapters) {
+      const elapsedMs = await execute(adapter);
+      if (phase === 'cold') {
+        cold[adapter.id] = elapsedMs;
+      } else if (phase === 'measured') {
+        samples[adapter.id].push(elapsedMs);
+      }
+    }
+  };
+
+  let round = 0;
+  await executeRound(round, 'cold');
+  round += 1;
+  for (let warmup = 0; warmup < warmupIterations; warmup += 1, round += 1) {
+    await executeRound(round, 'warmup');
+  }
+  for (let sample = 0; sample < iterations; sample += 1, round += 1) {
+    await executeRound(round, 'measured');
+  }
+
+  return {
+    rdf3x: cloudReplacementLatency(options.cacheMode, cold.rdf3x, samples.rdf3x),
+    qlever: cloudReplacementLatency(options.cacheMode, cold.qlever, samples.qlever),
+  };
+}
+
+export async function measureCloudReplacementConcurrency<Id extends CloudReplacementEngineId>(
+  workload: CloudReplacementWorkload,
+  adapter: CloudReplacementEngineAdapter<Id>,
+  options: {
+    concurrency: 1 | 8 | 32;
+    durationMs: number;
+    operationTimeoutMs: number;
+    now?: () => number;
+  } & CloudReplacementCacheMeasurementOptions,
+): Promise<CloudReplacementConcurrency> {
+  const { cacheMode, concurrency, durationMs } = options;
+  if (!Number.isFinite(durationMs)) {
+    throw new Error('Cloud replacement durationMs must be finite');
+  }
+  const operationTimeoutMs = cloudReplacementOperationTimeout(options.operationTimeoutMs);
+  const identitySource = cloudReplacementIdentitySource(cacheMode, options.identitySource);
+  if (![ 1, 8, 32 ].includes(concurrency)) {
+    throw new Error(`Cloud replacement concurrency must be 1, 8, or 32; received ${concurrency}`);
+  }
+
+  const emptyResult = (): CloudReplacementConcurrency => ({
+    cacheMode,
+    concurrency,
+    durationMs,
+    elapsedMs: 0,
+    completed: 0,
+    errors: 0,
+    throughputPerSecond: 0,
+  });
+  if (durationMs <= 0) {
+    return emptyResult();
+  }
+
+  const now = options.now ?? (() => performance.now());
+  const startedAt = now();
+  const deadline = startedAt + durationMs;
+  let completed = 0;
+  let errors = 0;
+
+  const worker = async (): Promise<void> => {
+    while (now() < deadline) {
+      const sampleIdentity = identitySource?.next(adapter.id);
+      try {
+        const execution = await executeCloudReplacementWithTimeout(
+          adapter,
+          workload,
+          sampleIdentity,
+          operationTimeoutMs,
+        );
+        if (execution.fallbackReason === null) {
+          completed += 1;
+        } else {
+          errors += 1;
+        }
+      } catch {
+        errors += 1;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  const elapsedMs = Math.max(now() - startedAt, Number.EPSILON);
+  return {
+    cacheMode,
+    concurrency,
+    durationMs,
+    elapsedMs,
+    completed,
+    errors,
+    throughputPerSecond: completed / (elapsedMs / 1_000),
+  };
+}
+
+function cloudReplacementIterationCount(
+  value: number,
+  name: 'warmupIterations' | 'iterations',
+): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`Cloud replacement ${name} must be finite and non-negative`);
+  }
+  return Math.floor(value);
+}
+
+function cloudReplacementOperationTimeout(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error('Cloud replacement operationTimeoutMs must be finite and positive');
+  }
+  return value;
+}
+
+async function executeCloudReplacementWithTimeout(
+  adapter: CloudReplacementEngineAdapter,
+  workload: CloudReplacementWorkload,
+  sampleIdentity: string | undefined,
+  operationTimeoutMs: number,
+): Promise<CloudReplacementExecution> {
+  const controller = new AbortController();
+  const timeoutError = new Error(
+    `Cloud replacement ${adapter.id} operation timed out after ${operationTimeoutMs}ms`,
+  );
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, operationTimeoutMs);
+  });
+  try {
+    const executionPromise = Promise.resolve().then(() =>
+      adapter.execute(workload, sampleIdentity, controller.signal));
+    return await Promise.race([ executionPromise, timeoutPromise ]);
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function cloudReplacementIdentitySource(
+  cacheMode: CloudReplacementCacheMode,
+  identitySource?: CloudReplacementSampleIdentitySource,
+): CloudReplacementSampleIdentitySource | undefined {
+  if (cacheMode === 'production') {
+    return undefined;
+  }
+  if (!identitySource) {
+    throw new Error('Cache-off cloud replacement measurements require identitySource');
+  }
+  return identitySource;
+}
+
+function cloudReplacementLatency(
+  cacheMode: CloudReplacementCacheMode,
+  coldMs: number,
+  samplesMs: number[],
+): CloudReplacementLatency {
+  return {
+    cacheMode,
+    coldMs,
+    samplesMs,
+    p50Ms: cloudReplacementNearestRank(samplesMs, 0.50),
+    p95Ms: cloudReplacementNearestRank(samplesMs, 0.95),
+    p99Ms: cloudReplacementNearestRank(samplesMs, 0.99),
+  };
+}
+
+function cloudReplacementNearestRank(samples: readonly number[], percentile: number): number {
+  if (samples.length === 0) {
+    return 0;
+  }
+  const sorted = [ ...samples ].sort((left, right) => left - right);
+  return sorted[Math.ceil(percentile * sorted.length) - 1] ?? 0;
 }
 
 export const CLOUD_REPLACEMENT_GROUP_WEIGHTS = Object.freeze({

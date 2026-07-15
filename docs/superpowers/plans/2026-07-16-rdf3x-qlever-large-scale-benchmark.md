@@ -438,6 +438,7 @@ function fakeAdapter<Id extends CloudReplacementEngineId>(
         multisetDigest: options.multisetDigest ?? digests.multisetDigest,
         fallbackReason: options.fallbackReason ?? null,
         physicalPlan: [ `${id}:fake` ],
+        queryElapsedMs: null,
       };
     },
   };
@@ -475,13 +476,18 @@ export interface CloudReplacementExecution {
   multisetDigest: string;
   fallbackReason: string | null;
   physicalPlan: string[];
+  queryElapsedMs: number | null;
 }
 
 export interface CloudReplacementEngineAdapter<
   Id extends CloudReplacementEngineId = CloudReplacementEngineId,
 > {
   readonly id: Id;
-  execute(workload: CloudReplacementWorkload, sampleIdentity?: string): Promise<CloudReplacementExecution>;
+  execute(
+    workload: CloudReplacementWorkload,
+    sampleIdentity?: string,
+    signal?: AbortSignal,
+  ): Promise<CloudReplacementExecution>;
 }
 
 export interface CloudReplacementCorrectness {
@@ -528,6 +534,10 @@ the original row sequence; multiset digests sort every row without deduplicating
 - propagate adapter exceptions unchanged and pass physical plans through without
   making performance decisions.
 
+Correctness-only executions may report `queryElapsedMs: null`; latency
+executions in Task 4 require a finite non-negative value measured only around
+the raw engine query/materialization interval.
+
 Negative tests must cover different rows with forged equal declarations, equal
 rows with forged different declarations, swapped/duplicate adapter identities,
 missing/unbound canonical variables, and identical denied authorization rows.
@@ -565,14 +575,21 @@ Tested: Adapter identity, digest forgery, canonical RDF term, authorization orac
 ```ts
 it('alternates engine order and reports p50 p95 p99', async () => {
   const order: string[] = [];
-  const clock = { value: 0 };
+  const identitySource = createCloudReplacementSampleIdentitySource('task4-suite');
   const result = await measureCloudReplacementCase(
     pointCase,
-    timedFakeAdapter('rdf3x', order, 10, clock),
-    timedFakeAdapter('qlever', order, 5, clock),
-    { warmupIterations: 3, iterations: 20, now: () => clock.value },
+    timedFakeAdapter('rdf3x', order, 10),
+    timedFakeAdapter('qlever', order, 5),
+    {
+      warmupIterations: 3,
+      iterations: 20,
+      cacheMode: 'off',
+      identitySource,
+      coldFirstEngine: 'rdf3x',
+      operationTimeoutMs: 30_000,
+    },
   );
-  expect(order.slice(6, 10)).toEqual([ 'rdf3x', 'qlever', 'qlever', 'rdf3x' ]);
+  expect(order.slice(0, 4)).toEqual([ 'rdf3x', 'qlever', 'qlever', 'rdf3x' ]);
   expect(result.rdf3x.samplesMs).toHaveLength(20);
   expect(result.rdf3x.p95Ms).toBe(10);
   expect(result.qlever.p99Ms).toBe(5);
@@ -580,9 +597,13 @@ it('alternates engine order and reports p50 p95 p99', async () => {
 
 it('runs every concurrency lane for the configured duration', async () => {
   let now = 0;
+  const identitySource = createCloudReplacementSampleIdentitySource('task4-suite');
   const result = await measureCloudReplacementConcurrency(pointCase, fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ]), {
     concurrency: 8,
     durationMs: 1_000,
+    cacheMode: 'off',
+    identitySource,
+    operationTimeoutMs: 30_000,
     now: () => {
       now += 10;
       return now;
@@ -597,16 +618,14 @@ function timedFakeAdapter<Id extends CloudReplacementEngineId>(
   id: Id,
   order: string[],
   durationMs: number,
-  clock: { value: number },
 ): CloudReplacementEngineAdapter<Id> {
   const base = fakeAdapter(id, [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ]);
   return {
     id,
-    async execute(workload, sampleIdentity) {
+    async execute(workload, sampleIdentity, signal) {
       order.push(id);
-      const result = await base.execute(workload, sampleIdentity);
-      clock.value += durationMs;
-      return result;
+      const result = await base.execute(workload, sampleIdentity, signal);
+      return { ...result, queryElapsedMs: durationMs };
     },
   };
 }
@@ -624,6 +643,7 @@ Expected: FAIL because measurement functions are absent.
 
 ```ts
 export interface CloudReplacementLatency {
+  cacheMode: 'off' | 'production';
   coldMs: number;
   samplesMs: number[];
   p50Ms: number;
@@ -632,11 +652,17 @@ export interface CloudReplacementLatency {
 }
 
 export interface CloudReplacementConcurrency {
+  cacheMode: 'off' | 'production';
   concurrency: 1 | 8 | 32;
   durationMs: number;
+  elapsedMs: number;
   completed: number;
   errors: number;
   throughputPerSecond: number;
+}
+
+export interface CloudReplacementSampleIdentitySource {
+  next(engine: CloudReplacementEngineId): string;
 }
 
 export interface CloudReplacementPgDiagnostics {
@@ -649,15 +675,32 @@ export interface CloudReplacementPgDiagnostics {
 }
 ```
 
-Use a unique trailing SPARQL comment for cache-off samples:
+Create one caller-owned identity source per benchmark run and reuse it across
+latency plus all 1/8/32 concurrency calls. The factory rejects empty/newline
+namespaces and emits globally monotonic trailing comments:
 
 ```ts
-const sampleIdentity = cacheMode === 'off'
-  ? `# xpod-benchmark-sample:${engine.id}:${sampleIndex}`
-  : undefined;
+const identitySource = createCloudReplacementSampleIdentitySource(runNamespace);
+identitySource.next(engine.id);
+// # xpod-benchmark-sample:<namespace>:<engine>:<counter>
 ```
 
-Measure cache-off and production-cache-on separately. Alternate the engine that executes first on every sample. Concurrency workers stop on a common deadline and count every exception.
+Cache-off options require that shared source; production mode never calls it.
+Measure cache-off and production-cache-on separately. The caller supplies
+`coldFirstEngine`; the first timed execution occurs only after the caller has
+prepared cold state, without claiming to clear PostgreSQL shared buffers. Keep
+one alternating round counter across cold, warmup, and measured phases. Cold is
+reported separately and never enters steady-state samples or percentiles.
+
+Every latency execution must return finite non-negative `queryElapsedMs` around
+only the raw engine query/materialization boundary; digest, canonicalization,
+plan reads, and adapter post-processing stay outside it. Both latency and
+concurrency use a finite positive per-operation timeout and pass an
+`AbortSignal` to adapters. Concurrency workers stop starting work at one common
+deadline, await or time out in-flight tail work, report actual `elapsedMs`, and
+derive throughput from completed operations divided by actual elapsed seconds.
+Exceptions, timeouts, and every non-null fallback reason (including `''`) count
+as errors; invalid duration/iteration/timeout inputs fail as specified by tests.
 
 - [ ] **Step 4: Verify timing and concurrency tests**
 
@@ -671,7 +714,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit measurement behavior**
 
 ```bash
-git add src/storage/rdf/cloud-replacement-benchmark.ts tests/storage/rdf/CloudReplacementBenchmark.test.ts
+git add src/storage/rdf/cloud-replacement-benchmark.ts tests/storage/rdf/CloudReplacementBenchmark.test.ts docs/superpowers/plans/2026-07-16-rdf3x-qlever-large-scale-benchmark.md
 git commit -m "⏱️ Remove order bias from RDF engine measurements" -m "Alternate engine execution, separate cache modes, and capture latency plus sustained concurrency without comparing incompatible samples.
 
 Confidence: high
@@ -865,6 +908,7 @@ CASCADE` plus `CREATE SCHEMA public`. Accepted options:
 --warmupIterations=3
 --concurrency=1,8,32
 --cacheMode=off|production|both
+--operationTimeoutMs=30000
 --image=xpod-rdf-postgres:pg17-smoke
 --out=.test-data/rdf-engine-perf-reports/...
 --dry-run
@@ -903,7 +947,29 @@ for (let start = 0; loadedFacts < targetQuads; start += messagesPerBatch) {
 }
 ```
 
-Build RDF3X with `nativeSparqlEnabled: false` and QLever with `nativeSparqlEnabled: true`. Both use the same facts and are wrapped by `SolidRdfSparqlEngine` without compatibility fallback. Capture `getMetrics().lastPrimary`; reject metrics that show fallback or the wrong selected engine.
+Build RDF3X with `nativeSparqlEnabled: false` and QLever with
+`nativeSparqlEnabled: true`. Both use the same facts and are wrapped by
+`SolidRdfSparqlEngine` without compatibility fallback. Capture
+`getMetrics().lastPrimary`; reject metrics that show fallback or the wrong
+selected engine.
+
+Create one `CloudReplacementSampleIdentitySource` for the whole run namespace
+and reuse it across every cache-off latency call plus the 1/8/32 concurrency
+lanes. Prepare caller-owned cold state before any correctness or warmup work,
+run the cold measurement first, and alternate `coldFirstEngine` across
+workload/cache-mode calls so neither engine receives a systematic ordering
+benefit. The runner is responsible for cold-state preparation; the helper does
+not clear PostgreSQL shared buffers.
+
+The real adapters must honor the supplied `AbortSignal` by cancelling the raw
+engine operation when possible and returning promptly after abort. Measure
+`queryElapsedMs` around only raw engine query/materialization. Read plans,
+canonicalize rows, and compute digests after that interval; correctness-only
+calls may use `queryElapsedMs: null`. Concurrency intentionally measures the
+whole adapter completion interval and reports actual elapsed wall time including
+in-flight tail completion. Pass the configured finite positive
+`operationTimeoutMs` to every latency and concurrency call, and treat timeout or
+non-null fallback (including `''`) as an error rather than a completed operation.
 
 Before and after each engine phase, snapshot `pg_stat_database` block and temp
 counters. Time RDF3X derived-index refresh and QLever initialization separately,

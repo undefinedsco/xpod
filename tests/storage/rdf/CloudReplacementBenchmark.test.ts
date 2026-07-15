@@ -9,11 +9,19 @@ import {
   canonicalCloudReplacementTerm,
   cloudReplacementWorkloads,
   compareCloudReplacementCase,
+  createCloudReplacementSampleIdentitySource,
+  measureCloudReplacementCase,
+  measureCloudReplacementConcurrency,
   type CloudReplacementBinding,
+  type CloudReplacementCacheMode,
+  type CloudReplacementConcurrency,
   type CloudReplacementCorrectness,
   type CloudReplacementEngineAdapter,
   type CloudReplacementEngineId,
   type CloudReplacementExecution,
+  type CloudReplacementLatency,
+  type CloudReplacementPgDiagnostics,
+  type CloudReplacementSampleIdentitySource,
   type CloudReplacementWorkload,
   type CloudReplacementWorkloadGroup,
 } from '../../../src/storage/rdf/cloud-replacement-benchmark';
@@ -169,26 +177,970 @@ function fakeAdapter<Id extends CloudReplacementEngineId>(
     fallbackReason?: string;
     orderedDigest?: string;
     multisetDigest?: string;
-    onExecute?: () => void;
+    queryElapsedMs?: number | null;
+    onExecute?: (sampleIdentity?: string) => void;
   } = {},
 ): CloudReplacementEngineAdapter<Id> {
   const digests = canonicalCloudReplacementDigests(rows);
   return {
     id,
-    async execute() {
-      options.onExecute?.();
+    async execute(_workload, sampleIdentity) {
+      options.onExecute?.(sampleIdentity);
       return {
         rows,
         orderedDigest: options.orderedDigest ?? digests.orderedDigest,
         multisetDigest: options.multisetDigest ?? digests.multisetDigest,
         fallbackReason: options.fallbackReason ?? null,
         physicalPlan: [ `${id}:fake` ],
+        queryElapsedMs: options.queryElapsedMs ?? null,
       };
     },
   };
 }
 
+function timedFakeAdapter<Id extends CloudReplacementEngineId>(
+  id: Id,
+  order: string[],
+  durationMs: number,
+  clock: { value: number },
+): CloudReplacementEngineAdapter<Id> {
+  const base = fakeAdapter(id, [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ]);
+  return {
+    id,
+    async execute(workload, sampleIdentity) {
+      order.push(id);
+      const result = await base.execute(workload, sampleIdentity);
+      clock.value += durationMs;
+      return { ...result, queryElapsedMs: durationMs };
+    },
+  };
+}
+
+function sequencedTimedFakeAdapter<Id extends CloudReplacementEngineId>(
+  id: Id,
+  durationsMs: number[],
+  clock: { value: number },
+  identities: Array<string | undefined> = [],
+): CloudReplacementEngineAdapter<Id> {
+  const base = fakeAdapter(id, [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ]);
+  let sampleIndex = 0;
+  return {
+    id,
+    async execute(workload, sampleIdentity) {
+      identities.push(sampleIdentity);
+      const result = await base.execute(workload, sampleIdentity);
+      const queryElapsedMs = durationsMs[sampleIndex] ?? 0;
+      clock.value += queryElapsedMs;
+      sampleIndex += 1;
+      return { ...result, queryElapsedMs };
+    },
+  };
+}
+
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 describe('cloud replacement benchmark', () => {
+  it('alternates engine order and reports cache-labelled latency percentiles', async () => {
+    const order: string[] = [];
+    const clock = { value: 0 };
+    const result = await measureCloudReplacementCase(
+      pointCase,
+      timedFakeAdapter('rdf3x', order, 10, clock),
+      timedFakeAdapter('qlever', order, 5, clock),
+      {
+        warmupIterations: 3,
+        iterations: 4,
+        cacheMode: 'production',
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    expect(order).toEqual([
+      'rdf3x', 'qlever',
+      'qlever', 'rdf3x',
+      'rdf3x', 'qlever',
+      'qlever', 'rdf3x',
+      'rdf3x', 'qlever',
+      'qlever', 'rdf3x',
+      'rdf3x', 'qlever',
+      'qlever', 'rdf3x',
+    ]);
+    expect(result.rdf3x).toEqual({
+      cacheMode: 'production',
+      coldMs: 10,
+      samplesMs: [ 10, 10, 10, 10 ],
+      p50Ms: 10,
+      p95Ms: 10,
+      p99Ms: 10,
+    } satisfies CloudReplacementLatency);
+    expect(result.qlever).toEqual({
+      cacheMode: 'production',
+      coldMs: 5,
+      samplesMs: [ 5, 5, 5, 5 ],
+      p50Ms: 5,
+      p95Ms: 5,
+      p99Ms: 5,
+    } satisfies CloudReplacementLatency);
+    expectTypeOf<CloudReplacementCacheMode>().toEqualTypeOf<'off' | 'production'>();
+  });
+
+  it('runs all concurrency workers against one shared deadline', async () => {
+    const starts: number[] = [];
+    const clock = { value: 0 };
+    const base = fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ]);
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute(workload, sampleIdentity) {
+        starts.push(clock.value);
+        clock.value += 10;
+        return base.execute(workload, sampleIdentity);
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 8,
+      durationMs: 100,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => clock.value,
+    });
+
+    expect(starts).toEqual(Array.from({ length: 16 }, (_value, index) => index * 10));
+    expect(result).toEqual({
+      cacheMode: 'production',
+      concurrency: 8,
+      durationMs: 100,
+      elapsedMs: 160,
+      completed: 16,
+      errors: 0,
+      throughputPerSecond: 100,
+    } satisfies CloudReplacementConcurrency);
+  });
+
+  it('keeps the measurement contracts exact and fixes adapter positions', () => {
+    expectTypeOf<CloudReplacementLatency>().toEqualTypeOf<{
+      cacheMode: CloudReplacementCacheMode;
+      coldMs: number;
+      samplesMs: number[];
+      p50Ms: number;
+      p95Ms: number;
+      p99Ms: number;
+    }>();
+    expectTypeOf<CloudReplacementConcurrency>().toEqualTypeOf<{
+      cacheMode: CloudReplacementCacheMode;
+      concurrency: 1 | 8 | 32;
+      durationMs: number;
+      elapsedMs: number;
+      completed: number;
+      errors: number;
+      throughputPerSecond: number;
+    }>();
+    expectTypeOf<CloudReplacementPgDiagnostics>().toEqualTypeOf<{
+      sharedBlocksRead: number | null;
+      sharedBlocksHit: number | null;
+      tempBytes: number | null;
+      memoryPeakBytes: number | null;
+      memoryLimitBytes: number | null;
+      diagnosticsUnavailable: string[];
+    }>();
+    expectTypeOf<Parameters<typeof measureCloudReplacementCase>[1]>()
+      .toEqualTypeOf<CloudReplacementEngineAdapter<'rdf3x'>>();
+    expectTypeOf<Parameters<typeof measureCloudReplacementCase>[2]>()
+      .toEqualTypeOf<CloudReplacementEngineAdapter<'qlever'>>();
+    expectTypeOf<Parameters<typeof measureCloudReplacementCase>[3]['coldFirstEngine']>()
+      .toEqualTypeOf<'rdf3x' | 'qlever'>();
+    expectTypeOf<Parameters<typeof measureCloudReplacementCase>[3]['operationTimeoutMs']>()
+      .toEqualTypeOf<number>();
+    expectTypeOf<Parameters<typeof measureCloudReplacementConcurrency>[2]['concurrency']>()
+      .toEqualTypeOf<1 | 8 | 32>();
+    expectTypeOf<CloudReplacementSampleIdentitySource>().toEqualTypeOf<{
+      next(engine: CloudReplacementEngineId): string;
+    }>();
+    expectTypeOf<Extract<
+      Parameters<typeof measureCloudReplacementCase>[3],
+      { cacheMode: 'off' }
+    >['identitySource']>().toEqualTypeOf<CloudReplacementSampleIdentitySource>();
+    expectTypeOf<Extract<
+      Parameters<typeof measureCloudReplacementConcurrency>[2],
+      { cacheMode: 'off' }
+    >['identitySource']>().toEqualTypeOf<CloudReplacementSampleIdentitySource>();
+    expectTypeOf<Parameters<CloudReplacementEngineAdapter['execute']>[2]>()
+      .toEqualTypeOf<AbortSignal | undefined>();
+  });
+
+  it('creates namespaced monotonic sample identities and rejects unsafe namespaces', () => {
+    const source = createCloudReplacementSampleIdentitySource('task4');
+
+    expect(source.next('rdf3x')).toBe('# xpod-benchmark-sample:task4:rdf3x:0');
+    expect(source.next('qlever')).toBe('# xpod-benchmark-sample:task4:qlever:1');
+    for (const namespace of [ '', '\n', 'unsafe\rnamespace' ]) {
+      expect(() => createCloudReplacementSampleIdentitySource(namespace)).toThrow(
+        'Cloud replacement sample identity namespace must be non-empty and contain no newlines',
+      );
+    }
+  });
+
+  it('requires one caller-owned identity source for every cache-off measurement', async () => {
+    const latencyOptions = {
+      warmupIterations: 0,
+      iterations: 0,
+      cacheMode: 'off',
+      coldFirstEngine: 'rdf3x',
+      operationTimeoutMs: 1_000,
+    } as Parameters<typeof measureCloudReplacementCase>[3];
+    const concurrencyOptions = {
+      concurrency: 1,
+      durationMs: 0,
+      cacheMode: 'off',
+      operationTimeoutMs: 1_000,
+      now: () => 0,
+    } as Parameters<typeof measureCloudReplacementConcurrency>[2];
+
+    await expect(measureCloudReplacementCase(
+      pointCase,
+      timedFakeAdapter('rdf3x', [], 1, { value: 0 }),
+      timedFakeAdapter('qlever', [], 1, { value: 0 }),
+      latencyOptions,
+    )).rejects.toThrow('Cache-off cloud replacement measurements require identitySource');
+    await expect(measureCloudReplacementConcurrency(
+      pointCase,
+      fakeAdapter('rdf3x', []),
+      concurrencyOptions,
+    )).rejects.toThrow('Cache-off cloud replacement measurements require identitySource');
+  });
+
+  it('starts cold with the caller-selected engine and keeps alternating across phases', async () => {
+    const order: string[] = [];
+    const clock = { value: 0 };
+
+    await measureCloudReplacementCase(
+      pointCase,
+      timedFakeAdapter('rdf3x', order, 1, clock),
+      timedFakeAdapter('qlever', order, 1, clock),
+      {
+        warmupIterations: 1,
+        iterations: 1,
+        cacheMode: 'production',
+        coldFirstEngine: 'qlever',
+        identitySource: {
+          next() {
+            throw new Error('production cache mode must not request an identity');
+          },
+        },
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    expect(order).toEqual([
+      'qlever', 'rdf3x',
+      'rdf3x', 'qlever',
+      'qlever', 'rdf3x',
+    ]);
+  });
+
+  it('waits for the first engine before starting the second in every round', async () => {
+    const clock = { value: 0 };
+    let inFlight = 0;
+    const adapter = <Id extends CloudReplacementEngineId>(
+      id: Id,
+    ): CloudReplacementEngineAdapter<Id> => ({
+      id,
+      async execute() {
+        expect(inFlight).toBe(0);
+        inFlight += 1;
+        await Promise.resolve();
+        clock.value += 1;
+        inFlight -= 1;
+        const execution = await fakeAdapter(
+          id,
+          [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ],
+          { queryElapsedMs: 1 },
+        ).execute(pointCase);
+        return execution;
+      },
+    });
+
+    await measureCloudReplacementCase(pointCase, adapter('rdf3x'), adapter('qlever'), {
+      warmupIterations: 2,
+      iterations: 2,
+      cacheMode: 'production',
+      coldFirstEngine: 'rdf3x',
+      operationTimeoutMs: 1_000,
+    });
+
+    expect(inFlight).toBe(0);
+  });
+
+  it.each([
+    [ 'empty', [], { p50Ms: 0, p95Ms: 0, p99Ms: 0 } ],
+    [ 'one sample', [ 7 ], { p50Ms: 7, p95Ms: 7, p99Ms: 7 } ],
+    [ 'even samples', [ 4, 1, 3, 2 ], { p50Ms: 2, p95Ms: 4, p99Ms: 4 } ],
+    [ 'odd samples', [ 5, 1, 4, 2, 3 ], { p50Ms: 3, p95Ms: 5, p99Ms: 5 } ],
+  ] as const)('uses nearest-rank percentiles for %s', async (_name, durations, expected) => {
+    const clock = { value: 0 };
+    const result = await measureCloudReplacementCase(
+      pointCase,
+      sequencedTimedFakeAdapter('rdf3x', [ 11, ...durations ], clock),
+      sequencedTimedFakeAdapter('qlever', [ 13, ...durations ], clock),
+      {
+        warmupIterations: 0,
+        iterations: durations.length,
+        cacheMode: 'production',
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    expect(result.rdf3x.coldMs).toBe(11);
+    expect(result.rdf3x.samplesMs).toEqual([ ...durations ]);
+    expect(result.rdf3x).toMatchObject(expected);
+    expect(result.qlever.coldMs).toBe(13);
+    expect(result.qlever.samplesMs).toEqual([ ...durations ]);
+    expect(result.qlever).toMatchObject(expected);
+  });
+
+  it('records a separate first-execution cold latency before warmup', async () => {
+    const clock = { value: 0 };
+    const result = await measureCloudReplacementCase(
+      pointCase,
+      sequencedTimedFakeAdapter('rdf3x', [ 101, 100, 200, 1, 2, 3 ], clock),
+      sequencedTimedFakeAdapter('qlever', [ 301, 300, 400, 4, 5, 6 ], clock),
+      {
+        warmupIterations: 2,
+        iterations: 3,
+        cacheMode: 'production',
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    expect(result.rdf3x).toMatchObject({
+      coldMs: 101,
+      samplesMs: [ 1, 2, 3 ],
+      p50Ms: 2,
+      p95Ms: 3,
+      p99Ms: 3,
+    });
+    expect(result.qlever).toMatchObject({
+      coldMs: 301,
+      samplesMs: [ 4, 5, 6 ],
+      p50Ms: 5,
+      p95Ms: 6,
+      p99Ms: 6,
+    });
+  });
+
+  it('uses adapter query time instead of adapter post-processing wall time', async () => {
+    const clock = { value: 0 };
+    const adapter = <Id extends CloudReplacementEngineId>(
+      id: Id,
+    ): CloudReplacementEngineAdapter<Id> => {
+      const base = fakeAdapter(id, []);
+      return {
+        id,
+        async execute(workload, sampleIdentity) {
+          const execution = await base.execute(workload, sampleIdentity);
+          clock.value += 1_000;
+          return { ...execution, queryElapsedMs: 5 };
+        },
+      };
+    };
+
+    const result = await measureCloudReplacementCase(
+      pointCase,
+      adapter('rdf3x'),
+      adapter('qlever'),
+      {
+        warmupIterations: 0,
+        iterations: 2,
+        cacheMode: 'production',
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    expect(result.rdf3x).toMatchObject({ coldMs: 5, samplesMs: [ 5, 5 ] });
+    expect(result.qlever).toMatchObject({ coldMs: 5, samplesMs: [ 5, 5 ] });
+    expect(clock.value).toBe(6_000);
+  });
+
+  it.each([ null, Number.NaN, Number.POSITIVE_INFINITY, -1 ])(
+    'rejects invalid latency queryElapsedMs %s',
+    async (queryElapsedMs) => {
+      await expect(measureCloudReplacementCase(
+        pointCase,
+        fakeAdapter('rdf3x', [], { queryElapsedMs }),
+        fakeAdapter('qlever', [], { queryElapsedMs: 1 }),
+        {
+          warmupIterations: 0,
+          iterations: 0,
+          cacheMode: 'production',
+          coldFirstEngine: 'rdf3x',
+          operationTimeoutMs: 1_000,
+        },
+      )).rejects.toThrow('Cloud replacement latency execution requires finite non-negative queryElapsedMs');
+    },
+  );
+
+  it('validates queryElapsedMs on warmup executions as well as recorded samples', async () => {
+    const clock = { value: 0 };
+    await expect(measureCloudReplacementCase(
+      pointCase,
+      sequencedTimedFakeAdapter('rdf3x', [ 1, 1 ], clock),
+      sequencedTimedFakeAdapter('qlever', [ 1, -1 ], clock),
+      {
+        warmupIterations: 1,
+        iterations: 0,
+        cacheMode: 'production',
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 1_000,
+      },
+    )).rejects.toThrow('Cloud replacement latency execution requires finite non-negative queryElapsedMs');
+  });
+
+  it.each([ Number.NaN, Number.POSITIVE_INFINITY, -1 ])(
+    'rejects invalid iteration count %s',
+    async (value) => {
+      for (const field of [ 'warmupIterations', 'iterations' ] as const) {
+        await expect(measureCloudReplacementCase(
+          pointCase,
+          timedFakeAdapter('rdf3x', [], 1, { value: 0 }),
+          timedFakeAdapter('qlever', [], 1, { value: 0 }),
+          {
+            warmupIterations: field === 'warmupIterations' ? value : 0,
+            iterations: field === 'iterations' ? value : 0,
+            cacheMode: 'production',
+            coldFirstEngine: 'rdf3x',
+            operationTimeoutMs: 1_000,
+          },
+        )).rejects.toThrow(
+          `Cloud replacement ${field} must be finite and non-negative`,
+        );
+      }
+    },
+  );
+
+  it('floors finite fractional warmup and iteration counts', async () => {
+    const order: string[] = [];
+    const result = await measureCloudReplacementCase(
+      pointCase,
+      timedFakeAdapter('rdf3x', order, 1, { value: 0 }),
+      timedFakeAdapter('qlever', order, 1, { value: 0 }),
+      {
+        warmupIterations: 1.9,
+        iterations: 1.9,
+        cacheMode: 'production',
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    expect(order).toHaveLength(6);
+    expect(result.rdf3x.samplesMs).toHaveLength(1);
+    expect(result.qlever.samplesMs).toHaveLength(1);
+  });
+
+  it.each([ 0, -1, Number.NaN, Number.POSITIVE_INFINITY ])(
+    'rejects invalid operation timeout %s',
+    async (operationTimeoutMs) => {
+      await expect(measureCloudReplacementCase(
+        pointCase,
+        timedFakeAdapter('rdf3x', [], 1, { value: 0 }),
+        timedFakeAdapter('qlever', [], 1, { value: 0 }),
+        {
+          warmupIterations: 0,
+          iterations: 0,
+          cacheMode: 'production',
+          coldFirstEngine: 'rdf3x',
+          operationTimeoutMs,
+        },
+      )).rejects.toThrow('Cloud replacement operationTimeoutMs must be finite and positive');
+      await expect(measureCloudReplacementConcurrency(
+        pointCase,
+        fakeAdapter('rdf3x', []),
+        {
+          concurrency: 1,
+          durationMs: 0,
+          cacheMode: 'production',
+          operationTimeoutMs,
+        },
+      )).rejects.toThrow('Cloud replacement operationTimeoutMs must be finite and positive');
+    },
+  );
+
+  it.each([ Number.NaN, Number.POSITIVE_INFINITY ])(
+    'rejects invalid concurrency duration %s',
+    async (durationMs) => {
+      await expect(measureCloudReplacementConcurrency(
+        pointCase,
+        fakeAdapter('rdf3x', []),
+        {
+          concurrency: 1,
+          durationMs,
+          cacheMode: 'production',
+          operationTimeoutMs: 1_000,
+          now: () => Number.POSITIVE_INFINITY,
+        },
+      )).rejects.toThrow('Cloud replacement durationMs must be finite');
+    },
+  );
+
+  it('aborts and rejects a timed-out latency execution', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const aborted = deferred();
+    const rdf3x: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      execute(_workload, _sampleIdentity, signal) {
+        capturedSignal = signal;
+        signal?.addEventListener('abort', () => aborted.resolve(), { once: true });
+        return new Promise<CloudReplacementExecution>((resolve) => {
+          setTimeout(() => {
+            void fakeAdapter('rdf3x', [], { queryElapsedMs: 1 }).execute(pointCase).then(resolve);
+          }, 25);
+        });
+      },
+    };
+
+    await expect(measureCloudReplacementCase(
+      pointCase,
+      rdf3x,
+      fakeAdapter('qlever', [], { queryElapsedMs: 1 }),
+      {
+        warmupIterations: 0,
+        iterations: 0,
+        cacheMode: 'production',
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 5,
+      },
+    )).rejects.toThrow('Cloud replacement rdf3x operation timed out after 5ms');
+    await aborted.promise;
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it('bounds a hanging concurrency operation and counts its timeout', async () => {
+    const signals: AbortSignal[] = [];
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      execute(_workload, _sampleIdentity, signal) {
+        if (signal) {
+          signals.push(signal);
+        }
+        return new Promise<CloudReplacementExecution>((resolve) => {
+          setTimeout(() => {
+            void fakeAdapter('rdf3x', []).execute(pointCase).then(resolve);
+          }, 25);
+        });
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 1,
+      durationMs: 1,
+      cacheMode: 'production',
+      operationTimeoutMs: 5,
+    });
+
+    expect(result.completed).toBe(0);
+    expect(result.errors).toBe(1);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(5);
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it('isolates cache-off identities from production-cache measurements', async () => {
+    const offIdentities: Array<string | undefined> = [];
+    const productionIdentities: Array<string | undefined> = [];
+    const offClock = { value: 0 };
+    const productionClock = { value: 0 };
+    const identitySource = createCloudReplacementSampleIdentitySource('latency');
+
+    const off = await measureCloudReplacementCase(
+      pointCase,
+      sequencedTimedFakeAdapter('rdf3x', [ 1, 1, 1, 1 ], offClock, offIdentities),
+      sequencedTimedFakeAdapter('qlever', [ 1, 1, 1, 1 ], offClock, offIdentities),
+      {
+        warmupIterations: 1,
+        iterations: 2,
+        cacheMode: 'off',
+        coldFirstEngine: 'rdf3x',
+        identitySource,
+        operationTimeoutMs: 1_000,
+      },
+    );
+    const production = await measureCloudReplacementCase(
+      pointCase,
+      sequencedTimedFakeAdapter('rdf3x', [ 1, 1, 1, 1 ], productionClock, productionIdentities),
+      sequencedTimedFakeAdapter('qlever', [ 1, 1, 1, 1 ], productionClock, productionIdentities),
+      {
+        warmupIterations: 1,
+        iterations: 2,
+        cacheMode: 'production',
+        coldFirstEngine: 'qlever',
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    expect(off.rdf3x.cacheMode).toBe('off');
+    expect(off.qlever.cacheMode).toBe('off');
+    expect(offIdentities).toHaveLength(8);
+    expect(offIdentities.every((identity) =>
+      /^# xpod-benchmark-sample:latency:(?:rdf3x|qlever):\d+$/u.test(identity ?? ''))).toBe(true);
+    expect(new Set(offIdentities).size).toBe(offIdentities.length);
+    expect(production.rdf3x.cacheMode).toBe('production');
+    expect(production.qlever.cacheMode).toBe('production');
+    expect(productionIdentities).toEqual(Array.from({ length: 8 }, () => undefined));
+  });
+
+  it('keeps cache-off identities unique across latency and all concurrency lanes', async () => {
+    const identitySource = createCloudReplacementSampleIdentitySource('shared-run');
+    const identities: Array<string | undefined> = [];
+    let expectedIdentities = 4;
+    const latencyClock = { value: 0 };
+    await measureCloudReplacementCase(
+      pointCase,
+      sequencedTimedFakeAdapter('rdf3x', [ 1, 1 ], latencyClock, identities),
+      sequencedTimedFakeAdapter('qlever', [ 1, 1 ], latencyClock, identities),
+      {
+        warmupIterations: 0,
+        iterations: 1,
+        cacheMode: 'off',
+        coldFirstEngine: 'rdf3x',
+        identitySource,
+        operationTimeoutMs: 1_000,
+      },
+    );
+
+    for (const concurrency of [ 1, 8, 32 ] as const) {
+      const clock = { value: 0 };
+      const adapter = fakeAdapter('rdf3x', [], {
+        onExecute: (sampleIdentity) => {
+          identities.push(sampleIdentity);
+          clock.value += 10;
+        },
+      });
+      const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+        concurrency,
+        durationMs: 20,
+        cacheMode: 'off',
+        identitySource,
+        operationTimeoutMs: 1_000,
+        now: () => clock.value,
+      });
+      expectedIdentities += result.completed + result.errors;
+    }
+
+    expect(identities).toHaveLength(expectedIdentities);
+    expect(new Set(identities).size).toBe(identities.length);
+    expect(identities.every((identity) =>
+      /^# xpod-benchmark-sample:shared-run:(?:rdf3x|qlever):\d+$/u.test(identity ?? '')))
+      .toBe(true);
+  });
+
+  it('propagates latency adapter exceptions unchanged', async () => {
+    const failure = new Error('timed execution failed');
+    let qleverExecutions = 0;
+    const rdf3x: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      execute() {
+        throw failure;
+      },
+    };
+    const qlever = fakeAdapter('qlever', [ 's=NamedNode:urn:s:1' ], {
+      onExecute: () => qleverExecutions += 1,
+    });
+
+    await expect(measureCloudReplacementCase(pointCase, rdf3x, qlever, {
+      warmupIterations: 0,
+      iterations: 1,
+      cacheMode: 'off',
+      coldFirstEngine: 'rdf3x',
+      identitySource: createCloudReplacementSampleIdentitySource('exception'),
+      operationTimeoutMs: 1_000,
+    })).rejects.toBe(failure);
+    expect(qleverExecutions).toBe(0);
+  });
+
+  it('rejects invalid latency adapter identities before either adapter executes', async () => {
+    let executions = 0;
+    const rdf3x = fakeAdapter('qlever', [], {
+      onExecute: () => executions += 1,
+    }) as unknown as CloudReplacementEngineAdapter<'rdf3x'>;
+    const qlever = fakeAdapter('rdf3x', [], {
+      onExecute: () => executions += 1,
+    }) as unknown as CloudReplacementEngineAdapter<'qlever'>;
+
+    await expect(measureCloudReplacementCase(pointCase, rdf3x, qlever, {
+      warmupIterations: 1,
+      iterations: 1,
+      cacheMode: 'off',
+      coldFirstEngine: 'rdf3x',
+      identitySource: createCloudReplacementSampleIdentitySource('invalid-adapter'),
+      operationTimeoutMs: 1_000,
+    })).rejects.toThrow(
+      'Cloud replacement adapter configuration error: expected rdf3x at rdf3x position, received qlever',
+    );
+    expect(executions).toBe(0);
+  });
+
+  it.each([ 1, 8, 32 ] as const)(
+    'sustains concurrency %i until the common configured deadline',
+    async (concurrency) => {
+      const clock = { value: 0 };
+      const base = fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ]);
+      const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+        id: 'rdf3x',
+        async execute(workload, sampleIdentity) {
+          clock.value += 10;
+          return base.execute(workload, sampleIdentity);
+        },
+      };
+
+      const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+        concurrency,
+        durationMs: 100,
+        cacheMode: 'production',
+        operationTimeoutMs: 1_000,
+        now: () => clock.value,
+      });
+
+      expect(result).toMatchObject({
+        cacheMode: 'production',
+        concurrency,
+        durationMs: 100,
+        errors: 0,
+        throughputPerSecond: 100,
+      });
+      expect(result.completed).toBeGreaterThan(0);
+      expect(result.elapsedMs).toBe(result.completed * 10);
+    },
+  );
+
+  it.each([ 8, 32 ] as const)(
+    'starts all %i workers concurrently before the shared deadline',
+    async (concurrency) => {
+      const clock = { value: 0 };
+      const allEntered = deferred();
+      const release = deferred();
+      let entered = 0;
+      let inFlight = 0;
+      let peakInFlight = 0;
+      const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+        id: 'rdf3x',
+        async execute() {
+          entered += 1;
+          inFlight += 1;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          if (entered === concurrency) {
+            allEntered.resolve();
+          }
+          await release.promise;
+          inFlight -= 1;
+          return fakeAdapter('rdf3x', []).execute(pointCase);
+        },
+      };
+
+      const measurement = measureCloudReplacementConcurrency(pointCase, adapter, {
+        concurrency,
+        durationMs: 100,
+        cacheMode: 'production',
+        operationTimeoutMs: 1_000,
+        now: () => clock.value,
+      });
+      await allEntered.promise;
+      expect(peakInFlight).toBe(concurrency);
+      clock.value = 100;
+      release.resolve();
+
+      const result = await measurement;
+      expect(result).toMatchObject({
+        concurrency,
+        completed: concurrency,
+        errors: 0,
+        elapsedMs: 100,
+        throughputPerSecond: concurrency * 10,
+      });
+    },
+  );
+
+  it('includes in-flight tail completion time in concurrency throughput', async () => {
+    const clock = { value: 0 };
+    const allEntered = deferred();
+    const release = deferred();
+    let entered = 0;
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute() {
+        entered += 1;
+        if (entered === 8) {
+          allEntered.resolve();
+        }
+        await release.promise;
+        return fakeAdapter('rdf3x', []).execute(pointCase);
+      },
+    };
+
+    const measurement = measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 8,
+      durationMs: 10,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => clock.value,
+    });
+    await allEntered.promise;
+    clock.value = 100;
+    release.resolve();
+
+    const result = await measurement;
+    expect(result).toMatchObject({
+      completed: 8,
+      errors: 0,
+      elapsedMs: 100,
+      throughputPerSecond: 80,
+    });
+  });
+
+  it('counts concurrency errors and continues attempting work until the deadline', async () => {
+    const clock = { value: 0 };
+    let attempts = 0;
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute() {
+        const attempt = attempts;
+        attempts += 1;
+        clock.value += 10;
+        if (attempt % 2 === 1) {
+          throw new Error(`failure ${attempt}`);
+        }
+        return fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ]).execute(pointCase);
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 1,
+      durationMs: 50,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => clock.value,
+    });
+
+    expect(attempts).toBe(5);
+    expect(result).toMatchObject({ completed: 3, errors: 2, throughputPerSecond: 60 });
+  });
+
+  it.each([ 'unsupported', '' ])(
+    'counts fallback execution %j as a concurrency error',
+    async (fallbackReason) => {
+      const clock = { value: 0 };
+      const adapter = fakeAdapter('rdf3x', [], {
+        fallbackReason,
+        onExecute: () => clock.value += 10,
+      });
+
+      const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+        concurrency: 1,
+        durationMs: 20,
+        cacheMode: 'production',
+        operationTimeoutMs: 1_000,
+        now: () => clock.value,
+      });
+
+      expect(result).toMatchObject({ completed: 0, errors: 2, elapsedMs: 20 });
+    },
+  );
+
+  it('uses globally unique cache-off identities across concurrency workers', async () => {
+    const identities: Array<string | undefined> = [];
+    const clock = { value: 0 };
+    const base = fakeAdapter('qlever', [ 's=NamedNode:urn:s:1' ]);
+    const adapter: CloudReplacementEngineAdapter<'qlever'> = {
+      id: 'qlever',
+      async execute(workload, sampleIdentity) {
+        identities.push(sampleIdentity);
+        clock.value += 10;
+        return base.execute(workload, sampleIdentity);
+      },
+    };
+    const identitySource = createCloudReplacementSampleIdentitySource('concurrency');
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 8,
+      durationMs: 100,
+      cacheMode: 'off',
+      identitySource,
+      operationTimeoutMs: 1_000,
+      now: () => clock.value,
+    });
+
+    expect(result.cacheMode).toBe('off');
+    expect(identities).toHaveLength(result.completed + result.errors);
+    expect(identities.every((identity) =>
+      /^# xpod-benchmark-sample:concurrency:qlever:\d+$/u.test(identity ?? ''))).toBe(true);
+    expect(new Set(identities).size).toBe(identities.length);
+  });
+
+  it('passes no sample identity in production concurrency mode', async () => {
+    const identities: Array<string | undefined> = [];
+    const clock = { value: 0 };
+    const adapter = fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ], {
+      onExecute: (sampleIdentity) => {
+        identities.push(sampleIdentity);
+        clock.value += 10;
+      },
+    });
+
+    await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 1,
+      durationMs: 30,
+      cacheMode: 'production',
+      identitySource: {
+        next() {
+          throw new Error('production cache mode must not request an identity');
+        },
+      },
+      operationTimeoutMs: 1_000,
+      now: () => clock.value,
+    });
+
+    expect(identities).toEqual([ undefined, undefined, undefined ]);
+  });
+
+  it.each([ 0, -1 ])('returns zero without executing for non-positive duration %i', async (durationMs) => {
+    let executions = 0;
+    const result = await measureCloudReplacementConcurrency(
+      pointCase,
+      fakeAdapter('rdf3x', [], { onExecute: () => executions += 1 }),
+      {
+        concurrency: 32,
+        durationMs,
+        cacheMode: 'off',
+        identitySource: createCloudReplacementSampleIdentitySource(`non-positive-${durationMs}`),
+        operationTimeoutMs: 1_000,
+        now: () => 0,
+      },
+    );
+
+    expect(result).toEqual({
+      cacheMode: 'off',
+      concurrency: 32,
+      durationMs,
+      elapsedMs: 0,
+      completed: 0,
+      errors: 0,
+      throughputPerSecond: 0,
+    });
+    expect(executions).toBe(0);
+  });
+
   it('declares replacement weights before performance results exist', () => {
     expect(CLOUD_REPLACEMENT_GROUP_WEIGHTS).toEqual({ short: 0.60, large: 0.30, authorization: 0.10 });
     expect(Object.isFrozen(CLOUD_REPLACEMENT_GROUP_WEIGHTS)).toBe(true);
@@ -204,6 +1156,7 @@ describe('cloud replacement benchmark', () => {
     expectTypeOf<CloudReplacementWorkload['authorizationGraphVariables']>()
       .toEqualTypeOf<readonly string[] | undefined>();
     expectTypeOf<CloudReplacementExecution['fallbackReason']>().toEqualTypeOf<string | null>();
+    expectTypeOf<CloudReplacementExecution['queryElapsedMs']>().toEqualTypeOf<number | null>();
     expectTypeOf<CloudReplacementCorrectness['rdf3x']>().toEqualTypeOf<CloudReplacementExecution>();
     expectTypeOf<CloudReplacementBinding>()
       .toEqualTypeOf<Readonly<Record<string, Term | undefined>>>();
