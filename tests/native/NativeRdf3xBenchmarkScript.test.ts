@@ -513,6 +513,99 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(events.slice(0, 4)).toEqual([ 'clock', 'materialize', 'clock', 'metrics' ]);
   });
 
+  it.each([
+    'Rdf3xPermutationScan(SPO)',
+    'Rdf3xPermutationScan(SOP)',
+    'Rdf3xPermutationScan(PSO)',
+    'Rdf3xPermutationScan(POS)',
+    'Rdf3xPermutationScan(OSP)',
+    'Rdf3xPermutationScan(OPS)',
+    'Rdf3xMembershipScan',
+  ])('accepts the real RDF3X physical primary marker %s', async (marker) => {
+    const engine: benchmark.BenchmarkSparqlEngine = {
+      async queryBindings() { return (async function* () {})(); },
+      getMetrics() {
+        return {
+          fallbackCount: 0,
+          lastPrimary: { operation: 'queryBindings', plan: [ marker ], indexChoices: [] },
+        };
+      },
+    };
+
+    await expect(benchmark.createCloudReplacementAdapter(
+      'rdf3x', engine,
+    ).execute(workload, '# timed')).resolves.toMatchObject({
+      fallbackReason: null,
+      physicalPlan: [ marker ],
+    });
+  });
+
+  it.each([
+    'Rdf3xPermutationScan',
+    'Rdf3xPermutationScan()',
+    'Rdf3xPermutationScan(GSP)',
+    'Rdf3xPermutationScan(SPO)Suffix',
+    'Rdf3xPermutationScan(SPO) trailing',
+    'Rdf3xMembershipScanSuffix',
+    'Rdf3xMembershipScan trailing',
+    'FakePostgresRdf3x',
+  ])('rejects malformed or unrelated RDF3X marker %s', async (marker) => {
+    const engine: benchmark.BenchmarkSparqlEngine = {
+      async queryBindings() { return (async function* () {})(); },
+      getMetrics() {
+        return {
+          fallbackCount: 0,
+          lastPrimary: { operation: 'queryBindings', plan: [ marker ], indexChoices: [] },
+        };
+      },
+    };
+
+    await expect(benchmark.createCloudReplacementAdapter(
+      'rdf3x', engine,
+    ).execute(workload, '# timed')).rejects.toThrow('selected engine');
+  });
+
+  it('rejects a wrong QLever plan even when no fallback is recorded', async () => {
+    const engine: benchmark.BenchmarkSparqlEngine = {
+      async queryBindings() { return (async function* () {})(); },
+      getMetrics() {
+        return {
+          fallbackCount: 0,
+          lastPrimary: {
+            operation: 'queryBindings',
+            plan: [ 'Rdf3xPermutationScan(SPO)' ],
+            indexChoices: [],
+          },
+        };
+      },
+    };
+
+    await expect(benchmark.createCloudReplacementAdapter(
+      'qlever', engine,
+    ).execute(workload, '# timed')).rejects.toThrow('selected engine');
+  });
+
+  it('rejects an empty fallback reason even when fallbackCount is zero', async () => {
+    const engine: benchmark.BenchmarkSparqlEngine = {
+      async queryBindings() { return (async function* () {})(); },
+      getMetrics() {
+        return {
+          fallbackCount: 0,
+          lastFallback: { reason: '' },
+          lastPrimary: {
+            operation: 'queryBindings',
+            plan: [ 'Rdf3xPermutationScan(SPO)' ],
+            indexChoices: [],
+          },
+        };
+      },
+    };
+
+    await expect(benchmark.createCloudReplacementAdapter(
+      'rdf3x', engine,
+    ).execute(workload, '# timed')).rejects.toThrow('fallback');
+  });
+
   it('fails closed on wrong engine selection or any fallback', async () => {
     const fake = (plan: string[], lastFallback?: { reason: string }) => ({
       async queryBindings() { return (async function* () {})(); },
@@ -528,6 +621,12 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     await expect(benchmark.createCloudReplacementAdapter(
       'rdf3x', fake([ 'NativeSparql' ]),
     ).execute(workload, '# timed')).rejects.toThrow('selected engine');
+    await expect(benchmark.createCloudReplacementAdapter(
+      'rdf3x', fake([ 'PostgresFactsQuery' ]),
+    ).execute(workload, '# timed')).rejects.toThrow('selected engine');
+    await expect(benchmark.createCloudReplacementAdapter(
+      'rdf3x', fake([ 'Rdf3xPermutationScan(SPO)' ], { reason: 'compatibility' }),
+    ).execute(workload, '# timed')).rejects.toThrow('fallback');
     await expect(benchmark.createCloudReplacementAdapter(
       'qlever', fake([ 'NativeSparql' ], { reason: '' }),
     ).execute(workload, '# timed')).rejects.toThrow('fallback');

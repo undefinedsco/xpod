@@ -59,6 +59,14 @@ const CONCURRENCY_DURATION_MS = 60_000;
 const LOCAL_DATABASE = 'xpod_benchmark';
 const EXTERNAL_DATABASE_ENV = 'XPOD_RDF_BENCHMARK_PG_URL';
 const BASE_PATH = 'https://pod.example/';
+const RDF3X_PERMUTATION_SCAN_MARKERS: ReadonlySet<string> = new Set([
+  'Rdf3xPermutationScan(SPO)',
+  'Rdf3xPermutationScan(SOP)',
+  'Rdf3xPermutationScan(PSO)',
+  'Rdf3xPermutationScan(POS)',
+  'Rdf3xPermutationScan(OSP)',
+  'Rdf3xPermutationScan(OPS)',
+]);
 
 export type BenchmarkMode = 'local' | 'external';
 export type BenchmarkCacheMode = CloudReplacementCacheMode | 'both';
@@ -856,7 +864,10 @@ function assertSelectedEngineMetrics(
   const selected = id === 'qlever'
     ? plan.some((entry) => entry === 'NativeSparql')
     : plan.some((entry) =>
-      entry.includes('PostgresRdf3x') || entry.startsWith('Rdf3xJoinBGP('));
+      entry.startsWith('PostgresRdf3x') ||
+      entry.startsWith('Rdf3xJoinBGP(') ||
+      RDF3X_PERMUTATION_SCAN_MARKERS.has(entry) ||
+      entry === 'Rdf3xMembershipScan');
   if (!selected) {
     throw new Error(`Cloud replacement ${id} adapter selected engine mismatch`);
   }
