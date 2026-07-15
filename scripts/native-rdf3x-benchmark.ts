@@ -1,0 +1,1866 @@
+import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { performance } from 'node:perf_hooks';
+import type { Quad, Term } from '@rdfjs/types';
+import { Pool } from 'pg';
+import {
+  PostgresRdfEngine,
+  type PostgresRdfEngineOptions,
+} from '../src/storage/rdf/PostgresRdfEngine';
+import { SolidRdfSparqlEngine } from '../src/storage/rdf/SolidRdfSparqlEngine';
+import {
+  buildRdfModelsBenchmarkSeed,
+  buildRdfModelsSyntheticMessageBatch,
+  RDF_MODELS_SYNTHETIC_MESSAGE_QUADS,
+} from '../src/storage/rdf/models-benchmark';
+import {
+  buildCloudReplacementTopology,
+  calculateCloudReplacementThroughputRatio,
+  calculateCloudReplacementWeightedP95Ratio,
+  canonicalCloudReplacementDigests,
+  canonicalCloudReplacementRow,
+  CLOUD_REPLACEMENT_GROUP_WEIGHTS,
+  CLOUD_REPLACEMENT_THRESHOLDS,
+  cloudReplacementWorkloads,
+  compareCloudReplacementCase,
+  createCloudReplacementSampleIdentitySource,
+  decideCloudReplacement,
+  measureCloudReplacementCase,
+  measureCloudReplacementConcurrency,
+  renderCloudReplacementJson,
+  sanitizeCloudReplacementEnvironment,
+  type CloudReplacementCacheMode,
+  type CloudReplacementConcurrency,
+  type CloudReplacementCorrectness,
+  type CloudReplacementEngineAdapter,
+  type CloudReplacementEngineId,
+  type CloudReplacementExecution,
+  type CloudReplacementLatency,
+  type CloudReplacementPgDiagnostics,
+  type CloudReplacementReport,
+  type CloudReplacementSampleIdentitySource,
+  type CloudReplacementWorkload,
+} from '../src/storage/rdf/cloud-replacement-benchmark';
+
+const DEFAULT_TARGET_QUADS = 20_000;
+const DEFAULT_ITERATIONS = 20;
+const DEFAULT_WARMUP_ITERATIONS = 3;
+const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
+export const BENCHMARK_BUILD_SETUP_TIMEOUT_MS = 30 * 60_000;
+export const BENCHMARK_DOCKER_TIMEOUT_MS = 2 * 60_000;
+export const BENCHMARK_MAX_LOAD_WAVES = 16;
+const BENCHMARK_CONNECTION_TIMEOUT_MS = 30_000;
+const DEFAULT_CONCURRENCY = [ 1, 8, 32 ] as const;
+const DEFAULT_IMAGE = 'xpod-rdf-postgres:pg17-smoke';
+const DEFAULT_MESSAGES_PER_BATCH = 10_000;
+const CONCURRENCY_DURATION_MS = 60_000;
+const LOCAL_DATABASE = 'xpod_benchmark';
+const EXTERNAL_DATABASE_ENV = 'XPOD_RDF_BENCHMARK_PG_URL';
+const BASE_PATH = 'https://pod.example/';
+
+export type BenchmarkMode = 'local' | 'external';
+export type BenchmarkCacheMode = CloudReplacementCacheMode | 'both';
+export type BenchmarkConcurrency = 1 | 8 | 32;
+
+export interface BenchmarkCliOptions {
+  mode: BenchmarkMode;
+  targetQuads: number;
+  iterations: number;
+  warmupIterations: number;
+  concurrency: BenchmarkConcurrency[];
+  cacheMode: BenchmarkCacheMode;
+  cacheModes: CloudReplacementCacheMode[];
+  operationTimeoutMs: number;
+  image: string;
+  out: string;
+  dryRun: boolean;
+  help: boolean;
+  databaseName: string;
+  benchmarkDatabaseUrl?: string;
+}
+
+export interface BenchmarkLoadingPlan {
+  targetQuads: number;
+  syntheticPodCount: 32 | 128 | 512;
+  messagesPerBatch: number;
+  maxBatchQuads: number;
+}
+
+interface BenchmarkPutEngine {
+  put(quads: Quad | Quad[]): void | Promise<void>;
+}
+
+interface BenchmarkAdapterMetrics {
+  fallbackCount?: number;
+  lastFallback?: { reason?: string } | null;
+  lastPrimary?: {
+    operation?: string;
+    plan?: string[];
+    indexChoices?: string[];
+  };
+}
+
+export interface BenchmarkSparqlEngine {
+  queryBindings(
+    query: string,
+    basePath: string,
+    accessScope?: CloudReplacementWorkload['accessScope'],
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<unknown>;
+  getMetrics(): BenchmarkAdapterMetrics;
+}
+
+export interface BenchmarkAdapterOptions {
+  now?: () => number;
+  timeWithoutSampleIdentity?: boolean;
+  operationTimeoutMs?: number;
+}
+
+type BenchmarkCaseMeasurementOptions = {
+  prepareColdState: () => void | Promise<void>;
+  warmupIterations: number;
+  iterations: number;
+  coldFirstEngine: CloudReplacementEngineId;
+  operationTimeoutMs: number;
+} & (
+  | {
+    cacheMode: 'off';
+    identitySource: CloudReplacementSampleIdentitySource;
+  }
+  | {
+    cacheMode: 'production';
+    identitySource?: CloudReplacementSampleIdentitySource;
+  }
+);
+
+export interface BenchmarkCaseMeasurement {
+  correctness: CloudReplacementCorrectness;
+  rdf3x: CloudReplacementLatency;
+  qlever: CloudReplacementLatency;
+  ignoredSteadyHelperColdMs: Record<CloudReplacementEngineId, number>;
+}
+
+interface ProvisionedDatabase {
+  connectionString: string;
+  container?: string;
+}
+
+interface BenchmarkCleanupClient {
+  query(statement: string): Promise<unknown>;
+  release(): void;
+}
+
+interface BenchmarkCleanupPool {
+  connect(): Promise<BenchmarkCleanupClient>;
+}
+
+export interface LocalPostgresProbeOptions {
+  attempts?: number;
+  delayMs?: number;
+  runDocker?: (args: string[]) => string;
+}
+
+interface PgStatSnapshot {
+  sharedBlocksRead: number | null;
+  sharedBlocksHit: number | null;
+  tempBytes: number | null;
+  diagnosticsUnavailable: string[];
+}
+
+interface AdapterPair {
+  rdf3xStore: PostgresRdfEngine;
+  qleverStore: PostgresRdfEngine;
+  rdf3xSparql: SolidRdfSparqlEngine;
+  qleverSparql: SolidRdfSparqlEngine;
+  rdf3xAdapter: CloudReplacementEngineAdapter<'rdf3x'>;
+  qleverAdapter: CloudReplacementEngineAdapter<'qlever'>;
+  rdf3xBuildMs: number;
+  qleverBuildMs: number;
+}
+
+export interface LatencyRecord {
+  cacheMode: CloudReplacementCacheMode;
+  workload: CloudReplacementWorkload;
+  rdf3x: CloudReplacementLatency;
+  qlever: CloudReplacementLatency;
+  ignoredSteadyHelperColdMs: Record<CloudReplacementEngineId, number>;
+}
+
+export interface ConcurrencyRecord extends CloudReplacementConcurrency {
+  cacheMode: CloudReplacementCacheMode;
+  caseId: string;
+  engine: CloudReplacementEngineId;
+}
+
+export interface SharedStorageEvidence {
+  factsBytes: number;
+  sharedPhysicalIndexBytes: number;
+  qleverIncrementalBytes: null;
+  reportStorageBytes: Record<CloudReplacementEngineId, number>;
+  semantics: 'shared-not-additive';
+}
+
+export interface BenchmarkCacheModePairPlan {
+  cacheMode: CloudReplacementCacheMode;
+  refreshDerivedIndexes: boolean;
+  recordBuildAndStorage: boolean;
+}
+
+export interface BenchmarkPgPoolConfiguration {
+  connectionString: string;
+  max: number;
+  connectionTimeoutMillis: number;
+  statement_timeout: number;
+  query_timeout: number;
+}
+
+export interface BenchmarkCorrectnessRecord {
+  cacheMode: CloudReplacementCacheMode;
+  caseId: string;
+  correctness: CloudReplacementCorrectness;
+}
+
+export type BenchmarkDiagnosticsByCacheMode = Partial<Record<
+  CloudReplacementCacheMode,
+  Record<CloudReplacementEngineId, CloudReplacementPgDiagnostics>
+>>;
+
+export interface BenchmarkReportSummaryInput {
+  cacheModes: readonly CloudReplacementCacheMode[];
+  latencyRecords: readonly LatencyRecord[];
+  concurrencyRecords: readonly ConcurrencyRecord[];
+  correctnessRecords: readonly BenchmarkCorrectnessRecord[];
+  correctnessFailures: readonly string[];
+  diagnosticsByCacheMode: BenchmarkDiagnosticsByCacheMode;
+  qleverReady: boolean;
+}
+
+const HELP = `Usage: bun scripts/native-rdf3x-benchmark.ts [options]
+
+Cloud/PostgreSQL replacement evidence only; Local production keeps RDF3X.
+
+Options:
+  --mode=local|external                  Database mode. Default: local
+  --targetQuads=N                       Minimum fact count. Default: 20000
+  --iterations=20                       Timed latency samples per case
+  --warmupIterations=3                  Warmup samples after the cold sample
+  --concurrency=1,8,32                  Sustained concurrency lanes
+  --cacheMode=off|production|both       Cache evidence. Default: both
+  --operationTimeoutMs=30000            Positive timeout for measured queries
+  --image=xpod-rdf-postgres:pg17-smoke  Disposable local PG17/QLever image
+  --out=.test-data/rdf-engine-perf-reports/...
+                                         Sanitized JSON report path
+  --dry-run                              Print the fixed gates and safe plan only
+  --help                                 Print this help
+
+External mode reads its URL only from XPOD_RDF_BENCHMARK_PG_URL.
+The URL must name a dedicated database ending in _benchmark.
+`;
+
+export function parseArgs(
+  args: readonly string[] = process.argv.slice(2),
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): BenchmarkCliOptions {
+  const values = new Map<string, string>();
+  let dryRun = false;
+  let help = false;
+  const valueOptions = new Set([
+    'mode',
+    'targetQuads',
+    'iterations',
+    'warmupIterations',
+    'concurrency',
+    'cacheMode',
+    'operationTimeoutMs',
+    'image',
+    'out',
+  ]);
+
+  for (const argument of args) {
+    if (argument === '--dry-run') {
+      dryRun = true;
+      continue;
+    }
+    if (argument === '--help') {
+      help = true;
+      continue;
+    }
+    const match = /^--([A-Za-z][A-Za-z0-9]*)=(.*)$/u.exec(argument);
+    const name = match?.[1];
+    if (!name || !valueOptions.has(name)) {
+      throw new Error(`Unknown option --${optionName(argument)}`);
+    }
+    if (values.has(name)) {
+      throw new Error(`Duplicate --${name} option`);
+    }
+    values.set(name, match[2] ?? '');
+  }
+
+  const mode = enumOption(values, 'mode', [ 'local', 'external' ], 'local');
+  const targetQuads = positiveIntegerOption(values, 'targetQuads', DEFAULT_TARGET_QUADS);
+  const iterations = positiveIntegerOption(values, 'iterations', DEFAULT_ITERATIONS);
+  const warmupIterations = nonNegativeIntegerOption(
+    values,
+    'warmupIterations',
+    DEFAULT_WARMUP_ITERATIONS,
+  );
+  const concurrency = concurrencyOption(values.get('concurrency'));
+  const cacheMode = enumOption(
+    values,
+    'cacheMode',
+    [ 'off', 'production', 'both' ],
+    'both',
+  );
+  const operationTimeoutMs = positiveIntegerOption(
+    values,
+    'operationTimeoutMs',
+    DEFAULT_OPERATION_TIMEOUT_MS,
+  );
+  const image = nonEmptyOption(values, 'image', DEFAULT_IMAGE);
+  const out = nonEmptyOption(
+    values,
+    'out',
+    `.test-data/rdf-engine-perf-reports/cloud-replacement-${targetQuads}.json`,
+  );
+  const cacheModes: CloudReplacementCacheMode[] = cacheMode === 'both'
+    ? [ 'off', 'production' ]
+    : [ cacheMode ];
+
+  let databaseName = LOCAL_DATABASE;
+  let benchmarkDatabaseUrl: string | undefined;
+  if (mode === 'external' && !help) {
+    benchmarkDatabaseUrl = env[EXTERNAL_DATABASE_ENV];
+    if (!benchmarkDatabaseUrl) {
+      throw new Error(`External mode requires ${EXTERNAL_DATABASE_ENV}`);
+    }
+    databaseName = assertDedicatedBenchmarkDatabase(benchmarkDatabaseUrl);
+  }
+
+  return {
+    mode,
+    targetQuads,
+    iterations,
+    warmupIterations,
+    concurrency,
+    cacheMode,
+    cacheModes,
+    operationTimeoutMs,
+    image,
+    out,
+    dryRun,
+    help,
+    databaseName,
+    ...(benchmarkDatabaseUrl ? { benchmarkDatabaseUrl } : {}),
+  };
+}
+
+export function assertDedicatedBenchmarkDatabase(connectionUrl: string): string {
+  try {
+    const parsed = new URL(connectionUrl);
+    if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+      throw new Error('protocol');
+    }
+    const encodedDatabase = parsed.pathname.replace(/^\/+/, '');
+    if (!encodedDatabase || encodedDatabase.includes('/')) {
+      throw new Error('path');
+    }
+    const database = decodeURIComponent(encodedDatabase);
+    if (!database || database.includes('/') || !database.endsWith('_benchmark')) {
+      throw new Error('name');
+    }
+    return database;
+  } catch {
+    throw new Error(
+      'External mode requires a dedicated benchmark database ending in _benchmark',
+    );
+  }
+}
+
+export function benchmarkCleanupSql(connectionUrl: string): [ string, string ] {
+  assertDedicatedBenchmarkDatabase(connectionUrl);
+  return [
+    'DROP SCHEMA public CASCADE',
+    'CREATE SCHEMA public',
+  ];
+}
+
+export function buildBenchmarkLoadingPlan(
+  targetQuads: number,
+  messagesPerBatch = DEFAULT_MESSAGES_PER_BATCH,
+): BenchmarkLoadingPlan {
+  assertPositiveInteger(targetQuads, 'targetQuads');
+  assertPositiveInteger(messagesPerBatch, 'messagesPerBatch');
+  const syntheticPodCount = targetQuads >= 10_000_000
+    ? 512
+    : targetQuads >= 2_000_000
+      ? 128
+      : 32;
+  return {
+    targetQuads,
+    syntheticPodCount,
+    messagesPerBatch,
+    maxBatchQuads: messagesPerBatch * RDF_MODELS_SYNTHETIC_MESSAGE_QUADS,
+  };
+}
+
+export async function loadBenchmarkFacts(
+  engine: BenchmarkPutEngine,
+  targetQuads: number,
+  options: {
+    messagesPerBatch?: number;
+    factCount: () => number | Promise<number>;
+  },
+): Promise<number> {
+  const plan = buildBenchmarkLoadingPlan(
+    targetQuads,
+    options.messagesPerBatch ?? DEFAULT_MESSAGES_PER_BATCH,
+  );
+  const seed = buildRdfModelsBenchmarkSeed({
+    syntheticMessages: 0,
+    syntheticPodCount: plan.syntheticPodCount,
+    caseProfile: 'default',
+  });
+  await engine.put(seed);
+
+  const topology = buildCloudReplacementTopology(plan.syntheticPodCount);
+  await engine.put(topology);
+
+  let actualFacts = await readBenchmarkFactCount(options.factCount);
+  let start = 0;
+  let loadWaves = 0;
+  while (actualFacts < targetQuads) {
+    if (loadWaves >= BENCHMARK_MAX_LOAD_WAVES) {
+      throw new Error(
+        `Benchmark loading stopped ${targetQuads - actualFacts} facts below target after ` +
+        `${BENCHMARK_MAX_LOAD_WAVES} load waves`,
+      );
+    }
+    loadWaves += 1;
+    let remainingMessages = Math.ceil(
+      (targetQuads - actualFacts) / RDF_MODELS_SYNTHETIC_MESSAGE_QUADS,
+    );
+    while (remainingMessages > 0) {
+      const count = Math.min(plan.messagesPerBatch, remainingMessages);
+      const batch = buildRdfModelsSyntheticMessageBatch({
+        start,
+        count,
+        syntheticPodCount: plan.syntheticPodCount,
+      });
+      await engine.put(batch);
+      start += count;
+      remainingMessages -= count;
+    }
+    actualFacts = await readBenchmarkFactCount(options.factCount);
+  }
+  return actualFacts;
+}
+
+export async function countBenchmarkFacts(
+  queryable: {
+    query<T>(sql: string): Promise<{ rows: T[] }>;
+  },
+): Promise<number> {
+  const result = await queryable.query<{ count: string | number }>(
+    'SELECT COUNT(*) FROM rdf_quads',
+  );
+  return readBenchmarkFactCount(() => Number(result.rows[0]?.count));
+}
+
+async function readBenchmarkFactCount(
+  factCount: () => number | Promise<number>,
+): Promise<number> {
+  const count = await factCount();
+  if (!Number.isFinite(count) || !Number.isInteger(count) || count < 0) {
+    throw new Error('Benchmark fact count must be a finite non-negative integer');
+  }
+  return count;
+}
+
+export function createCloudReplacementAdapter<Id extends CloudReplacementEngineId>(
+  id: Id,
+  engine: BenchmarkSparqlEngine,
+  options: BenchmarkAdapterOptions = {},
+): CloudReplacementEngineAdapter<Id> {
+  const now = options.now ?? (() => performance.now());
+  const operationTimeoutMs = options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
+  if (!Number.isFinite(operationTimeoutMs) || operationTimeoutMs <= 0) {
+    throw new Error('Benchmark adapter operationTimeoutMs must be finite and positive');
+  }
+  return {
+    id,
+    async execute(workload, sampleIdentity, signal): Promise<CloudReplacementExecution> {
+      throwIfAborted(signal);
+      const operation = createOperationAbortScope(signal, operationTimeoutMs);
+      try {
+        const query = sampleIdentity === undefined
+          ? workload.sparql
+          : `${workload.sparql}\n${sampleIdentity}`;
+        let activeStream: unknown;
+        const startedAt = now();
+        const rawRows = await raceWithAbort((async () => {
+          activeStream = await engine.queryBindings(
+            query,
+            workload.accessScope?.basePath ?? BASE_PATH,
+            workload.accessScope,
+            { signal: operation.signal, timeoutMs: operationTimeoutMs },
+          );
+          return await materializeBindings(activeStream, operation.signal);
+        })(), operation.signal, () => destroyStream(activeStream));
+        const elapsedMs = now() - startedAt;
+
+        const metrics = engine.getMetrics();
+        const physicalPlan = [ ...(metrics.lastPrimary?.plan ?? []) ];
+        assertSelectedEngineMetrics(id, metrics, physicalPlan);
+        const rows = rawRows.map((binding) => canonicalCloudReplacementRow(binding));
+        const digests = canonicalCloudReplacementDigests(rows);
+        return {
+          rows,
+          ...digests,
+          fallbackReason: null,
+          physicalPlan,
+          queryElapsedMs: sampleIdentity === undefined && !options.timeWithoutSampleIdentity
+            ? null
+            : elapsedMs,
+        };
+      } finally {
+        operation.dispose();
+      }
+    },
+  };
+}
+
+export async function measureCloudReplacementCaseWithTrueCold(
+  workload: CloudReplacementWorkload,
+  rdf3xAdapter: CloudReplacementEngineAdapter<'rdf3x'>,
+  qleverAdapter: CloudReplacementEngineAdapter<'qlever'>,
+  options: BenchmarkCaseMeasurementOptions,
+): Promise<BenchmarkCaseMeasurement> {
+  await options.prepareColdState();
+  const adapters = options.coldFirstEngine === 'rdf3x'
+    ? [ rdf3xAdapter, qleverAdapter ] as const
+    : [ qleverAdapter, rdf3xAdapter ] as const;
+  const coldMs: Record<CloudReplacementEngineId, number> = {
+    rdf3x: 0,
+    qlever: 0,
+  };
+  for (const adapter of adapters) {
+    const sampleIdentity = options.cacheMode === 'off'
+      ? options.identitySource.next(adapter.id)
+      : undefined;
+    const execution = await adapter.execute(workload, sampleIdentity);
+    if (execution.fallbackReason !== null) {
+      throw new Error(`Cloud replacement ${adapter.id} cold execution observed a fallback`);
+    }
+    if (execution.queryElapsedMs === null || !Number.isFinite(execution.queryElapsedMs) ||
+      execution.queryElapsedMs < 0) {
+      throw new Error(
+        `Cloud replacement ${adapter.id} cold execution requires finite queryElapsedMs`,
+      );
+    }
+    coldMs[adapter.id] = execution.queryElapsedMs;
+  }
+
+  const correctness = await compareCloudReplacementCase(
+    workload,
+    rdf3xAdapter,
+    qleverAdapter,
+  );
+  const steady = await measureCloudReplacementCase(
+    workload,
+    rdf3xAdapter,
+    qleverAdapter,
+    {
+      warmupIterations: options.warmupIterations,
+      iterations: options.iterations,
+      coldFirstEngine: options.coldFirstEngine,
+      operationTimeoutMs: options.operationTimeoutMs,
+      ...benchmarkCacheMeasurementOptions(options.cacheMode, options.identitySource),
+    },
+  );
+  return {
+    correctness,
+    rdf3x: { ...steady.rdf3x, coldMs: coldMs.rdf3x },
+    qlever: { ...steady.qlever, coldMs: coldMs.qlever },
+    ignoredSteadyHelperColdMs: {
+      rdf3x: steady.rdf3x.coldMs,
+      qlever: steady.qlever.coldMs,
+    },
+  };
+}
+
+function benchmarkCacheMeasurementOptions(
+  cacheMode: CloudReplacementCacheMode,
+  identitySource?: CloudReplacementSampleIdentitySource,
+): { cacheMode: 'off'; identitySource: CloudReplacementSampleIdentitySource } |
+  { cacheMode: 'production' } {
+  if (cacheMode === 'off') {
+    if (!identitySource) {
+      throw new Error('Cache-off benchmark measurements require identitySource');
+    }
+    return { cacheMode, identitySource };
+  }
+  return { cacheMode };
+}
+
+export function buildBenchmarkCacheModePairPlan(
+  cacheModes: readonly CloudReplacementCacheMode[],
+): BenchmarkCacheModePairPlan[] {
+  return cacheModes.map((cacheMode) => ({
+    cacheMode,
+    refreshDerivedIndexes: false,
+    recordBuildAndStorage: false,
+  }));
+}
+
+export function buildBenchmarkPgPoolConfiguration(
+  connectionString: string,
+  timeoutMs: number,
+  max: number,
+): BenchmarkPgPoolConfiguration {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('Benchmark pool timeoutMs must be finite and positive');
+  }
+  assertPositiveInteger(max, 'pool max');
+  return {
+    connectionString,
+    max,
+    connectionTimeoutMillis: BENCHMARK_CONNECTION_TIMEOUT_MS,
+    statement_timeout: timeoutMs,
+    query_timeout: timeoutMs,
+  };
+}
+
+export function buildBenchmarkPostgresEngineOptions(
+  engine: CloudReplacementEngineId,
+  connectionString: string,
+  cacheMode: CloudReplacementCacheMode,
+  operationTimeoutMs: number,
+  createPool: (configuration: BenchmarkPgPoolConfiguration) => unknown =
+    (configuration) => new Pool(configuration),
+): PostgresRdfEngineOptions {
+  const cacheEnabled = cacheMode === 'production';
+  return {
+    pool: createPool(buildBenchmarkPgPoolConfiguration(
+      connectionString,
+      operationTimeoutMs,
+      32,
+    )),
+    nativeSparqlEnabled: engine === 'qlever',
+    queryResultCacheEnabled: cacheEnabled,
+    materializedResultCacheEnabled: cacheEnabled,
+    deferPgCustomIndexInitialization: true,
+    maintenanceIntervalMs: 0,
+  };
+}
+
+export function buildSharedStorageEvidence(
+  storageStats: { factsBytes: number; derivedBytes: number },
+): SharedStorageEvidence {
+  return {
+    factsBytes: storageStats.factsBytes,
+    sharedPhysicalIndexBytes: storageStats.derivedBytes,
+    qleverIncrementalBytes: null,
+    reportStorageBytes: {
+      rdf3x: storageStats.derivedBytes,
+      qlever: storageStats.derivedBytes,
+    },
+    semantics: 'shared-not-additive',
+  };
+}
+
+export function buildBenchmarkReportSummary(input: BenchmarkReportSummaryInput) {
+  const evidenceModes = selectBenchmarkEvidenceModes(input.cacheModes);
+  const latencyCacheMode = evidenceModes.latency;
+  const gateCacheMode = evidenceModes.concurrencyAndGates;
+  const preferredLatency = input.latencyRecords.filter((record) =>
+    record.cacheMode === latencyCacheMode);
+  const gateLatency = input.latencyRecords.filter((record) =>
+    record.cacheMode === gateCacheMode);
+  const gateConcurrency = input.concurrencyRecords.filter((record) =>
+    record.cacheMode === gateCacheMode);
+  const resourceDiagnostics = input.diagnosticsByCacheMode[gateCacheMode];
+  if (!resourceDiagnostics) {
+    throw new Error(`Missing ${gateCacheMode} resource diagnostics`);
+  }
+
+  const throughputRatio = calculateCloudReplacementThroughputRatio(
+    throughputMeasurements(gateConcurrency, 'rdf3x'),
+    throughputMeasurements(gateConcurrency, 'qlever'),
+  );
+  const errorRates = {
+    rdf3x: benchmarkEngineErrorRate(gateConcurrency, 'rdf3x'),
+    qlever: benchmarkEngineErrorRate(gateConcurrency, 'qlever'),
+  };
+  const baselineValid = errorRates.rdf3x === 0;
+  const cases = preferredLatency.map((record) => {
+    const selectedCorrectness = input.cacheModes.map((cacheMode) => {
+      const correctness = input.correctnessRecords.find((entry) =>
+        entry.cacheMode === cacheMode && entry.caseId === record.workload.id)?.correctness;
+      if (!correctness) {
+        throw new Error(`Missing ${cacheMode} correctness for ${record.workload.id}`);
+      }
+      return { cacheMode, correctness };
+    });
+    const correctnessFailures = selectedCorrectness.flatMap(({ cacheMode, correctness }) =>
+      correctness.failures.map((failure) => `${cacheMode}:${failure}`));
+    const correctness = {
+      correct: selectedCorrectness.every((entry) => entry.correctness.correct),
+      sameMultiset: selectedCorrectness.every((entry) => entry.correctness.sameMultiset),
+      sameOrder: selectedCorrectness.every((entry) => entry.correctness.sameOrder),
+      failures: correctnessFailures,
+    };
+    return {
+      id: record.workload.id,
+      group: record.workload.group,
+      correctnessFailures,
+      correctness,
+      rdf3x: {
+        fallbackReason: null,
+        coldMs: record.rdf3x.coldMs,
+        p50Ms: record.rdf3x.p50Ms,
+        p95Ms: record.rdf3x.p95Ms,
+        p99Ms: record.rdf3x.p99Ms,
+      },
+      qlever: {
+        fallbackReason: null,
+        coldMs: record.qlever.coldMs,
+        p50Ms: record.qlever.p50Ms,
+        p95Ms: record.qlever.p95Ms,
+        p99Ms: record.qlever.p99Ms,
+      },
+    };
+  });
+  const correctnessPassed = input.correctnessFailures.length === 0 &&
+    cases.every((entry) => entry.correctness.correct) && baselineValid && input.qleverReady;
+  const p95Comparisons = gateLatency.map((record) => ({
+    group: record.workload.group,
+    rdf3xP95Ms: Math.max(record.rdf3x.p95Ms, Number.EPSILON),
+    qleverP95Ms: record.qlever.p95Ms,
+  }));
+  const decision = decideCloudReplacement({
+    correctnessPassed,
+    criticalShortP95Ratios: gateLatency
+      .filter((record) => record.workload.group === 'short' &&
+        record.workload.concurrencyRepresentative)
+      .map((record) => record.qlever.p95Ms /
+        Math.max(record.rdf3x.p95Ms, Number.EPSILON)),
+    weightedP95Ratio: calculateCloudReplacementWeightedP95Ratio(p95Comparisons),
+    throughputRatio,
+    largeCaseSpeedups: gateLatency
+      .filter((record) => record.workload.group === 'large')
+      .map((record) => record.rdf3x.p95Ms /
+        Math.max(record.qlever.p95Ms, Number.EPSILON)),
+    errorRate: errorRates.qlever,
+    memoryLimitRatio: null,
+    tempDiskLimitRatio: null,
+  });
+
+  return {
+    source: input,
+    latencyCacheMode,
+    gateCacheMode,
+    preferredLatency,
+    gateLatency,
+    gateConcurrency,
+    throughputRatio,
+    errorRates,
+    baselineValid,
+    correctnessPassed,
+    qleverReady: input.qleverReady,
+    environment: { qleverReady: input.qleverReady },
+    resourceDiagnostics,
+    cases,
+    decision,
+  };
+}
+
+function selectBenchmarkEvidenceModes(
+  cacheModes: readonly CloudReplacementCacheMode[],
+): { latency: CloudReplacementCacheMode; concurrencyAndGates: CloudReplacementCacheMode } {
+  if (cacheModes.length === 0) {
+    throw new Error('Cloud replacement report requires at least one cache mode');
+  }
+  return {
+    latency: cacheModes.includes('production') ? 'production' : 'off',
+    concurrencyAndGates: cacheModes.includes('off') ? 'off' : 'production',
+  };
+}
+
+function throughputMeasurements(
+  records: readonly ConcurrencyRecord[],
+  engine: CloudReplacementEngineId,
+): Array<{ completed: number; elapsedMs: number }> {
+  return records
+    .filter((record) => record.engine === engine)
+    .map((record) => ({ completed: record.completed, elapsedMs: record.elapsedMs }));
+}
+
+function benchmarkEngineErrorRate(
+  records: readonly ConcurrencyRecord[],
+  engine: CloudReplacementEngineId,
+): number {
+  const selected = records.filter((record) => record.engine === engine);
+  const completed = selected.reduce((sum, record) => sum + record.completed, 0);
+  const errors = selected.reduce((sum, record) => sum + record.errors, 0);
+  const operations = completed + errors;
+  if (!Number.isFinite(operations) || operations <= 0) {
+    throw new Error(`Cloud replacement ${engine} error rate requires completed operations`);
+  }
+  return errors / operations;
+}
+
+function createOperationAbortScope(
+  outerSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const forwardAbort = (): void => {
+    controller.abort(outerSignal?.reason ?? new DOMException('Aborted', 'AbortError'));
+  };
+  if (outerSignal?.aborted) {
+    forwardAbort();
+  } else {
+    outerSignal?.addEventListener('abort', forwardAbort, { once: true });
+  }
+  const timeout = setTimeout(() => {
+    controller.abort(new DOMException(
+      `Benchmark operation timed out after ${timeoutMs}ms`,
+      'TimeoutError',
+    ));
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout);
+      outerSignal?.removeEventListener('abort', forwardAbort);
+    },
+  };
+}
+
+function assertSelectedEngineMetrics(
+  id: CloudReplacementEngineId,
+  metrics: BenchmarkAdapterMetrics,
+  plan: readonly string[],
+): void {
+  if (metrics.lastFallback !== undefined && metrics.lastFallback !== null) {
+    throw new Error(`Cloud replacement ${id} adapter observed a fallback`);
+  }
+  if ((metrics.fallbackCount ?? 0) !== 0) {
+    throw new Error(`Cloud replacement ${id} adapter observed a fallback`);
+  }
+  if (metrics.lastPrimary?.operation !== 'queryBindings') {
+    throw new Error(`Cloud replacement ${id} adapter did not record a primary query`);
+  }
+  const selected = id === 'qlever'
+    ? plan.some((entry) => entry === 'NativeSparql')
+    : plan.some((entry) =>
+      entry.includes('PostgresRdf3x') || entry.startsWith('Rdf3xJoinBGP('));
+  if (!selected) {
+    throw new Error(`Cloud replacement ${id} adapter selected engine mismatch`);
+  }
+}
+
+async function materializeBindings(
+  stream: unknown,
+  signal?: AbortSignal,
+): Promise<Array<Readonly<Record<string, Term | undefined>>>> {
+  if (!stream || typeof (stream as AsyncIterable<unknown>)[Symbol.asyncIterator] !== 'function') {
+    throw new Error('Cloud replacement queryBindings did not return an async iterable');
+  }
+  const rows: Array<Readonly<Record<string, Term | undefined>>> = [];
+  for await (const binding of stream as AsyncIterable<unknown>) {
+    throwIfAborted(signal);
+    if (!binding || typeof (binding as Iterable<unknown>)[Symbol.iterator] !== 'function') {
+      throw new Error('Cloud replacement query returned a non-binding row');
+    }
+    const row: Record<string, Term | undefined> = {};
+    for (const entry of binding as Iterable<unknown>) {
+      if (!Array.isArray(entry) || entry.length < 2) {
+        throw new Error('Cloud replacement query returned a malformed binding');
+      }
+      const variable = entry[0];
+      const name = typeof variable === 'string'
+        ? variable
+        : typeof variable === 'object' && variable !== null &&
+          'value' in variable && typeof variable.value === 'string'
+          ? variable.value
+          : undefined;
+      if (!name) {
+        throw new Error('Cloud replacement query returned an unnamed variable');
+      }
+      row[name] = entry[1] as Term | undefined;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function raceWithAbort<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+  onAbort?: () => void,
+): Promise<T> {
+  if (!signal) {
+    return await operation;
+  }
+  throwIfAborted(signal);
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal.removeEventListener('abort', abort);
+      callback();
+    };
+    const abort = (): void => finish(() => {
+      const primaryError = abortReason(signal);
+      try {
+        onAbort?.();
+      } catch (cleanupError) {
+        reject(new AggregateError(
+          [ primaryError, cleanupError ],
+          'Benchmark operation aborted and stream cleanup failed',
+        ));
+        return;
+      }
+      reject(primaryError);
+    });
+    signal.addEventListener('abort', abort, { once: true });
+    operation.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw abortReason(signal);
+  }
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('Aborted', 'AbortError');
+}
+
+function destroyStream(stream: unknown): void {
+  const destroy = stream && typeof stream === 'object' && 'destroy' in stream
+    ? (stream as { destroy?: () => void }).destroy
+    : undefined;
+  if (typeof destroy === 'function') {
+    destroy.call(stream);
+  }
+}
+
+function buildDryRunPlan(options: BenchmarkCliOptions): Record<string, unknown> {
+  const evidenceModes = selectBenchmarkEvidenceModes(options.cacheModes);
+  return {
+    mode: options.mode,
+    targetQuads: options.targetQuads,
+    iterations: options.iterations,
+    warmupIterations: options.warmupIterations,
+    concurrency: options.concurrency,
+    cacheModes: options.cacheModes,
+    operationTimeoutMs: options.operationTimeoutMs,
+    buildSetupTimeoutMs: BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
+    concurrencyDurationMs: CONCURRENCY_DURATION_MS,
+    image: options.image,
+    out: options.out,
+    engines: {
+      rdf3x: {
+        nativeSparqlEnabled: false,
+        compatibilityFallback: false,
+        cancellation: 'server-statement-timeout-plus-prompt-client-race',
+      },
+      qlever: {
+        nativeSparqlEnabled: true,
+        compatibilityFallback: false,
+        cancellation: 'native-abort-signal-plus-server-statement-timeout',
+      },
+    },
+    loading: buildBenchmarkLoadingPlan(options.targetQuads),
+    workload: {
+      source: 'shared-product-facts',
+      coldState: 'recorded-before-correctness-with-caller-owned-query-cache-reset',
+      coldFirstEngine: 'alternating-by-workload-and-cache-mode',
+      cacheOffIdentitySource: 'single-run-source',
+    },
+    engineLifecycle: {
+      buildPairCount: 1,
+      measurementPairCount: options.cacheModes.length,
+      initialization: 'long-timeout-build-pair-then-independent-cache-mode-pairs',
+      buildTimings: 'build-pair-rdf3x-refresh-and-qlever-init-only',
+    },
+    storage: {
+      snapshotCount: 1,
+      semantics: 'shared-not-additive',
+      qleverIncrementalBytes: null,
+    },
+    evidenceModes,
+    diagnostics: {
+      attribution: 'per-engine-concurrency-phases-only',
+      unavailable: 'interleaved-correctness-and-latency-resource-attribution',
+    },
+    weights: CLOUD_REPLACEMENT_GROUP_WEIGHTS,
+    thresholds: CLOUD_REPLACEMENT_THRESHOLDS,
+    safety: options.mode === 'external'
+      ? {
+          connectionSource: EXTERNAL_DATABASE_ENV,
+          database: options.databaseName,
+          cleanup: 'drop-and-recreate-public-schema',
+        }
+      : {
+          connectionSource: 'disposable-local-container',
+          cleanup: 'remove-container',
+        },
+  };
+}
+
+async function main(): Promise<void> {
+  let options: BenchmarkCliOptions | undefined;
+  try {
+    options = parseArgs();
+    if (options.help) {
+      process.stdout.write(HELP);
+      return;
+    }
+    if (options.dryRun) {
+      process.stdout.write(`${JSON.stringify(buildDryRunPlan(options), null, 2)}\n`);
+      return;
+    }
+    await runBenchmark(options);
+  } catch (error) {
+    process.stderr.write(`${formatBenchmarkCliFailure(
+      error,
+      options?.benchmarkDatabaseUrl,
+    )}\n`);
+    process.exitCode = 1;
+  }
+}
+
+async function runBenchmark(options: BenchmarkCliOptions): Promise<void> {
+  const provisioned = await provisionDatabase(options);
+  let controlPool: Pool | undefined;
+  let setup: PostgresRdfEngine | undefined;
+  let primaryError: unknown;
+  try {
+    controlPool = new Pool(buildBenchmarkPgPoolConfiguration(
+      provisioned.connectionString,
+      BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
+      4,
+    ));
+    if (options.mode === 'external') {
+      await executeBenchmarkCleanup(controlPool, provisioned.connectionString);
+    }
+
+    setup = new PostgresRdfEngine(buildBenchmarkPostgresEngineOptions(
+      'rdf3x',
+      provisioned.connectionString,
+      'off',
+      BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
+    ));
+    await setup.open();
+    const actualFacts = await loadBenchmarkFacts(setup, options.targetQuads, {
+      factCount: () => countBenchmarkFacts(controlPool!),
+    });
+    await controlPool.query('ANALYZE rdf_terms');
+    await controlPool.query('ANALYZE rdf_quads');
+    await setup.close();
+    setup = undefined;
+
+    const report = await collectBenchmarkReport(
+      options,
+      provisioned,
+      controlPool,
+      actualFacts,
+    );
+    const target = path.resolve(options.out);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, `${JSON.stringify(report, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const cleanupErrors: unknown[] = [];
+  await captureCleanupFailure(() => setup?.close(), cleanupErrors);
+  if (options.mode === 'external' && controlPool) {
+    await captureCleanupFailure(
+      () => executeBenchmarkCleanup(controlPool!, provisioned.connectionString),
+      cleanupErrors,
+    );
+  }
+  await captureCleanupFailure(() => controlPool?.end(), cleanupErrors);
+  if (provisioned.container) {
+    try {
+      removeLocalBenchmarkContainer(provisioned.container);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  throwBenchmarkFailures(primaryError, cleanupErrors);
+}
+
+async function collectBenchmarkReport(
+  options: BenchmarkCliOptions,
+  provisioned: ProvisionedDatabase,
+  pool: Pool,
+  actualFacts: number,
+): Promise<Record<string, unknown>> {
+  const workloads = cloudReplacementWorkloads();
+  const identitySource = createCloudReplacementSampleIdentitySource(
+    `run-${process.pid}-${randomUUID()}`,
+  );
+  const latencyRecords: LatencyRecord[] = [];
+  const concurrencyRecords: ConcurrencyRecord[] = [];
+  const correctnessRecords: BenchmarkCorrectnessRecord[] = [];
+  const correctnessFailures: string[] = [];
+  const diagnosticsByCacheMode: BenchmarkDiagnosticsByCacheMode = {};
+  let orderIndex = 0;
+
+  const buildPair = await openAdapterPair(
+    provisioned.connectionString,
+    BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
+    {
+      cacheMode: 'off',
+      refreshDerivedIndexes: true,
+      recordBuildAndStorage: true,
+    },
+  );
+  const buildEvidence = await useAdapterPair(buildPair, async () => ({
+    rdf3xBuildMs: buildPair.rdf3xBuildMs,
+    qleverBuildMs: buildPair.qleverBuildMs,
+    storage: buildSharedStorageEvidence(await buildPair.rdf3xStore.storageStats()),
+    qleverReady: true,
+  }));
+
+  for (const pairPlan of buildBenchmarkCacheModePairPlan(options.cacheModes)) {
+    const { cacheMode } = pairPlan;
+    const pair = await openAdapterPair(
+      provisioned.connectionString,
+      options.operationTimeoutMs,
+      pairPlan,
+    );
+    await useAdapterPair(pair, async () => {
+      for (const workload of workloads) {
+        const coldFirstEngine = orderIndex % 2 === 0 ? 'rdf3x' : 'qlever';
+        orderIndex += 1;
+        const measured = await measureCloudReplacementCaseWithTrueCold(
+          workload,
+          pair.rdf3xAdapter,
+          pair.qleverAdapter,
+          {
+            prepareColdState: () => prepareColdState(pair),
+            warmupIterations: options.warmupIterations,
+            iterations: options.iterations,
+            coldFirstEngine,
+            operationTimeoutMs: options.operationTimeoutMs,
+            ...benchmarkCacheMeasurementOptions(cacheMode, identitySource),
+          },
+        );
+        correctnessRecords.push({
+          cacheMode,
+          caseId: workload.id,
+          correctness: measured.correctness,
+        });
+        correctnessFailures.push(...measured.correctness.failures.map((failure) =>
+          `${cacheMode}:${workload.id}:${failure}`));
+        latencyRecords.push({ cacheMode, workload, ...measured });
+      }
+
+      const modeDiagnostics = {
+        rdf3x: emptyDiagnostics(),
+        qlever: emptyDiagnostics(),
+      };
+      for (const engineId of [ 'rdf3x', 'qlever' ] as const) {
+        await prepareColdState(pair);
+        const adapter = engineId === 'rdf3x' ? pair.rdf3xAdapter : pair.qleverAdapter;
+        const phase = await captureAttributedPgPhase(async () => {
+          const records: ConcurrencyRecord[] = [];
+          for (const workload of workloads.filter((entry) =>
+            entry.concurrencyRepresentative)) {
+            for (const concurrency of options.concurrency) {
+              const measured = await measureCloudReplacementConcurrency(
+                workload,
+                adapter,
+                {
+                  concurrency,
+                  durationMs: CONCURRENCY_DURATION_MS,
+                  operationTimeoutMs: options.operationTimeoutMs,
+                  ...benchmarkCacheMeasurementOptions(cacheMode, identitySource),
+                },
+              );
+              records.push({
+                ...measured,
+                cacheMode,
+                caseId: workload.id,
+                engine: engineId,
+              });
+            }
+          }
+          return records;
+        }, () => snapshotPgStatDatabase(pool));
+        concurrencyRecords.push(...phase.result);
+        modeDiagnostics[engineId] = phase.diagnostics;
+      }
+      diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
+    });
+  }
+
+  const summary = buildBenchmarkReportSummary({
+    cacheModes: options.cacheModes,
+    latencyRecords,
+    concurrencyRecords,
+    correctnessRecords,
+    correctnessFailures,
+    diagnosticsByCacheMode,
+    qleverReady: buildEvidence.qleverReady,
+  });
+  const versionResult = await pool.query<{ server_version: string }>('SHOW server_version');
+  const environment = sanitizeCloudReplacementEnvironment({
+    connectionString: provisioned.connectionString,
+    postgresVersion: versionResult.rows[0]?.server_version ?? 'unknown',
+    engineCommit: currentCommit(),
+  });
+  const report: CloudReplacementReport = {
+    environment,
+    targetFacts: options.targetQuads,
+    actualFacts,
+    correctnessFailures,
+    cases: summary.cases.map(({ correctness: _correctness, ...benchmarkCase }) =>
+      benchmarkCase),
+    concurrency: summary.gateConcurrency.map((record) => ({
+      caseId: record.caseId,
+      engine: record.engine,
+      concurrency: record.concurrency,
+      completed: record.completed,
+      errors: record.errors,
+      elapsedMs: record.elapsedMs,
+      throughputPerSecond: record.throughputPerSecond,
+    })),
+    indexBuildAndStorage: {
+      rdf3x: {
+        buildMs: buildEvidence.rdf3xBuildMs,
+        storageBytes: buildEvidence.storage.reportStorageBytes.rdf3x,
+      },
+      qlever: {
+        buildMs: buildEvidence.qleverBuildMs,
+        storageBytes: buildEvidence.storage.reportStorageBytes.qlever,
+      },
+    },
+    resourceDiagnostics: summary.resourceDiagnostics,
+    decision: summary.decision,
+  };
+  const sanitized = JSON.parse(renderCloudReplacementJson(report)) as CloudReplacementReport;
+  return {
+    generatedAt: new Date().toISOString(),
+    mode: options.mode,
+    cacheModes: options.cacheModes,
+    evidenceModes: {
+      latency: summary.latencyCacheMode,
+      concurrencyAndGates: summary.gateCacheMode,
+    },
+    weights: CLOUD_REPLACEMENT_GROUP_WEIGHTS,
+    thresholds: CLOUD_REPLACEMENT_THRESHOLDS,
+    ...sanitized,
+    environment: {
+      ...sanitized.environment,
+      qleverReady: summary.environment.qleverReady,
+    },
+    cases: sanitized.cases.map((benchmarkCase, index) => {
+      const correctness = summary.cases[index]?.correctness;
+      if (!correctness) {
+        throw new Error(`Missing correctness summary for report case ${index}`);
+      }
+      return { ...benchmarkCase, correctness };
+    }),
+    errorRates: summary.errorRates,
+    baselineValid: summary.baselineValid,
+    storage: {
+      factsBytes: buildEvidence.storage.factsBytes,
+      sharedPhysicalIndexBytes: buildEvidence.storage.sharedPhysicalIndexBytes,
+      qleverIncrementalBytes: buildEvidence.storage.qleverIncrementalBytes,
+      reportStorageBytes: buildEvidence.storage.reportStorageBytes,
+      semantics: buildEvidence.storage.semantics,
+    },
+    latencyByCacheMode: latencyRecords.map((record) => ({
+      cacheMode: record.cacheMode,
+      caseId: record.workload.id,
+      rdf3x: record.rdf3x,
+      qlever: record.qlever,
+      ignoredSteadyHelperColdMs: record.ignoredSteadyHelperColdMs,
+    })),
+    concurrencyByCacheMode: concurrencyRecords,
+    diagnosticsByCacheMode,
+    methodology: {
+      buildSetupTimeoutMs: BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
+      operationTimeoutMs: options.operationTimeoutMs,
+      concurrencyDurationMs: CONCURRENCY_DURATION_MS,
+      coldState: 'recorded before correctness; caller-owned query-cache reset; PostgreSQL shared buffers are not cleared',
+      ignoredCold: 'the post-correctness cold emitted by the steady-state helper is retained only as ignored diagnostic evidence',
+      cacheOffIdentitySource: 'one identity source reused for the entire run; cache misses do not depend on its SPARQL comment',
+      cacheOff: 'query-result and materialized-result caches disabled when the off pair is constructed',
+      coldFirstEngine: 'alternated by workload/cache-mode call',
+      engineLifecycle: 'long-timeout build pair followed by independent operation-timeout cache-mode pairs',
+      cancellation: 'RDF3X uses PostgreSQL statement_timeout plus prompt client race; QLever also receives the native AbortSignal',
+      storage: 'one final shared physical storageStats snapshot; per-engine bytes are non-additive and QLever incremental bytes are unavailable',
+      diagnosticsAttribution: 'separate pg_stat_database deltas for each cache-mode and engine concurrency phase',
+      evidenceModes: 'production latency when selected; cache-off concurrency, errors, gates, and diagnostics when selected',
+      externalResourceSampler: 'not attached',
+    },
+  };
+}
+
+async function openAdapterPair(
+  connectionString: string,
+  operationTimeoutMs: number,
+  pairPlan: BenchmarkCacheModePairPlan,
+): Promise<AdapterPair> {
+  const rdf3xStore = new PostgresRdfEngine(buildBenchmarkPostgresEngineOptions(
+    'rdf3x',
+    connectionString,
+    pairPlan.cacheMode,
+    operationTimeoutMs,
+  ));
+  const qleverStore = new PostgresRdfEngine(buildBenchmarkPostgresEngineOptions(
+    'qlever',
+    connectionString,
+    pairPlan.cacheMode,
+    operationTimeoutMs,
+  ));
+  try {
+    await rdf3xStore.open();
+    let rdf3xBuildMs = 0;
+    if (pairPlan.refreshDerivedIndexes) {
+      const rdf3xStartedAt = performance.now();
+      await rdf3xStore.refreshDerivedIndexes({ mode: 'full' });
+      rdf3xBuildMs = performance.now() - rdf3xStartedAt;
+    }
+
+    const qleverStartedAt = performance.now();
+    await qleverStore.open();
+    const qleverBuildMs = pairPlan.recordBuildAndStorage
+      ? performance.now() - qleverStartedAt
+      : 0;
+    const rdf3xSparql = new SolidRdfSparqlEngine(rdf3xStore);
+    const qleverSparql = new SolidRdfSparqlEngine(qleverStore);
+    return {
+      rdf3xStore,
+      qleverStore,
+      rdf3xSparql,
+      qleverSparql,
+      rdf3xAdapter: createCloudReplacementAdapter('rdf3x', rdf3xSparql, {
+        timeWithoutSampleIdentity: true,
+        operationTimeoutMs,
+      }),
+      qleverAdapter: createCloudReplacementAdapter('qlever', qleverSparql, {
+        timeWithoutSampleIdentity: true,
+        operationTimeoutMs,
+      }),
+      rdf3xBuildMs,
+      qleverBuildMs,
+    };
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    await captureCleanupFailure(() => qleverStore.close(), cleanupErrors);
+    await captureCleanupFailure(() => rdf3xStore.close(), cleanupErrors);
+    throwBenchmarkFailures(error, cleanupErrors);
+    throw error;
+  }
+}
+
+async function closeAdapterPair(pair: AdapterPair): Promise<void> {
+  const cleanupErrors: unknown[] = [];
+  await captureCleanupFailure(() => pair.qleverStore.close(), cleanupErrors);
+  await captureCleanupFailure(() => pair.rdf3xStore.close(), cleanupErrors);
+  throwBenchmarkFailures(undefined, cleanupErrors);
+}
+
+async function useAdapterPair<T>(pair: AdapterPair, run: () => Promise<T>): Promise<T> {
+  let result: T | undefined;
+  let primaryError: unknown;
+  try {
+    result = await run();
+  } catch (error) {
+    primaryError = error;
+  }
+  const cleanupErrors: unknown[] = [];
+  await captureCleanupFailure(() => closeAdapterPair(pair), cleanupErrors);
+  throwBenchmarkFailures(primaryError, cleanupErrors);
+  return result as T;
+}
+
+async function captureCleanupFailure(
+  run: () => void | Promise<void> | undefined,
+  errors: unknown[],
+): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    errors.push(error);
+  }
+}
+
+async function prepareColdState(pair: AdapterPair): Promise<void> {
+  await pair.rdf3xStore.invalidateQueryResultCache();
+  await pair.qleverStore.invalidateQueryResultCache();
+  pair.rdf3xSparql.resetMetrics();
+  pair.qleverSparql.resetMetrics();
+}
+
+async function provisionDatabase(options: BenchmarkCliOptions): Promise<ProvisionedDatabase> {
+  if (options.mode === 'external') {
+    const connectionString = options.benchmarkDatabaseUrl;
+    if (!connectionString) {
+      throw new Error(`External mode requires ${EXTERNAL_DATABASE_ENV}`);
+    }
+    assertDedicatedBenchmarkDatabase(connectionString);
+    return {
+      connectionString,
+    };
+  }
+
+  const container = `xpod-rdf-cloud-benchmark-${process.pid}-${randomUUID().slice(0, 8)}`;
+  try {
+    docker([
+      'run', '--rm', '-d', '--name', container,
+      '-e', 'POSTGRES_HOST_AUTH_METHOD=trust',
+      '-e', `POSTGRES_DB=${LOCAL_DATABASE}`,
+      '-p', '127.0.0.1::5432',
+      options.image,
+    ]);
+    await waitForLocalPostgres(container);
+    const port = docker([ 'port', container, '5432/tcp' ])
+      .trim()
+      .split(':')
+      .at(-1);
+    if (!port || !/^\d+$/u.test(port)) {
+      throw new Error('Docker did not publish the benchmark PostgreSQL port');
+    }
+    return {
+      connectionString: `postgres://postgres@127.0.0.1:${port}/${LOCAL_DATABASE}`,
+      container,
+    };
+  } catch (error) {
+    try {
+      removeLocalBenchmarkContainer(container);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [ error, cleanupError ],
+        'Failed to remove disposable benchmark container after provisioning failed',
+      );
+    }
+    throw error;
+  }
+}
+
+export async function waitForLocalPostgres(
+  container: string,
+  options: LocalPostgresProbeOptions = {},
+): Promise<void> {
+  const attempts = options.attempts ?? 120;
+  const delayMs = options.delayMs ?? 500;
+  const runDocker = options.runDocker ?? docker;
+  assertPositiveInteger(attempts, 'startup probe attempts');
+  if (!Number.isFinite(delayMs) || delayMs < 0) {
+    throw new Error('Benchmark startup probe delayMs must be finite and non-negative');
+  }
+  let lastProbeFailure: unknown = new Error('PostgreSQL startup probe did not run');
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      runDocker([ 'exec', container, 'pg_isready', '-U', 'postgres', '-d', LOCAL_DATABASE ]);
+      const capabilities = runDocker([
+        'exec', container,
+        'psql', '-U', 'postgres', '-d', LOCAL_DATABASE, '-Atc',
+        `SELECT xpod_rdf.native_sparql_capabilities()->>'abiVersion', ` +
+          `xpod_rdf.native_sparql_capabilities()->>'ready'`,
+      ]).trim();
+      if (capabilities === '1|true') {
+        return;
+      }
+      lastProbeFailure = new Error(`native capability probe returned ${JSON.stringify(capabilities)}`);
+    } catch (error) {
+      lastProbeFailure = error;
+    }
+    if (attempt + 1 < attempts && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw new Error(
+    'Disposable PostgreSQL/QLever image did not become ready; final probe failure: ' +
+    sanitizeError(lastProbeFailure),
+  );
+}
+
+export function removeLocalBenchmarkContainer(
+  container: string,
+  runDocker: (args: string[]) => string = docker,
+): void {
+  const cleanupErrors: unknown[] = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      runDocker([ 'rm', '-f', container ]);
+    } catch (error) {
+      cleanupErrors.push(error);
+      // Verification below decides whether a failed removal left a container behind.
+    }
+    try {
+      runDocker([ 'inspect', '--format={{.Id}}', container ]);
+      cleanupErrors.push(new Error('Disposable benchmark container still exists'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/no such (?:container|object)/iu.test(message)) {
+        return;
+      }
+      cleanupErrors.push(error);
+    }
+  }
+  throw new AggregateError(
+    cleanupErrors,
+    'Failed to remove disposable benchmark container after 3 attempts',
+  );
+}
+
+function docker(args: string[]): string {
+  return execFileSync('docker', args, {
+    encoding: 'utf8',
+    stdio: [ 'ignore', 'pipe', 'pipe' ],
+    timeout: BENCHMARK_DOCKER_TIMEOUT_MS,
+  });
+}
+
+export async function executeBenchmarkCleanup(
+  pool: BenchmarkCleanupPool,
+  connectionString: string,
+): Promise<void> {
+  const statements = benchmarkCleanupSql(connectionString);
+  const client = await pool.connect();
+  let transactionStarted = false;
+  let primaryError: unknown;
+  const cleanupErrors: unknown[] = [];
+  try {
+    await client.query('BEGIN');
+    transactionStarted = true;
+    for (const statement of statements) {
+      await client.query(statement);
+    }
+    await client.query('COMMIT');
+    transactionStarted = false;
+  } catch (error) {
+    primaryError = error;
+    if (transactionStarted) {
+      await captureCleanupFailure(async () => {
+        await client.query('ROLLBACK');
+      }, cleanupErrors);
+    }
+  }
+  await captureCleanupFailure(() => client.release(), cleanupErrors);
+  throwBenchmarkFailures(primaryError, cleanupErrors);
+}
+
+export async function captureAttributedPgPhase<T>(
+  run: () => Promise<T>,
+  snapshot: () => Promise<PgStatSnapshot>,
+): Promise<{ result: T; diagnostics: CloudReplacementPgDiagnostics }> {
+  const before = await snapshot();
+  const outcome = await run().then(
+    (result) => ({ completed: true as const, result }),
+    (error: unknown) => ({ completed: false as const, error }),
+  );
+  let after: PgStatSnapshot;
+  try {
+    after = await snapshot();
+  } catch (diagnosticsError) {
+    if ('error' in outcome) {
+      throw new AggregateError(
+        [ outcome.error, diagnosticsError ],
+        'Benchmark engine phase and trailing diagnostics snapshot both failed',
+      );
+    }
+    throw diagnosticsError;
+  }
+  if ('error' in outcome) {
+    throw outcome.error;
+  }
+  return {
+    result: outcome.result,
+    diagnostics: calculatePgDiagnosticsDelta(before, after),
+  };
+}
+
+async function snapshotPgStatDatabase(pool: Pool): Promise<PgStatSnapshot> {
+  try {
+    const result = await pool.query<{
+      blks_read: string | number;
+      blks_hit: string | number;
+      temp_bytes: string | number;
+    }>(`
+      SELECT blks_read, blks_hit, temp_bytes
+      FROM pg_stat_database
+      WHERE datname = current_database()
+    `);
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error('missing row');
+    }
+    return {
+      sharedBlocksRead: finiteCounter(row.blks_read),
+      sharedBlocksHit: finiteCounter(row.blks_hit),
+      tempBytes: finiteCounter(row.temp_bytes),
+      diagnosticsUnavailable: [],
+    };
+  } catch {
+    return {
+      sharedBlocksRead: null,
+      sharedBlocksHit: null,
+      tempBytes: null,
+      diagnosticsUnavailable: [ 'pg_stat_database counters unavailable' ],
+    };
+  }
+}
+
+function finiteCounter(value: string | number): number {
+  const counter = Number(value);
+  if (!Number.isFinite(counter) || counter < 0) {
+    throw new Error('invalid PostgreSQL counter');
+  }
+  return counter;
+}
+
+export function calculatePgDiagnosticsDelta(
+  before: PgStatSnapshot,
+  after: PgStatSnapshot,
+): CloudReplacementPgDiagnostics {
+  const counterResets: string[] = [];
+  return {
+    sharedBlocksRead: counterDelta(
+      'sharedBlocksRead', before.sharedBlocksRead, after.sharedBlocksRead, counterResets,
+    ),
+    sharedBlocksHit: counterDelta(
+      'sharedBlocksHit', before.sharedBlocksHit, after.sharedBlocksHit, counterResets,
+    ),
+    tempBytes: counterDelta('tempBytes', before.tempBytes, after.tempBytes, counterResets),
+    memoryPeakBytes: null,
+    memoryLimitBytes: null,
+    diagnosticsUnavailable: [
+      ...before.diagnosticsUnavailable,
+      ...after.diagnosticsUnavailable,
+      ...counterResets,
+      'Interleaved correctness and latency phases are excluded from per-engine attribution',
+      'PostgreSQL does not expose per-engine memory high-water marks',
+      'Memory limits require the external resource sampler',
+      'Temp-disk limits require the external resource sampler',
+    ],
+  };
+}
+
+function emptyDiagnostics(): CloudReplacementPgDiagnostics {
+  return {
+    sharedBlocksRead: 0,
+    sharedBlocksHit: 0,
+    tempBytes: 0,
+    memoryPeakBytes: null,
+    memoryLimitBytes: null,
+    diagnosticsUnavailable: [],
+  };
+}
+
+function counterDelta(
+  name: 'sharedBlocksRead' | 'sharedBlocksHit' | 'tempBytes',
+  before: number | null,
+  after: number | null,
+  diagnosticsUnavailable: string[],
+): number | null {
+  if (before === null || after === null) {
+    return null;
+  }
+  if (after < before) {
+    diagnosticsUnavailable.push(`pg_stat_database ${name} counter reset during phase`);
+    return null;
+  }
+  return after - before;
+}
+
+export function throwBenchmarkFailures(
+  primaryError: unknown,
+  cleanupErrors: readonly unknown[],
+): void {
+  if (primaryError !== undefined && cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [ primaryError, ...cleanupErrors ],
+      'Benchmark failed and cleanup also failed',
+    );
+  }
+  if (primaryError !== undefined) {
+    throw primaryError;
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError([ ...cleanupErrors ], 'Benchmark cleanup failed');
+  }
+}
+
+function currentCommit(): string {
+  try {
+    return execFileSync('git', [ 'rev-parse', 'HEAD' ], {
+      encoding: 'utf8',
+      stdio: [ 'ignore', 'pipe', 'ignore' ],
+    }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function sanitizeError(error: unknown, knownUrl?: string): string {
+  let message = error instanceof Error ? error.message : String(error);
+  if (knownUrl) {
+    message = message.replaceAll(knownUrl, '[redacted benchmark URL]');
+    try {
+      const parsed = new URL(knownUrl);
+      const sentinels = [
+        parsed.host,
+        parsed.hostname,
+        parsed.username,
+        parsed.password,
+        decodeURIComponent(parsed.username),
+        decodeURIComponent(parsed.password),
+      ].filter((sentinel, index, values) =>
+        sentinel.length > 0 && values.indexOf(sentinel) === index)
+        .sort((left, right) => right.length - left.length);
+      for (const sentinel of sentinels) {
+        message = message.replaceAll(sentinel, '[redacted connection sentinel]');
+      }
+    } catch {
+      // The full known URL was already redacted; malformed URLs have no safe sentinels to parse.
+    }
+  }
+  return message
+    .replace(/postgres(?:ql)?:\/\/[^\s]+/giu, '[redacted benchmark URL]')
+    .replace(/(?:password|secret|token)=\S+/giu, '[redacted credential]');
+}
+
+export function formatBenchmarkCliFailure(error: unknown, knownUrl?: string): string {
+  const lines: string[] = [];
+  appendBenchmarkCliFailure(lines, error, 'failure', knownUrl);
+  return [
+    'RDF cloud replacement benchmark failed:',
+    ...lines.map((line) => `- ${line}`),
+  ].join('\n');
+}
+
+function appendBenchmarkCliFailure(
+  lines: string[],
+  error: unknown,
+  category: string,
+  knownUrl?: string,
+): void {
+  lines.push(`${category}: ${sanitizeError(error, knownUrl)}`);
+  if (!(error instanceof AggregateError)) {
+    return;
+  }
+  const children = Array.from(error.errors as Iterable<unknown>);
+  const combinedFailure = category === 'failure' &&
+    error.message === 'Benchmark failed and cleanup also failed';
+  const cleanupFailure = category === 'failure' && error.message === 'Benchmark cleanup failed';
+  children.forEach((child, index) => {
+    const childCategory = combinedFailure
+      ? index === 0 ? 'primary' : `cleanup[${index}]`
+      : cleanupFailure
+        ? `cleanup[${index + 1}]`
+        : `${category}.cause[${index + 1}]`;
+    appendBenchmarkCliFailure(lines, child, childCategory, knownUrl);
+  });
+}
+
+function optionName(argument: string): string {
+  const withoutPrefix = argument.startsWith('--') ? argument.slice(2) : 'argument';
+  return withoutPrefix.split('=', 1)[0] || 'argument';
+}
+
+function enumOption<const T extends string>(
+  values: ReadonlyMap<string, string>,
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const value = values.get(name);
+  if (value === undefined) {
+    return fallback;
+  }
+  if (!allowed.includes(value as T)) {
+    throw new Error(`Invalid --${name}; expected ${allowed.join(' or ')}`);
+  }
+  return value as T;
+}
+
+function positiveIntegerOption(
+  values: ReadonlyMap<string, string>,
+  name: string,
+  fallback: number,
+): number {
+  const raw = values.get(name);
+  if (raw === undefined) {
+    return fallback;
+  }
+  const value = Number(raw);
+  assertPositiveInteger(value, name);
+  return value;
+}
+
+function nonNegativeIntegerOption(
+  values: ReadonlyMap<string, string>,
+  name: string,
+  fallback: number,
+): number {
+  const raw = values.get(name);
+  if (raw === undefined) {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    throw new Error(`Invalid --${name}; expected a finite non-negative integer`);
+  }
+  return value;
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`Invalid --${name}; expected a finite positive integer`);
+  }
+}
+
+function nonEmptyOption(
+  values: ReadonlyMap<string, string>,
+  name: string,
+  fallback: string,
+): string {
+  const value = values.get(name);
+  if (value === undefined) {
+    return fallback;
+  }
+  if (value.length === 0 || /[\r\n\0]/u.test(value)) {
+    throw new Error(`Invalid --${name}; expected a non-empty single-line value`);
+  }
+  return value;
+}
+
+function concurrencyOption(raw?: string): BenchmarkConcurrency[] {
+  if (raw === undefined) {
+    return [ ...DEFAULT_CONCURRENCY ];
+  }
+  const parts = raw.split(',');
+  const values = parts.map(Number);
+  const allowed = new Set<number>(DEFAULT_CONCURRENCY);
+  if (parts.length === 0 || values.some((value) =>
+    !Number.isInteger(value) || !allowed.has(value)) || new Set(values).size !== values.length) {
+    throw new Error('Invalid --concurrency; expected unique lanes chosen from 1, 8, and 32');
+  }
+  return values as BenchmarkConcurrency[];
+}
+
+if (import.meta.main) {
+  await main();
+}
