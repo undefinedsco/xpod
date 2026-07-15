@@ -1,10 +1,19 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { DataFactory } from 'n3';
+import type { Term } from '@rdfjs/types';
 import {
   buildCloudReplacementTopology,
   CLOUD_REPLACEMENT_GROUP_WEIGHTS,
+  canonicalCloudReplacementDigests,
+  canonicalCloudReplacementRow,
+  canonicalCloudReplacementTerm,
   cloudReplacementWorkloads,
+  compareCloudReplacementCase,
+  type CloudReplacementBinding,
+  type CloudReplacementCorrectness,
+  type CloudReplacementEngineAdapter,
   type CloudReplacementEngineId,
+  type CloudReplacementExecution,
   type CloudReplacementWorkload,
   type CloudReplacementWorkloadGroup,
 } from '../../../src/storage/rdf/cloud-replacement-benchmark';
@@ -87,11 +96,18 @@ const AUTHORIZATION_IDS = [
   'authorization-scoped-broad-join',
 ] as const;
 
-const AUTHORIZATION_QUERY_SOURCES = {
-  'authorization-inherited-prefix': 'message-star',
-  'authorization-explicit-allow': 'two-hop-chain',
-  'authorization-explicit-deny': 'count-distinct-threads',
-  'authorization-scoped-broad-join': 'ordered-top-k',
+const AUTHORIZATION_QUERY_BODIES = {
+  'authorization-inherited-prefix': 'SELECT ?g ?message ?thread ?created ?score ?workspace WHERE { GRAPH ?g { ?message sioc:has_member ?thread; dct:created ?created; udfs:score ?score; udfs:workspace ?workspace; udfs:status "indexed" } }',
+  'authorization-explicit-allow': 'SELECT ?g1 ?g2 ?message ?chat WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat } }',
+  'authorization-explicit-deny': 'SELECT ?g (COUNT(DISTINCT ?thread) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } } GROUP BY ?g ORDER BY ?g',
+  'authorization-scoped-broad-join': 'SELECT ?g ?message ?score WHERE { GRAPH ?g { ?message udfs:score ?score } } ORDER BY DESC(?score) ?message LIMIT 100',
+} as const;
+
+const AUTHORIZATION_GRAPH_VARIABLES = {
+  'authorization-inherited-prefix': [ 'g' ],
+  'authorization-explicit-allow': [ 'g1', 'g2' ],
+  'authorization-explicit-deny': [ 'g' ],
+  'authorization-scoped-broad-join': [ 'g' ],
 } as const;
 
 const ROW_EXPECTATIONS = {
@@ -117,9 +133,60 @@ const ROW_EXPECTATIONS = {
   'top-thread-aggregate': { expectedRows: undefined, minRows: 1 },
   'authorization-inherited-prefix': { expectedRows: undefined, minRows: 1 },
   'authorization-explicit-allow': { expectedRows: undefined, minRows: 1 },
-  'authorization-explicit-deny': { expectedRows: 1, minRows: undefined },
+  'authorization-explicit-deny': { expectedRows: undefined, minRows: 1 },
   'authorization-scoped-broad-join': { expectedRows: 100, minRows: undefined },
 } as const;
+
+const pointCase: CloudReplacementWorkload = {
+  id: 'point-lookup',
+  group: 'short',
+  purpose: 'test fixture',
+  sparql: 'SELECT ?s WHERE { VALUES ?s { <urn:s:1> <urn:s:2> } }',
+  sharedSurface: true,
+  orderSensitive: false,
+  concurrencyRepresentative: true,
+  expectedRows: 2,
+};
+
+const authorizationCase: CloudReplacementWorkload = {
+  ...pointCase,
+  id: 'authorization-oracle',
+  group: 'authorization',
+  expectedRows: 1,
+  concurrencyRepresentative: false,
+  accessScope: {
+    basePath: ALICE_CHAT_PREFIX,
+    mode: 'read',
+    deniedGraphUrls: [ DENIED_DAY ],
+  },
+  authorizationGraphVariables: [ 'g' ],
+};
+
+function fakeAdapter<Id extends CloudReplacementEngineId>(
+  id: Id,
+  rows: string[],
+  options: {
+    fallbackReason?: string;
+    orderedDigest?: string;
+    multisetDigest?: string;
+    onExecute?: () => void;
+  } = {},
+): CloudReplacementEngineAdapter<Id> {
+  const digests = canonicalCloudReplacementDigests(rows);
+  return {
+    id,
+    async execute() {
+      options.onExecute?.();
+      return {
+        rows,
+        orderedDigest: options.orderedDigest ?? digests.orderedDigest,
+        multisetDigest: options.multisetDigest ?? digests.multisetDigest,
+        fallbackReason: options.fallbackReason ?? null,
+        physicalPlan: [ `${id}:fake` ],
+      };
+    },
+  };
+}
 
 describe('cloud replacement benchmark', () => {
   it('declares replacement weights before performance results exist', () => {
@@ -134,6 +201,337 @@ describe('cloud replacement benchmark', () => {
     expectTypeOf<CloudReplacementWorkload['sharedSurface']>().toEqualTypeOf<true>();
     expectTypeOf<CloudReplacementWorkload['orderSensitive']>().toEqualTypeOf<boolean>();
     expectTypeOf<CloudReplacementWorkload['concurrencyRepresentative']>().toEqualTypeOf<boolean>();
+    expectTypeOf<CloudReplacementWorkload['authorizationGraphVariables']>()
+      .toEqualTypeOf<readonly string[] | undefined>();
+    expectTypeOf<CloudReplacementExecution['fallbackReason']>().toEqualTypeOf<string | null>();
+    expectTypeOf<CloudReplacementCorrectness['rdf3x']>().toEqualTypeOf<CloudReplacementExecution>();
+    expectTypeOf<CloudReplacementBinding>()
+      .toEqualTypeOf<Readonly<Record<string, Term | undefined>>>();
+    expectTypeOf<CloudReplacementEngineAdapter<'rdf3x'>['id']>().toEqualTypeOf<'rdf3x'>();
+  });
+
+  it('normalizes binding order without hiding ordered-result differences', async () => {
+    const left = fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:2', 's=NamedNode:urn:s:1' ]);
+    const right = fakeAdapter('qlever', [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ]);
+
+    const comparison = await compareCloudReplacementCase(pointCase, left, right);
+
+    expect(comparison.sameMultiset).toBe(true);
+    expect(comparison.sameOrder).toBe(false);
+    expect(comparison.correct).toBe(true);
+    expect(comparison.failures).not.toContain('order-mismatch');
+    expect(comparison.rdf3x.physicalPlan).toEqual([ 'rdf3x:fake' ]);
+    expect(comparison.qlever.physicalPlan).toEqual([ 'qlever:fake' ]);
+  });
+
+  it('fails correctness when either adapter reports fallback', async () => {
+    const comparison = await compareCloudReplacementCase(
+      pointCase,
+      fakeAdapter('rdf3x', [ 'o=Literal:ok' ]),
+      fakeAdapter('qlever', [ 'o=Literal:ok' ], { fallbackReason: 'unsupported' }),
+    );
+
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain('qlever-fallback:unsupported');
+  });
+
+  it('fails correctness when an adapter reports an empty fallback reason', async () => {
+    const rows = [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ];
+    const comparison = await compareCloudReplacementCase(
+      pointCase,
+      fakeAdapter('rdf3x', rows),
+      fakeAdapter('qlever', rows, { fallbackReason: '' }),
+    );
+
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain('qlever-fallback:');
+  });
+
+  it('recomputes digests when different rows forge the same declared digest', async () => {
+    const rdf3xRows = [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ];
+    const qleverRows = [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:3' ];
+    const forged = canonicalCloudReplacementDigests(rdf3xRows);
+    const comparison = await compareCloudReplacementCase(
+      pointCase,
+      fakeAdapter('rdf3x', rdf3xRows),
+      fakeAdapter('qlever', qleverRows, forged),
+    );
+
+    expect(comparison.sameMultiset).toBe(false);
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain('qlever-invalid-ordered-digest');
+    expect(comparison.failures).toContain('qlever-invalid-multiset-digest');
+    expect(comparison.failures).toContain('multiset-mismatch');
+  });
+
+  it('rejects forged different digests without inventing a row mismatch', async () => {
+    const rows = [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ];
+    const comparison = await compareCloudReplacementCase(
+      pointCase,
+      fakeAdapter('rdf3x', rows),
+      fakeAdapter('qlever', rows, {
+        orderedDigest: 'forged-ordered',
+        multisetDigest: 'forged-multiset',
+      }),
+    );
+
+    expect(comparison.sameMultiset).toBe(true);
+    expect(comparison.sameOrder).toBe(true);
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain('qlever-invalid-ordered-digest');
+    expect(comparison.failures).toContain('qlever-invalid-multiset-digest');
+    expect(comparison.failures).not.toContain('multiset-mismatch');
+  });
+
+  it('reports exact expected-row failures for each engine', async () => {
+    const comparison = await compareCloudReplacementCase(
+      pointCase,
+      fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ]),
+      fakeAdapter('qlever', [ 's=NamedNode:urn:s:1' ]),
+    );
+
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toEqual([
+      'rdf3x-expected-rows:expected=2:actual=1',
+      'qlever-expected-rows:expected=2:actual=1',
+    ]);
+  });
+
+  it('reports minimum-row failures per engine without hiding zero rows', async () => {
+    const minimumCase: CloudReplacementWorkload = {
+      ...pointCase,
+      expectedRows: undefined,
+      minRows: 2,
+    };
+    const comparison = await compareCloudReplacementCase(
+      minimumCase,
+      fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ]),
+      fakeAdapter('qlever', []),
+    );
+
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toEqual([
+      'rdf3x-min-rows:min=2:actual=1',
+      'qlever-min-rows:min=2:actual=0',
+      'multiset-mismatch',
+    ]);
+    expect(comparison.qlever.rows).toEqual([]);
+  });
+
+  it('requires matching order only for order-sensitive workloads', async () => {
+    const comparison = await compareCloudReplacementCase(
+      { ...pointCase, orderSensitive: true },
+      fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:2', 's=NamedNode:urn:s:1' ]),
+      fakeAdapter('qlever', [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ]),
+    );
+
+    expect(comparison.sameMultiset).toBe(true);
+    expect(comparison.sameOrder).toBe(false);
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain('order-mismatch');
+  });
+
+  it('canonicalizes variable order and all RDF literal identity fields', () => {
+    const plain = DataFactory.literal('plain');
+    const integer = DataFactory.literal('1', DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#integer'));
+    const decimal = DataFactory.literal('1', DataFactory.namedNode('http://www.w3.org/2001/XMLSchema#decimal'));
+    const english = DataFactory.literal('chat', 'en');
+    const french = DataFactory.literal('chat', 'fr');
+    const subject = DataFactory.namedNode('urn:s:1');
+
+    expect(canonicalCloudReplacementTerm(plain)).toBe(JSON.stringify([
+      'Literal',
+      'plain',
+      '',
+      'http://www.w3.org/2001/XMLSchema#string',
+    ]));
+    expect(canonicalCloudReplacementTerm(english)).toBe(JSON.stringify([
+      'Literal',
+      'chat',
+      'en',
+      'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString',
+    ]));
+    expect(canonicalCloudReplacementTerm(integer)).toBe(JSON.stringify([
+      'Literal',
+      '1',
+      '',
+      'http://www.w3.org/2001/XMLSchema#integer',
+    ]));
+    expect(canonicalCloudReplacementTerm(decimal)).toBe(JSON.stringify([
+      'Literal',
+      '1',
+      '',
+      'http://www.w3.org/2001/XMLSchema#decimal',
+    ]));
+    expect(canonicalCloudReplacementTerm(integer)).not.toBe(canonicalCloudReplacementTerm(decimal));
+    expect(canonicalCloudReplacementTerm(english)).not.toBe(canonicalCloudReplacementTerm(french));
+    expect(canonicalCloudReplacementRow({ value: integer, subject }))
+      .toBe(canonicalCloudReplacementRow({ subject, value: integer }));
+    expect(canonicalCloudReplacementRow({ value: integer })).not
+      .toBe(canonicalCloudReplacementRow({ value: decimal }));
+    expect(canonicalCloudReplacementRow({ value: english })).not
+      .toBe(canonicalCloudReplacementRow({ value: french }));
+  });
+
+  it('canonicalizes missing and explicitly unbound variables identically', () => {
+    const subject = DataFactory.namedNode('urn:s:1');
+
+    expect(canonicalCloudReplacementRow({})).toBe(canonicalCloudReplacementRow({ missing: undefined }));
+    expect(canonicalCloudReplacementRow({ subject })).toBe(canonicalCloudReplacementRow({
+      missing: undefined,
+      subject,
+    }));
+  });
+
+  it('builds deterministic ordered and multiplicity-preserving multiset digests', () => {
+    const first = canonicalCloudReplacementRow({ s: DataFactory.namedNode('urn:s:1') });
+    const second = canonicalCloudReplacementRow({ s: DataFactory.namedNode('urn:s:2') });
+    const original = canonicalCloudReplacementDigests([ first, second, first ]);
+    const reordered = canonicalCloudReplacementDigests([ first, first, second ]);
+    const deduplicated = canonicalCloudReplacementDigests([ first, second ]);
+
+    expect(original.orderedDigest).not.toBe(reordered.orderedDigest);
+    expect(original.multisetDigest).toBe(reordered.multisetDigest);
+    expect(original.multisetDigest).not.toBe(deduplicated.multisetDigest);
+    expect(original).toEqual(canonicalCloudReplacementDigests([ first, second, first ]));
+  });
+
+  it('executes both adapters and propagates authorization errors unchanged', async () => {
+    const authorizationError = new Error('authorization denied');
+    let qleverExecuted = false;
+    const rdf3x: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      execute() {
+        throw authorizationError;
+      },
+    };
+    const qlever: CloudReplacementEngineAdapter<'qlever'> = {
+      id: 'qlever',
+      async execute() {
+        qleverExecuted = true;
+        return fakeAdapter('qlever', [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ])
+          .execute(pointCase);
+      },
+    };
+
+    await expect(compareCloudReplacementCase(pointCase, rdf3x, qlever)).rejects.toBe(authorizationError);
+    expect(qleverExecuted).toBe(true);
+  });
+
+  it('rejects swapped adapter identities before either adapter executes', async () => {
+    const rows = [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ];
+    let executions = 0;
+    const rdf3x = fakeAdapter('qlever', rows, {
+      onExecute: () => executions += 1,
+    }) as unknown as CloudReplacementEngineAdapter<'rdf3x'>;
+    const qlever = fakeAdapter('rdf3x', rows, {
+      onExecute: () => executions += 1,
+    }) as unknown as CloudReplacementEngineAdapter<'qlever'>;
+
+    await expect(compareCloudReplacementCase(pointCase, rdf3x, qlever)).rejects.toThrow(
+      'Cloud replacement adapter configuration error: expected rdf3x at rdf3x position, received qlever',
+    );
+    expect(executions).toBe(0);
+  });
+
+  it('rejects duplicate adapter identities before either adapter executes', async () => {
+    const rows = [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ];
+    let executions = 0;
+    const rdf3x = fakeAdapter('rdf3x', rows, {
+      onExecute: () => executions += 1,
+    });
+    const qlever = fakeAdapter('rdf3x', rows, {
+      onExecute: () => executions += 1,
+    }) as unknown as CloudReplacementEngineAdapter<'qlever'>;
+
+    await expect(compareCloudReplacementCase(pointCase, rdf3x, qlever)).rejects.toThrow(
+      'Cloud replacement adapter configuration error: expected qlever at qlever position, received rdf3x',
+    );
+    expect(executions).toBe(0);
+  });
+
+  it('fails authorization correctness when both adapters return the same denied graph', async () => {
+    const deniedRow = canonicalCloudReplacementRow({
+      g: DataFactory.namedNode(DENIED_DAY),
+      message: DataFactory.namedNode(`${DENIED_DAY}#message`),
+    });
+    const comparison = await compareCloudReplacementCase(
+      authorizationCase,
+      fakeAdapter('rdf3x', [ deniedRow ]),
+      fakeAdapter('qlever', [ deniedRow ]),
+    );
+
+    expect(comparison.sameMultiset).toBe(true);
+    expect(comparison.sameOrder).toBe(true);
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain(
+      `rdf3x-authorization-row:0:denied-graph:g:${DENIED_DAY}`,
+    );
+    expect(comparison.failures).toContain(
+      `qlever-authorization-row:0:denied-graph:g:${DENIED_DAY}`,
+    );
+  });
+
+  it('fails authorization correctness when a required graph variable is missing', async () => {
+    const missingGraphRow = canonicalCloudReplacementRow({
+      message: DataFactory.namedNode(`${DAY_ONE}#message`),
+    });
+    const comparison = await compareCloudReplacementCase(
+      authorizationCase,
+      fakeAdapter('rdf3x', [ missingGraphRow ]),
+      fakeAdapter('qlever', [ missingGraphRow ]),
+    );
+
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain('rdf3x-authorization-row:0:missing-graph-variable:g');
+    expect(comparison.failures).toContain('qlever-authorization-row:0:missing-graph-variable:g');
+  });
+
+  it.each([
+    [ 'malformed row', 'not-json', 'malformed' ],
+    [
+      'non-named graph',
+      canonicalCloudReplacementRow({ g: DataFactory.literal(DAY_ONE) }),
+      'non-named-graph-variable:g',
+    ],
+  ])('fails authorization correctness for a %s', async (_name, row, failure) => {
+    const comparison = await compareCloudReplacementCase(
+      authorizationCase,
+      fakeAdapter('rdf3x', [ row ]),
+      fakeAdapter('qlever', [ row ]),
+    );
+
+    expect(comparison.correct).toBe(false);
+    expect(comparison.failures).toContain(`rdf3x-authorization-row:0:${failure}`);
+    expect(comparison.failures).toContain(`qlever-authorization-row:0:${failure}`);
+  });
+
+  it('fails closed when an authorization workload omits its oracle configuration', async () => {
+    const row = canonicalCloudReplacementRow({ g: DataFactory.namedNode(DAY_ONE) });
+    const withoutScope: CloudReplacementWorkload = {
+      ...authorizationCase,
+      accessScope: undefined,
+    };
+    const withoutVariables: CloudReplacementWorkload = {
+      ...authorizationCase,
+      authorizationGraphVariables: undefined,
+    };
+
+    const missingScope = await compareCloudReplacementCase(
+      withoutScope,
+      fakeAdapter('rdf3x', [ row ]),
+      fakeAdapter('qlever', [ row ]),
+    );
+    const missingVariables = await compareCloudReplacementCase(
+      withoutVariables,
+      fakeAdapter('rdf3x', [ row ]),
+      fakeAdapter('qlever', [ row ]),
+    );
+
+    expect(missingScope.failures).toContain('authorization-missing-access-scope');
+    expect(missingVariables.failures).toContain('authorization-missing-graph-variables');
+    expect(missingScope.correct).toBe(false);
+    expect(missingVariables.correct).toBe(false);
   });
 
   it('covers the exact shared workload matrix without QLever-only cases', () => {
@@ -162,8 +560,8 @@ describe('cloud replacement benchmark', () => {
     for (const [ id, body ] of Object.entries(SHARED_QUERY_BODIES)) {
       expect(casesById.get(id)?.sparql).toBe(`${QUERY_PREFIXES}\n${body}`);
     }
-    for (const [ authorizationId, sourceId ] of Object.entries(AUTHORIZATION_QUERY_SOURCES)) {
-      expect(casesById.get(authorizationId)?.sparql).toBe(`${QUERY_PREFIXES}\n${SHARED_QUERY_BODIES[sourceId]}`);
+    for (const [ authorizationId, body ] of Object.entries(AUTHORIZATION_QUERY_BODIES)) {
+      expect(casesById.get(authorizationId)?.sparql).toBe(`${QUERY_PREFIXES}\n${body}`);
     }
   });
 
@@ -196,6 +594,7 @@ describe('cloud replacement benchmark', () => {
         'keyset-page',
         'ordered-top-k',
         'top-thread-aggregate',
+        'authorization-explicit-deny',
         'authorization-scoped-broad-join',
       ]);
     expect(Object.fromEntries(cases.map((testCase) => [
@@ -205,8 +604,11 @@ describe('cloud replacement benchmark', () => {
   });
 
   it('uses the four exact authorization scopes', () => {
-    const authorizationCases = cloudReplacementWorkloads()
+    const workloads = cloudReplacementWorkloads();
+    const authorizationCases = workloads
       .filter((testCase) => testCase.group === 'authorization');
+    expect(workloads.filter((testCase) => testCase.group !== 'authorization')
+      .every((testCase) => testCase.authorizationGraphVariables === undefined)).toBe(true);
     expect(authorizationCases.map((testCase) => testCase.accessScope)).toEqual([
       {
         basePath: 'https://pod.example/alice/.data/chat/',
@@ -239,6 +641,10 @@ describe('cloud replacement benchmark', () => {
         version: 'scoped-broad-join',
       },
     ]);
+    expect(Object.fromEntries(authorizationCases.map((testCase) => [
+      testCase.id,
+      testCase.authorizationGraphVariables,
+    ]))).toEqual(AUTHORIZATION_GRAPH_VARIABLES);
   });
 
   it('allows both explicit two-hop graphs and denies the populated denied day', () => {
@@ -286,6 +692,9 @@ describe('cloud replacement benchmark', () => {
         explicitAllow.accessScope,
       ));
       expect(explicitResult.bindings).toHaveLength(3);
+      expect(explicitResult.bindings.every((binding) =>
+        binding.g1.termType === 'NamedNode' && binding.g1.value === DAY_ONE &&
+        binding.g2.termType === 'NamedNode' && binding.g2.value === ALICE_CHAT_INDEX)).toBe(true);
 
       const aggregate = workloads.find((testCase) => testCase.id === 'top-thread-aggregate');
       if (!aggregate) {
@@ -326,6 +735,8 @@ describe('cloud replacement benchmark', () => {
 
     try {
       const adapter = new RdfSparqlAdapter();
+      const authorizationGraphs: string[] = [];
+      const deniedByScopeGraphs: string[] = [];
       const outcomes = workloads.map((testCase) => {
         const compiled = adapter.compile(testCase.sparql, ALICE_POD);
         const query = testCase.accessScope
@@ -339,11 +750,29 @@ describe('cloud replacement benchmark', () => {
         let stableOrder = true;
         if (testCase.orderSensitive) {
           const repeated = engine.query(query);
-          const serialize = (bindings: typeof result.bindings): string => JSON.stringify(bindings.map((binding) =>
-            Object.fromEntries(Object.entries(binding)
-              .sort(([ left ], [ right ]) => left.localeCompare(right))
-              .map(([ variable, term ]) => [ variable, `${term.termType}:${term.value}` ]))));
+          const serialize = (bindings: typeof result.bindings): string =>
+            JSON.stringify(bindings.map((binding) => canonicalCloudReplacementRow(binding)));
           stableOrder = serialize(result.bindings) === serialize(repeated.bindings);
+        }
+        let authorizationSafe = true;
+        if (testCase.group === 'authorization') {
+          authorizationSafe = Boolean(
+            testCase.accessScope && testCase.authorizationGraphVariables?.length,
+          );
+          for (const binding of result.bindings) {
+            for (const variable of testCase.authorizationGraphVariables ?? []) {
+              const graph = binding[variable];
+              if (!graph || graph.termType !== 'NamedNode' ||
+                !testCase.accessScope || !rdfAccessGraphAllowed(graph.value, testCase.accessScope)) {
+                authorizationSafe = false;
+              } else {
+                authorizationGraphs.push(graph.value);
+                if (!rdfAccessGraphAllowed(DENIED_DAY, testCase.accessScope)) {
+                  deniedByScopeGraphs.push(graph.value);
+                }
+              }
+            }
+          }
         }
         return {
           id: testCase.id,
@@ -352,11 +781,15 @@ describe('cloud replacement benchmark', () => {
           minRows: testCase.minRows,
           meetsRows,
           stableOrder,
+          authorizationSafe,
         };
       });
 
       expect(outcomes).toHaveLength(24);
-      expect(outcomes.filter((outcome) => !outcome.meetsRows || !outcome.stableOrder)).toEqual([]);
+      expect(outcomes.filter((outcome) =>
+        !outcome.meetsRows || !outcome.stableOrder || !outcome.authorizationSafe)).toEqual([]);
+      expect(authorizationGraphs.length).toBeGreaterThan(0);
+      expect(deniedByScopeGraphs).not.toContain(DENIED_DAY);
     } finally {
       await engine.close();
     }

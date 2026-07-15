@@ -1,6 +1,10 @@
-import type { Quad } from '@rdfjs/types';
+import type { Quad, Term } from '@rdfjs/types';
 import { DataFactory } from 'n3';
-import { RdfAccessMode, type RdfAccessScope } from './RdfAccessScope';
+import {
+  RdfAccessMode,
+  rdfAccessGraphAllowed,
+  type RdfAccessScope,
+} from './RdfAccessScope';
 import {
   RDF_MODELS_SYNTHETIC_THREAD_COUNT,
   rdfModelsSyntheticPodIri,
@@ -20,6 +24,212 @@ export interface CloudReplacementWorkload {
   expectedRows?: number;
   minRows?: number;
   accessScope?: RdfAccessScope;
+  authorizationGraphVariables?: readonly string[];
+}
+
+export interface CloudReplacementExecution {
+  rows: string[];
+  orderedDigest: string;
+  multisetDigest: string;
+  fallbackReason: string | null;
+  physicalPlan: string[];
+}
+
+export interface CloudReplacementEngineAdapter<
+  Id extends CloudReplacementEngineId = CloudReplacementEngineId,
+> {
+  readonly id: Id;
+  execute(
+    workload: CloudReplacementWorkload,
+    sampleIdentity?: string,
+  ): Promise<CloudReplacementExecution>;
+}
+
+export interface CloudReplacementCorrectness {
+  correct: boolean;
+  sameMultiset: boolean;
+  sameOrder: boolean;
+  failures: string[];
+  rdf3x: CloudReplacementExecution;
+  qlever: CloudReplacementExecution;
+}
+
+export type CloudReplacementBinding = Readonly<
+  Record<string, Term | undefined>
+>;
+
+type CanonicalTermTuple = [ string, string, string, string ];
+
+function canonicalTermTuple(term: Term): CanonicalTermTuple {
+  return term.termType === 'Literal'
+    ? [ term.termType, term.value, term.language, term.datatype.value ]
+    : [ term.termType, term.value, '', '' ];
+}
+
+export function canonicalCloudReplacementTerm(term: Term): string {
+  return JSON.stringify(canonicalTermTuple(term));
+}
+
+export function canonicalCloudReplacementRow(binding: CloudReplacementBinding): string {
+  const variables = Object.entries(binding)
+    .filter((entry): entry is [ string, Term ] => entry[1] !== undefined)
+    .sort(([ left ], [ right ]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([ variable, term ]) => [ variable, canonicalTermTuple(term) ]);
+  return JSON.stringify(variables);
+}
+
+export function canonicalCloudReplacementDigests(rows: readonly string[]): {
+  orderedDigest: string;
+  multisetDigest: string;
+} {
+  return {
+    orderedDigest: JSON.stringify(rows),
+    multisetDigest: JSON.stringify([ ...rows ].sort()),
+  };
+}
+
+function parseCanonicalCloudReplacementRow(row: string): Map<string, CanonicalTermTuple> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+
+  const binding = new Map<string, CanonicalTermTuple>();
+  for (const entry of parsed) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' ||
+      !isCanonicalTermTuple(entry[1]) || binding.has(entry[0])) {
+      return null;
+    }
+    binding.set(entry[0], entry[1]);
+  }
+  return binding;
+}
+
+function isCanonicalTermTuple(value: unknown): value is CanonicalTermTuple {
+  return Array.isArray(value) && value.length === 4 &&
+    value.every((part) => typeof part === 'string');
+}
+
+function appendCloudReplacementAuthorizationFailures(
+  workload: CloudReplacementWorkload,
+  executions: readonly [
+    readonly [ 'rdf3x', CloudReplacementExecution ],
+    readonly [ 'qlever', CloudReplacementExecution ],
+  ],
+  failures: string[],
+): void {
+  if (workload.group !== 'authorization') {
+    return;
+  }
+
+  const scope = workload.accessScope;
+  const graphVariables = workload.authorizationGraphVariables;
+  if (!scope) {
+    failures.push('authorization-missing-access-scope');
+  }
+  if (!graphVariables?.length) {
+    failures.push('authorization-missing-graph-variables');
+  }
+  if (!scope || !graphVariables?.length) {
+    return;
+  }
+
+  for (const [ engine, execution ] of executions) {
+    execution.rows.forEach((row, rowIndex) => {
+      const binding = parseCanonicalCloudReplacementRow(row);
+      if (!binding) {
+        failures.push(`${engine}-authorization-row:${rowIndex}:malformed`);
+        return;
+      }
+      for (const variable of graphVariables) {
+        const graph = binding.get(variable);
+        if (!graph) {
+          failures.push(`${engine}-authorization-row:${rowIndex}:missing-graph-variable:${variable}`);
+        } else if (graph[0] !== 'NamedNode') {
+          failures.push(`${engine}-authorization-row:${rowIndex}:non-named-graph-variable:${variable}`);
+        } else if (!rdfAccessGraphAllowed(graph[1], scope)) {
+          failures.push(`${engine}-authorization-row:${rowIndex}:denied-graph:${variable}:${graph[1]}`);
+        }
+      }
+    });
+  }
+}
+
+export async function compareCloudReplacementCase(
+  workload: CloudReplacementWorkload,
+  rdf3xAdapter: CloudReplacementEngineAdapter<'rdf3x'>,
+  qleverAdapter: CloudReplacementEngineAdapter<'qlever'>,
+): Promise<CloudReplacementCorrectness> {
+  assertCloudReplacementAdapterIdentity('rdf3x', rdf3xAdapter);
+  assertCloudReplacementAdapterIdentity('qlever', qleverAdapter);
+  const rdf3xPromise = Promise.resolve().then(() => rdf3xAdapter.execute(workload));
+  const qleverPromise = Promise.resolve().then(() => qleverAdapter.execute(workload));
+  const [ rdf3x, qlever ] = await Promise.all([ rdf3xPromise, qleverPromise ]);
+  const failures: string[] = [];
+  const rdf3xDigests = canonicalCloudReplacementDigests(rdf3x.rows);
+  const qleverDigests = canonicalCloudReplacementDigests(qlever.rows);
+
+  for (const [ engine, execution, digests ] of [
+    [ 'rdf3x', rdf3x, rdf3xDigests ],
+    [ 'qlever', qlever, qleverDigests ],
+  ] as const) {
+    if (execution.fallbackReason !== null) {
+      failures.push(`${engine}-fallback:${execution.fallbackReason}`);
+    }
+    if (execution.orderedDigest !== digests.orderedDigest) {
+      failures.push(`${engine}-invalid-ordered-digest`);
+    }
+    if (execution.multisetDigest !== digests.multisetDigest) {
+      failures.push(`${engine}-invalid-multiset-digest`);
+    }
+    if (workload.expectedRows !== undefined && execution.rows.length !== workload.expectedRows) {
+      failures.push(
+        `${engine}-expected-rows:expected=${workload.expectedRows}:actual=${execution.rows.length}`,
+      );
+    }
+    if (workload.minRows !== undefined && execution.rows.length < workload.minRows) {
+      failures.push(`${engine}-min-rows:min=${workload.minRows}:actual=${execution.rows.length}`);
+    }
+  }
+
+  appendCloudReplacementAuthorizationFailures(workload, [
+    [ 'rdf3x', rdf3x ],
+    [ 'qlever', qlever ],
+  ], failures);
+
+  const sameMultiset = rdf3xDigests.multisetDigest === qleverDigests.multisetDigest;
+  const sameOrder = rdf3xDigests.orderedDigest === qleverDigests.orderedDigest;
+  if (!sameMultiset) {
+    failures.push('multiset-mismatch');
+  }
+  if (workload.orderSensitive && !sameOrder) {
+    failures.push('order-mismatch');
+  }
+
+  return {
+    correct: failures.length === 0,
+    sameMultiset,
+    sameOrder,
+    failures,
+    rdf3x,
+    qlever,
+  };
+}
+
+function assertCloudReplacementAdapterIdentity(
+  expected: CloudReplacementEngineId,
+  adapter: CloudReplacementEngineAdapter,
+): void {
+  if (adapter.id !== expected) {
+    throw new Error(
+      `Cloud replacement adapter configuration error: expected ${expected} at ${expected} position, received ${adapter.id}`,
+    );
+  }
 }
 
 export const CLOUD_REPLACEMENT_GROUP_WEIGHTS = Object.freeze({
@@ -57,6 +267,10 @@ const QUERY_BODIES = {
   'optional-content': 'SELECT ?message ?content WHERE { GRAPH ?g { ?message a meeting:Message . OPTIONAL { ?message sioc:content ?content } } }',
   'union-status-score': 'SELECT DISTINCT ?message WHERE { { GRAPH ?g { ?message udfs:status "indexed" } } UNION { GRAPH ?g { ?message udfs:score 100 } } }',
   'top-thread-aggregate': 'SELECT ?thread (COUNT(?message) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } } GROUP BY ?thread ORDER BY DESC(?count) ?thread LIMIT 20',
+  'authorization-inherited-prefix': 'SELECT ?g ?message ?thread ?created ?score ?workspace WHERE { GRAPH ?g { ?message sioc:has_member ?thread; dct:created ?created; udfs:score ?score; udfs:workspace ?workspace; udfs:status "indexed" } }',
+  'authorization-explicit-allow': 'SELECT ?g1 ?g2 ?message ?chat WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat } }',
+  'authorization-explicit-deny': 'SELECT ?g (COUNT(DISTINCT ?thread) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } } GROUP BY ?g ORDER BY ?g',
+  'authorization-scoped-broad-join': 'SELECT ?g ?message ?score WHERE { GRAPH ?g { ?message udfs:score ?score } } ORDER BY DESC(?score) ?message LIMIT 100',
 } as const;
 
 function query(body: string): string {
@@ -347,45 +561,49 @@ export function cloudReplacementWorkloads(): CloudReplacementWorkload[] {
       id: 'authorization-inherited-prefix',
       group: 'authorization',
       purpose: 'Measure an inherited-prefix scope on the message star workload.',
-      sparql: query(QUERY_BODIES['message-star']),
+      sparql: query(QUERY_BODIES['authorization-inherited-prefix']),
       sharedSurface: true,
       orderSensitive: false,
       concurrencyRepresentative: false,
       minRows: 1,
       accessScope: authorizationScopes[0],
+      authorizationGraphVariables: [ 'g' ],
     },
     {
       id: 'authorization-explicit-allow',
       group: 'authorization',
       purpose: 'Measure an explicit graph allow on the two-hop workload.',
-      sparql: query(QUERY_BODIES['two-hop-chain']),
+      sparql: query(QUERY_BODIES['authorization-explicit-allow']),
       sharedSurface: true,
       orderSensitive: false,
       concurrencyRepresentative: false,
       minRows: 1,
       accessScope: authorizationScopes[1],
+      authorizationGraphVariables: [ 'g1', 'g2' ],
     },
     {
       id: 'authorization-explicit-deny',
       group: 'authorization',
       purpose: 'Measure an explicit graph deny on the distinct-count workload.',
-      sparql: query(QUERY_BODIES['count-distinct-threads']),
+      sparql: query(QUERY_BODIES['authorization-explicit-deny']),
       sharedSurface: true,
-      orderSensitive: false,
+      orderSensitive: true,
       concurrencyRepresentative: false,
-      expectedRows: 1,
+      minRows: 1,
       accessScope: authorizationScopes[2],
+      authorizationGraphVariables: [ 'g' ],
     },
     {
       id: 'authorization-scoped-broad-join',
       group: 'authorization',
       purpose: 'Measure a denied-prefix scope on the ordered broad workload.',
-      sparql: query(QUERY_BODIES['ordered-top-k']),
+      sparql: query(QUERY_BODIES['authorization-scoped-broad-join']),
       sharedSurface: true,
       orderSensitive: true,
       concurrencyRepresentative: true,
       expectedRows: 100,
       accessScope: authorizationScopes[3],
+      authorizationGraphVariables: [ 'g' ],
     },
   ];
 }

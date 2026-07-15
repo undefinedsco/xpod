@@ -212,6 +212,7 @@ export interface CloudReplacementWorkload {
   expectedRows?: number;
   minRows?: number;
   accessScope?: RdfAccessScope;
+  authorizationGraphVariables?: readonly string[];
 }
 
 export const CLOUD_REPLACEMENT_GROUP_WEIGHTS = Object.freeze({
@@ -313,8 +314,18 @@ UDFS, Meeting, and AI prefixes. The AI prefix is
 | `union-status-score` | large | `SELECT DISTINCT ?message WHERE { { GRAPH ?g { ?message udfs:status "indexed" } } UNION { GRAPH ?g { ?message udfs:score 100 } } }` | no | at least 1 |
 | `top-thread-aggregate` | large | `SELECT ?thread (COUNT(?message) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } } GROUP BY ?thread ORDER BY DESC(?count) ?thread LIMIT 20` | yes | at least 1 |
 
-The four authorization cases reuse `message-star`, `two-hop-chain`,
-`count-distinct-threads`, and `ordered-top-k` with these exact scopes:
+Authorization cases use audit variants that explicitly project every graph
+variable needed by the independent authorization oracle. Only these four cases
+set `authorizationGraphVariables`:
+
+| id | SPARQL body | ordered | rows | graph variables |
+|---|---|---:|---|---|
+| `authorization-inherited-prefix` | `SELECT ?g ?message ?thread ?created ?score ?workspace WHERE { GRAPH ?g { ?message sioc:has_member ?thread; dct:created ?created; udfs:score ?score; udfs:workspace ?workspace; udfs:status "indexed" } }` | no | at least 1 | `['g']` |
+| `authorization-explicit-allow` | `SELECT ?g1 ?g2 ?message ?chat WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat } }` | no | at least 1 | `['g1', 'g2']` |
+| `authorization-explicit-deny` | `SELECT ?g (COUNT(DISTINCT ?thread) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } } GROUP BY ?g ORDER BY ?g` | yes | at least 1 | `['g']` |
+| `authorization-scoped-broad-join` | `SELECT ?g ?message ?score WHERE { GRAPH ?g { ?message udfs:score ?score } } ORDER BY DESC(?score) ?message LIMIT 100` | yes | 100 | `['g']` |
+
+The audit variants use these exact scopes:
 
 ```ts
 const aliceChatPrefix = 'https://pod.example/alice/.data/chat/';
@@ -328,6 +339,12 @@ const authorizationScopes: RdfAccessScope[] = [
   { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', deniedGraphPrefixes: [ `${aliceChatPrefix}default/2026/05/05/` ], version: 'scoped-broad-join' },
 ];
 ```
+
+The all-24 real-fixture test requires every projected graph term to be present,
+named, and accepted by its case's `rdfAccessGraphAllowed` scope. The Task 3
+canonical-row oracle applies the same invariant fail closed to malformed,
+missing, non-named, and scope-denied graph terms. A graph denied by a given
+scope must never appear in that case's result rows.
 
 Set `concurrencyRepresentative: true` only for `point-lookup`,
 `latest-message`, `four-hop-chain`, `eight-hop-chain`,
@@ -391,18 +408,34 @@ it('fails correctness when either adapter reports fallback', async () => {
   expect(comparison.failures).toContain('qlever-fallback:unsupported');
 });
 
-function fakeAdapter(
-  id: CloudReplacementEngineId,
+it('fails correctness for an empty but non-null fallback reason', async () => {
+  const rows = [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ];
+  const comparison = await compareCloudReplacementCase(
+    pointCase,
+    fakeAdapter('rdf3x', rows),
+    fakeAdapter('qlever', rows, { fallbackReason: '' }),
+  );
+  expect(comparison.correct).toBe(false);
+  expect(comparison.failures).toContain('qlever-fallback:');
+});
+
+function fakeAdapter<Id extends CloudReplacementEngineId>(
+  id: Id,
   rows: string[],
-  options: { fallbackReason?: string } = {},
-): CloudReplacementEngineAdapter {
+  options: {
+    fallbackReason?: string;
+    orderedDigest?: string;
+    multisetDigest?: string;
+  } = {},
+): CloudReplacementEngineAdapter<Id> {
+  const digests = canonicalCloudReplacementDigests(rows);
   return {
     id,
     async execute() {
       return {
         rows,
-        orderedDigest: rows.join('\n'),
-        multisetDigest: [ ...rows ].sort().join('\n'),
+        orderedDigest: options.orderedDigest ?? digests.orderedDigest,
+        multisetDigest: options.multisetDigest ?? digests.multisetDigest,
         fallbackReason: options.fallbackReason ?? null,
         physicalPlan: [ `${id}:fake` ],
       };
@@ -428,11 +461,14 @@ const pointCase: CloudReplacementWorkload = {
 bun test tests/storage/rdf/CloudReplacementBenchmark.test.ts --run
 ```
 
-Expected: FAIL because adapter comparison is absent.
+Expected: FAIL because digest revalidation, runtime identity checks, unbound
+canonicalization, and the authorization graph oracle are absent.
 
 - [ ] **Step 3: Implement canonical digests and adapter contracts**
 
 ```ts
+import type { Term } from '@rdfjs/types';
+
 export interface CloudReplacementExecution {
   rows: string[];
   orderedDigest: string;
@@ -441,8 +477,10 @@ export interface CloudReplacementExecution {
   physicalPlan: string[];
 }
 
-export interface CloudReplacementEngineAdapter {
-  readonly id: CloudReplacementEngineId;
+export interface CloudReplacementEngineAdapter<
+  Id extends CloudReplacementEngineId = CloudReplacementEngineId,
+> {
+  readonly id: Id;
   execute(workload: CloudReplacementWorkload, sampleIdentity?: string): Promise<CloudReplacementExecution>;
 }
 
@@ -455,19 +493,44 @@ export interface CloudReplacementCorrectness {
   qlever: CloudReplacementExecution;
 }
 
-function canonicalTerm(term: {
-  termType: string;
-  value: string;
-  language?: string;
-  datatype?: { value: string };
-}): string {
-  return JSON.stringify([ term.termType, term.value, term.language ?? '', term.datatype?.value ?? '' ]);
+export type CloudReplacementBinding = Readonly<Record<string, Term | undefined>>;
+
+function canonicalTermTuple(term: Term): [ string, string, string, string ] {
+  return term.termType === 'Literal'
+    ? [ term.termType, term.value, term.language, term.datatype.value ]
+    : [ term.termType, term.value, '', '' ];
 }
 ```
 
-Canonical rows sort variables by variable name. `compareCloudReplacementCase`
-rejects either fallback, checks expected/minimum rows, compares multiset digests,
-and requires ordered digests only when `workload.orderSensitive` is true.
+Canonical rows sort variables by variable name and omit `undefined` entries, so
+missing and explicitly unbound bindings are identical. Literal identity includes
+the RDFJS-provided datatype and language; lock plain `xsd:string`, language-tagged
+`rdf:langString`, and typed integer/decimal literals in tests. Ordered digests use
+the original row sequence; multiset digests sort every row without deduplicating.
+
+`compareCloudReplacementCase` is fail closed at these boundaries:
+
+- accept `CloudReplacementEngineAdapter<'rdf3x'>` and
+  `CloudReplacementEngineAdapter<'qlever'>`; before execution, reject swapped or
+  duplicate runtime ids with a configuration error and execute neither adapter;
+- use fixed `rdf3x` / `qlever` position labels for every failure;
+- treat `null` as the only no-fallback sentinel, including `''` as fallback;
+- recompute both digests from `execution.rows`; compare only recomputed values,
+  and add `<engine>-invalid-ordered-digest` or
+  `<engine>-invalid-multiset-digest` when declarations disagree;
+- check expected/minimum rows independently for each engine, always compare the
+  recomputed multiset, and require recomputed order only for ordered workloads;
+- for authorization workloads, require `accessScope` and non-empty
+  `authorizationGraphVariables`, parse every canonical row, and require every
+  listed graph variable to exist, be a `NamedNode`, and pass
+  `rdfAccessGraphAllowed`; malformed, missing, non-named, or denied graph values
+  fail correctness even when both adapters return identical rows and digests;
+- propagate adapter exceptions unchanged and pass physical plans through without
+  making performance decisions.
+
+Negative tests must cover different rows with forged equal declarations, equal
+rows with forged different declarations, swapped/duplicate adapter identities,
+missing/unbound canonical variables, and identical denied authorization rows.
 
 - [ ] **Step 4: Verify correctness tests**
 
@@ -481,13 +544,14 @@ Expected: PASS.
 - [ ] **Step 5: Commit correctness boundary**
 
 ```bash
-git add src/storage/rdf/cloud-replacement-benchmark.ts tests/storage/rdf/CloudReplacementBenchmark.test.ts
+git add src/storage/rdf/cloud-replacement-benchmark.ts tests/storage/rdf/CloudReplacementBenchmark.test.ts docs/superpowers/plans/2026-07-16-rdf3x-qlever-large-scale-benchmark.md
 git commit -m "🔒 Make RDF engine comparison fail closed" -m "Require canonical result agreement and reject compatibility fallback before any timing can support replacement.
 
 Constraint: Authorization-denied rows must never be normalized away
+Constraint: Adapter ids and declared digests are untrusted runtime input
 Confidence: high
 Scope-risk: narrow
-Tested: Adapter correctness, ordering, expected-row, and fallback unit tests"
+Tested: Adapter identity, digest forgery, canonical RDF term, authorization oracle, ordering, expected-row, and fallback unit tests"
 ```
 
 ## Task 4: Measure alternating latency and sustained concurrency
@@ -529,12 +593,12 @@ it('runs every concurrency lane for the configured duration', async () => {
   expect(result.throughputPerSecond).toBeGreaterThan(0);
 });
 
-function timedFakeAdapter(
-  id: CloudReplacementEngineId,
+function timedFakeAdapter<Id extends CloudReplacementEngineId>(
+  id: Id,
   order: string[],
   durationMs: number,
   clock: { value: number },
-): CloudReplacementEngineAdapter {
+): CloudReplacementEngineAdapter<Id> {
   const base = fakeAdapter(id, [ 's=NamedNode:urn:s:1', 's=NamedNode:urn:s:2' ]);
   return {
     id,
