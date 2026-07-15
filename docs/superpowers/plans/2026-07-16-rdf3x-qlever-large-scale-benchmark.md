@@ -174,7 +174,7 @@ it('builds one reusable relationship topology per synthetic pod', () => {
   const quads = buildCloudReplacementTopology(2);
   expect(quads.filter((quad) => quad.predicate.value === 'http://rdfs.org/sioc/ns#has_parent'))
     .toHaveLength(128);
-  expect(quads.filter((quad) => quad.predicate.value === 'https://undefineds.co/ns/ai#hasModel'))
+  expect(quads.filter((quad) => quad.predicate.value === 'https://vocab.xpod.dev/ai#hasModel'))
     .toHaveLength(2);
 });
 ```
@@ -242,11 +242,12 @@ export function buildCloudReplacementTopology(podCount: number): Quad[] {
     const data = `${pod}/.data`;
     const graph = `${data}/chat/default/index.ttl`;
     const chat = `${graph}#this`;
-    const workspace = `${data}/workspaces/default/index.ttl#this`;
+    const workspaceGraph = `${data}/workspaces/default/index.ttl`;
+    const workspace = `${workspaceGraph}#this`;
     const owner = `${pod}/profile/card#me`;
-    const provider = `${data}/settings/providers/default.ttl#this`;
-    const model = `${provider}#model`;
-    const capability = `${provider}#capability`;
+    const provider = `${pod}/settings/providers/benchmark.ttl`;
+    const model = `${provider}#benchmark-model`;
+    const capability = `${provider}#capability-agent`;
     const category = 'urn:xpod-benchmark:category:agent';
 
     for (let threadIndex = 0; threadIndex < RDF_MODELS_SYNTHETIC_THREAD_COUNT; threadIndex += 1) {
@@ -259,11 +260,11 @@ export function buildCloudReplacementTopology(podCount: number): Quad[] {
     }
     quads.push(
       benchmarkQuad(chat, 'https://undefineds.co/ns#workspace', workspace, graph),
-      benchmarkQuad(workspace, 'https://undefineds.co/ns#owner', owner, graph),
-      benchmarkQuad(owner, 'https://undefineds.co/ns#provider', provider, graph),
-      benchmarkQuad(provider, 'https://undefineds.co/ns/ai#hasModel', model, graph),
-      benchmarkQuad(model, 'https://undefineds.co/ns#capability', capability, graph),
-      benchmarkQuad(capability, 'https://undefineds.co/ns#category', category, graph),
+      benchmarkQuad(workspace, 'https://undefineds.co/ns#owner', owner, workspaceGraph),
+      benchmarkQuad(owner, 'https://undefineds.co/ns#provider', provider, provider),
+      benchmarkQuad(provider, 'https://vocab.xpod.dev/ai#hasModel', model, provider),
+      benchmarkQuad(model, 'https://undefineds.co/ns#capability', capability, provider),
+      benchmarkQuad(capability, 'https://undefineds.co/ns#category', category, provider),
     );
   }
   return quads;
@@ -277,7 +278,7 @@ reuse the exact existing identity scheme.
 `cloudReplacementWorkloads()` returns static standard-SPARQL cases:
 
 - short: point lookup, subject-star, latest-message, keyset-page, exact-graph, selective predicate-object;
-- large: 2/4/8-hop chains, star, snowflake, many-to-many, three selectivity levels, aggregate/count-distinct, ordered top-k, optional/union/subquery;
+- large: 2/4/8-hop chains, star, snowflake, many-to-many, three selectivity levels, aggregate/count-distinct, ordered top-k, optional/union/top-level aggregate;
 - authorization: inherited prefix, explicit allow, explicit deny, scoped broad join.
 
 Every query uses the existing message/thread/chat/workspace/provider vocabulary
@@ -286,7 +287,8 @@ correctness behavior by parsing the query string. Do not add text, vector,
 spatial, or other QLever-only syntax.
 
 Use this concrete query matrix; `query(body)` prepends the SIOC, DCTERMS,
-UDFS, Meeting, and AI prefixes:
+UDFS, Meeting, and AI prefixes. The AI prefix is
+`https://vocab.xpod.dev/ai#`:
 
 | id | group | SPARQL body | ordered | rows |
 |---|---|---|---:|---|
@@ -295,34 +297,35 @@ UDFS, Meeting, and AI prefixes:
 | `latest-message` | short | `SELECT ?message ?created WHERE { GRAPH ?g { ?message sioc:has_member <https://pod.example/alice/.data/chat/default/index.ttl#thread_1>; dct:created ?created } } ORDER BY DESC(?created) LIMIT 1` | yes | 1 |
 | `keyset-page` | short | `SELECT ?message ?rank WHERE { GRAPH ?g { ?message udfs:rank ?rank . FILTER(?rank > 100) } } ORDER BY ?rank LIMIT 50` | yes | 50 |
 | `exact-graph` | short | `SELECT ?message WHERE { GRAPH <https://pod.example/alice/.data/chat/default/2026/05/01/messages.ttl> { ?message a meeting:Message } }` | no | at least 1 |
-| `selective-po` | short | `SELECT ?message WHERE { GRAPH ?g { ?message udfs:score 100; udfs:status "indexed" } }` | no | at least 1 |
+| `selective-po` | short | `SELECT ?message WHERE { GRAPH ?g { ?message udfs:score 97; udfs:status "indexed" } }` | no | at least 1 |
 | `two-hop-chain` | large | `SELECT ?message ?chat WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat } }` | no | at least 1 |
-| `four-hop-chain` | large | `SELECT ?message ?owner WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat . ?chat udfs:workspace ?workspace . ?workspace udfs:owner ?owner } }` | no | at least 1 |
-| `eight-hop-chain` | large | `SELECT ?message ?category WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat . ?chat udfs:workspace ?workspace . ?workspace udfs:owner ?owner . ?owner udfs:provider ?provider . ?provider ai:hasModel ?model . ?model udfs:capability ?capability . ?capability udfs:category ?category } }` | no | at least 1 |
+| `four-hop-chain` | large | `SELECT ?message ?owner WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat } GRAPH ?g3 { ?chat udfs:workspace ?workspace } GRAPH ?g4 { ?workspace udfs:owner ?owner } }` | no | at least 1 |
+| `eight-hop-chain` | large | `SELECT ?message ?category WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread } GRAPH ?g2 { ?thread sioc:has_parent ?chat } GRAPH ?g3 { ?chat udfs:workspace ?workspace } GRAPH ?g4 { ?workspace udfs:owner ?owner } GRAPH ?g5 { ?owner udfs:provider ?provider } GRAPH ?g6 { ?provider ai:hasModel ?model } GRAPH ?g7 { ?model udfs:capability ?capability } GRAPH ?g8 { ?capability udfs:category ?category } }` | no | at least 1 |
 | `message-star` | large | `SELECT ?message ?thread ?created ?score ?workspace WHERE { GRAPH ?g { ?message sioc:has_member ?thread; dct:created ?created; udfs:score ?score; udfs:workspace ?workspace; udfs:status "indexed" } }` | no | at least 1 |
 | `message-snowflake` | large | `SELECT ?message ?threadCreated ?score WHERE { GRAPH ?g1 { ?message sioc:has_member ?thread; udfs:score ?score } GRAPH ?g2 { ?thread dct:created ?threadCreated; udfs:workspace ?workspace } }` | no | at least 1 |
 | `bounded-many-to-many` | large | `SELECT ?left ?right WHERE { GRAPH ?g1 { ?left sioc:has_member ?thread; udfs:rank ?leftRank } GRAPH ?g2 { ?right sioc:has_member ?thread; udfs:rank ?rightRank } FILTER(?leftRank < 20 && ?rightRank < 20 && ?left != ?right) }` | no | at least 1 |
 | `low-selectivity-filter` | large | `SELECT ?message WHERE { GRAPH ?g { ?message udfs:score ?score . FILTER(?score > 0) } }` | no | at least 1 |
 | `medium-selectivity-filter` | large | `SELECT ?message WHERE { GRAPH ?g { ?message udfs:score ?score . FILTER(?score > 50) } }` | no | at least 1 |
-| `high-selectivity-filter` | large | `SELECT ?message WHERE { GRAPH ?g { ?message udfs:score 100 } }` | no | at least 1 |
+| `high-selectivity-filter` | large | `SELECT ?message WHERE { GRAPH ?g { ?message udfs:score 97 } }` | no | at least 1 |
 | `count-distinct-threads` | large | `SELECT (COUNT(DISTINCT ?thread) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } }` | no | 1 |
 | `ordered-top-k` | large | `SELECT ?message ?score WHERE { GRAPH ?g { ?message udfs:score ?score } } ORDER BY DESC(?score) ?message LIMIT 100` | yes | 100 |
 | `optional-content` | large | `SELECT ?message ?content WHERE { GRAPH ?g { ?message a meeting:Message . OPTIONAL { ?message sioc:content ?content } } }` | no | at least 1 |
 | `union-status-score` | large | `SELECT DISTINCT ?message WHERE { { GRAPH ?g { ?message udfs:status "indexed" } } UNION { GRAPH ?g { ?message udfs:score 100 } } }` | no | at least 1 |
-| `top-thread-subquery` | large | `SELECT ?thread ?count WHERE { { SELECT ?thread (COUNT(?message) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } } GROUP BY ?thread } } ORDER BY DESC(?count) LIMIT 20` | yes | at least 1 |
+| `top-thread-aggregate` | large | `SELECT ?thread (COUNT(?message) AS ?count) WHERE { GRAPH ?g { ?message sioc:has_member ?thread } } GROUP BY ?thread ORDER BY DESC(?count) ?thread LIMIT 20` | yes | at least 1 |
 
 The four authorization cases reuse `message-star`, `two-hop-chain`,
 `count-distinct-threads`, and `ordered-top-k` with these exact scopes:
 
 ```ts
 const aliceChatPrefix = 'https://pod.example/alice/.data/chat/';
+const aliceChatIndex = `${aliceChatPrefix}default/index.ttl`;
 const dayOne = `${aliceChatPrefix}default/2026/05/01/messages.ttl`;
-const dayTwo = `${aliceChatPrefix}default/2026/05/02/messages.ttl`;
+const deniedDay = `${aliceChatPrefix}default/2026/05/05/messages.ttl`;
 const authorizationScopes: RdfAccessScope[] = [
   { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', version: 'inherited-prefix' },
-  { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', allowedGraphUrls: [ dayOne ], version: 'explicit-allow' },
-  { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', deniedGraphUrls: [ dayTwo ], version: 'explicit-deny' },
-  { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', deniedGraphPrefixes: [ `${aliceChatPrefix}default/2026/05/02/` ], version: 'scoped-broad-join' },
+  { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', allowedGraphUrls: [ dayOne, aliceChatIndex ], version: 'explicit-allow' },
+  { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', deniedGraphUrls: [ deniedDay ], version: 'explicit-deny' },
+  { basePath: aliceChatPrefix, mode: RdfAccessMode.READ, principal: 'urn:xpod-benchmark:alice', deniedGraphPrefixes: [ `${aliceChatPrefix}default/2026/05/05/` ], version: 'scoped-broad-join' },
 ];
 ```
 

@@ -258,3 +258,5 @@ export type {
   RdfTermRewriteSkippedTerm,
   RdfTermSelection,
 } from './types';
+
+export * from './cloud-replacement-benchmark';
