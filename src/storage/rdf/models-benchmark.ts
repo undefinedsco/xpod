@@ -409,6 +409,12 @@ export interface RdfModelsBenchmarkSeedOptions {
   searchFusionBroadSourceCount?: number;
 }
 
+export interface RdfModelsSyntheticMessageBatchOptions {
+  start: number;
+  count: number;
+  syntheticPodCount: number;
+}
+
 interface RdfModelsSearchFusionSource {
   source: string;
   localPath: string;
@@ -652,7 +658,7 @@ const ACL = 'http://www.w3.org/ns/auth/acl#';
 const ACP = 'http://www.w3.org/ns/solid/acp#';
 const AS = 'https://www.w3.org/ns/activitystreams#';
 const ODRL = 'http://www.w3.org/ns/odrl/2/';
-const RDF_MODELS_SYNTHETIC_THREAD_COUNT = 64;
+export const RDF_MODELS_SYNTHETIC_THREAD_COUNT = 64;
 const PERFORMANCE_P95_MIN_ABSOLUTE_HEADROOM_MS = 25;
 const PERFORMANCE_P95_MAX_RATIO = 8;
 const POSTGRES_CONCURRENCY_GATE_QUERY_CASE_NAMES = [
@@ -4162,6 +4168,25 @@ export function buildRdfModelsBenchmarkSeed(options: RdfModelsBenchmarkSeedOptio
   return quads;
 }
 
+export function buildRdfModelsSyntheticMessageBatch(options: RdfModelsSyntheticMessageBatchOptions): Quad[] {
+  const start = Math.max(0, Math.floor(options.start));
+  const count = Math.max(0, Math.floor(options.count));
+  const syntheticPodCount = Math.max(1, Math.floor(options.syntheticPodCount));
+  const hotPodCount = Math.min(4, syntheticPodCount);
+  const quads: Quad[] = [];
+
+  for (let offset = 0; offset < count; offset += 1) {
+    const index = start + offset;
+    const hot = index % 10 < 8;
+    const podIndex = index % (hot ? hotPodCount : syntheticPodCount);
+    const threadIndex = index % (hot ? 8 : RDF_MODELS_SYNTHETIC_THREAD_COUNT);
+    const data = `${rdfModelsSyntheticPodIri(podIndex)}/.data`;
+    seedSyntheticMessage(quads, data, index, threadIndex);
+  }
+
+  return quads;
+}
+
 export function rdfModelsBenchmarkProfileRequiresSearchFusion(profile: RdfBenchmarkCaseProfile): boolean {
   return profile === 'fusion' || profile === 'all';
 }
@@ -4577,10 +4602,14 @@ function seedCanonicalMessages(quads: Quad[]): void {
   );
 }
 
+export function rdfModelsSyntheticPodIri(podIndex: number): string {
+  return podIndex === 0 ? RDF_MODELS_BENCHMARK_POD : `https://pod.example/synthetic-${podIndex}`;
+}
+
 function seedSyntheticThreads(quads: Quad[], podCount: number): void {
   const syntheticPodCount = Math.max(1, Math.floor(podCount));
   for (let podIndex = 0; podIndex < syntheticPodCount; podIndex += 1) {
-    const pod = podIndex === 0 ? RDF_MODELS_BENCHMARK_POD : `https://pod.example/synthetic-${podIndex}`;
+    const pod = rdfModelsSyntheticPodIri(podIndex);
     const data = `${pod}/.data`;
     const graph = `${data}/chat/default/index.ttl`;
     for (let threadIndex = 0; threadIndex < RDF_MODELS_SYNTHETIC_THREAD_COUNT; threadIndex += 1) {
@@ -4599,7 +4628,7 @@ function seedSyntheticMessages(quads: Quad[], count: number, podCount: number): 
   const syntheticPodCount = Math.max(1, Math.floor(podCount));
   for (let index = 0; index < count; index += 1) {
     const podIndex = index % syntheticPodCount;
-    const pod = podIndex === 0 ? RDF_MODELS_BENCHMARK_POD : `https://pod.example/synthetic-${podIndex}`;
+    const pod = rdfModelsSyntheticPodIri(podIndex);
     const data = `${pod}/.data`;
     seedSyntheticMessage(quads, data, index);
   }
@@ -4618,8 +4647,13 @@ function seedPrimaryPodSearchFusionMessages(quads: Quad[], count: number, podCou
   }
 }
 
-function seedSyntheticMessage(quads: Quad[], data: string, index: number): void {
-  const thread = syntheticThreadIri(data, index % RDF_MODELS_SYNTHETIC_THREAD_COUNT);
+function seedSyntheticMessage(
+  quads: Quad[],
+  data: string,
+  index: number,
+  threadIndex = index % RDF_MODELS_SYNTHETIC_THREAD_COUNT,
+): void {
+  const thread = syntheticThreadIri(data, threadIndex);
   const dayNumber = (index % 28) + 1;
   const day = String(dayNumber).padStart(2, '0');
   const graph = `${data}/chat/default/2026/05/${day}/messages.ttl`;

@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
+import type { Term } from '@rdfjs/types';
 import { PGlite } from '@electric-sql/pglite';
 import {
   PostgresRdfEngine,
@@ -24,6 +26,7 @@ import {
   type RdfVectorSearchOptions,
   type RdfVectorSearchResult,
 } from '../../../src/storage/rdf';
+import { buildRdfModelsSyntheticMessageBatch } from '../../../src/storage/rdf/models-benchmark';
 import { rdfTermValueHead } from '../../../src/storage/rdf/RdfTermDictionary';
 
 const { literal, namedNode, quad } = DataFactory;
@@ -38,12 +41,33 @@ const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const STATUS = 'https://undefineds.co/ns#status';
 const THREAD = 'https://undefineds.co/ns#thread';
 const ACP = 'http://www.w3.org/ns/solid/acp#';
+const RDF_MODELS_BENCHMARK_SEED_3X16_PARENT_DIGEST =
+  '8704c3ed6273f93b9f9067b88e8c9631ab3ad6aea51e595b325f288b1685fcf5';
 
 function stringList(value: unknown): string[] {
   if (!value || typeof value !== 'object' || !(Symbol.iterator in value)) {
     return [];
   }
   return Array.from(value as Iterable<unknown>).filter((entry): entry is string => typeof entry === 'string');
+}
+
+function canonicalRdfTerm(term: Term): [string, string, string, string] {
+  return [
+    term.termType,
+    term.value,
+    term.termType === 'Literal' ? term.language : '',
+    term.termType === 'Literal' ? term.datatype.value : '',
+  ];
+}
+
+function canonicalRdfSeedDigest(quads: ReturnType<typeof buildRdfModelsBenchmarkSeed>): string {
+  const canonical = quads.map((entry) => [
+    canonicalRdfTerm(entry.subject),
+    canonicalRdfTerm(entry.predicate),
+    canonicalRdfTerm(entry.object),
+    canonicalRdfTerm(entry.graph),
+  ]);
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }
 
 describe('PostgresRdfEngine', () => {
@@ -154,6 +178,84 @@ describe('PostgresRdfEngine', () => {
     expect(rdfModelsPostgresQueryBenchmarkCasesForProfile('all').map((testCase) => testCase.name)).toEqual(
       expect.arrayContaining(rdfModelsSearchFusionQueryBenchmarkCaseNames()),
     );
+  });
+
+  it('builds bounded deterministic synthetic message batches', () => {
+    const options = { start: 100, count: 3, syntheticPodCount: 16 };
+
+    const first = buildRdfModelsSyntheticMessageBatch(options);
+    const second = buildRdfModelsSyntheticMessageBatch(options);
+
+    expect(first).toEqual(second);
+    expect(first).toHaveLength(27);
+    expect(new Set(first.map((entry) => entry.subject.value)).size).toBe(3);
+    const quadCountsBySubject = new Map<string, number>();
+    for (const entry of first) {
+      quadCountsBySubject.set(entry.subject.value, (quadCountsBySubject.get(entry.subject.value) ?? 0) + 1);
+    }
+    expect(Array.from(quadCountsBySubject.values())).toEqual([9, 9, 9]);
+  });
+
+  it('routes exactly eight hot and two tail messages per ten-message window', () => {
+    const quads = buildRdfModelsSyntheticMessageBatch({
+      start: 0,
+      count: 200,
+      syntheticPodCount: 32,
+    });
+    const actualRoute = (index: number): { subject: string; thread: string } => {
+      const membership = quads.find((entry) =>
+        entry.subject.value.endsWith(`#synthetic_${index}`) &&
+        entry.predicate.value === 'http://rdfs.org/sioc/ns#has_member');
+      expect(membership).toBeDefined();
+      return { subject: membership!.subject.value, thread: membership!.object.value };
+    };
+    const expectedRoute = (index: number, podIndex: number, threadIndex: number) => {
+      const pod = podIndex === 0
+        ? 'https://pod.example/alice'
+        : `https://pod.example/synthetic-${podIndex}`;
+      const day = String((index % 28) + 1).padStart(2, '0');
+      return {
+        subject: `${pod}/.data/chat/default/2026/05/${day}/messages.ttl#synthetic_${index}`,
+        thread: `${pod}/.data/chat/default/index.ttl#thread_${threadIndex + 1}`,
+      };
+    };
+
+    for (const [index, podIndex, threadIndex] of [
+      [7, 3, 7],
+      [8, 8, 8],
+      [9, 9, 9],
+      [10, 2, 2],
+      [159, 31, 31],
+    ]) {
+      expect(actualRoute(index)).toEqual(expectedRoute(index, podIndex, threadIndex));
+    }
+
+    for (let windowStart = 0; windowStart < 200; windowStart += 10) {
+      const routes = { hot: 0, tail: 0 };
+      for (let index = windowStart; index < windowStart + 10; index += 1) {
+        const hot = index % 10 < 8;
+        const podIndex = hot ? index % 4 : index % 32;
+        const threadIndex = hot ? index % 8 : index % 64;
+        expect(actualRoute(index)).toEqual(expectedRoute(index, podIndex, threadIndex));
+        routes[hot ? 'hot' : 'tail'] += 1;
+      }
+      expect(routes).toEqual({ hot: 8, tail: 2 });
+    }
+  });
+
+  it('keeps the existing models benchmark seed deterministic and its default message thread mapping', () => {
+    const options = { syntheticMessages: 3, syntheticPodCount: 16 };
+
+    const first = buildRdfModelsBenchmarkSeed(options);
+    const second = buildRdfModelsBenchmarkSeed(options);
+    const messageThread = first.find((entry) =>
+      entry.subject.value === 'https://pod.example/synthetic-2/.data/chat/default/2026/05/03/messages.ttl#synthetic_2' &&
+      entry.predicate.value === 'http://rdfs.org/sioc/ns#has_member');
+
+    expect(first).toEqual(second);
+    expect(canonicalRdfSeedDigest(first)).toBe(RDF_MODELS_BENCHMARK_SEED_3X16_PARENT_DIGEST);
+    expect(messageThread?.object.value)
+      .toBe('https://pod.example/synthetic-2/.data/chat/default/index.ttl#thread_3');
   });
 
   it('pushes slot term-key ranges into PostgreSQL RDF scans', async () => {
