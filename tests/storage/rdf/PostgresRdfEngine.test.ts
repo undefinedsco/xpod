@@ -8473,6 +8473,7 @@ describe('PostgresRdfEngine', () => {
         acceptMediaType: 'application/sparql-results+json',
         graphPrefix: 'https://pod.example/alice/',
         principal: 'https://id.example/alice#me',
+        accessScopeResolved: true,
         accessMode: 'read',
         authorizationModel: 'mixed',
         timeoutMs: 2500,
@@ -8480,7 +8481,9 @@ describe('PostgresRdfEngine', () => {
         loadDocumentBody: '<urn:s> <urn:p> <urn:o> .',
         loadDocumentMediaType: 'application/n-triples',
       });
-      expect(JSON.parse(pool.nativeSparqlCalls[0].params[1] as string)).not.toHaveProperty('sourceUriPrefix');
+      const extensionOptions = JSON.parse(pool.nativeSparqlCalls[0].params[1] as string);
+      expect(extensionOptions).not.toHaveProperty('operation');
+      expect(extensionOptions).not.toHaveProperty('sourceUriPrefix');
     } finally {
       await engine.close();
       await rm(dataDir, { recursive: true, force: true });

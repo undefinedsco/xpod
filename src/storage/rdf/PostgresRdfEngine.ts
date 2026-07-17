@@ -1949,7 +1949,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       graphPrefix: options.accessScope?.basePath ?? options.basePath,
       authorizationModel: 'mixed',
     };
-    if (options.operation) {
+    if (options.operation === 'execute' || options.operation === 'prepareUpdate') {
       extensionOptions.operation = options.operation;
     }
     if (options.timeoutMs !== undefined) {
@@ -1967,6 +1967,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     if (options.accessScope?.principal) {
       extensionOptions.principal = options.accessScope.principal;
+    }
+    if (options.accessScope) {
+      extensionOptions.accessScopeResolved = true;
     }
     if (options.accessScope?.mode) {
       extensionOptions.accessMode = options.accessScope.mode;
