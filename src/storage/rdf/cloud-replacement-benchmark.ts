@@ -1188,9 +1188,19 @@ export function sanitizeCloudReplacementEnvironment(
   if (encodedDatabase.length === 0) {
     throw new Error('Cloud replacement connection URL requires a database path');
   }
-  const database = decodeURIComponent(encodedDatabase);
-  if (database.length === 0) {
-    throw new Error('Cloud replacement connection URL requires a database path');
+  let database: string;
+  try {
+    database = decodeURIComponent(encodedDatabase);
+  } catch {
+    throw new Error(
+      'Cloud replacement connection URL requires a dedicated benchmark database ending in _benchmark',
+    );
+  }
+  if (encodedDatabase.includes('/') || database.includes('/') ||
+    !database.endsWith('_benchmark')) {
+    throw new Error(
+      'Cloud replacement connection URL requires a dedicated benchmark database ending in _benchmark',
+    );
   }
   return {
     postgresVersion: input.postgresVersion,

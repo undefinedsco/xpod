@@ -222,7 +222,8 @@ Checkpoint files live beside the report as `<out>.checkpoint.json`.
   system identifier and database name are not stored in the checkpoint identity.
 - The checkpoint context includes runner identity, current git commit, workload
   ids, transport, execution location, mode, target facts, cache modes, image,
-  timeout, and database name.
+  timeout, and hashed database identity. It does not persist the raw database
+  name in either fingerprint.
 - Latency and concurrency use separate context fingerprints. Changing latency
   inputs can clear latency evidence without implying concurrency reuse, and
   changing concurrency lanes clears concurrency evidence without discarding

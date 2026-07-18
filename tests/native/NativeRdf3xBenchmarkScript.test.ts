@@ -840,6 +840,25 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       .toThrow('Unknown option');
   });
 
+  it('keeps raw external database names out of checkpoint fingerprints', () => {
+    const options = benchmark.parseArgs([
+      '--mode=external',
+      '--executionLocation=cluster',
+      '--transport=direct',
+    ], {
+      XPOD_RDF_BENCHMARK_PG_URL:
+        'postgres://operator:top-secret@example.test/tenant_benchmark',
+    });
+    const context = benchmark.buildBenchmarkExecutionContext(options, 'a'.repeat(64));
+    const fingerprints = [
+      benchmark.benchmarkLatencyContextFingerprint(options, context),
+      benchmark.benchmarkConcurrencyContextFingerprint(options, context),
+    ].join('\n');
+
+    expect(fingerprints).not.toContain('tenant_benchmark');
+    expect(fingerprints).not.toContain('top-secret');
+  });
+
   it('adds the dedicated benchmark search path to external PostgreSQL URLs', () => {
     const raw = 'postgresql://user:secret@example.test/tenant_benchmark?sslmode=require';
     const connection = benchmark.buildExternalBenchmarkConnectionString(raw);
@@ -1021,6 +1040,17 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     }
   });
 
+  it('redacts the raw database name from PostgreSQL driver errors', () => {
+    const url = 'postgres://operator:top-secret@private-db.invalid/tenant_benchmark';
+    const rendered = benchmark.formatBenchmarkCliFailure(
+      new Error('database "tenant_benchmark" does not exist'),
+      url,
+    );
+
+    expect(rendered).toContain('database "[redacted connection sentinel]" does not exist');
+    expect(rendered).not.toContain('tenant_benchmark');
+  });
+
   it.each([
     [ '--mode=cloud', 'mode' ],
     [ '--targetQuads=0', 'targetQuads' ],
@@ -1074,6 +1104,26 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(JSON.stringify(plan)).not.toMatch(
       /postgres(?:ql)?:\/\/|connectionString|password|apiKey|secret/iu,
     );
+  });
+
+  it('keeps the raw external database name out of the dry-run plan', () => {
+    const dryRun = runCli([
+      '--dry-run',
+      '--mode=external',
+      '--executionLocation=cluster',
+      '--transport=direct',
+    ], {
+      XPOD_RDF_BENCHMARK_PG_URL:
+        'postgres://operator:top-secret@example.test/tenant_benchmark',
+    });
+
+    expect(dryRun.status, dryRun.stderr).toBe(0);
+    expect(dryRun.stdout).not.toContain('tenant_benchmark');
+    expect(JSON.parse(dryRun.stdout).safety).toEqual({
+      connectionSource: 'XPOD_RDF_BENCHMARK_PG_URL',
+      databaseGuard: 'decoded-name-ends-with-_benchmark',
+      cleanup: 'drop-and-recreate-xpod_benchmark-schema',
+    });
   });
 
   it('selects bounded loading plans at the required pod-count thresholds', () => {

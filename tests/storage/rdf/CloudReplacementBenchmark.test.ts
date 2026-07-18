@@ -2494,7 +2494,8 @@ describe('cloud replacement benchmark', () => {
 
   it('redacts connection URLs without exposing the raw database name', () => {
     const sanitized = sanitizeCloudReplacementEnvironment({
-      connectionString: 'postgres://user:secret@db.example/xpod%20benchmark?sslmode=require#private',
+      connectionString:
+        'postgres://user:secret@db.example/xpod%20benchmark_benchmark?sslmode=require#private',
       postgresVersion: '17.5',
       engineCommit: 'abc123',
     });
@@ -2504,7 +2505,7 @@ describe('cloud replacement benchmark', () => {
       engineCommit: 'abc123',
     });
     expect(JSON.stringify(sanitized)).not.toMatch(
-      /secret|db\.example|user|sslmode|private|xpod benchmark/u,
+      /secret|db\.example|user|sslmode|private|xpod benchmark_benchmark/u,
     );
     expect(Object.keys(sanitized).sort()).toEqual([ 'engineCommit', 'postgresVersion' ]);
     expect(() => sanitizeCloudReplacementEnvironment({
@@ -2512,6 +2513,18 @@ describe('cloud replacement benchmark', () => {
       postgresVersion: '17.5',
       engineCommit: 'abc123',
     })).toThrow('Cloud replacement connection URL requires a database path');
+  });
+
+  it.each([
+    'postgres://example.test/xpod',
+    'postgres://example.test/a/b_benchmark',
+    'postgres://example.test/a%2Fb_benchmark',
+  ])('rejects non-dedicated benchmark database path %s', (connectionString) => {
+    expect(() => sanitizeCloudReplacementEnvironment({
+      connectionString,
+      postgresVersion: '17.5',
+      engineCommit: 'abc123',
+    })).toThrow('requires a dedicated benchmark database ending in _benchmark');
   });
 
   it.each([

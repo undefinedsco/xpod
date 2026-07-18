@@ -376,7 +376,6 @@ export function benchmarkLatencyContextFingerprint(
     cacheModes: options.cacheModes,
     operationTimeoutMs: options.operationTimeoutMs,
     image: options.image,
-    databaseName: options.databaseName,
   });
 }
 
@@ -395,7 +394,6 @@ export function benchmarkConcurrencyContextFingerprint(
     cacheModes: options.cacheModes,
     operationTimeoutMs: options.operationTimeoutMs,
     image: options.image,
-    databaseName: options.databaseName,
   });
 }
 
@@ -1864,7 +1862,7 @@ function buildDryRunPlan(options: BenchmarkCliOptions): Record<string, unknown> 
     safety: options.mode === 'external'
       ? {
           connectionSource: EXTERNAL_DATABASE_ENV,
-          database: options.databaseName,
+          databaseGuard: 'decoded-name-ends-with-_benchmark',
           cleanup: `drop-and-recreate-${BENCHMARK_SCHEMA}-schema`,
         }
       : {
@@ -2684,11 +2682,21 @@ function sanitizeError(error: unknown, knownUrl?: string): string {
     message = message.replaceAll(knownUrl, '[redacted benchmark URL]');
     try {
       const parsed = new URL(knownUrl);
+      const encodedDatabase = parsed.pathname.replace(/^\/+/, '');
+      let decodedDatabase = '';
+      try {
+        decodedDatabase = decodeURIComponent(encodedDatabase);
+      } catch {
+        // The full known URL was already redacted; malformed path encodings add no safe sentinel.
+      }
       const sentinels = [
         parsed.host,
         parsed.hostname,
         parsed.username,
         parsed.password,
+        parsed.pathname,
+        encodedDatabase,
+        decodedDatabase,
         decodeURIComponent(parsed.username),
         decodeURIComponent(parsed.password),
       ].filter((sentinel, index, values) =>
