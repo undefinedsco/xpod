@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { Quad, Term } from '@rdfjs/types';
@@ -51,12 +51,15 @@ const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
 export const BENCHMARK_BUILD_SETUP_TIMEOUT_MS = 30 * 60_000;
 export const BENCHMARK_DOCKER_TIMEOUT_MS = 2 * 60_000;
 export const BENCHMARK_MAX_LOAD_WAVES = 16;
+export const BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024;
 const BENCHMARK_CONNECTION_TIMEOUT_MS = 30_000;
 const DEFAULT_CONCURRENCY = [ 1, 8, 32 ] as const;
 const DEFAULT_IMAGE = 'xpod-rdf-postgres:pg17-smoke';
 const DEFAULT_MESSAGES_PER_BATCH = 10_000;
 const CONCURRENCY_DURATION_MS = 60_000;
 const LOCAL_DATABASE = 'xpod_benchmark';
+const BENCHMARK_SCHEMA = 'xpod_benchmark';
+const BENCHMARK_SEARCH_PATH_OPTION = `-csearch_path=${BENCHMARK_SCHEMA},public`;
 const EXTERNAL_DATABASE_ENV = 'XPOD_RDF_BENCHMARK_PG_URL';
 const BASE_PATH = 'https://pod.example/';
 const RDF3X_PERMUTATION_SCAN_MARKERS: ReadonlySet<string> = new Set([
@@ -124,6 +127,21 @@ export interface BenchmarkAdapterOptions {
   now?: () => number;
   timeWithoutSampleIdentity?: boolean;
   operationTimeoutMs?: number;
+}
+
+export class BenchmarkEngineExecutionError extends Error {
+  public readonly cause: unknown;
+
+  public constructor(
+    public readonly engine: CloudReplacementEngineId,
+    cause: unknown,
+  ) {
+    super(`${engine} benchmark execution failed: ${errorMessage(cause)}`);
+    // Preserve abort/timeout identity for callers while retaining engine
+    // attribution through this wrapper type.
+    this.name = cause instanceof Error ? cause.name : 'BenchmarkEngineExecutionError';
+    this.cause = cause;
+  }
 }
 
 type BenchmarkCaseMeasurementOptions = {
@@ -243,6 +261,130 @@ export interface BenchmarkReportSummaryInput {
   correctnessFailures: readonly string[];
   diagnosticsByCacheMode: BenchmarkDiagnosticsByCacheMode;
   qleverReady: boolean;
+}
+
+export interface BenchmarkCheckpoint {
+  version: 1;
+  fingerprint: string;
+  identityId: string;
+  completedLatencyKeys: string[];
+  completedConcurrencyPhases: string[];
+  latencyRecords: LatencyRecord[];
+  concurrencyRecords: ConcurrencyRecord[];
+  correctnessRecords: BenchmarkCorrectnessRecord[];
+  correctnessFailures: string[];
+  diagnosticsByCacheMode: BenchmarkDiagnosticsByCacheMode;
+}
+
+export function benchmarkCheckpointPath(out: string): string {
+  return `${path.resolve(out)}.checkpoint.json`;
+}
+
+export function benchmarkCheckpointFingerprint(options: BenchmarkCliOptions): string {
+  return JSON.stringify({
+    version: 1,
+    mode: options.mode,
+    targetQuads: options.targetQuads,
+    iterations: options.iterations,
+    warmupIterations: options.warmupIterations,
+    concurrency: options.concurrency,
+    cacheModes: options.cacheModes,
+    operationTimeoutMs: options.operationTimeoutMs,
+    image: options.image,
+    databaseName: options.databaseName,
+    engineCommit: currentCommit(),
+    workloads: cloudReplacementWorkloads().map(({ id }) => id),
+  });
+}
+
+export function emptyBenchmarkCheckpoint(
+  options: BenchmarkCliOptions,
+  identityId: string,
+): BenchmarkCheckpoint {
+  return {
+    version: 1,
+    fingerprint: benchmarkCheckpointFingerprint(options),
+    identityId,
+    completedLatencyKeys: [],
+    completedConcurrencyPhases: [],
+    latencyRecords: [],
+    concurrencyRecords: [],
+    correctnessRecords: [],
+    correctnessFailures: [],
+    diagnosticsByCacheMode: {},
+  };
+}
+
+export async function loadBenchmarkCheckpoint(
+  options: BenchmarkCliOptions,
+): Promise<BenchmarkCheckpoint | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(benchmarkCheckpointPath(options.out), 'utf8')) as
+      Partial<BenchmarkCheckpoint>;
+    if (parsed.version !== 1 ||
+      parsed.fingerprint !== benchmarkCheckpointFingerprint(options) ||
+      typeof parsed.identityId !== 'string' ||
+      !Array.isArray(parsed.completedLatencyKeys) ||
+      !Array.isArray(parsed.completedConcurrencyPhases) ||
+      !Array.isArray(parsed.latencyRecords) ||
+      !Array.isArray(parsed.concurrencyRecords) ||
+      !Array.isArray(parsed.correctnessRecords) ||
+      !Array.isArray(parsed.correctnessFailures) ||
+      typeof parsed.diagnosticsByCacheMode !== 'object' ||
+      parsed.diagnosticsByCacheMode === null) {
+      return undefined;
+    }
+    return parsed as BenchmarkCheckpoint;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export async function saveBenchmarkCheckpoint(
+  options: BenchmarkCliOptions,
+  checkpoint: BenchmarkCheckpoint,
+): Promise<void> {
+  const target = benchmarkCheckpointPath(options.out);
+  const temporary = `${target}.${process.pid}.tmp`;
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(temporary, `${JSON.stringify(compactBenchmarkCheckpoint(checkpoint), null, 2)}\n`);
+  await rename(temporary, target);
+}
+
+export function compactBenchmarkCheckpoint(
+  checkpoint: BenchmarkCheckpoint,
+): BenchmarkCheckpoint {
+  const compactCorrectness = (
+    correctness: CloudReplacementCorrectness,
+  ): CloudReplacementCorrectness => ({
+    ...correctness,
+    rdf3x: {
+      ...correctness.rdf3x,
+      rows: [],
+      orderedDigest: '',
+      multisetDigest: '',
+    },
+    qlever: {
+      ...correctness.qlever,
+      rows: [],
+      orderedDigest: '',
+      multisetDigest: '',
+    },
+  });
+  return {
+    ...checkpoint,
+    latencyRecords: checkpoint.latencyRecords.map((record) => ({
+      ...record,
+      correctness: compactCorrectness(record.correctness),
+    })),
+    correctnessRecords: checkpoint.correctnessRecords.map((record) => ({
+      ...record,
+      correctness: compactCorrectness(record.correctness),
+    })),
+  };
 }
 
 const HELP = `Usage: bun scripts/native-rdf3x-benchmark.ts [options]
@@ -389,9 +531,25 @@ export function assertDedicatedBenchmarkDatabase(connectionUrl: string): string 
 export function benchmarkCleanupSql(connectionUrl: string): [ string, string ] {
   assertDedicatedBenchmarkDatabase(connectionUrl);
   return [
-    'DROP SCHEMA public CASCADE',
-    'CREATE SCHEMA public',
+    `DROP SCHEMA IF EXISTS ${BENCHMARK_SCHEMA} CASCADE`,
+    `CREATE SCHEMA ${BENCHMARK_SCHEMA}`,
   ];
+}
+
+export function buildExternalBenchmarkConnectionString(connectionUrl: string): string {
+  assertDedicatedBenchmarkDatabase(connectionUrl);
+  const parsed = new URL(connectionUrl);
+  const existingOptions = parsed.searchParams.getAll('options');
+  parsed.searchParams.delete('options');
+  parsed.searchParams.append(
+    'options',
+    [ ...existingOptions, BENCHMARK_SEARCH_PATH_OPTION ].join(' ').trim(),
+  );
+  return parsed.toString();
+}
+
+export function buildLocalBenchmarkConnectionString(connectionUrl: string): string {
+  return connectionUrl;
 }
 
 export function buildBenchmarkLoadingPlan(
@@ -532,6 +690,11 @@ export function createCloudReplacementAdapter<Id extends CloudReplacementEngineI
             ? null
             : elapsedMs,
         };
+      } catch (error) {
+        if (error instanceof BenchmarkEngineExecutionError) {
+          throw error;
+        }
+        throw new BenchmarkEngineExecutionError(id, error);
       } finally {
         operation.dispose();
       }
@@ -598,6 +761,201 @@ export async function measureCloudReplacementCaseWithTrueCold(
   };
 }
 
+export async function measureCloudReplacementCaseWithTimeoutEvidence(
+  workload: CloudReplacementWorkload,
+  rdf3xAdapter: CloudReplacementEngineAdapter<'rdf3x'>,
+  qleverAdapter: CloudReplacementEngineAdapter<'qlever'>,
+  options: BenchmarkCaseMeasurementOptions,
+): Promise<BenchmarkCaseMeasurement> {
+  try {
+    return await measureCloudReplacementCaseWithTrueCold(
+      workload,
+      rdf3xAdapter,
+      qleverAdapter,
+      options,
+    );
+  } catch (error) {
+    const failedEngine = benchmarkTimeoutEngine(error);
+    if (!failedEngine) {
+      throw error;
+    }
+    const survivingAdapter = failedEngine === 'rdf3x' ? qleverAdapter : rdf3xAdapter;
+    const timedOut = censoredTimeoutLatency(
+      options.cacheMode,
+      options.operationTimeoutMs,
+      options.iterations,
+    );
+    const emptyExecution = emptyBenchmarkExecution(options.operationTimeoutMs);
+    let surviving: Awaited<ReturnType<typeof measureSingleBenchmarkAdapter>>;
+    try {
+      surviving = await measureSingleBenchmarkAdapter(
+        workload,
+        survivingAdapter,
+        options,
+      );
+    } catch (survivingError) {
+      if (!(survivingError instanceof BenchmarkEngineExecutionError) ||
+        !isTimeoutError(survivingError)) {
+        throw survivingError;
+      }
+      const failures = [ failedEngine, survivingError.engine ].map((engine) =>
+        `${engine}-timeout:${options.operationTimeoutMs}ms`);
+      return {
+        correctness: {
+          correct: false,
+          sameMultiset: false,
+          sameOrder: false,
+          failures,
+          rdf3x: emptyExecution,
+          qlever: emptyExecution,
+        },
+        rdf3x: timedOut,
+        qlever: timedOut,
+        ignoredSteadyHelperColdMs: {
+          rdf3x: timedOut.coldMs,
+          qlever: timedOut.coldMs,
+        },
+      };
+    }
+    const correctness: CloudReplacementCorrectness = {
+      correct: false,
+      sameMultiset: false,
+      sameOrder: false,
+      failures: [ `${failedEngine}-timeout:${options.operationTimeoutMs}ms` ],
+      rdf3x: failedEngine === 'rdf3x' ? emptyExecution : surviving.execution,
+      qlever: failedEngine === 'qlever' ? emptyExecution : surviving.execution,
+    };
+    const rdf3x = failedEngine === 'rdf3x' ? timedOut : surviving.latency;
+    const qlever = failedEngine === 'qlever' ? timedOut : surviving.latency;
+    return {
+      correctness,
+      rdf3x,
+      qlever,
+      ignoredSteadyHelperColdMs: {
+        rdf3x: rdf3x.coldMs,
+        qlever: qlever.coldMs,
+      },
+    };
+  }
+}
+
+async function measureSingleBenchmarkAdapter(
+  workload: CloudReplacementWorkload,
+  adapter: CloudReplacementEngineAdapter,
+  options: BenchmarkCaseMeasurementOptions,
+): Promise<{ latency: CloudReplacementLatency; execution: CloudReplacementExecution }> {
+  await options.prepareColdState();
+  const execute = async (): Promise<CloudReplacementExecution> => adapter.execute(
+    workload,
+    options.cacheMode === 'off' ? options.identitySource.next(adapter.id) : undefined,
+  );
+  const cold = await execute();
+  for (let index = 0; index < options.warmupIterations; index += 1) {
+    await execute();
+  }
+  const samples: number[] = [];
+  let representative = cold;
+  for (let index = 0; index < options.iterations; index += 1) {
+    representative = await execute();
+    samples.push(finiteExecutionElapsed(representative, adapter.id));
+  }
+  return {
+    latency: summarizeBenchmarkLatency(
+      options.cacheMode,
+      finiteExecutionElapsed(cold, adapter.id),
+      samples,
+    ),
+    execution: representative,
+  };
+}
+
+function finiteExecutionElapsed(
+  execution: CloudReplacementExecution,
+  engine: CloudReplacementEngineId,
+): number {
+  if (execution.queryElapsedMs === null || !Number.isFinite(execution.queryElapsedMs) ||
+    execution.queryElapsedMs < 0) {
+    throw new Error(`Cloud replacement ${engine} execution requires finite queryElapsedMs`);
+  }
+  return execution.queryElapsedMs;
+}
+
+function censoredTimeoutLatency(
+  cacheMode: CloudReplacementCacheMode,
+  timeoutMs: number,
+  iterations: number,
+): CloudReplacementLatency {
+  return summarizeBenchmarkLatency(
+    cacheMode,
+    timeoutMs,
+    Array.from({ length: iterations }, () => timeoutMs),
+  );
+}
+
+function summarizeBenchmarkLatency(
+  cacheMode: CloudReplacementCacheMode,
+  coldMs: number,
+  samplesMs: number[],
+): CloudReplacementLatency {
+  const sorted = [ ...samplesMs ].sort((left, right) => left - right);
+  const percentile = (value: number): number => sorted.length === 0
+    ? 0
+    : sorted[Math.max(0, Math.ceil(value * sorted.length) - 1)]!;
+  return {
+    cacheMode,
+    coldMs,
+    samplesMs,
+    p50Ms: percentile(0.50),
+    p95Ms: percentile(0.95),
+    p99Ms: percentile(0.99),
+  };
+}
+
+function emptyBenchmarkExecution(timeoutMs: number): CloudReplacementExecution {
+  const digests = canonicalCloudReplacementDigests([]);
+  return {
+    rows: [],
+    ...digests,
+    fallbackReason: `timeout:${timeoutMs}ms`,
+    physicalPlan: [],
+    queryElapsedMs: timeoutMs,
+  };
+}
+
+function isTimeoutError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 8 && current; depth += 1) {
+    if (current instanceof DOMException && current.name === 'TimeoutError') {
+      return true;
+    }
+    if (current instanceof Error && /timed out|timeout/iu.test(current.message)) {
+      return true;
+    }
+    current = typeof current === 'object' && current !== null && 'cause' in current
+      ? (current as { cause?: unknown }).cause
+      : undefined;
+  }
+  return false;
+}
+
+export function benchmarkTimeoutEngine(
+  error: unknown,
+): CloudReplacementEngineId | undefined {
+  if (!isTimeoutError(error)) {
+    return undefined;
+  }
+  if (error instanceof BenchmarkEngineExecutionError) {
+    return error.engine;
+  }
+  const message = errorMessage(error);
+  const match = /cloud replacement (rdf3x|qlever) operation/iu.exec(message);
+  return match?.[1] as CloudReplacementEngineId | undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function benchmarkCacheMeasurementOptions(
   cacheMode: CloudReplacementCacheMode,
   identitySource?: CloudReplacementSampleIdentitySource,
@@ -656,6 +1014,9 @@ export function buildBenchmarkPostgresEngineOptions(
       32,
     )),
     nativeSparqlEnabled: engine === 'qlever',
+    nativeSparqlMemoryLimitBytes: engine === 'qlever'
+      ? BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES
+      : undefined,
     queryResultCacheEnabled: cacheEnabled,
     materializedResultCacheEnabled: cacheEnabled,
     deferPgCustomIndexInitialization: true,
@@ -1022,7 +1383,7 @@ function buildDryRunPlan(options: BenchmarkCliOptions): Record<string, unknown> 
       ? {
           connectionSource: EXTERNAL_DATABASE_ENV,
           database: options.databaseName,
-          cleanup: 'drop-and-recreate-public-schema',
+          cleanup: `drop-and-recreate-${BENCHMARK_SCHEMA}-schema`,
         }
       : {
           connectionSource: 'disposable-local-container',
@@ -1092,6 +1453,7 @@ async function runBenchmark(options: BenchmarkCliOptions): Promise<void> {
     const target = path.resolve(options.out);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, `${JSON.stringify(report, null, 2)}\n`);
+    await rm(benchmarkCheckpointPath(options.out), { force: true });
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } catch (error) {
     primaryError = error;
@@ -1123,14 +1485,24 @@ async function collectBenchmarkReport(
   actualFacts: number,
 ): Promise<Record<string, unknown>> {
   const workloads = cloudReplacementWorkloads();
-  const identitySource = createCloudReplacementSampleIdentitySource(
+  const workloadById = new Map(workloads.map((workload) => [ workload.id, workload ]));
+  const checkpoint = await loadBenchmarkCheckpoint(options) ?? emptyBenchmarkCheckpoint(
+    options,
     `run-${process.pid}-${randomUUID()}`,
   );
-  const latencyRecords: LatencyRecord[] = [];
-  const concurrencyRecords: ConcurrencyRecord[] = [];
-  const correctnessRecords: BenchmarkCorrectnessRecord[] = [];
-  const correctnessFailures: string[] = [];
-  const diagnosticsByCacheMode: BenchmarkDiagnosticsByCacheMode = {};
+  const identitySource = createCloudReplacementSampleIdentitySource(
+    checkpoint.identityId,
+  );
+  const latencyRecords: LatencyRecord[] = checkpoint.latencyRecords.map((record) => ({
+    ...record,
+    workload: workloadById.get(record.workload.id) ?? record.workload,
+  }));
+  const concurrencyRecords = [ ...checkpoint.concurrencyRecords ];
+  const correctnessRecords = [ ...checkpoint.correctnessRecords ];
+  const correctnessFailures = [ ...checkpoint.correctnessFailures ];
+  const diagnosticsByCacheMode = { ...checkpoint.diagnosticsByCacheMode };
+  const completedLatencyKeys = new Set(checkpoint.completedLatencyKeys);
+  const completedConcurrencyPhases = new Set(checkpoint.completedConcurrencyPhases);
   let orderIndex = 0;
 
   const buildPair = await openAdapterPair(
@@ -1158,9 +1530,15 @@ async function collectBenchmarkReport(
     );
     await useAdapterPair(pair, async () => {
       for (const workload of workloads) {
+        const latencyKey = `${cacheMode}:${workload.id}`;
         const coldFirstEngine = orderIndex % 2 === 0 ? 'rdf3x' : 'qlever';
         orderIndex += 1;
-        const measured = await measureCloudReplacementCaseWithTrueCold(
+        if (completedLatencyKeys.has(latencyKey)) {
+          process.stderr.write(`[benchmark] resume latency ${latencyKey}\n`);
+          continue;
+        }
+        process.stderr.write(`[benchmark] latency ${latencyKey}\n`);
+        const measured = await measureCloudReplacementCaseWithTimeoutEvidence(
           workload,
           pair.rdf3xAdapter,
           pair.qleverAdapter,
@@ -1181,13 +1559,24 @@ async function collectBenchmarkReport(
         correctnessFailures.push(...measured.correctness.failures.map((failure) =>
           `${cacheMode}:${workload.id}:${failure}`));
         latencyRecords.push({ cacheMode, workload, ...measured });
+        completedLatencyKeys.add(latencyKey);
+        checkpoint.completedLatencyKeys = [ ...completedLatencyKeys ];
+        checkpoint.latencyRecords = latencyRecords;
+        checkpoint.correctnessRecords = correctnessRecords;
+        checkpoint.correctnessFailures = correctnessFailures;
+        await saveBenchmarkCheckpoint(options, checkpoint);
       }
 
-      const modeDiagnostics = {
+      const modeDiagnostics = diagnosticsByCacheMode[cacheMode] ?? {
         rdf3x: emptyDiagnostics(),
         qlever: emptyDiagnostics(),
       };
       for (const engineId of [ 'rdf3x', 'qlever' ] as const) {
+        const phaseKey = `${cacheMode}:${engineId}`;
+        if (completedConcurrencyPhases.has(phaseKey)) {
+          process.stderr.write(`[benchmark] resume concurrency ${phaseKey}\n`);
+          continue;
+        }
         await prepareColdState(pair);
         const adapter = engineId === 'rdf3x' ? pair.rdf3xAdapter : pair.qleverAdapter;
         const phase = await captureAttributedPgPhase(async () => {
@@ -1195,6 +1584,9 @@ async function collectBenchmarkReport(
           for (const workload of workloads.filter((entry) =>
             entry.concurrencyRepresentative)) {
             for (const concurrency of options.concurrency) {
+              process.stderr.write(
+                `[benchmark] concurrency ${cacheMode}:${engineId}:${workload.id}:${concurrency}\n`,
+              );
               const measured = await measureCloudReplacementConcurrency(
                 workload,
                 adapter,
@@ -1217,6 +1609,12 @@ async function collectBenchmarkReport(
         }, () => snapshotPgStatDatabase(pool));
         concurrencyRecords.push(...phase.result);
         modeDiagnostics[engineId] = phase.diagnostics;
+        diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
+        completedConcurrencyPhases.add(phaseKey);
+        checkpoint.completedConcurrencyPhases = [ ...completedConcurrencyPhases ];
+        checkpoint.concurrencyRecords = concurrencyRecords;
+        checkpoint.diagnosticsByCacheMode = diagnosticsByCacheMode;
+        await saveBenchmarkCheckpoint(options, checkpoint);
       }
       diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
     });
@@ -1431,7 +1829,7 @@ async function provisionDatabase(options: BenchmarkCliOptions): Promise<Provisio
     }
     assertDedicatedBenchmarkDatabase(connectionString);
     return {
-      connectionString,
+      connectionString: buildExternalBenchmarkConnectionString(connectionString),
     };
   }
 
@@ -1453,7 +1851,9 @@ async function provisionDatabase(options: BenchmarkCliOptions): Promise<Provisio
       throw new Error('Docker did not publish the benchmark PostgreSQL port');
     }
     return {
-      connectionString: `postgres://postgres@127.0.0.1:${port}/${LOCAL_DATABASE}`,
+      connectionString: buildLocalBenchmarkConnectionString(
+        `postgres://postgres@127.0.0.1:${port}/${LOCAL_DATABASE}`,
+      ),
       container,
     };
   } catch (error) {

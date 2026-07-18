@@ -1,5 +1,7 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { DataFactory } from 'n3';
@@ -79,6 +81,36 @@ function latency(cacheMode: 'off' | 'production', p95Ms: number) {
 }
 
 describe('native RDF3X/QLever cloud replacement runner', () => {
+  it('persists and reloads only matching workload checkpoints', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-checkpoint-'));
+    try {
+      const options = benchmark.parseArgs([
+        '--mode=local',
+        '--targetQuads=2000000',
+        '--iterations=5',
+        '--warmupIterations=1',
+        '--concurrency=1,8,32',
+        '--cacheMode=both',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(options, 'identity-a');
+      checkpoint.completedLatencyKeys.push('off:point-lookup');
+
+      await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
+
+      expect(await benchmark.loadBenchmarkCheckpoint(options)).toEqual(checkpoint);
+      expect(JSON.parse(await readFile(
+        benchmark.benchmarkCheckpointPath(options.out),
+        'utf8',
+      ))).toEqual(checkpoint);
+
+      const changed = { ...options, iterations: options.iterations + 1 };
+      expect(await benchmark.loadBenchmarkCheckpoint(changed)).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('documents the safe CLI without accepting a connection URL argument', () => {
     const help = runCli([ '--help' ]);
 
@@ -140,6 +172,45 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       .toThrow('Unknown option');
   });
 
+  it('adds the dedicated benchmark search path to external PostgreSQL URLs', () => {
+    const raw = 'postgresql://user:secret@example.test/tenant_benchmark?sslmode=require';
+    const connection = benchmark.buildExternalBenchmarkConnectionString(raw);
+    const parsed = new URL(connection);
+
+    expect(parsed.protocol).toBe('postgresql:');
+    expect(parsed.pathname).toBe('/tenant_benchmark');
+    expect(parsed.searchParams.get('sslmode')).toBe('require');
+    expect(parsed.searchParams.getAll('options')).toEqual([
+      '-csearch_path=xpod_benchmark,public',
+    ]);
+    expect(parsed.username).toBe('user');
+    expect(parsed.password).toBe('secret');
+  });
+
+  it('merges existing external PostgreSQL options without changing credentials', () => {
+    const raw = 'postgres://operator:p%40ss%20word@example.test/tenant_benchmark' +
+      '?sslmode=verify-full&options=-cstatement_timeout%3D5000&application_name=bench';
+    const connection = benchmark.buildExternalBenchmarkConnectionString(raw);
+    const parsed = new URL(connection);
+
+    expect(connection).not.toContain('p@ss word');
+    expect(parsed.protocol).toBe('postgres:');
+    expect(parsed.pathname).toBe('/tenant_benchmark');
+    expect(parsed.searchParams.get('sslmode')).toBe('verify-full');
+    expect(parsed.searchParams.get('application_name')).toBe('bench');
+    expect(parsed.username).toBe('operator');
+    expect(parsed.password).toBe('p%40ss%20word');
+    expect(parsed.searchParams.getAll('options')).toEqual([
+      '-cstatement_timeout=5000 -csearch_path=xpod_benchmark,public',
+    ]);
+  });
+
+  it('does not modify local benchmark PostgreSQL URLs', () => {
+    const local = 'postgres://postgres@127.0.0.1:5432/xpod_benchmark';
+
+    expect(benchmark.buildLocalBenchmarkConnectionString(local)).toBe(local);
+  });
+
   it('does not echo the external URL when CLI database validation fails', () => {
     const productionUrl = 'postgres://operator:top-secret@example.test/xpod';
     const failed = runCli([ '--mode=external', '--dry-run' ], {
@@ -177,8 +248,8 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(benchmark.benchmarkCleanupSql(
       'postgres://user:secret@example.test/xpod_benchmark',
     )).toEqual([
-      'DROP SCHEMA public CASCADE',
-      'CREATE SCHEMA public',
+      'DROP SCHEMA IF EXISTS xpod_benchmark CASCADE',
+      'CREATE SCHEMA xpod_benchmark',
     ]);
     expect(() => benchmark.benchmarkCleanupSql(
       'postgres://user:secret@example.test/xpod',
@@ -196,9 +267,9 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         calls.push(statement);
         if (statement === 'BEGIN') {
           schemaBeforeTransaction = schemaExists;
-        } else if (statement === 'DROP SCHEMA public CASCADE') {
+        } else if (statement === 'DROP SCHEMA IF EXISTS xpod_benchmark CASCADE') {
           schemaExists = false;
-        } else if (statement === 'CREATE SCHEMA public') {
+        } else if (statement === 'CREATE SCHEMA xpod_benchmark') {
           throw createFailure;
         } else if (statement === 'ROLLBACK') {
           schemaExists = schemaBeforeTransaction;
@@ -213,8 +284,8 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
 
     expect(calls).toEqual([
       'BEGIN',
-      'DROP SCHEMA public CASCADE',
-      'CREATE SCHEMA public',
+      'DROP SCHEMA IF EXISTS xpod_benchmark CASCADE',
+      'CREATE SCHEMA xpod_benchmark',
       'ROLLBACK',
     ]);
     expect(schemaExists).toBe(true);
@@ -227,7 +298,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     let releases = 0;
     const client = {
       async query(statement: string) {
-        if (statement === 'CREATE SCHEMA public') {
+        if (statement === 'CREATE SCHEMA xpod_benchmark') {
           throw createFailure;
         }
         if (statement === 'ROLLBACK') {
@@ -467,6 +538,99 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(result.rdf3x.coldMs).toBe(11);
     expect(result.qlever.coldMs).toBe(12);
     expect(result.ignoredSteadyHelperColdMs).toEqual({ rdf3x: 31, qlever: 32 });
+  });
+
+  it('records a timed-out engine as censored evidence and still measures its baseline', async () => {
+    let rdf3xCalls = 0;
+    const rdf3x: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute() {
+        rdf3xCalls += 1;
+        return {
+          rows: [], orderedDigest: '[]', multisetDigest: '[]',
+          fallbackReason: null, physicalPlan: [ 'rdf3x' ], queryElapsedMs: rdf3xCalls,
+        };
+      },
+    };
+    const qlever: CloudReplacementEngineAdapter<'qlever'> = {
+      id: 'qlever',
+      async execute() {
+        throw new benchmark.BenchmarkEngineExecutionError(
+          'qlever',
+          new DOMException('timed out', 'TimeoutError'),
+        );
+      },
+    };
+    let identities = 0;
+
+    const result = await benchmark.measureCloudReplacementCaseWithTimeoutEvidence(
+      workload,
+      rdf3x,
+      qlever,
+      {
+        prepareColdState() {},
+        warmupIterations: 0,
+        iterations: 2,
+        coldFirstEngine: 'rdf3x',
+        operationTimeoutMs: 100,
+        cacheMode: 'off',
+        identitySource: { next: () => `# identity:${++identities}` },
+      },
+    );
+
+    expect(result.correctness.correct).toBe(false);
+    expect(result.correctness.failures).toContain('qlever-timeout:100ms');
+    // The failed paired attempt already consumed one RDF3X cold sample. The
+    // surviving engine is then measured again from a freshly prepared state.
+    expect(result.rdf3x.samplesMs).toEqual([ 3, 4 ]);
+    expect(result.qlever.samplesMs).toEqual([ 100, 100 ]);
+    expect(result.qlever.p95Ms).toBe(100);
+  });
+
+  it('records both engines when the surviving baseline also times out', async () => {
+    const timedOut = (engine: 'rdf3x' | 'qlever'): CloudReplacementEngineAdapter<typeof engine> => ({
+      id: engine,
+      async execute() {
+        throw new benchmark.BenchmarkEngineExecutionError(
+          engine,
+          new DOMException('timed out', 'TimeoutError'),
+        );
+      },
+    });
+
+    const result = await benchmark.measureCloudReplacementCaseWithTimeoutEvidence(
+      workload,
+      timedOut('rdf3x'),
+      timedOut('qlever'),
+      {
+        prepareColdState() {},
+        warmupIterations: 0,
+        iterations: 2,
+        coldFirstEngine: 'qlever',
+        operationTimeoutMs: 100,
+        cacheMode: 'off',
+        identitySource: { next: () => '# identity' },
+      },
+    );
+
+    expect(result.correctness.failures).toEqual([
+      'qlever-timeout:100ms',
+      'rdf3x-timeout:100ms',
+    ]);
+    expect(result.rdf3x.samplesMs).toEqual([ 100, 100 ]);
+    expect(result.qlever.samplesMs).toEqual([ 100, 100 ]);
+  });
+
+  it('attributes timeout errors raised by the paired measurement helper', () => {
+    expect(benchmark.benchmarkTimeoutEngine(
+      new DOMException(
+        'Cloud replacement rdf3x operation timed out after 100ms',
+        'TimeoutError',
+      ),
+    )).toBe('rdf3x');
+    expect(benchmark.benchmarkTimeoutEngine(
+      new Error('Cloud replacement qlever operation timeout exceeded'),
+    )).toBe('qlever');
   });
 
   it('passes timeout and signal to raw engines and times only materialization', async () => {
@@ -777,6 +941,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     );
 
     expect(benchmark.BENCHMARK_BUILD_SETUP_TIMEOUT_MS).toBeGreaterThan(4_321);
+    expect(benchmark.BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES).toBe(2 * 1024 * 1024 * 1024);
     expect(benchmark.BENCHMARK_DOCKER_TIMEOUT_MS).toBeGreaterThan(0);
     expect(control.connectionTimeoutMillis > 0).toBe(true);
     expect(control).toMatchObject({
@@ -797,6 +962,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     });
     expect(production).toMatchObject({
       nativeSparqlEnabled: true,
+      nativeSparqlMemoryLimitBytes: benchmark.BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES,
       queryResultCacheEnabled: true,
       materializedResultCacheEnabled: true,
       pool: { benchmarkPool: 2 },
