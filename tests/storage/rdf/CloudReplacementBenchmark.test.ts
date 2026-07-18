@@ -11,6 +11,7 @@ import {
   canonicalCloudReplacementDigests,
   canonicalCloudReplacementRow,
   canonicalCloudReplacementTerm,
+  classifyCloudReplacementBenchmarkError,
   cloudReplacementWorkloads,
   compareCloudReplacementCase,
   createCloudReplacementSampleIdentitySource,
@@ -24,6 +25,9 @@ import {
   type CloudReplacementCacheMode,
   type CloudReplacementConcurrency,
   type CloudReplacementCorrectness,
+  type CloudReplacementErrorCategory,
+  type CloudReplacementErrorEvidence,
+  type CloudReplacementErrorStage,
   type CloudReplacementDecisionInput,
   type CloudReplacementEngineAdapter,
   type CloudReplacementEngineId,
@@ -334,8 +338,163 @@ describe('cloud replacement benchmark', () => {
       elapsedMs: 160,
       completed: 16,
       errors: 0,
+      infrastructureErrors: 0,
+      infrastructureFailure: false,
+      errorEvidence: {
+        counts: {
+          timeout: 0,
+          connection: 0,
+          cancelled: 0,
+          engine: 0,
+          correctness: 0,
+          unknown: 0,
+        },
+        samples: [],
+      },
       throughputPerSecond: 100,
     } satisfies CloudReplacementConcurrency);
+  });
+
+  it('classifies cloud replacement benchmark errors with stable categories and stages', () => {
+    const connection = Object.assign(new Error('connection terminated unexpectedly'), {
+      code: 'ECONNRESET',
+    });
+    const sqlConnection = Object.assign(new Error('pool ended'), { code: '08006' });
+    const timeout = new DOMException('statement timeout', 'TimeoutError');
+    const statementTimeout = Object.assign(new Error('canceling statement due to statement timeout'), {
+      code: '57014',
+    });
+    const cancelled = new DOMException('manual abort', 'AbortError');
+    const engine = new Error('adapter blew up');
+    const correctness = { category: 'correctness', stage: 'materialize', message: 'digest mismatch' };
+
+    expect(classifyCloudReplacementBenchmarkError(connection)).toMatchObject({
+      category: 'connection',
+      stage: 'acquire',
+      code: 'ECONNRESET',
+    });
+    expect(classifyCloudReplacementBenchmarkError(sqlConnection)).toMatchObject({
+      category: 'connection',
+      stage: 'acquire',
+      code: '08006',
+    });
+    expect(classifyCloudReplacementBenchmarkError(timeout)).toMatchObject({
+      category: 'timeout',
+      stage: 'query',
+      name: 'TimeoutError',
+    });
+    expect(classifyCloudReplacementBenchmarkError(statementTimeout)).toMatchObject({
+      category: 'timeout',
+      stage: 'query',
+      code: '57014',
+    });
+    expect(classifyCloudReplacementBenchmarkError(cancelled)).toMatchObject({
+      category: 'cancelled',
+      stage: 'cancel',
+      name: 'AbortError',
+    });
+    expect(classifyCloudReplacementBenchmarkError(engine)).toMatchObject({
+      category: 'engine',
+      stage: 'query',
+    });
+    expect(classifyCloudReplacementBenchmarkError(correctness)).toMatchObject({
+      category: 'correctness',
+      stage: 'materialize',
+      message: 'digest mismatch',
+    });
+    expect(classifyCloudReplacementBenchmarkError('plain failure')).toMatchObject({
+      category: 'unknown',
+      stage: 'query',
+    });
+    expectTypeOf<CloudReplacementErrorCategory>().toEqualTypeOf<
+      'timeout' | 'connection' | 'cancelled' | 'engine' | 'correctness' | 'unknown'
+    >();
+    expectTypeOf<CloudReplacementErrorStage>().toEqualTypeOf<
+      'acquire' | 'query' | 'materialize' | 'cancel' | 'cleanup'
+    >();
+  });
+
+  it('prefers explicit legal stages and walks nested causes up to the connection root', () => {
+    const root = Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:5432'), {
+      code: 'ECONNREFUSED',
+    });
+    const wrapper = Object.assign(new Error('outer wrapper'), {
+      stage: 'cleanup',
+      cause: { cause: root },
+    });
+
+    expect(classifyCloudReplacementBenchmarkError(wrapper)).toMatchObject({
+      category: 'connection',
+      stage: 'cleanup',
+      code: 'ECONNREFUSED',
+    });
+  });
+
+  it('records bounded sanitized error evidence while preserving full category counts', async () => {
+    const messages = [
+      'variant one postgres://alice:secret@db.internal.example:5432/app password=hunter2 token=abc secret=def host=api.internal 192.168.1.50:5432',
+      'variant two postgres://bob:secret@db2.internal.example:5432/app password=hidden token=ghi secret=jkl host=db2.internal 10.0.0.2:5432',
+      'variant three https://user:pass@service.internal.example/path password=one token=two secret=three host=service.internal [2001:db8::1]:5432',
+      'variant four postgres://carol:secret@db3.internal.example:5432/app password=more token=more secret=more host=db3.internal 172.16.0.3:5432',
+      'variant one postgres://alice:secret@db.internal.example:5432/app password=hunter2 token=abc secret=def host=api.internal 192.168.1.50:5432',
+    ];
+    let attempts = 0;
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute() {
+        const message = messages[attempts] ?? messages[0];
+        attempts += 1;
+        throw Object.assign(new Error(`${message}\u0000${'x'.repeat(300)}`), {
+          code: 'EPIPE',
+        });
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 1,
+      durationMs: 5,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => attempts,
+    });
+
+    expect(result.infrastructureErrors).toBe(5);
+    expect(result.infrastructureFailure).toBe(false);
+    expect(result.errors).toBe(0);
+    expect(result.errorEvidence.counts.connection).toBe(5);
+    expect(result.errorEvidence.samples).toHaveLength(3);
+    expect(result.errorEvidence.samples[0]).toMatchObject({
+      category: 'connection',
+      stage: 'acquire',
+      count: 2,
+      firstSeenAt: 1,
+      lastSeenAt: 5,
+      workloadId: pointCase.id,
+      engine: 'rdf3x',
+      cacheMode: 'production',
+      concurrency: 1,
+    });
+    for (const sample of result.errorEvidence.samples) {
+      expect(sample.message.length).toBeLessThanOrEqual(240);
+      expect(sample.message).not.toMatch(/alice|bob|carol|hunter2|secret|abc|ghi|jkl|db\d?\.internal|service\.internal|api\.internal|192\.168|10\.0|172\.16|2001:db8|password=|token=/iu);
+    }
+    expectTypeOf<CloudReplacementErrorEvidence>().toEqualTypeOf<{
+      counts: Record<CloudReplacementErrorCategory, number>;
+      samples: Array<{
+        category: CloudReplacementErrorCategory;
+        stage: CloudReplacementErrorStage;
+        name: string;
+        code: string | null;
+        message: string;
+        firstSeenAt: number;
+        lastSeenAt: number;
+        count: number;
+        workloadId: string;
+        engine: CloudReplacementEngineId;
+        cacheMode: CloudReplacementCacheMode;
+        concurrency: 1 | 8 | 32;
+      }>;
+    }>();
   });
 
   it('keeps the measurement contracts exact and fixes adapter positions', () => {
@@ -354,6 +513,9 @@ describe('cloud replacement benchmark', () => {
       elapsedMs: number;
       completed: number;
       errors: number;
+      infrastructureErrors: number;
+      infrastructureFailure: boolean;
+      errorEvidence: CloudReplacementErrorEvidence;
       throughputPerSecond: number;
     }>();
     expectTypeOf<CloudReplacementPgDiagnostics>().toEqualTypeOf<{
@@ -763,6 +925,13 @@ describe('cloud replacement benchmark', () => {
 
     expect(result.completed).toBe(0);
     expect(result.errors).toBe(1);
+    expect(result.infrastructureErrors).toBe(0);
+    expect(result.errorEvidence.counts.timeout).toBe(1);
+    expect(result.errorEvidence.samples[0]).toMatchObject({
+      category: 'timeout',
+      stage: 'query',
+      count: 1,
+    });
     expect(result.elapsedMs).toBeGreaterThanOrEqual(5);
     expect(signals).toHaveLength(1);
     expect(signals[0]?.aborted).toBe(true);
@@ -1046,6 +1215,8 @@ describe('cloud replacement benchmark', () => {
 
     expect(attempts).toBe(5);
     expect(result).toMatchObject({ completed: 3, errors: 2, throughputPerSecond: 60 });
+    expect(result.infrastructureErrors).toBe(0);
+    expect(result.errorEvidence.counts.engine).toBe(2);
   });
 
   it.each([ 'unsupported', '' ])(
@@ -1066,8 +1237,48 @@ describe('cloud replacement benchmark', () => {
       });
 
       expect(result).toMatchObject({ completed: 0, errors: 2, elapsedMs: 20 });
+      expect(result.infrastructureErrors).toBe(0);
+      expect(result.errorEvidence.counts.engine).toBe(2);
+      expect(result.errorEvidence.samples[0]).toMatchObject({
+        category: 'engine',
+        stage: 'query',
+        message: `fallback:${fallbackReason}`,
+      });
     },
   );
+
+  it('keeps empty concurrency results structurally complete', async () => {
+    const result = await measureCloudReplacementConcurrency(pointCase, fakeAdapter('rdf3x', []), {
+      concurrency: 1,
+      durationMs: 0,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => 0,
+    });
+
+    expect(result).toEqual({
+      cacheMode: 'production',
+      concurrency: 1,
+      durationMs: 0,
+      elapsedMs: 0,
+      completed: 0,
+      errors: 0,
+      infrastructureErrors: 0,
+      infrastructureFailure: false,
+      errorEvidence: {
+        counts: {
+          timeout: 0,
+          connection: 0,
+          cancelled: 0,
+          engine: 0,
+          correctness: 0,
+          unknown: 0,
+        },
+        samples: [],
+      },
+      throughputPerSecond: 0,
+    });
+  });
 
   it('uses globally unique cache-off identities across concurrency workers', async () => {
     const identities: Array<string | undefined> = [];
@@ -1147,6 +1358,19 @@ describe('cloud replacement benchmark', () => {
       elapsedMs: 0,
       completed: 0,
       errors: 0,
+      infrastructureErrors: 0,
+      infrastructureFailure: false,
+      errorEvidence: {
+        counts: {
+          timeout: 0,
+          connection: 0,
+          cancelled: 0,
+          engine: 0,
+          correctness: 0,
+          unknown: 0,
+        },
+        samples: [],
+      },
       throughputPerSecond: 0,
     });
     expect(executions).toBe(0);

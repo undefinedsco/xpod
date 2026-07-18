@@ -36,6 +36,7 @@ import {
   type CloudReplacementCorrectness,
   type CloudReplacementEngineAdapter,
   type CloudReplacementEngineId,
+  type CloudReplacementErrorStage,
   type CloudReplacementExecution,
   type CloudReplacementLatency,
   type CloudReplacementPgDiagnostics,
@@ -148,6 +149,7 @@ export class BenchmarkEngineExecutionError extends Error {
   public constructor(
     public readonly engine: CloudReplacementEngineId,
     cause: unknown,
+    public readonly stage: CloudReplacementErrorStage = benchmarkErrorStage(cause, 'query'),
   ) {
     super(`${engine} benchmark execution failed: ${errorMessage(cause)}`);
     // Preserve abort/timeout identity for callers while retaining engine
@@ -155,6 +157,27 @@ export class BenchmarkEngineExecutionError extends Error {
     this.name = cause instanceof Error ? cause.name : 'BenchmarkEngineExecutionError';
     this.cause = cause;
   }
+}
+
+function benchmarkErrorStage(
+  error: unknown,
+  fallback: CloudReplacementErrorStage,
+): CloudReplacementErrorStage {
+  if (error && typeof error === 'object' && 'stage' in error) {
+    const stage = (error as { stage?: unknown }).stage;
+    if (stage === 'acquire' || stage === 'query' || stage === 'materialize' ||
+      stage === 'cancel' || stage === 'cleanup') {
+      return stage;
+    }
+  }
+  const name = error instanceof Error ? error.name : undefined;
+  if (name === 'AbortError') {
+    return 'cancel';
+  }
+  if (name === 'TimeoutError') {
+    return fallback === 'materialize' ? 'materialize' : 'query';
+  }
+  return fallback;
 }
 
 type BenchmarkCaseMeasurementOptions = {
@@ -787,23 +810,28 @@ export function createCloudReplacementAdapter<Id extends CloudReplacementEngineI
   return {
     id,
     async execute(workload, sampleIdentity, signal): Promise<CloudReplacementExecution> {
-      throwIfAborted(signal);
-      const operation = createOperationAbortScope(signal, operationTimeoutMs);
+      let stage: CloudReplacementErrorStage = 'query';
+      let operation: { signal: AbortSignal; dispose: () => void } | undefined;
       try {
+        throwIfAborted(signal);
+        operation = createOperationAbortScope(signal, operationTimeoutMs);
         const query = sampleIdentity === undefined
           ? workload.sparql
           : `${workload.sparql}\n${sampleIdentity}`;
         let activeStream: unknown;
         const startedAt = now();
+        const operationSignal = operation.signal;
         const rawRows = await raceWithAbort((async () => {
+          stage = 'query';
           activeStream = await engine.queryBindings(
             query,
             workload.accessScope?.basePath ?? BASE_PATH,
             workload.accessScope,
-            { signal: operation.signal, timeoutMs: operationTimeoutMs },
+            { signal: operationSignal, timeoutMs: operationTimeoutMs },
           );
-          return await materializeBindings(activeStream, operation.signal);
-        })(), operation.signal, () => destroyStream(activeStream));
+          stage = 'materialize';
+          return await materializeBindings(activeStream, operationSignal);
+        })(), operationSignal, () => destroyStream(activeStream));
         const elapsedMs = now() - startedAt;
 
         const metrics = engine.getMetrics();
@@ -824,9 +852,9 @@ export function createCloudReplacementAdapter<Id extends CloudReplacementEngineI
         if (error instanceof BenchmarkEngineExecutionError) {
           throw error;
         }
-        throw new BenchmarkEngineExecutionError(id, error);
+        throw new BenchmarkEngineExecutionError(id, error, benchmarkErrorStage(error, stage));
       } finally {
-        operation.dispose();
+        operation?.dispose();
       }
     },
   };

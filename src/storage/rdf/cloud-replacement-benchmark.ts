@@ -103,6 +103,41 @@ export interface CloudReplacementLatency {
   p99Ms: number;
 }
 
+export type CloudReplacementErrorCategory =
+  | 'timeout'
+  | 'connection'
+  | 'cancelled'
+  | 'engine'
+  | 'correctness'
+  | 'unknown';
+
+export type CloudReplacementErrorStage =
+  | 'acquire'
+  | 'query'
+  | 'materialize'
+  | 'cancel'
+  | 'cleanup';
+
+export interface CloudReplacementErrorSample {
+  category: CloudReplacementErrorCategory;
+  stage: CloudReplacementErrorStage;
+  name: string;
+  code: string | null;
+  message: string;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  count: number;
+  workloadId: string;
+  engine: CloudReplacementEngineId;
+  cacheMode: CloudReplacementCacheMode;
+  concurrency: 1 | 8 | 32;
+}
+
+export interface CloudReplacementErrorEvidence {
+  counts: Record<CloudReplacementErrorCategory, number>;
+  samples: CloudReplacementErrorSample[];
+}
+
 export interface CloudReplacementConcurrency {
   cacheMode: CloudReplacementCacheMode;
   concurrency: 1 | 8 | 32;
@@ -110,6 +145,9 @@ export interface CloudReplacementConcurrency {
   elapsedMs: number;
   completed: number;
   errors: number;
+  infrastructureErrors: number;
+  infrastructureFailure: boolean;
+  errorEvidence: CloudReplacementErrorEvidence;
   throughputPerSecond: number;
 }
 
@@ -154,6 +192,199 @@ export function canonicalCloudReplacementDigests(rows: readonly string[]): {
     orderedDigest: JSON.stringify(rows),
     multisetDigest: JSON.stringify([ ...rows ].sort()),
   };
+}
+
+interface CloudReplacementErrorClassification {
+  category: CloudReplacementErrorCategory;
+  stage: CloudReplacementErrorStage;
+  name: string;
+  code: string | null;
+  message: string;
+}
+
+const CLOUD_REPLACEMENT_ERROR_CATEGORIES: readonly CloudReplacementErrorCategory[] = [
+  'timeout',
+  'connection',
+  'cancelled',
+  'engine',
+  'correctness',
+  'unknown',
+];
+
+const CLOUD_REPLACEMENT_ERROR_STAGES: readonly CloudReplacementErrorStage[] = [
+  'acquire',
+  'query',
+  'materialize',
+  'cancel',
+  'cleanup',
+];
+
+const CLOUD_REPLACEMENT_CONNECTION_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+]);
+
+export function classifyCloudReplacementBenchmarkError(
+  error: unknown,
+): CloudReplacementErrorClassification {
+  const chain = cloudReplacementErrorChain(error);
+  const explicitStage = chain.map(readCloudReplacementErrorStage)
+    .find((stage): stage is CloudReplacementErrorStage => stage !== undefined);
+  const explicitCategory = chain.map(readCloudReplacementErrorCategory)
+    .find((category): category is CloudReplacementErrorCategory => category !== undefined);
+  const attributed = explicitCategory === undefined
+    ? undefined
+    : chain.find((entry) => readCloudReplacementErrorCategory(entry) === explicitCategory);
+  const node = attributed ?? chain.find(cloudReplacementErrorLooksClassifiable) ?? error;
+  const name = sanitizeCloudReplacementErrorMessage(readCloudReplacementErrorName(node));
+  const code = readCloudReplacementErrorCode(node);
+  const message = sanitizeCloudReplacementErrorMessage(readCloudReplacementErrorMessage(node));
+
+  if (explicitCategory !== undefined) {
+    return {
+      category: explicitCategory,
+      stage: explicitStage ?? defaultCloudReplacementErrorStage(explicitCategory),
+      name,
+      code,
+      message,
+    };
+  }
+  if (code !== null && (CLOUD_REPLACEMENT_CONNECTION_CODES.has(code) || /^08/u.test(code))) {
+    return { category: 'connection', stage: explicitStage ?? 'acquire', name, code, message };
+  }
+  if (/connection (?:terminated|closed)|pool ended|connection ended|server closed the connection/iu
+    .test(message)) {
+    return { category: 'connection', stage: explicitStage ?? 'acquire', name, code, message };
+  }
+  if (name === 'TimeoutError' || code === '57014' || /statement timeout|timed out|timeout/iu
+    .test(message)) {
+    return { category: 'timeout', stage: explicitStage ?? 'query', name, code, message };
+  }
+  if (name === 'AbortError') {
+    return { category: 'cancelled', stage: explicitStage ?? 'cancel', name, code, message };
+  }
+  if (error instanceof Error) {
+    return { category: 'engine', stage: explicitStage ?? 'query', name, code, message };
+  }
+  return { category: 'unknown', stage: explicitStage ?? 'query', name, code, message };
+}
+
+function cloudReplacementErrorChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let current = error;
+  for (let depth = 0; depth < 8; depth += 1) {
+    chain.push(current);
+    const cause = readCloudReplacementErrorCause(current);
+    if (cause === undefined) {
+      break;
+    }
+    current = cause;
+  }
+  return chain;
+}
+
+function cloudReplacementErrorLooksClassifiable(error: unknown): boolean {
+  const name = readCloudReplacementErrorName(error);
+  const code = readCloudReplacementErrorCode(error);
+  const message = readCloudReplacementErrorMessage(error);
+  return name === 'TimeoutError' || name === 'AbortError' || code !== null ||
+    /connection|pool ended|statement timeout|timed out|timeout/iu.test(message);
+}
+
+function readCloudReplacementErrorCause(error: unknown): unknown {
+  if (!error || typeof error !== 'object' || !('cause' in error)) {
+    return undefined;
+  }
+  return (error as { cause?: unknown }).cause;
+}
+
+function readCloudReplacementErrorName(error: unknown): string {
+  if (error instanceof Error) {
+    return error.name || 'Error';
+  }
+  if (error && typeof error === 'object' && 'name' in error &&
+    typeof (error as { name?: unknown }).name === 'string') {
+    return (error as { name: string }).name || 'Error';
+  }
+  return typeof error;
+}
+
+function readCloudReplacementErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return null;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && code.length > 0 ? code.toUpperCase() : null;
+}
+
+function readCloudReplacementErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === 'object' && 'message' in error &&
+    typeof (error as { message?: unknown }).message === 'string') {
+    return (error as { message: string }).message;
+  }
+  return String(error);
+}
+
+function readCloudReplacementErrorStage(error: unknown): CloudReplacementErrorStage | undefined {
+  if (!error || typeof error !== 'object' || !('stage' in error)) {
+    return undefined;
+  }
+  const stage = (error as { stage?: unknown }).stage;
+  return typeof stage === 'string' && isCloudReplacementErrorStage(stage) ? stage : undefined;
+}
+
+function readCloudReplacementErrorCategory(
+  error: unknown,
+): CloudReplacementErrorCategory | undefined {
+  if (!error || typeof error !== 'object' || !('category' in error)) {
+    return undefined;
+  }
+  const category = (error as { category?: unknown }).category;
+  return typeof category === 'string' && isCloudReplacementErrorCategory(category)
+    ? category
+    : undefined;
+}
+
+function isCloudReplacementErrorStage(value: string): value is CloudReplacementErrorStage {
+  return CLOUD_REPLACEMENT_ERROR_STAGES.includes(value as CloudReplacementErrorStage);
+}
+
+function isCloudReplacementErrorCategory(value: string): value is CloudReplacementErrorCategory {
+  return CLOUD_REPLACEMENT_ERROR_CATEGORIES.includes(value as CloudReplacementErrorCategory);
+}
+
+function defaultCloudReplacementErrorStage(
+  category: CloudReplacementErrorCategory,
+): CloudReplacementErrorStage {
+  if (category === 'connection') {
+    return 'acquire';
+  }
+  if (category === 'cancelled') {
+    return 'cancel';
+  }
+  return 'query';
+}
+
+function sanitizeCloudReplacementErrorMessage(message: string): string {
+  return message
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ')
+    .replace(/\bpostgres(?:ql)?:\/\/\S+/giu, '[redacted-url]')
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/giu, '[redacted-url]')
+    .replace(/\b(?:password|token|secret)=\S+/giu, '[redacted-credential]')
+    .replace(/\bhost=\S+/giu, 'host=[redacted-host]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/gu, '[redacted-endpoint]')
+    .replace(/\[[0-9a-f:]+\]:\d+/giu, '[redacted-endpoint]')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 240);
 }
 
 function parseCanonicalCloudReplacementRow(row: string): Map<string, CanonicalTermTuple> | null {
@@ -410,6 +641,9 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
     elapsedMs: 0,
     completed: 0,
     errors: 0,
+    infrastructureErrors: 0,
+    infrastructureFailure: false,
+    errorEvidence: emptyCloudReplacementErrorEvidence(),
     throughputPerSecond: 0,
   });
   if (durationMs <= 0) {
@@ -421,6 +655,14 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
   const deadline = startedAt + durationMs;
   let completed = 0;
   let errors = 0;
+  let infrastructureErrors = 0;
+  const errorEvidence = emptyCloudReplacementErrorEvidence();
+  const evidenceContext = {
+    workloadId: workload.id,
+    engine: adapter.id,
+    cacheMode,
+    concurrency,
+  };
 
   const worker = async (): Promise<void> => {
     while (now() < deadline) {
@@ -436,9 +678,30 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
           completed += 1;
         } else {
           errors += 1;
+          recordCloudReplacementErrorEvidence(
+            errorEvidence,
+            {
+              category: 'engine',
+              stage: 'query',
+              name: 'FallbackReason',
+              code: null,
+              message: sanitizeCloudReplacementErrorMessage(`fallback:${execution.fallbackReason}`),
+            },
+            { ...evidenceContext, seenAt: now() },
+          );
         }
-      } catch {
-        errors += 1;
+      } catch (error) {
+        const classification = classifyCloudReplacementBenchmarkError(error);
+        if (classification.category === 'connection') {
+          infrastructureErrors += 1;
+        } else {
+          errors += 1;
+        }
+        recordCloudReplacementErrorEvidence(
+          errorEvidence,
+          classification,
+          { ...evidenceContext, seenAt: now() },
+        );
       }
     }
   };
@@ -452,8 +715,83 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
     elapsedMs,
     completed,
     errors,
+    infrastructureErrors,
+    infrastructureFailure: false,
+    errorEvidence,
     throughputPerSecond: completed / (elapsedMs / 1_000),
   };
+}
+
+function emptyCloudReplacementErrorEvidence(): CloudReplacementErrorEvidence {
+  return {
+    counts: {
+      timeout: 0,
+      connection: 0,
+      cancelled: 0,
+      engine: 0,
+      correctness: 0,
+      unknown: 0,
+    },
+    samples: [],
+  };
+}
+
+function recordCloudReplacementErrorEvidence(
+  evidence: CloudReplacementErrorEvidence,
+  classification: CloudReplacementErrorClassification,
+  context: {
+    workloadId: string;
+    engine: CloudReplacementEngineId;
+    cacheMode: CloudReplacementCacheMode;
+    concurrency: 1 | 8 | 32;
+    seenAt: number;
+  },
+): void {
+  evidence.counts[classification.category] += 1;
+  const fingerprint = cloudReplacementErrorFingerprint(classification, context);
+  const existing = evidence.samples.find((sample) =>
+    cloudReplacementErrorFingerprint(sample, sample) === fingerprint);
+  if (existing) {
+    existing.count += 1;
+    existing.lastSeenAt = context.seenAt;
+    return;
+  }
+  const categorySamples = evidence.samples.filter((sample) =>
+    sample.category === classification.category);
+  if (categorySamples.length >= 3) {
+    return;
+  }
+  evidence.samples.push({
+    category: classification.category,
+    stage: classification.stage,
+    name: classification.name,
+    code: classification.code,
+    message: classification.message,
+    firstSeenAt: context.seenAt,
+    lastSeenAt: context.seenAt,
+    count: 1,
+    workloadId: context.workloadId,
+    engine: context.engine,
+    cacheMode: context.cacheMode,
+    concurrency: context.concurrency,
+  });
+}
+
+function cloudReplacementErrorFingerprint(
+  classification: Pick<CloudReplacementErrorSample, 'category' | 'stage' | 'name' | 'code' | 'message'>,
+  context: Pick<CloudReplacementErrorSample, 'workloadId' | 'engine' | 'cacheMode' | 'concurrency'>,
+): string {
+  return JSON.stringify([
+    classification.category,
+    classification.stage,
+    classification.name,
+    classification.code,
+    classification.message,
+    context.workloadId,
+    context.engine,
+    context.cacheMode,
+    context.concurrency,
+  ]);
 }
 
 function cloudReplacementIterationCount(

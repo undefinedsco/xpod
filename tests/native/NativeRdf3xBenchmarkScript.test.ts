@@ -861,6 +861,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
 
     expect(result.correctness.correct).toBe(false);
     expect(result.correctness.failures).toContain('qlever-timeout:100ms');
+    expect(result.correctness.failures).not.toContain('qlever-cancel:100ms');
     // The failed paired attempt already consumed one RDF3X cold sample. The
     // surviving engine is then measured again from a freshly prepared state.
     expect(result.rdf3x.samplesMs).toEqual([ 3, 4 ]);
@@ -956,6 +957,89 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(calls[0]).toMatchObject({ signal: true, timeoutMs: 4_321 });
     expect(calls[1]).toMatchObject({ signal: true, timeoutMs: 4_321 });
     expect(events.slice(0, 4)).toEqual([ 'clock', 'materialize', 'clock', 'metrics' ]);
+  });
+
+  it('attributes wrapped adapter failures to query and materialize stages', async () => {
+    const queryFailure = new Error('query failed');
+    const queryEngine: benchmark.BenchmarkSparqlEngine = {
+      async queryBindings() {
+        throw queryFailure;
+      },
+      getMetrics() {
+        return {
+          fallbackCount: 0,
+          lastPrimary: { operation: 'queryBindings', plan: [ 'NativeSparql' ], indexChoices: [] },
+        };
+      },
+    };
+    const materializeEngine: benchmark.BenchmarkSparqlEngine = {
+      async queryBindings() {
+        return (async function* () {
+          yield 'not a binding';
+        })();
+      },
+      getMetrics() {
+        return {
+          fallbackCount: 0,
+          lastPrimary: { operation: 'queryBindings', plan: [ 'NativeSparql' ], indexChoices: [] },
+        };
+      },
+    };
+
+    await expect(benchmark.createCloudReplacementAdapter(
+      'qlever', queryEngine,
+    ).execute(workload, '# timed')).rejects.toMatchObject({
+      stage: 'query',
+      cause: queryFailure,
+    });
+    await expect(benchmark.createCloudReplacementAdapter(
+      'qlever', materializeEngine,
+    ).execute(workload, '# timed')).rejects.toMatchObject({
+      stage: 'materialize',
+    });
+  });
+
+  it('preserves cancel and timeout stages in BenchmarkEngineExecutionError wrappers', async () => {
+    const aborted = new AbortController();
+    aborted.abort(new DOMException('caller stopped', 'AbortError'));
+    await expect(benchmark.createCloudReplacementAdapter(
+      'qlever',
+      {
+        async queryBindings() {
+          return (async function* () {})();
+        },
+        getMetrics() {
+          return {
+            fallbackCount: 0,
+            lastPrimary: { operation: 'queryBindings', plan: [ 'NativeSparql' ], indexChoices: [] },
+          };
+        },
+      },
+      { operationTimeoutMs: 1_000 },
+    ).execute(workload, '# timed', aborted.signal)).rejects.toMatchObject({
+      stage: 'cancel',
+      name: 'AbortError',
+    });
+
+    const neverResolves: benchmark.BenchmarkSparqlEngine = {
+      async queryBindings() {
+        return new Promise<unknown>(() => {});
+      },
+      getMetrics() {
+        return {
+          fallbackCount: 0,
+          lastPrimary: { operation: 'queryBindings', plan: [ 'NativeSparql' ], indexChoices: [] },
+        };
+      },
+    };
+    await expect(benchmark.createCloudReplacementAdapter(
+      'qlever',
+      neverResolves,
+      { operationTimeoutMs: 5 },
+    ).execute(workload, '# timed')).rejects.toMatchObject({
+      stage: 'query',
+      name: 'TimeoutError',
+    });
   });
 
   it.each([
