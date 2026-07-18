@@ -81,6 +81,43 @@ function latency(cacheMode: 'off' | 'production', p95Ms: number) {
 }
 
 describe('native RDF3X/QLever cloud replacement runner', () => {
+  it('requires external execution location and transport while local defaults safely', () => {
+    expect(() => benchmark.parseArgs([
+      '--mode=external',
+      '--executionLocation=cluster',
+    ], {
+      XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/tenant_benchmark',
+    })).toThrow('--transport');
+    expect(() => benchmark.parseArgs([
+      '--mode=external',
+      '--transport=port-forward',
+    ], {
+      XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/tenant_benchmark',
+    })).toThrow('--executionLocation');
+
+    const external = benchmark.parseArgs([
+      '--mode=external',
+      '--executionLocation=cluster',
+      '--transport=port-forward',
+    ], {
+      XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/tenant_benchmark',
+    });
+    const local = benchmark.parseArgs([ '--mode=local' ], {});
+
+    expect(external.executionLocation).toBe('cluster');
+    expect(external.transport).toBe('port-forward');
+    expect(local.executionLocation).toBe('local');
+    expect(local.transport).toBe('direct');
+  });
+
+  it('documents execution location and transport in CLI help', () => {
+    const help = runCli([ '--help' ]);
+
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stdout).toContain('--executionLocation=local|cluster');
+    expect(help.stdout).toContain('--transport=direct|port-forward');
+  });
+
   it('persists and reloads only matching workload checkpoints', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-checkpoint-'));
     try {
@@ -93,22 +130,232 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         '--cacheMode=both',
         `--out=${path.join(root, 'report.json')}`,
       ], {});
-      const checkpoint = benchmark.emptyBenchmarkCheckpoint(options, 'identity-a');
+      const context = benchmark.buildBenchmarkExecutionContext(options, 'database-a');
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(options, context, 'identity-a');
       checkpoint.completedLatencyKeys.push('off:point-lookup');
 
       await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
 
-      expect(await benchmark.loadBenchmarkCheckpoint(options)).toEqual(checkpoint);
+      expect(await benchmark.loadBenchmarkCheckpoint(options, context)).toEqual(checkpoint);
       expect(JSON.parse(await readFile(
         benchmark.benchmarkCheckpointPath(options.out),
         'utf8',
       ))).toEqual(checkpoint);
 
       const changed = { ...options, iterations: options.iterations + 1 };
-      expect(await benchmark.loadBenchmarkCheckpoint(changed)).toBeUndefined();
+      expect(await benchmark.loadBenchmarkCheckpoint(
+        changed,
+        benchmark.buildBenchmarkExecutionContext(changed, 'database-a'),
+      )).toMatchObject({
+        completedLatencyKeys: [],
+        completedConcurrencyKeys: [],
+        latencyRecords: [],
+        concurrencyRecords: [],
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('does not reuse concurrency checkpoints across direct and port-forward contexts', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-transport-'));
+    try {
+      const direct = benchmark.parseArgs([
+        '--mode=external',
+        '--executionLocation=cluster',
+        '--transport=direct',
+        `--out=${path.join(root, 'report.json')}`,
+      ], { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/tenant_benchmark' });
+      const portForward = benchmark.parseArgs([
+        '--mode=external',
+        '--executionLocation=cluster',
+        '--transport=port-forward',
+        `--out=${path.join(root, 'report.json')}`,
+      ], { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/tenant_benchmark' });
+      const directContext = benchmark.buildBenchmarkExecutionContext(direct, 'database-a');
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(direct, directContext, 'identity-a');
+      checkpoint.completedLatencyKeys.push('off:case-a');
+      checkpoint.completedConcurrencyKeys.push('off:rdf3x');
+      checkpoint.concurrencyRecords.push({
+        cacheMode: 'off',
+        caseId: 'case-a',
+        engine: 'rdf3x',
+        concurrency: 1,
+        durationMs: 60_000,
+        completed: 1,
+        errors: 0,
+        elapsedMs: 1_000,
+        throughputPerSecond: 1,
+      });
+      await benchmark.saveBenchmarkCheckpoint(direct, checkpoint);
+
+      const loaded = await benchmark.loadBenchmarkCheckpoint(
+        portForward,
+        benchmark.buildBenchmarkExecutionContext(portForward, 'database-a'),
+      );
+
+      expect(loaded?.completedLatencyKeys).toEqual([]);
+      expect(loaded?.completedConcurrencyKeys).toEqual([]);
+      expect(loaded?.concurrencyRecords).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('clears all checkpoint evidence when database identity changes', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-db-'));
+    try {
+      const options = benchmark.parseArgs([
+        '--mode=local',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(
+        options,
+        benchmark.buildBenchmarkExecutionContext(options, 'database-a'),
+        'identity-a',
+      );
+      checkpoint.completedLatencyKeys.push('off:case-a');
+      checkpoint.completedConcurrencyKeys.push('off:rdf3x');
+      checkpoint.latencyRecords.push({
+        cacheMode: 'off',
+        workload,
+        rdf3x: latency('off', 10),
+        qlever: latency('off', 8),
+        ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 },
+      });
+      checkpoint.concurrencyRecords.push({
+        cacheMode: 'off',
+        caseId: 'case-a',
+        engine: 'rdf3x',
+        concurrency: 1,
+        durationMs: 60_000,
+        completed: 1,
+        errors: 0,
+        elapsedMs: 1_000,
+        throughputPerSecond: 1,
+      });
+      await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
+
+      const loaded = await benchmark.loadBenchmarkCheckpoint(
+        options,
+        benchmark.buildBenchmarkExecutionContext(options, 'database-b'),
+      );
+
+      expect(loaded?.completedLatencyKeys).toEqual([]);
+      expect(loaded?.completedConcurrencyKeys).toEqual([]);
+      expect(loaded?.latencyRecords).toEqual([]);
+      expect(loaded?.concurrencyRecords).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps latency checkpoints but clears concurrency when only lanes change', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-lanes-'));
+    try {
+      const base = benchmark.parseArgs([
+        '--mode=local',
+        '--concurrency=1,8',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      const changed = benchmark.parseArgs([
+        '--mode=local',
+        '--concurrency=1,8,32',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      const context = benchmark.buildBenchmarkExecutionContext(base, 'database-a');
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(base, context, 'identity-a');
+      checkpoint.completedLatencyKeys.push('off:case-a');
+      checkpoint.completedConcurrencyKeys.push('off:rdf3x');
+      checkpoint.latencyRecords.push({
+        cacheMode: 'off',
+        workload,
+        rdf3x: latency('off', 10),
+        qlever: latency('off', 8),
+        ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 },
+      });
+      checkpoint.concurrencyRecords.push({
+        cacheMode: 'off',
+        caseId: 'case-a',
+        engine: 'rdf3x',
+        concurrency: 8,
+        durationMs: 60_000,
+        completed: 8,
+        errors: 0,
+        elapsedMs: 1_000,
+        throughputPerSecond: 8,
+      });
+      await benchmark.saveBenchmarkCheckpoint(base, checkpoint);
+
+      const loaded = await benchmark.loadBenchmarkCheckpoint(
+        changed,
+        benchmark.buildBenchmarkExecutionContext(changed, 'database-a'),
+      );
+
+      expect(loaded?.completedLatencyKeys).toEqual([ 'off:case-a' ]);
+      expect(loaded?.latencyRecords).toHaveLength(1);
+      expect(loaded?.completedConcurrencyKeys).toEqual([]);
+      expect(loaded?.concurrencyRecords).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects version 1 checkpoints instead of migrating ambiguous evidence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-v1-'));
+    try {
+      const options = benchmark.parseArgs([
+        '--mode=local',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      await benchmark.saveBenchmarkCheckpoint(options, {
+        version: 1,
+        fingerprint: 'legacy',
+        identityId: 'identity-a',
+        completedLatencyKeys: [ 'off:case-a' ],
+        completedConcurrencyPhases: [ 'off:rdf3x' ],
+        latencyRecords: [],
+        concurrencyRecords: [],
+        correctnessRecords: [],
+        correctnessFailures: [],
+        diagnosticsByCacheMode: {},
+      } as unknown as benchmark.BenchmarkCheckpoint);
+
+      expect(await benchmark.loadBenchmarkCheckpoint(
+        options,
+        benchmark.buildBenchmarkExecutionContext(options, 'database-a'),
+      )).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('hashes PostgreSQL system identity without leaking raw database identifiers', async () => {
+    const queries: string[] = [];
+    const identity = await benchmark.collectBenchmarkDatabaseIdentity({
+      async query<T>(sql: string) {
+        queries.push(sql);
+        return { rows: [ {
+          system_identifier: '123456789012345678',
+          database_name: 'tenant_benchmark',
+        } as T ] };
+      },
+    });
+
+    expect(queries).toEqual([
+      'SELECT pg_control_system().system_identifier::text AS system_identifier, current_database() AS database_name',
+    ]);
+    expect(identity).toMatch(/^[a-f0-9]{64}$/u);
+    expect(identity).not.toContain('123456789012345678');
+    expect(identity).not.toContain('tenant_benchmark');
+  });
+
+  it('fails closed when PostgreSQL system identity is unavailable', async () => {
+    await expect(benchmark.collectBenchmarkDatabaseIdentity({
+      async query() {
+        throw new Error('permission denied for function pg_control_system');
+      },
+    })).rejects.toThrow('pg_control_system');
   });
 
   it('documents the safe CLI without accepting a connection URL argument', () => {
@@ -157,7 +404,12 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
   it('reads external database configuration only from the dedicated environment key', () => {
     const url = 'postgres://user:secret@example.test/tenant_benchmark';
     const parsed = benchmark.parseArgs(
-      [ '--mode=external', '--targetQuads=2000000' ],
+      [
+        '--mode=external',
+        '--executionLocation=cluster',
+        '--transport=direct',
+        '--targetQuads=2000000',
+      ],
       {
         XPOD_RDF_BENCHMARK_PG_URL: url,
         CONNECTION_STRING: 'postgres://admin:production@example.test/xpod',
@@ -165,7 +417,11 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     );
 
     expect(parsed.databaseName).toBe('tenant_benchmark');
-    expect(() => benchmark.parseArgs([ '--mode=external' ], {
+    expect(() => benchmark.parseArgs([
+      '--mode=external',
+      '--executionLocation=cluster',
+      '--transport=direct',
+    ], {
       CONNECTION_STRING: url,
     })).toThrow('XPOD_RDF_BENCHMARK_PG_URL');
     expect(() => benchmark.parseArgs([ `--connectionString=${url}` ], {}))
@@ -213,7 +469,12 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
 
   it('does not echo the external URL when CLI database validation fails', () => {
     const productionUrl = 'postgres://operator:top-secret@example.test/xpod';
-    const failed = runCli([ '--mode=external', '--dry-run' ], {
+    const failed = runCli([
+      '--mode=external',
+      '--executionLocation=cluster',
+      '--transport=direct',
+      '--dry-run',
+    ], {
       XPOD_RDF_BENCHMARK_PG_URL: productionUrl,
     });
 

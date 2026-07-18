@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -72,6 +72,8 @@ const RDF3X_PERMUTATION_SCAN_MARKERS: ReadonlySet<string> = new Set([
 ]);
 
 export type BenchmarkMode = 'local' | 'external';
+export type BenchmarkExecutionLocation = 'local' | 'cluster';
+export type BenchmarkTransport = 'direct' | 'port-forward';
 export type BenchmarkCacheMode = CloudReplacementCacheMode | 'both';
 export type BenchmarkConcurrency = 1 | 8 | 32;
 
@@ -89,7 +91,18 @@ export interface BenchmarkCliOptions {
   dryRun: boolean;
   help: boolean;
   databaseName: string;
+  executionLocation: BenchmarkExecutionLocation;
+  transport: BenchmarkTransport;
   benchmarkDatabaseUrl?: string;
+}
+
+export interface BenchmarkExecutionContext {
+  location: BenchmarkExecutionLocation;
+  transport: BenchmarkTransport;
+  databaseIdentity: string;
+  runnerIdentity: 'native-rdf3x-benchmark-v2';
+  engineCommit: string;
+  workloadIds: string[];
 }
 
 export interface BenchmarkLoadingPlan {
@@ -182,6 +195,10 @@ interface BenchmarkCleanupPool {
   connect(): Promise<BenchmarkCleanupClient>;
 }
 
+interface BenchmarkDatabaseIdentityClient {
+  query<T>(statement: string): Promise<{ rows: T[] }>;
+}
+
 export interface LocalPostgresProbeOptions {
   attempts?: number;
   delayMs?: number;
@@ -264,11 +281,12 @@ export interface BenchmarkReportSummaryInput {
 }
 
 export interface BenchmarkCheckpoint {
-  version: 1;
-  fingerprint: string;
+  version: 2;
+  latencyContextFingerprint: string;
+  concurrencyContextFingerprint: string;
   identityId: string;
   completedLatencyKeys: string[];
-  completedConcurrencyPhases: string[];
+  completedConcurrencyKeys: string[];
   latencyRecords: LatencyRecord[];
   concurrencyRecords: ConcurrencyRecord[];
   correctnessRecords: BenchmarkCorrectnessRecord[];
@@ -280,33 +298,76 @@ export function benchmarkCheckpointPath(out: string): string {
   return `${path.resolve(out)}.checkpoint.json`;
 }
 
-export function benchmarkCheckpointFingerprint(options: BenchmarkCliOptions): string {
+export function buildBenchmarkExecutionContext(
+  options: BenchmarkCliOptions,
+  databaseIdentity: string,
+): BenchmarkExecutionContext {
+  return {
+    location: options.executionLocation,
+    transport: options.transport,
+    databaseIdentity,
+    runnerIdentity: 'native-rdf3x-benchmark-v2',
+    engineCommit: currentCommit(),
+    workloadIds: cloudReplacementWorkloads().map(({ id }) => id),
+  };
+}
+
+export function benchmarkLatencyContextFingerprint(
+  options: BenchmarkCliOptions,
+  context: BenchmarkExecutionContext,
+): string {
   return JSON.stringify({
-    version: 1,
+    version: 2,
+    lane: 'latency',
+    context,
     mode: options.mode,
     targetQuads: options.targetQuads,
     iterations: options.iterations,
     warmupIterations: options.warmupIterations,
+    cacheModes: options.cacheModes,
+    operationTimeoutMs: options.operationTimeoutMs,
+    image: options.image,
+    databaseName: options.databaseName,
+  });
+}
+
+export function benchmarkConcurrencyContextFingerprint(
+  options: BenchmarkCliOptions,
+  context: BenchmarkExecutionContext,
+): string {
+  return JSON.stringify({
+    version: 2,
+    lane: 'concurrency',
+    context,
+    mode: options.mode,
+    targetQuads: options.targetQuads,
     concurrency: options.concurrency,
     cacheModes: options.cacheModes,
     operationTimeoutMs: options.operationTimeoutMs,
     image: options.image,
     databaseName: options.databaseName,
-    engineCommit: currentCommit(),
-    workloads: cloudReplacementWorkloads().map(({ id }) => id),
   });
+}
+
+export function benchmarkCheckpointFingerprint(options: BenchmarkCliOptions): string {
+  return benchmarkLatencyContextFingerprint(
+    options,
+    buildBenchmarkExecutionContext(options, 'legacy-unavailable'),
+  );
 }
 
 export function emptyBenchmarkCheckpoint(
   options: BenchmarkCliOptions,
+  context: BenchmarkExecutionContext,
   identityId: string,
 ): BenchmarkCheckpoint {
   return {
-    version: 1,
-    fingerprint: benchmarkCheckpointFingerprint(options),
+    version: 2,
+    latencyContextFingerprint: benchmarkLatencyContextFingerprint(options, context),
+    concurrencyContextFingerprint: benchmarkConcurrencyContextFingerprint(options, context),
     identityId,
     completedLatencyKeys: [],
-    completedConcurrencyPhases: [],
+    completedConcurrencyKeys: [],
     latencyRecords: [],
     concurrencyRecords: [],
     correctnessRecords: [],
@@ -317,15 +378,17 @@ export function emptyBenchmarkCheckpoint(
 
 export async function loadBenchmarkCheckpoint(
   options: BenchmarkCliOptions,
+  context: BenchmarkExecutionContext,
 ): Promise<BenchmarkCheckpoint | undefined> {
   try {
     const parsed = JSON.parse(await readFile(benchmarkCheckpointPath(options.out), 'utf8')) as
       Partial<BenchmarkCheckpoint>;
-    if (parsed.version !== 1 ||
-      parsed.fingerprint !== benchmarkCheckpointFingerprint(options) ||
+    if (parsed.version !== 2 ||
+      typeof parsed.latencyContextFingerprint !== 'string' ||
+      typeof parsed.concurrencyContextFingerprint !== 'string' ||
       typeof parsed.identityId !== 'string' ||
       !Array.isArray(parsed.completedLatencyKeys) ||
-      !Array.isArray(parsed.completedConcurrencyPhases) ||
+      !Array.isArray(parsed.completedConcurrencyKeys) ||
       !Array.isArray(parsed.latencyRecords) ||
       !Array.isArray(parsed.concurrencyRecords) ||
       !Array.isArray(parsed.correctnessRecords) ||
@@ -334,7 +397,31 @@ export async function loadBenchmarkCheckpoint(
       parsed.diagnosticsByCacheMode === null) {
       return undefined;
     }
-    return parsed as BenchmarkCheckpoint;
+    const expectedLatency = benchmarkLatencyContextFingerprint(options, context);
+    const expectedConcurrency = benchmarkConcurrencyContextFingerprint(options, context);
+    const latencyMatches = parsed.latencyContextFingerprint === expectedLatency;
+    const concurrencyMatches = parsed.concurrencyContextFingerprint === expectedConcurrency;
+    if (latencyMatches && concurrencyMatches) {
+      return parsed as BenchmarkCheckpoint;
+    }
+    return {
+      ...emptyBenchmarkCheckpoint(options, context, parsed.identityId),
+      ...(latencyMatches
+        ? {
+            completedLatencyKeys: parsed.completedLatencyKeys,
+            latencyRecords: parsed.latencyRecords,
+            correctnessRecords: parsed.correctnessRecords,
+            correctnessFailures: parsed.correctnessFailures,
+          }
+        : {}),
+      ...(concurrencyMatches
+        ? {
+            completedConcurrencyKeys: parsed.completedConcurrencyKeys,
+            concurrencyRecords: parsed.concurrencyRecords,
+            diagnosticsByCacheMode: parsed.diagnosticsByCacheMode,
+          }
+        : {}),
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) {
       return undefined;
@@ -357,6 +444,7 @@ export async function saveBenchmarkCheckpoint(
 export function compactBenchmarkCheckpoint(
   checkpoint: BenchmarkCheckpoint,
 ): BenchmarkCheckpoint {
+  type RecordWithOptionalCorrectness<T> = T & { correctness?: CloudReplacementCorrectness };
   const compactCorrectness = (
     correctness: CloudReplacementCorrectness,
   ): CloudReplacementCorrectness => ({
@@ -376,10 +464,15 @@ export function compactBenchmarkCheckpoint(
   });
   return {
     ...checkpoint,
-    latencyRecords: checkpoint.latencyRecords.map((record) => ({
-      ...record,
-      correctness: compactCorrectness(record.correctness),
-    })),
+    latencyRecords: checkpoint.latencyRecords.map((record) => {
+      const recordWithCorrectness = record as RecordWithOptionalCorrectness<LatencyRecord>;
+      return recordWithCorrectness.correctness
+        ? {
+            ...record,
+            correctness: compactCorrectness(recordWithCorrectness.correctness),
+          }
+        : record;
+    }),
     correctnessRecords: checkpoint.correctnessRecords.map((record) => ({
       ...record,
       correctness: compactCorrectness(record.correctness),
@@ -393,6 +486,8 @@ Cloud/PostgreSQL replacement evidence only; Local production keeps RDF3X.
 
 Options:
   --mode=local|external                  Database mode. Default: local
+  --executionLocation=local|cluster      Required in external mode
+  --transport=direct|port-forward        Required in external mode
   --targetQuads=N                       Minimum fact count. Default: 20000
   --iterations=20                       Timed latency samples per case
   --warmupIterations=3                  Warmup samples after the cold sample
@@ -418,6 +513,8 @@ export function parseArgs(
   let help = false;
   const valueOptions = new Set([
     'mode',
+    'executionLocation',
+    'transport',
     'targetQuads',
     'iterations',
     'warmupIterations',
@@ -449,6 +546,28 @@ export function parseArgs(
   }
 
   const mode = enumOption(values, 'mode', [ 'local', 'external' ], 'local');
+  let executionLocation: BenchmarkExecutionLocation = 'local';
+  let transport: BenchmarkTransport = 'direct';
+  if (mode === 'external' && !help) {
+    if (!values.has('executionLocation')) {
+      throw new Error('External mode requires --executionLocation');
+    }
+    if (!values.has('transport')) {
+      throw new Error('External mode requires --transport');
+    }
+    executionLocation = enumOption(
+      values,
+      'executionLocation',
+      [ 'local', 'cluster' ],
+      'local',
+    );
+    transport = enumOption(
+      values,
+      'transport',
+      [ 'direct', 'port-forward' ],
+      'direct',
+    );
+  }
   const targetQuads = positiveIntegerOption(values, 'targetQuads', DEFAULT_TARGET_QUADS);
   const iterations = positiveIntegerOption(values, 'iterations', DEFAULT_ITERATIONS);
   const warmupIterations = nonNegativeIntegerOption(
@@ -502,6 +621,8 @@ export function parseArgs(
     dryRun,
     help,
     databaseName,
+    executionLocation,
+    transport,
     ...(benchmarkDatabaseUrl ? { benchmarkDatabaseUrl } : {}),
   };
 }
@@ -550,6 +671,33 @@ export function buildExternalBenchmarkConnectionString(connectionUrl: string): s
 
 export function buildLocalBenchmarkConnectionString(connectionUrl: string): string {
   return connectionUrl;
+}
+
+export async function collectBenchmarkDatabaseIdentity(
+  client: BenchmarkDatabaseIdentityClient,
+): Promise<string> {
+  let result: { rows: Array<{ system_identifier?: unknown; database_name?: unknown }> };
+  try {
+    result = await client.query(
+      'SELECT pg_control_system().system_identifier::text AS system_identifier, current_database() AS database_name',
+    );
+  } catch (error) {
+    throw new Error(
+      `Unable to collect PostgreSQL database identity from pg_control_system(): ${errorMessage(error)}`,
+    );
+  }
+  const row = result.rows[0];
+  if (typeof row?.system_identifier !== 'string' ||
+    row.system_identifier.length === 0 ||
+    typeof row.database_name !== 'string' ||
+    row.database_name.length === 0) {
+    throw new Error('Unable to collect PostgreSQL database identity from pg_control_system()');
+  }
+  return createHash('sha256')
+    .update(row.system_identifier)
+    .update('\0')
+    .update(row.database_name)
+    .digest('hex');
 }
 
 export function buildBenchmarkLoadingPlan(
@@ -1486,8 +1634,11 @@ async function collectBenchmarkReport(
 ): Promise<Record<string, unknown>> {
   const workloads = cloudReplacementWorkloads();
   const workloadById = new Map(workloads.map((workload) => [ workload.id, workload ]));
-  const checkpoint = await loadBenchmarkCheckpoint(options) ?? emptyBenchmarkCheckpoint(
+  const databaseIdentity = await collectBenchmarkDatabaseIdentity(pool);
+  const context = buildBenchmarkExecutionContext(options, databaseIdentity);
+  const checkpoint = await loadBenchmarkCheckpoint(options, context) ?? emptyBenchmarkCheckpoint(
     options,
+    context,
     `run-${process.pid}-${randomUUID()}`,
   );
   const identitySource = createCloudReplacementSampleIdentitySource(
@@ -1502,7 +1653,7 @@ async function collectBenchmarkReport(
   const correctnessFailures = [ ...checkpoint.correctnessFailures ];
   const diagnosticsByCacheMode = { ...checkpoint.diagnosticsByCacheMode };
   const completedLatencyKeys = new Set(checkpoint.completedLatencyKeys);
-  const completedConcurrencyPhases = new Set(checkpoint.completedConcurrencyPhases);
+  const completedConcurrencyKeys = new Set(checkpoint.completedConcurrencyKeys);
   let orderIndex = 0;
 
   const buildPair = await openAdapterPair(
@@ -1573,7 +1724,7 @@ async function collectBenchmarkReport(
       };
       for (const engineId of [ 'rdf3x', 'qlever' ] as const) {
         const phaseKey = `${cacheMode}:${engineId}`;
-        if (completedConcurrencyPhases.has(phaseKey)) {
+        if (completedConcurrencyKeys.has(phaseKey)) {
           process.stderr.write(`[benchmark] resume concurrency ${phaseKey}\n`);
           continue;
         }
@@ -1610,8 +1761,8 @@ async function collectBenchmarkReport(
         concurrencyRecords.push(...phase.result);
         modeDiagnostics[engineId] = phase.diagnostics;
         diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
-        completedConcurrencyPhases.add(phaseKey);
-        checkpoint.completedConcurrencyPhases = [ ...completedConcurrencyPhases ];
+        completedConcurrencyKeys.add(phaseKey);
+        checkpoint.completedConcurrencyKeys = [ ...completedConcurrencyKeys ];
         checkpoint.concurrencyRecords = concurrencyRecords;
         checkpoint.diagnosticsByCacheMode = diagnosticsByCacheMode;
         await saveBenchmarkCheckpoint(options, checkpoint);
