@@ -263,6 +263,10 @@ function deferred<T = void>(): {
   return { promise, resolve };
 }
 
+function cloudReplacementConnectionError(message = 'connect ECONNREFUSED 10.0.0.1:5432'): Error {
+  return Object.assign(new Error(message), { code: 'ECONNREFUSED' });
+}
+
 describe('cloud replacement benchmark', () => {
   it('alternates engine order and reports cache-labelled latency percentiles', async () => {
     const order: string[] = [];
@@ -464,6 +468,8 @@ describe('cloud replacement benchmark', () => {
       operationTimeoutMs: 1_000,
       now: () => attempts,
       wallNow: () => seenAt[Math.max(attempts - 1, 0)] ?? seenAt[0]!,
+      sleep: async () => {},
+      maxConsecutiveConnectionErrors: 10,
     });
 
     expect(result.infrastructureErrors).toBe(5);
@@ -1263,6 +1269,156 @@ describe('cloud replacement benchmark', () => {
     expect(result).toMatchObject({ completed: 3, errors: 2, throughputPerSecond: 60 });
     expect(result.infrastructureErrors).toBe(0);
     expect(result.errorEvidence.counts.engine).toBe(2);
+  });
+
+  it('stops a single disconnected worker at the shared connection-error threshold', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute() {
+        attempts += 1;
+        throw cloudReplacementConnectionError();
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 1,
+      durationMs: 100,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => attempts,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      connectionBackoffMs: 100,
+      maxConsecutiveConnectionErrors: 3,
+    });
+
+    expect(result).toMatchObject({
+      completed: 0,
+      errors: 0,
+      infrastructureErrors: 3,
+      infrastructureFailure: true,
+    });
+    expect(sleeps).toEqual([ 100, 100 ]);
+    expect(attempts).toBe(3);
+  });
+
+  it('resets the shared connection-error streak after successful work', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const base = fakeAdapter('rdf3x', [ 's=NamedNode:urn:s:1' ]);
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute(workload, sampleIdentity) {
+        attempts += 1;
+        if (attempts === 1 || attempts === 3) {
+          throw cloudReplacementConnectionError();
+        }
+        return base.execute(workload, sampleIdentity);
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 1,
+      durationMs: 4,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => attempts,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      connectionBackoffMs: 25,
+      maxConsecutiveConnectionErrors: 2,
+    });
+
+    expect(result.completed).toBe(2);
+    expect(result.errors).toBe(0);
+    expect(result.infrastructureErrors).toBe(2);
+    expect(result.infrastructureFailure).toBe(false);
+    expect(sleeps).toEqual([ 25, 25 ]);
+  });
+
+  it('does not back off or trip infrastructure failure for ordinary engine errors', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute() {
+        attempts += 1;
+        throw new Error(`engine failure ${attempts}`);
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 1,
+      durationMs: 5,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => attempts,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      connectionBackoffMs: 100,
+      maxConsecutiveConnectionErrors: 3,
+    });
+
+    expect(attempts).toBe(5);
+    expect(result.errors).toBe(5);
+    expect(result.infrastructureErrors).toBe(0);
+    expect(result.infrastructureFailure).toBe(false);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('shares the disconnected breaker across concurrent workers without flooding attempts', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
+      id: 'rdf3x',
+      async execute() {
+        attempts += 1;
+        throw cloudReplacementConnectionError();
+      },
+    };
+
+    const result = await measureCloudReplacementConcurrency(pointCase, adapter, {
+      concurrency: 8,
+      durationMs: 1_000,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => attempts,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      connectionBackoffMs: 100,
+      maxConsecutiveConnectionErrors: 3,
+    });
+
+    expect(result.completed).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(result.infrastructureFailure).toBe(true);
+    expect(result.infrastructureErrors).toBeGreaterThanOrEqual(3);
+    expect(result.infrastructureErrors).toBeLessThanOrEqual(10);
+    expect(attempts).toBe(result.infrastructureErrors);
+    expect(sleeps.length).toBeLessThanOrEqual(2);
+  });
+
+  it.each([
+    [ 'negative backoff', { connectionBackoffMs: -1 }, 'connectionBackoffMs must be finite and non-negative' ],
+    [ 'infinite backoff', { connectionBackoffMs: Number.POSITIVE_INFINITY }, 'connectionBackoffMs must be finite and non-negative' ],
+    [ 'zero threshold', { maxConsecutiveConnectionErrors: 0 }, 'maxConsecutiveConnectionErrors must be a finite positive integer' ],
+    [ 'fractional threshold', { maxConsecutiveConnectionErrors: 1.5 }, 'maxConsecutiveConnectionErrors must be a finite positive integer' ],
+    [ 'infinite threshold', { maxConsecutiveConnectionErrors: Number.POSITIVE_INFINITY }, 'maxConsecutiveConnectionErrors must be a finite positive integer' ],
+  ] as const)('rejects invalid connection breaker option: %s', async (_name, invalid, message) => {
+    await expect(measureCloudReplacementConcurrency(pointCase, fakeAdapter('rdf3x', []), {
+      concurrency: 1,
+      durationMs: 1,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => 0,
+      ...invalid,
+    })).rejects.toThrow(message);
   });
 
   it.each([ 'unsupported', '' ])(

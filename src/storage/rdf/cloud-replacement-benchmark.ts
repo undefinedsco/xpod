@@ -628,6 +628,9 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
     operationTimeoutMs: number;
     now?: () => number;
     wallNow?: () => Date;
+    sleep?: (ms: number) => Promise<void>;
+    connectionBackoffMs?: number;
+    maxConsecutiveConnectionErrors?: number;
   } & CloudReplacementCacheMeasurementOptions,
 ): Promise<CloudReplacementConcurrency> {
   const { cacheMode, concurrency, durationMs } = options;
@@ -636,6 +639,19 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
   }
   const operationTimeoutMs = cloudReplacementOperationTimeout(options.operationTimeoutMs);
   const identitySource = cloudReplacementIdentitySource(cacheMode, options.identitySource);
+  const sleep = options.sleep ?? cloudReplacementSleep;
+  const connectionBackoffMs = options.connectionBackoffMs ?? 100;
+  const maxConsecutiveConnectionErrors = options.maxConsecutiveConnectionErrors ?? 3;
+  if (!Number.isFinite(connectionBackoffMs) || connectionBackoffMs < 0) {
+    throw new Error('Cloud replacement connectionBackoffMs must be finite and non-negative');
+  }
+  if (!Number.isFinite(maxConsecutiveConnectionErrors) ||
+    !Number.isInteger(maxConsecutiveConnectionErrors) ||
+    maxConsecutiveConnectionErrors <= 0) {
+    throw new Error(
+      'Cloud replacement maxConsecutiveConnectionErrors must be a finite positive integer',
+    );
+  }
   if (![ 1, 8, 32 ].includes(concurrency)) {
     throw new Error(`Cloud replacement concurrency must be 1, 8, or 32; received ${concurrency}`);
   }
@@ -663,6 +679,8 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
   let completed = 0;
   let errors = 0;
   let infrastructureErrors = 0;
+  let consecutiveConnectionErrors = 0;
+  let infrastructureFailure = false;
   const errorEvidence = emptyCloudReplacementErrorEvidence();
   const evidenceContext = {
     workloadId: workload.id,
@@ -672,7 +690,7 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
   };
 
   const worker = async (): Promise<void> => {
-    while (now() < deadline) {
+    while (!infrastructureFailure && now() < deadline) {
       const sampleIdentity = identitySource?.next(adapter.id);
       try {
         const execution = await executeCloudReplacementWithTimeout(
@@ -683,8 +701,10 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
         );
         if (execution.fallbackReason === null) {
           completed += 1;
+          consecutiveConnectionErrors = 0;
         } else {
           errors += 1;
+          consecutiveConnectionErrors = 0;
           recordCloudReplacementErrorEvidence(
             errorEvidence,
             {
@@ -701,14 +721,23 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
         const classification = classifyCloudReplacementBenchmarkError(error);
         if (classification.category === 'connection') {
           infrastructureErrors += 1;
+          consecutiveConnectionErrors += 1;
         } else {
           errors += 1;
+          consecutiveConnectionErrors = 0;
         }
         recordCloudReplacementErrorEvidence(
           errorEvidence,
           classification,
           { ...evidenceContext, seenAt: wallNow().toISOString() },
         );
+        if (classification.category === 'connection') {
+          if (consecutiveConnectionErrors >= maxConsecutiveConnectionErrors) {
+            infrastructureFailure = true;
+          } else if (!infrastructureFailure) {
+            await sleep(connectionBackoffMs);
+          }
+        }
       }
     }
   };
@@ -723,10 +752,16 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
     completed,
     errors,
     infrastructureErrors,
-    infrastructureFailure: false,
+    infrastructureFailure,
     errorEvidence,
     throughputPerSecond: completed / (elapsedMs / 1_000),
   };
+}
+
+function cloudReplacementSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function emptyCloudReplacementErrorEvidence(): CloudReplacementErrorEvidence {
