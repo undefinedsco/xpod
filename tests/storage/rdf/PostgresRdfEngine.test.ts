@@ -1144,6 +1144,51 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('orders numerically constrained RDF-3X join variables by numeric value', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-numeric-order-'));
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const engine = new PostgresRdfEngine({
+      driver: 'pglite',
+      dataDir,
+      queryResultCacheEnabled: false,
+    });
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(namedNode(`${graph.value}#msg_2`), namedNode(PRIORITY), literal('2', namedNode(XSD_INTEGER)), graph),
+        quad(namedNode(`${graph.value}#msg_10`), namedNode(PRIORITY), literal('10', namedNode(XSD_INTEGER)), graph),
+        quad(namedNode(`${graph.value}#msg_100`), namedNode(PRIORITY), literal('100', namedNode(XSD_INTEGER)), graph),
+      ]);
+
+      const result = await engine.query({
+        patterns: [{
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(PRIORITY),
+          object: { variable: 'priority' },
+        }],
+        filters: [{
+          variable: 'priority',
+          operator: '$gt',
+          value: literal('1', namedNode(XSD_INTEGER)),
+        }],
+        select: ['message', 'priority'],
+        orderBy: [{ variable: 'priority', direction: 'asc' }],
+        limit: 3,
+        cache: { mode: 'bypass' },
+      });
+
+      expect(result.bindings.map((binding) => binding.priority.value)).toEqual(['2', '10', '100']);
+      expect(result.metrics.plan).toContain('NumericRange(object$gt)');
+      expect(result.metrics.plan).toContain('Rdf3xJoinOrderBy(asc:priority)');
+      expect(result.metrics.plan).not.toContain('PostgresFactsQuery');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('caches PostgreSQL query results by facts data version and invalidates on writes', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-'));
     const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');

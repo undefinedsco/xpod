@@ -8095,7 +8095,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ];
     const builder = new PgSqlBuilder(nativeParams);
     const orderClause = usesOrderPage && !usesOrderPageTopN
-      ? this.buildJoinOrderClause(orderBy, new Map(project.map((variableName, index) => [variableName, `ordered.v${index}`])))
+      ? this.buildJoinOrderClause(
+        orderBy,
+        new Map(project.map((variableName, index) => [variableName, `ordered.v${index}`])),
+        this.numericJoinVariables(patterns),
+      )
       : { joins: '', orderBy: '' };
     const pagination = usesOrderPage && !usesOrderPageTopN ? this.buildPagination(query, builder) : { sql: '', paramCount: 0 };
     const sql = usesOrderPage && !usesOrderPageTopN
@@ -9302,7 +9306,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const valuesJoins = this.buildPgValuesJoins(options?.values ?? [], variableColumns, builder);
     queryPlan.push(...valuesJoins.queryPlan);
     const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
-    const orderClause = this.buildJoinOrderClause(options?.orderBy, variableColumns);
+    const orderClause = this.buildJoinOrderClause(
+      options?.orderBy,
+      variableColumns,
+      this.numericJoinVariables(patterns),
+    );
     const pagination = this.buildPagination(options, builder);
     const from = `${joins.join('')}${valuesJoins.joins}`;
     const countSql = pagination.sql && options?.countMatchedRows !== false
@@ -9720,6 +9728,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private buildJoinOrderClause(
     orderBy: RdfQuery['orderBy'] | undefined,
     variableColumns: Map<string, string>,
+    numericVariables: ReadonlySet<string>,
   ): { joins: string; orderBy: string } {
     if (!orderBy || orderBy.length === 0) return { joins: '', orderBy: '' };
     const joins: string[] = [];
@@ -9729,9 +9738,24 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!column) throw new Error(`Postgres RDF-3X join cannot order by unbound variable: ${entry.variable}`);
       const alias = `join_order_t${index}`;
       joins.push(` JOIN rdf_terms ${alias} ON ${alias}.id = ${column}`);
-      orders.push(`${alias}.value ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`);
+      const orderColumn = numericVariables.has(entry.variable) ? 'numeric_value' : 'value';
+      orders.push(`${alias}.${orderColumn} ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`);
     }
     return { joins: joins.join(''), orderBy: ` ORDER BY ${orders.join(', ')}` };
+  }
+
+  private numericJoinVariables(patterns: PgCompiledJoinPattern[]): ReadonlySet<string> {
+    const variables = new Set<string>();
+    for (const pattern of patterns) {
+      const variable = pattern.variables.object;
+      const object = pattern.pattern.object;
+      if (!variable || !object || isTerm(object as any)) continue;
+      const operators = object as TermOperators;
+      if (operators.$termType === 'numeric' || this.resolveObjectRange(operators)?.mode === 'numeric') {
+        variables.add(variable);
+      }
+    }
+    return variables;
   }
 
   private buildPagination(
