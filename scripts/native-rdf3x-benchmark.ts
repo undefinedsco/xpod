@@ -36,6 +36,9 @@ import {
   type CloudReplacementCorrectness,
   type CloudReplacementEngineAdapter,
   type CloudReplacementEngineId,
+  type CloudReplacementErrorCategory,
+  type CloudReplacementErrorEvidence,
+  type CloudReplacementErrorSample,
   type CloudReplacementErrorStage,
   type CloudReplacementExecution,
   type CloudReplacementLatency,
@@ -144,7 +147,7 @@ export interface BenchmarkAdapterOptions {
 }
 
 export class BenchmarkEngineExecutionError extends Error {
-  public readonly cause: unknown;
+  public override readonly cause: unknown;
 
   public constructor(
     public readonly engine: CloudReplacementEngineId,
@@ -417,7 +420,9 @@ export async function loadBenchmarkCheckpoint(
     const expectedConcurrency = benchmarkConcurrencyContextFingerprint(options, context);
     const latencyMatches = parsed.latencyContextFingerprint === expectedLatency;
     const concurrencyMatches = parsed.concurrencyContextFingerprint === expectedConcurrency;
-    if (latencyMatches && concurrencyMatches) {
+    const validConcurrencyRecords = concurrencyMatches &&
+      parsed.concurrencyRecords.every(isBenchmarkConcurrencyRecord);
+    if (latencyMatches && validConcurrencyRecords) {
       return parsed as BenchmarkCheckpoint;
     }
     return {
@@ -430,7 +435,7 @@ export async function loadBenchmarkCheckpoint(
             correctnessFailures: parsed.correctnessFailures,
           }
         : {}),
-      ...(concurrencyMatches
+      ...(validConcurrencyRecords
         ? {
             completedConcurrencyKeys: parsed.completedConcurrencyKeys,
             concurrencyRecords: parsed.concurrencyRecords,
@@ -444,6 +449,111 @@ export async function loadBenchmarkCheckpoint(
     }
     throw error;
   }
+}
+
+function isBenchmarkConcurrencyRecord(value: unknown): value is ConcurrencyRecord {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Partial<ConcurrencyRecord>;
+  return isBenchmarkCacheMode(record.cacheMode) &&
+    typeof record.caseId === 'string' &&
+    record.caseId.length > 0 &&
+    isBenchmarkEngineId(record.engine) &&
+    isBenchmarkConcurrency(record.concurrency) &&
+    isFiniteNonNegativeNumber(record.durationMs) &&
+    isFiniteNonNegativeInteger(record.completed) &&
+    isFiniteNonNegativeInteger(record.errors) &&
+    isFiniteNonNegativeInteger(record.infrastructureErrors) &&
+    typeof record.infrastructureFailure === 'boolean' &&
+    isBenchmarkErrorEvidence(record.errorEvidence) &&
+    isFiniteNonNegativeNumber(record.elapsedMs) &&
+    isFiniteNonNegativeNumber(record.throughputPerSecond);
+}
+
+function isBenchmarkCacheMode(value: unknown): value is CloudReplacementCacheMode {
+  return value === 'off' || value === 'production';
+}
+
+function isBenchmarkEngineId(value: unknown): value is CloudReplacementEngineId {
+  return value === 'rdf3x' || value === 'qlever';
+}
+
+function isBenchmarkConcurrency(value: unknown): value is BenchmarkConcurrency {
+  return value === 1 || value === 8 || value === 32;
+}
+
+function isBenchmarkErrorEvidence(value: unknown): value is CloudReplacementErrorEvidence {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const evidence = value as Partial<CloudReplacementErrorEvidence>;
+  if (!evidence.counts || typeof evidence.counts !== 'object' ||
+    Array.isArray(evidence.counts) || !Array.isArray(evidence.samples)) {
+    return false;
+  }
+  const categories: CloudReplacementErrorCategory[] = [
+    'timeout',
+    'connection',
+    'cancelled',
+    'engine',
+    'correctness',
+    'unknown',
+  ];
+  const countEntries = Object.keys(evidence.counts);
+  return countEntries.length === categories.length &&
+    countEntries.every((key) => categories.includes(key as CloudReplacementErrorCategory)) &&
+    categories.every((category) =>
+      isFiniteNonNegativeInteger((evidence.counts as Record<string, unknown>)[category])) &&
+    evidence.samples.every(isBenchmarkErrorSample);
+}
+
+function isBenchmarkErrorSample(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const sample = value as Partial<CloudReplacementErrorSample>;
+  return isBenchmarkErrorCategory(sample.category) &&
+    isBenchmarkErrorStage(sample.stage) &&
+    typeof sample.name === 'string' &&
+    sample.name.length > 0 &&
+    (sample.code === null || typeof sample.code === 'string') &&
+    typeof sample.message === 'string' &&
+    sample.message.length > 0 &&
+    isIsoTimestamp(sample.firstSeenAt) &&
+    isIsoTimestamp(sample.lastSeenAt) &&
+    isFiniteNonNegativeInteger(sample.count) &&
+    typeof sample.workloadId === 'string' &&
+    sample.workloadId.length > 0 &&
+    isBenchmarkEngineId(sample.engine) &&
+    isBenchmarkCacheMode(sample.cacheMode) &&
+    isBenchmarkConcurrency(sample.concurrency);
+}
+
+function isBenchmarkErrorCategory(value: unknown): value is CloudReplacementErrorCategory {
+  return value === 'timeout' || value === 'connection' || value === 'cancelled' ||
+    value === 'engine' || value === 'correctness' || value === 'unknown';
+}
+
+function isBenchmarkErrorStage(value: unknown): value is CloudReplacementErrorStage {
+  return value === 'acquire' || value === 'query' || value === 'materialize' ||
+    value === 'cancel' || value === 'cleanup';
+}
+
+function isFiniteNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
 }
 
 export async function saveBenchmarkCheckpoint(

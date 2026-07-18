@@ -384,6 +384,8 @@ function sanitizeCloudReplacementErrorMessage(message: string): string {
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/gu, '[redacted-endpoint]')
     .replace(/\[[0-9a-f:]+\]:\d+/giu, '[redacted-endpoint]')
     .replace(/\b[0-9a-f]{0,4}:[0-9a-f:]*:[0-9a-f:]*\b/giu, '[redacted-endpoint]')
+    .replace(/\b(?:connect\s+\S+\s+|getaddrinfo\s+\S+\s+)([a-z0-9][a-z0-9.-]*\.[a-z]{2,})(?::\d+)?\b/giu,
+      (match) => match.replace(/[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?::\d+)?/iu, '[redacted-endpoint]'))
     .replace(/\s+/gu, ' ')
     .trim()
     .slice(0, 240);

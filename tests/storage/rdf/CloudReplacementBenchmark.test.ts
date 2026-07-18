@@ -524,6 +524,23 @@ describe('cloud replacement benchmark', () => {
     expect(classified.message).toContain('[redacted-host]');
   });
 
+  it('redacts DNS endpoint-looking hostnames while preserving diagnostic error codes', () => {
+    for (const error of [
+      Object.assign(new Error('connect ECONNREFUSED db.internal.example:5432'), {
+        code: 'ECONNREFUSED',
+      }),
+      Object.assign(new Error('getaddrinfo ENOTFOUND db.internal.example'), {
+        code: 'ENOTFOUND',
+      }),
+    ]) {
+      const classified = classifyCloudReplacementBenchmarkError(error);
+
+      expect(classified.code).toBe((error as { code: string }).code);
+      expect(classified.message).not.toMatch(/db\.internal\.example|5432/u);
+      expect(classified.message).toContain('[redacted-endpoint]');
+    }
+  });
+
   it('keeps the measurement contracts exact and fixes adapter positions', () => {
     expectTypeOf<CloudReplacementLatency>().toEqualTypeOf<{
       cacheMode: CloudReplacementCacheMode;

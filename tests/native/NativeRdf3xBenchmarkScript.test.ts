@@ -14,6 +14,8 @@ import {
 import {
   buildCloudReplacementTopology,
   type CloudReplacementEngineAdapter,
+  type CloudReplacementEngineId,
+  type CloudReplacementErrorEvidence,
   type CloudReplacementPgDiagnostics,
   type CloudReplacementWorkload,
 } from '../../src/storage/rdf/cloud-replacement-benchmark';
@@ -78,6 +80,42 @@ function latency(cacheMode: 'off' | 'production', p95Ms: number) {
     p50Ms: p95Ms,
     p95Ms,
     p99Ms: p95Ms,
+  };
+}
+
+function emptyErrorEvidence(): CloudReplacementErrorEvidence {
+  return {
+    counts: {
+      timeout: 0,
+      connection: 0,
+      cancelled: 0,
+      engine: 0,
+      correctness: 0,
+      unknown: 0,
+    },
+    samples: [],
+  };
+}
+
+function concurrencyRecord(
+  overrides: Partial<benchmark.ConcurrencyRecord> & {
+    cacheMode: 'off' | 'production';
+    engine: CloudReplacementEngineId;
+  },
+): benchmark.ConcurrencyRecord {
+  return {
+    cacheMode: overrides.cacheMode,
+    caseId: overrides.caseId ?? workload.id,
+    engine: overrides.engine,
+    concurrency: overrides.concurrency ?? 1,
+    durationMs: overrides.durationMs ?? 60_000,
+    completed: overrides.completed ?? 1,
+    errors: overrides.errors ?? 0,
+    infrastructureErrors: overrides.infrastructureErrors ?? 0,
+    infrastructureFailure: overrides.infrastructureFailure ?? false,
+    errorEvidence: overrides.errorEvidence ?? emptyErrorEvidence(),
+    elapsedMs: overrides.elapsedMs ?? 1_000,
+    throughputPerSecond: overrides.throughputPerSecond ?? 1,
   };
 }
 
@@ -177,17 +215,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       const checkpoint = benchmark.emptyBenchmarkCheckpoint(direct, directContext, 'identity-a');
       checkpoint.completedLatencyKeys.push('off:case-a');
       checkpoint.completedConcurrencyKeys.push('off:rdf3x');
-      checkpoint.concurrencyRecords.push({
-        cacheMode: 'off',
-        caseId: 'case-a',
-        engine: 'rdf3x',
-        concurrency: 1,
-        durationMs: 60_000,
-        completed: 1,
-        errors: 0,
-        elapsedMs: 1_000,
-        throughputPerSecond: 1,
-      });
+      checkpoint.concurrencyRecords.push(concurrencyRecord({ cacheMode: 'off', engine: 'rdf3x' }));
       await benchmark.saveBenchmarkCheckpoint(direct, checkpoint);
 
       const loaded = await benchmark.loadBenchmarkCheckpoint(
@@ -224,17 +252,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         qlever: latency('off', 8),
         ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 },
       });
-      checkpoint.concurrencyRecords.push({
-        cacheMode: 'off',
-        caseId: 'case-a',
-        engine: 'rdf3x',
-        concurrency: 1,
-        durationMs: 60_000,
-        completed: 1,
-        errors: 0,
-        elapsedMs: 1_000,
-        throughputPerSecond: 1,
-      });
+      checkpoint.concurrencyRecords.push(concurrencyRecord({ cacheMode: 'off', engine: 'rdf3x' }));
       await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
 
       const loaded = await benchmark.loadBenchmarkCheckpoint(
@@ -275,17 +293,13 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         qlever: latency('off', 8),
         ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 },
       });
-      checkpoint.concurrencyRecords.push({
+      checkpoint.concurrencyRecords.push(concurrencyRecord({
         cacheMode: 'off',
-        caseId: 'case-a',
         engine: 'rdf3x',
         concurrency: 8,
-        durationMs: 60_000,
         completed: 8,
-        errors: 0,
-        elapsedMs: 1_000,
         throughputPerSecond: 8,
-      });
+      }));
       await benchmark.saveBenchmarkCheckpoint(base, checkpoint);
 
       const loaded = await benchmark.loadBenchmarkCheckpoint(
@@ -297,6 +311,80 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       expect(loaded?.latencyRecords).toHaveLength(1);
       expect(loaded?.completedConcurrencyKeys).toEqual([]);
       expect(loaded?.concurrencyRecords).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps matching latency evidence but drops stale v2 concurrency records missing error evidence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-v2-stale-concurrency-'));
+    try {
+      const options = benchmark.parseArgs([
+        '--mode=local',
+        '--concurrency=1,8',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      const context = benchmark.buildBenchmarkExecutionContext(options, 'database-a');
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(options, context, 'identity-a');
+      checkpoint.completedLatencyKeys.push('off:case-a');
+      checkpoint.completedConcurrencyKeys.push('off:rdf3x');
+      checkpoint.latencyRecords.push({
+        cacheMode: 'off',
+        workload,
+        rdf3x: latency('off', 10),
+        qlever: latency('off', 8),
+        ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 },
+      });
+      checkpoint.correctnessRecords.push({
+        cacheMode: 'off',
+        caseId: workload.id,
+        correctness: {
+          correct: true,
+          sameMultiset: true,
+          sameOrder: true,
+          failures: [],
+          rdf3x: {
+            rows: [],
+            orderedDigest: '[]',
+            multisetDigest: '[]',
+            fallbackReason: null,
+            physicalPlan: [],
+            queryElapsedMs: null,
+          },
+          qlever: {
+            rows: [],
+            orderedDigest: '[]',
+            multisetDigest: '[]',
+            fallbackReason: null,
+            physicalPlan: [],
+            queryElapsedMs: null,
+          },
+        },
+      });
+      checkpoint.correctnessFailures.push('off:case-a:existing-failure');
+      checkpoint.concurrencyRecords.push({
+        cacheMode: 'off',
+        caseId: 'case-a',
+        engine: 'rdf3x',
+        concurrency: 8,
+        durationMs: 60_000,
+        completed: 8,
+        errors: 0,
+        elapsedMs: 1_000,
+        throughputPerSecond: 8,
+      } as unknown as benchmark.ConcurrencyRecord);
+      checkpoint.diagnosticsByCacheMode = { off: { rdf3x: diagnostics(1), qlever: diagnostics(2) } };
+      await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
+
+      const loaded = await benchmark.loadBenchmarkCheckpoint(options, context);
+
+      expect(loaded?.completedLatencyKeys).toEqual([ 'off:case-a' ]);
+      expect(loaded?.latencyRecords).toHaveLength(1);
+      expect(loaded?.correctnessRecords).toHaveLength(1);
+      expect(loaded?.correctnessFailures).toEqual([ 'off:case-a:existing-failure' ]);
+      expect(loaded?.completedConcurrencyKeys).toEqual([]);
+      expect(loaded?.concurrencyRecords).toEqual([]);
+      expect(loaded?.diagnosticsByCacheMode).toEqual({});
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1370,10 +1458,10 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         { cacheMode: 'production', workload: authorizationWorkload, rdf3x: latency('production', 10), qlever: latency('production', 10), ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 } },
       ],
       concurrencyRecords: [
-        { cacheMode: 'off', caseId: workload.id, engine: 'rdf3x', concurrency: 1, durationMs: 60_000, completed: 50, errors: 1, elapsedMs: 1_000, throughputPerSecond: 50 },
-        { cacheMode: 'off', caseId: workload.id, engine: 'qlever', concurrency: 1, durationMs: 60_000, completed: 75, errors: 2, elapsedMs: 1_000, throughputPerSecond: 75 },
-        { cacheMode: 'production', caseId: workload.id, engine: 'rdf3x', concurrency: 1, durationMs: 60_000, completed: 100, errors: 3, elapsedMs: 1_000, throughputPerSecond: 100 },
-        { cacheMode: 'production', caseId: workload.id, engine: 'qlever', concurrency: 1, durationMs: 60_000, completed: 200, errors: 4, elapsedMs: 1_000, throughputPerSecond: 200 },
+        concurrencyRecord({ cacheMode: 'off', engine: 'rdf3x', completed: 50, errors: 1, throughputPerSecond: 50 }),
+        concurrencyRecord({ cacheMode: 'off', engine: 'qlever', completed: 75, errors: 2, throughputPerSecond: 75 }),
+        concurrencyRecord({ cacheMode: 'production', engine: 'rdf3x', completed: 100, errors: 3, throughputPerSecond: 100 }),
+        concurrencyRecord({ cacheMode: 'production', engine: 'qlever', completed: 200, errors: 4, throughputPerSecond: 200 }),
       ],
       correctnessRecords: [
         { cacheMode: 'off', caseId: workload.id, correctness: failedOffCorrectness },
