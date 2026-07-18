@@ -2273,7 +2273,6 @@ describe('cloud replacement benchmark', () => {
 
   const minimalCloudReplacementReport = (): CloudReplacementReport => ({
     environment: {
-      database: 'xpod_benchmark',
       postgresVersion: '17.5',
       engineCommit: 'abc123',
     },
@@ -2493,7 +2492,7 @@ describe('cloud replacement benchmark', () => {
     )).toThrow('throughput ratio must be finite and non-negative');
   });
 
-  it('redacts connection URLs and correctly decodes the database identity', () => {
+  it('redacts connection URLs without exposing the raw database name', () => {
     const sanitized = sanitizeCloudReplacementEnvironment({
       connectionString: 'postgres://user:secret@db.example/xpod%20benchmark?sslmode=require#private',
       postgresVersion: '17.5',
@@ -2501,12 +2500,13 @@ describe('cloud replacement benchmark', () => {
     });
 
     expect(sanitized).toEqual({
-      database: 'xpod benchmark',
       postgresVersion: '17.5',
       engineCommit: 'abc123',
     });
-    expect(JSON.stringify(sanitized)).not.toMatch(/secret|db\.example|user|sslmode|private/u);
-    expect(Object.keys(sanitized).sort()).toEqual([ 'database', 'engineCommit', 'postgresVersion' ]);
+    expect(JSON.stringify(sanitized)).not.toMatch(
+      /secret|db\.example|user|sslmode|private|xpod benchmark/u,
+    );
+    expect(Object.keys(sanitized).sort()).toEqual([ 'engineCommit', 'postgresVersion' ]);
     expect(() => sanitizeCloudReplacementEnvironment({
       connectionString: 'postgres://user:secret@db.example/',
       postgresVersion: '17.5',
@@ -2724,7 +2724,7 @@ describe('cloud replacement benchmark', () => {
     };
 
     expect(parsed).toMatchObject({
-      environment: { database: 'xpod_benchmark', postgresVersion: '17.5', engineCommit: 'abc123' },
+      environment: { postgresVersion: '17.5', engineCommit: 'abc123' },
       targetFacts: 10_000_000,
       actualFacts: 10_000_128,
       correctnessFailures: [ 'large-mismatch' ],
@@ -2751,10 +2751,11 @@ describe('cloud replacement benchmark', () => {
         passed: { correctness: true, all: true },
       },
     });
+    expect(parsed.environment).toEqual({ postgresVersion: '17.5', engineCommit: 'abc123' });
+    expect(json).not.toContain('xpod_benchmark');
     expect(countRecommendationKeys(parsed)).toBe(1);
     expect(markdown.match(/recommendation/giu)).toHaveLength(1);
     for (const expected of [
-      'xpod_benchmark',
       '17.5',
       'abc123',
       '10,000,000',
@@ -2885,7 +2886,6 @@ describe('cloud replacement benchmark', () => {
     expect(() => renderCloudReplacementMarkdown({
       ...report,
       environment: {
-        database: 'xpod_benchmark',
         postgresVersion: '17.5',
         engineCommit: 'postgres://user:secret@db.example/xpod_benchmark',
       },
@@ -2893,7 +2893,6 @@ describe('cloud replacement benchmark', () => {
     expect(() => renderCloudReplacementJson({
       ...report,
       environment: {
-        database: 'xpod_benchmark',
         postgresVersion: '17.5',
         engineCommit: 'postgres://db.example/xpod_benchmark',
       },

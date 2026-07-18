@@ -991,7 +991,6 @@ export interface CloudReplacementEnvironmentInput {
 }
 
 export interface CloudReplacementEnvironment {
-  database: string;
   postgresVersion: string;
   engineCommit: string;
 }
@@ -1194,7 +1193,6 @@ export function sanitizeCloudReplacementEnvironment(
     throw new Error('Cloud replacement connection URL requires a database path');
   }
   return {
-    database,
     postgresVersion: input.postgresVersion,
     engineCommit: input.engineCommit,
   };
@@ -1211,7 +1209,6 @@ export function renderCloudReplacementMarkdown(report: CloudReplacementReport): 
     '',
     '## Environment',
     '',
-    `- Database: ${cloudReplacementMarkdownText(normalized.environment.database)}`,
     `- PostgreSQL: ${cloudReplacementMarkdownText(normalized.environment.postgresVersion)}`,
     `- Engine commit: ${cloudReplacementMarkdownText(normalized.environment.engineCommit)}`,
     '',
@@ -1444,13 +1441,12 @@ function normalizeCloudReplacementReportEnvironment(
   if (!environment || typeof environment !== 'object') {
     throw new Error('Cloud replacement report environment must contain only sanitized fields');
   }
-  const expected = [ 'database', 'engineCommit', 'postgresVersion' ];
+  const expected = [ 'engineCommit', 'postgresVersion' ];
   const actual = Object.keys(environment).sort();
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
     throw new Error('Cloud replacement report environment must contain only sanitized fields');
   }
   return {
-    database: cloudReplacementReportText(environment.database, 'environment.database'),
     postgresVersion: cloudReplacementReportText(
       environment.postgresVersion,
       'environment.postgresVersion',
