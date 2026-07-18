@@ -736,7 +736,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     });
 
     expect(queries).toEqual([
-      'SELECT pg_control_system().system_identifier::text AS system_identifier, current_database() AS database_name',
+      'SELECT (pg_control_system()).system_identifier::text AS system_identifier, current_database() AS database_name',
     ]);
     expect(identity).toMatch(/^[a-f0-9]{64}$/u);
     expect(identity).not.toContain('123456789012345678');

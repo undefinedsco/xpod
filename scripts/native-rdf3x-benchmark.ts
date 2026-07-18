@@ -927,7 +927,7 @@ export async function collectBenchmarkDatabaseIdentity(
   let result: { rows: Array<{ system_identifier?: unknown; database_name?: unknown }> };
   try {
     result = await client.query(
-      'SELECT pg_control_system().system_identifier::text AS system_identifier, current_database() AS database_name',
+      'SELECT (pg_control_system()).system_identifier::text AS system_identifier, current_database() AS database_name',
     );
   } catch {
     throw new Error('Unable to collect PostgreSQL database identity from pg_control_system()');
