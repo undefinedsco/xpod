@@ -114,10 +114,11 @@ option, so the secret is not placed in shell history or process arguments. Do
 not repurpose `DATABASE_URL`, `CONNECTION_STRING`, or any application database
 setting.
 
-The URL must name a dedicated database whose decoded name ends in
-`_benchmark`. Never point it at Xpod production, identity, billing, gateway,
-Inngest, or any shared service database. The dedicated database must run
-PostgreSQL 17 with the verified QLever extension.
+The runner automatically rejects external URLs whose decoded database name does
+not end in `_benchmark`. Never point it at Xpod production, identity, billing,
+gateway, Inngest, or any shared service database. The operator must still
+confirm that the dedicated database runs PostgreSQL 17 with the verified QLever
+extension before starting the run.
 
 ### Current decision run: 2M cluster/direct
 
@@ -158,10 +159,30 @@ bun run benchmark:rdf-cloud-replacement \
   --out=.test-data/rdf-engine-perf-reports/sealos-cloud-replacement-2m-port-forward-diagnostic.json
 ```
 
-Before each external run, verify `current_database()`, PostgreSQL version,
+### Operator preflight
+
+Before each external run, the operator should manually verify
+`current_database()`, PostgreSQL version,
 `xpod_rdf.native_sparql_capabilities()`, and the absence of unrelated tables.
-Persist only sanitized database name, versions, commit, and measurements; never
-persist the URL, host, user, password, namespace, pod name, or cluster address.
+This is an operator preflight, not an automatic runner guard.
+
+The runner automatically performs only these external safety and identity
+checks:
+
+- Reads the connection URL only from `XPOD_RDF_BENCHMARK_PG_URL`.
+- Rejects database names whose decoded path does not end in `_benchmark`.
+- Adds `search_path=xpod_benchmark,public` internally.
+- Drops and recreates only the `xpod_benchmark` schema during setup and cleanup.
+- Hashes `pg_control_system().system_identifier` plus `current_database()` for
+  checkpoint/report database identity.
+- Reads PostgreSQL version for the sanitized report environment.
+
+The runner does not automatically inspect all catalog contents for unrelated
+tables, and external QLever capability verification remains part of operator
+preflight. Persist only sanitized database name, versions, commit, execution
+context, and measurements; never persist the URL, host, user, password,
+namespace, pod name, cluster address, raw database name, or raw PostgreSQL
+system identifier.
 
 ## Destructive safety and cleanup
 
@@ -181,8 +202,9 @@ External connections also add `search_path=xpod_benchmark,public` to the
 PostgreSQL URL internally. If a cleanup statement fails, the runner attempts
 `ROLLBACK`; it also preserves the primary benchmark failure while reporting
 cleanup failures. This transaction boundary does not make a wrong database
-safe, so the dedicated-name and catalog checks remain mandatory. After a crash
-or forced termination, reconnect to the dedicated database, remove any generated
+safe. The automatic guard is the decoded `_benchmark` database-name suffix; the
+operator remains responsible for the preflight checks above. After a crash or
+forced termination, reconnect to the dedicated database, remove any generated
 schema/data, and verify the fact tables are absent before deleting the temporary
 database or deployment.
 
@@ -213,6 +235,24 @@ Checkpoint files live beside the report as `<out>.checkpoint.json`.
   load. Saved aggregate diagnostics never override per-cell evidence.
 - `direct` and `port-forward` are different transport contexts. A checkpoint
   produced by one transport must not be reused by the other.
+
+## Final report identity
+
+Final JSON reports include a sanitized `executionContext` so decision evidence
+can be audited without looking at the checkpoint file:
+
+- `location`: `local` or `cluster`.
+- `transport`: `direct` or `port-forward`.
+- `databaseIdentity`: a 64-character lowercase SHA-256 hex digest.
+- `runnerIdentity`: currently `native-rdf3x-benchmark-v2`.
+- `engineCommit`: the git commit used by the runner.
+- `workloadIds`: the non-empty workload id list used for the report.
+
+The final report context does not include the connection URL, raw database
+name, raw `pg_control_system().system_identifier`, host, user, password,
+namespace, pod name, or cluster address. The separate sanitized `environment`
+object contains only the database name, PostgreSQL version, engine commit, and
+`qleverReady` summary.
 
 ## Measurement and cache semantics
 
