@@ -718,7 +718,13 @@ export function compactBenchmarkCheckpoint(
   });
   return {
     ...checkpoint,
-    latencyRecords: [ ...checkpoint.latencyRecords ],
+    latencyRecords: checkpoint.latencyRecords.map((record) => ({
+      cacheMode: record.cacheMode,
+      workload: record.workload,
+      rdf3x: record.rdf3x,
+      qlever: record.qlever,
+      ignoredSteadyHelperColdMs: record.ignoredSteadyHelperColdMs,
+    })),
     correctnessRecords: checkpoint.correctnessRecords.map((record) => ({
       ...record,
       correctness: compactCorrectness(record.correctness),
@@ -2038,14 +2044,15 @@ async function collectBenchmarkReport(
             ...benchmarkCacheMeasurementOptions(cacheMode, identitySource),
           },
         );
+        const { correctness, ...latencyMeasurement } = measured;
         correctnessRecords.push({
           cacheMode,
           caseId: workload.id,
-          correctness: measured.correctness,
+          correctness,
         });
-        correctnessFailures.push(...measured.correctness.failures.map((failure) =>
+        correctnessFailures.push(...correctness.failures.map((failure) =>
           `${cacheMode}:${workload.id}:${failure}`));
-        latencyRecords.push({ cacheMode, workload, ...measured });
+        latencyRecords.push({ cacheMode, workload, ...latencyMeasurement });
         completedLatencyKeys.add(latencyKey);
         checkpoint.completedLatencyKeys = [ ...completedLatencyKeys ];
         checkpoint.latencyRecords = latencyRecords;

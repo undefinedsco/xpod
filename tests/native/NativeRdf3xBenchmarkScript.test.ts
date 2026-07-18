@@ -723,6 +723,34 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     }
   });
 
+  it('removes duplicated correctness rows from compact latency checkpoints', () => {
+    const options = benchmark.parseArgs([ '--mode=local' ], {});
+    const context = benchmark.buildBenchmarkExecutionContext(options, 'a'.repeat(64));
+    const checkpoint = benchmark.emptyBenchmarkCheckpoint(options, context, 'identity-a');
+    const correctness = correctnessRecord();
+    correctness.rdf3x.rows = [ 'large-rdf3x-row' ];
+    correctness.qlever.rows = [ 'large-qlever-row' ];
+    checkpoint.latencyRecords.push({
+      cacheMode: 'production',
+      workload,
+      rdf3x: latency('production', 10),
+      qlever: latency('production', 8),
+      ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 },
+      correctness,
+    } as unknown as benchmark.LatencyRecord);
+    checkpoint.correctnessRecords.push({
+      cacheMode: 'production',
+      caseId: workload.id,
+      correctness,
+    });
+
+    const compact = benchmark.compactBenchmarkCheckpoint(checkpoint);
+
+    expect(compact.latencyRecords[0]).not.toHaveProperty('correctness');
+    expect(compact.correctnessRecords[0]?.correctness.rdf3x.rows).toEqual([]);
+    expect(compact.correctnessRecords[0]?.correctness.qlever.rows).toEqual([]);
+  });
+
   it('hashes PostgreSQL system identity without leaking raw database identifiers', async () => {
     const queries: string[] = [];
     const identity = await benchmark.collectBenchmarkDatabaseIdentity({
