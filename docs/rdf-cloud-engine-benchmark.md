@@ -179,7 +179,7 @@ checks:
 
 The runner does not automatically inspect all catalog contents for unrelated
 tables, and external QLever capability verification remains part of operator
-preflight. Persist only sanitized database name, versions, commit, execution
+preflight. Persist only versions, commit, hashed database identity, execution
 context, and measurements; never persist the URL, host, user, password,
 namespace, pod name, cluster address, raw database name, or raw PostgreSQL
 system identifier.
@@ -251,8 +251,8 @@ can be audited without looking at the checkpoint file:
 The final report context does not include the connection URL, raw database
 name, raw `pg_control_system().system_identifier`, host, user, password,
 namespace, pod name, or cluster address. The separate sanitized `environment`
-object contains only the database name, PostgreSQL version, engine commit, and
-`qleverReady` summary.
+object contains only the PostgreSQL version, engine commit, and `qleverReady`
+summary.
 
 ## Measurement and cache semantics
 
