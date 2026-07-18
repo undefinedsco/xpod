@@ -1184,7 +1184,12 @@ export function sanitizeCloudReplacementEnvironment(
   if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') {
     throw new Error('Cloud replacement connection URL must use postgres or postgresql');
   }
-  const encodedDatabase = url.pathname.replace(/^\/+/, '');
+  if (!url.pathname.startsWith('/') || url.pathname.startsWith('//')) {
+    throw new Error(
+      'Cloud replacement connection URL requires a dedicated benchmark database ending in _benchmark',
+    );
+  }
+  const encodedDatabase = url.pathname.slice(1);
   if (encodedDatabase.length === 0) {
     throw new Error('Cloud replacement connection URL requires a database path');
   }

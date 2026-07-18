@@ -879,7 +879,10 @@ export function assertDedicatedBenchmarkDatabase(connectionUrl: string): string 
     if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
       throw new Error('protocol');
     }
-    const encodedDatabase = parsed.pathname.replace(/^\/+/, '');
+    if (!parsed.pathname.startsWith('/') || parsed.pathname.startsWith('//')) {
+      throw new Error('path');
+    }
+    const encodedDatabase = parsed.pathname.slice(1);
     if (!encodedDatabase || encodedDatabase.includes('/')) {
       throw new Error('path');
     }

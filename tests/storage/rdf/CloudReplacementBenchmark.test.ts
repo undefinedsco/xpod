@@ -2517,6 +2517,7 @@ describe('cloud replacement benchmark', () => {
 
   it.each([
     'postgres://example.test/xpod',
+    'postgres://example.test//tenant_benchmark',
     'postgres://example.test/a/b_benchmark',
     'postgres://example.test/a%2Fb_benchmark',
   ])('rejects non-dedicated benchmark database path %s', (connectionString) => {

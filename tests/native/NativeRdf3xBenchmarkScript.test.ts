@@ -928,6 +928,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       'http://example.test/xpod_benchmark',
       'postgres://example.test',
       'postgres://example.test/',
+      'postgres://example.test//tenant_benchmark',
       'postgres://user:secret@example.test/xpod',
       'postgres://user:secret@example.test/production',
     ]) {
