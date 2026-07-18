@@ -364,6 +364,7 @@ export function benchmarkConcurrencyContextFingerprint(
   return JSON.stringify({
     version: 2,
     lane: 'concurrency',
+    checkpointGranularity: 'workload-concurrency-v1',
     context,
     mode: options.mode,
     targetQuads: options.targetQuads,
@@ -373,6 +374,15 @@ export function benchmarkConcurrencyContextFingerprint(
     image: options.image,
     databaseName: options.databaseName,
   });
+}
+
+export function benchmarkConcurrencyKey(
+  cacheMode: CloudReplacementCacheMode,
+  engine: CloudReplacementEngineId,
+  workloadId: string,
+  concurrency: BenchmarkConcurrency,
+): string {
+  return `${cacheMode}:${engine}:${workloadId}:${concurrency}`;
 }
 
 export function emptyBenchmarkCheckpoint(
@@ -423,7 +433,7 @@ export async function loadBenchmarkCheckpoint(
     const validConcurrencyRecords = concurrencyMatches &&
       parsed.concurrencyRecords.every(isBenchmarkConcurrencyRecord);
     if (latencyMatches && validConcurrencyRecords) {
-      return parsed as BenchmarkCheckpoint;
+      return sanitizeBenchmarkCheckpointConcurrency(parsed as BenchmarkCheckpoint);
     }
     return {
       ...emptyBenchmarkCheckpoint(options, context, parsed.identityId),
@@ -437,7 +447,10 @@ export async function loadBenchmarkCheckpoint(
         : {}),
       ...(validConcurrencyRecords
         ? {
-            completedConcurrencyKeys: parsed.completedConcurrencyKeys,
+            completedConcurrencyKeys: completedConcurrencyKeysWithEvidence(
+              parsed.completedConcurrencyKeys,
+              parsed.concurrencyRecords,
+            ),
             concurrencyRecords: parsed.concurrencyRecords,
             diagnosticsByCacheMode: parsed.diagnosticsByCacheMode,
           }
@@ -449,6 +462,33 @@ export async function loadBenchmarkCheckpoint(
     }
     throw error;
   }
+}
+
+function sanitizeBenchmarkCheckpointConcurrency(
+  checkpoint: BenchmarkCheckpoint,
+): BenchmarkCheckpoint {
+  return {
+    ...checkpoint,
+    completedConcurrencyKeys: completedConcurrencyKeysWithEvidence(
+      checkpoint.completedConcurrencyKeys,
+      checkpoint.concurrencyRecords,
+    ),
+  };
+}
+
+function completedConcurrencyKeysWithEvidence(
+  keys: readonly string[],
+  records: readonly ConcurrencyRecord[],
+): string[] {
+  const completeRecordKeys = new Set(records
+    .filter((record) => !record.infrastructureFailure)
+    .map((record) => benchmarkConcurrencyKey(
+      record.cacheMode,
+      record.engine,
+      record.caseId,
+      record.concurrency,
+    )));
+  return [ ...new Set(keys) ].filter((key) => completeRecordKeys.has(key));
 }
 
 function isBenchmarkConcurrencyRecord(value: unknown): value is ConcurrencyRecord {
@@ -1330,7 +1370,12 @@ export function buildBenchmarkReportSummary(input: BenchmarkReportSummaryInput) 
     rdf3x: benchmarkEngineErrorRate(gateConcurrency, 'rdf3x'),
     qlever: benchmarkEngineErrorRate(gateConcurrency, 'qlever'),
   };
+  const infrastructureErrorRates = {
+    rdf3x: benchmarkEngineInfrastructureErrorRate(gateConcurrency, 'rdf3x'),
+    qlever: benchmarkEngineInfrastructureErrorRate(gateConcurrency, 'qlever'),
+  };
   const baselineValid = errorRates.rdf3x === 0;
+  const evidenceComplete = gateConcurrency.every((record) => !record.infrastructureFailure);
   const cases = preferredLatency.map((record) => {
     const selectedCorrectness = input.cacheModes.map((cacheMode) => {
       const correctness = input.correctnessRecords.find((entry) =>
@@ -1370,7 +1415,10 @@ export function buildBenchmarkReportSummary(input: BenchmarkReportSummaryInput) 
     };
   });
   const correctnessPassed = input.correctnessFailures.length === 0 &&
-    cases.every((entry) => entry.correctness.correct) && baselineValid && input.qleverReady;
+    cases.every((entry) => entry.correctness.correct) &&
+    baselineValid &&
+    evidenceComplete &&
+    input.qleverReady;
   const p95Comparisons = gateLatency.map((record) => ({
     group: record.workload.group,
     rdf3xP95Ms: Math.max(record.rdf3x.p95Ms, Number.EPSILON),
@@ -1403,7 +1451,9 @@ export function buildBenchmarkReportSummary(input: BenchmarkReportSummaryInput) 
     gateConcurrency,
     throughputRatio,
     errorRates,
+    infrastructureErrorRates,
     baselineValid,
+    evidenceComplete,
     correctnessPassed,
     qleverReady: input.qleverReady,
     environment: { qleverReady: input.qleverReady },
@@ -1434,6 +1484,33 @@ function throughputMeasurements(
     .map((record) => ({ completed: record.completed, elapsedMs: record.elapsedMs }));
 }
 
+export function upsertBenchmarkConcurrencyRecord(
+  records: readonly ConcurrencyRecord[],
+  next: ConcurrencyRecord,
+): ConcurrencyRecord[] {
+  const nextKey = benchmarkConcurrencyKey(
+    next.cacheMode,
+    next.engine,
+    next.caseId,
+    next.concurrency,
+  );
+  let replaced = false;
+  const updated = records.map((record) => {
+    const key = benchmarkConcurrencyKey(
+      record.cacheMode,
+      record.engine,
+      record.caseId,
+      record.concurrency,
+    );
+    if (key !== nextKey) {
+      return record;
+    }
+    replaced = true;
+    return next;
+  });
+  return replaced ? updated : [ ...updated, next ];
+}
+
 function benchmarkEngineErrorRate(
   records: readonly ConcurrencyRecord[],
   engine: CloudReplacementEngineId,
@@ -1446,6 +1523,24 @@ function benchmarkEngineErrorRate(
     throw new Error(`Cloud replacement ${engine} error rate requires completed operations`);
   }
   return errors / operations;
+}
+
+function benchmarkEngineInfrastructureErrorRate(
+  records: readonly ConcurrencyRecord[],
+  engine: CloudReplacementEngineId,
+): number {
+  const selected = records.filter((record) => record.engine === engine);
+  const completed = selected.reduce((sum, record) => sum + record.completed, 0);
+  const errors = selected.reduce((sum, record) => sum + record.errors, 0);
+  const infrastructureErrors = selected.reduce((sum, record) =>
+    sum + record.infrastructureErrors, 0);
+  const operations = completed + errors + infrastructureErrors;
+  if (!Number.isFinite(operations) || operations <= 0) {
+    throw new Error(
+      `Cloud replacement ${engine} infrastructure error rate requires attempted operations`,
+    );
+  }
+  return infrastructureErrors / operations;
 }
 
 function createOperationAbortScope(
@@ -1768,7 +1863,7 @@ async function collectBenchmarkReport(
     ...record,
     workload: workloadById.get(record.workload.id) ?? record.workload,
   }));
-  const concurrencyRecords = [ ...checkpoint.concurrencyRecords ];
+  let concurrencyRecords = [ ...checkpoint.concurrencyRecords ];
   const correctnessRecords = [ ...checkpoint.correctnessRecords ];
   const correctnessFailures = [ ...checkpoint.correctnessFailures ];
   const diagnosticsByCacheMode = { ...checkpoint.diagnosticsByCacheMode };
@@ -1843,49 +1938,59 @@ async function collectBenchmarkReport(
         qlever: emptyDiagnostics(),
       };
       for (const engineId of [ 'rdf3x', 'qlever' ] as const) {
-        const phaseKey = `${cacheMode}:${engineId}`;
-        if (completedConcurrencyKeys.has(phaseKey)) {
-          process.stderr.write(`[benchmark] resume concurrency ${phaseKey}\n`);
+        const adapter = engineId === 'rdf3x' ? pair.rdf3xAdapter : pair.qleverAdapter;
+        const pendingCells = workloads
+          .filter((entry) => entry.concurrencyRepresentative)
+          .flatMap((workload) => options.concurrency.map((concurrency) => ({
+            workload,
+            concurrency,
+            key: benchmarkConcurrencyKey(cacheMode, engineId, workload.id, concurrency),
+          })))
+          .filter(({ key }) => !completedConcurrencyKeys.has(key));
+        if (pendingCells.length === 0) {
+          process.stderr.write(`[benchmark] resume concurrency ${cacheMode}:${engineId}\n`);
           continue;
         }
         await prepareColdState(pair);
-        const adapter = engineId === 'rdf3x' ? pair.rdf3xAdapter : pair.qleverAdapter;
-        const phase = await captureAttributedPgPhase(async () => {
-          const records: ConcurrencyRecord[] = [];
-          for (const workload of workloads.filter((entry) =>
-            entry.concurrencyRepresentative)) {
-            for (const concurrency of options.concurrency) {
-              process.stderr.write(
-                `[benchmark] concurrency ${cacheMode}:${engineId}:${workload.id}:${concurrency}\n`,
-              );
-              const measured = await measureCloudReplacementConcurrency(
-                workload,
-                adapter,
-                {
-                  concurrency,
-                  durationMs: CONCURRENCY_DURATION_MS,
-                  operationTimeoutMs: options.operationTimeoutMs,
-                  ...benchmarkCacheMeasurementOptions(cacheMode, identitySource),
-                },
-              );
-              records.push({
-                ...measured,
-                cacheMode,
-                caseId: workload.id,
-                engine: engineId,
-              });
-            }
+        for (const { workload, concurrency, key } of pendingCells) {
+          process.stderr.write(`[benchmark] concurrency ${key}\n`);
+          const cell = await captureAttributedPgPhase(async () => {
+            const measured = await measureCloudReplacementConcurrency(
+              workload,
+              adapter,
+              {
+                concurrency,
+                durationMs: CONCURRENCY_DURATION_MS,
+                operationTimeoutMs: options.operationTimeoutMs,
+                ...benchmarkCacheMeasurementOptions(cacheMode, identitySource),
+              },
+            );
+            return {
+              ...measured,
+              cacheMode,
+              caseId: workload.id,
+              engine: engineId,
+            };
+          }, () => snapshotPgStatDatabase(pool));
+          concurrencyRecords = upsertBenchmarkConcurrencyRecord(
+            concurrencyRecords,
+            cell.result,
+          );
+          modeDiagnostics[engineId] = mergeBenchmarkPgDiagnostics(
+            modeDiagnostics[engineId],
+            cell.diagnostics,
+          );
+          diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
+          if (!cell.result.infrastructureFailure) {
+            completedConcurrencyKeys.add(key);
+          } else {
+            completedConcurrencyKeys.delete(key);
           }
-          return records;
-        }, () => snapshotPgStatDatabase(pool));
-        concurrencyRecords.push(...phase.result);
-        modeDiagnostics[engineId] = phase.diagnostics;
-        diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
-        completedConcurrencyKeys.add(phaseKey);
-        checkpoint.completedConcurrencyKeys = [ ...completedConcurrencyKeys ];
-        checkpoint.concurrencyRecords = concurrencyRecords;
-        checkpoint.diagnosticsByCacheMode = diagnosticsByCacheMode;
-        await saveBenchmarkCheckpoint(options, checkpoint);
+          checkpoint.completedConcurrencyKeys = [ ...completedConcurrencyKeys ];
+          checkpoint.concurrencyRecords = concurrencyRecords;
+          checkpoint.diagnosticsByCacheMode = diagnosticsByCacheMode;
+          await saveBenchmarkCheckpoint(options, checkpoint);
+        }
       }
       diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
     });
@@ -1962,7 +2067,9 @@ async function collectBenchmarkReport(
       return { ...benchmarkCase, correctness };
     }),
     errorRates: summary.errorRates,
+    infrastructureErrorRates: summary.infrastructureErrorRates,
     baselineValid: summary.baselineValid,
+    evidenceComplete: summary.evidenceComplete,
     storage: {
       factsBytes: buildEvidence.storage.factsBytes,
       sharedPhysicalIndexBytes: buildEvidence.storage.sharedPhysicalIndexBytes,
@@ -2341,6 +2448,72 @@ export function calculatePgDiagnosticsDelta(
       'Temp-disk limits require the external resource sampler',
     ],
   };
+}
+
+export function mergeBenchmarkPgDiagnostics(
+  existing: CloudReplacementPgDiagnostics,
+  next: CloudReplacementPgDiagnostics,
+): CloudReplacementPgDiagnostics {
+  return {
+    sharedBlocksRead: sumKnownDiagnosticsCounter(
+      existing.sharedBlocksRead,
+      next.sharedBlocksRead,
+    ),
+    sharedBlocksHit: sumKnownDiagnosticsCounter(
+      existing.sharedBlocksHit,
+      next.sharedBlocksHit,
+    ),
+    tempBytes: sumKnownDiagnosticsCounter(existing.tempBytes, next.tempBytes),
+    memoryPeakBytes: maxKnownDiagnosticsValue(
+      existing.memoryPeakBytes,
+      next.memoryPeakBytes,
+    ),
+    memoryLimitBytes: minKnownDiagnosticsValue(
+      existing.memoryLimitBytes,
+      next.memoryLimitBytes,
+    ),
+    diagnosticsUnavailable: [
+      ...new Set([
+        ...existing.diagnosticsUnavailable,
+        ...next.diagnosticsUnavailable,
+      ]),
+    ],
+  };
+}
+
+function sumKnownDiagnosticsCounter(left: number | null, right: number | null): number | null {
+  return typeof left === 'number' && Number.isFinite(left) &&
+    typeof right === 'number' && Number.isFinite(right)
+    ? left + right
+    : null;
+}
+
+function maxKnownDiagnosticsValue(left: number | null, right: number | null): number | null {
+  if (typeof left === 'number' && Number.isFinite(left) &&
+    typeof right === 'number' && Number.isFinite(right)) {
+    return Math.max(left, right);
+  }
+  if (typeof left === 'number' && Number.isFinite(left)) {
+    return left;
+  }
+  if (typeof right === 'number' && Number.isFinite(right)) {
+    return right;
+  }
+  return null;
+}
+
+function minKnownDiagnosticsValue(left: number | null, right: number | null): number | null {
+  if (typeof left === 'number' && Number.isFinite(left) &&
+    typeof right === 'number' && Number.isFinite(right)) {
+    return Math.min(left, right);
+  }
+  if (typeof left === 'number' && Number.isFinite(left)) {
+    return left;
+  }
+  if (typeof right === 'number' && Number.isFinite(right)) {
+    return right;
+  }
+  return null;
 }
 
 function emptyDiagnostics(): CloudReplacementPgDiagnostics {
