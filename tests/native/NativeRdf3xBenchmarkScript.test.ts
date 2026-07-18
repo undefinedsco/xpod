@@ -1906,9 +1906,9 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     );
 
     expect(benchmark.BENCHMARK_BUILD_SETUP_TIMEOUT_MS).toBeGreaterThan(4_321);
-    expect(benchmark.BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES).toBe(256 * 1024 * 1024);
+    expect(benchmark.BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES).toBe(384 * 1024 * 1024);
     expect(benchmark.BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES * 32)
-      .toBeLessThanOrEqual(8 * 1024 * 1024 * 1024);
+      .toBeLessThanOrEqual(12 * 1024 * 1024 * 1024);
     expect(benchmark.BENCHMARK_DOCKER_TIMEOUT_MS).toBeGreaterThan(0);
     expect(control.connectionTimeoutMillis > 0).toBe(true);
     expect(control).toMatchObject({

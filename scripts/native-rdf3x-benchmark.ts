@@ -55,8 +55,8 @@ const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
 export const BENCHMARK_BUILD_SETUP_TIMEOUT_MS = 30 * 60_000;
 export const BENCHMARK_DOCKER_TIMEOUT_MS = 2 * 60_000;
 export const BENCHMARK_MAX_LOAD_WAVES = 16;
-// Keep the c32 lane within an 8 GiB aggregate QLever query-memory budget.
-export const BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
+// Cover broad single-query joins while keeping c32 within a 12 GiB aggregate budget.
+export const BENCHMARK_QLEVER_MEMORY_LIMIT_BYTES = 384 * 1024 * 1024;
 const BENCHMARK_CONNECTION_TIMEOUT_MS = 30_000;
 const DEFAULT_CONCURRENCY = [ 1, 8, 32 ] as const;
 const DEFAULT_IMAGE = 'xpod-rdf-postgres:pg17-smoke';
