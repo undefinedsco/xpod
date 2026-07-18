@@ -318,6 +318,7 @@ export interface BenchmarkCheckpoint {
   correctnessRecords: BenchmarkCorrectnessRecord[];
   correctnessFailures: string[];
   diagnosticsByCacheMode: BenchmarkDiagnosticsByCacheMode;
+  concurrencyDiagnosticsByKey: Record<string, CloudReplacementPgDiagnostics>;
 }
 
 export function benchmarkCheckpointPath(out: string): string {
@@ -402,6 +403,7 @@ export function emptyBenchmarkCheckpoint(
     correctnessRecords: [],
     correctnessFailures: [],
     diagnosticsByCacheMode: {},
+    concurrencyDiagnosticsByKey: {},
   };
 }
 
@@ -431,8 +433,14 @@ export async function loadBenchmarkCheckpoint(
     const latencyMatches = parsed.latencyContextFingerprint === expectedLatency;
     const concurrencyMatches = parsed.concurrencyContextFingerprint === expectedConcurrency;
     const validConcurrencyRecords = concurrencyMatches &&
-      parsed.concurrencyRecords.every(isBenchmarkConcurrencyRecord);
-    if (latencyMatches && validConcurrencyRecords) {
+      parsed.concurrencyRecords.every(isBenchmarkConcurrencyRecord) &&
+      isBenchmarkDiagnosticsByKey(parsed.concurrencyDiagnosticsByKey);
+    const validConcurrencyLane = validConcurrencyRecords &&
+      hasCompleteConcurrencyDiagnostics(
+        parsed.concurrencyRecords,
+        parsed.concurrencyDiagnosticsByKey,
+      );
+    if (latencyMatches && validConcurrencyLane) {
       return sanitizeBenchmarkCheckpointConcurrency(parsed as BenchmarkCheckpoint);
     }
     return {
@@ -445,14 +453,19 @@ export async function loadBenchmarkCheckpoint(
             correctnessFailures: parsed.correctnessFailures,
           }
         : {}),
-      ...(validConcurrencyRecords
+      ...(validConcurrencyLane
         ? {
             completedConcurrencyKeys: completedConcurrencyKeysWithEvidence(
               parsed.completedConcurrencyKeys,
               parsed.concurrencyRecords,
+              parsed.concurrencyDiagnosticsByKey,
             ),
             concurrencyRecords: parsed.concurrencyRecords,
-            diagnosticsByCacheMode: parsed.diagnosticsByCacheMode,
+            diagnosticsByCacheMode: rebuildBenchmarkDiagnosticsByCacheMode(
+              parsed.concurrencyRecords,
+              parsed.concurrencyDiagnosticsByKey,
+            ),
+            concurrencyDiagnosticsByKey: parsed.concurrencyDiagnosticsByKey,
           }
         : {}),
     };
@@ -472,6 +485,11 @@ function sanitizeBenchmarkCheckpointConcurrency(
     completedConcurrencyKeys: completedConcurrencyKeysWithEvidence(
       checkpoint.completedConcurrencyKeys,
       checkpoint.concurrencyRecords,
+      checkpoint.concurrencyDiagnosticsByKey,
+    ),
+    diagnosticsByCacheMode: rebuildBenchmarkDiagnosticsByCacheMode(
+      checkpoint.concurrencyRecords,
+      checkpoint.concurrencyDiagnosticsByKey,
     ),
   };
 }
@@ -479,9 +497,16 @@ function sanitizeBenchmarkCheckpointConcurrency(
 function completedConcurrencyKeysWithEvidence(
   keys: readonly string[],
   records: readonly ConcurrencyRecord[],
+  diagnosticsByKey: Readonly<Record<string, CloudReplacementPgDiagnostics>>,
 ): string[] {
   const completeRecordKeys = new Set(records
-    .filter((record) => !record.infrastructureFailure)
+    .filter((record) => !record.infrastructureFailure &&
+      diagnosticsByKey[benchmarkConcurrencyKey(
+        record.cacheMode,
+        record.engine,
+        record.caseId,
+        record.concurrency,
+      )] !== undefined)
     .map((record) => benchmarkConcurrencyKey(
       record.cacheMode,
       record.engine,
@@ -489,6 +514,32 @@ function completedConcurrencyKeysWithEvidence(
       record.concurrency,
     )));
   return [ ...new Set(keys) ].filter((key) => completeRecordKeys.has(key));
+}
+
+function hasCompleteConcurrencyDiagnostics(
+  records: readonly unknown[],
+  diagnosticsByKey: Readonly<Record<string, CloudReplacementPgDiagnostics>>,
+): records is ConcurrencyRecord[] {
+  return records.every((record) => {
+    if (!isBenchmarkConcurrencyRecord(record)) {
+      return false;
+    }
+    return diagnosticsByKey[benchmarkConcurrencyKey(
+      record.cacheMode,
+      record.engine,
+      record.caseId,
+      record.concurrency,
+    )] !== undefined;
+  });
+}
+
+function isBenchmarkDiagnosticsByKey(
+  value: unknown,
+): value is Record<string, CloudReplacementPgDiagnostics> {
+  return !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.values(value).every(isBenchmarkPgDiagnostics);
 }
 
 function isBenchmarkConcurrencyRecord(value: unknown): value is ConcurrencyRecord {
@@ -578,6 +629,24 @@ function isBenchmarkErrorCategory(value: unknown): value is CloudReplacementErro
 function isBenchmarkErrorStage(value: unknown): value is CloudReplacementErrorStage {
   return value === 'acquire' || value === 'query' || value === 'materialize' ||
     value === 'cancel' || value === 'cleanup';
+}
+
+function isBenchmarkPgDiagnostics(value: unknown): value is CloudReplacementPgDiagnostics {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const diagnostics = value as Partial<CloudReplacementPgDiagnostics>;
+  return (diagnostics.sharedBlocksRead === null ||
+    isFiniteNonNegativeNumber(diagnostics.sharedBlocksRead)) &&
+    (diagnostics.sharedBlocksHit === null ||
+      isFiniteNonNegativeNumber(diagnostics.sharedBlocksHit)) &&
+    (diagnostics.tempBytes === null || isFiniteNonNegativeNumber(diagnostics.tempBytes)) &&
+    (diagnostics.memoryPeakBytes === null ||
+      isFiniteNonNegativeNumber(diagnostics.memoryPeakBytes)) &&
+    (diagnostics.memoryLimitBytes === null ||
+      isFiniteNonNegativeNumber(diagnostics.memoryLimitBytes)) &&
+    Array.isArray(diagnostics.diagnosticsUnavailable) &&
+    diagnostics.diagnosticsUnavailable.every((entry) => typeof entry === 'string');
 }
 
 function isFiniteNonNegativeInteger(value: unknown): value is number {
@@ -1511,6 +1580,34 @@ export function upsertBenchmarkConcurrencyRecord(
   return replaced ? updated : [ ...updated, next ];
 }
 
+export function rebuildBenchmarkDiagnosticsByCacheMode(
+  records: readonly ConcurrencyRecord[],
+  diagnosticsByKey: Readonly<Record<string, CloudReplacementPgDiagnostics>>,
+): BenchmarkDiagnosticsByCacheMode {
+  const diagnosticsByCacheMode: BenchmarkDiagnosticsByCacheMode = {};
+  for (const record of records) {
+    const key = benchmarkConcurrencyKey(
+      record.cacheMode,
+      record.engine,
+      record.caseId,
+      record.concurrency,
+    );
+    const cellDiagnostics = diagnosticsByKey[key];
+    if (!cellDiagnostics) {
+      throw new Error(`Missing concurrency diagnostics for ${key}`);
+    }
+    const modeDiagnostics = diagnosticsByCacheMode[record.cacheMode] ?? {};
+    modeDiagnostics[record.engine] = modeDiagnostics[record.engine]
+      ? mergeBenchmarkPgDiagnostics(modeDiagnostics[record.engine], cellDiagnostics)
+      : cellDiagnostics;
+    diagnosticsByCacheMode[record.cacheMode] = modeDiagnostics as Record<
+      CloudReplacementEngineId,
+      CloudReplacementPgDiagnostics
+    >;
+  }
+  return diagnosticsByCacheMode;
+}
+
 function benchmarkEngineErrorRate(
   records: readonly ConcurrencyRecord[],
   engine: CloudReplacementEngineId,
@@ -1866,7 +1963,8 @@ async function collectBenchmarkReport(
   let concurrencyRecords = [ ...checkpoint.concurrencyRecords ];
   const correctnessRecords = [ ...checkpoint.correctnessRecords ];
   const correctnessFailures = [ ...checkpoint.correctnessFailures ];
-  const diagnosticsByCacheMode = { ...checkpoint.diagnosticsByCacheMode };
+  let diagnosticsByCacheMode = { ...checkpoint.diagnosticsByCacheMode };
+  const concurrencyDiagnosticsByKey = { ...checkpoint.concurrencyDiagnosticsByKey };
   const completedLatencyKeys = new Set(checkpoint.completedLatencyKeys);
   const completedConcurrencyKeys = new Set(checkpoint.completedConcurrencyKeys);
   let orderIndex = 0;
@@ -1933,10 +2031,6 @@ async function collectBenchmarkReport(
         await saveBenchmarkCheckpoint(options, checkpoint);
       }
 
-      const modeDiagnostics = diagnosticsByCacheMode[cacheMode] ?? {
-        rdf3x: emptyDiagnostics(),
-        qlever: emptyDiagnostics(),
-      };
       for (const engineId of [ 'rdf3x', 'qlever' ] as const) {
         const adapter = engineId === 'rdf3x' ? pair.rdf3xAdapter : pair.qleverAdapter;
         const pendingCells = workloads
@@ -1976,11 +2070,11 @@ async function collectBenchmarkReport(
             concurrencyRecords,
             cell.result,
           );
-          modeDiagnostics[engineId] = mergeBenchmarkPgDiagnostics(
-            modeDiagnostics[engineId],
-            cell.diagnostics,
+          concurrencyDiagnosticsByKey[key] = cell.diagnostics;
+          diagnosticsByCacheMode = rebuildBenchmarkDiagnosticsByCacheMode(
+            concurrencyRecords,
+            concurrencyDiagnosticsByKey,
           );
-          diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
           if (!cell.result.infrastructureFailure) {
             completedConcurrencyKeys.add(key);
           } else {
@@ -1989,10 +2083,10 @@ async function collectBenchmarkReport(
           checkpoint.completedConcurrencyKeys = [ ...completedConcurrencyKeys ];
           checkpoint.concurrencyRecords = concurrencyRecords;
           checkpoint.diagnosticsByCacheMode = diagnosticsByCacheMode;
+          checkpoint.concurrencyDiagnosticsByKey = concurrencyDiagnosticsByKey;
           await saveBenchmarkCheckpoint(options, checkpoint);
         }
       }
-      diagnosticsByCacheMode[cacheMode] = modeDiagnostics;
     });
   }
 
@@ -2514,17 +2608,6 @@ function minKnownDiagnosticsValue(left: number | null, right: number | null): nu
     return right;
   }
   return null;
-}
-
-function emptyDiagnostics(): CloudReplacementPgDiagnostics {
-  return {
-    sharedBlocksRead: 0,
-    sharedBlocksHit: 0,
-    tempBytes: 0,
-    memoryPeakBytes: null,
-    memoryLimitBytes: null,
-    diagnosticsUnavailable: [],
-  };
 }
 
 function counterDelta(

@@ -72,6 +72,21 @@ function diagnostics(read: number): CloudReplacementPgDiagnostics {
   };
 }
 
+function diagnosticsByKey(
+  record: benchmark.ConcurrencyRecord,
+  read: number,
+): [ string, CloudReplacementPgDiagnostics ] {
+  return [
+    benchmark.benchmarkConcurrencyKey(
+      record.cacheMode,
+      record.engine,
+      record.caseId,
+      record.concurrency,
+    ),
+    diagnostics(read),
+  ];
+}
+
 function correctnessRecord(correct = true) {
   return {
     correct,
@@ -407,16 +422,23 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       const goodKey = benchmark.benchmarkConcurrencyKey('off', 'rdf3x', 'case-a', 1);
       const failedKey = benchmark.benchmarkConcurrencyKey('off', 'qlever', 'case-a', 1);
       checkpoint.completedConcurrencyKeys.push(goodKey, failedKey, 'off:rdf3x:missing:8');
-      checkpoint.concurrencyRecords.push(
-        concurrencyRecord({ cacheMode: 'off', engine: 'rdf3x', caseId: 'case-a', concurrency: 1 }),
-        concurrencyRecord({
-          cacheMode: 'off',
-          engine: 'qlever',
-          caseId: 'case-a',
-          concurrency: 1,
-          infrastructureErrors: 1,
-          infrastructureFailure: true,
-        }),
+      const goodRecord = concurrencyRecord({
+        cacheMode: 'off',
+        engine: 'rdf3x',
+        caseId: 'case-a',
+        concurrency: 1,
+      });
+      const failedRecord = concurrencyRecord({
+        cacheMode: 'off',
+        engine: 'qlever',
+        caseId: 'case-a',
+        concurrency: 1,
+        infrastructureErrors: 1,
+        infrastructureFailure: true,
+      });
+      checkpoint.concurrencyRecords.push(goodRecord, failedRecord);
+      checkpoint.concurrencyDiagnosticsByKey = Object.fromEntries(
+        [ diagnosticsByKey(goodRecord, 1), diagnosticsByKey(failedRecord, 2) ],
       );
       await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
 
@@ -424,6 +446,94 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
 
       expect(loaded?.concurrencyRecords).toHaveLength(2);
       expect(loaded?.completedConcurrencyKeys).toEqual([ goodKey ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('clears concurrency but keeps latency when per-cell diagnostics are missing', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-missing-cell-diag-'));
+    try {
+      const options = benchmark.parseArgs([
+        '--mode=local',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      const context = benchmark.buildBenchmarkExecutionContext(options, 'database-a');
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(options, context, 'identity-a');
+      const record = concurrencyRecord({
+        cacheMode: 'off',
+        engine: 'rdf3x',
+        caseId: 'case-a',
+        concurrency: 1,
+      });
+      checkpoint.completedLatencyKeys.push('off:case-a');
+      checkpoint.latencyRecords.push({
+        cacheMode: 'off',
+        workload,
+        rdf3x: latency('off', 10),
+        qlever: latency('off', 8),
+        ignoredSteadyHelperColdMs: { rdf3x: 1, qlever: 1 },
+      });
+      checkpoint.completedConcurrencyKeys.push(
+        benchmark.benchmarkConcurrencyKey('off', 'rdf3x', 'case-a', 1),
+      );
+      checkpoint.concurrencyRecords.push(record);
+      checkpoint.diagnosticsByCacheMode = { off: { rdf3x: diagnostics(999), qlever: diagnostics(2) } };
+      delete (checkpoint as Partial<benchmark.BenchmarkCheckpoint>).concurrencyDiagnosticsByKey;
+      await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
+
+      const loaded = await benchmark.loadBenchmarkCheckpoint(options, context);
+
+      expect(loaded?.completedLatencyKeys).toEqual([ 'off:case-a' ]);
+      expect(loaded?.latencyRecords).toHaveLength(1);
+      expect(loaded?.completedConcurrencyKeys).toEqual([]);
+      expect(loaded?.concurrencyRecords).toEqual([]);
+      expect(loaded?.concurrencyDiagnosticsByKey).toEqual({});
+      expect(loaded?.diagnosticsByCacheMode).toEqual({});
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rebuilds checkpoint aggregate diagnostics from per-cell diagnostics instead of trusting saved aggregate', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-rebuild-diag-'));
+    try {
+      const options = benchmark.parseArgs([
+        '--mode=local',
+        `--out=${path.join(root, 'report.json')}`,
+      ], {});
+      const context = benchmark.buildBenchmarkExecutionContext(options, 'database-a');
+      const checkpoint = benchmark.emptyBenchmarkCheckpoint(options, context, 'identity-a');
+      const first = concurrencyRecord({
+        cacheMode: 'off',
+        engine: 'rdf3x',
+        caseId: 'case-a',
+        concurrency: 1,
+      });
+      const second = concurrencyRecord({
+        cacheMode: 'off',
+        engine: 'rdf3x',
+        caseId: 'case-b',
+        concurrency: 1,
+      });
+      checkpoint.concurrencyRecords.push(first, second);
+      checkpoint.completedConcurrencyKeys.push(
+        benchmark.benchmarkConcurrencyKey('off', 'rdf3x', 'case-a', 1),
+        benchmark.benchmarkConcurrencyKey('off', 'rdf3x', 'case-b', 1),
+      );
+      checkpoint.concurrencyDiagnosticsByKey = Object.fromEntries([
+        diagnosticsByKey(first, 10),
+        diagnosticsByKey(second, 3),
+      ]);
+      checkpoint.diagnosticsByCacheMode = { off: { rdf3x: diagnostics(999), qlever: diagnostics(2) } };
+      await benchmark.saveBenchmarkCheckpoint(options, checkpoint);
+
+      const loaded = await benchmark.loadBenchmarkCheckpoint(options, context);
+
+      expect(loaded?.completedConcurrencyKeys).toHaveLength(2);
+      expect(loaded?.diagnosticsByCacheMode.off?.rdf3x.sharedBlocksRead).toBe(13);
+      expect(loaded?.diagnosticsByCacheMode.off?.rdf3x.sharedBlocksHit).toBe(15);
+      expect(loaded?.diagnosticsByCacheMode.off?.qlever).toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1563,6 +1673,58 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       complete,
       otherLane,
     ]);
+  });
+
+  it('rebuilds aggregate diagnostics after replacing a resumed infrastructure-failed cell', () => {
+    const completed = concurrencyRecord({
+      cacheMode: 'off',
+      engine: 'rdf3x',
+      caseId: 'case-a',
+      concurrency: 1,
+    });
+    const failedOld = concurrencyRecord({
+      cacheMode: 'off',
+      engine: 'rdf3x',
+      caseId: 'case-b',
+      concurrency: 1,
+      infrastructureErrors: 1,
+      infrastructureFailure: true,
+    });
+    const completedAfterRetry = concurrencyRecord({
+      ...failedOld,
+      completed: 1,
+      infrastructureErrors: 0,
+      infrastructureFailure: false,
+    });
+    const perCellDiagnostics = Object.fromEntries([
+      diagnosticsByKey(completed, 10),
+      diagnosticsByKey(failedOld, 20),
+    ]);
+    const records = benchmark.upsertBenchmarkConcurrencyRecord(
+      [ completed, failedOld ],
+      completedAfterRetry,
+    );
+    perCellDiagnostics[benchmark.benchmarkConcurrencyKey('off', 'rdf3x', 'case-b', 1)] =
+      diagnostics(3);
+
+    const aggregate = benchmark.rebuildBenchmarkDiagnosticsByCacheMode(
+      records,
+      perCellDiagnostics,
+    );
+
+    expect(aggregate.off?.rdf3x.sharedBlocksRead).toBe(13);
+    expect(aggregate.off?.rdf3x.sharedBlocksHit).toBe(15);
+  });
+
+  it('fails closed when rebuilding aggregate diagnostics without a per-cell entry', () => {
+    expect(() => benchmark.rebuildBenchmarkDiagnosticsByCacheMode([
+      concurrencyRecord({
+        cacheMode: 'off',
+        engine: 'rdf3x',
+        caseId: 'case-a',
+        concurrency: 1,
+      }),
+    ], {})).toThrow(/Missing concurrency diagnostics/iu);
   });
 
   it('separates build/setup pools from cache-mode operation pools', () => {
