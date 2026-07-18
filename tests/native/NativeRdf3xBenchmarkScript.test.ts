@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { inspect } from 'node:util';
 import { DataFactory } from 'n3';
 import { describe, expect, it } from 'vitest';
 import * as benchmark from '../../scripts/native-rdf3x-benchmark';
@@ -367,7 +368,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
 
     expect(caught).toBeInstanceOf(Error);
     const message = (caught as Error).message;
-    const directlyRendered = `${message}\n${JSON.stringify(caught)}`;
+    const directlyRendered = `${message}\n${JSON.stringify(caught)}\n${inspect(caught)}`;
     expect(directlyRendered).toContain('pg_control_system');
     expect(directlyRendered).not.toContain('postgres://');
     expect(directlyRendered).not.toContain('user');

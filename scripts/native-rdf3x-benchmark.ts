@@ -665,10 +665,8 @@ export async function collectBenchmarkDatabaseIdentity(
     result = await client.query(
       'SELECT pg_control_system().system_identifier::text AS system_identifier, current_database() AS database_name',
     );
-  } catch (error) {
-    throw new Error('Unable to collect PostgreSQL database identity from pg_control_system()', {
-      cause: error,
-    });
+  } catch {
+    throw new Error('Unable to collect PostgreSQL database identity from pg_control_system()');
   }
   const row = result.rows[0];
   if (typeof row?.system_identifier !== 'string' ||
