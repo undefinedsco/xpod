@@ -439,6 +439,13 @@ describe('cloud replacement benchmark', () => {
       'variant one postgres://alice:secret@db.internal.example:5432/app password=hunter2 token=abc secret=def host=api.internal 192.168.1.50:5432',
     ];
     let attempts = 0;
+    const seenAt = [
+      new Date('2026-07-18T01:00:00.000Z'),
+      new Date('2026-07-18T01:00:01.000Z'),
+      new Date('2026-07-18T01:00:02.000Z'),
+      new Date('2026-07-18T01:00:03.000Z'),
+      new Date('2026-07-18T01:00:04.000Z'),
+    ];
     const adapter: CloudReplacementEngineAdapter<'rdf3x'> = {
       id: 'rdf3x',
       async execute() {
@@ -456,6 +463,7 @@ describe('cloud replacement benchmark', () => {
       cacheMode: 'production',
       operationTimeoutMs: 1_000,
       now: () => attempts,
+      wallNow: () => seenAt[Math.max(attempts - 1, 0)] ?? seenAt[0]!,
     });
 
     expect(result.infrastructureErrors).toBe(5);
@@ -467,8 +475,8 @@ describe('cloud replacement benchmark', () => {
       category: 'connection',
       stage: 'acquire',
       count: 2,
-      firstSeenAt: 1,
-      lastSeenAt: 5,
+      firstSeenAt: '2026-07-18T01:00:00.000Z',
+      lastSeenAt: '2026-07-18T01:00:04.000Z',
       workloadId: pointCase.id,
       engine: 'rdf3x',
       cacheMode: 'production',
@@ -486,8 +494,8 @@ describe('cloud replacement benchmark', () => {
         name: string;
         code: string | null;
         message: string;
-        firstSeenAt: number;
-        lastSeenAt: number;
+        firstSeenAt: string;
+        lastSeenAt: string;
         count: number;
         workloadId: string;
         engine: CloudReplacementEngineId;
@@ -495,6 +503,25 @@ describe('cloud replacement benchmark', () => {
         concurrency: 1 | 8 | 32;
       }>;
     }>();
+  });
+
+  it('sanitizes raw endpoints and credential assignments in classified benchmark errors', () => {
+    const classified = classifyCloudReplacementBenchmarkError(Object.assign(new Error(
+      [
+        'connect 192.168.10.20 and 192.168.10.21:5432',
+        'ipv6 2001:db8:85a3::8a2e:370:7334 and [2001:db8::1]:5432',
+        'password = hunter2 token: abc secret : def user=alice username: bob',
+        'host = db.internal.example host: api.internal.example',
+      ].join(' '),
+    ), { code: 'ECONNRESET' }));
+
+    expect(classified.category).toBe('connection');
+    expect(classified.message).not.toMatch(
+      /192\.168|2001:db8|hunter2|abc|def|alice|bob|db\.internal|api\.internal|password\s*[=:]|token\s*[=:]|secret\s*[=:]|user(?:name)?\s*[=:]|host\s*[=:]/iu,
+    );
+    expect(classified.message).toContain('[redacted-endpoint]');
+    expect(classified.message).toContain('[redacted-credential]');
+    expect(classified.message).toContain('[redacted-host]');
   });
 
   it('keeps the measurement contracts exact and fixes adapter positions', () => {
@@ -2429,6 +2456,34 @@ describe('cloud replacement benchmark', () => {
           concurrency: 8,
           completed: 800,
           errors: 0,
+          infrastructureErrors: 2,
+          infrastructureFailure: false,
+          errorEvidence: {
+            counts: {
+              timeout: 0,
+              connection: 2,
+              cancelled: 0,
+              engine: 0,
+              correctness: 0,
+              unknown: 0,
+            },
+            samples: [
+              {
+                category: 'connection',
+                stage: 'acquire',
+                name: 'Error',
+                code: 'ECONNRESET',
+                message: 'connection reset [redacted-endpoint]',
+                firstSeenAt: '2026-07-18T01:00:00.000Z',
+                lastSeenAt: '2026-07-18T01:00:05.000Z',
+                count: 2,
+                workloadId: 'point-lookup',
+                engine: 'qlever',
+                cacheMode: 'off',
+                concurrency: 8,
+              },
+            ],
+          },
           elapsedMs: 10_000,
           throughputPerSecond: 80,
         },
@@ -2477,6 +2532,24 @@ describe('cloud replacement benchmark', () => {
       targetFacts: 10_000_000,
       actualFacts: 10_000_128,
       correctnessFailures: [ 'large-mismatch' ],
+      concurrency: [
+        {
+          infrastructureErrors: 2,
+          infrastructureFailure: false,
+          errorEvidence: {
+            counts: { connection: 2 },
+            samples: [
+              {
+                category: 'connection',
+                stage: 'acquire',
+                firstSeenAt: '2026-07-18T01:00:00.000Z',
+                lastSeenAt: '2026-07-18T01:00:05.000Z',
+                message: 'connection reset [redacted-endpoint]',
+              },
+            ],
+          },
+        },
+      ],
       decision: {
         recommendation: 'replace',
         passed: { correctness: true, all: true },
@@ -2497,6 +2570,9 @@ describe('cloud replacement benchmark', () => {
       'p95',
       'p99',
       '80',
+      'infrastructureErrors',
+      'connection reset [redacted-endpoint]',
+      '2026-07-18T01:00:05.000Z',
       '12,000',
       '400,000,000',
       'sharedBlocksRead',
@@ -2510,6 +2586,64 @@ describe('cloud replacement benchmark', () => {
     expect(`${json}\n${markdown}`).not.toMatch(
       /secret|db\.example|user|sslmode|private|connectionString/iu,
     );
+  });
+
+  it('rejects invalid concurrency evidence while rendering reports', () => {
+    const report: CloudReplacementReport = {
+      ...minimalCloudReplacementReport(),
+      concurrency: [
+        {
+          caseId: 'point-lookup',
+          engine: 'qlever',
+          concurrency: 8,
+          completed: 1,
+          errors: 0,
+          infrastructureErrors: 0,
+          infrastructureFailure: false,
+          errorEvidence: {
+            counts: {
+              timeout: 0,
+              connection: 0,
+              cancelled: 0,
+              engine: 0,
+              correctness: 0,
+              unknown: 0,
+            },
+            samples: [
+              {
+                category: 'connection',
+                stage: 'query',
+                name: 'Error',
+                code: null,
+                message: 'bad timestamp',
+                firstSeenAt: 'not-a-date',
+                lastSeenAt: '2026-07-18T01:00:00.000Z',
+                count: 1,
+                workloadId: 'point-lookup',
+                engine: 'qlever',
+                cacheMode: 'off',
+                concurrency: 8,
+              },
+            ],
+          },
+          elapsedMs: 1_000,
+          throughputPerSecond: 1,
+        },
+      ],
+    };
+
+    expect(() => renderCloudReplacementJson(report))
+      .toThrow('Cloud replacement concurrency[0].errorEvidence.samples[0].firstSeenAt must be an ISO timestamp');
+    expect(() => renderCloudReplacementJson({
+      ...report,
+      concurrency: [
+        {
+          ...report.concurrency[0]!,
+          infrastructureErrors: -1,
+          errorEvidence: { counts: { bogus: 1 }, samples: [] } as unknown as CloudReplacementErrorEvidence,
+        },
+      ],
+    })).toThrow('Cloud replacement report concurrency[0].infrastructureErrors must be finite and non-negative');
   });
 
   it('rejects raw connection fields and credential-bearing report strings', () => {

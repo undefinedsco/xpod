@@ -124,8 +124,8 @@ export interface CloudReplacementErrorSample {
   name: string;
   code: string | null;
   message: string;
-  firstSeenAt: number;
-  lastSeenAt: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
   count: number;
   workloadId: string;
   engine: CloudReplacementEngineId;
@@ -378,10 +378,12 @@ function sanitizeCloudReplacementErrorMessage(message: string): string {
     .replace(/[\u0000-\u001f\u007f-\u009f]/gu, ' ')
     .replace(/\bpostgres(?:ql)?:\/\/\S+/giu, '[redacted-url]')
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/giu, '[redacted-url]')
-    .replace(/\b(?:password|token|secret)=\S+/giu, '[redacted-credential]')
-    .replace(/\bhost=\S+/giu, 'host=[redacted-host]')
+    .replace(/\b(?:password|token|secret|user|username)\s*[=:]\s*\S+/giu, '[redacted-credential]')
+    .replace(/\bhost\s*[=:]\s*\S+/giu, '[redacted-host]')
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/gu, '[redacted-endpoint]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/gu, '[redacted-endpoint]')
     .replace(/\[[0-9a-f:]+\]:\d+/giu, '[redacted-endpoint]')
+    .replace(/\b[0-9a-f]{0,4}:[0-9a-f:]*:[0-9a-f:]*\b/giu, '[redacted-endpoint]')
     .replace(/\s+/gu, ' ')
     .trim()
     .slice(0, 240);
@@ -622,6 +624,7 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
     durationMs: number;
     operationTimeoutMs: number;
     now?: () => number;
+    wallNow?: () => Date;
   } & CloudReplacementCacheMeasurementOptions,
 ): Promise<CloudReplacementConcurrency> {
   const { cacheMode, concurrency, durationMs } = options;
@@ -651,6 +654,7 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
   }
 
   const now = options.now ?? (() => performance.now());
+  const wallNow = options.wallNow ?? (() => new Date());
   const startedAt = now();
   const deadline = startedAt + durationMs;
   let completed = 0;
@@ -687,7 +691,7 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
               code: null,
               message: sanitizeCloudReplacementErrorMessage(`fallback:${execution.fallbackReason}`),
             },
-            { ...evidenceContext, seenAt: now() },
+            { ...evidenceContext, seenAt: wallNow().toISOString() },
           );
         }
       } catch (error) {
@@ -700,7 +704,7 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
         recordCloudReplacementErrorEvidence(
           errorEvidence,
           classification,
-          { ...evidenceContext, seenAt: now() },
+          { ...evidenceContext, seenAt: wallNow().toISOString() },
         );
       }
     }
@@ -744,7 +748,7 @@ function recordCloudReplacementErrorEvidence(
     engine: CloudReplacementEngineId;
     cacheMode: CloudReplacementCacheMode;
     concurrency: 1 | 8 | 32;
-    seenAt: number;
+    seenAt: string;
   },
 ): void {
   evidence.counts[classification.category] += 1;
@@ -973,6 +977,9 @@ export interface CloudReplacementReportConcurrency {
   concurrency: 1 | 8 | 32;
   completed: number;
   errors: number;
+  infrastructureErrors: number;
+  infrastructureFailure: boolean;
+  errorEvidence: CloudReplacementErrorEvidence;
   elapsedMs: number;
   throughputPerSecond: number;
 }
@@ -1206,16 +1213,21 @@ export function renderCloudReplacementMarkdown(report: CloudReplacementReport): 
     '',
     '## Concurrency throughput',
     '',
-    '| Case | Engine | Concurrency | Completed | Errors | Measured (ms) | Throughput (ops/s) |',
-    '| --- | --- | ---: | ---: | ---: | ---: | ---: |',
+    '| Case | Engine | Concurrency | Completed | Errors | infrastructureErrors | infrastructureFailure | Measured (ms) | Throughput (ops/s) | errorEvidence |',
+    '| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |',
     ...normalized.concurrency.map((measurement) => [
       cloudReplacementMarkdownText(measurement.caseId),
       measurement.engine,
       measurement.concurrency,
       cloudReplacementReportNumber(measurement.completed),
       cloudReplacementReportNumber(measurement.errors),
+      cloudReplacementReportNumber(measurement.infrastructureErrors),
+      String(measurement.infrastructureFailure),
       cloudReplacementReportNumber(measurement.elapsedMs),
       cloudReplacementReportNumber(measurement.throughputPerSecond),
+      cloudReplacementMarkdownText(renderCloudReplacementErrorEvidenceSummary(
+        measurement.errorEvidence,
+      )),
     ].join(' | ').replace(/^/u, '| ').replace(/$/u, ' |')),
     '',
     '## Index build and storage',
@@ -1257,6 +1269,17 @@ export function renderCloudReplacementMarkdown(report: CloudReplacementReport): 
     '',
   );
   return lines.join('\n');
+}
+
+function renderCloudReplacementErrorEvidenceSummary(
+  evidence: CloudReplacementErrorEvidence,
+): string {
+  const nonZeroCounts = CLOUD_REPLACEMENT_ERROR_CATEGORIES
+    .filter((category) => evidence.counts[category] > 0)
+    .map((category) => `${category}=${evidence.counts[category]}`);
+  const samples = evidence.samples.map((sample) =>
+    `${sample.category}/${sample.stage}/${sample.count}/${sample.firstSeenAt}-${sample.lastSeenAt}: ${sample.message}`);
+  return [ ...nonZeroCounts, ...samples ].join('; ') || 'none';
 }
 
 function assertCloudReplacementRatioArray(value: number[], name: string): void {
@@ -1326,6 +1349,18 @@ function normalizeCloudReplacementReport(report: CloudReplacementReport): CloudR
       errors: cloudReplacementReportInteger(
         measurement.errors,
         `concurrency[${index}].errors`,
+      ),
+      infrastructureErrors: cloudReplacementReportInteger(
+        measurement.infrastructureErrors,
+        `concurrency[${index}].infrastructureErrors`,
+      ),
+      infrastructureFailure: cloudReplacementReportBoolean(
+        measurement.infrastructureFailure,
+        `concurrency[${index}].infrastructureFailure`,
+      ),
+      errorEvidence: normalizeCloudReplacementErrorEvidence(
+        measurement.errorEvidence,
+        `concurrency[${index}].errorEvidence`,
       ),
       elapsedMs: cloudReplacementReportNumberValue(
         measurement.elapsedMs,
@@ -1440,6 +1475,62 @@ function normalizeCloudReplacementDiagnostics(
   };
 }
 
+function normalizeCloudReplacementErrorEvidence(
+  evidence: CloudReplacementErrorEvidence,
+  path: string,
+): CloudReplacementErrorEvidence {
+  if (!evidence || typeof evidence !== 'object') {
+    throw new Error(`Cloud replacement report ${path} must be an object`);
+  }
+  const counts = evidence.counts;
+  if (!counts || typeof counts !== 'object' || Array.isArray(counts)) {
+    throw new Error(`Cloud replacement report ${path}.counts must contain every error category`);
+  }
+  const normalizedCounts = Object.fromEntries(CLOUD_REPLACEMENT_ERROR_CATEGORIES.map((category) => [
+    category,
+    cloudReplacementReportInteger(
+      (counts as Record<string, unknown>)[category] as number,
+      `${path}.counts.${category}`,
+    ),
+  ])) as Record<CloudReplacementErrorCategory, number>;
+  const countKeys = Object.keys(counts).sort();
+  if (countKeys.length !== CLOUD_REPLACEMENT_ERROR_CATEGORIES.length ||
+    countKeys.some((key) => !isCloudReplacementErrorCategory(key))) {
+    throw new Error(`Cloud replacement report ${path}.counts must contain only known error categories`);
+  }
+  if (!Array.isArray(evidence.samples)) {
+    throw new Error(`Cloud replacement report ${path}.samples must be an array`);
+  }
+  return {
+    counts: normalizedCounts,
+    samples: evidence.samples.map((sample, index) =>
+      normalizeCloudReplacementErrorSample(sample, `${path}.samples[${index}]`)),
+  };
+}
+
+function normalizeCloudReplacementErrorSample(
+  sample: CloudReplacementErrorSample,
+  path: string,
+): CloudReplacementErrorSample {
+  if (!sample || typeof sample !== 'object') {
+    throw new Error(`Cloud replacement report ${path} must be an object`);
+  }
+  return {
+    category: cloudReplacementReportErrorCategory(sample.category, `${path}.category`),
+    stage: cloudReplacementReportErrorStage(sample.stage, `${path}.stage`),
+    name: cloudReplacementReportText(sample.name, `${path}.name`),
+    code: sample.code === null ? null : cloudReplacementReportText(sample.code, `${path}.code`),
+    message: cloudReplacementReportText(sample.message, `${path}.message`),
+    firstSeenAt: cloudReplacementReportIsoTimestamp(sample.firstSeenAt, `${path}.firstSeenAt`),
+    lastSeenAt: cloudReplacementReportIsoTimestamp(sample.lastSeenAt, `${path}.lastSeenAt`),
+    count: cloudReplacementReportInteger(sample.count, `${path}.count`),
+    workloadId: cloudReplacementReportText(sample.workloadId, `${path}.workloadId`),
+    engine: cloudReplacementReportEngine(sample.engine),
+    cacheMode: cloudReplacementReportCacheMode(sample.cacheMode, `${path}.cacheMode`),
+    concurrency: cloudReplacementReportConcurrency(sample.concurrency),
+  };
+}
+
 function cloudReplacementReportGroup(value: CloudReplacementWorkloadGroup): CloudReplacementWorkloadGroup {
   if (![ 'short', 'large', 'authorization' ].includes(value)) {
     throw new Error(`Invalid Cloud replacement report workload group: ${value}`);
@@ -1459,6 +1550,52 @@ function cloudReplacementReportConcurrency(value: 1 | 8 | 32): 1 | 8 | 32 {
     throw new Error(`Invalid Cloud replacement report concurrency: ${value}`);
   }
   return value;
+}
+
+function cloudReplacementReportCacheMode(
+  value: CloudReplacementCacheMode,
+  path: string,
+): CloudReplacementCacheMode {
+  if (value !== 'off' && value !== 'production') {
+    throw new Error(`Invalid Cloud replacement report ${path}: ${value}`);
+  }
+  return value;
+}
+
+function cloudReplacementReportErrorCategory(
+  value: CloudReplacementErrorCategory,
+  path: string,
+): CloudReplacementErrorCategory {
+  if (!isCloudReplacementErrorCategory(value)) {
+    throw new Error(`Invalid Cloud replacement report ${path}: ${value}`);
+  }
+  return value;
+}
+
+function cloudReplacementReportErrorStage(
+  value: CloudReplacementErrorStage,
+  path: string,
+): CloudReplacementErrorStage {
+  if (!isCloudReplacementErrorStage(value)) {
+    throw new Error(`Invalid Cloud replacement report ${path}: ${value}`);
+  }
+  return value;
+}
+
+function cloudReplacementReportBoolean(value: boolean, path: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`Cloud replacement report ${path} must be boolean`);
+  }
+  return value;
+}
+
+function cloudReplacementReportIsoTimestamp(value: string, path: string): string {
+  const text = cloudReplacementReportText(value, path);
+  const date = new Date(text);
+  if (!Number.isFinite(date.getTime()) || date.toISOString() !== text) {
+    throw new Error(`Cloud replacement ${path} must be an ISO timestamp`);
+  }
+  return text;
 }
 
 function cloudReplacementReportText(value: string, path: string): string {
