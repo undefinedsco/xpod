@@ -109,6 +109,8 @@ export interface BenchmarkExecutionContext {
   workloadIds: string[];
 }
 
+export type BenchmarkReportExecutionContext = BenchmarkExecutionContext;
+
 export interface BenchmarkLoadingPlan {
   targetQuads: number;
   syntheticPodCount: 32 | 128 | 512;
@@ -336,6 +338,26 @@ export function buildBenchmarkExecutionContext(
     runnerIdentity: 'native-rdf3x-benchmark-v2',
     engineCommit: currentCommit(),
     workloadIds: cloudReplacementWorkloads().map(({ id }) => id),
+  };
+}
+
+export function buildBenchmarkReportExecutionContext(
+  context: BenchmarkExecutionContext,
+): BenchmarkReportExecutionContext {
+  if (!/^[a-f0-9]{64}$/u.test(context.databaseIdentity)) {
+    throw new Error('Invalid benchmark report execution context: databaseIdentity must be a sha256 hex digest');
+  }
+  if (context.workloadIds.length === 0 || context.workloadIds.some((id) =>
+    id.length === 0 || /[\u0000-\u001F\u007F]/u.test(id))) {
+    throw new Error('Invalid benchmark report execution context: workloadIds must be non-empty safe strings');
+  }
+  return {
+    location: context.location,
+    transport: context.transport,
+    databaseIdentity: context.databaseIdentity,
+    runnerIdentity: context.runnerIdentity,
+    engineCommit: context.engineCommit,
+    workloadIds: [ ...context.workloadIds ],
   };
 }
 
@@ -2149,6 +2171,7 @@ async function collectBenchmarkReport(
     weights: CLOUD_REPLACEMENT_GROUP_WEIGHTS,
     thresholds: CLOUD_REPLACEMENT_THRESHOLDS,
     ...sanitized,
+    executionContext: buildBenchmarkReportExecutionContext(context),
     environment: {
       ...sanitized.environment,
       qleverReady: summary.environment.qleverReady,

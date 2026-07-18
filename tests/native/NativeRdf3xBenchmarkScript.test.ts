@@ -263,6 +263,87 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     }
   });
 
+  it('builds cloned report execution contexts for direct and port-forward runs', () => {
+    const databaseIdentity = 'a'.repeat(64);
+    const workloadIds = [ 'point-lookup', 'message-feed' ];
+    const direct = benchmark.buildBenchmarkReportExecutionContext({
+      location: 'cluster',
+      transport: 'direct',
+      databaseIdentity,
+      runnerIdentity: 'native-rdf3x-benchmark-v2',
+      engineCommit: 'commit-a',
+      workloadIds,
+    });
+    const portForward = benchmark.buildBenchmarkReportExecutionContext({
+      location: 'cluster',
+      transport: 'port-forward',
+      databaseIdentity,
+      runnerIdentity: 'native-rdf3x-benchmark-v2',
+      engineCommit: 'commit-a',
+      workloadIds: [ 'point-lookup', 'message-feed' ],
+    });
+
+    expect(direct).toEqual({
+      location: 'cluster',
+      transport: 'direct',
+      databaseIdentity,
+      runnerIdentity: 'native-rdf3x-benchmark-v2',
+      engineCommit: 'commit-a',
+      workloadIds: [ 'point-lookup', 'message-feed' ],
+    });
+    expect(portForward.transport).toBe('port-forward');
+    expect(portForward.workloadIds).toEqual([ 'point-lookup', 'message-feed' ]);
+    expect(portForward.workloadIds).not.toBe(direct.workloadIds);
+    expect(direct.workloadIds).not.toBe(workloadIds);
+    workloadIds.push('mutated-after-build');
+    expect(direct.workloadIds).toEqual([ 'point-lookup', 'message-feed' ]);
+  });
+
+  it('rejects unsafe report execution context identities without leaking input', () => {
+    const unsafeIdentity = 'postgres://user:secret@example.test/raw_database';
+
+    try {
+      benchmark.buildBenchmarkReportExecutionContext({
+        location: 'cluster',
+        transport: 'direct',
+        databaseIdentity: unsafeIdentity,
+        runnerIdentity: 'native-rdf3x-benchmark-v2',
+        engineCommit: 'commit-a',
+        workloadIds: [ 'point-lookup' ],
+      });
+      throw new Error('expected context validation to fail');
+    } catch (error) {
+      const rendered = `${error instanceof Error ? error.message : String(error)} ${inspect(error)}`;
+      expect(rendered).not.toContain(unsafeIdentity);
+      expect(rendered).not.toContain('secret');
+      expect(rendered).not.toContain('raw_database');
+      expect(rendered).toContain('databaseIdentity');
+    }
+  });
+
+  it('rejects empty or control-character workload ids without leaking input', () => {
+    const unsafeWorkload = 'safe-id\nsecret-workload-url=https://example.test';
+
+    for (const workloadIds of [ [], [ unsafeWorkload ] ]) {
+      try {
+        benchmark.buildBenchmarkReportExecutionContext({
+          location: 'cluster',
+          transport: 'direct',
+          databaseIdentity: 'b'.repeat(64),
+          runnerIdentity: 'native-rdf3x-benchmark-v2',
+          engineCommit: 'commit-a',
+          workloadIds,
+        });
+        throw new Error('expected context validation to fail');
+      } catch (error) {
+        const rendered = `${error instanceof Error ? error.message : String(error)} ${inspect(error)}`;
+        expect(rendered).not.toContain(unsafeWorkload);
+        expect(rendered).not.toContain('secret-workload-url');
+        expect(rendered).toContain('workloadIds');
+      }
+    }
+  });
+
   it('clears all checkpoint evidence when database identity changes', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-db-'));
     try {
