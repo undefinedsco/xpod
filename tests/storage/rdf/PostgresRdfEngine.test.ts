@@ -1262,6 +1262,62 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('namespaces persisted result caches by execution semantics version', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-cache-semantics-version-'));
+    const engine = new PostgresRdfEngine({ driver: 'pglite', dataDir });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/2026/05/18/messages.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const query: RdfQuery = {
+      patterns: [{
+        graph,
+        subject: { variable: 'message' },
+        predicate: namedNode(STATUS),
+        object: literal('open'),
+      }],
+      select: ['message'],
+    };
+
+    try {
+      await engine.open();
+      await engine.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      await engine.query(query);
+      await engine.query({
+        ...query,
+        cache: { materialized: 'chat/default/open-messages' },
+      });
+      await engine.close();
+
+      const { PGlite: PGliteDatabase } = await import('@electric-sql/pglite');
+      const db = new PGliteDatabase(dataDir);
+      try {
+        const queryRows = await db.query<{ cache_key: string; query_shape: string }>(
+          'SELECT cache_key, query_shape FROM rdf_query_result_cache',
+        );
+        const queryShape = String(queryRows.rows[0]?.query_shape ?? '');
+        expect(queryRows.rows[0]?.cache_key).toBe(createHash('sha256')
+          .update('rdf-query-result-cache:3')
+          .update('\0')
+          .update(queryShape)
+          .digest('hex'));
+
+        const materializedRows = await db.query<{ cache_key: string; materialized_shape: string }>(
+          'SELECT cache_key, materialized_shape FROM rdf_materialized_result_cache',
+        );
+        const materializedShape = String(materializedRows.rows[0]?.materialized_shape ?? '');
+        expect(materializedRows.rows[0]?.cache_key).toBe(createHash('sha256')
+          .update('rdf-materialized-result-cache:2')
+          .update('\0')
+          .update(materializedShape)
+          .digest('hex'));
+      } finally {
+        await db.close();
+      }
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('can disable PostgreSQL query result caching and fall back to the baseline query path', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-query-cache-disabled-'));
     const engine = new PostgresRdfEngine({
