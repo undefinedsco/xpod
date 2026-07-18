@@ -1421,6 +1421,27 @@ describe('cloud replacement benchmark', () => {
     })).rejects.toThrow(message);
   });
 
+  it('rejects invalid connection breaker sleep hooks before any benchmark path can skip them', async () => {
+    const invalidSleep = 'invalid' as unknown as (ms: number) => Promise<void>;
+
+    await expect(measureCloudReplacementConcurrency(pointCase, fakeAdapter('rdf3x', []), {
+      concurrency: 1,
+      durationMs: 0,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      sleep: invalidSleep,
+    })).rejects.toThrow('Cloud replacement sleep must be a function');
+
+    await expect(measureCloudReplacementConcurrency(pointCase, fakeAdapter('rdf3x', []), {
+      concurrency: 1,
+      durationMs: 1,
+      cacheMode: 'production',
+      operationTimeoutMs: 1_000,
+      now: () => 1,
+      sleep: invalidSleep,
+    })).rejects.toThrow('Cloud replacement sleep must be a function');
+  });
+
   it.each([ 'unsupported', '' ])(
     'counts fallback execution %j as a concurrency error',
     async (fallbackReason) => {

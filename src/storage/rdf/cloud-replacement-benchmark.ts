@@ -642,6 +642,9 @@ export async function measureCloudReplacementConcurrency<Id extends CloudReplace
   const sleep = options.sleep ?? cloudReplacementSleep;
   const connectionBackoffMs = options.connectionBackoffMs ?? 100;
   const maxConsecutiveConnectionErrors = options.maxConsecutiveConnectionErrors ?? 3;
+  if (typeof sleep !== 'function') {
+    throw new Error('Cloud replacement sleep must be a function');
+  }
   if (!Number.isFinite(connectionBackoffMs) || connectionBackoffMs < 0) {
     throw new Error('Cloud replacement connectionBackoffMs must be finite and non-negative');
   }
