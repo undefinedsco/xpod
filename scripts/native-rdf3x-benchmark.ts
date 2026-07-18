@@ -349,13 +349,6 @@ export function benchmarkConcurrencyContextFingerprint(
   });
 }
 
-export function benchmarkCheckpointFingerprint(options: BenchmarkCliOptions): string {
-  return benchmarkLatencyContextFingerprint(
-    options,
-    buildBenchmarkExecutionContext(options, 'legacy-unavailable'),
-  );
-}
-
 export function emptyBenchmarkCheckpoint(
   options: BenchmarkCliOptions,
   context: BenchmarkExecutionContext,
@@ -444,7 +437,6 @@ export async function saveBenchmarkCheckpoint(
 export function compactBenchmarkCheckpoint(
   checkpoint: BenchmarkCheckpoint,
 ): BenchmarkCheckpoint {
-  type RecordWithOptionalCorrectness<T> = T & { correctness?: CloudReplacementCorrectness };
   const compactCorrectness = (
     correctness: CloudReplacementCorrectness,
   ): CloudReplacementCorrectness => ({
@@ -464,15 +456,7 @@ export function compactBenchmarkCheckpoint(
   });
   return {
     ...checkpoint,
-    latencyRecords: checkpoint.latencyRecords.map((record) => {
-      const recordWithCorrectness = record as RecordWithOptionalCorrectness<LatencyRecord>;
-      return recordWithCorrectness.correctness
-        ? {
-            ...record,
-            correctness: compactCorrectness(recordWithCorrectness.correctness),
-          }
-        : record;
-    }),
+    latencyRecords: [ ...checkpoint.latencyRecords ],
     correctnessRecords: checkpoint.correctnessRecords.map((record) => ({
       ...record,
       correctness: compactCorrectness(record.correctness),
@@ -682,9 +666,9 @@ export async function collectBenchmarkDatabaseIdentity(
       'SELECT pg_control_system().system_identifier::text AS system_identifier, current_database() AS database_name',
     );
   } catch (error) {
-    throw new Error(
-      `Unable to collect PostgreSQL database identity from pg_control_system(): ${errorMessage(error)}`,
-    );
+    throw new Error('Unable to collect PostgreSQL database identity from pg_control_system()', {
+      cause: error,
+    });
   }
   const row = result.rows[0];
   if (typeof row?.system_identifier !== 'string' ||

@@ -351,11 +351,30 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
   });
 
   it('fails closed when PostgreSQL system identity is unavailable', async () => {
-    await expect(benchmark.collectBenchmarkDatabaseIdentity({
-      async query() {
-        throw new Error('permission denied for function pg_control_system');
-      },
-    })).rejects.toThrow('pg_control_system');
+    let caught: unknown;
+    try {
+      await benchmark.collectBenchmarkDatabaseIdentity({
+        async query() {
+          throw new Error(
+            'permission denied for function pg_control_system against ' +
+            'postgres://user:top-secret@example.test/tenant_benchmark password=hunter2',
+          );
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    const directlyRendered = `${message}\n${JSON.stringify(caught)}`;
+    expect(directlyRendered).toContain('pg_control_system');
+    expect(directlyRendered).not.toContain('postgres://');
+    expect(directlyRendered).not.toContain('user');
+    expect(directlyRendered).not.toContain('top-secret');
+    expect(directlyRendered).not.toContain('example.test');
+    expect(directlyRendered).not.toContain('password=');
+    expect(directlyRendered).not.toContain('hunter2');
   });
 
   it('documents the safe CLI without accepting a connection URL argument', () => {
