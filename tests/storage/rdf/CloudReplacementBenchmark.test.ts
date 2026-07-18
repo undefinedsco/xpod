@@ -535,6 +535,8 @@ describe('cloud replacement benchmark', () => {
     ]) {
       const classified = classifyCloudReplacementBenchmarkError(error);
 
+      expect(classified.category).toBe('connection');
+      expect(classified.stage).toBe('acquire');
       expect(classified.code).toBe((error as { code: string }).code);
       expect(classified.message).not.toMatch(/db\.internal\.example|5432/u);
       expect(classified.message).toContain('[redacted-endpoint]');

@@ -227,6 +227,7 @@ const CLOUD_REPLACEMENT_CONNECTION_CODES = new Set([
   'EHOSTUNREACH',
   'ECONNABORTED',
   'ETIMEDOUT',
+  'ENOTFOUND',
 ]);
 
 export function classifyCloudReplacementBenchmarkError(
