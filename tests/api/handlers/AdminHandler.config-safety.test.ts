@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createAllowedAdminConfigPatch,
+  hasValidAdminToken,
   isAdminSecretEnvKey,
   sanitizeEnvForRead,
   sanitizeLogMessage,
@@ -124,6 +125,24 @@ describe('admin runtime config safety', () => {
     expect(isAdminSecretEnvKey('XPOD_NODE_TOKEN')).toBe(true);
     expect(isAdminSecretEnvKey('CSS_IDENTITY_DB_URL')).toBe(true);
     expect(isAdminSecretEnvKey('XPOD_HTTPS_KEY_PATH')).toBe(false);
+  });
+
+  it('accepts an admin token only when it matches the configured value', () => {
+    const originalToken = process.env.XPOD_ADMIN_TOKEN;
+    process.env.XPOD_ADMIN_TOKEN = 'admin-token';
+
+    try {
+      expect(hasValidAdminToken({ headers: { host: 'node.example.test' } } as any)).toBe(false);
+      expect(hasValidAdminToken({
+        headers: { host: 'node.example.test', 'x-xpod-admin-token': 'admin-token' },
+      } as any)).toBe(true);
+    } finally {
+      if (originalToken === undefined) {
+        delete process.env.XPOD_ADMIN_TOKEN;
+      } else {
+        process.env.XPOD_ADMIN_TOKEN = originalToken;
+      }
+    }
   });
 
   it('redacts configured secret values from log text', () => {

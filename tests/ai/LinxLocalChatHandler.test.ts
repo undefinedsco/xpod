@@ -397,6 +397,20 @@ describe('LinxLocalChatHandler local AI config routing', () => {
     expect(queryMock).not.toHaveBeenCalled();
   });
 
+  it('rejects chat graphs outside the authenticated Pod', async () => {
+    const response = await callLocalChatRoute({
+      chatId: 'http://localhost:5737/qa234350/.data/chat/private.ttl#this',
+      threadId: 'thread-1',
+      webId: 'http://localhost:5737/cuilinsu/profile/card#me',
+      content: 'cross-pod write',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toContain('chatId, threadId');
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(connectMock).not.toHaveBeenCalled();
+  });
+
   it('honors an explicit provider from the web chat request', async () => {
     queryMock.mockResolvedValue({
       rows: [

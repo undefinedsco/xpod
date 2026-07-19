@@ -1025,15 +1025,30 @@ function normalizeChatGraph(value: unknown, webId?: string): string | null {
   if (typeof value !== 'string' || !value) return null;
   const trimmed = value.trim();
   const withoutHash = trimmed.split('#')[0];
+  const podBase = resolvePodBaseFromWebId(webId);
+  if (!podBase) return null;
+  const chatRoot = new URL('.data/chat/', podBase);
+
   if (/^https?:\/\/.+\/\.data\/chat\/.+(?:\.ttl|\/index\.ttl)$/.test(withoutHash)) {
-    return withoutHash;
+    try {
+      const graph = new URL(withoutHash);
+      const isOwnedChatResource = graph.origin === chatRoot.origin
+        && graph.pathname.startsWith(chatRoot.pathname)
+        && (graph.pathname.endsWith('.ttl') || graph.pathname.endsWith('/index.ttl'));
+      if (!isOwnedChatResource) return null;
+
+      graph.search = '';
+      graph.hash = '';
+      return graph.href;
+    } catch {
+      return null;
+    }
   }
 
   const chatId = normalizeChatId(trimmed);
   if (!chatId) return null;
 
-  const podBase = resolvePodBaseFromWebId(webId) || 'http://localhost:5737/';
-  return `${podBase}.data/chat/${chatId}/index.ttl`;
+  return new URL(`.data/chat/${encodeURIComponent(chatId)}/index.ttl`, podBase).href;
 }
 
 function normalizeChatId(value: string): string | null {

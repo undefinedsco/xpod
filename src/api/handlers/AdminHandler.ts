@@ -151,16 +151,20 @@ function sanitizeLogEntry(entry: LogEntry, env: EnvConfig): LogEntry {
   };
 }
 
-function isLocalAdminHost(req: AuthenticatedRequest): boolean {
-  const configuredToken = process.env.XPOD_ADMIN_TOKEN;
-  const providedToken = req.headers['x-xpod-admin-token'] ??
-    req.headers.authorization?.replace(/^Bearer\s+/i, '');
-  if (configuredToken && providedToken === configuredToken) {
+export function isLocalAdminHost(req: AuthenticatedRequest): boolean {
+  if (hasValidAdminToken(req)) {
     return true;
   }
 
   const host = String(req.headers.host ?? '').split(':')[0].toLowerCase();
   return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+}
+
+export function hasValidAdminToken(req: AuthenticatedRequest): boolean {
+  const configuredToken = process.env.XPOD_ADMIN_TOKEN;
+  const providedToken = req.headers['x-xpod-admin-token'] ??
+    req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  return Boolean(configuredToken && providedToken === configuredToken);
 }
 
 function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerResponse): boolean {
@@ -170,6 +174,17 @@ function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerRespon
   sendJson(res, 403, {
     error: 'Forbidden',
     detail: 'Runtime config writes and restart are allowed only from loopback or with XPOD_ADMIN_TOKEN.',
+  });
+  return false;
+}
+
+function assertAdminModelProbeAllowed(req: AuthenticatedRequest, res: ServerResponse): boolean {
+  if (hasValidAdminToken(req)) {
+    return true;
+  }
+  sendJson(res, 403, {
+    error: 'Forbidden',
+    detail: 'Model service probing requires XPOD_ADMIN_TOKEN.',
   });
   return false;
 }
@@ -428,6 +443,10 @@ export function registerAdminRoutes(server: ApiServer): void {
     res: ServerResponse,
   ) => {
     try {
+      if (!assertAdminModelProbeAllowed(req, res)) {
+        return;
+      }
+
       const body = await parseJsonBody<ModelListProbeBody>(req);
       const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
       const providerId = typeof body.providerId === 'string' ? body.providerId.trim() : '';
