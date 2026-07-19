@@ -87,6 +87,7 @@ export interface BenchmarkCliOptions {
   targetQuads: number;
   iterations: number;
   warmupIterations: number;
+  workloadIds: string[];
   concurrency: BenchmarkConcurrency[];
   cacheMode: BenchmarkCacheMode;
   cacheModes: CloudReplacementCacheMode[];
@@ -338,7 +339,7 @@ export function buildBenchmarkExecutionContext(
     databaseIdentity,
     runnerIdentity: 'native-rdf3x-benchmark-v2',
     engineCommit: currentCommit(),
-    workloadIds: cloudReplacementWorkloads().map(({ id }) => id),
+    workloadIds: [ ...options.workloadIds ],
   };
 }
 
@@ -744,6 +745,7 @@ Options:
   --targetQuads=N                       Minimum fact count. Default: 20000
   --iterations=20                       Timed latency samples per case
   --warmupIterations=3                  Warmup samples after the cold sample
+  --workloads=id,id                     Run only the selected benchmark cases
   --concurrency=1,8,32                  Sustained concurrency lanes
   --cacheMode=off|production|both       Cache evidence. Default: both
   --operationTimeoutMs=30000            Positive timeout for measured queries
@@ -771,6 +773,7 @@ export function parseArgs(
     'targetQuads',
     'iterations',
     'warmupIterations',
+    'workloads',
     'concurrency',
     'cacheMode',
     'operationTimeoutMs',
@@ -828,6 +831,7 @@ export function parseArgs(
     'warmupIterations',
     DEFAULT_WARMUP_ITERATIONS,
   );
+  const workloadIds = workloadOption(values.get('workloads'));
   const concurrency = concurrencyOption(values.get('concurrency'));
   const cacheMode = enumOption(
     values,
@@ -865,6 +869,7 @@ export function parseArgs(
     targetQuads,
     iterations,
     warmupIterations,
+    workloadIds,
     concurrency,
     cacheMode,
     cacheModes,
@@ -1825,6 +1830,7 @@ function buildDryRunPlan(options: BenchmarkCliOptions): Record<string, unknown> 
     targetQuads: options.targetQuads,
     iterations: options.iterations,
     warmupIterations: options.warmupIterations,
+    workloadIds: options.workloadIds,
     concurrency: options.concurrency,
     cacheModes: options.cacheModes,
     operationTimeoutMs: options.operationTimeoutMs,
@@ -1974,7 +1980,9 @@ async function collectBenchmarkReport(
   pool: Pool,
   actualFacts: number,
 ): Promise<Record<string, unknown>> {
-  const workloads = cloudReplacementWorkloads();
+  const selectedWorkloadIds = new Set(options.workloadIds);
+  const workloads = cloudReplacementWorkloads().filter(({ id }) =>
+    selectedWorkloadIds.has(id));
   const workloadById = new Map(workloads.map((workload) => [ workload.id, workload ]));
   const databaseIdentity = await collectBenchmarkDatabaseIdentity(pool);
   const context = buildBenchmarkExecutionContext(options, databaseIdentity);
@@ -2828,6 +2836,22 @@ function nonEmptyOption(
     throw new Error(`Invalid --${name}; expected a non-empty single-line value`);
   }
   return value;
+}
+
+function workloadOption(raw?: string): string[] {
+  const available = cloudReplacementWorkloads().map(({ id }) => id);
+  if (raw === undefined) {
+    return available;
+  }
+  const selected = raw.split(',');
+  const known = new Set(available);
+  if (selected.length === 0 || selected.some((id) => !id || !known.has(id))) {
+    throw new Error('Unknown benchmark workload in --workloads');
+  }
+  if (new Set(selected).size !== selected.length) {
+    throw new Error('Invalid --workloads; expected unique workload ids');
+  }
+  return selected;
 }
 
 function concurrencyOption(raw?: string): BenchmarkConcurrency[] {

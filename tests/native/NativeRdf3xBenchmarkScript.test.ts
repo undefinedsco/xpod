@@ -189,6 +189,25 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(help.stdout).toContain('--transport=direct|port-forward');
   });
 
+  it('limits diagnostic runs to explicitly selected workloads', () => {
+    const options = benchmark.parseArgs([
+      '--mode=local',
+      '--workloads=point-lookup,latest-message,count-distinct-threads',
+    ], {});
+
+    expect(options.workloadIds).toEqual([
+      'point-lookup',
+      'latest-message',
+      'count-distinct-threads',
+    ]);
+    expect(benchmark.buildBenchmarkExecutionContext(options, 'database-a').workloadIds)
+      .toEqual(options.workloadIds);
+    expect(() => benchmark.parseArgs([
+      '--mode=local',
+      '--workloads=missing-workload',
+    ], {})).toThrow('Unknown benchmark workload');
+  });
+
   it('persists and reloads only matching workload checkpoints', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-benchmark-checkpoint-'));
     try {
