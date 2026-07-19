@@ -575,6 +575,41 @@ describe('VercelChatService provider config fallback', () => {
     });
   });
 
+  it('streams ai-gateway responses requests without parsing SSE as JSON', async () => {
+    process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
+    process.env.DEFAULT_API_KEY = 'gateway-service-key';
+
+    const { service } = createService(undefined);
+    mockAiGatewayModels(['linx-lite']);
+    getFetchMock().mockResolvedValueOnce(new Response(
+      'event: response.output_text.delta\ndata: {"delta":"pong-local"}\n\n',
+      {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+      },
+    ));
+
+    const result = await service.responses({
+      model: 'linx-lite',
+      input: 'hello',
+      stream: true,
+      vector_store_ids: ['vs_123'],
+    }, solidAuth as any);
+
+    const response = result.toTextStreamResponse();
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(await response.text()).toContain('pong-local');
+
+    expect(getFetchMock().mock.calls[1]?.[0]).toBe('https://ai-gateway.example.com/v1/responses');
+    const [, init] = getFetchMock().mock.calls[1] as [string, RequestInit];
+    expect(new Headers(init.headers).get('accept')).toBe('text/event-stream');
+    expect(JSON.parse(String(init.body))).toEqual({
+      model: 'linx-lite',
+      input: 'hello',
+      stream: true,
+    });
+  });
+
   it('caches ai-gateway models between forwarded requests', async () => {
     process.env.DEFAULT_API_BASE = 'https://ai-gateway.example.com/v1';
     process.env.DEFAULT_API_KEY = 'gateway-service-key';

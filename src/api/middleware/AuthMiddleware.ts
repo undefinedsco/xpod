@@ -57,7 +57,7 @@ export class AuthMiddleware {
     this.logger.debug(
       `Auth ${request.method} ${request.url} success=${result.success}` +
       (result.error ? ` error=${result.error}` : '') +
-      (result.context ? ` context=${JSON.stringify(this.safeContextForLog(result.context))}` : ''),
+      (result.context ? ` context=${JSON.stringify(sanitizeAuthContextForLog(result.context))}` : ''),
     );
 
     if (!result.success) {
@@ -76,15 +76,34 @@ export class AuthMiddleware {
     response.setHeader('WWW-Authenticate', 'Bearer, DPoP');
     response.end(JSON.stringify({ error: 'Unauthorized', message }));
   }
+}
 
-  private safeContextForLog(context: AuthContext): Record<string, unknown> {
+export function sanitizeAuthContextForLog(context: AuthContext | undefined): Record<string, unknown> | undefined {
+  if (!context) return undefined;
+
+  if (context.type === 'solid') {
     return {
-      type: (context as any).type,
-      webId: (context as any).webId,
-      accountId: (context as any).accountId,
-      clientId: (context as any).clientId,
-      tokenType: (context as any).tokenType,
-      viaApiKey: (context as any).viaApiKey,
+      type: context.type,
+      webId: context.webId,
+      accountId: context.accountId,
+      clientId: context.clientId,
+      tokenType: context.tokenType,
+      viaApiKey: context.viaApiKey,
     };
   }
+
+  if (context.type === 'node') {
+    return {
+      type: context.type,
+      nodeId: context.nodeId,
+      accountId: context.accountId,
+    };
+  }
+
+  return {
+    type: context.type,
+    serviceType: context.serviceType,
+    serviceId: context.serviceId,
+    scopes: context.scopes,
+  };
 }

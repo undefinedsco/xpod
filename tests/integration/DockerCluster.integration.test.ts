@@ -27,6 +27,7 @@ const LOCAL_PORT = process.env.LOCAL_PORT || '5737';
 const LOCAL_API_PORT = process.env.LOCAL_API_PORT || '5738';
 const STANDALONE_PORT = process.env.STANDALONE_PORT || '5739';
 const STANDALONE_API_PORT = process.env.STANDALONE_API_PORT || '5740';
+const POSTGRES_PORT = Number(process.env.POSTGRES_PORT || '5432');
 const SERVICE_TOKEN = 'svc-testservicetokenforintegration';
 
 // 与 docker-compose.cluster.yml 对应的服务配置
@@ -71,7 +72,7 @@ suite('Docker Cluster Integration', () => {
         password: 'xpod',
         host: 'localhost',
         database: 'xpod',
-        port: 5432,
+        port: POSTGRES_PORT,
       });
       await pgClient.connect();
     } catch {

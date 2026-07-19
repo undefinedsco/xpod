@@ -1,6 +1,10 @@
 import { PassThrough } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AuthMiddleware, type AuthenticatedRequest } from '../../src/api/middleware/AuthMiddleware';
+import {
+  AuthMiddleware,
+  sanitizeAuthContextForLog,
+  type AuthenticatedRequest,
+} from '../../src/api/middleware/AuthMiddleware';
 import type { Authenticator } from '../../src/api/auth/Authenticator';
 
 function createRequest(): AuthenticatedRequest {
@@ -48,5 +52,29 @@ describe('AuthMiddleware logging', () => {
     await expect(middleware.process(createRequest(), createResponse())).resolves.toBe(true);
 
     expect(stdout).not.toHaveBeenCalled();
+  });
+
+  it('redacts credential material from auth context logs', () => {
+    const sanitized = sanitizeAuthContextForLog({
+      type: 'solid',
+      webId: 'https://example.com/profile/card#me',
+      accountId: 'account-1',
+      clientId: 'client-1',
+      clientSecret: 'secret-should-not-log',
+      accessToken: 'token-should-not-log',
+      tokenType: 'Bearer',
+      viaApiKey: true,
+    } as any);
+
+    expect(sanitized).toEqual({
+      type: 'solid',
+      webId: 'https://example.com/profile/card#me',
+      accountId: 'account-1',
+      clientId: 'client-1',
+      tokenType: 'Bearer',
+      viaApiKey: true,
+    });
+    expect(JSON.stringify(sanitized)).not.toContain('secret-should-not-log');
+    expect(JSON.stringify(sanitized)).not.toContain('token-should-not-log');
   });
 });

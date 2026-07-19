@@ -90,6 +90,7 @@
     "test:safe": "./scripts/run-vitest-safe.sh",
     "test:run:safe": "./scripts/run-vitest-safe.sh --run",
     "test:terminal": "bun scripts/test-terminal.ts",
+    "test:e2e:linx-local-chat": "bun scripts/test-linx-local-chat-e2e.ts",
     "test:coverage": "./scripts/run-vitest-safe.sh --run --coverage",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "test:integration": "bun run test:integration:all",

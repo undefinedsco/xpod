@@ -22,6 +22,64 @@ export interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1';
+}
+
+export function normalizeAccountControlUrl(value: string | undefined, currentOrigin: string | undefined): string | undefined {
+  if (!value || !currentOrigin) {
+    return value;
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.pathname.startsWith('/.account/') && isLoopbackHost(url.hostname)) {
+      return `${currentOrigin}${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch {
+    return value;
+  }
+
+  return value;
+}
+
+export function normalizeAccountControls(controls: Controls, currentOrigin: string | undefined): Controls {
+  return {
+    password: controls.password && {
+      login: normalizeAccountControlUrl(controls.password.login, currentOrigin),
+      create: normalizeAccountControlUrl(controls.password.create, currentOrigin),
+      forgot: normalizeAccountControlUrl(controls.password.forgot, currentOrigin),
+      reset: normalizeAccountControlUrl(controls.password.reset, currentOrigin),
+    },
+    account: controls.account && {
+      create: normalizeAccountControlUrl(controls.account.create, currentOrigin),
+      logout: normalizeAccountControlUrl(controls.account.logout, currentOrigin),
+      webId: normalizeAccountControlUrl(controls.account.webId, currentOrigin),
+      pod: normalizeAccountControlUrl(controls.account.pod, currentOrigin),
+      clientCredentials: normalizeAccountControlUrl(controls.account.clientCredentials, currentOrigin),
+    },
+    html: controls.html && {
+      password: controls.html.password && {
+        login: normalizeAccountControlUrl(controls.html.password.login, currentOrigin),
+        register: normalizeAccountControlUrl(controls.html.password.register, currentOrigin),
+        forgot: normalizeAccountControlUrl(controls.html.password.forgot, currentOrigin),
+      },
+      account: controls.html.account && {
+        account: normalizeAccountControlUrl(controls.html.account.account, currentOrigin),
+      },
+    },
+    oidc: controls.oidc && {
+      webId: normalizeAccountControlUrl(controls.oidc.webId, currentOrigin),
+      consent: normalizeAccountControlUrl(controls.oidc.consent, currentOrigin),
+      cancel: normalizeAccountControlUrl(controls.oidc.cancel, currentOrigin),
+    },
+    main: controls.main && {
+      logins: normalizeAccountControlUrl(controls.main.logins, currentOrigin),
+      index: normalizeAccountControlUrl(controls.main.index, currentOrigin),
+    },
+  };
+}
+
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
@@ -73,7 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         
         // Set both states together to avoid race condition
         setHasOidcPending(pending);
-        setControls(json.controls || {});
+        setControls(normalizeAccountControls(json.controls || {}, window.location.origin));
       } else {
         if (res.status === 401 || res.status === 403) {
           clearAccountSessionToken();

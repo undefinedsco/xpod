@@ -22,12 +22,12 @@
       }
     },
     {
-      "comment": "定义 oidcIssuer 变量（外部 OIDC issuer 基础 URL），设置后本地仍提供 account/consent/SP 页面",
+      "comment": "定义 oidcIssuer 变量（外部 IdP 基础 URL），设置后启用 SP 模式",
       "@id": "urn:solid-server:default:variable:oidcIssuer",
       "@type": "Variable"
     },
     {
-      "comment": "Auto-detect OIDC pass-through - 有 oidcIssuer 时也保持本地 CSS OIDC discovery/token/JWKS 同源",
+      "comment": "Auto-detect OIDC Handler - 有 oidcIssuer 时启用 SP 模式，代理 JWKS",
       "@id": "urn:undefineds:xpod:AutoDetectOidcHandler",
       "@type": "AutoDetectOidcHandler",
       "AutoDetectOidcHandler:_options_oidcIssuer": {
@@ -36,7 +36,7 @@
       "AutoDetectOidcHandler:_options_cacheMs": 300000
     },
     {
-      "comment": "CSS 原生 IdentityProvider parsing handler，始终用于本地 account/consent/WebID 选择页面",
+      "comment": "原始 IdentityProviderHandler 实例（用于标准模式委托）",
       "@id": "urn:undefineds:xpod:SourceIdentityProviderHandler",
       "@type": "RouterHandler",
       "baseUrl": {
@@ -53,7 +53,7 @@
       }
     },
     {
-      "comment": "Auto-detect Identity Provider Handler - 有 oidcIssuer 时仍委托本地 account/consent，避免 Local 登录漏到 Cloud Pod",
+      "comment": "Auto-detect Identity Provider Handler - 有 oidcIssuer 时禁用本地账户管理",
       "@id": "urn:undefineds:xpod:AutoDetectIdentityProviderHandler",
       "@type": "AutoDetectIdentityProviderHandler",
       "AutoDetectIdentityProviderHandler:_options_oidcIssuer": {
@@ -78,34 +78,19 @@
       "@value": "./data"
     },
     {
-      "comment": "Compatibility QuintStore instance (SQLite TEXT quints for fallback and migration).",
-      "@id": "urn:undefineds:xpod:CompatibilityQuintStore",
-      "@type": "SqliteQuintStore",
-      "options_path": {
+      "comment": "Shared QuintStore instance (PostgreSQL for local Docker development)",
+      "@id": "urn:undefineds:xpod:QuintStore",
+      "@type": "PgQuintStore",
+      "options_driver": "pg",
+      "connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
       }
     },
     {
-      "comment": "Shared RDF write store: mirrors compatibility quints into the term-id RDF index.",
-      "@id": "urn:undefineds:xpod:QuintStore",
-      "@type": "ShadowRdfQuintStore",
-      "compatibilityStore": {
-        "@id": "urn:undefineds:xpod:CompatibilityQuintStore"
-      },
-      "index_path": {
-        "@id": "urn:solid-server:default:variable:rdfIndexPath",
-        "@type": "Variable"
-      },
-      "autoOpen": true,
-      "autoBackfill_enabled": true,
-      "autoBackfill_clear": true,
-      "autoBackfill_batchSize": 1000
-    },
-    {
-      "comment": "VectorStore using SQLite (same db as QuintStore for JOIN)",
+      "comment": "VectorStore using PostgreSQL for local Docker development",
       "@id": "urn:undefineds:xpod:VectorStore",
-      "@type": "SqliteVectorStore",
+      "@type": "PostgresVectorStore",
       "options_connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
@@ -129,56 +114,26 @@
       }
     },
     {
-      "comment": "RDF term-id query engine backed by the shared local RDF index.",
-      "@id": "urn:undefineds:xpod:SolidRdfEngine",
-      "@type": "SolidRdfEngine",
-      "index_path": {
-        "@id": "urn:solid-server:default:variable:rdfIndexPath",
-        "@type": "Variable"
-      },
-      "autoOpen": true
-    },
-    {
-      "comment": "Compatibility SPARQL engine backed by the shadow store, so fallback writes update both indexes.",
-      "@id": "urn:undefineds:xpod:CompatibilitySparqlEngine",
+      "comment": "DefaultSparqlEngine: QuintstoreSparqlEngine for local (with OPTIONAL optimization)",
+      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
       "@type": "QuintstoreSparqlEngine",
       "store": {
         "@id": "urn:undefineds:xpod:QuintStore"
       }
     },
     {
-      "comment": "Default SPARQL engine: server-owned Pod queries use SolidRdfEngine; compatibility fallback is opt-in.",
-      "@id": "urn:undefineds:xpod:DefaultSparqlEngine",
-      "@type": "SolidRdfSparqlEngine",
-      "rdfEngine": {
-        "@id": "urn:undefineds:xpod:SolidRdfEngine"
-      },
-      "enablePrimary": true
-    },
-    {
-      "comment": "Use SolidRdfEngine for structured RDF data and local filesystem for other content.",
+      "comment": "Use QuintStore for RDF data and local filesystem for other content.",
       "@id": "urn:undefineds:xpod:MixDataAccessor",
       "@type": "MixDataAccessor",
       "structuredDataAccessor": {
-        "@id": "urn:undefineds:xpod:SolidRdfDataAccessor"
+        "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor"
       },
       "unstructuredDataAccessor": {
         "@id": "urn:solid-server:default:FileDataAccessor"
       }
     },
     {
-      "comment": "Default structured RDF data accessor backed directly by SolidRdfEngine.",
-      "@id": "urn:undefineds:xpod:SolidRdfDataAccessor",
-      "@type": "SolidRdfDataAccessor",
-      "rdfEngine": {
-        "@id": "urn:undefineds:xpod:SolidRdfEngine"
-      },
-      "identifierStrategy": {
-        "@id": "urn:solid-server:default:IdentifierStrategy"
-      }
-    },
-    {
-      "comment": "Compatibility SPARQL data accessor using shared QuintStore.",
+      "comment": "QuintStore-based SPARQL data accessor using shared QuintStore.",
       "@id": "urn:undefineds:xpod:QuintStoreSparqlDataAccessor",
       "@type": "QuintStoreSparqlDataAccessor",
       "store": {
@@ -264,21 +219,22 @@
             "@type": "MemoryMapStorage"
           }
         },
-        "expiration": 30000
+        "expiration": 6000
       }
     },
     {
-      "comment": "Use SQLite-based KeyValueStorage for internal data (avoids .internal directory)",
+      "comment": "Use PostgreSQL KeyValueStorage for internal data in local Docker development",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:KeyValueStorage"
       },
       "overrideParameters": {
-        "@type": "SqliteKeyValueStorage",
-        "path": {
+        "@type": "PostgresKeyValueStorage",
+        "connectionString": {
           "@id": "urn:solid-server:default:variable:identityDbUrl",
           "@type": "Variable"
-        }
+        },
+        "tableName": "internal_kv"
       }
     },
     {
@@ -310,7 +266,7 @@
             "@id": "urn:solid-server:default:StaticAssetHandler"
           },
           {
-            "comment": "Local 模式下 OIDC discovery/token/JWKS 全部由 CSS 默认 OIDC handler 处理，避免本地 token 与外部 JWKS 错配",
+            "comment": "SP 模式下代理 JWKS，标准模式下透传",
             "@id": "urn:undefineds:xpod:AutoDetectOidcHandler"
           },
           {

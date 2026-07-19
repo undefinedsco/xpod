@@ -19,6 +19,8 @@ COPY scripts/patch-jose.js ./scripts/patch-jose.js
 RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
+# Never allow host-native UI binaries to override the Linux dependencies.
+RUN rm -rf ui/node_modules
 RUN bun run build:ts && bun run build:components && node scripts/check-components-runtime-metadata.cjs && bun run build:ui
 
 # Runtime

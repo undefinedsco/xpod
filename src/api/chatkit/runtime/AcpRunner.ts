@@ -47,6 +47,7 @@ export class AcpRunner extends EventEmitter {
   private readonly logger = getLoggerFor(this);
   private proc?: ChildProcessWithoutNullStreams;
   private nextId: JsonRpcId = 1;
+  private stderrTail = '';
   private pending = new Map<JsonRpcId, {
     resolve: (value: unknown) => void;
     reject: (err: Error) => void;
@@ -102,13 +103,17 @@ export class AcpRunner extends EventEmitter {
     this.proc.stderr.setEncoding('utf8');
     this.proc.stderr.on('data', (data: string) => {
       // Keep stderr observable for debugging; do not treat it as protocol.
+      this.stderrTail = `${this.stderrTail}${data}`.slice(-4000);
       this.emit('stderr', data);
     });
 
     this.proc.on('exit', (code, signal) => {
       this.logger.debug(`ACP process exited: code=${code}, signal=${signal}`);
+      const detail = this.stderrTail.trim();
       for (const [ id, p ] of this.pending.entries()) {
-        p.reject(new Error(`ACP process exited before response (id=${id})`));
+        p.reject(new Error(
+          `ACP process exited before response (id=${id})${detail ? `: ${detail}` : ''}`,
+        ));
       }
       this.pending.clear();
       this.emit('exit', code ?? null, signal ?? undefined);

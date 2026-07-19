@@ -1513,7 +1513,7 @@
 
     "@undefineds.co/drizzle-solid": ["@undefineds.co/drizzle-solid@0.3.18", "", { "dependencies": { "@inrupt/solid-client": "^3.0.0", "@inrupt/solid-client-authn-node": "^3.1.1", "@inrupt/universal-fetch": "^1.0.3", "@inrupt/vocab-common-rdf": "^1.0.5", "dotenv": "^17.2.2", "drizzle-orm": "^0.28.0", "n3": "^1.26.0", "node-fetch": "^3.3.2", "sparqljs": "^3.7.3", "zod": "^4.1.8" }, "peerDependencies": { "@comunica/query-sparql-solid": "^4.0.2" }, "optionalPeers": ["@comunica/query-sparql-solid"] }, "sha512-VY+4xkSuMhKKjujn+pEIifq/194Vc8fdw7GF+9HJb0YBAyXQUXwNFDt3mZnHN/pTVfta5RUJIIG14TTlr78pJg=="],
 
-    "@undefineds.co/extensions": ["@undefineds.co/extensions@github:undefinedsco/extensions#4979425", {}, "undefinedsco-extensions-4979425"],
+    "@undefineds.co/extensions": ["@undefineds.co/extensions@github:undefinedsco/extensions#4979425", {}, "undefinedsco-extensions-4979425", "sha512-v/VsHBbohPzlx5PisiKKXDS6fHd5htJ8+OQT3b8tn1V1UUoUO72kSkDpTf1Txd7ianMey/wuDt8wpPm6AOjb1w=="],
 
     "@undefineds.co/models": ["@undefineds.co/models@0.2.46", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-bLXYoKjNTrM2RMBzusjOVurWjC7CABttDE7wLo7av0QkN8sUc6e0AXTwBkKvp/GT0G3udLVwT9CRQ3aCwpbI8g=="],
 

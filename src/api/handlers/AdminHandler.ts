@@ -174,6 +174,13 @@ function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerRespon
   return false;
 }
 
+interface ModelListProbeBody {
+  providerId?: string;
+  endpoint?: string;
+  apiKey?: string;
+  proxyUrl?: string;
+}
+
 /**
  * Read .env.local file and parse it
  */
@@ -291,7 +298,7 @@ function sendJson(res: ServerResponse, status: number, data: unknown): void {
 /**
  * Parse JSON body from request
  */
-function parseJsonBody(req: AuthenticatedRequest): Promise<{ env?: EnvConfig }> {
+function parseJsonBody<T = { env?: EnvConfig }>(req: AuthenticatedRequest): Promise<T> {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', (chunk: Buffer) => {
@@ -299,13 +306,31 @@ function parseJsonBody(req: AuthenticatedRequest): Promise<{ env?: EnvConfig }> 
     });
     req.on('end', () => {
       try {
-        resolve(body ? JSON.parse(body) : {});
+        resolve((body ? JSON.parse(body) : {}) as T);
       } catch (err) {
         reject(err);
       }
     });
     req.on('error', reject);
   });
+}
+
+function buildProviderModelHeaders(providerId?: string, apiKey?: string): Record<string, string> {
+  if (!apiKey) return {};
+  if (providerId === 'google') {
+    return { 'x-goog-api-key': apiKey };
+  }
+  if (providerId === 'ollama') {
+    return {};
+  }
+  return { Authorization: `Bearer ${apiKey}` };
+}
+
+function normalizeProxyUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed;
 }
 
 export function registerAdminRoutes(server: ApiServer): void {
@@ -394,6 +419,72 @@ export function registerAdminRoutes(server: ApiServer): void {
     } catch (error) {
       logger.error('[Admin] Update config error:', error);
       sendJson(res, 500, { error: 'Failed to update configuration' });
+    }
+  };
+
+  // POST /api/admin/model-services/models - Server-side model list probe for browser UIs.
+  const modelListProbeHandler: RouteHandler = async (
+    req: AuthenticatedRequest,
+    res: ServerResponse,
+  ) => {
+    try {
+      const body = await parseJsonBody<ModelListProbeBody>(req);
+      const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
+      const providerId = typeof body.providerId === 'string' ? body.providerId.trim() : '';
+      const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+
+      if (!endpoint) {
+        sendJson(res, 400, { error: 'endpoint is required' });
+        return;
+      }
+
+      const parsed = new URL(endpoint);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        sendJson(res, 400, { error: 'endpoint must be http or https' });
+        return;
+      }
+
+      if (providerId !== 'ollama' && !apiKey) {
+        sendJson(res, 400, { error: 'apiKey is required' });
+        return;
+      }
+
+      const fetchInit: RequestInit = {
+        method: 'GET',
+        headers: buildProviderModelHeaders(providerId, apiKey),
+        signal: AbortSignal.timeout(20000),
+      };
+      const proxyUrl = normalizeProxyUrl(body.proxyUrl);
+      if (proxyUrl) {
+        const { ProxyAgent } = await import('undici');
+        (fetchInit as any).dispatcher = new ProxyAgent(proxyUrl);
+      }
+
+      const upstream = await fetch(endpoint, fetchInit);
+      const text = await upstream.text();
+      if (!upstream.ok) {
+        sendJson(res, upstream.status, {
+          error: 'model list fetch failed',
+          status: upstream.status,
+          body: text.slice(0, 1000),
+        });
+        return;
+      }
+
+      try {
+        sendJson(res, 200, JSON.parse(text));
+      } catch {
+        sendJson(res, 502, {
+          error: 'model list response is not JSON',
+          status: upstream.status,
+          body: text.slice(0, 1000),
+        });
+      }
+    } catch (error) {
+      logger.error('[Admin] Model list probe error:', error);
+      sendJson(res, 500, {
+        error: error instanceof Error ? error.message : 'Failed to fetch model list',
+      });
     }
   };
 
@@ -689,6 +780,7 @@ export function registerAdminRoutes(server: ApiServer): void {
   server.get('/api/admin/config', getConfigHandler, { public: true });
   server.get('/api/admin/public-ip', ipv4Handler, { public: true });
   server.put('/api/admin/config', updateConfigHandler, { public: true });
+  server.post('/api/admin/model-services/models', modelListProbeHandler, { public: true });
   server.post('/api/admin/restart', restartHandler, { public: true });
   server.get('/api/admin/logs', getLogsHandler, { public: true });
   server.get('/api/admin/logs/stream', streamLogsHandler, { public: true });

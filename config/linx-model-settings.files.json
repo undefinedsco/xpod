@@ -1,0 +1,68 @@
+{
+  "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+  "@graph": [
+    {
+      "comment": "Route LinX app-owned Pod TTL resources to the file store while keeping AI settings on the RDF backend for drizzle-solid writes.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:RouterRule"
+      },
+      "overrideParameters": {
+        "@type": "RegexRouterRule",
+        "base": {
+          "@id": "urn:solid-server:default:variable:baseUrl"
+        },
+        "rules": [
+          {
+            "comment": "Stores internal data in the file system",
+            "@type": "RegexRule",
+            "regex": "^/\\.internal/",
+            "store": {
+              "@id": "urn:solid-server:default:FileResourceStore"
+            }
+          },
+          {
+            "comment": "Store LinX app-owned data containers as Pod directories",
+            "@type": "RegexRule",
+            "regex": "^/[^/]+/(\\.data|\\.data/chat|\\.data/agents|\\.data/contacts)/?$",
+            "store": {
+              "@id": "urn:solid-server:default:FileResourceStore"
+            }
+          },
+          {
+            "comment": "Store LinX chat archives as Pod files",
+            "@type": "RegexRule",
+            "regex": "^/[^/]+/\\.data/chat/[^/]+\\.ttl$",
+            "store": {
+              "@id": "urn:solid-server:default:FileResourceStore"
+            }
+          },
+          {
+            "comment": "Store LinX local agent records as Pod files",
+            "@type": "RegexRule",
+            "regex": "^/[^/]+/\\.data/agents/[^/]+\\.ttl$",
+            "store": {
+              "@id": "urn:solid-server:default:FileResourceStore"
+            }
+          },
+          {
+            "comment": "Store LinX local contact records as Pod files",
+            "@type": "RegexRule",
+            "regex": "^/[^/]+/\\.data/contacts/[^/]+\\.ttl$",
+            "store": {
+              "@id": "urn:solid-server:default:FileResourceStore"
+            }
+          },
+          {
+            "comment": "Send everything else to the xpod SPARQL/Quint store.",
+            "@type": "RegexRule",
+            "regex": ".*",
+            "store": {
+              "@id": "urn:undefineds:xpod:SparqlQuadstoreResourceStore"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

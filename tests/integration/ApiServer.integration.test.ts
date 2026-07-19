@@ -31,7 +31,7 @@ describe('ApiServer Integration', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    port = await getFreePort(10000);
+    port = await getFreePort(30_000 + Math.floor(Math.random() * 20_000));
     baseUrl = `http://localhost:${port}`;
 
     const authMiddleware = new AuthMiddleware({

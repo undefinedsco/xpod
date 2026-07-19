@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { AddressInfo } from 'node:net';
 import { ApiServer } from '../../src/api/ApiServer';
-import { getFreePort } from '../../src/runtime/port-finder';
 import { VercelChatService } from '../../src/api/service/VercelChatService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
@@ -50,8 +50,6 @@ suite('Chat Pod E2E Integration (Real Network)', () => {
   let account: AccountSetup;
 
   beforeAll(async () => {
-    port = await getFreePort(10000);
-    baseUrl = `http://localhost:${port}`;
     const createdAccount = await setupAccount(solidBaseUrl, 'chat-e2e');
     if (!createdAccount) {
       throw new Error(`Failed to setup account on ${solidBaseUrl}`);
@@ -112,9 +110,15 @@ suite('Chat Pod E2E Integration (Real Network)', () => {
       } as any,
     });
 
-    server = new ApiServer({ port, authMiddleware });
+    server = new ApiServer({ port: 0, authMiddleware });
     registerChatRoutes(server, { chatService });
     await server.start();
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address === 'string') {
+      throw new Error('ChatPodE2E API server did not bind to a TCP port');
+    }
+    port = address.port;
+    baseUrl = `http://localhost:${port}`;
   }, 60000);
 
   afterAll(async () => {

@@ -147,37 +147,7 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
       // Handle streaming
       if (completionRequest.stream === true) {
         const streamResult = await chatService.stream(completionRequest, auth);
-        // Vercel AI SDK v6 uses toTextStreamResponse (not toDataStreamResponse)
-        const webResponse = streamResult.toTextStreamResponse();
-
-        // Copy headers (Content-Type: text/plain; charset=utf-8, X-Vercel-AI-Data-Stream: v1)
-        webResponse.headers.forEach((value: string, key: string) => {
-          response.setHeader(key, value);
-        });
-        response.statusCode = webResponse.status;
-
-        // Pipe Web Stream to Node Response
-        if (webResponse.body) {
-          const reader = webResponse.body.getReader();
-          const pump = async () => {
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) {
-                  break;
-                }
-                response.write(value);
-              }
-            } catch (e) {
-              logger.error(`Stream write error: ${e}`);
-            } finally {
-              response.end();
-            }
-          };
-          pump();
-        } else {
-          response.end();
-        }
+        await sendWebStreamResponse(response, streamResult.toTextStreamResponse(), logger);
         return;
       }
 
@@ -224,6 +194,10 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
     try {
       logger.info(`Responses API request from ${displayName} (acc: ${accountId})`);
       const result = await chatService.responses(body, auth);
+      if (body && typeof body === 'object' && (body as any).stream === true && isTextStreamResult(result)) {
+        await sendWebStreamResponse(response, result.toTextStreamResponse(), logger);
+        return;
+      }
       sendJson(response, 200, result);
     } catch (error: any) {
       logger.error(`Responses API error: ${error}`);
@@ -302,4 +276,41 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.statusCode = status;
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(data));
+}
+
+function isTextStreamResult(result: unknown): result is { toTextStreamResponse: () => Response } {
+  return !!result
+    && typeof result === 'object'
+    && typeof (result as any).toTextStreamResponse === 'function';
+}
+
+async function sendWebStreamResponse(
+  response: ServerResponse,
+  webResponse: Response,
+  logger: ReturnType<typeof getLoggerFor>,
+): Promise<void> {
+  webResponse.headers.forEach((value: string, key: string) => {
+    response.setHeader(key, value);
+  });
+  response.statusCode = webResponse.status;
+
+  if (!webResponse.body) {
+    response.end();
+    return;
+  }
+
+  const reader = webResponse.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      response.write(value);
+    }
+  } catch (e) {
+    logger.error(`Stream write error: ${e}`);
+  } finally {
+    response.end();
+  }
 }

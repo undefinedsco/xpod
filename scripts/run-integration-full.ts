@@ -2,6 +2,8 @@ import path from 'node:path';
 
 import net from 'node:net';
 import { spawn } from 'node:child_process';
+import Redis from 'ioredis';
+import { Client } from 'pg';
 import { getFreePort } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
 
@@ -9,6 +11,10 @@ const DEFAULT_CLOUD_PORT = Number(process.env.CLOUD_PORT || '6300');
 const DEFAULT_CLOUD_B_PORT = Number(process.env.CLOUD_B_PORT || '6400');
 const DEFAULT_LOCAL_PORT = Number(process.env.LOCAL_PORT || '5737');
 const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
+const DEFAULT_POSTGRES_PORT = Number(process.env.POSTGRES_PORT || '5432');
+const DEFAULT_REDIS_PORT = Number(process.env.REDIS_PORT || '6379');
+const DEFAULT_MINIO_PORT = Number(process.env.MINIO_PORT || '9000');
+const DEFAULT_MINIO_CONSOLE_PORT = Number(process.env.MINIO_CONSOLE_PORT || '9001');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const composeArgs = [
   'compose',
@@ -20,7 +26,6 @@ const composeArgs = [
   'docker-compose.cluster.integration.yml',
 ];
 const runtimeRoot = path.resolve('.test-data/full-runtime', process.env.XPOD_FULL_RUN_ID || `${Date.now()}-${process.pid}`);
-const cloudDb = process.env.XPOD_FULL_PG_URL || 'postgres://xpod:xpod@localhost:5432/xpod';
 const defaultTargets = [
   'tests/integration/DockerCluster.integration.test.ts',
   'tests/integration/MultiNodeCluster.integration.test.ts',
@@ -39,6 +44,13 @@ interface FullRuntimePorts {
   cloudB: RuntimePorts;
   local: RuntimePorts;
   standalone: RuntimePorts;
+}
+
+interface InfraPorts {
+  postgres: number;
+  redis: number;
+  minio: number;
+  minioConsole: number;
 }
 
 function runCommand(
@@ -100,9 +112,9 @@ async function hasTcpService(port: number, host = '127.0.0.1', timeoutMs = 1500)
   });
 }
 
-async function hasMinio(): Promise<boolean> {
+async function hasMinio(port = DEFAULT_MINIO_PORT): Promise<boolean> {
   try {
-    const response = await fetch('http://localhost:9000/minio/health/live', {
+    const response = await fetch(`http://localhost:${port}/minio/health/live`, {
       signal: AbortSignal.timeout(1500),
     });
     return response.ok;
@@ -111,24 +123,67 @@ async function hasMinio(): Promise<boolean> {
   }
 }
 
-async function shouldReuseExistingInfra(): Promise<boolean> {
+async function canUseExistingPostgres(port: number): Promise<boolean> {
+  const client = new Client({
+    user: 'xpod',
+    password: 'xpod',
+    host: 'localhost',
+    database: 'xpod',
+    port,
+    connectionTimeoutMillis: 1500,
+  });
+
+  try {
+    await client.connect();
+    await client.query('SELECT 1');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function canUseExistingRedis(port: number): Promise<boolean> {
+  const redis = new Redis(port, '127.0.0.1', {
+    lazyConnect: true,
+    connectTimeout: 1500,
+    commandTimeout: 1500,
+    maxRetriesPerRequest: 0,
+    retryStrategy: null,
+  });
+  redis.on('error', () => {
+    // Probe failures only mean the existing Redis is not the test instance.
+  });
+
+  try {
+    await redis.connect();
+    return await redis.ping() === 'PONG';
+  } catch {
+    return false;
+  } finally {
+    redis.disconnect(false);
+  }
+}
+
+async function shouldReuseExistingInfra(infraPorts: InfraPorts): Promise<boolean> {
   const [postgresReady, redisReady, minioReady] = await Promise.all([
-    hasTcpService(5432),
-    hasTcpService(6379),
-    hasMinio(),
+    canUseExistingPostgres(infraPorts.postgres),
+    canUseExistingRedis(infraPorts.redis),
+    hasMinio(infraPorts.minio),
   ]);
   return postgresReady && redisReady && minioReady;
 }
 
-async function waitForInfraServices(maxRetries = 60, delayMs = 1000): Promise<void> {
+async function waitForInfraServices(infraPorts: InfraPorts, maxRetries = 60, delayMs = 1000): Promise<void> {
   let lastStatus = '';
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const [postgresReady, redisReady, postgresHostReady, redisHostReady, minioReady] = await Promise.all([
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'xpod', '-d', 'xpod']),
       commandExitCode('docker', [...composeArgs, 'exec', '-T', 'redis', 'redis-cli', 'ping']),
-      hasTcpService(5432),
-      hasTcpService(6379),
-      hasMinio(),
+      hasTcpService(infraPorts.postgres),
+      hasTcpService(infraPorts.redis),
+      hasMinio(infraPorts.minio),
     ]);
 
     if (postgresReady === 0 && redisReady === 0 && postgresHostReady && redisHostReady && minioReady) {
@@ -183,6 +238,25 @@ async function resolveFullRuntimePorts(): Promise<FullRuntimePorts> {
   };
 }
 
+async function resolveInfraPorts(reuseExistingInfra: boolean): Promise<InfraPorts> {
+  if (reuseExistingInfra) {
+    return {
+      postgres: DEFAULT_POSTGRES_PORT,
+      redis: DEFAULT_REDIS_PORT,
+      minio: DEFAULT_MINIO_PORT,
+      minioConsole: DEFAULT_MINIO_CONSOLE_PORT,
+    };
+  }
+
+  const reserved = new Set<number>();
+  return {
+    postgres: await allocatePort(DEFAULT_POSTGRES_PORT, reserved),
+    redis: await allocatePort(DEFAULT_REDIS_PORT, reserved),
+    minio: await allocatePort(DEFAULT_MINIO_PORT, reserved),
+    minioConsole: await allocatePort(DEFAULT_MINIO_CONSOLE_PORT, reserved),
+  };
+}
+
 async function waitForService(name: string, baseUrl: string, maxRetries = 90, delayMs = 2000): Promise<void> {
   const statusUrl = `${baseUrl.replace(/\/$/, '')}/service/status`;
 
@@ -213,14 +287,15 @@ async function waitForService(name: string, baseUrl: string, maxRetries = 90, de
   throw new Error(`[full] ${name} not ready: ${statusUrl}`);
 }
 
-async function startFullRuntimes(ports: FullRuntimePorts): Promise<XpodRuntimeHandle[]> {
+async function startFullRuntimes(ports: FullRuntimePorts, infraPorts: InfraPorts): Promise<XpodRuntimeHandle[]> {
   const runtimes: XpodRuntimeHandle[] = [];
+  const cloudDb = process.env.XPOD_FULL_PG_URL || `postgres://xpod:xpod@localhost:${infraPorts.postgres}/xpod`;
   const commonCloudEnv = {
     CSS_BASE_STORAGE_DOMAIN: 'undefineds.site',
-    CSS_REDIS_CLIENT: 'localhost:6379',
+    CSS_REDIS_CLIENT: `localhost:${infraPorts.redis}`,
     CSS_REDIS_USERNAME: '',
     CSS_REDIS_PASSWORD: '',
-    CSS_MINIO_ENDPOINT: 'http://localhost:9000',
+    CSS_MINIO_ENDPOINT: `http://localhost:${infraPorts.minio}`,
     CSS_MINIO_ACCESS_KEY: 'minioadmin',
     CSS_MINIO_SECRET_KEY: 'minioadmin',
     CSS_MINIO_BUCKET_NAME: 'xpod',
@@ -319,8 +394,20 @@ async function main(): Promise<void> {
   const targets = process.argv.slice(2);
   const testTargets = targets.length > 0 ? targets : defaultTargets;
   const ports = await resolveFullRuntimePorts();
+  const defaultInfraPorts = {
+    postgres: DEFAULT_POSTGRES_PORT,
+    redis: DEFAULT_REDIS_PORT,
+    minio: DEFAULT_MINIO_PORT,
+    minioConsole: DEFAULT_MINIO_CONSOLE_PORT,
+  };
+  const reuseExistingInfra = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra(defaultInfraPorts);
+  const infraPorts = await resolveInfraPorts(reuseExistingInfra);
   const sharedEnv = {
     CSS_BASE_URL: `http://localhost:${ports.standalone.gateway}`,
+    POSTGRES_PORT: String(infraPorts.postgres),
+    REDIS_PORT: String(infraPorts.redis),
+    MINIO_PORT: String(infraPorts.minio),
+    MINIO_CONSOLE_PORT: String(infraPorts.minioConsole),
     CLOUD_PORT: String(ports.cloud.gateway),
     CLOUD_API_PORT: String(ports.cloud.api),
     CLOUD_B_PORT: String(ports.cloudB.gateway),
@@ -331,7 +418,6 @@ async function main(): Promise<void> {
     STANDALONE_API_PORT: String(ports.standalone.api),
   };
   const runtimes: XpodRuntimeHandle[] = [];
-  const reuseExistingInfra = process.env.XPOD_FULL_USE_EXISTING_INFRA === 'true' || await shouldReuseExistingInfra();
   const startedInfra = !reuseExistingInfra;
 
   if (startedInfra) {
@@ -343,10 +429,10 @@ async function main(): Promise<void> {
   let testExitCode = 1;
   try {
     if (startedInfra) {
-      await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio']);
-      await waitForInfraServices();
+      await runCommand('docker', [...composeArgs, 'up', '-d', 'postgres', 'redis', 'minio'], { env: sharedEnv });
+      await waitForInfraServices(infraPorts);
     }
-    runtimes.push(...await startFullRuntimes(ports));
+    runtimes.push(...await startFullRuntimes(ports, infraPorts));
     await waitForFullPorts(ports);
 
     await runCommand('bun', ['run', 'test:setup'], { env: sharedEnv });

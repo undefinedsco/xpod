@@ -130,8 +130,8 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     credentialsExtractor: CredentialsExtractor,
     permissionReader: PermissionReader,
     authorizer: Authorizer,
-    options: SubgraphSparqlHttpHandlerOptions = {},
     updateAuthority?: MixDataAccessor,
+    options: SubgraphSparqlHttpHandlerOptions = {},
   ) {
     super();
     this.engine = queryEngine;

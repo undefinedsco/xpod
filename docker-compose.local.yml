@@ -1,0 +1,53 @@
+# Xpod local Docker deployment.
+#
+# Defaults:
+#   App:  http://localhost:5737
+#   Files: /Users/shallin/docker/undefinedsco/xpod/data
+#   Logs: /Users/shallin/docker/undefinedsco/xpod/logs
+#   DB:    postgresql://postgres:postgres@host.docker.internal:5432/xpod_local
+#
+# Override examples:
+#   XPOD_DOCKER_PORT=3100 docker compose -f docker-compose.local.yml up -d --build
+#   XPOD_DOCKER_DATA_DIR=/path/to/data docker compose -f docker-compose.local.yml up -d --build
+#   XPOD_DOCKER_DATABASE_URL=postgresql://user:pass@host.docker.internal:5432/db docker compose -f docker-compose.local.yml up -d --build
+
+services:
+  xpod:
+    image: xpod:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xpod-local
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      XPOD_EDITION: local
+      XPOD_ENCRYPTION_KEY: ${XPOD_ENCRYPTION_KEY:-dev-encryption-key-change-in-production}
+      API_HOST: 0.0.0.0
+      API_PORT: ${XPOD_DOCKER_API_PORT:-5739}
+      CSS_PORT: ${XPOD_DOCKER_CONTAINER_PORT:-5737}
+      CSS_BASE_URL: ${XPOD_DOCKER_BASE_URL:-http://localhost:${XPOD_DOCKER_PORT:-5737}}
+      CSS_ALLOWED_HOSTS: ${XPOD_DOCKER_ALLOWED_HOSTS:-localhost,127.0.0.1,host.docker.internal}
+      CSS_LOGGING_LEVEL: ${XPOD_DOCKER_LOGGING_LEVEL:-info}
+      CSS_AUTH_MODE: ${XPOD_DOCKER_AUTH_MODE:-acp}
+      CSS_ROOT_FILE_PATH: /app/data
+      CSS_SPARQL_ENDPOINT: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
+      CSS_IDENTITY_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
+      CSS_USAGE_DB_URL: ${XPOD_DOCKER_DATABASE_URL:-postgresql://postgres:postgres@host.docker.internal:5432/xpod_local}
+      CSS_SEED_CONFIG: ${XPOD_DOCKER_SEED_CONFIG:-}
+      http_proxy: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    ports:
+      - "${XPOD_DOCKER_PORT:-5737}:${XPOD_DOCKER_CONTAINER_PORT:-5737}"
+    volumes:
+      - "${XPOD_DOCKER_DATA_DIR:-/Users/shallin/docker/undefinedsco/xpod/data}:/app/data"
+      - "${XPOD_DOCKER_LOG_DIR:-/Users/shallin/docker/undefinedsco/xpod/logs}:/app/logs"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:$${CSS_PORT:-5737}/service/status >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    command: ["sh", "-c", "node dist/main.js --config /app/config/local-pg.json -p $${CSS_PORT:-5737} --host 0.0.0.0"]

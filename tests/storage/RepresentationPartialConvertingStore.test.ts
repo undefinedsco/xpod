@@ -98,6 +98,31 @@ describe('RepresentationPartialConvertingStore', () => {
     expect(converted.metadata?.contentType).toBe('internal/quads');
   });
 
+  it('创建配置为文件存储的资源时跳过 Turtle 转换', async () => {
+    const inConverterCalls: MockConverterCallArgs[] = [];
+    const inConverter = {
+      canHandle: vi.fn(async () => undefined),
+      handleSafe: vi.fn(async (args: MockConverterCallArgs) => {
+        inConverterCalls.push(args);
+        return createRepresentation('internal/quads');
+      }),
+    };
+    const store = new RepresentationPartialConvertingStore(baseStore as any, metadataStrategy as any, {
+      inConverter: inConverter as any,
+      inPreferences: { type: { 'internal/quads': 1 } },
+      skipConversionPathRegexes: ['^http://localhost:3000/[^/]+/\\.data/chat/[^/]+\\.ttl$'],
+    });
+    const identifier = { path: 'http://localhost:3000/alice/.data/chat/chat-a.ttl' } as ResourceIdentifier;
+    const representation = createRepresentation('text/turtle');
+
+    await store.addResource(identifier, representation);
+
+    expect(inConverter.canHandle).not.toHaveBeenCalled();
+    expect(inConverter.handleSafe).not.toHaveBeenCalled();
+    expect(baseStore.addResource).toHaveBeenCalledTimes(1);
+    expect((baseStore.addResource.mock.calls as any)[0][1]).toBe(representation);
+  });
+
   it('读取资源时根据偏好把 internal/quads 转换回 Turtle', async () => {
     const { store, outConverter } = createStore();
     const identifier = { path: 'http://localhost:3000/alice/profile/card' } as ResourceIdentifier;
@@ -118,6 +143,23 @@ describe('RepresentationPartialConvertingStore', () => {
 
     expect(inConverter.handleSafe).toHaveBeenCalledTimes(1);
     expect(baseStore.setRepresentation).toHaveBeenCalledTimes(1);
+    const converted = (baseStore.setRepresentation.mock.calls as any)[0][1] as unknown as Representation;
+    expect(converted.metadata?.contentType).toBe('internal/quads');
+  });
+
+  it('辅助资源即使命中跳过路径也会强制转换', async () => {
+    const { inConverter } = createStore();
+    const store = new RepresentationPartialConvertingStore(baseStore as any, metadataStrategy as any, {
+      inConverter: inConverter as any,
+      inPreferences: { type: { 'internal/quads': 1 } },
+      skipConversionPathRegexes: ['\\.acr$'],
+    });
+    const identifier = { path: 'http://localhost:3000/alice/.data/chat/chat-a.ttl.acr' } as ResourceIdentifier;
+    const representation = createRepresentation('text/turtle');
+
+    await store.setRepresentation(identifier, representation);
+
+    expect(inConverter.handleSafe).toHaveBeenCalledTimes(1);
     const converted = (baseStore.setRepresentation.mock.calls as any)[0][1] as unknown as Representation;
     expect(converted.metadata?.contentType).toBe('internal/quads');
   });

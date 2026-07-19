@@ -33,34 +33,6 @@
     ],
     "@graph": [
       {
-        "comment": "Overrides the default rule to make sure internal data is stored on the file system.",
-        "@type": "Override",
-        "overrideInstance": {
-          "@id": "urn:solid-server:default:RouterRule"
-        },
-        "overrideParameters": {
-          "@type": "RegexRouterRule",
-          "rules": [
-            {
-              "comment": "Stores internal data in the file system",
-              "@type": "RegexRule",
-              "regex": "^/\\.internal/",
-              "store": {
-                "@id": "urn:solid-server:default:FileResourceStore"
-              }
-            },
-            {
-              "comment": "Send everything else to the SPARQL store.",
-              "@type": "RegexRule",
-              "regex": ".*",
-              "store": {
-                "@id": "urn:solid-server:default:SparqlResourceStore"
-              }
-            }
-          ]
-        }
-      },
-      {
         "comment": "The updated OIDC configuration.",
         "@type": "Override",
         "overrideInstance": {

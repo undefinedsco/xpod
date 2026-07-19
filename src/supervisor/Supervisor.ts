@@ -257,6 +257,39 @@ export class Supervisor {
     });
   }
 
+  public async restart(name: string): Promise<void> {
+    if (!this.configs.has(name)) return;
+
+    this.addLog(name, 'warn', 'Restart requested by health monitor');
+    await this.stop(name);
+
+    const deadline = Date.now() + 5_000;
+    while (this.processes.has(name) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    if (this.processes.has(name)) {
+      const child = this.processes.get(name);
+      this.addLog(name, 'warn', 'Graceful stop timed out; forcing service termination');
+      if (child?.pid) {
+        await new Promise<void>((resolve) => {
+          kill(child.pid!, 'SIGKILL', () => resolve());
+        });
+      }
+
+      const forceDeadline = Date.now() + 2_000;
+      while (this.processes.has(name) && Date.now() < forceDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (this.processes.has(name)) {
+        this.addLog(name, 'error', 'Forced service termination did not complete');
+        return;
+      }
+    }
+
+    this.start(name);
+  }
+
   public getStatus(name: string): ServiceState | undefined {
     const state = this.states.get(name);
     if (state && state.status === 'running' && state.startTime) {

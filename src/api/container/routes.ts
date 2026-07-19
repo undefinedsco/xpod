@@ -26,6 +26,7 @@ import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
 import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
+import { registerLinxLocalChatRoutes } from '../handlers/LinxLocalChatHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
@@ -209,6 +210,7 @@ function registerLocalRoutes(
   server: ApiServer,
 ): void {
   registerLinxCapabilitiesRoutes(server);
+  registerLinxLocalChatRoutes(server);
 
   // Admin API (配置管理、重启)
   registerAdminRoutes(server);

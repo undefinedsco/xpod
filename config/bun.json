@@ -6,6 +6,7 @@
   ],
   "import": [
     "./main.json",
+    "./router.sparql.json",
     "./xpod.base.json",
     "./terminal.json",
     "./extensions.local.initializer.json"

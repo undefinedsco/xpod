@@ -40,6 +40,10 @@ export class GatewayProxy {
   private readonly exitOnStop: boolean;
   private readonly shutdownHandler?: () => Promise<void>;
   private readonly baseUrl?: string;
+  private healthMonitor?: ReturnType<typeof setInterval>;
+  private consecutiveCssFailures = 0;
+  private cssRestartInProgress = false;
+  private cssHealthPausedUntil = 0;
 
   constructor(
     port: number | undefined,
@@ -113,10 +117,15 @@ export class GatewayProxy {
 
   public async start(): Promise<void> {
     await this.runtimeHost.listen(this.server, this.listenEndpoint);
+    this.startHealthMonitor();
     this.logger.info(`Listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
   }
 
   public stop(): Promise<void> {
+    if (this.healthMonitor) {
+      clearInterval(this.healthMonitor);
+      this.healthMonitor = undefined;
+    }
     return new Promise((resolve, reject) => {
       this.proxy.close();
       this.runtimeHost.close(this.server, this.listenEndpoint).then(() => {
@@ -454,7 +463,55 @@ export class GatewayProxy {
       return true;
     }
 
+    if (this.targets.css.url) {
+      try {
+        const publicUrl = new URL(this.baseUrl ?? process.env.CSS_BASE_URL ?? this.targets.css.url);
+        const response = await fetch(new URL('/.well-known/openid-configuration', this.targets.css.url), {
+          headers: {
+            Host: publicUrl.host,
+            'X-Forwarded-Host': publicUrl.host,
+            'X-Forwarded-Proto': publicUrl.protocol.replace(':', ''),
+          },
+          signal: AbortSignal.timeout(1_500),
+        });
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }
+
     return this.runtimeHost.isConnectionTargetReady(this.targets.css, 1_500);
+  }
+
+  private startHealthMonitor(): void {
+    if (!this.targets.css || this.healthMonitor) return;
+
+    const intervalMs = Number(process.env.XPOD_CSS_HEALTH_INTERVAL_MS ?? 10_000);
+    this.healthMonitor = setInterval(() => void this.checkCssHealth(), intervalMs);
+    this.healthMonitor.unref?.();
+  }
+
+  private async checkCssHealth(): Promise<void> {
+    if (this.cssRestartInProgress || Date.now() < this.cssHealthPausedUntil) return;
+
+    if (await this.isCssReady()) {
+      this.consecutiveCssFailures = 0;
+      return;
+    }
+
+    this.consecutiveCssFailures += 1;
+    this.logger.warn(`CSS health probe failed (${this.consecutiveCssFailures}/3)`);
+    if (this.consecutiveCssFailures < 3) return;
+
+    this.cssRestartInProgress = true;
+    this.consecutiveCssFailures = 0;
+    try {
+      this.logger.error('CSS is unresponsive; restarting worker');
+      await this.supervisor.restart('css');
+      this.cssHealthPausedUntil = Date.now() + 30_000;
+    } finally {
+      this.cssRestartInProgress = false;
+    }
   }
 
   private normalizeTarget(target?: string | GatewayProxyTarget): GatewayProxyTarget | undefined {

@@ -73,7 +73,12 @@ export default defineConfig(() => {
           // app 使用固定文件名（auth.html 模板需要），dashboard 使用 hash
           entryFileNames: buildTarget === 'app' ? 'assets/[name].js' : 'assets/[name]-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
-          assetFileNames: buildTarget === 'app' ? 'assets/[name].[ext]' : 'assets/[name]-[hash].[ext]'
+          assetFileNames: (assetInfo) => {
+            if (buildTarget === 'app' && assetInfo.names.some((name) => name.endsWith('.css'))) {
+              return 'assets/main.css';
+            }
+            return buildTarget === 'app' ? 'assets/[name].[ext]' : 'assets/[name]-[hash].[ext]';
+          },
         }
       }
     }

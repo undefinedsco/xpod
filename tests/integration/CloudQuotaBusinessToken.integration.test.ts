@@ -13,6 +13,7 @@ const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '4
 const SERVICE_READY_DELAY_MS = Number(process.env.XPOD_DOCKER_READY_DELAY_MS ?? '1000');
 const CLOUD_PORT = process.env.CLOUD_PORT || '6300';
 const CLOUD_BASE_URL = `http://localhost:${CLOUD_PORT}`;
+const POSTGRES_PORT = Number(process.env.POSTGRES_PORT || '5432');
 const BUSINESS_TOKEN = 'svc-testservicetokenforintegration';
 
 const suite = RUN_INTEGRATION_TESTS ? describe : describe.skip;
@@ -26,7 +27,7 @@ suite('Cloud PG quota regression', () => {
       password: 'xpod',
       host: 'localhost',
       database: 'xpod',
-      port: 5432,
+      port: POSTGRES_PORT,
     });
     await pgClient.connect();
 

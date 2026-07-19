@@ -313,6 +313,9 @@ export class VercelChatService {
     if (await resolveChatExecutionRoute({ model: body?.model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
       this.logger.info(`Forwarding responses request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
       const sanitizedBody = sanitizeAiGatewayResponsesBody(body);
+      if (sanitizedBody?.stream === true) {
+        return this.forwardAiGatewayStream('/v1/responses', sanitizedBody, auth);
+      }
       const result = await this.forwardAiGatewayJson('/v1/responses', sanitizedBody, auth);
       this.recordForwardedUsage(accountId, String(context.userId), result);
       return result;
@@ -342,6 +345,27 @@ export class VercelChatService {
     this.logger.info(`Proxying responses request to ${url} for ${displayName} (acc: ${accountId}), proxy: ${proxy || 'none'}`);
 
     try {
+      if (body?.stream === true) {
+        const response = await this.providerHttpTransport.postStream({
+          url,
+          apiKey,
+          proxy,
+          body,
+          headers: {
+            Accept: 'text/event-stream',
+          },
+        });
+        if (credentialId) {
+          this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
+        }
+        return {
+          toTextStreamResponse: () => new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers(response.headers),
+          }),
+        };
+      }
       const result = await this.providerHttpTransport.postJson({
         url,
         apiKey,

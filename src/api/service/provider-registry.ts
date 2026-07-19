@@ -122,10 +122,8 @@ export function supportsMessagesApi(baseUrl: string): boolean {
 }
 
 /**
- * For codex wire_api selection: only native OpenAI uses Responses wire protocol.
- * All other providers (including openrouter) should use Chat Completions wire.
+ * Current codex-acp versions only accept the Responses wire protocol.
  */
-export function codexWireApi(baseUrl: string): 'responses' | 'chat' {
-  const host = hostnameOf(baseUrl);
-  return host === 'api.openai.com' ? 'responses' : 'chat';
+export function codexWireApi(_baseUrl: string): 'responses' {
+  return 'responses';
 }

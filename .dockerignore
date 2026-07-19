@@ -16,5 +16,8 @@
 !templates/
 !types/
 
+# Native dependencies must always be installed for the image platform.
+**/node_modules/
+
 # Explicitly excluded (not needed in image)
 .github/

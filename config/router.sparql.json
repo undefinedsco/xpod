@@ -1,0 +1,33 @@
+{
+  "@context": "https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld",
+  "@graph": [
+    {
+      "comment": "Default routing: keep internal data on files and send Pod resources to the SPARQL store.",
+      "@type": "Override",
+      "overrideInstance": {
+        "@id": "urn:solid-server:default:RouterRule"
+      },
+      "overrideParameters": {
+        "@type": "RegexRouterRule",
+        "rules": [
+          {
+            "comment": "Stores internal data in the file system",
+            "@type": "RegexRule",
+            "regex": "^/\\.internal/",
+            "store": {
+              "@id": "urn:solid-server:default:FileResourceStore"
+            }
+          },
+          {
+            "comment": "Send everything else to the SPARQL store.",
+            "@type": "RegexRule",
+            "regex": ".*",
+            "store": {
+              "@id": "urn:solid-server:default:SparqlResourceStore"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

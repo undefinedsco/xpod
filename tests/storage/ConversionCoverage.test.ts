@@ -132,4 +132,21 @@ describe('RepresentationPartialConvertingStore Conversion Coverage', () => {
       expect(baseStore.addResource).toHaveBeenCalledTimes(1);
     });
   });
+
+  it('should NOT convert whitelisted RDF when the path is configured for file storage', async () => {
+    store = new RepresentationPartialConvertingStore(baseStore as any, metadataStrategy as any, {
+      inConverter: inConverter as any,
+      outConverter: outConverter as any,
+      inPreferences: { type: { 'internal/quads': 1 } },
+      skipConversionPathRegexes: ['^http://example.org/alice/\\.data/chat/[^/]+\\.ttl$'],
+    });
+    const identifier = { path: 'http://example.org/alice/.data/chat/chat-a.ttl' };
+    const representation = createRepresentation('text/turtle');
+
+    await store.addResource(identifier, representation);
+
+    expect(inConverter.canHandle).not.toHaveBeenCalled();
+    expect(inConverter.handleSafe).not.toHaveBeenCalled();
+    expect(baseStore.addResource).toHaveBeenCalledTimes(1);
+  });
 });

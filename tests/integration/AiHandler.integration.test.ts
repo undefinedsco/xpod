@@ -107,6 +107,33 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     }, expect.anything());
   });
 
+  it('should stream POST /v1/responses when stream=true', async () => {
+    chatService.responses.mockResolvedValue({
+      toTextStreamResponse: () => new Response('event: response.output_text.delta\ndata: {"delta":"pong-local"}\n\n', {
+        headers: { 'Content-Type': 'text/event-stream; charset=utf-8' },
+      }),
+    });
+
+    const response = await fetch(baseUrl + '/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({
+        model: 'linx-lite',
+        input: 'hello',
+        stream: true,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(await response.text()).toContain('pong-local');
+    expect(chatService.responses).toHaveBeenCalledWith({
+      model: 'linx-lite',
+      input: 'hello',
+      stream: true,
+    }, expect.anything());
+  });
+
   it('should handle POST /v1/messages', async () => {
     chatService.messages.mockResolvedValue({ id: 'msg-1', role: 'assistant' });
 

@@ -23,6 +23,7 @@ interface RepresentationPartialConvertingStoreOptions {
   outConverter?: RepresentationConverter
   inConverter?: RepresentationConverter
   inPreferences?: RepresentationPreferences
+  skipConversionPathRegexes?: string[]
 }
 
 /**
@@ -35,6 +36,7 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
   private readonly inConverter: RepresentationConverter
   private readonly outConverter: RepresentationConverter
   private readonly inPreferences: RepresentationPreferences
+  private readonly skipConversionPathRegexes: RegExp[]
   
   constructor(
     source: T,
@@ -46,13 +48,19 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
     this.inConverter = options.inConverter ?? new PassthroughConverter();
     this.outConverter = options.outConverter ?? new PassthroughConverter();
     this.inPreferences = options.inPreferences ?? {};
+    this.skipConversionPathRegexes = (options.skipConversionPathRegexes ?? []).map((regex) => new RegExp(regex, 'u'));
 
     const inConverterClass = this.inConverter.constructor.name;
     const outConverterClass = this.outConverter.constructor.name;
     this.logger.debug(
       `Initializing with inConverter: ${inConverterClass}, 
       outConverter: ${outConverterClass}, 
-      inPreferences: ${JSON.stringify(this.inPreferences)}`);
+      inPreferences: ${JSON.stringify(this.inPreferences)},
+      skipConversionPathRegexes: ${this.skipConversionPathRegexes.map((regex) => regex.source).join(',')}`);
+  }
+
+  private shouldSkipConversion(identifier: ResourceIdentifier): boolean {
+    return this.skipConversionPathRegexes.some((regex) => regex.test(identifier.path));
   }
 
   private async shouldConvert(
@@ -69,6 +77,11 @@ export class RepresentationPartialConvertingStore<T extends ResourceStore = Reso
 
     if (preferences.type?.[contentType]) {
       this.logger.debug(`Not converting ${identifier.path}: ${contentType} already satisfies preferences`);
+      return false;
+    }
+
+    if (this.shouldSkipConversion(identifier)) {
+      this.logger.debug(`Not converting ${identifier.path}: path is configured for file storage`);
       return false;
     }
 
