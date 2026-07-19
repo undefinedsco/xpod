@@ -8816,7 +8816,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       if (!alias) {
         throw new Error(`Postgres RDF-3X aggregate cannot order by unbound variable: ${entry.variable}`);
       }
-      return `source.${alias} ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`;
+      return `(SELECT aggregate_order_term.value FROM rdf_terms aggregate_order_term WHERE aggregate_order_term.id = source.${alias}) ${entry.direction === 'desc' ? 'DESC' : 'ASC'}`;
     });
     return ` ORDER BY ${order.join(', ')}`;
   }

@@ -3526,6 +3526,44 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('orders grouped RDF terms lexically before applying LIMIT', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-group-term-order-'));
+    const engine = new PostgresRdfEngine({ driver: 'pglite', dataDir });
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/messages.ttl');
+    const thread2 = namedNode('https://pod.example/synthetic-2/thread');
+    const thread10 = namedNode('https://pod.example/synthetic-10/thread');
+
+    try {
+      await engine.open();
+      await engine.put([
+        quad(namedNode(`${graph.value}#message-2`), namedNode(THREAD), thread2, graph),
+        quad(namedNode(`${graph.value}#message-10`), namedNode(THREAD), thread10, graph),
+      ]);
+
+      const result = await engine.query({
+        patterns: [{
+          graph,
+          subject: { variable: 'message' },
+          predicate: namedNode(THREAD),
+          object: { variable: 'thread' },
+        }],
+        groupBy: ['thread'],
+        aggregates: [{ type: 'count', as: 'count', variable: 'message' }],
+        orderBy: [
+          { variable: 'count', direction: 'desc' },
+          { variable: 'thread', direction: 'asc' },
+        ],
+        limit: 1,
+      });
+
+      expect(result.bindings.map((binding) => binding.thread.value)).toEqual([thread10.value]);
+      expect(result.metrics.plan).toContain('PostgresRdf3xAggregateOrder(desc:count,asc:thread)');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('runs non-grouped numeric aggregates as PostgreSQL RDF-3X SQL', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-numeric-aggregate-'));
     const engine = new PostgresRdfEngine({
