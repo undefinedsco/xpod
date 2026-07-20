@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createReadStream as createNodeReadStream } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { Readable } from 'node:stream';
 import type { Quad, Term } from '@rdfjs/types';
-import { Parser as N3Parser } from 'n3';
+import { Parser as N3Parser, StreamParser as N3StreamParser } from 'n3';
 import { Pool } from 'pg';
 import {
   PostgresRdfEngine,
@@ -80,6 +82,7 @@ const RDF3X_PARITY_CONTRACT = 'xpod-rdf3x-parity-adapter';
 const RDF3X_PARITY_CONTRACT_VERSION = 1;
 const RDF3X_PARITY_FIXTURE_MANIFEST_TABLE = 'rdf_benchmark_manifest';
 const RDF3X_PARITY_FIXTURE_SHA256_KEY = 'fixture_sha256';
+const RDF3X_PARITY_PREPARE_BATCH_QUADS = 1_000;
 
 export type BenchmarkMode = 'local' | 'external';
 export type BenchmarkExecutionLocation = 'local' | 'cluster';
@@ -146,6 +149,7 @@ export interface Rdf3xParityRuntime {
   env?: Readonly<Record<string, string | undefined>>;
   now?: () => number;
   readFile?: (file: string, encoding: BufferEncoding) => Promise<string>;
+  createReadStream?: (file: string, options?: { encoding?: BufferEncoding }) => Readable;
   readFixtureSha256?: (connectionString: string) => Promise<string | undefined>;
   resetBenchmarkSchema?: (connectionString: string) => Promise<void>;
   createRdf3xEngine?: (connectionString: string) => Rdf3xParityPrepareEngine;
@@ -155,6 +159,16 @@ export interface Rdf3xParityRuntime {
     connectionString: string,
     query: string,
   ) => Promise<SparqlJsonBindingsBody>;
+}
+
+interface Rdf3xParityFixtureManifestClient {
+  query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  release(): void;
+}
+
+interface Rdf3xParityFixtureManifestPool {
+  connect(): Promise<Rdf3xParityFixtureManifestClient>;
+  end(): Promise<void>;
 }
 
 export interface BenchmarkExecutionContext {
@@ -509,13 +523,16 @@ export async function loadBenchmarkCheckpoint(
     const expectedConcurrency = benchmarkConcurrencyContextFingerprint(options, context);
     const latencyMatches = parsed.latencyContextFingerprint === expectedLatency;
     const concurrencyMatches = parsed.concurrencyContextFingerprint === expectedConcurrency;
+    const concurrencyDiagnosticsByKey = isBenchmarkDiagnosticsByKey(parsed.concurrencyDiagnosticsByKey)
+      ? parsed.concurrencyDiagnosticsByKey
+      : undefined;
     const validConcurrencyRecords = concurrencyMatches &&
       parsed.concurrencyRecords.every(isBenchmarkConcurrencyRecord) &&
-      isBenchmarkDiagnosticsByKey(parsed.concurrencyDiagnosticsByKey);
+      concurrencyDiagnosticsByKey !== undefined;
     const validConcurrencyLane = validConcurrencyRecords &&
       hasCompleteConcurrencyDiagnostics(
         parsed.concurrencyRecords,
-        parsed.concurrencyDiagnosticsByKey,
+        concurrencyDiagnosticsByKey,
       );
     if (latencyMatches && validConcurrencyLane) {
       return sanitizeBenchmarkCheckpointConcurrency(parsed as BenchmarkCheckpoint);
@@ -535,14 +552,14 @@ export async function loadBenchmarkCheckpoint(
             completedConcurrencyKeys: completedConcurrencyKeysWithEvidence(
               parsed.completedConcurrencyKeys,
               parsed.concurrencyRecords,
-              parsed.concurrencyDiagnosticsByKey,
+              concurrencyDiagnosticsByKey,
             ),
             concurrencyRecords: parsed.concurrencyRecords,
             diagnosticsByCacheMode: rebuildBenchmarkDiagnosticsByCacheMode(
               parsed.concurrencyRecords,
-              parsed.concurrencyDiagnosticsByKey,
+              concurrencyDiagnosticsByKey,
             ),
-            concurrencyDiagnosticsByKey: parsed.concurrencyDiagnosticsByKey,
+            concurrencyDiagnosticsByKey,
           }
         : {}),
     };
@@ -1686,9 +1703,12 @@ export function rebuildBenchmarkDiagnosticsByCacheMode(
     if (!cellDiagnostics) {
       throw new Error(`Missing concurrency diagnostics for ${key}`);
     }
-    const modeDiagnostics = diagnosticsByCacheMode[record.cacheMode] ?? {};
-    modeDiagnostics[record.engine] = modeDiagnostics[record.engine]
-      ? mergeBenchmarkPgDiagnostics(modeDiagnostics[record.engine], cellDiagnostics)
+    const modeDiagnostics: Partial<Record<CloudReplacementEngineId, CloudReplacementPgDiagnostics>> = {
+      ...(diagnosticsByCacheMode[record.cacheMode] ?? {}),
+    };
+    const existingDiagnostics = modeDiagnostics[record.engine];
+    modeDiagnostics[record.engine] = existingDiagnostics
+      ? mergeBenchmarkPgDiagnostics(existingDiagnostics, cellDiagnostics)
       : cellDiagnostics;
     diagnosticsByCacheMode[record.cacheMode] = modeDiagnostics as Record<
       CloudReplacementEngineId,
@@ -2119,21 +2139,18 @@ export async function runRdf3xParityPrepare(
 ): Promise<Rdf3xParityEnvelope> {
   const env = runtime.env ?? process.env;
   const connectionString = resolveRdf3xParityPrepareConnectionString(env);
-  const readFacts = runtime.readFile ?? readFile;
+  const createFactsStream = rdf3xParityPrepareReadStreamFactory(runtime);
   const resetSchema = runtime.resetBenchmarkSchema ?? resetRdf3xParityBenchmarkSchema;
   const createEngine = runtime.createRdf3xEngine ?? createRdf3xParityPrepareEngine;
   const countFacts = runtime.countFacts ?? countRdf3xParityFacts;
   const writeManifest = runtime.writeFixtureManifest ?? writeRdf3xParityFixtureManifest;
-  const readManifest = runtime.readFixtureSha256 ?? readRdf3xParityFixtureSha256;
   const now = runtime.now ?? (() => performance.now());
 
-  const facts = await readFacts(options.facts, 'utf8');
-  const actualFixtureSha256 = createHash('sha256').update(facts).digest('hex');
+  const actualFixtureSha256 = await hashRdf3xParityFacts(options.facts, createFactsStream);
   const expectedFixtureSha256 = assertRdf3xParitySha256(options.fixtureSha256);
   if (actualFixtureSha256 !== expectedFixtureSha256) {
     throw new Error('RDF3X parity prepare fixture sha256 mismatch');
   }
-  const quads = parseRdf3xParityNQuads(facts);
 
   const startedAt = now();
   await resetSchema(connectionString);
@@ -2141,13 +2158,18 @@ export async function runRdf3xParityPrepare(
   let primaryError: unknown;
   let envelope: Rdf3xParityEnvelope | undefined;
   let factCount: number | undefined;
+  let parsedFactCount = 0;
   try {
     await engine.open();
-    await engine.put(quads);
+    parsedFactCount = await putRdf3xParityNQuadStream(
+      options.facts,
+      createFactsStream,
+      engine,
+    );
     await engine.refreshDerivedIndexes({ mode: 'full' });
     factCount = await readBenchmarkFactCount(() => countFacts(connectionString));
-    if (factCount !== quads.length) {
-      throw new Error(`RDF3X parity prepare fact count mismatch: expected ${quads.length}, got ${factCount}`);
+    if (factCount !== parsedFactCount) {
+      throw new Error(`RDF3X parity prepare fact count mismatch: expected ${parsedFactCount}, got ${factCount}`);
     }
   } catch (error) {
     primaryError = error;
@@ -2244,7 +2266,7 @@ export async function countRdf3xParityFacts(connectionUrl: string): Promise<numb
 export async function writeRdf3xParityFixtureManifest(
   connectionUrl: string,
   fixtureSha256: string,
-  createPool: (configuration: BenchmarkPgPoolConfiguration) => Pick<Pool, 'connect' | 'end'> =
+  createPool: (configuration: BenchmarkPgPoolConfiguration) => Rdf3xParityFixtureManifestPool =
     (configuration) => new Pool(configuration),
 ): Promise<void> {
   const pool = createPool(buildBenchmarkPgPoolConfiguration(
@@ -2325,6 +2347,71 @@ export async function readRdf3xParityFixtureSha256(
     return typeof value === 'string' ? value : undefined;
   } finally {
     await pool.end();
+  }
+}
+
+type Rdf3xParityReadStreamFactory = (
+  file: string,
+  options?: { encoding?: BufferEncoding },
+) => Readable | Promise<Readable>;
+
+function rdf3xParityPrepareReadStreamFactory(runtime: Rdf3xParityRuntime): Rdf3xParityReadStreamFactory {
+  if (runtime.createReadStream) {
+    return runtime.createReadStream;
+  }
+  if (runtime.readFile) {
+    return async (file, options) => Readable.from([
+      await runtime.readFile!(file, options?.encoding ?? 'utf8'),
+    ]);
+  }
+  return (file, options) => createNodeReadStream(file, options);
+}
+
+async function hashRdf3xParityFacts(
+  file: string,
+  createStream: Rdf3xParityReadStreamFactory,
+): Promise<string> {
+  const stream = await createStream(file);
+  const hash = createHash('sha256');
+  try {
+    for await (const chunk of stream) {
+      hash.update(chunk);
+    }
+  } catch (error) {
+    stream.destroy(error instanceof Error ? error : undefined);
+    throw error;
+  }
+  return hash.digest('hex');
+}
+
+async function putRdf3xParityNQuadStream(
+  file: string,
+  createStream: Rdf3xParityReadStreamFactory,
+  engine: Rdf3xParityPrepareEngine,
+): Promise<number> {
+  const source = await createStream(file, { encoding: 'utf8' });
+  const parser = new N3StreamParser({ format: 'N-Quads' });
+  const batch: Quad[] = [];
+  let count = 0;
+
+  source.on('error', (error) => parser.destroy(error));
+  source.pipe(parser);
+  try {
+    for await (const quad of parser as AsyncIterable<Quad>) {
+      batch.push(quad);
+      count += 1;
+      if (batch.length >= RDF3X_PARITY_PREPARE_BATCH_QUADS) {
+        await engine.put(batch.splice(0, batch.length));
+      }
+    }
+    if (batch.length > 0) {
+      await engine.put(batch);
+    }
+    return count;
+  } catch (error) {
+    source.destroy(error instanceof Error ? error : undefined);
+    parser.destroy(error instanceof Error ? error : undefined);
+    throw new Error(`RDF3X parity prepare could not parse N-Quads: ${errorMessage(error)}`);
   }
 }
 
@@ -3480,6 +3567,11 @@ function concurrencyOption(raw?: string): BenchmarkConcurrency[] {
   return values as BenchmarkConcurrency[];
 }
 
-if (import.meta.main) {
-  await main();
+function isNativeRdf3xBenchmarkEntrypoint(argv = process.argv): boolean {
+  const entrypoint = path.basename(argv[1] ?? '');
+  return entrypoint === 'native-rdf3x-benchmark.ts' || entrypoint === 'native-rdf3x-benchmark.js';
+}
+
+if (isNativeRdf3xBenchmarkEntrypoint()) {
+  void main();
 }

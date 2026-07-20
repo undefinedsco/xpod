@@ -2,10 +2,12 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { inspect } from 'node:util';
+import type { Quad, Term } from '@rdfjs/types';
 import { DataFactory } from 'n3';
 import { describe, expect, it } from 'vitest';
 import * as benchmark from '../../scripts/native-rdf3x-benchmark';
@@ -14,6 +16,7 @@ import {
 } from '../../src/storage/rdf/models-benchmark';
 import {
   buildCloudReplacementTopology,
+  type CloudReplacementCorrectness,
   type CloudReplacementEngineAdapter,
   type CloudReplacementEngineId,
   type CloudReplacementErrorEvidence,
@@ -21,10 +24,33 @@ import {
   type CloudReplacementWorkload,
 } from '../../src/storage/rdf/cloud-replacement-benchmark';
 
-const repositoryRoot = path.resolve(import.meta.dirname, '../..');
+const repositoryRoot = process.cwd();
 const benchmarkScript = path.join(repositoryRoot, 'scripts/native-rdf3x-benchmark.ts');
 const benchmarkModuleUrl = pathToFileURL(benchmarkScript).href;
 const resultMarker = '__XPOD_BENCHMARK_TEST_RESULT__';
+
+class TrackingReadable extends Readable {
+  public destroyedWithError = false;
+  private pushed = false;
+
+  public constructor(private readonly body: string) {
+    super();
+  }
+
+  public override _read(): void {
+    if (this.pushed) {
+      return;
+    }
+    this.pushed = true;
+    this.push(this.body);
+    this.push(null);
+  }
+
+  public override destroy(error?: Error): this {
+    this.destroyedWithError ||= error !== undefined;
+    return super.destroy(error);
+  }
+}
 
 function runCli(
   args: string[],
@@ -88,7 +114,7 @@ function diagnosticsByKey(
   ];
 }
 
-function correctnessRecord(correct = true) {
+function correctnessRecord(correct = true): CloudReplacementCorrectness {
   return {
     correct,
     sameMultiset: correct,
@@ -1361,7 +1387,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
   });
 
   it('records both engines when the surviving baseline also times out', async () => {
-    const timedOut = (engine: 'rdf3x' | 'qlever'): CloudReplacementEngineAdapter<typeof engine> => ({
+    const timedOut = <Id extends CloudReplacementEngineId>(engine: Id): CloudReplacementEngineAdapter<Id> => ({
       id: engine,
       async execute() {
         throw new benchmark.BenchmarkEngineExecutionError(
@@ -1494,9 +1520,9 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       async open() {
         events.push('open');
       },
-      async put(quads: unknown[]) {
+      async put(quads: Quad | Quad[]) {
         events.push('put');
-        putBatchSizes.push(quads.length);
+        putBatchSizes.push(Array.isArray(quads) ? quads.length : 1);
       },
       async refreshDerivedIndexes(options?: unknown) {
         events.push(`refresh:${JSON.stringify(options)}`);
@@ -1549,6 +1575,96 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       fixtureSha256: sha,
       factCount: 2,
     });
+  });
+
+  it('streams RDF3X parity prepare facts in bounded batches after hash validation', async () => {
+    const facts = Array.from({ length: 1_001 }, (_value, index) =>
+      `<https://pod.example/s${index}> <https://pod.example/p> "value ${index}" <https://pod.example/g> .`,
+    ).join('\n');
+    const sha = createHash('sha256').update(facts).digest('hex');
+    const events: string[] = [];
+    const putBatchSizes: number[] = [];
+
+    const envelope = await benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      createReadStream: () => Readable.from([ facts ]),
+      readFile: async () => {
+        throw new Error('prepare must stream facts instead of reading the full file');
+      },
+      resetBenchmarkSchema: async () => {
+        events.push('reset');
+      },
+      createRdf3xEngine: () => ({
+        async open() {
+          events.push('open');
+        },
+        async put(quads) {
+          const batch = Array.isArray(quads) ? quads : [ quads ];
+          putBatchSizes.push(batch.length);
+        },
+        async refreshDerivedIndexes() {
+          events.push('refresh');
+        },
+        async close() {
+          events.push('close');
+        },
+      }),
+      countFacts: async () => 1_001,
+      writeFixtureManifest: async () => {
+        events.push('write');
+      },
+      now: () => 0,
+    });
+
+    expect(events).toEqual([ 'reset', 'open', 'refresh', 'close', 'write' ]);
+    expect(putBatchSizes).toEqual([ 1_000, 1 ]);
+    expect(envelope.factCount).toBe(1_001);
+    expect(envelope.fixtureSha256).toBe(sha);
+  });
+
+  it('closes the RDF3X parity prepare engine and destroys the parse stream on invalid streamed facts', async () => {
+    const facts = '<https://pod.example/s> <https://pod.example/p> "unterminated <https://pod.example/g> .\n';
+    const sha = createHash('sha256').update(facts).digest('hex');
+    const events: string[] = [];
+    const streams: TrackingReadable[] = [];
+
+    await expect(benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      createReadStream: () => {
+        const stream = new TrackingReadable(facts);
+        streams.push(stream);
+        return stream;
+      },
+      resetBenchmarkSchema: async () => {
+        events.push('reset');
+      },
+      createRdf3xEngine: () => ({
+        async open() {
+          events.push('open');
+        },
+        async put() {
+          events.push('put');
+        },
+        async refreshDerivedIndexes() {
+          events.push('refresh');
+        },
+        async close() {
+          events.push('close');
+        },
+      }),
+    })).rejects.toThrow('could not parse N-Quads');
+
+    expect(events).toEqual([ 'reset', 'open', 'close' ]);
+    expect(streams).toHaveLength(2);
+    expect(streams[1].destroyedWithError).toBe(true);
   });
 
   it('commits RDF3X parity fixture manifest only after closing the prepare engine', async () => {
@@ -1771,6 +1887,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
 
   it('validates fixture sha against seeded metadata before running RDF3X parity query', async () => {
     await expect(benchmark.runRdf3xParityQuery({
+      mode: 'query',
       query: '/tmp/query.rq',
       fixtureSha256: 'a'.repeat(64),
     }, {
@@ -1789,6 +1906,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     const calls: Array<Record<string, unknown>> = [];
     let now = 10;
     const envelope = await benchmark.runRdf3xParityQuery({
+      mode: 'query',
       query: '/tmp/query.rq',
       fixtureSha256: 'a'.repeat(64),
     }, {
@@ -1870,7 +1988,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
 
   it('materializes RDF3X parity binding streams as standard SPARQL JSON bindings', async () => {
     const stream = (async function* () {
-      yield new Map([
+      yield new Map<Term, Term>([
         [ DataFactory.variable('name'), DataFactory.literal('Alice', 'en') ],
         [ DataFactory.variable('webId'), DataFactory.namedNode('https://pod.example/alice#me') ],
       ]);
