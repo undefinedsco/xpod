@@ -1537,9 +1537,9 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       'put',
       'refresh:{"mode":"full"}',
       'count',
+      'close',
       `write:${sha}`,
       'verify',
-      'close',
     ]);
     expect(putBatchSizes).toEqual([ 2 ]);
     expect(envelope).toMatchObject({
@@ -1551,6 +1551,142 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       fixtureSha256: sha,
       factCount: 2,
     });
+  });
+
+  it('commits RDF3X parity fixture manifest only after closing the prepare engine', async () => {
+    const facts = '<https://pod.example/s> <https://pod.example/p> "one" <https://pod.example/g> .\n';
+    const sha = createHash('sha256').update(facts).digest('hex');
+    const events: string[] = [];
+
+    await benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      readFile: async () => facts,
+      resetBenchmarkSchema: async () => {
+        events.push('reset');
+      },
+      createRdf3xEngine: () => ({
+        async open() {
+          events.push('open');
+        },
+        async put() {
+          events.push('put');
+        },
+        async refreshDerivedIndexes() {
+          events.push('refresh');
+        },
+        async close() {
+          events.push('close');
+        },
+      }),
+      countFacts: async () => {
+        events.push('count');
+        return 1;
+      },
+      writeFixtureManifest: async () => {
+        events.push('write');
+      },
+      readFixtureSha256: async () => {
+        events.push('verify');
+        return sha;
+      },
+    });
+
+    expect(events).toEqual([
+      'reset',
+      'open',
+      'put',
+      'refresh',
+      'count',
+      'close',
+      'write',
+      'verify',
+    ]);
+  });
+
+  it('does not clean prepared RDF3X data when manifest commit fails after engine close', async () => {
+    const facts = '<https://pod.example/s> <https://pod.example/p> "one" <https://pod.example/g> .\n';
+    const sha = createHash('sha256').update(facts).digest('hex');
+    const events: string[] = [];
+
+    await expect(benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      readFile: async () => facts,
+      resetBenchmarkSchema: async () => {
+        events.push('reset');
+      },
+      createRdf3xEngine: () => ({
+        async open() {
+          events.push('open');
+        },
+        async put() {
+          events.push('put');
+        },
+        async refreshDerivedIndexes() {
+          events.push('refresh');
+        },
+        async close() {
+          events.push('close');
+        },
+      }),
+      countFacts: async () => 1,
+      writeFixtureManifest: async () => {
+        events.push('write');
+        throw new Error('manifest commit failed');
+      },
+    })).rejects.toThrow('manifest commit failed');
+
+    expect(events).toEqual([ 'reset', 'open', 'put', 'refresh', 'close', 'write' ]);
+  });
+
+  it('rolls back RDF3X parity manifest transaction when readback fails', async () => {
+    const events: string[] = [];
+    const client = {
+      async query(sql: string) {
+        const normalized = sql.trim().split(/\s+/u).slice(0, 3).join(' ');
+        events.push(normalized);
+        if (sql.includes(`SELECT value FROM`)) {
+          throw new Error('readback failed');
+        }
+        return { rows: [] };
+      },
+      release() {
+        events.push('release');
+      },
+    };
+    const pool = {
+      async connect() {
+        events.push('connect');
+        return client;
+      },
+      async end() {
+        events.push('end');
+      },
+    };
+
+    await expect(benchmark.writeRdf3xParityFixtureManifest(
+      'postgres://example.test/seeded_benchmark',
+      'a'.repeat(64),
+      () => pool,
+    )).rejects.toThrow('readback failed');
+
+    expect(events).toEqual([
+      'connect',
+      'BEGIN',
+      'CREATE TABLE IF',
+      'INSERT INTO rdf_benchmark_manifest',
+      'SELECT value FROM',
+      'ROLLBACK',
+      'release',
+      'end',
+    ]);
   });
 
   it('rejects prepare fixture hash mismatches before resetting the database', async () => {
@@ -1718,6 +1854,22 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         },
       },
     });
+  });
+
+  it('builds RDF3X parity query engines with existing-schema read-only open options', () => {
+    const options = benchmark.buildRdf3xParityQueryEngineOptions('postgres://example.test/seeded_benchmark');
+    const connection = new URL(
+      benchmark.buildRdf3xParityReadOnlyConnectionString('postgres://example.test/seeded_benchmark'),
+    );
+
+    expect(options).toMatchObject({
+      readOnlyExistingSchema: true,
+      deferPgCustomIndexInitialization: true,
+      maintenanceIntervalMs: 0,
+      queryResultCacheEnabled: false,
+      materializedResultCacheEnabled: false,
+    });
+    expect(connection.searchParams.get('options')).toContain('-c default_transaction_read_only=on');
   });
 
   it('materializes RDF3X parity binding streams as standard SPARQL JSON bindings', async () => {

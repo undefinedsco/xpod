@@ -5346,6 +5346,46 @@ describe('PostgresRdfEngine', () => {
     }
   });
 
+  it('opens an existing RDF3X schema in read-only mode without schema writes', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-readonly-open-'));
+    const setupPool = new XpodRdfExtensionPgPool(dataDir);
+    const graph = namedNode('https://pod.example/alice/.data/chat/default/readonly.ttl');
+    const message = namedNode(`${graph.value}#msg_1`);
+    const setup = new PostgresRdfEngine({
+      pool: setupPool,
+      deferPgCustomIndexInitialization: true,
+      maintenanceIntervalMs: 0,
+    });
+    let readOnlyPool: XpodRdfExtensionPgPool | undefined;
+    let readOnly: PostgresRdfEngine | undefined;
+
+    try {
+      await setup.open();
+      await setup.put(quad(message, namedNode(STATUS), literal('open'), graph));
+      await setup.refreshDerivedIndexes({ mode: 'full' });
+      await setup.close();
+
+      readOnlyPool = new XpodRdfExtensionPgPool(dataDir);
+      readOnly = new PostgresRdfEngine({
+        pool: readOnlyPool,
+        deferPgCustomIndexInitialization: true,
+        maintenanceIntervalMs: 0,
+        readOnlyExistingSchema: true,
+      });
+      await readOnly.open();
+
+      const writes = readOnlyPool.executedSql.filter((sql) =>
+        /\b(CREATE|ALTER|INSERT|UPDATE|DELETE|DROP)\b/iu.test(sql));
+      expect(writes).toEqual([]);
+      expect(readOnlyPool.executedSql).toContain("SELECT value FROM rdf_index_metadata WHERE key = 'schema_version'");
+      expect(readOnlyPool.executedSql).toContain("SELECT value FROM rdf3x_metadata WHERE key = 'schema_version'");
+    } finally {
+      await readOnly?.close();
+      await setup.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('batch upserts terms and quads during deferred custom-index seed', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-rdf-bulk-upsert-'));
     const pool = new XpodRdfExtensionPgPool(dataDir);

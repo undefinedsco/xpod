@@ -737,6 +737,7 @@ export interface PostgresRdfEngineOptions {
   numericAggregateFactsCutoverMaxSourceRows?: number;
   textIndex?: RdfTextIndexInput;
   vectorIndex?: RdfVectorIndexInput;
+  readOnlyExistingSchema?: boolean;
 }
 
 interface PostgresRdfTermRow {
@@ -1824,15 +1825,21 @@ export class PostgresRdfEngine implements RdfEngineLike {
             await this.vectorIndex?.open();
           });
           this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
-          await runPhase('term-dictionary', () => this.termDictionary!.initialize());
-          await runPhase('schema', () => this.initializeSchema());
+          if (this.pgOptions.readOnlyExistingSchema) {
+            await runPhase('schema', () => this.assertExistingSchema());
+          } else {
+            await runPhase('term-dictionary', () => this.termDictionary!.initialize());
+            await runPhase('schema', () => this.initializeSchema());
+          }
           this.pgAcceleration = await runPhase('acceleration-probe', () => this.probePgAcceleration());
-          if (!this.pgOptions.deferPgCustomIndexInitialization) {
+          if (!this.pgOptions.readOnlyExistingSchema && !this.pgOptions.deferPgCustomIndexInitialization) {
             await runPhase('custom-indexes', () => this.initializePgCustomIndexes());
           }
           this.initialized = true;
           await runPhase('maintenance-scheduler', async () => {
-            this.startMaintenanceScheduler();
+            if (!this.pgOptions.readOnlyExistingSchema) {
+              this.startMaintenanceScheduler();
+            }
           });
 
           const readyAtMs = Date.now();
@@ -3315,6 +3322,55 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.initializeMaterializedResultCacheSchema(executor);
     await this.initializeMaterializedViewSchema(executor);
     await this.initializeRdf3xSchema(executor);
+  }
+
+  private async assertExistingSchema(): Promise<void> {
+    const executor = this.requireExecutor();
+    await this.assertMetadataVersion(
+      executor,
+      'rdf_index_metadata',
+      POSTGRES_RDF_SCHEMA_VERSION,
+    );
+    await this.assertMetadataVersion(
+      executor,
+      'rdf3x_metadata',
+      POSTGRES_RDF3X_SCHEMA_VERSION,
+    );
+    for (const table of [
+      'rdf_terms',
+      'rdf_sources',
+      RDF_DIRTY_SOURCE_TABLE,
+      RDF_MAINTENANCE_LEASE_TABLE,
+      RDF_ACCESS_CONTROL_OVERRIDE_TABLE,
+      RDF_FACTS_TABLE,
+      'rdf_index_metadata',
+      RDF_QUERY_RESULT_CACHE_TABLE,
+      RDF_MATERIALIZED_RESULT_CACHE_TABLE,
+      RDF_MATERIALIZED_VIEW_TABLE,
+      RDF_MATERIALIZED_VIEW_CELL_TABLE,
+      'rdf3x_metadata',
+      RDF3X_GRAPH_PROJECTION_TABLE,
+      RDF3X_DIRTY_GRAPH_TABLE,
+      RDF3X_DIRTY_PAIR_TABLE,
+      RDF3X_DIRTY_TERM_TABLE,
+      ...PAIR_PROJECTIONS.map((projection) => projection.table),
+      ...TERM_PROJECTIONS.map((projection) => projection.table),
+    ]) {
+      await executor.query(`SELECT 1 FROM ${table} LIMIT 0`);
+    }
+  }
+
+  private async assertMetadataVersion(
+    executor: AsyncSqlExecutor,
+    table: 'rdf_index_metadata' | 'rdf3x_metadata',
+    expectedVersion: number,
+  ): Promise<void> {
+    const row = await executor.query<{ value: string }>(
+      `SELECT value FROM ${table} WHERE key = 'schema_version'`,
+    );
+    if (row[0]?.value !== String(expectedVersion)) {
+      throw new Error(`${table} schema_version is not compatible with read-only RDF open`);
+    }
   }
 
   private async initializePgCustomIndexes(): Promise<void> {

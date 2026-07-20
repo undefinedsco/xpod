@@ -2140,28 +2140,15 @@ export async function runRdf3xParityPrepare(
   const engine = createEngine(connectionString);
   let primaryError: unknown;
   let envelope: Rdf3xParityEnvelope | undefined;
+  let factCount: number | undefined;
   try {
     await engine.open();
     await engine.put(quads);
     await engine.refreshDerivedIndexes({ mode: 'full' });
-    const factCount = await readBenchmarkFactCount(() => countFacts(connectionString));
+    factCount = await readBenchmarkFactCount(() => countFacts(connectionString));
     if (factCount !== quads.length) {
       throw new Error(`RDF3X parity prepare fact count mismatch: expected ${quads.length}, got ${factCount}`);
     }
-    await writeManifest(connectionString, actualFixtureSha256);
-    const committedFixtureSha256 = assertRdf3xParityManifestSha256(
-      await readManifest(connectionString),
-    );
-    if (committedFixtureSha256 !== actualFixtureSha256) {
-      throw new Error('RDF3X parity prepare committed fixture sha256 mismatch');
-    }
-    envelope = rdf3xParityEnvelope(
-      'prepare',
-      now() - startedAt,
-      actualFixtureSha256,
-      emptySparqlJsonBindingsBody(),
-      factCount,
-    );
   } catch (error) {
     primaryError = error;
   }
@@ -2169,10 +2156,25 @@ export async function runRdf3xParityPrepare(
   const cleanupErrors: unknown[] = [];
   await captureCleanupFailure(() => engine.close(), cleanupErrors);
   throwBenchmarkFailures(primaryError, cleanupErrors);
-  if (envelope) {
-    return envelope;
+  if (factCount === undefined) {
+    throw new Error('RDF3X parity prepare failed without validated fact count');
   }
-  throw new Error('RDF3X parity prepare failed without an attributed error');
+
+  await writeManifest(connectionString, actualFixtureSha256);
+  const committedFixtureSha256 = assertRdf3xParityManifestSha256(
+    await readManifest(connectionString),
+  );
+  if (committedFixtureSha256 !== actualFixtureSha256) {
+    throw new Error('RDF3X parity prepare committed fixture sha256 mismatch');
+  }
+  envelope = rdf3xParityEnvelope(
+    'prepare',
+    now() - startedAt,
+    actualFixtureSha256,
+    emptySparqlJsonBindingsBody(),
+    factCount,
+  );
+  return envelope;
 }
 
 export function buildRdf3xParityConnectionString(connectionUrl: string): string {
@@ -2187,9 +2189,20 @@ export function buildRdf3xParityConnectionString(connectionUrl: string): string 
   return parsed.toString();
 }
 
+export function buildRdf3xParityReadOnlyConnectionString(connectionUrl: string): string {
+  const parsed = new URL(buildRdf3xParityConnectionString(connectionUrl));
+  const existingOptions = parsed.searchParams.getAll('options');
+  parsed.searchParams.delete('options');
+  parsed.searchParams.append(
+    'options',
+    [ ...existingOptions, '-c default_transaction_read_only=on' ].join(' ').trim(),
+  );
+  return parsed.toString();
+}
+
 export async function resetRdf3xParityBenchmarkSchema(connectionUrl: string): Promise<void> {
   const pool = new Pool(buildBenchmarkPgPoolConfiguration(
-    buildRdf3xParityPrepareConnectionString(connectionUrl),
+    resolveRdf3xParityPrepareConnectionString(connectionUrl),
     BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
     4,
   ));
@@ -2203,15 +2216,27 @@ export async function resetRdf3xParityBenchmarkSchema(connectionUrl: string): Pr
 export function createRdf3xParityPrepareEngine(connectionUrl: string): Rdf3xParityPrepareEngine {
   return new PostgresRdfEngine(buildBenchmarkPostgresEngineOptions(
     'rdf3x',
-    buildRdf3xParityPrepareConnectionString(connectionUrl),
+    resolveRdf3xParityPrepareConnectionString(connectionUrl),
     'off',
     BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
   ));
 }
 
+export function buildRdf3xParityQueryEngineOptions(connectionUrl: string): PostgresRdfEngineOptions {
+  return {
+    ...buildBenchmarkPostgresEngineOptions(
+      'rdf3x',
+      buildRdf3xParityReadOnlyConnectionString(connectionUrl),
+      'off',
+      DEFAULT_OPERATION_TIMEOUT_MS,
+    ),
+    readOnlyExistingSchema: true,
+  };
+}
+
 export async function countRdf3xParityFacts(connectionUrl: string): Promise<number> {
   const pool = new Pool(buildBenchmarkPgPoolConfiguration(
-    buildRdf3xParityPrepareConnectionString(connectionUrl),
+    resolveRdf3xParityPrepareConnectionString(connectionUrl),
     DEFAULT_OPERATION_TIMEOUT_MS,
     2,
   ));
@@ -2225,25 +2250,49 @@ export async function countRdf3xParityFacts(connectionUrl: string): Promise<numb
 export async function writeRdf3xParityFixtureManifest(
   connectionUrl: string,
   fixtureSha256: string,
+  createPool: (configuration: BenchmarkPgPoolConfiguration) => Pick<Pool, 'connect' | 'end'> =
+    (configuration) => new Pool(configuration),
 ): Promise<void> {
-  const pool = new Pool(buildBenchmarkPgPoolConfiguration(
-    buildRdf3xParityPrepareConnectionString(connectionUrl),
+  const pool = createPool(buildBenchmarkPgPoolConfiguration(
+    resolveRdf3xParityPrepareConnectionString(connectionUrl),
     DEFAULT_OPERATION_TIMEOUT_MS,
     2,
   ));
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} (
-        key text PRIMARY KEY,
-        value text NOT NULL
-      )
-    `);
-    await pool.query(
-      `INSERT INTO ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} (key, value)
-       VALUES ($1, $2)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-      [ RDF3X_PARITY_FIXTURE_SHA256_KEY, assertRdf3xParitySha256(fixtureSha256) ],
-    );
+    const client = await pool.connect();
+    let transactionStarted = false;
+    try {
+      await client.query('BEGIN');
+      transactionStarted = true;
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} (
+          key text PRIMARY KEY,
+          value text NOT NULL
+        )
+      `);
+      await client.query(
+        `INSERT INTO ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} (key, value)
+         VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [ RDF3X_PARITY_FIXTURE_SHA256_KEY, assertRdf3xParitySha256(fixtureSha256) ],
+      );
+      const result = await client.query<{ value: unknown }>(
+        `SELECT value FROM ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} WHERE key = $1`,
+        [ RDF3X_PARITY_FIXTURE_SHA256_KEY ],
+      );
+      if (result.rows[0]?.value !== assertRdf3xParitySha256(fixtureSha256)) {
+        throw new Error('RDF3X parity fixture manifest transaction readback mismatch');
+      }
+      await client.query('COMMIT');
+      transactionStarted = false;
+    } catch (error) {
+      if (transactionStarted) {
+        await client.query('ROLLBACK');
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   } finally {
     await pool.end();
   }
@@ -2297,12 +2346,7 @@ async function executeRdf3xParityProductQuery(
   connectionUrl: string,
   query: string,
 ): Promise<SparqlJsonBindingsBody> {
-  const store = new PostgresRdfEngine(buildBenchmarkPostgresEngineOptions(
-    'rdf3x',
-    buildRdf3xParityConnectionString(connectionUrl),
-    'off',
-    DEFAULT_OPERATION_TIMEOUT_MS,
-  ));
+  const store = new PostgresRdfEngine(buildRdf3xParityQueryEngineOptions(connectionUrl));
   try {
     await store.open();
     const sparql = new SolidRdfSparqlEngine(store);
