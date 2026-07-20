@@ -2158,18 +2158,18 @@ export async function runRdf3xParityPrepare(
   let primaryError: unknown;
   let envelope: Rdf3xParityEnvelope | undefined;
   let factCount: number | undefined;
-  let parsedFactCount = 0;
+  let loaded: Rdf3xParityLoadResult | undefined;
   try {
     await engine.open();
-    parsedFactCount = await putRdf3xParityNQuadStream(
+    loaded = await putRdf3xParityNQuadStream(
       options.facts,
       createFactsStream,
       engine,
     );
     await engine.refreshDerivedIndexes({ mode: 'full' });
     factCount = await readBenchmarkFactCount(() => countFacts(connectionString));
-    if (factCount !== parsedFactCount) {
-      throw new Error(`RDF3X parity prepare fact count mismatch: expected ${parsedFactCount}, got ${factCount}`);
+    if (factCount !== loaded.factCount) {
+      throw new Error(`RDF3X parity prepare fact count mismatch: expected ${loaded.factCount}, got ${factCount}`);
     }
   } catch (error) {
     primaryError = error;
@@ -2180,6 +2180,9 @@ export async function runRdf3xParityPrepare(
   throwBenchmarkFailures(primaryError, cleanupErrors);
   if (factCount === undefined) {
     throw new Error('RDF3X parity prepare failed without validated fact count');
+  }
+  if (loaded?.fixtureSha256 !== expectedFixtureSha256) {
+    throw new Error('RDF3X parity prepare fixture sha256 mismatch');
   }
 
   await writeManifest(connectionString, actualFixtureSha256);
@@ -2355,6 +2358,11 @@ type Rdf3xParityReadStreamFactory = (
   options?: { encoding?: BufferEncoding },
 ) => Readable | Promise<Readable>;
 
+interface Rdf3xParityLoadResult {
+  factCount: number;
+  fixtureSha256: string;
+}
+
 function rdf3xParityPrepareReadStreamFactory(runtime: Rdf3xParityRuntime): Rdf3xParityReadStreamFactory {
   if (runtime.createReadStream) {
     return runtime.createReadStream;
@@ -2388,15 +2396,15 @@ async function putRdf3xParityNQuadStream(
   file: string,
   createStream: Rdf3xParityReadStreamFactory,
   engine: Rdf3xParityPrepareEngine,
-): Promise<number> {
+): Promise<Rdf3xParityLoadResult> {
   const source = await createStream(file, { encoding: 'utf8' });
   const parser = new N3StreamParser({ format: 'N-Quads' });
   const batch: Quad[] = [];
+  const hash = createHash('sha256');
   let count = 0;
 
-  source.on('error', (error) => parser.destroy(error));
-  source.pipe(parser);
-  try {
+  parser.on('error', () => undefined);
+  const parseOperation = (async () => {
     for await (const quad of parser as AsyncIterable<Quad>) {
       batch.push(quad);
       count += 1;
@@ -2407,7 +2415,24 @@ async function putRdf3xParityNQuadStream(
     if (batch.length > 0) {
       await engine.put(batch);
     }
-    return count;
+  })();
+
+  try {
+    for await (const chunk of source) {
+      hash.update(chunk);
+      if (!parser.write(chunk)) {
+        await new Promise<void>((resolve, reject) => {
+          parser.once('drain', resolve);
+          parser.once('error', reject);
+        });
+      }
+    }
+    parser.end();
+    await parseOperation;
+    return {
+      factCount: count,
+      fixtureSha256: hash.digest('hex'),
+    };
   } catch (error) {
     source.destroy(error instanceof Error ? error : undefined);
     parser.destroy(error instanceof Error ? error : undefined);

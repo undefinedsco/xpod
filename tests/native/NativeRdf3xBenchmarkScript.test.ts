@@ -1626,6 +1626,46 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(envelope.fixtureSha256).toBe(sha);
   });
 
+  it('fails before manifest when RDF3X parity prepare facts change between hash and load streams', async () => {
+    const firstFacts = '<https://pod.example/a> <https://pod.example/p> "first" <https://pod.example/g> .\n';
+    const secondFacts = '<https://pod.example/b> <https://pod.example/p> "second" <https://pod.example/g> .\n';
+    const sha = createHash('sha256').update(firstFacts).digest('hex');
+    const events: string[] = [];
+    const streams = [ firstFacts, secondFacts ];
+
+    await expect(benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      createReadStream: () => Readable.from([ streams.shift() ?? secondFacts ]),
+      resetBenchmarkSchema: async () => {
+        events.push('reset');
+      },
+      createRdf3xEngine: () => ({
+        async open() {
+          events.push('open');
+        },
+        async put() {
+          events.push('put');
+        },
+        async refreshDerivedIndexes() {
+          events.push('refresh');
+        },
+        async close() {
+          events.push('close');
+        },
+      }),
+      countFacts: async () => 1,
+      writeFixtureManifest: async () => {
+        events.push('write');
+      },
+    })).rejects.toThrow('fixture sha256 mismatch');
+
+    expect(events).toEqual([ 'reset', 'open', 'put', 'refresh', 'close' ]);
+  });
+
   it('closes the RDF3X parity prepare engine and destroys the parse stream on invalid streamed facts', async () => {
     const facts = '<https://pod.example/s> <https://pod.example/p> "unterminated <https://pod.example/g> .\n';
     const sha = createHash('sha256').update(facts).digest('hex');
