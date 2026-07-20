@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { Quad, Term } from '@rdfjs/types';
+import { Parser as N3Parser } from 'n3';
 import { Pool } from 'pg';
 import {
   PostgresRdfEngine,
@@ -108,7 +109,8 @@ export interface BenchmarkCliOptions {
 
 export type Rdf3xParityCliOptions =
   | { mode: 'contract' }
-  | { mode: 'query'; query: string; fixtureSha256: string };
+  | { mode: 'query'; query: string; fixtureSha256: string }
+  | { mode: 'prepare'; facts: string; fixtureSha256: string };
 
 export interface SparqlJsonTerm {
   type: 'uri' | 'bnode' | 'literal';
@@ -126,10 +128,18 @@ export interface Rdf3xParityEnvelope {
   adapter: 'rdf3x';
   contract: typeof RDF3X_PARITY_CONTRACT;
   contractVersion: typeof RDF3X_PARITY_CONTRACT_VERSION;
-  mode: 'contract' | 'query';
+  mode: 'contract' | 'query' | 'prepare';
   elapsedMs: number;
   fixtureSha256: string;
+  factCount?: number;
   result: { body: SparqlJsonBindingsBody };
+}
+
+export interface Rdf3xParityPrepareEngine {
+  open(): Promise<void>;
+  put(quads: Quad | Quad[]): Promise<void>;
+  refreshDerivedIndexes(options?: { mode?: 'full' }): Promise<unknown>;
+  close(): Promise<void>;
 }
 
 export interface Rdf3xParityRuntime {
@@ -137,6 +147,10 @@ export interface Rdf3xParityRuntime {
   now?: () => number;
   readFile?: (file: string, encoding: BufferEncoding) => Promise<string>;
   readFixtureSha256?: (connectionString: string) => Promise<string | undefined>;
+  resetBenchmarkSchema?: (connectionString: string) => Promise<void>;
+  createRdf3xEngine?: (connectionString: string) => Rdf3xParityPrepareEngine;
+  countFacts?: (connectionString: string) => Promise<number>;
+  writeFixtureManifest?: (connectionString: string, fixtureSha256: string) => Promise<void>;
   executeRdf3xQuery?: (
     connectionString: string,
     query: string,
@@ -1938,7 +1952,9 @@ async function main(): Promise<void> {
       parityConnectionString = process.env[EXTERNAL_DATABASE_ENV];
       const envelope = parityOptions.mode === 'contract'
         ? await runRdf3xParityContract()
-        : await runRdf3xParityQuery(parityOptions);
+        : parityOptions.mode === 'query'
+          ? await runRdf3xParityQuery(parityOptions)
+          : await runRdf3xParityPrepare(parityOptions);
       process.stdout.write(`${JSON.stringify(envelope)}\n`);
       return;
     }
@@ -1966,6 +1982,8 @@ export function parseRdf3xParityArgs(
 ): Rdf3xParityCliOptions | undefined {
   if (!args.some((argument) =>
     argument === '--contract' ||
+    argument === '--prepare-fixture' ||
+    argument.startsWith('--prepare-fixture=') ||
     argument === '--query' ||
     argument.startsWith('--query=') ||
     argument === '--fixture-sha256' ||
@@ -1974,6 +1992,7 @@ export function parseRdf3xParityArgs(
   }
 
   let contract = false;
+  let facts: string | undefined;
   let query: string | undefined;
   let fixtureSha256: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
@@ -1991,6 +2010,15 @@ export function parseRdf3xParityArgs(
       query = argument.slice('--query='.length);
       continue;
     }
+    if (argument === '--prepare-fixture') {
+      facts = requiredFollowingParityValue(args, index, 'prepare-fixture');
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--prepare-fixture=')) {
+      facts = argument.slice('--prepare-fixture='.length);
+      continue;
+    }
     if (argument === '--fixture-sha256') {
       fixtureSha256 = requiredFollowingParityValue(args, index, 'fixture-sha256');
       index += 1;
@@ -2004,10 +2032,26 @@ export function parseRdf3xParityArgs(
   }
 
   if (contract) {
-    if (query !== undefined || fixtureSha256 !== undefined) {
-      throw new Error('RDF3X parity --contract cannot be combined with --query');
+    if (query !== undefined || facts !== undefined || fixtureSha256 !== undefined) {
+      throw new Error('RDF3X parity --contract cannot be combined with --query or --prepare-fixture');
     }
     return { mode: 'contract' };
+  }
+  if (facts !== undefined) {
+    if (query !== undefined) {
+      throw new Error('RDF3X parity --prepare-fixture cannot be combined with --query');
+    }
+    if (!facts) {
+      throw new Error('RDF3X parity prepare mode requires --prepare-fixture');
+    }
+    if (!fixtureSha256) {
+      throw new Error('RDF3X parity prepare mode requires --fixture-sha256');
+    }
+    return {
+      mode: 'prepare',
+      facts: assertRdf3xParityPath(facts, 'prepare-fixture'),
+      fixtureSha256: assertRdf3xParitySha256(fixtureSha256),
+    };
   }
   if (!query) {
     throw new Error('RDF3X parity query mode requires --query');
@@ -2069,6 +2113,68 @@ export async function runRdf3xParityQuery(
   );
 }
 
+export async function runRdf3xParityPrepare(
+  options: Extract<Rdf3xParityCliOptions, { mode: 'prepare' }>,
+  runtime: Rdf3xParityRuntime = {},
+): Promise<Rdf3xParityEnvelope> {
+  const env = runtime.env ?? process.env;
+  const connectionString = resolveRdf3xParityPrepareConnectionString(env);
+  const readFacts = runtime.readFile ?? readFile;
+  const resetSchema = runtime.resetBenchmarkSchema ?? resetRdf3xParityBenchmarkSchema;
+  const createEngine = runtime.createRdf3xEngine ?? createRdf3xParityPrepareEngine;
+  const countFacts = runtime.countFacts ?? countRdf3xParityFacts;
+  const writeManifest = runtime.writeFixtureManifest ?? writeRdf3xParityFixtureManifest;
+  const readManifest = runtime.readFixtureSha256 ?? readRdf3xParityFixtureSha256;
+  const now = runtime.now ?? (() => performance.now());
+
+  const facts = await readFacts(options.facts, 'utf8');
+  const actualFixtureSha256 = createHash('sha256').update(facts).digest('hex');
+  const expectedFixtureSha256 = assertRdf3xParitySha256(options.fixtureSha256);
+  if (actualFixtureSha256 !== expectedFixtureSha256) {
+    throw new Error('RDF3X parity prepare fixture sha256 mismatch');
+  }
+  const quads = parseRdf3xParityNQuads(facts);
+
+  const startedAt = now();
+  await resetSchema(connectionString);
+  const engine = createEngine(connectionString);
+  let primaryError: unknown;
+  let envelope: Rdf3xParityEnvelope | undefined;
+  try {
+    await engine.open();
+    await engine.put(quads);
+    await engine.refreshDerivedIndexes({ mode: 'full' });
+    const factCount = await readBenchmarkFactCount(() => countFacts(connectionString));
+    if (factCount !== quads.length) {
+      throw new Error(`RDF3X parity prepare fact count mismatch: expected ${quads.length}, got ${factCount}`);
+    }
+    await writeManifest(connectionString, actualFixtureSha256);
+    const committedFixtureSha256 = assertRdf3xParityManifestSha256(
+      await readManifest(connectionString),
+    );
+    if (committedFixtureSha256 !== actualFixtureSha256) {
+      throw new Error('RDF3X parity prepare committed fixture sha256 mismatch');
+    }
+    envelope = rdf3xParityEnvelope(
+      'prepare',
+      now() - startedAt,
+      actualFixtureSha256,
+      emptySparqlJsonBindingsBody(),
+      factCount,
+    );
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const cleanupErrors: unknown[] = [];
+  await captureCleanupFailure(() => engine.close(), cleanupErrors);
+  throwBenchmarkFailures(primaryError, cleanupErrors);
+  if (envelope) {
+    return envelope;
+  }
+  throw new Error('RDF3X parity prepare failed without an attributed error');
+}
+
 export function buildRdf3xParityConnectionString(connectionUrl: string): string {
   assertPostgresConnectionString(connectionUrl);
   const parsed = new URL(connectionUrl);
@@ -2079,6 +2185,68 @@ export function buildRdf3xParityConnectionString(connectionUrl: string): string 
     [ ...existingOptions, BENCHMARK_SEARCH_PATH_OPTION ].join(' ').trim(),
   );
   return parsed.toString();
+}
+
+export async function resetRdf3xParityBenchmarkSchema(connectionUrl: string): Promise<void> {
+  const pool = new Pool(buildBenchmarkPgPoolConfiguration(
+    buildRdf3xParityPrepareConnectionString(connectionUrl),
+    BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
+    4,
+  ));
+  try {
+    await executeBenchmarkCleanup(pool, connectionUrl);
+  } finally {
+    await pool.end();
+  }
+}
+
+export function createRdf3xParityPrepareEngine(connectionUrl: string): Rdf3xParityPrepareEngine {
+  return new PostgresRdfEngine(buildBenchmarkPostgresEngineOptions(
+    'rdf3x',
+    buildRdf3xParityPrepareConnectionString(connectionUrl),
+    'off',
+    BENCHMARK_BUILD_SETUP_TIMEOUT_MS,
+  ));
+}
+
+export async function countRdf3xParityFacts(connectionUrl: string): Promise<number> {
+  const pool = new Pool(buildBenchmarkPgPoolConfiguration(
+    buildRdf3xParityPrepareConnectionString(connectionUrl),
+    DEFAULT_OPERATION_TIMEOUT_MS,
+    2,
+  ));
+  try {
+    return await countBenchmarkFacts(pool);
+  } finally {
+    await pool.end();
+  }
+}
+
+export async function writeRdf3xParityFixtureManifest(
+  connectionUrl: string,
+  fixtureSha256: string,
+): Promise<void> {
+  const pool = new Pool(buildBenchmarkPgPoolConfiguration(
+    buildRdf3xParityPrepareConnectionString(connectionUrl),
+    DEFAULT_OPERATION_TIMEOUT_MS,
+    2,
+  ));
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} (
+        key text PRIMARY KEY,
+        value text NOT NULL
+      )
+    `);
+    await pool.query(
+      `INSERT INTO ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} (key, value)
+       VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [ RDF3X_PARITY_FIXTURE_SHA256_KEY, assertRdf3xParitySha256(fixtureSha256) ],
+    );
+  } finally {
+    await pool.end();
+  }
 }
 
 export async function readRdf3xParityFixtureSha256(
@@ -2114,6 +2282,14 @@ export async function readRdf3xParityFixtureSha256(
     return typeof value === 'string' ? value : undefined;
   } finally {
     await pool.end();
+  }
+}
+
+export function parseRdf3xParityNQuads(input: string): Quad[] {
+  try {
+    return new N3Parser({ format: 'N-Quads' }).parse(input);
+  } catch (error) {
+    throw new Error(`RDF3X parity prepare could not parse N-Quads: ${errorMessage(error)}`);
   }
 }
 
@@ -2209,6 +2385,7 @@ function rdf3xParityEnvelope(
   elapsedMs: number,
   fixtureSha256: string,
   body: SparqlJsonBindingsBody,
+  factCount?: number,
 ): Rdf3xParityEnvelope {
   return {
     adapter: 'rdf3x',
@@ -2217,6 +2394,7 @@ function rdf3xParityEnvelope(
     mode,
     elapsedMs,
     fixtureSha256,
+    ...(factCount === undefined ? {} : { factCount }),
     result: { body },
   };
 }
@@ -2237,6 +2415,19 @@ function resolveRdf3xParityConnectionString(
   }
   assertPostgresConnectionString(connectionString);
   return connectionString;
+}
+
+function resolveRdf3xParityPrepareConnectionString(
+  envOrConnectionString: Readonly<Record<string, string | undefined>> | string,
+): string {
+  const connectionString = typeof envOrConnectionString === 'string'
+    ? envOrConnectionString
+    : envOrConnectionString[EXTERNAL_DATABASE_ENV];
+  if (!connectionString) {
+    throw new Error(`RDF3X parity prepare requires ${EXTERNAL_DATABASE_ENV}`);
+  }
+  assertDedicatedBenchmarkDatabase(connectionString);
+  return buildExternalBenchmarkConnectionString(connectionString);
 }
 
 function assertPostgresConnectionString(connectionUrl: string): void {

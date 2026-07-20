@@ -1,4 +1,5 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -1463,9 +1464,170 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       query: '/tmp/query.rq',
       fixtureSha256: 'a'.repeat(64),
     });
+    expect(benchmark.parseRdf3xParityArgs([
+      '--prepare-fixture',
+      '/tmp/facts.nq',
+      '--fixture-sha256',
+      'b'.repeat(64),
+    ])).toEqual({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: 'b'.repeat(64),
+    });
     expect(benchmark.parseRdf3xParityArgs([ '--mode=local' ])).toBeUndefined();
     expect(() => benchmark.parseRdf3xParityArgs([ '--query', '/tmp/query.rq' ]))
       .toThrow('--fixture-sha256');
+    expect(() => benchmark.parseRdf3xParityArgs([ '--contract', '--prepare-fixture', '/tmp/facts.nq' ]))
+      .toThrow('--contract');
+  });
+
+  it('prepares RDF3X parity fixture by parsing N-Quads and committing manifest last', async () => {
+    const facts = [
+      '<https://pod.example/s1> <https://pod.example/p> "one" <https://pod.example/g> .',
+      '<https://pod.example/s2> <https://pod.example/p> "two" <https://pod.example/g> .',
+      '',
+    ].join('\n');
+    const sha = createHash('sha256').update(facts).digest('hex');
+    const events: string[] = [];
+    const putBatchSizes: number[] = [];
+    const engine = {
+      async open() {
+        events.push('open');
+      },
+      async put(quads: unknown[]) {
+        events.push('put');
+        putBatchSizes.push(quads.length);
+      },
+      async refreshDerivedIndexes(options?: unknown) {
+        events.push(`refresh:${JSON.stringify(options)}`);
+      },
+      async close() {
+        events.push('close');
+      },
+    };
+
+    const envelope = await benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      readFile: async () => facts,
+      resetBenchmarkSchema: async (connectionString) => {
+        events.push(`reset:${connectionString.includes('seeded_benchmark')}`);
+      },
+      createRdf3xEngine: () => engine,
+      countFacts: async () => {
+        events.push('count');
+        return 2;
+      },
+      writeFixtureManifest: async (_connectionString, fixtureSha256) => {
+        events.push(`write:${fixtureSha256}`);
+      },
+      readFixtureSha256: async () => {
+        events.push('verify');
+        return sha;
+      },
+      now: () => 10,
+    });
+
+    expect(events).toEqual([
+      'reset:true',
+      'open',
+      'put',
+      'refresh:{"mode":"full"}',
+      'count',
+      `write:${sha}`,
+      'verify',
+      'close',
+    ]);
+    expect(putBatchSizes).toEqual([ 2 ]);
+    expect(envelope).toMatchObject({
+      adapter: 'rdf3x',
+      contract: 'xpod-rdf3x-parity-adapter',
+      contractVersion: 1,
+      mode: 'prepare',
+      elapsedMs: 0,
+      fixtureSha256: sha,
+      factCount: 2,
+    });
+  });
+
+  it('rejects prepare fixture hash mismatches before resetting the database', async () => {
+    const events: string[] = [];
+
+    await expect(benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: '1'.repeat(64),
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      readFile: async () => '<s> <p> <o> <g> .\n',
+      resetBenchmarkSchema: async () => {
+        events.push('reset');
+      },
+    })).rejects.toThrow('fixture sha256 mismatch');
+    expect(events).toEqual([]);
+  });
+
+  it('does not commit RDF3X parity fixture metadata when refresh or fact-count validation fails', async () => {
+    const facts = '<https://pod.example/s> <https://pod.example/p> "one" <https://pod.example/g> .\n';
+    const sha = createHash('sha256').update(facts).digest('hex');
+    const writes: string[] = [];
+
+    await expect(benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      readFile: async () => facts,
+      resetBenchmarkSchema: async () => undefined,
+      createRdf3xEngine: () => ({
+        async open() {},
+        async put() {},
+        async refreshDerivedIndexes() {
+          throw new Error('refresh failed');
+        },
+        async close() {},
+      }),
+      countFacts: async () => 1,
+      writeFixtureManifest: async () => {
+        writes.push('write');
+      },
+    })).rejects.toThrow('refresh failed');
+
+    await expect(benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: sha,
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded_benchmark' },
+      readFile: async () => facts,
+      resetBenchmarkSchema: async () => undefined,
+      createRdf3xEngine: () => ({
+        async open() {},
+        async put() {},
+        async refreshDerivedIndexes() {},
+        async close() {},
+      }),
+      countFacts: async () => 0,
+      writeFixtureManifest: async () => {
+        writes.push('write');
+      },
+    })).rejects.toThrow('fact count');
+    expect(writes).toEqual([]);
+  });
+
+  it('requires prepare fixture mode to use a dedicated benchmark database', async () => {
+    await expect(benchmark.runRdf3xParityPrepare({
+      mode: 'prepare',
+      facts: '/tmp/facts.nq',
+      fixtureSha256: 'a'.repeat(64),
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/not_dedicated' },
+      readFile: async () => '',
+    })).rejects.toThrow('dedicated benchmark database');
   });
 
   it('fails the RDF3X parity contract closed when the seeded fixture manifest is missing', async () => {
