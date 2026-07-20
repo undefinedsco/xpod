@@ -2161,12 +2161,6 @@ export async function runRdf3xParityPrepare(
   }
 
   await writeManifest(connectionString, actualFixtureSha256);
-  const committedFixtureSha256 = assertRdf3xParityManifestSha256(
-    await readManifest(connectionString),
-  );
-  if (committedFixtureSha256 !== actualFixtureSha256) {
-    throw new Error('RDF3X parity prepare committed fixture sha256 mismatch');
-  }
   envelope = rdf3xParityEnvelope(
     'prepare',
     now() - startedAt,

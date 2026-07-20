@@ -1525,8 +1525,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         events.push(`write:${fixtureSha256}`);
       },
       readFixtureSha256: async () => {
-        events.push('verify');
-        return sha;
+        throw new Error('post-commit manifest reads are not allowed during prepare');
       },
       now: () => 10,
     });
@@ -1539,7 +1538,6 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       'count',
       'close',
       `write:${sha}`,
-      'verify',
     ]);
     expect(putBatchSizes).toEqual([ 2 ]);
     expect(envelope).toMatchObject({
@@ -1590,8 +1588,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         events.push('write');
       },
       readFixtureSha256: async () => {
-        events.push('verify');
-        return sha;
+        throw new Error('post-commit manifest reads are not allowed during prepare');
       },
     });
 
@@ -1603,7 +1600,6 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       'count',
       'close',
       'write',
-      'verify',
     ]);
   });
 
