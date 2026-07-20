@@ -1449,6 +1449,136 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     expect(events.slice(0, 4)).toEqual([ 'clock', 'materialize', 'clock', 'metrics' ]);
   });
 
+  it('parses RDF3X parity contract args without changing benchmark args', () => {
+    expect(benchmark.parseRdf3xParityArgs([ '--contract' ])).toEqual({
+      mode: 'contract',
+    });
+    expect(benchmark.parseRdf3xParityArgs([
+      '--query',
+      '/tmp/query.rq',
+      '--fixture-sha256',
+      'a'.repeat(64),
+    ])).toEqual({
+      mode: 'query',
+      query: '/tmp/query.rq',
+      fixtureSha256: 'a'.repeat(64),
+    });
+    expect(benchmark.parseRdf3xParityArgs([ '--mode=local' ])).toBeUndefined();
+    expect(() => benchmark.parseRdf3xParityArgs([ '--query', '/tmp/query.rq' ]))
+      .toThrow('--fixture-sha256');
+  });
+
+  it('fails the RDF3X parity contract closed when the seeded fixture manifest is missing', async () => {
+    await expect(benchmark.runRdf3xParityContract({
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded' },
+      readFixtureSha256: async () => undefined,
+    })).rejects.toThrow('rdf_benchmark_manifest');
+  });
+
+  it('validates fixture sha against seeded metadata before running RDF3X parity query', async () => {
+    await expect(benchmark.runRdf3xParityQuery({
+      query: '/tmp/query.rq',
+      fixtureSha256: 'a'.repeat(64),
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded' },
+      readFile: async () => 'SELECT ?value WHERE { ?s ?p ?value }',
+      readFixtureSha256: async () => 'b'.repeat(64),
+      executeRdf3xQuery: async () => ({
+        head: { vars: [ 'value' ] },
+        results: { bindings: [] },
+      }),
+      now: () => 0,
+    })).rejects.toThrow('fixture sha256 mismatch');
+  });
+
+  it('runs RDF3X parity query through an injectable product-path seam and emits SPARQL JSON', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    let now = 10;
+    const envelope = await benchmark.runRdf3xParityQuery({
+      query: '/tmp/query.rq',
+      fixtureSha256: 'a'.repeat(64),
+    }, {
+      env: { XPOD_RDF_BENCHMARK_PG_URL: 'postgres://example.test/seeded' },
+      readFile: async (file) => {
+        calls.push({ file });
+        return 'SELECT ?value ?iri WHERE { ?s ?p ?value }';
+      },
+      readFixtureSha256: async (connectionString) => {
+        calls.push({ connectionString });
+        return 'a'.repeat(64);
+      },
+      async executeRdf3xQuery(connectionString, query) {
+        calls.push({ executeConnectionString: connectionString, query });
+        return {
+          head: { vars: [ 'value', 'iri' ] },
+          results: {
+            bindings: [
+              {
+                value: { type: 'literal', value: 'ok' },
+                iri: { type: 'uri', value: 'https://pod.example/item' },
+              },
+            ],
+          },
+        };
+      },
+      now: () => {
+        now += 7;
+        return now;
+      },
+    });
+
+    expect(calls).toEqual([
+      { file: '/tmp/query.rq' },
+      { connectionString: expect.stringContaining('postgres://example.test/seeded') },
+      {
+        executeConnectionString: expect.stringContaining('postgres://example.test/seeded'),
+        query: 'SELECT ?value ?iri WHERE { ?s ?p ?value }',
+      },
+    ]);
+    expect(envelope).toEqual({
+      adapter: 'rdf3x',
+      contract: 'xpod-rdf3x-parity-adapter',
+      contractVersion: 1,
+      mode: 'query',
+      elapsedMs: 7,
+      fixtureSha256: 'a'.repeat(64),
+      result: {
+        body: {
+          head: { vars: [ 'value', 'iri' ] },
+          results: {
+            bindings: [
+              {
+                value: { type: 'literal', value: 'ok' },
+                iri: { type: 'uri', value: 'https://pod.example/item' },
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it('materializes RDF3X parity binding streams as standard SPARQL JSON bindings', async () => {
+    const stream = (async function* () {
+      yield new Map([
+        [ DataFactory.variable('name'), DataFactory.literal('Alice', 'en') ],
+        [ DataFactory.variable('webId'), DataFactory.namedNode('https://pod.example/alice#me') ],
+      ]);
+    })();
+
+    expect(await benchmark.materializeRdf3xParityBindingsBody(stream)).toEqual({
+      head: { vars: [ 'name', 'webId' ] },
+      results: {
+        bindings: [
+          {
+            name: { type: 'literal', value: 'Alice', 'xml:lang': 'en' },
+            webId: { type: 'uri', value: 'https://pod.example/alice#me' },
+          },
+        ],
+      },
+    });
+  });
+
   it('attributes wrapped adapter failures to query and materialize stages', async () => {
     const queryFailure = new Error('query failed');
     const queryEngine: benchmark.BenchmarkSparqlEngine = {

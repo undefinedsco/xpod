@@ -75,6 +75,10 @@ const RDF3X_PERMUTATION_SCAN_MARKERS: ReadonlySet<string> = new Set([
   'Rdf3xPermutationScan(OSP)',
   'Rdf3xPermutationScan(OPS)',
 ]);
+const RDF3X_PARITY_CONTRACT = 'xpod-rdf3x-parity-adapter';
+const RDF3X_PARITY_CONTRACT_VERSION = 1;
+const RDF3X_PARITY_FIXTURE_MANIFEST_TABLE = 'rdf_benchmark_manifest';
+const RDF3X_PARITY_FIXTURE_SHA256_KEY = 'fixture_sha256';
 
 export type BenchmarkMode = 'local' | 'external';
 export type BenchmarkExecutionLocation = 'local' | 'cluster';
@@ -100,6 +104,43 @@ export interface BenchmarkCliOptions {
   executionLocation: BenchmarkExecutionLocation;
   transport: BenchmarkTransport;
   benchmarkDatabaseUrl?: string;
+}
+
+export type Rdf3xParityCliOptions =
+  | { mode: 'contract' }
+  | { mode: 'query'; query: string; fixtureSha256: string };
+
+export interface SparqlJsonTerm {
+  type: 'uri' | 'bnode' | 'literal';
+  value: string;
+  datatype?: string;
+  'xml:lang'?: string;
+}
+
+export interface SparqlJsonBindingsBody {
+  head: { vars: string[] };
+  results: { bindings: Array<Record<string, SparqlJsonTerm>> };
+}
+
+export interface Rdf3xParityEnvelope {
+  adapter: 'rdf3x';
+  contract: typeof RDF3X_PARITY_CONTRACT;
+  contractVersion: typeof RDF3X_PARITY_CONTRACT_VERSION;
+  mode: 'contract' | 'query';
+  elapsedMs: number;
+  fixtureSha256: string;
+  result: { body: SparqlJsonBindingsBody };
+}
+
+export interface Rdf3xParityRuntime {
+  env?: Readonly<Record<string, string | undefined>>;
+  now?: () => number;
+  readFile?: (file: string, encoding: BufferEncoding) => Promise<string>;
+  readFixtureSha256?: (connectionString: string) => Promise<string | undefined>;
+  executeRdf3xQuery?: (
+    connectionString: string,
+    query: string,
+  ) => Promise<SparqlJsonBindingsBody>;
 }
 
 export interface BenchmarkExecutionContext {
@@ -1890,7 +1931,17 @@ function buildDryRunPlan(options: BenchmarkCliOptions): Record<string, unknown> 
 
 async function main(): Promise<void> {
   let options: BenchmarkCliOptions | undefined;
+  let parityConnectionString: string | undefined;
   try {
+    const parityOptions = parseRdf3xParityArgs();
+    if (parityOptions) {
+      parityConnectionString = process.env[EXTERNAL_DATABASE_ENV];
+      const envelope = parityOptions.mode === 'contract'
+        ? await runRdf3xParityContract()
+        : await runRdf3xParityQuery(parityOptions);
+      process.stdout.write(`${JSON.stringify(envelope)}\n`);
+      return;
+    }
     options = parseArgs();
     if (options.help) {
       process.stdout.write(HELP);
@@ -1904,10 +1955,342 @@ async function main(): Promise<void> {
   } catch (error) {
     process.stderr.write(`${formatBenchmarkCliFailure(
       error,
-      options?.benchmarkDatabaseUrl,
+      parityConnectionString ?? options?.benchmarkDatabaseUrl,
     )}\n`);
     process.exitCode = 1;
   }
+}
+
+export function parseRdf3xParityArgs(
+  args: readonly string[] = process.argv.slice(2),
+): Rdf3xParityCliOptions | undefined {
+  if (!args.some((argument) =>
+    argument === '--contract' ||
+    argument === '--query' ||
+    argument.startsWith('--query=') ||
+    argument === '--fixture-sha256' ||
+    argument.startsWith('--fixture-sha256='))) {
+    return undefined;
+  }
+
+  let contract = false;
+  let query: string | undefined;
+  let fixtureSha256: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === '--contract') {
+      contract = true;
+      continue;
+    }
+    if (argument === '--query') {
+      query = requiredFollowingParityValue(args, index, 'query');
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--query=')) {
+      query = argument.slice('--query='.length);
+      continue;
+    }
+    if (argument === '--fixture-sha256') {
+      fixtureSha256 = requiredFollowingParityValue(args, index, 'fixture-sha256');
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--fixture-sha256=')) {
+      fixtureSha256 = argument.slice('--fixture-sha256='.length);
+      continue;
+    }
+    throw new Error(`Unknown RDF3X parity option --${optionName(argument)}`);
+  }
+
+  if (contract) {
+    if (query !== undefined || fixtureSha256 !== undefined) {
+      throw new Error('RDF3X parity --contract cannot be combined with --query');
+    }
+    return { mode: 'contract' };
+  }
+  if (!query) {
+    throw new Error('RDF3X parity query mode requires --query');
+  }
+  if (!fixtureSha256) {
+    throw new Error('RDF3X parity query mode requires --fixture-sha256');
+  }
+  return {
+    mode: 'query',
+    query: assertRdf3xParityPath(query, 'query'),
+    fixtureSha256: assertRdf3xParitySha256(fixtureSha256),
+  };
+}
+
+export async function runRdf3xParityContract(
+  runtime: Rdf3xParityRuntime = {},
+): Promise<Rdf3xParityEnvelope> {
+  const env = runtime.env ?? process.env;
+  const connectionString = resolveRdf3xParityConnectionString(env);
+  const now = runtime.now ?? (() => performance.now());
+  const readManifest = runtime.readFixtureSha256 ?? readRdf3xParityFixtureSha256;
+  const startedAt = now();
+  const fixtureSha256 = await readManifest(connectionString);
+  const normalizedFixtureSha256 = assertRdf3xParityManifestSha256(fixtureSha256);
+  return rdf3xParityEnvelope(
+    'contract',
+    now() - startedAt,
+    normalizedFixtureSha256,
+    emptySparqlJsonBindingsBody(),
+  );
+}
+
+export async function runRdf3xParityQuery(
+  options: Extract<Rdf3xParityCliOptions, { mode: 'query' }>,
+  runtime: Rdf3xParityRuntime = {},
+): Promise<Rdf3xParityEnvelope> {
+  const env = runtime.env ?? process.env;
+  const connectionString = resolveRdf3xParityConnectionString(env);
+  const readQuery = runtime.readFile ?? readFile;
+  const readManifest = runtime.readFixtureSha256 ?? readRdf3xParityFixtureSha256;
+  const executeQuery = runtime.executeRdf3xQuery ?? executeRdf3xParityProductQuery;
+  const now = runtime.now ?? (() => performance.now());
+  const query = await readQuery(options.query, 'utf8');
+  const actualFixtureSha256 = assertRdf3xParityManifestSha256(
+    await readManifest(connectionString),
+  );
+  const expectedFixtureSha256 = assertRdf3xParitySha256(options.fixtureSha256);
+  if (actualFixtureSha256 !== expectedFixtureSha256) {
+    throw new Error('RDF3X parity fixture sha256 mismatch');
+  }
+
+  const startedAt = now();
+  const body = await executeQuery(connectionString, query);
+  return rdf3xParityEnvelope(
+    'query',
+    now() - startedAt,
+    actualFixtureSha256,
+    body,
+  );
+}
+
+export function buildRdf3xParityConnectionString(connectionUrl: string): string {
+  assertPostgresConnectionString(connectionUrl);
+  const parsed = new URL(connectionUrl);
+  const existingOptions = parsed.searchParams.getAll('options');
+  parsed.searchParams.delete('options');
+  parsed.searchParams.append(
+    'options',
+    [ ...existingOptions, BENCHMARK_SEARCH_PATH_OPTION ].join(' ').trim(),
+  );
+  return parsed.toString();
+}
+
+export async function readRdf3xParityFixtureSha256(
+  connectionUrl: string,
+  createPool: (configuration: BenchmarkPgPoolConfiguration) => Pick<Pool, 'query' | 'end'> =
+    (configuration) => new Pool(configuration),
+): Promise<string | undefined> {
+  const pool = createPool(buildBenchmarkPgPoolConfiguration(
+    buildRdf3xParityConnectionString(connectionUrl),
+    DEFAULT_OPERATION_TIMEOUT_MS,
+    2,
+  ));
+  try {
+    for (const tableName of [
+      RDF3X_PARITY_FIXTURE_MANIFEST_TABLE,
+      'rdf_terms',
+      'rdf_quads',
+      'rdf3x_metadata',
+    ]) {
+      const table = await pool.query<{ name: string | null }>(
+        'SELECT to_regclass($1) AS name',
+        [ tableName ],
+      );
+      if (typeof table.rows[0]?.name !== 'string') {
+        return undefined;
+      }
+    }
+    const result = await pool.query<{ value: unknown }>(
+      `SELECT value FROM ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE} WHERE key = $1`,
+      [ RDF3X_PARITY_FIXTURE_SHA256_KEY ],
+    );
+    const value = result.rows[0]?.value;
+    return typeof value === 'string' ? value : undefined;
+  } finally {
+    await pool.end();
+  }
+}
+
+async function executeRdf3xParityProductQuery(
+  connectionUrl: string,
+  query: string,
+): Promise<SparqlJsonBindingsBody> {
+  const store = new PostgresRdfEngine(buildBenchmarkPostgresEngineOptions(
+    'rdf3x',
+    buildRdf3xParityConnectionString(connectionUrl),
+    'off',
+    DEFAULT_OPERATION_TIMEOUT_MS,
+  ));
+  try {
+    await store.open();
+    const sparql = new SolidRdfSparqlEngine(store);
+    const stream = await sparql.queryBindings(query, BASE_PATH, undefined, {
+      timeoutMs: DEFAULT_OPERATION_TIMEOUT_MS,
+    });
+    return await materializeRdf3xParityBindingsBody(stream);
+  } finally {
+    await store.close();
+  }
+}
+
+export async function materializeRdf3xParityBindingsBody(stream: unknown): Promise<SparqlJsonBindingsBody> {
+  const metadata = typeof (stream as { metadata?: unknown })?.metadata === 'function'
+    ? await (stream as { metadata: () => Promise<{ variables?: Array<{ value?: unknown }> }> }).metadata()
+    : undefined;
+  const rows = await materializeBindings(stream);
+  const variableNames = metadata?.variables
+    ?.map((variable) => variable.value)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const vars = variableNames && variableNames.length > 0
+    ? variableNames
+    : inferSparqlJsonVariables(rows);
+  return {
+    head: { vars },
+    results: {
+      bindings: rows.map((row) => sparqlJsonBinding(row, vars)),
+    },
+  };
+}
+
+function sparqlJsonBinding(
+  row: Readonly<Record<string, Term | undefined>>,
+  vars: readonly string[],
+): Record<string, SparqlJsonTerm> {
+  const binding: Record<string, SparqlJsonTerm> = {};
+  for (const name of vars) {
+    const term = row[name];
+    if (term) {
+      binding[name] = sparqlJsonTerm(term);
+    }
+  }
+  return binding;
+}
+
+function sparqlJsonTerm(term: Term): SparqlJsonTerm {
+  if (term.termType === 'NamedNode') {
+    return { type: 'uri', value: term.value };
+  }
+  if (term.termType === 'BlankNode') {
+    return { type: 'bnode', value: term.value };
+  }
+  if (term.termType === 'Literal') {
+    if (term.language) {
+      return { type: 'literal', value: term.value, 'xml:lang': term.language };
+    }
+    return {
+      type: 'literal',
+      value: term.value,
+      datatype: term.datatype.value,
+    };
+  }
+  throw new Error(`RDF3X parity cannot serialize ${term.termType} as a SPARQL JSON binding`);
+}
+
+function inferSparqlJsonVariables(rows: readonly Readonly<Record<string, Term | undefined>>[]): string[] {
+  const vars = new Set<string>();
+  for (const row of rows) {
+    for (const [ name, term ] of Object.entries(row)) {
+      if (term) {
+        vars.add(name);
+      }
+    }
+  }
+  return [ ...vars ];
+}
+
+function rdf3xParityEnvelope(
+  mode: Rdf3xParityEnvelope['mode'],
+  elapsedMs: number,
+  fixtureSha256: string,
+  body: SparqlJsonBindingsBody,
+): Rdf3xParityEnvelope {
+  return {
+    adapter: 'rdf3x',
+    contract: RDF3X_PARITY_CONTRACT,
+    contractVersion: RDF3X_PARITY_CONTRACT_VERSION,
+    mode,
+    elapsedMs,
+    fixtureSha256,
+    result: { body },
+  };
+}
+
+function emptySparqlJsonBindingsBody(): SparqlJsonBindingsBody {
+  return {
+    head: { vars: [] },
+    results: { bindings: [] },
+  };
+}
+
+function resolveRdf3xParityConnectionString(
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  const connectionString = env[EXTERNAL_DATABASE_ENV];
+  if (!connectionString) {
+    throw new Error(`RDF3X parity contract requires ${EXTERNAL_DATABASE_ENV}`);
+  }
+  assertPostgresConnectionString(connectionString);
+  return connectionString;
+}
+
+function assertPostgresConnectionString(connectionUrl: string): void {
+  try {
+    const parsed = new URL(connectionUrl);
+    if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
+      throw new Error('protocol');
+    }
+    if (!parsed.pathname.startsWith('/') || parsed.pathname.startsWith('//')) {
+      throw new Error('path');
+    }
+    const encodedDatabase = parsed.pathname.slice(1);
+    if (!encodedDatabase || encodedDatabase.includes('/')) {
+      throw new Error('path');
+    }
+  } catch {
+    throw new Error(`RDF3X parity contract requires a valid ${EXTERNAL_DATABASE_ENV} PostgreSQL URL`);
+  }
+}
+
+function assertRdf3xParityManifestSha256(value: string | undefined): string {
+  if (value === undefined) {
+    throw new Error(
+      `RDF3X parity requires ${RDF3X_PARITY_FIXTURE_MANIFEST_TABLE}.${RDF3X_PARITY_FIXTURE_SHA256_KEY}`,
+    );
+  }
+  return assertRdf3xParitySha256(value);
+}
+
+function assertRdf3xParitySha256(value: string): string {
+  const normalized = value.toLowerCase();
+  if (!/^[a-f0-9]{64}$/u.test(normalized)) {
+    throw new Error('RDF3X parity requires a 64-hex fixture sha256');
+  }
+  return normalized;
+}
+
+function assertRdf3xParityPath(value: string, name: string): string {
+  if (value.length === 0 || /[\r\n\0]/u.test(value)) {
+    throw new Error(`Invalid --${name}; expected a non-empty single-line value`);
+  }
+  return value;
+}
+
+function requiredFollowingParityValue(
+  args: readonly string[],
+  index: number,
+  name: string,
+): string {
+  const value = args[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`RDF3X parity --${name} requires a value`);
+  }
+  return value;
 }
 
 async function runBenchmark(options: BenchmarkCliOptions): Promise<void> {
