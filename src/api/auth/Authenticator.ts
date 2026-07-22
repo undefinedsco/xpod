@@ -8,6 +8,8 @@ export interface AuthResult {
   success: boolean;
   context?: AuthContext;
   error?: string;
+  category?: 'invalid_credentials' | 'forbidden' | 'service_unavailable';
+  statusCode?: 401 | 403 | 503;
   cause?: unknown;
 }
 

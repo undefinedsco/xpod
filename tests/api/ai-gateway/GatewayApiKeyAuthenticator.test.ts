@@ -148,9 +148,11 @@ describe('GatewayApiKeyAuthenticator', () => {
       'xpod_gw_v1_cloud_gak_missing_missingsecret',
     ];
     for (const plaintext of attempts) {
-      await expect(authenticator.authenticate(requestWith(plaintext))).resolves.toEqual({
+      await expect(authenticator.authenticate(requestWith(plaintext))).resolves.toMatchObject({
         success: false,
         error: 'Invalid gateway API key',
+        category: 'invalid_credentials',
+        statusCode: 401,
       });
     }
   });
@@ -172,9 +174,11 @@ describe('GatewayApiKeyAuthenticator', () => {
     });
     const spy = vi.spyOn(gatewayApiKeyModule, 'verifyGatewayApiKeySecret');
 
-    await expect(authenticator.authenticate(requestWith('xpod_gw_v1_cloud_gak_missing_opaque-secret'))).resolves.toEqual({
+    await expect(authenticator.authenticate(requestWith('xpod_gw_v1_cloud_gak_missing_opaque-secret'))).resolves.toMatchObject({
       success: false,
       error: 'Invalid gateway API key',
+      category: 'invalid_credentials',
+      statusCode: 401,
     });
 
     expect(spy).toHaveBeenCalledWith('opaque-secret', expect.stringMatching(/^scrypt\$/));
@@ -201,6 +205,8 @@ describe('GatewayApiKeyAuthenticator', () => {
     await expect(authenticator.authenticate(requestWith(issued.plaintext))).resolves.toMatchObject({
       success: false,
       error: 'Gateway API key authentication unavailable',
+      category: 'service_unavailable',
+      statusCode: 503,
       cause,
     });
   });

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
-import type { Authenticator } from '../auth/Authenticator';
+import type { Authenticator, AuthResult } from '../auth/Authenticator';
 import type { AuthContext } from '../auth/AuthContext';
 
 /**
@@ -61,7 +61,7 @@ export class AuthMiddleware {
     );
 
     if (!result.success) {
-      this.sendUnauthorized(response, result.error ?? 'Authentication failed');
+      this.sendAuthFailure(response, result);
       return false;
     }
 
@@ -71,10 +71,45 @@ export class AuthMiddleware {
   }
 
   private sendUnauthorized(response: ServerResponse, message: string): void {
-    response.statusCode = 401;
+    this.sendAuthFailure(response, {
+      error: message,
+      category: 'invalid_credentials',
+      statusCode: 401,
+    });
+  }
+
+  private sendAuthFailure(
+    response: ServerResponse,
+    result: Pick<AuthResult, 'error' | 'category' | 'statusCode'>,
+  ): void {
+    const statusCode = result.statusCode ?? (
+      result.category === 'service_unavailable' ? 503 :
+      result.category === 'forbidden' ? 403 :
+      401
+    );
+    response.statusCode = statusCode;
     response.setHeader('Content-Type', 'application/json');
-    response.setHeader('WWW-Authenticate', 'Bearer, DPoP');
-    response.end(JSON.stringify({ error: 'Unauthorized', message }));
+    if (statusCode === 401) {
+      response.setHeader('WWW-Authenticate', 'Bearer, DPoP');
+    }
+    if (statusCode === 503) {
+      response.end(JSON.stringify({
+        error: 'Service Unavailable',
+        message: 'Authentication service unavailable',
+      }));
+      return;
+    }
+    if (statusCode === 403) {
+      response.end(JSON.stringify({
+        error: 'Forbidden',
+        message: result.error ?? 'Forbidden',
+      }));
+      return;
+    }
+    response.end(JSON.stringify({
+      error: 'Unauthorized',
+      message: result.error ?? 'Authentication failed',
+    }));
   }
 
   private safeContextForLog(context: AuthContext): Record<string, unknown> {

@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import {
   canManageGatewayKeys,
   isGatewayApiKeyPrincipal,
@@ -40,7 +41,7 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
 
-    const bodyResult = await readJsonBody(request, jsonBodyLimitBytes);
+    const bodyResult = await readBoundedJsonBody(request, { limitBytes: jsonBodyLimitBytes });
     if (!bodyResult.ok) {
       sendJson(response, bodyResult.status, { error: bodyResult.error });
       return;
@@ -196,41 +197,6 @@ function publicRecord(record: GatewayAccessKeyRecord): Record<string, unknown> {
     revokedAt: record.revokedAt?.toISOString(),
     name: record.name,
   };
-}
-
-type JsonBodyResult =
-  | { ok: true; value: unknown }
-  | { ok: false; status: 400 | 413; error: string };
-
-function readJsonBody(request: AuthenticatedRequest, limitBytes: number): Promise<JsonBodyResult> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    let bytes = 0;
-    let tooLarge = false;
-    request.on('data', (chunk) => {
-      bytes += Buffer.byteLength(chunk);
-      if (bytes > limitBytes) {
-        tooLarge = true;
-      }
-      body += chunk;
-    });
-    request.on('end', () => {
-      if (tooLarge) {
-        resolve({ ok: false, status: 413, error: 'Request body too large' });
-        return;
-      }
-      if (!body.trim()) {
-        resolve({ ok: true, value: {} });
-        return;
-      }
-      try {
-        resolve({ ok: true, value: JSON.parse(body) });
-      } catch {
-        resolve({ ok: false, status: 400, error: 'Request body must be valid JSON' });
-      }
-    });
-    request.on('error', reject);
-  });
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {

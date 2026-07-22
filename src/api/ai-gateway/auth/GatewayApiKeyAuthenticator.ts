@@ -121,13 +121,20 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
 }
 
 function invalidGatewayApiKey(): AuthResult {
-  return { success: false, error: INVALID_GATEWAY_API_KEY };
+  return {
+    success: false,
+    error: INVALID_GATEWAY_API_KEY,
+    category: 'invalid_credentials',
+    statusCode: 401,
+  };
 }
 
 function infrastructureError(cause: unknown): AuthResult {
   return {
     success: false,
     error: 'Gateway API key authentication unavailable',
+    category: 'service_unavailable',
+    statusCode: 503,
     cause,
   };
 }
