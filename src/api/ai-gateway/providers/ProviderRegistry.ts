@@ -174,14 +174,16 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     label: 'Kimi',
     authModes: ['oauth', 'apiKey'],
     protocols: ['chatCompletions'],
-    defaultBaseUrl: 'https://api.moonshot.cn/v1',
-    safeBaseUrls: ['https://api.moonshot.cn/v1'],
+    defaultBaseUrl: 'https://api.moonshot.ai/v1',
+    safeBaseUrls: ['https://api.moonshot.ai/v1'],
     capabilities: {
       toolCalls: true,
       imageInput: true,
+      reasoningEffort: true,
     },
     models: [
       { id: 'kimi-k2', capabilities: { toolCalls: true } },
+      { id: 'kimi-k3-thinking', capabilities: { toolCalls: true, reasoningEffort: true } },
     ],
   },
   {
