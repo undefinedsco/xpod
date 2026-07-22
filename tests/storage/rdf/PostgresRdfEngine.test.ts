@@ -83,6 +83,8 @@ describe('PostgresRdfEngine', () => {
     expect(source).toContain("WHEN 'blank' THEN 2");
     expect(source).toContain("WHEN 'literal' THEN 3");
     expect(source).toContain("VALUES ('term_id_encoding', 'kind-tagged-v1')");
+    expect(source).toContain('qlever_inline_bits BIGINT');
+    expect(source).toContain('qlever_inline_projected BOOLEAN NOT NULL DEFAULT FALSE');
   });
 
   it('covers shared models resource surfaces in the RDF benchmark definitions', () => {

@@ -1157,6 +1157,8 @@ class PostgresRdfTermDictionary {
         hash TEXT NOT NULL UNIQUE,
         normalized_text TEXT,
         numeric_value DOUBLE PRECISION,
+        qlever_inline_bits BIGINT,
+        qlever_inline_projected BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
