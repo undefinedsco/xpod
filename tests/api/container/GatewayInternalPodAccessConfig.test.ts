@@ -12,6 +12,7 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
     corsOrigins: ['*'],
     cssTokenEndpoint: 'https://issuer.example/.oidc/token',
     gatewayLocatorSecret: 'locator-secret',
+    gatewayLocatorKeyId: 'active',
     gatewayInternalClientId: 'internal-client',
     gatewayInternalClientSecret: 'internal-secret',
     ...overrides,
@@ -23,12 +24,19 @@ describe('Gateway internal Pod access container config', () => {
     const previous = { ...process.env };
     try {
       process.env.XPOD_GATEWAY_LOCATOR_SECRET = 'locator-secret';
+      process.env.XPOD_GATEWAY_LOCATOR_KEY_ID = 'active';
+      process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS = 'old-1:previous-secret,old-2:older-secret';
       process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID = 'internal-client';
       process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET = 'internal-secret';
 
       const config = loadConfigFromEnv();
 
       expect(config.gatewayLocatorSecret).toBe('locator-secret');
+      expect(config.gatewayLocatorKeyId).toBe('active');
+      expect(config.gatewayPreviousLocatorSecrets).toEqual([
+        { kid: 'old-1', secret: 'previous-secret' },
+        { kid: 'old-2', secret: 'older-secret' },
+      ]);
       expect(config.gatewayInternalClientId).toBe('internal-client');
       expect(config.gatewayInternalClientSecret).toBe('internal-secret');
     } finally {
@@ -43,6 +51,17 @@ describe('Gateway internal Pod access container config', () => {
     }));
 
     expect(() => container.resolve('gatewayAccessKeyRepository')).toThrow(/GATEWAY_INTERNAL_CLIENT_ID/);
+  });
+
+  it('does not silently fall back to rotating service tokens as locator secrets', () => {
+    const container = createApiContainer(baseConfig({
+      gatewayLocatorSecret: undefined,
+      gatewayLocatorKeyId: undefined,
+      serviceToken: 'rotating-service-token',
+      nodeToken: 'rotating-node-token',
+    }));
+
+    expect(() => container.resolve('gatewayAccessKeyRepository')).toThrow(/GATEWAY_LOCATOR_SECRET/);
   });
 
   it('constructs the default gateway repository when locator and internal access are configured', () => {

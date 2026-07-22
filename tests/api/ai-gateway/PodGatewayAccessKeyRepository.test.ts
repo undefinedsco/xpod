@@ -131,6 +131,28 @@ describe('PodGatewayAccessKeyRepository', () => {
     });
   });
 
+  it('encodes locators with an active key id and decodes previous-key rotation rings only for reads', () => {
+    const rotatingCodec = new AesGatewayKeyLocatorCodec({
+      active: { kid: 'active-2026-07', secret: 'active-secret' },
+      previous: [{ kid: 'previous-2026-06', secret: 'previous-secret' }],
+    });
+    const oldCodec = new AesGatewayKeyLocatorCodec({
+      active: { kid: 'previous-2026-06', secret: 'previous-secret' },
+    });
+    const oldLocator = createGatewayKeyLocator(ALICE, 'cloud', oldCodec);
+    const newLocator = createGatewayKeyLocator(ALICE, 'cloud', rotatingCodec);
+    const unknownKidLocator = oldLocator.replace('.previous-2026-06.', '.unknown-kid.');
+    const tamperedParts = oldLocator.split('.');
+    tamperedParts[3] = `${tamperedParts[3][0] === 'A' ? 'B' : 'A'}${tamperedParts[3].slice(1)}`;
+    const tampered = tamperedParts.join('.');
+
+    expect(newLocator.split('.')[1]).toBe('active-2026-07');
+    expect(rotatingCodec.decode(oldLocator)).toMatchObject({ owner: ALICE, deployment: 'cloud' });
+    expect(rotatingCodec.decode(unknownKidLocator)).toBeUndefined();
+    expect(rotatingCodec.decode(tampered)).toBeUndefined();
+    expect(oldCodec.decode(newLocator)).toBeUndefined();
+  });
+
   it('persists access keys through the models gatewayAccessKeyResource without storing plaintext', async () => {
     const { dbFactory, calls, pods } = createPodBackedDbFactory();
     const internal = createInternalPodAccess();
@@ -164,6 +186,49 @@ describe('PodGatewayAccessKeyRepository', () => {
       expect.objectContaining({ op: 'init', resource: gatewayAccessKeyResource }),
       expect.objectContaining({ op: 'insert', resource: gatewayAccessKeyResource }),
     ]));
+  });
+
+  it('mints locator-backed ids in the real Pod repository and preserves key labels across create, auth, list, and revoke', async () => {
+    const backing = createPodBackedDbFactory();
+    const internal = createInternalPodAccess();
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: internal.provider,
+    });
+    const keyId = repository.createKeyId(ALICE, 'cloud');
+    const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
+    await repository.create({
+      ...issued.record,
+      owner: ALICE,
+      scopes: ['models:read', 'inference:write'],
+      createdAt: new Date('2026-07-23T00:00:00.000Z'),
+      name: 'Codex laptop',
+    });
+    const restarted = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: internal.provider,
+    });
+    const authenticator = new GatewayApiKeyAuthenticator({
+      repository: restarted,
+      deployment: 'cloud',
+      now: () => new Date('2026-07-23T01:00:00.000Z'),
+    });
+
+    await expect(authenticator.authenticate({
+      headers: { authorization: `Bearer ${issued.plaintext}` },
+    } as any)).resolves.toMatchObject({
+      success: true,
+      context: { webId: ALICE },
+    });
+    await expect(restarted.listByOwner(ALICE)).resolves.toEqual([
+      expect.objectContaining({ id: keyId, owner: ALICE, name: 'Codex laptop' }),
+    ]);
+    await expect(restarted.revoke(keyId, new Date('2026-07-23T02:00:00.000Z'))).resolves.toMatchObject({
+      revokedAt: new Date('2026-07-23T02:00:00.000Z'),
+      name: 'Codex laptop',
+    });
   });
 
   it('authenticates after repository restart by resolving the owner Pod from the opaque key locator', async () => {
@@ -254,20 +319,47 @@ describe('PodGatewayAccessKeyRepository', () => {
     ]));
   });
 
-  it('fails closed without trusted internal access and does not issue anonymous Pod reads', async () => {
+  it('returns undefined for invalid locators without trusted internal access and does not issue anonymous Pod reads', async () => {
     const backing = createPodBackedDbFactory();
     const anonymousFetch = vi.spyOn(globalThis, 'fetch');
-    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
     const repository = new PodGatewayAccessKeyRepository({
       dbFactory: backing.dbFactory,
       locatorCodec: codec,
     });
 
-    await expect(repository.findById(keyId)).resolves.toBeUndefined();
+    await expect(repository.findById('not-a-locator')).resolves.toBeUndefined();
 
     expect(backing.dbFactory).not.toHaveBeenCalled();
     expect(anonymousFetch).not.toHaveBeenCalled();
     anonymousFetch.mockRestore();
+  });
+
+  it('propagates internal token and Pod read failures instead of flattening them into not-found', async () => {
+    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
+    const tokenFailure = new Error('token endpoint down');
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: createPodBackedDbFactory().dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => { throw tokenFailure; }),
+      },
+    });
+    await expect(repository.findById(keyId)).rejects.toBe(tokenFailure);
+
+    const podFailure = new Error('pod read down');
+    const failingDb = new PodGatewayAccessKeyRepository({
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: vi.fn() as any,
+        updateById: vi.fn() as any,
+        findById: vi.fn(async () => { throw podFailure; }),
+        findByIri: vi.fn() as any,
+      } as any),
+      locatorCodec: codec,
+      internalPodAccess: createInternalPodAccess().provider,
+    });
+    await expect(failingDb.findById(keyId)).rejects.toBe(podFailure);
   });
 });
 

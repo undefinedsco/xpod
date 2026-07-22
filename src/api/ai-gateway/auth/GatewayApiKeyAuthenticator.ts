@@ -26,6 +26,7 @@ export interface GatewayAccessKeyRepositoryContext {
 }
 
 export interface GatewayAccessKeyRepository {
+  createKeyId?(owner: string, deployment: GatewayDeployment): string;
   create(record: GatewayAccessKeyRecord, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord>;
   findById(id: string): Promise<GatewayAccessKeyRecord | undefined>;
   listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
@@ -68,7 +69,12 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       return { success: false, error: INVALID_GATEWAY_API_KEY };
     }
 
-    const record = await this.repository.findById(parsed.keyId);
+    let record: GatewayAccessKeyRecord | undefined;
+    try {
+      record = await this.repository.findById(parsed.keyId);
+    } catch (cause) {
+      return infrastructureError(cause);
+    }
     if (!record) {
       await verifyGatewayApiKeySecret(parsed.secret, await this.dummyHash);
       return invalidGatewayApiKey();
@@ -87,7 +93,11 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     }
 
     const lastUsedAt = this.now();
-    await this.repository.touchLastUsed(record.id, lastUsedAt);
+    try {
+      await this.repository.touchLastUsed(record.id, lastUsedAt);
+    } catch (cause) {
+      return infrastructureError(cause);
+    }
 
     const context: SolidAuthContext = {
       type: 'solid',
@@ -112,6 +122,14 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
 
 function invalidGatewayApiKey(): AuthResult {
   return { success: false, error: INVALID_GATEWAY_API_KEY };
+}
+
+function infrastructureError(cause: unknown): AuthResult {
+  return {
+    success: false,
+    error: 'Gateway API key authentication unavailable',
+    cause,
+  };
 }
 
 function isExpired(record: GatewayAccessKeyRecord, now: Date): boolean {

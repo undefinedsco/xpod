@@ -6,12 +6,13 @@ import {
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
 import { isSolidAuth } from '../../auth/AuthContext';
-import type { GatewayKeyLocatorCodec } from './GatewayKeyLocatorCodec';
+import { createGatewayKeyLocator, type GatewayKeyLocatorCodec } from './GatewayKeyLocatorCodec';
 import {
   type GatewayAccessKeyRecord,
   type GatewayAccessKeyRepository,
   type GatewayAccessKeyRepositoryContext,
 } from './GatewayApiKeyAuthenticator';
+import type { GatewayDeployment } from './GatewayApiKey';
 
 type GatewayAccessKeyDb = {
   init?: (...resources: unknown[]) => Promise<void>;
@@ -23,6 +24,8 @@ type GatewayAccessKeyDb = {
       where(condition: unknown): { execute(): Promise<GatewayAccessKeyRow[]> };
     };
   };
+  findById<TRow>(resource: typeof gatewayAccessKeyResource, id: string): Promise<TRow | null>;
+  findByIri<TRow>(resource: typeof gatewayAccessKeyResource, iri: string): Promise<TRow | null>;
   updateById<TRow>(resource: typeof gatewayAccessKeyResource, id: string, patch: unknown): Promise<TRow | null>;
 };
 
@@ -51,6 +54,10 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     this.dbFactory = options.dbFactory ?? createDefaultGatewayAccessKeyDb;
   }
 
+  public createKeyId(owner: string, deployment: GatewayDeployment): string {
+    return createGatewayKeyLocator(owner, deployment, this.locatorCodec);
+  }
+
   public async create(
     record: GatewayAccessKeyRecord,
     context?: GatewayAccessKeyRepositoryContext,
@@ -66,13 +73,9 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    try {
-      const db = await this.dbForOwner(locator.owner);
-      const row = await aiGatewayRepository.findAccessKeyById(db as never, id);
-      return row ? recordFromRow(row) : undefined;
-    } catch {
-      return undefined;
-    }
+    const db = await this.dbForOwner(locator.owner);
+    const row = await aiGatewayRepository.findAccessKeyById(db as never, id);
+    return row ? recordFromRow(row) : undefined;
   }
 
   public async listByOwner(
@@ -180,6 +183,7 @@ function toGatewayAccessKeyInsert(record: GatewayAccessKeyRecord): Record<string
     expiresAt: record.expiresAt,
     lastUsedAt: record.lastUsedAt,
     revokedAt: record.revokedAt,
+    name: record.name,
   };
 }
 
@@ -194,6 +198,7 @@ function recordFromRow(row: GatewayAccessKeyRow): GatewayAccessKeyRecord {
     expiresAt: toDate(row.expiresAt),
     lastUsedAt: toDate(row.lastUsedAt),
     revokedAt: toDate(row.revokedAt),
+    name: typeof (row as any).name === 'string' ? (row as any).name : undefined,
   };
 }
 

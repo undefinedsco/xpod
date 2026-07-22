@@ -118,6 +118,8 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
     gatewayLocatorSecret: process.env.XPOD_GATEWAY_LOCATOR_SECRET,
+    gatewayLocatorKeyId: process.env.XPOD_GATEWAY_LOCATOR_KEY_ID,
+    gatewayPreviousLocatorSecrets: parseGatewayPreviousLocatorSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
     gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
     gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
     inngest: {
@@ -173,6 +175,27 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     // Edge 节点管理 (cloud 模式)
     edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',
   };
+}
+
+function parseGatewayPreviousLocatorSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separator = entry.indexOf(':');
+      if (separator <= 0 || separator === entry.length - 1) {
+        throw new Error('XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS entries must be kid:secret');
+      }
+      return {
+        kid: entry.slice(0, separator),
+        secret: entry.slice(separator + 1),
+      };
+    });
+  return entries.length ? entries : undefined;
 }
 
 /**

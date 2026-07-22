@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
 import { InMemoryGatewayAccessKeyRepository } from '../ai-gateway/InMemoryGatewayAccessKeyRepository';
+import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
+import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
+import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 
@@ -31,6 +34,16 @@ function request(auth: AuthenticatedRequest['auth'], body?: unknown): Authentica
   } else {
     req.end();
   }
+  return req;
+}
+
+function rawRequest(auth: AuthenticatedRequest['auth'], rawBody: string): AuthenticatedRequest {
+  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  req.method = 'POST';
+  req.url = '/api/ai/gateway/keys';
+  req.headers = {};
+  req.auth = auth;
+  req.end(rawBody);
   return req;
 }
 
@@ -82,6 +95,115 @@ describe('AiGatewayManagementHandler', () => {
     });
     expect(JSON.stringify(await repository.findById('gak_created'))).not.toContain(body.key);
     expect((await repository.findById('gak_created'))?.secretHash).toMatch(/^scrypt\$/);
+  });
+
+  it('uses repository-backed locator minting by default when creating keys', async () => {
+    const repository = new InMemoryGatewayAccessKeyRepository() as InMemoryGatewayAccessKeyRepository & {
+      createKeyId(owner: string, deployment: 'cloud' | 'local'): string;
+    };
+    const codec = new AesGatewayKeyLocatorCodec('locator-secret');
+    repository.createKeyId = (owner, deployment) => codec.encode({ owner, deployment, keyId: 'gak_inner' });
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository,
+      deployment: 'cloud',
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/keys'](request({
+      type: 'solid',
+      webId: WEB_ID,
+      accountId: WEB_ID,
+    }, {}), res, {});
+
+    const body = JSON.parse(res.body);
+    const parsedKeyId = body.record.id;
+    expect(res.statusCode).toBe(201);
+    expect(codec.decode(parsedKeyId)).toMatchObject({
+      owner: WEB_ID,
+      deployment: 'cloud',
+      keyId: 'gak_inner',
+    });
+    expect(body.key).toContain(parsedKeyId);
+  });
+
+  it('creates, authenticates, lists, and revokes a locator-backed key across the real Pod repository boundary', async () => {
+    const podRows = new Map<string, any>();
+    const codec = new AesGatewayKeyLocatorCodec('locator-secret');
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: codec,
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => fetch),
+      },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: () => ({
+          values: (value: any) => ({
+            execute: async () => {
+              podRows.set(value.id, structuredClone(value));
+              return [structuredClone(value)];
+            },
+          }),
+        }),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              execute: async () => [...podRows.values()].map((row) => structuredClone(row)),
+            }),
+          }),
+        }),
+        findById: async (_resource: unknown, id: string) => structuredClone(podRows.get(id)),
+        findByIri: async () => null,
+        updateById: async (_resource: unknown, id: string, patch: any) => {
+          const row = podRows.get(id);
+          if (!row) return null;
+          Object.assign(row, patch);
+          return structuredClone(row);
+        },
+      } as any),
+    });
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository,
+      deployment: 'cloud',
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+    const createRes = response();
+
+    await routes['POST /api/ai/gateway/keys'](request({
+      type: 'solid',
+      webId: WEB_ID,
+      accessToken: 'solid-access-token',
+    }, { name: 'Codex laptop' }), createRes, {});
+
+    const created = JSON.parse(createRes.body);
+    expect(codec.decode(created.record.id)).toMatchObject({ owner: WEB_ID, deployment: 'cloud' });
+    await expect(new GatewayApiKeyAuthenticator({
+      repository,
+      deployment: 'cloud',
+      now: () => new Date('2026-07-23T01:00:00.000Z'),
+    }).authenticate({
+      headers: { authorization: `Bearer ${created.key}` },
+    } as any)).resolves.toMatchObject({
+      success: true,
+      context: { webId: WEB_ID },
+    });
+
+    const listRes = response();
+    await routes['GET /api/ai/gateway/keys'](request({ type: 'solid', webId: WEB_ID }), listRes, {});
+    expect(JSON.parse(listRes.body).data).toEqual([
+      expect.objectContaining({ id: created.record.id, name: 'Codex laptop' }),
+    ]);
+
+    const revokeRes = response();
+    await routes['DELETE /api/ai/gateway/keys/:keyId'](request({ type: 'solid', webId: WEB_ID }), revokeRes, {
+      keyId: encodeURIComponent(created.record.id),
+    });
+    expect(JSON.parse(revokeRes.body).record).toMatchObject({
+      id: created.record.id,
+      revokedAt: '2026-07-23T00:00:00.000Z',
+      name: 'Codex laptop',
+    });
   });
 
   it('lists keys without plaintext or secret hash for the current owner', async () => {
@@ -203,5 +325,30 @@ describe('AiGatewayManagementHandler', () => {
       owner: WEB_ID,
       deployment: 'local',
     });
+  });
+
+  it('rejects invalid JSON with 400 and oversized JSON bodies with 413', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      keyId: () => 'gak_unused',
+      jsonBodyLimitBytes: 32,
+    });
+    const invalid = response();
+    await routes['POST /api/ai/gateway/keys'](rawRequest({
+      type: 'solid',
+      webId: WEB_ID,
+    }, '{not-json'), invalid, {});
+    expect(invalid.statusCode).toBe(400);
+    expect(JSON.parse(invalid.body)).toEqual({ error: 'Request body must be valid JSON' });
+
+    const oversized = response();
+    await routes['POST /api/ai/gateway/keys'](rawRequest({
+      type: 'solid',
+      webId: WEB_ID,
+    }, JSON.stringify({ name: 'x'.repeat(64) })), oversized, {});
+    expect(oversized.statusCode).toBe(413);
+    expect(JSON.parse(oversized.body)).toEqual({ error: 'Request body too large' });
   });
 });

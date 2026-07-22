@@ -22,6 +22,7 @@ export interface AiGatewayManagementHandlerOptions {
   deployment: GatewayDeployment;
   now?: () => Date;
   keyId?: (owner: string) => string;
+  jsonBodyLimitBytes?: number;
 }
 
 export function registerAiGatewayManagementRoutes(
@@ -29,14 +30,22 @@ export function registerAiGatewayManagementRoutes(
   options: AiGatewayManagementHandlerOptions,
 ): void {
   const now = options.now ?? (() => new Date());
-  const createKeyId = options.keyId ?? (() => createGatewayKeyId());
+  const createKeyId = options.keyId ?? ((owner: string) => (
+    options.repository.createKeyId?.(owner, options.deployment) ?? createGatewayKeyId()
+  ));
+  const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 64 * 1024;
 
   server.post('/api/ai/gateway/keys', async (request, response) => {
     if (!authorizeGatewayKeyManagement(request, response)) {
       return;
     }
 
-    const body = await readJsonBody(request);
+    const bodyResult = await readJsonBody(request, jsonBodyLimitBytes);
+    if (!bodyResult.ok) {
+      sendJson(response, bodyResult.status, { error: bodyResult.error });
+      return;
+    }
+    const body = bodyResult.value;
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       sendJson(response, 400, { error: 'Request body must be a JSON object' });
       return;
@@ -189,21 +198,35 @@ function publicRecord(record: GatewayAccessKeyRecord): Record<string, unknown> {
   };
 }
 
-function readJsonBody(request: AuthenticatedRequest): Promise<unknown> {
+type JsonBodyResult =
+  | { ok: true; value: unknown }
+  | { ok: false; status: 400 | 413; error: string };
+
+function readJsonBody(request: AuthenticatedRequest, limitBytes: number): Promise<JsonBodyResult> {
   return new Promise((resolve, reject) => {
     let body = '';
+    let bytes = 0;
+    let tooLarge = false;
     request.on('data', (chunk) => {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > limitBytes) {
+        tooLarge = true;
+      }
       body += chunk;
     });
     request.on('end', () => {
+      if (tooLarge) {
+        resolve({ ok: false, status: 413, error: 'Request body too large' });
+        return;
+      }
       if (!body.trim()) {
-        resolve({});
+        resolve({ ok: true, value: {} });
         return;
       }
       try {
-        resolve(JSON.parse(body));
-      } catch (error) {
-        reject(error);
+        resolve({ ok: true, value: JSON.parse(body) });
+      } catch {
+        resolve({ ok: false, status: 400, error: 'Request body must be valid JSON' });
       }
     });
     request.on('error', reject);

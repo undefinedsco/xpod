@@ -8,6 +8,7 @@ export interface AuthResult {
   success: boolean;
   context?: AuthContext;
   error?: string;
+  cause?: unknown;
 }
 
 /**

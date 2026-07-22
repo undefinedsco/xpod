@@ -81,15 +81,20 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewayAccessKeyRepository: asFunction(({ config }: ApiContainerCradle) => {
-      const locatorSecret = config.gatewayLocatorSecret ?? config.serviceToken ?? config.nodeToken;
-      if (!locatorSecret) {
-        throw new Error('XPOD_GATEWAY_LOCATOR_SECRET or service token is required for Gateway API key locator encryption');
+      if (!config.gatewayLocatorSecret) {
+        throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for Gateway API key locator encryption');
       }
       if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
         throw new Error('XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET are required for Gateway API key Pod access');
       }
       return new PodGatewayAccessKeyRepository({
-        locatorCodec: new AesGatewayKeyLocatorCodec(locatorSecret),
+        locatorCodec: new AesGatewayKeyLocatorCodec({
+          active: {
+            kid: config.gatewayLocatorKeyId ?? 'active',
+            secret: config.gatewayLocatorSecret,
+          },
+          previous: config.gatewayPreviousLocatorSecrets,
+        }),
         internalPodAccess: new ClientCredentialsInternalPodAccessTokenProvider({
           tokenEndpoint: config.cssTokenEndpoint,
           clientId: config.gatewayInternalClientId,

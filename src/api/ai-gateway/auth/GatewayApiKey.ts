@@ -114,7 +114,12 @@ export async function verifyGatewayApiKeySecret(secret: string, encodedHash: str
   if (!parsed) {
     return false;
   }
-  const actual = await deriveScrypt(secret, parsed.salt, parsed.N, parsed.r, parsed.p);
+  let actual: Buffer;
+  try {
+    actual = await deriveScrypt(secret, parsed.salt, parsed.N, parsed.r, parsed.p);
+  } catch {
+    return false;
+  }
   const expected = Buffer.from(parsed.key, 'base64url');
   if (actual.byteLength !== expected.byteLength) {
     const paddedActual = Buffer.alloc(SCRYPT_KEY_BYTES);
@@ -135,29 +140,35 @@ function parseScryptHash(encodedHash: string): {
   key: string;
 } | undefined {
   const parts = encodedHash.split('$');
-  if (parts[0] !== 'scrypt') {
+  if (
+    parts.length !== 7
+    || parts[0] !== 'scrypt'
+    || parts[1] !== 'v=1'
+    || parts[2] !== `N=${SCRYPT_N}`
+    || parts[3] !== `r=${SCRYPT_R}`
+    || parts[4] !== `p=${SCRYPT_P}`
+    || !parts[5]?.startsWith('salt=')
+    || !parts[6]?.startsWith('key=')
+  ) {
     return undefined;
   }
-  const values = new Map<string, string>();
-  for (const part of parts.slice(1)) {
-    const separator = part.indexOf('=');
-    if (separator === -1) {
-      return undefined;
-    }
-    values.set(part.slice(0, separator), part.slice(separator + 1));
-  }
-  if (values.get('v') !== '1') {
+  const salt = parts[5].slice('salt='.length);
+  const key = parts[6].slice('key='.length);
+  if (!isBase64UrlBytes(salt, 16) || !isBase64UrlBytes(key, SCRYPT_KEY_BYTES)) {
     return undefined;
   }
-  const N = Number(values.get('N'));
-  const r = Number(values.get('r'));
-  const p = Number(values.get('p'));
-  const salt = values.get('salt');
-  const key = values.get('key');
-  if (!Number.isInteger(N) || !Number.isInteger(r) || !Number.isInteger(p) || !salt || !key) {
-    return undefined;
+  return { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, salt, key };
+}
+
+function isBase64UrlBytes(value: string, bytes: number): boolean {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    return false;
   }
-  return { N, r, p, salt, key };
+  try {
+    return Buffer.from(value, 'base64url').byteLength === bytes;
+  } catch {
+    return false;
+  }
 }
 
 async function deriveScrypt(

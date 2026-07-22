@@ -51,6 +51,24 @@ describe('Gateway API keys', () => {
     await expect(verifyGatewayApiKeySecret(`${key.secret}x`, key.record.secretHash)).resolves.toBe(false);
     await expect(verifyGatewayApiKeySecret('', key.record.secretHash)).resolves.toBe(false);
   });
+
+  it('rejects unsupported or hostile scrypt encodings before deriving', async () => {
+    const valid = await createGatewayApiKey({
+      deployment: 'cloud',
+      keyId: 'gak_hash_strict',
+    });
+    const hostileCost = valid.record.secretHash.replace('$N=16384$', '$N=1048576$');
+    const malformedSalt = valid.record.secretHash.replace(/salt=[^$]+/, 'salt=%%%%');
+    const malformedKey = valid.record.secretHash.replace(/key=[^$]+/, 'key=short');
+    const unsupportedVersion = valid.record.secretHash.replace('$v=1$', '$v=2$');
+    const unsupportedOrder = valid.record.secretHash.replace('$N=16384$r=8$', '$r=8$N=16384$');
+
+    await expect(verifyGatewayApiKeySecret(valid.secret, hostileCost)).resolves.toBe(false);
+    await expect(verifyGatewayApiKeySecret(valid.secret, malformedSalt)).resolves.toBe(false);
+    await expect(verifyGatewayApiKeySecret(valid.secret, malformedKey)).resolves.toBe(false);
+    await expect(verifyGatewayApiKeySecret(valid.secret, unsupportedVersion)).resolves.toBe(false);
+    await expect(verifyGatewayApiKeySecret(valid.secret, unsupportedOrder)).resolves.toBe(false);
+  });
 });
 
 describe('GatewayApiKeyAuthenticator', () => {
@@ -160,5 +178,30 @@ describe('GatewayApiKeyAuthenticator', () => {
     });
 
     expect(spy).toHaveBeenCalledWith('opaque-secret', expect.stringMatching(/^scrypt\$/));
+  });
+
+  it('reports infrastructure lookup errors without treating them as invalid keys', async () => {
+    const issued = await createGatewayApiKey({
+      deployment: 'cloud',
+      keyId: 'gak_infra',
+    });
+    const cause = new Error('trusted token endpoint unavailable');
+    const repository = {
+      create: vi.fn(),
+      findById: vi.fn(async () => { throw cause; }),
+      listByOwner: vi.fn(),
+      revoke: vi.fn(),
+      touchLastUsed: vi.fn(),
+    };
+    const authenticator = new GatewayApiKeyAuthenticator({
+      repository,
+      deployment: 'cloud',
+    });
+
+    await expect(authenticator.authenticate(requestWith(issued.plaintext))).resolves.toMatchObject({
+      success: false,
+      error: 'Gateway API key authentication unavailable',
+      cause,
+    });
   });
 });

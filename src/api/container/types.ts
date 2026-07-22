@@ -98,6 +98,8 @@ export interface ApiContainerConfig {
 
   /** Gateway locator encryption secret. Internal platform secret; not a user/provider AI credential. */
   gatewayLocatorSecret?: string;
+  gatewayLocatorKeyId?: string;
+  gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
 
   /** Internal service client used to read user-owned private Pod gateway-key hashes. */
   gatewayInternalClientId?: string;
