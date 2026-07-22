@@ -99,6 +99,7 @@ function registerSharedRoutes(
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
+  const providerConnectService = container.resolve('providerConnectService');
   const config = container.resolve('config') as ApiContainerConfig;
 
   registerEdgeNodeSignalRoutes(server, {
@@ -129,6 +130,7 @@ function registerSharedRoutes(
   registerAiGatewayManagementRoutes(server, {
     repository: gatewayAccessKeyRepository,
     deployment: config.edition,
+    connectService: providerConnectService,
   });
 
   // Quota & Usage API (Business 对接)

@@ -107,6 +107,7 @@ describe('registerRoutes mode wiring', () => {
         }),
       },
       gatewayAccessKeyRepository: {},
+      providerConnectService: {},
       db: {},
       podLookupRepo: {},
       ddnsRepo: edition === 'cloud' ? {} : undefined,

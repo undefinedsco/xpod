@@ -36,6 +36,8 @@ import type { PodMatrixStore } from '../matrix';
 import type { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import type { AuthMode } from '../../authorization/AuthMode';
 import type { RdfEngineLike } from '../../storage/rdf';
+import type { KeyWrapper } from '../ai-gateway/credentials/KeyWrapper';
+import type { ProviderConnectService } from '../ai-gateway/connect';
 
 /**
  * 容器配置
@@ -104,6 +106,15 @@ export interface ApiContainerConfig {
   /** Internal service client used to read user-owned private Pod gateway-key hashes. */
   gatewayInternalClientId?: string;
   gatewayInternalClientSecret?: string;
+
+  /** AI Provider Connect is disabled by default for backwards-compatible startup. */
+  aiGatewayConnectEnabled?: boolean;
+  /** Platform signing secret for short-lived provider Connect attempts. */
+  aiGatewayConnectSigningSecret?: string;
+  /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
+  aiGatewayKimiClientId?: string;
+  /** Platform DEK wrapper factory: Local Keychain or Cloud KMS boundary. */
+  aiGatewayCredentialKeyWrapperFactory?: () => KeyWrapper;
 
   /** 子域名功能配置 (cloud 模式) */
   subdomain?: {
@@ -199,6 +210,7 @@ export interface ApiContainerCradle {
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
   gatewayAccessKeyRepository: GatewayAccessKeyRepository;
+  providerConnectService: ProviderConnectService;
 
   // 业务服务
   chatService: VercelChatService;

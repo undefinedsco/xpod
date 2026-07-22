@@ -407,8 +407,8 @@ describe('AiGatewayManagementHandler', () => {
       provider: 'openai',
     });
 
-    expect(callback.statusCode).toBe(400);
-    expect(JSON.parse(callback.body).error).toMatch(/signed OAuth attempts/i);
+    expect(callback.statusCode).toBe(405);
+    expect(JSON.parse(callback.body).error).toMatch(/unsupported/i);
     expect(connectService.completeApiKey).not.toHaveBeenCalled();
 
     const complete = response();
@@ -459,5 +459,34 @@ describe('AiGatewayManagementHandler', () => {
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage provider Connect state' });
+  });
+
+  it('does not accept plaintext refresh tokens through the provider Connect refresh API', async () => {
+    const connectService = {
+      refresh: vi.fn(async () => undefined),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      refreshToken: 'must-not-leave-handler',
+    }), res, {
+      provider: 'kimi',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.refresh).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+    });
   });
 });

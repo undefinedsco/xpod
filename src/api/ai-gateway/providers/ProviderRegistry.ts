@@ -8,6 +8,8 @@ export interface ProviderConnectCapability {
   mode: ProviderConnectMode;
   label: string;
   apiKeyManagementSupported: boolean;
+  configured?: boolean;
+  experimental?: boolean;
   requiresAuthenticatedManagementApi?: boolean;
   publicCallbackSupported?: boolean;
   notes?: string[];
@@ -50,6 +52,7 @@ export interface ModelAliasTarget {
 
 export interface ProviderRegistryOptions {
   aliases?: Record<string, ModelAliasTarget>;
+  connect?: Partial<Record<string, Partial<ProviderConnectCapability>>>;
 }
 
 const RESERVED_DISCOVERY_METADATA_KEYS = new Set([
@@ -67,7 +70,18 @@ export class ProviderRegistry {
 
   public constructor(providers: ProviderDescriptor[], options: ProviderRegistryOptions = {}) {
     for (const provider of providers) {
-      this.register(provider);
+      const connectOverride = options.connect?.[normalizeProviderId(provider.id)];
+      this.register(connectOverride && provider.connect ? {
+        ...provider,
+        connect: {
+          ...provider.connect,
+          ...connectOverride,
+          notes: [
+            ...provider.connect.notes ?? [],
+            ...connectOverride.notes ?? [],
+          ],
+        },
+      } : provider);
     }
     for (const [alias, target] of Object.entries(options.aliases ?? {})) {
       this.aliases.set(normalizeKey(alias), {
@@ -152,6 +166,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       mode: 'browserAssistedApiKey',
       label: 'Open official OpenAI API key settings, then submit the key through Xpod management API',
       apiKeyManagementSupported: true,
+      configured: true,
       requiresAuthenticatedManagementApi: true,
       publicCallbackSupported: false,
       notes: ['Do not reuse official Codex client IDs or scrape browser cookies.'],
@@ -179,6 +194,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       mode: 'browserAssistedApiKey',
       label: 'Open official Anthropic console keys, then submit the key through Xpod management API',
       apiKeyManagementSupported: true,
+      configured: true,
       requiresAuthenticatedManagementApi: true,
       publicCallbackSupported: false,
       notes: ['Do not reuse Claude Code OAuth clients or scrape browser cookies.'],
@@ -204,7 +220,10 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       mode: 'deviceCodeOAuth',
       label: 'Kimi Code device-code OAuth',
       apiKeyManagementSupported: true,
+      configured: false,
+      experimental: true,
       publicCallbackSupported: true,
+      notes: ['Requires an Xpod/Moonshot-issued device-code OAuth client id; do not reuse the official Kimi CLI client id.'],
     },
     protocols: ['chatCompletions'],
     defaultBaseUrl: 'https://api.moonshot.ai/v1',
@@ -226,6 +245,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       mode: 'browserAssistedApiKey',
       label: 'Open official Bailian console keys, then submit the key through Xpod management API',
       apiKeyManagementSupported: true,
+      configured: true,
       requiresAuthenticatedManagementApi: true,
       publicCallbackSupported: false,
       notes: ['Bailian browser Connect is API-key assisted unless an official third-party OAuth flow is available.'],
@@ -255,6 +275,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       mode: 'connectUnsupported',
       label: 'DeepSeek does not expose a supported third-party browser Connect flow',
       apiKeyManagementSupported: true,
+      configured: false,
       publicCallbackSupported: false,
     },
     protocols: ['chatCompletions'],

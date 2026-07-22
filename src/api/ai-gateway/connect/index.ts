@@ -1,8 +1,13 @@
 import { createHash, createHmac, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { drizzle } from '@undefineds.co/drizzle-solid';
+import { credentialResource } from '@undefineds.co/models';
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
+import type { AuthContext } from '../../auth/AuthContext';
+import { isSolidAuth } from '../../auth/AuthContext';
+import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 
 export type ConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
 export type ConnectAttemptStatus =
@@ -66,7 +71,6 @@ export interface RefreshInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
-  refreshToken: string;
 }
 
 export interface RevokeInput {
@@ -101,14 +105,146 @@ export interface ConnectCredentialRecord {
 }
 
 export interface PodCredentialRepository {
+  getActiveCredential(input: {
+    webId: string;
+    provider: string;
+    deployment: GatewayDeployment;
+  }): Promise<ConnectCredentialRecord | undefined>;
   upsertConnectedCredential(record: ConnectCredentialRecord): Promise<ConnectCredentialRecord>;
   markReauthRequired(input: {
     webId: string;
     provider: string;
     deployment: GatewayDeployment;
     reason: string;
+    expectedVersion?: number;
   }): Promise<ConnectCredentialRecord | undefined>;
   disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined>;
+}
+
+type ConnectedCredentialDb = {
+  init?: (...resources: unknown[]) => Promise<void>;
+  insert(resource: typeof credentialResource): {
+    values(value: unknown): { execute(): Promise<unknown[]> };
+  };
+  select(): {
+    from(resource: typeof credentialResource): {
+      where(condition: unknown): { execute(): Promise<Record<string, unknown>[]> };
+    };
+  };
+  findById<TRow>(resource: typeof credentialResource, id: string): Promise<TRow | null>;
+  updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
+};
+
+export interface PodConnectedCredentialRepositoryOptions {
+  internalPodAccess?: InternalPodAccessTokenProvider;
+  dbFactory?: (input: {
+    owner: string;
+    auth?: AuthContext;
+    fetch: typeof fetch;
+  }) => Promise<ConnectedCredentialDb>;
+}
+
+export class PodConnectedCredentialRepository implements PodCredentialRepository {
+  private readonly dbFactory: NonNullable<PodConnectedCredentialRepositoryOptions['dbFactory']>;
+  private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+
+  public constructor(options: PodConnectedCredentialRepositoryOptions = {}) {
+    this.internalPodAccess = options.internalPodAccess;
+    this.dbFactory = options.dbFactory ?? createDefaultConnectedCredentialDb;
+  }
+
+  public async getActiveCredential(input: {
+    webId: string;
+    provider: string;
+    deployment: GatewayDeployment;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const db = await this.dbForOwner(input.webId);
+    const id = credentialIdFor(input.deployment, input.provider);
+    const row = await db.findById<Record<string, unknown>>(credentialResource, id);
+    const record = row ? recordFromCredentialRow(row) : undefined;
+    if (!record || record.status !== 'active' || record.reauthRequired) {
+      return undefined;
+    }
+    return record;
+  }
+
+  public async upsertConnectedCredential(record: ConnectCredentialRecord): Promise<ConnectCredentialRecord> {
+    const db = await this.dbForOwner(record.webId);
+    const existing = await db.findById<Record<string, unknown>>(credentialResource, record.id);
+    const existingVersion = existing ? versionFromRow(existing) : 0;
+    if (record.expectedVersion !== undefined && record.expectedVersion !== existingVersion) {
+      throw new Error('credential_version_conflict');
+    }
+    const nextVersion = existingVersion + 1;
+    const row = credentialRowFromRecord({
+      ...record,
+      version: nextVersion,
+    });
+    if (existing) {
+      const updated = await db.updateById<Record<string, unknown>>(credentialResource, record.id, row);
+      return recordFromCredentialRow(updated ?? row);
+    }
+    await db.insert(credentialResource).values(row).execute();
+    return recordFromCredentialRow(row);
+  }
+
+  public async markReauthRequired(input: {
+    webId: string;
+    provider: string;
+    deployment: GatewayDeployment;
+    reason: string;
+    expectedVersion?: number;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const db = await this.dbForOwner(input.webId);
+    const id = credentialIdFor(input.deployment, input.provider);
+    const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
+    if (!existing) {
+      return undefined;
+    }
+    const existingVersion = versionFromRow(existing);
+    if (input.expectedVersion !== undefined && input.expectedVersion !== existingVersion) {
+      throw new Error('credential_version_conflict');
+    }
+    const updated = await db.updateById<Record<string, unknown>>(credentialResource, id, {
+      reauthRequired: true,
+      status: 'active',
+      keyVersion: String(existingVersion + 1),
+    });
+    return updated ? recordFromCredentialRow(updated) : undefined;
+  }
+
+  public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
+    const db = await this.dbForOwner(input.webId);
+    const id = credentialIdFor(input.deployment, input.provider);
+    const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
+    if (!existing) {
+      return undefined;
+    }
+    const updated = await db.updateById<Record<string, unknown>>(credentialResource, id, {
+      status: 'revoked',
+      keyVersion: String(versionFromRow(existing) + 1),
+    });
+    return updated ? recordFromCredentialRow(updated) : undefined;
+  }
+
+  private async dbForOwner(owner: string, auth?: AuthContext): Promise<ConnectedCredentialDb> {
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
+    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
+    await db.init?.(credentialResource);
+    return db;
+  }
+
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const authFetch = createAuthFetch(auth);
+    if (authFetch) {
+      return authFetch;
+    }
+    const internalFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    if (internalFetch) {
+      return internalFetch;
+    }
+    throw new Error('Internal Pod access is not configured for AI provider Connect credentials');
+  }
 }
 
 export interface ProviderConnectAdapter {
@@ -117,7 +253,11 @@ export interface ProviderConnectAdapter {
   status?(input: PollDeviceInput): Promise<ConnectBeginResult>;
   completeApiKey?(input: CompleteApiKeyInput): Promise<ConnectBeginResult>;
   pollDevice?(input: PollDeviceInput): Promise<ConnectBeginResult>;
-  refresh?(input: RefreshInput): Promise<ConnectCredentialRecord | undefined>;
+  refresh?(
+    input: RefreshInput,
+    current: ConnectCredentialRecord,
+    secret: ProviderSecret,
+  ): Promise<ConnectCredentialRecord | undefined>;
   revoke?(input: RevokeInput): Promise<void>;
   disconnect?(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined>;
 }
@@ -322,6 +462,9 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     if (attempt.expiresAt.getTime() <= this.now().getTime()) {
       throw new Error('Connect attempt expired');
     }
+    if (attempt.consumedAt) {
+      throw new Error('Connect attempt already consumed');
+    }
     return attempt;
   }
 
@@ -364,9 +507,9 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     });
     this.fetchImpl = options.fetch ?? fetch;
     this.clientId = options.clientId;
-    this.deviceAuthorizationEndpoint = options.deviceAuthorizationEndpoint ?? 'https://kimi.moonshot.cn/oauth/device/code';
-    this.tokenEndpoint = options.tokenEndpoint ?? 'https://kimi.moonshot.cn/oauth/token';
-    this.revokeEndpoint = options.revokeEndpoint ?? 'https://kimi.moonshot.cn/oauth/revoke';
+    this.deviceAuthorizationEndpoint = options.deviceAuthorizationEndpoint ?? 'https://auth.kimi.com/api/oauth/device_authorization';
+    this.tokenEndpoint = options.tokenEndpoint ?? 'https://auth.kimi.com/api/oauth/token';
+    this.revokeEndpoint = options.revokeEndpoint ?? 'https://auth.kimi.com/api/oauth/revoke';
     for (const endpoint of [this.deviceAuthorizationEndpoint, this.tokenEndpoint, this.revokeEndpoint]) {
       assertKimiEndpoint(endpoint);
     }
@@ -390,6 +533,9 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     if (!response.ok) {
       throw new Error(`Kimi device authorization failed: ${safeProviderError(body)}`);
     }
+    requireStringField(body, 'device_code');
+    requireStringField(body, 'user_code');
+    requireStringField(body, 'verification_uri_complete');
     const expiresIn = numberFrom(body.expires_in, 300);
     const attempt = await this.createAttempt(input, new Date(now.getTime() + expiresIn * 1000), {
       mode: 'deviceCodeOAuth',
@@ -433,7 +579,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
         return pendingResult(input, 'authorization_pending');
       }
       if (body.error === 'slow_down') {
-        return pendingResult(input, 'slow_down');
+        return pendingResult(input, 'slow_down', (attempt.intervalSeconds ?? 5) + 5);
       }
       if (body.error === 'expired_token') {
         await this.attempts.consume(input.attemptId, this.nowForConsume());
@@ -442,6 +588,8 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       throw new Error(`Kimi device token failed: ${safeProviderError(body)}`);
     }
     await this.attempts.consume(input.attemptId, this.nowForConsume());
+    requireStringField(body, 'access_token');
+    requireStringField(body, 'refresh_token');
     const record = await this.storeOAuthCredential(input, body, attempt.expectedCredentialVersion);
     return {
       mode: 'deviceCodeOAuth',
@@ -467,13 +615,27 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     };
   }
 
-  public async refresh(input: RefreshInput): Promise<ConnectCredentialRecord | undefined> {
+  public async refresh(
+    input: RefreshInput,
+    current: ConnectCredentialRecord,
+    secret: ProviderSecret,
+  ): Promise<ConnectCredentialRecord | undefined> {
+    const refreshToken = stringFrom(secret.refreshToken);
+    if (!refreshToken) {
+      return this.credentialRepository.markReauthRequired({
+        webId: input.webId,
+        provider: 'kimi',
+        deployment: input.deployment,
+        reason: 'missing_refresh_token',
+        expectedVersion: current.version,
+      });
+    }
     const response = await this.fetchImpl(this.tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         grant_type: 'refresh_token',
-        refresh_token: input.refreshToken,
+        refresh_token: refreshToken,
         client_id: this.clientId,
       }),
     });
@@ -484,9 +646,12 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
         provider: 'kimi',
         deployment: input.deployment,
         reason: safeProviderError(body),
+        expectedVersion: current.version,
       });
     }
-    return this.storeOAuthCredential(input, body);
+    requireStringField(body, 'access_token');
+    requireStringField(body, 'refresh_token');
+    return this.storeOAuthCredential(input, body, current.version);
   }
 
   public async revoke(input: RevokeInput): Promise<void> {
@@ -580,14 +745,20 @@ export class DeepSeekConnectAdapter implements ProviderConnectAdapter {
 export interface ProviderConnectServiceOptions {
   registry: ProviderRegistry;
   adapters: ProviderConnectAdapter[];
+  credentialRepository?: PodCredentialRepository;
+  vault?: CredentialVault;
 }
 
 export class ProviderConnectService {
   private readonly registry: ProviderRegistry;
+  private readonly credentialRepository?: PodCredentialRepository;
+  private readonly vault?: CredentialVault;
   private readonly adapters = new Map<string, ProviderConnectAdapter>();
 
   public constructor(options: ProviderConnectServiceOptions) {
     this.registry = options.registry;
+    this.credentialRepository = options.credentialRepository;
+    this.vault = options.vault;
     for (const adapter of options.adapters) {
       this.adapters.set(normalizeProvider(adapter.provider), adapter);
     }
@@ -597,6 +768,16 @@ export class ProviderConnectService {
     const descriptor = this.registry.requireProvider(input.provider);
     if (descriptor.connect?.mode !== input.requestedMode) {
       throw new Error('Requested Connect mode does not match provider capability');
+    }
+    if (descriptor.connect?.configured === false) {
+      return Promise.resolve({
+        mode: descriptor.connect.mode,
+        status: 'unsupported',
+        provider: normalizeProvider(input.provider),
+        deployment: input.deployment,
+        apiKeyManagementSupported: descriptor.connect.apiKeyManagementSupported,
+        message: descriptor.connect.notes?.join(' '),
+      });
     }
     return this.requireAdapter(input.provider).begin(input);
   }
@@ -626,11 +807,42 @@ export class ProviderConnectService {
   }
 
   public refresh(input: RefreshInput): Promise<ConnectCredentialRecord | undefined> {
+    return this.refreshWithRetry(input, 2);
+  }
+
+  private async refreshWithRetry(
+    input: RefreshInput,
+    remainingAttempts: number,
+  ): Promise<ConnectCredentialRecord | undefined> {
     const adapter = this.requireAdapter(input.provider);
     if (!adapter.refresh) {
       throw new Error('Provider does not support refresh');
     }
-    return adapter.refresh(input);
+    if (!this.credentialRepository || !this.vault) {
+      throw new Error('CredentialVault and PodCredentialRepository are required for provider refresh');
+    }
+    const current = await this.credentialRepository.getActiveCredential(input);
+    if (!current) {
+      throw new Error('Active provider credential not found');
+    }
+    const secret = await this.vault.open(
+      { webId: input.webId },
+      current.credentialIri,
+      normalizeProvider(input.provider),
+      current.encryptedSecret,
+    );
+    try {
+      return await adapter.refresh(input, current, secret);
+    } catch (error) {
+      if (remainingAttempts > 0 && isVersionConflict(error)) {
+        const latest = await this.credentialRepository.getActiveCredential(input);
+        if (latest && latest.version !== current.version && !latest.reauthRequired) {
+          return latest;
+        }
+        return this.refreshWithRetry(input, remainingAttempts - 1);
+      }
+      throw error;
+    }
   }
 
   public disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
@@ -652,6 +864,124 @@ export class ProviderConnectService {
 
 function token(randomBytes: (bytes: number) => Buffer): string {
   return randomBytes(32).toString('base64url');
+}
+
+function createDefaultConnectedCredentialDb(input: {
+  owner: string;
+  auth?: AuthContext;
+  fetch: typeof fetch;
+}): Promise<ConnectedCredentialDb> {
+  return Promise.resolve(drizzle(
+    {
+      fetch: input.fetch,
+      info: { webId: input.owner, isLoggedIn: true },
+    } as any,
+    {
+      schema: {
+        credential: credentialResource,
+      },
+    },
+  ) as unknown as ConnectedCredentialDb);
+}
+
+function createAuthFetch(auth: AuthContext | undefined): typeof fetch | undefined {
+  if (auth && isSolidAuth(auth) && auth.accessToken) {
+    const scheme = auth.tokenType ?? 'Bearer';
+    return async (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (!headers.has('Authorization')) {
+        headers.set('Authorization', `${scheme} ${auth.accessToken}`);
+      }
+      return fetch(input, { ...init, headers });
+    };
+  }
+  return undefined;
+}
+
+function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string, unknown> {
+  return {
+    id: record.id,
+    provider: normalizeProvider(record.provider),
+    service: 'ai',
+    authMode: record.authMode,
+    status: record.status,
+    encryptedSecret: JSON.stringify(record.encryptedSecret),
+    wrappedDataKey: record.encryptedSecret.wrappedDek,
+    encryptionAlgorithm: record.encryptedSecret.algorithm,
+    keyVersion: String(record.version ?? 1),
+    scopes: record.scopes ?? [],
+    expiresAt: record.expiresAt,
+    accountLabel: record.accountLabel,
+    label: record.accountLabel,
+    reauthRequired: record.reauthRequired ?? false,
+    lastRefreshAt: new Date(),
+  };
+}
+
+function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentialRecord {
+  const encrypted = parseEncryptedSecret(row.encryptedSecret);
+  const id = stringFrom(row.id);
+  const provider = normalizeProvider(stringFrom(row.provider) || providerFromCredentialId(id));
+  const deployment = deploymentFromCredentialId(id);
+  const webId = encrypted.webId;
+  return {
+    id,
+    credentialIri: encrypted.credentialIri,
+    webId,
+    provider,
+    deployment,
+    authMode: stringFrom(row.authMode) === 'deviceCodeOAuth' ? 'deviceCodeOAuth' : 'apiKey',
+    encryptedSecret: encrypted,
+    status: stringFrom(row.status) === 'revoked' ? 'revoked' : 'active',
+    accountLabel: stringFrom(row.accountLabel) || stringFrom(row.label) || undefined,
+    expiresAt: dateFrom(row.expiresAt),
+    scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : undefined,
+    version: versionFromRow(row),
+    reauthRequired: row.reauthRequired === true || row.reauthRequired === 'true',
+  };
+}
+
+function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('Credential row is missing encrypted secret payload');
+  }
+  const parsed = JSON.parse(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Credential row encrypted secret payload is invalid');
+  }
+  return parsed as EncryptedCredentialSecret;
+}
+
+function versionFromRow(row: Record<string, unknown>): number {
+  const value = row.keyVersion;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function providerFromCredentialId(id: string): string {
+  const match = /\/([^/#]+)\.ttl#/u.exec(id);
+  return match?.[1] ?? '';
+}
+
+function deploymentFromCredentialId(id: string): GatewayDeployment {
+  return id.includes('#cloud-') ? 'cloud' : 'local';
+}
+
+function dateFrom(value: unknown): Date | undefined {
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  }
+  return undefined;
 }
 
 function signAttempt(
@@ -702,11 +1032,25 @@ function normalizeProvider(provider: string): string {
 
 async function safeJson(response: Response): Promise<Record<string, unknown>> {
   const text = await response.text();
-  if (!text) return {};
+  if (!text) {
+    if (response.ok) {
+      throw new Error('Provider returned an empty JSON response');
+    }
+    return {};
+  }
   try {
     const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      if (response.ok) {
+        throw new Error('Provider returned a non-object JSON response');
+      }
+      return {};
+    }
+    return parsed as Record<string, unknown>;
   } catch {
+    if (response.ok) {
+      throw new Error('Provider returned invalid JSON');
+    }
     return {};
   }
 }
@@ -730,21 +1074,36 @@ function safeProviderError(body: Record<string, unknown>): string {
   return stringFrom(body.error) || stringFrom(body.error_description) || 'provider_error';
 }
 
-function pendingResult(input: PollDeviceInput, status: ConnectAttemptStatus): ConnectBeginResult {
+function pendingResult(
+  input: PollDeviceInput,
+  status: ConnectAttemptStatus,
+  intervalSeconds?: number,
+): ConnectBeginResult {
   return {
     mode: 'deviceCodeOAuth',
     status,
     provider: 'kimi',
     deployment: input.deployment,
     attemptId: input.attemptId,
+    intervalSeconds,
   };
 }
 
 function assertKimiEndpoint(endpoint: string): void {
   const url = new URL(endpoint);
-  if (url.protocol !== 'https:' || url.hostname !== 'kimi.moonshot.cn') {
+  if (url.protocol !== 'https:' || url.hostname !== 'auth.kimi.com') {
     throw new Error('Kimi Connect endpoint is not allowlisted');
   }
+}
+
+function requireStringField(body: Record<string, unknown>, field: string): void {
+  if (typeof body[field] !== 'string' || !(body[field] as string).trim()) {
+    throw new Error(`Provider response missing required field: ${field}`);
+  }
+}
+
+function isVersionConflict(error: unknown): boolean {
+  return error instanceof Error && /version_conflict|credential_version_conflict/u.test(error.message);
 }
 
 function decodeJwtSubject(idToken: string): string | undefined {

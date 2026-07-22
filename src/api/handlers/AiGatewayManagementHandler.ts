@@ -250,7 +250,6 @@ export function registerAiGatewayManagementRoutes(
       webId: request.auth!.webId,
       deployment: options.deployment,
       provider: params.provider,
-      refreshToken: stringBody(body.refreshToken),
     });
     sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
   });
@@ -275,8 +274,8 @@ export function registerAiGatewayManagementRoutes(
     // This endpoint is intentionally public only for signed one-time OAuth callbacks.
     // Browser-assisted API key completion is never accepted here because API keys
     // must be submitted through the authenticated management API.
-    sendJson(response, 400, {
-      error: 'Public Connect callback is only available for signed OAuth attempts',
+    sendJson(response, 405, {
+      error: 'Public Connect callback is unsupported for current provider Connect modes',
     });
   }, { public: true });
 }

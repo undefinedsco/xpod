@@ -20,6 +20,15 @@ import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuth
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import { WebCryptoCredentialVault } from '../ai-gateway/credentials/WebCryptoCredentialVault';
+import {
+  BrowserAssistedApiKeyConnectAdapter,
+  InMemoryConnectAttemptStore,
+  KimiDeviceCodeConnectAdapter,
+  PodConnectedCredentialRepository,
+  ProviderConnectService,
+} from '../ai-gateway/connect';
+import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
@@ -100,6 +109,92 @@ export function registerCommonServices(
           clientId: config.gatewayInternalClientId,
           clientSecret: config.gatewayInternalClientSecret,
         }),
+      });
+    }).singleton(),
+
+    providerConnectService: asFunction(({ config }: ApiContainerCradle) => {
+      if (!config.aiGatewayConnectEnabled) {
+        return new ProviderConnectService({
+          registry: createDefaultGatewayProviderRegistry({
+            connect: {
+              openai: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
+              anthropic: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
+              kimi: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
+              bailian: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
+              deepseek: { configured: false },
+            },
+          }),
+          adapters: [],
+        });
+      }
+      if (!config.aiGatewayCredentialKeyWrapperFactory) {
+        throw new Error('AI Gateway Connect requires an aiGatewayCredentialKeyWrapperFactory platform wrapper');
+      }
+      const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
+      if (!signingSecret) {
+        throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
+      }
+      if (!config.aiGatewayKimiClientId) {
+        throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_KIMI_CLIENT_ID for Kimi device-code OAuth');
+      }
+      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
+        throw new Error('AI Gateway Connect requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod access');
+      }
+      const internalPodAccess = new ClientCredentialsInternalPodAccessTokenProvider({
+        tokenEndpoint: config.cssTokenEndpoint,
+        clientId: config.gatewayInternalClientId,
+        clientSecret: config.gatewayInternalClientSecret,
+      });
+      const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
+      const vault = new WebCryptoCredentialVault({
+        keyWrapper: config.aiGatewayCredentialKeyWrapperFactory(),
+      });
+      const attempts = new InMemoryConnectAttemptStore();
+      return new ProviderConnectService({
+        registry: createDefaultGatewayProviderRegistry({
+          connect: {
+            kimi: { configured: true },
+          },
+        }),
+        adapters: [
+          new BrowserAssistedApiKeyConnectAdapter({
+            provider: 'openai',
+            consoleUrl: 'https://platform.openai.com/api-keys',
+            attempts,
+            credentialRepository,
+            vault,
+            deployment: config.edition,
+            signingSecret,
+          }),
+          new BrowserAssistedApiKeyConnectAdapter({
+            provider: 'anthropic',
+            consoleUrl: 'https://console.anthropic.com/settings/keys',
+            attempts,
+            credentialRepository,
+            vault,
+            deployment: config.edition,
+            signingSecret,
+          }),
+          new BrowserAssistedApiKeyConnectAdapter({
+            provider: 'bailian',
+            consoleUrl: 'https://bailian.console.aliyun.com/',
+            attempts,
+            credentialRepository,
+            vault,
+            deployment: config.edition,
+            signingSecret,
+          }),
+          new KimiDeviceCodeConnectAdapter({
+            attempts,
+            credentialRepository,
+            vault,
+            deployment: config.edition,
+            signingSecret,
+            clientId: config.aiGatewayKimiClientId,
+          }),
+        ],
+        credentialRepository,
+        vault,
       });
     }).singleton(),
 

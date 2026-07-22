@@ -127,6 +127,8 @@ Local 的 OAuth 仅用于官方支持的 public client + PKCE/device flow，不�
 
 Connect Credential 与 API Key Credential 不得静默互相回退，避免改变账号或计费来源。
 
+Kimi device-code Connect 只允许使用 Xpod/Moonshot 签发给本产品的 client id，并访问 `https://auth.kimi.com/api/oauth/device_authorization` 与 `https://auth.kimi.com/api/oauth/token`。未配置该 client id 时，capability 必须显示 `configured=false` 和 experimental/disabled 说明，不得复用官方 CLI client id 或伪装为可用。
+
 ## Gateway API Key
 
 用户在 LinX 当前身份下创建具名 Gateway Key。默认 scope 为 `models:read` 和 `inference:write`。创建响应只显示一次明文，LinX立即写入客户端原生认证存储、环境变量安全设施或系统 Keychain。客户端只能使用 Gateway Key，不能读取 Provider Credential。

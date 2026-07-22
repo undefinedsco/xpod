@@ -1,6 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
 import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
+import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+
+class TestKeyWrapper implements KeyWrapper {
+  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
+    return {
+      algorithm: 'test-wrapper',
+      keyId: context.provider,
+      wrappedDek: Buffer.from(dek).toString('base64url'),
+    };
+  }
+
+  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
+    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
+  }
+}
 
 function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerConfig {
   return {
@@ -68,5 +83,52 @@ describe('Gateway internal Pod access container config', () => {
     const container = createApiContainer(baseConfig());
 
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
+  });
+
+  it('constructs a disabled provider Connect service by default without requiring platform wrappers', async () => {
+    const service = createApiContainer(baseConfig()).resolve('providerConnectService');
+
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({
+      status: 'unsupported',
+      message: expect.stringContaining('disabled'),
+    });
+  });
+
+  it('fails fast when Connect is enabled without the platform credential wrapper or Kimi client id', () => {
+    expect(() => createApiContainer(baseConfig({
+      aiGatewayConnectEnabled: true,
+      aiGatewayKimiClientId: 'xpod-kimi-client',
+      aiGatewayCredentialKeyWrapperFactory: undefined,
+    })).resolve('providerConnectService')).toThrow(/CredentialKeyWrapperFactory/i);
+
+    expect(() => createApiContainer(baseConfig({
+      aiGatewayConnectEnabled: true,
+      aiGatewayCredentialKeyWrapperFactory: () => new TestKeyWrapper(),
+      aiGatewayKimiClientId: undefined,
+    })).resolve('providerConnectService')).toThrow(/KIMI_CLIENT_ID/);
+  });
+
+  it('constructs the configured provider Connect service with injected platform wrapper and Kimi client id', async () => {
+    const service = createApiContainer(baseConfig({
+      aiGatewayConnectEnabled: true,
+      aiGatewayConnectSigningSecret: 'connect-signing-secret',
+      aiGatewayKimiClientId: 'xpod-kimi-client',
+      aiGatewayCredentialKeyWrapperFactory: () => new TestKeyWrapper(),
+    })).resolve('providerConnectService');
+
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({
+      status: 'pending',
+      mode: 'browserAssistedApiKey',
+    });
   });
 });
