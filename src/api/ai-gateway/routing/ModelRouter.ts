@@ -1,0 +1,376 @@
+import { GatewayProtocolError } from '../errors';
+import {
+  normalizeProviderId,
+  type ProviderAuthMode,
+  type ProviderDescriptor,
+  type ProviderRegistry,
+} from '../providers/ProviderRegistry';
+import {
+  affinityStorageKey,
+  type SessionAffinityStore,
+} from './SessionAffinityStore';
+
+export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error';
+export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
+export type ModelRouteSource =
+  | 'alias'
+  | 'explicit-provider'
+  | 'exact-model'
+  | 'default-provider'
+  | 'default-model';
+
+export interface GatewayCredentialCandidate {
+  id: string;
+  credentialIri: string;
+  provider: string;
+  authMode: ProviderAuthMode;
+  enabled: boolean;
+  priority?: number;
+  models?: string[];
+  defaultModel?: string;
+  health?: GatewayCredentialHealth;
+  quota?: {
+    status: GatewayQuotaStatus;
+  };
+  cooldownUntil?: Date;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ModelRouterCredentialLookupInput {
+  webId: string;
+  deployment: string;
+}
+
+export interface ModelRouterOptions {
+  registry: ProviderRegistry;
+  affinityStore: SessionAffinityStore;
+  credentials(input: ModelRouterCredentialLookupInput): Promise<GatewayCredentialCandidate[]>;
+  defaultProvider?: string;
+  defaultModel?: string;
+  now?: () => Date;
+}
+
+export interface ModelRouteInput {
+  webId: string;
+  deployment: string;
+  model?: string;
+  conversationId?: string;
+  explicitCredentialId?: string;
+  rawPrompt?: string;
+}
+
+export interface ModelRouteFailoverState {
+  allowedBeforeFirstEvent: boolean;
+  committed: boolean;
+  clientEventEmitted: boolean;
+}
+
+export interface ModelRouteResult {
+  provider: ProviderDescriptor;
+  model: string;
+  credential: GatewayCredentialCandidate;
+  source: ModelRouteSource;
+  affinityKey?: string;
+  failover: ModelRouteFailoverState;
+}
+
+interface ResolvedModelTarget {
+  providerId: string;
+  model: string;
+  source: ModelRouteSource;
+}
+
+export class ModelRouter {
+  private readonly registry: ProviderRegistry;
+  private readonly affinityStore: SessionAffinityStore;
+  private readonly credentials: ModelRouterOptions['credentials'];
+  private readonly defaultProvider?: string;
+  private readonly defaultModel?: string;
+  private readonly now: () => Date;
+
+  public constructor(options: ModelRouterOptions) {
+    this.registry = options.registry;
+    this.affinityStore = options.affinityStore;
+    this.credentials = options.credentials;
+    this.defaultProvider = options.defaultProvider ? normalizeProviderId(options.defaultProvider) : undefined;
+    this.defaultModel = options.defaultModel;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  public async route(input: ModelRouteInput): Promise<ModelRouteResult> {
+    const candidates = await this.credentials({
+      webId: input.webId,
+      deployment: input.deployment,
+    });
+    const target = this.resolveTarget(input, candidates);
+    const provider = this.registry.requireProvider(target.providerId);
+    const providerCandidates = candidates
+      .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id));
+    const selected = input.explicitCredentialId
+      ? this.selectExplicitCredential(providerCandidates, input.explicitCredentialId, target.model)
+      : await this.selectCredential(input, providerCandidates, target);
+
+    if (!selected) {
+      throw new GatewayProtocolError('No usable credential is available for the requested model', {
+        code: 'credential_unavailable',
+        status: 403,
+        details: {
+          provider: provider.id,
+          model: target.model,
+        },
+      });
+    }
+
+    if (input.conversationId && !input.explicitCredentialId) {
+      await this.affinityStore.set({
+        deployment: input.deployment,
+        webId: input.webId,
+        conversationId: input.conversationId,
+        provider: provider.id,
+        credentialId: selected.id,
+      });
+    }
+
+    return {
+      provider,
+      model: target.model,
+      credential: selected,
+      source: target.source,
+      affinityKey: input.conversationId ? affinityStorageKey({
+        deployment: input.deployment,
+        webId: input.webId,
+        conversationId: input.conversationId,
+        provider: provider.id,
+      }) : undefined,
+      failover: {
+        allowedBeforeFirstEvent: !input.explicitCredentialId,
+        committed: false,
+        clientEventEmitted: false,
+      },
+    };
+  }
+
+  public markClientEventEmitted(route: ModelRouteResult): ModelRouteFailoverState {
+    route.failover.clientEventEmitted = true;
+    route.failover.committed = true;
+    route.failover.allowedBeforeFirstEvent = false;
+    return { ...route.failover };
+  }
+
+  public canFailOver(route: ModelRouteResult): boolean {
+    return route.failover.allowedBeforeFirstEvent
+      && !route.failover.committed
+      && !route.failover.clientEventEmitted;
+  }
+
+  public async recordCooldown(input: {
+    webId: string;
+    deployment: string;
+    credentialId: string;
+    until: Date;
+  }): Promise<void> {
+    await this.affinityStore.setCooldown(input);
+  }
+
+  private resolveTarget(
+    input: ModelRouteInput,
+    candidates: GatewayCredentialCandidate[],
+  ): ResolvedModelTarget {
+    const requestedModel = input.model?.trim();
+    if (requestedModel) {
+      const alias = this.registry.resolveAlias(requestedModel);
+      if (alias) {
+        return {
+          providerId: normalizeProviderId(alias.provider),
+          model: alias.model,
+          source: 'alias',
+        };
+      }
+
+      const explicit = this.parseExplicitProviderModel(requestedModel);
+      if (explicit && this.registry.getProvider(explicit.providerId)) {
+        return {
+          ...explicit,
+          source: 'explicit-provider',
+        };
+      }
+
+      const exact = this.findExactModelTarget(requestedModel, candidates);
+      if (exact) {
+        return exact;
+      }
+    }
+
+    const defaultProviderTarget = this.findDefaultProviderTarget(requestedModel, candidates);
+    if (defaultProviderTarget) {
+      return defaultProviderTarget;
+    }
+
+    const defaultModelTarget = this.findDefaultModelTarget(candidates);
+    if (defaultModelTarget) {
+      return defaultModelTarget;
+    }
+
+    throw new GatewayProtocolError('Unable to resolve model route', {
+      code: 'invalid_request',
+      status: 400,
+      details: { model: input.model },
+    });
+  }
+
+  private parseExplicitProviderModel(model: string): { providerId: string; model: string } | undefined {
+    const slash = model.indexOf('/');
+    if (slash <= 0 || slash === model.length - 1) {
+      return undefined;
+    }
+    return {
+      providerId: normalizeProviderId(model.slice(0, slash)),
+      model: model.slice(slash + 1),
+    };
+  }
+
+  private findExactModelTarget(
+    model: string,
+    candidates: GatewayCredentialCandidate[],
+  ): ResolvedModelTarget | undefined {
+    for (const match of this.registry.findModel(model)) {
+      if (candidates.some((candidate) =>
+        normalizeProviderId(candidate.provider) === normalizeProviderId(match.provider.id)
+        && credentialSupportsModel(candidate, match.model.id))) {
+        return {
+          providerId: normalizeProviderId(match.provider.id),
+          model: match.model.id,
+          source: 'exact-model',
+        };
+      }
+    }
+
+    const candidate = candidates.find((item) => credentialSupportsModel(item, model));
+    if (candidate) {
+      return {
+        providerId: normalizeProviderId(candidate.provider),
+        model,
+        source: 'exact-model',
+      };
+    }
+    return undefined;
+  }
+
+  private findDefaultProviderTarget(
+    requestedModel: string | undefined,
+    candidates: GatewayCredentialCandidate[],
+  ): ResolvedModelTarget | undefined {
+    if (!this.defaultProvider || requestedModel) {
+      return undefined;
+    }
+    const credential = candidates.find((item) => normalizeProviderId(item.provider) === this.defaultProvider);
+    const model = this.defaultModel
+      ?? credential?.defaultModel
+      ?? credential?.models?.[0]
+      ?? this.registry.requireProvider(this.defaultProvider).models[0]?.id;
+    if (!model) {
+      return undefined;
+    }
+    return {
+      providerId: this.defaultProvider,
+      model,
+      source: this.defaultModel ? 'default-model' : 'default-provider',
+    };
+  }
+
+  private findDefaultModelTarget(candidates: GatewayCredentialCandidate[]): ResolvedModelTarget | undefined {
+    for (const candidate of candidates) {
+      const model = candidate.defaultModel ?? candidate.models?.[0];
+      if (model) {
+        return {
+          providerId: normalizeProviderId(candidate.provider),
+          model,
+          source: 'default-model',
+        };
+      }
+    }
+    for (const provider of this.registry.listProviders()) {
+      const model = provider.models[0]?.id;
+      if (model && candidates.some((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))) {
+        return {
+          providerId: normalizeProviderId(provider.id),
+          model,
+          source: 'default-model',
+        };
+      }
+    }
+    return undefined;
+  }
+
+  private selectExplicitCredential(
+    candidates: GatewayCredentialCandidate[],
+    credentialId: string,
+    model: string,
+  ): GatewayCredentialCandidate {
+    const selected = candidates.find((candidate) => candidate.id === credentialId || candidate.credentialIri === credentialId);
+    if (!selected || !this.isCredentialUsable(selected, model)) {
+      throw new GatewayProtocolError('Requested credential is not available for this model', {
+        code: 'credential_unavailable',
+        status: 403,
+        details: { credentialId },
+      });
+    }
+    return selected;
+  }
+
+  private async selectCredential(
+    input: ModelRouteInput,
+    candidates: GatewayCredentialCandidate[],
+    target: ResolvedModelTarget,
+  ): Promise<GatewayCredentialCandidate | undefined> {
+    const usable = candidates
+      .filter((candidate) => this.isCredentialUsable(candidate, target.model))
+      .sort(compareCredentialPriority);
+
+    if (input.conversationId) {
+      const affinity = await this.affinityStore.get({
+        deployment: input.deployment,
+        webId: input.webId,
+        conversationId: input.conversationId,
+        provider: target.providerId,
+      });
+      const existing = affinity
+        ? usable.find((candidate) => candidate.id === affinity.credentialId)
+        : undefined;
+      if (existing) {
+        return existing;
+      }
+    }
+
+    return usable[0];
+  }
+
+  private isCredentialUsable(candidate: GatewayCredentialCandidate, model: string): boolean {
+    if (!candidate.enabled) {
+      return false;
+    }
+    if (candidate.health && candidate.health !== 'healthy') {
+      return false;
+    }
+    if (candidate.quota?.status === 'exhausted') {
+      return false;
+    }
+    if (candidate.cooldownUntil && candidate.cooldownUntil.getTime() > this.now().getTime()) {
+      return false;
+    }
+    return credentialSupportsModel(candidate, model);
+  }
+}
+
+function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {
+  const models = candidate.models ?? [];
+  return models.length === 0 || models.some((candidateModel) => candidateModel === model);
+}
+
+function compareCredentialPriority(
+  left: GatewayCredentialCandidate,
+  right: GatewayCredentialCandidate,
+): number {
+  return (left.priority ?? 100) - (right.priority ?? 100)
+    || left.id.localeCompare(right.id);
+}

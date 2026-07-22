@@ -2,6 +2,7 @@ export type GatewayErrorCode =
   | 'invalid_request'
   | 'invalid_tool_arguments'
   | 'unsupported_protocol_event'
+  | 'credential_unavailable'
   | 'provider_error'
   | 'internal_error';
 

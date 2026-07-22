@@ -1,92 +1,90 @@
 /**
- * AI Provider capability registry.
+ * Backwards-compatible provider capability helpers.
  *
- * Single source of truth for which API protocols each known provider supports.
- * Used by VercelChatService (API proxy/conversion) and ACP agent runtime env setup.
- *
- * TODO: replace with discovery service lookup via provider WebID
- * See: docs/issues/discovery/001-provider-capability-registry.md
+ * New AI Gateway routing owns provider descriptors in
+ * src/api/ai-gateway/providers/ProviderRegistry.ts. Keep this module as a
+ * thin compatibility facade for legacy VercelChatService/chat-routing callers.
  */
 
-interface ProviderInfo {
-  /** Default base URL (with /v1 suffix where applicable) */
-  baseUrl: string;
-  /** Hostnames that identify this provider */
-  hostnames: string[];
-  supports: {
-    chatCompletions: boolean;
-    /** OpenAI Responses API: POST /v1/responses */
-    responses: boolean;
-    /** Anthropic Messages API: POST /v1/messages */
-    messages: boolean;
-  };
-}
+import {
+  createDefaultProviderRegistry,
+  type ProviderDescriptor,
+} from '../ai-gateway/providers/ProviderRegistry';
 
-const REGISTRY: ProviderInfo[] = [
+const gatewayProviderRegistry = createDefaultProviderRegistry();
+
+const LEGACY_COMPATIBLE_PROVIDERS: ProviderDescriptor[] = [
   {
-    baseUrl: 'https://api.openai.com/v1',
-    hostnames: ['api.openai.com'],
-    supports: { chatCompletions: true, responses: true, messages: false },
+    id: 'openrouter',
+    label: 'OpenRouter',
+    authModes: ['apiKey'],
+    protocols: ['responses', 'anthropic', 'chatCompletions'],
+    defaultBaseUrl: 'https://openrouter.ai/api/v1',
+    safeBaseUrls: ['https://openrouter.ai/api/v1'],
+    capabilities: { toolCalls: true, imageInput: true },
+    models: [],
   },
   {
-    baseUrl: 'https://api.anthropic.com/v1',
-    hostnames: ['api.anthropic.com'],
-    supports: { chatCompletions: false, responses: false, messages: true },
+    id: 'gemini',
+    label: 'Google Gemini OpenAI-compatible',
+    authModes: ['apiKey'],
+    protocols: ['chatCompletions'],
+    defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    safeBaseUrls: ['https://generativelanguage.googleapis.com/v1beta/openai'],
+    capabilities: { toolCalls: true, imageInput: true },
+    models: [],
   },
   {
-    baseUrl: 'https://openrouter.ai/api/v1',
-    hostnames: ['openrouter.ai'],
-    supports: { chatCompletions: true, responses: true, messages: true },
+    id: 'ollama',
+    label: 'Ollama',
+    authModes: ['apiKey'],
+    protocols: ['chatCompletions'],
+    defaultBaseUrl: 'http://localhost:11434/v1',
+    safeBaseUrls: ['http://localhost:11434/v1'],
+    capabilities: { toolCalls: true },
+    models: [],
   },
   {
-    baseUrl: 'https://api.deepseek.com/v1',
-    hostnames: ['api.deepseek.com'],
-    supports: { chatCompletions: true, responses: false, messages: false },
+    id: 'mistral',
+    label: 'Mistral',
+    authModes: ['apiKey'],
+    protocols: ['chatCompletions'],
+    defaultBaseUrl: 'https://api.mistral.ai/v1',
+    safeBaseUrls: ['https://api.mistral.ai/v1'],
+    capabilities: { toolCalls: true },
+    models: [],
   },
   {
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    hostnames: ['generativelanguage.googleapis.com'],
-    supports: { chatCompletions: true, responses: false, messages: false },
+    id: 'cohere',
+    label: 'Cohere',
+    authModes: ['apiKey'],
+    protocols: ['chatCompletions'],
+    defaultBaseUrl: 'https://api.cohere.ai/v1',
+    safeBaseUrls: ['https://api.cohere.ai/v1'],
+    capabilities: { toolCalls: true },
+    models: [],
   },
   {
-    baseUrl: 'http://localhost:11434/v1',
-    hostnames: ['localhost', '127.0.0.1'],
-    supports: { chatCompletions: true, responses: false, messages: false },
-  },
-  {
-    baseUrl: 'https://api.mistral.ai/v1',
-    hostnames: ['api.mistral.ai'],
-    supports: { chatCompletions: true, responses: false, messages: false },
-  },
-  {
-    baseUrl: 'https://api.cohere.ai/v1',
-    hostnames: ['api.cohere.ai'],
-    supports: { chatCompletions: true, responses: false, messages: false },
-  },
-  {
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    hostnames: ['open.bigmodel.cn'],
-    supports: { chatCompletions: true, responses: false, messages: false },
+    id: 'bigmodel',
+    label: 'BigModel',
+    authModes: ['apiKey'],
+    protocols: ['chatCompletions'],
+    defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+    safeBaseUrls: ['https://open.bigmodel.cn/api/paas/v4'],
+    capabilities: { toolCalls: true },
+    models: [],
   },
 ];
 
-/** Default for unknown providers — Chat Completions is the most widely supported protocol */
-const UNKNOWN: ProviderInfo['supports'] = {
+for (const provider of LEGACY_COMPATIBLE_PROVIDERS) {
+  gatewayProviderRegistry.register(provider);
+}
+
+const UNKNOWN_SUPPORTS = {
   chatCompletions: true,
   responses: false,
   messages: false,
 };
-
-const byName = new Map<string, ProviderInfo>();
-const byHost = new Map<string, ProviderInfo>();
-
-for (const p of REGISTRY) {
-  // Index by provider name derived from hostname
-  byName.set(p.hostnames[0], p);
-  for (const h of p.hostnames) {
-    byHost.set(h, p);
-  }
-}
 
 function hostnameOf(baseUrl: string): string | undefined {
   try {
@@ -96,34 +94,47 @@ function hostnameOf(baseUrl: string): string | undefined {
   }
 }
 
-function lookupByUrl(baseUrl: string): ProviderInfo['supports'] {
+function lookupByUrl(baseUrl: string): ProviderDescriptor | undefined {
   const host = hostnameOf(baseUrl);
-  if (!host) return UNKNOWN;
-  return byHost.get(host)?.supports ?? UNKNOWN;
+  if (!host) {
+    return undefined;
+  }
+  return gatewayProviderRegistry.listProviders().find((provider) =>
+    provider.safeBaseUrls.some((safeUrl) => hostnameOf(safeUrl) === host));
+}
+
+function legacySupports(baseUrl: string): typeof UNKNOWN_SUPPORTS {
+  const provider = lookupByUrl(baseUrl);
+  if (!provider) {
+    return UNKNOWN_SUPPORTS;
+  }
+  return {
+    chatCompletions: provider.protocols.includes('chatCompletions'),
+    responses: provider.protocols.includes('responses'),
+    messages: provider.protocols.includes('anthropic'),
+  };
 }
 
 export function getDefaultBaseUrl(provider?: string): string {
   const normalized = (provider || 'openrouter').toLowerCase();
-  // Match by first hostname segment or full name
-  for (const p of REGISTRY) {
-    if (p.hostnames[0].includes(normalized) || normalized.includes(p.hostnames[0].split('.')[0])) {
-      return p.baseUrl;
-    }
-  }
-  return 'https://openrouter.ai/api/v1';
+  const match = gatewayProviderRegistry.listProviders().find((candidate) =>
+    candidate.id.toLowerCase() === normalized
+    || candidate.label.toLowerCase().includes(normalized)
+    || normalized.includes(candidate.id.toLowerCase()));
+  return match?.defaultBaseUrl ?? 'https://openrouter.ai/api/v1';
 }
 
 export function supportsResponsesApi(baseUrl: string): boolean {
-  return lookupByUrl(baseUrl).responses;
+  return legacySupports(baseUrl).responses;
 }
 
 export function supportsMessagesApi(baseUrl: string): boolean {
-  return lookupByUrl(baseUrl).messages;
+  return legacySupports(baseUrl).messages;
 }
 
 /**
  * For codex wire_api selection: only native OpenAI uses Responses wire protocol.
- * All other providers (including openrouter) should use Chat Completions wire.
+ * All other providers should use Chat Completions wire unless explicitly migrated.
  */
 export function codexWireApi(baseUrl: string): 'responses' | 'chat' {
   const host = hostnameOf(baseUrl);
