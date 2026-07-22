@@ -16,6 +16,7 @@ import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthent
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
+import { GatewayApiKeyAuthenticator, InMemoryGatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
@@ -76,7 +77,11 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, config }: ApiContainerCradle) => {
+    gatewayAccessKeyRepository: asFunction(() => {
+      return new InMemoryGatewayAccessKeyRepository();
+    }).singleton(),
+
+    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
       });
@@ -93,10 +98,15 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
+      const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
+        repository: gatewayAccessKeyRepository,
+        deployment: config.edition,
+      });
+
       return new MultiAuthenticator({
-        // Order: Solid DPoP → Service Token → Node Token → Client Credentials.
+        // Order: Solid DPoP → Service Token → Node Token → Gateway Key → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
-        authenticators: [solidAuthenticator, serviceTokenAuthenticator, nodeTokenAuthenticator, clientCredAuthenticator],
+        authenticators: [solidAuthenticator, serviceTokenAuthenticator, nodeTokenAuthenticator, gatewayApiKeyAuthenticator, clientCredAuthenticator],
       });
     }).singleton(),
 

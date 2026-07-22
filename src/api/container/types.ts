@@ -7,6 +7,7 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
+import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -188,6 +189,7 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
+  gatewayAccessKeyRepository: GatewayAccessKeyRepository;
 
   // 业务服务
   chatService: VercelChatService;

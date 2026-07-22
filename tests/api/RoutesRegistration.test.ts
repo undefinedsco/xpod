@@ -106,6 +106,7 @@ describe('registerRoutes mode wiring', () => {
           reason: 'not-cloud',
         }),
       },
+      gatewayAccessKeyRepository: {},
       db: {},
       podLookupRepo: {},
       ddnsRepo: edition === 'cloud' ? {} : undefined,
@@ -141,6 +142,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs/:runId/steps']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();
@@ -179,6 +183,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['GET /api/admin/rdf/stats']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
+    expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();

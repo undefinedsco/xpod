@@ -20,6 +20,12 @@ export interface SolidAuthContext {
   dpopProof?: string;
   /** Whether this was authenticated via the sk-* CSS client credentials wrapper */
   viaApiKey?: boolean;
+  /** Whether this was authenticated via an Xpod Gateway API key. */
+  viaGatewayApiKey?: boolean;
+  /** Opaque Gateway API key id, present only for gateway-key principals. */
+  gatewayKeyId?: string;
+  /** Gateway/API scopes bound to the authenticated principal. */
+  scopes?: string[];
 }
 
 export interface NodeAuthContext {
