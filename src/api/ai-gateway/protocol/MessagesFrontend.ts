@@ -3,6 +3,7 @@ import {
   extractExtension,
   extractText,
   type GatewayEvent,
+  type GatewayEventSerializer,
   type GatewayProtocolFrontend,
   type GatewayRequest,
   mapGatewayUsageToAnthropic,
@@ -26,7 +27,6 @@ const MESSAGES_NORMALIZED_KEYS = [
 
 export class MessagesFrontend implements GatewayProtocolFrontend {
   public readonly protocol = 'anthropic' as const;
-  private readonly toolArguments = new ToolArgumentTracker();
 
   public parseRequest(body: unknown): GatewayRequest {
     const record = requireObject(body, 'Messages request');
@@ -53,9 +53,18 @@ export class MessagesFrontend implements GatewayProtocolFrontend {
     };
   }
 
+  public createEventSerializer(): GatewayEventSerializer {
+    return new MessagesEventSerializer();
+  }
+}
+
+class MessagesEventSerializer implements GatewayEventSerializer {
+  private readonly toolArguments = new ToolArgumentTracker();
+
   public serializeEvent(event: GatewayEvent): Record<string, unknown> {
     switch (event.type) {
       case 'response.started':
+        this.toolArguments.reset();
         return { type: 'message_start', message: { id: event.id, type: 'message', role: 'assistant' } };
       case 'text.delta':
         return { type: 'content_block_delta', delta: { type: 'text_delta', text: event.text }, index: 0 };
@@ -84,6 +93,7 @@ export class MessagesFrontend implements GatewayProtocolFrontend {
       case 'usage':
         return { type: 'message_delta', usage: mapGatewayUsageToAnthropic(event.usage) };
       case 'response.completed':
+        this.toolArguments.reset();
         return { type: 'message_stop', stop_reason: event.finishReason };
       default:
         return unsupportedEvent(event);

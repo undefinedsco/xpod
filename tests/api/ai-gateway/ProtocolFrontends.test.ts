@@ -192,8 +192,11 @@ describe('AI Gateway protocol frontends', () => {
     const responses = new ResponsesFrontend();
     const messages = new MessagesFrontend();
     const chat = new ChatCompletionsFrontend();
+    const responsesStream = responses.createEventSerializer();
+    const messagesStream = messages.createEventSerializer();
+    const chatStream = chat.createEventSerializer();
 
-    expect(events.map((event) => responses.serializeEvent(event))).toEqual([
+    expect(events.map((event) => responsesStream.serializeEvent(event))).toEqual([
       { type: 'response.created', response: { id: 'resp_1' } },
       { type: 'response.output_text.delta', delta: '{"not buffered text"' },
       { type: 'response.reasoning_summary_text.delta', delta: 'reasoning chunk' },
@@ -213,12 +216,12 @@ describe('AI Gateway protocol frontends', () => {
       { type: 'response.completed', response: { status: 'completed', finish_reason: 'stop' } },
     ]);
 
-    expect(events.map((event) => messages.serializeEvent(event))).toContainEqual({
+    expect(events.map((event) => messagesStream.serializeEvent(event))).toContainEqual({
       type: 'content_block_delta',
       delta: { type: 'input_json_delta', partial_json: '{"q":' },
       index: 0,
     });
-    expect(events.map((event) => chat.serializeEvent(event))).toContainEqual({
+    expect(events.map((event) => chatStream.serializeEvent(event))).toContainEqual({
       choices: [
         {
           index: 0,
@@ -237,9 +240,84 @@ describe('AI Gateway protocol frontends', () => {
     });
 
     const invalid = new ChatCompletionsFrontend();
-    invalid.serializeEvent({ type: 'tool.started', callId: 'bad_call', name: 'bad' });
-    invalid.serializeEvent({ type: 'tool.arguments.delta', callId: 'bad_call', delta: '{"broken":' });
-    expect(() => invalid.serializeEvent({ type: 'tool.completed', callId: 'bad_call' }))
+    const invalidSerializer = invalid.createEventSerializer();
+    invalidSerializer.serializeEvent({ type: 'tool.started', callId: 'bad_call', name: 'bad' });
+    invalidSerializer.serializeEvent({ type: 'tool.arguments.delta', callId: 'bad_call', delta: '{"broken":' });
+    expect(() => invalidSerializer.serializeEvent({ type: 'tool.completed', callId: 'bad_call' }))
       .toThrow(GatewayProtocolError);
+  });
+
+  it('requires tool argument deltas to follow tool start within an isolated event serializer', () => {
+    const chat = new ChatCompletionsFrontend();
+    const stream = chat.createEventSerializer();
+
+    expect(() => stream.serializeEvent({ type: 'tool.arguments.delta', callId: 'missing', delta: '{}' }))
+      .toThrow(GatewayProtocolError);
+    expect(() => stream.serializeEvent({ type: 'tool.completed', callId: 'missing' }))
+      .toThrow(GatewayProtocolError);
+  });
+
+  it('clears tool state after completion and response completion so repeated call IDs work in sequential streams', () => {
+    const frontend = new ResponsesFrontend();
+    const firstStream = frontend.createEventSerializer();
+    firstStream.serializeEvent({ type: 'response.started', id: 'resp_1' });
+    firstStream.serializeEvent({ type: 'tool.started', callId: 'call_repeat', name: 'lookup' });
+    firstStream.serializeEvent({ type: 'tool.arguments.delta', callId: 'call_repeat', delta: '{"q":"one"}' });
+    firstStream.serializeEvent({ type: 'tool.completed', callId: 'call_repeat' });
+    expect(() => firstStream.serializeEvent({ type: 'tool.arguments.delta', callId: 'call_repeat', delta: '{}' }))
+      .toThrow(GatewayProtocolError);
+    firstStream.serializeEvent({ type: 'response.completed', finishReason: 'stop' });
+
+    const secondStream = frontend.createEventSerializer();
+    secondStream.serializeEvent({ type: 'response.started', id: 'resp_2' });
+    secondStream.serializeEvent({ type: 'tool.started', callId: 'call_repeat', name: 'lookup' });
+    secondStream.serializeEvent({ type: 'tool.arguments.delta', callId: 'call_repeat', delta: '{"q":"two"}' });
+    expect(secondStream.serializeEvent({ type: 'tool.completed', callId: 'call_repeat' }))
+      .toEqual({ type: 'response.output_item.done', call_id: 'call_repeat' });
+  });
+
+  it('serializes Chat Completions usage with native prompt and completion token keys', () => {
+    const chat = new ChatCompletionsFrontend().createEventSerializer();
+
+    expect(chat.serializeEvent({
+      type: 'usage',
+      usage: {
+        inputTokens: 11,
+        outputTokens: 13,
+        totalTokens: 24,
+        cacheReadTokens: 5,
+      },
+    })).toEqual({
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 13,
+        total_tokens: 24,
+        prompt_tokens_details: { cached_tokens: 5 },
+      },
+    });
+  });
+
+  it('normalizes non-array Responses input only once', () => {
+    let textReads = 0;
+    const input = {};
+    Object.defineProperty(input, 'text', {
+      enumerable: true,
+      get() {
+        textReads += 1;
+        return 'single pass';
+      },
+    });
+    Object.defineProperty(input, 'type', {
+      enumerable: true,
+      value: 'input_text',
+    });
+
+    const request = new ResponsesFrontend().parseRequest({
+      model: 'gpt-5.1',
+      input,
+    });
+
+    expect(request.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'single pass' }] }]);
+    expect(textReads).toBe(1);
   });
 });

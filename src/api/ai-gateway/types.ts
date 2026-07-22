@@ -58,10 +58,14 @@ export type GatewayEvent =
   | { type: 'usage'; usage: GatewayUsage }
   | { type: 'response.completed'; finishReason: string };
 
+export interface GatewayEventSerializer {
+  serializeEvent(event: GatewayEvent): Record<string, unknown>;
+}
+
 export interface GatewayProtocolFrontend {
   readonly protocol: GatewayProtocol;
   parseRequest(body: unknown): GatewayRequest;
-  serializeEvent(event: GatewayEvent): Record<string, unknown>;
+  createEventSerializer(): GatewayEventSerializer;
 }
 
 export function requireObject(value: unknown, context: string): Record<string, unknown> {
@@ -124,6 +128,9 @@ export function normalizeContentParts(content: unknown, protocol: GatewayProtoco
   }
 
   if (!Array.isArray(content)) {
+    if (content && typeof content === 'object') {
+      return normalizeContentParts([content], protocol);
+    }
     const text = extractText(content);
     return text ? [{ type: 'text', text }] : [];
   }
@@ -282,6 +289,24 @@ export function mapGatewayUsageToOpenAi(usage: GatewayUsage): Record<string, unk
   };
 }
 
+export function mapGatewayUsageToChatCompletions(usage: GatewayUsage): Record<string, unknown> {
+  return {
+    ...(usage.inputTokens !== undefined ? { prompt_tokens: usage.inputTokens } : {}),
+    ...(usage.outputTokens !== undefined ? { completion_tokens: usage.outputTokens } : {}),
+    ...(usage.totalTokens !== undefined ? { total_tokens: usage.totalTokens } : {}),
+    ...(
+      usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined
+        ? {
+            prompt_tokens_details: {
+              ...(usage.cacheReadTokens !== undefined ? { cached_tokens: usage.cacheReadTokens } : {}),
+              ...(usage.cacheWriteTokens !== undefined ? { cache_write_tokens: usage.cacheWriteTokens } : {}),
+            },
+          }
+        : {}
+    ),
+  };
+}
+
 export function mapGatewayUsageToAnthropic(usage: GatewayUsage): Record<string, unknown> {
   return {
     ...(usage.inputTokens !== undefined ? { input_tokens: usage.inputTokens } : {}),
@@ -296,6 +321,12 @@ export class ToolArgumentTracker {
   private readonly toolIndexes = new Map<string, number>();
   private nextIndex = 0;
 
+  public reset(): void {
+    this.chunks.clear();
+    this.toolIndexes.clear();
+    this.nextIndex = 0;
+  }
+
   public start(callId: string): number {
     if (!this.toolIndexes.has(callId)) {
       this.toolIndexes.set(callId, this.nextIndex);
@@ -308,13 +339,13 @@ export class ToolArgumentTracker {
   }
 
   public append(callId: string, delta: string): number {
-    const index = this.start(callId);
+    const index = this.requireStarted(callId);
     this.chunks.set(callId, `${this.chunks.get(callId) ?? ''}${delta}`);
     return index;
   }
 
   public complete(callId: string): number {
-    const index = this.start(callId);
+    const index = this.requireStarted(callId);
     const value = this.chunks.get(callId) ?? '';
     try {
       JSON.parse(value || '{}');
@@ -324,6 +355,20 @@ export class ToolArgumentTracker {
         status: 400,
         details: { callId },
         cause: error,
+      });
+    }
+    this.chunks.delete(callId);
+    this.toolIndexes.delete(callId);
+    return index;
+  }
+
+  private requireStarted(callId: string): number {
+    const index = this.toolIndexes.get(callId);
+    if (index === undefined || !this.chunks.has(callId)) {
+      throw new GatewayProtocolError('Tool arguments event received before tool start', {
+        code: 'invalid_tool_arguments',
+        status: 400,
+        details: { callId },
       });
     }
     return index;

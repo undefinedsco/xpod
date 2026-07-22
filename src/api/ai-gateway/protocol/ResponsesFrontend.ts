@@ -2,6 +2,7 @@ import {
   booleanValue,
   extractExtension,
   type GatewayEvent,
+  type GatewayEventSerializer,
   type GatewayProtocolFrontend,
   type GatewayRequest,
   mapGatewayUsageToOpenAi,
@@ -26,15 +27,15 @@ const RESPONSES_NORMALIZED_KEYS = [
 
 export class ResponsesFrontend implements GatewayProtocolFrontend {
   public readonly protocol = 'responses' as const;
-  private readonly toolArguments = new ToolArgumentTracker();
 
   public parseRequest(body: unknown): GatewayRequest {
     const record = requireObject(body, 'Responses request');
     const input = record.input;
+    const inputContent = normalizeContentParts(input, this.protocol);
     const messages = Array.isArray(input)
       ? input.map((message) => normalizeMessage(message, this.protocol)).filter((message) => message !== undefined)
-      : normalizeContentParts(input, this.protocol).length > 0
-        ? [{ role: 'user' as const, content: normalizeContentParts(input, this.protocol) }]
+      : inputContent.length > 0
+        ? [{ role: 'user' as const, content: inputContent }]
         : [];
     const reasoning = record.reasoning && typeof record.reasoning === 'object'
       ? record.reasoning as Record<string, unknown>
@@ -59,9 +60,18 @@ export class ResponsesFrontend implements GatewayProtocolFrontend {
     };
   }
 
+  public createEventSerializer(): GatewayEventSerializer {
+    return new ResponsesEventSerializer();
+  }
+}
+
+class ResponsesEventSerializer implements GatewayEventSerializer {
+  private readonly toolArguments = new ToolArgumentTracker();
+
   public serializeEvent(event: GatewayEvent): Record<string, unknown> {
     switch (event.type) {
       case 'response.started':
+        this.toolArguments.reset();
         return { type: 'response.created', response: { id: event.id } };
       case 'text.delta':
         return { type: 'response.output_text.delta', delta: event.text };
@@ -86,6 +96,7 @@ export class ResponsesFrontend implements GatewayProtocolFrontend {
       case 'usage':
         return { type: 'response.usage', usage: mapGatewayUsageToOpenAi(event.usage) };
       case 'response.completed':
+        this.toolArguments.reset();
         return {
           type: 'response.completed',
           response: { status: 'completed', finish_reason: event.finishReason },

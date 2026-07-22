@@ -3,10 +3,11 @@ import {
   extractExtension,
   extractText,
   type GatewayEvent,
+  type GatewayEventSerializer,
   type GatewayMessage,
   type GatewayProtocolFrontend,
   type GatewayRequest,
-  mapGatewayUsageToOpenAi,
+  mapGatewayUsageToChatCompletions,
   normalizeMessage,
   normalizeToolFromChat,
   requireObject,
@@ -25,7 +26,6 @@ const CHAT_COMPLETIONS_NORMALIZED_KEYS = [
 
 export class ChatCompletionsFrontend implements GatewayProtocolFrontend {
   public readonly protocol = 'chatCompletions' as const;
-  private readonly toolArguments = new ToolArgumentTracker();
 
   public parseRequest(body: unknown): GatewayRequest {
     const record = requireObject(body, 'Chat Completions request');
@@ -55,9 +55,18 @@ export class ChatCompletionsFrontend implements GatewayProtocolFrontend {
     };
   }
 
+  public createEventSerializer(): GatewayEventSerializer {
+    return new ChatCompletionsEventSerializer();
+  }
+}
+
+class ChatCompletionsEventSerializer implements GatewayEventSerializer {
+  private readonly toolArguments = new ToolArgumentTracker();
+
   public serializeEvent(event: GatewayEvent): Record<string, unknown> {
     switch (event.type) {
       case 'response.started':
+        this.toolArguments.reset();
         return { id: event.id, choices: [{ index: 0, delta: { role: 'assistant' } }] };
       case 'text.delta':
         return { choices: [{ index: 0, delta: { content: event.text } }] };
@@ -97,8 +106,9 @@ export class ChatCompletionsFrontend implements GatewayProtocolFrontend {
         this.toolArguments.complete(event.callId);
         return { choices: [{ index: 0, delta: {} }] };
       case 'usage':
-        return { usage: mapGatewayUsageToOpenAi(event.usage) };
+        return { usage: mapGatewayUsageToChatCompletions(event.usage) };
       case 'response.completed':
+        this.toolArguments.reset();
         return { choices: [{ index: 0, delta: {}, finish_reason: event.finishReason }] };
       default:
         return unsupportedEvent(event);
