@@ -1,3 +1,5 @@
+import { createHmac } from 'node:crypto';
+
 export interface SessionAffinityIdentity {
   deployment: string;
   webId: string;
@@ -17,6 +19,8 @@ export interface CredentialCooldownIdentity {
 }
 
 export interface SessionAffinityStore {
+  affinityKey(input: SessionAffinityIdentity): string;
+  cooldownKey(input: CredentialCooldownIdentity): string;
   get(input: SessionAffinityIdentity): Promise<SessionAffinityEntry | undefined>;
   set(input: SessionAffinityEntry): Promise<void>;
   delete(input: SessionAffinityIdentity): Promise<void>;
@@ -24,24 +28,76 @@ export interface SessionAffinityStore {
   setCooldown(input: CredentialCooldownIdentity & { until: Date }): Promise<void>;
 }
 
-export function affinityStorageKey(input: SessionAffinityIdentity): string {
+export interface SessionAffinityKeyDeriver {
+  hashWebId(webId: string): string;
+  hashConversationId(conversationId: string): string;
+  hashCredentialId(credentialId: string): string;
+}
+
+export interface HmacSessionAffinityKeyDeriverOptions {
+  secret: string | Uint8Array;
+}
+
+export class HmacSessionAffinityKeyDeriver implements SessionAffinityKeyDeriver {
+  private readonly secret: Buffer;
+
+  public constructor(options: HmacSessionAffinityKeyDeriverOptions) {
+    this.secret = Buffer.isBuffer(options.secret)
+      ? Buffer.from(options.secret)
+      : Buffer.from(options.secret);
+    if (this.secret.byteLength < 16) {
+      throw new Error('Session affinity key derivation secret must contain at least 128-bit entropy');
+    }
+  }
+
+  public hashWebId(webId: string): string {
+    return `web_${this.hmac(webId)}`;
+  }
+
+  public hashConversationId(conversationId: string): string {
+    return `conv_${this.hmac(conversationId)}`;
+  }
+
+  public hashCredentialId(credentialId: string): string {
+    return `cred_${this.hmac(credentialId)}`;
+  }
+
+  private hmac(value: string): string {
+    return createHmac('sha256', this.secret).update(value, 'utf8').digest('hex');
+  }
+}
+
+export function createSessionAffinityKeyDeriver(input: {
+  secret?: string | Uint8Array;
+  keyDeriver?: SessionAffinityKeyDeriver;
+}): SessionAffinityKeyDeriver {
+  if (input.keyDeriver) {
+    return input.keyDeriver;
+  }
+  if (!input.secret) {
+    throw new Error('Session affinity key derivation requires a deployment secret');
+  }
+  return new HmacSessionAffinityKeyDeriver({ secret: input.secret });
+}
+
+export function affinityStorageKey(input: SessionAffinityIdentity, keyDeriver: SessionAffinityKeyDeriver): string {
   return [
     'ai-gateway',
     'affinity',
     safeKeySegment(input.deployment),
-    hashIdentity(input.webId),
+    keyDeriver.hashWebId(input.webId),
     safeKeySegment(input.provider),
-    hashIdentity(input.conversationId),
+    keyDeriver.hashConversationId(input.conversationId),
   ].join(':');
 }
 
-export function cooldownStorageKey(input: CredentialCooldownIdentity): string {
+export function cooldownStorageKey(input: CredentialCooldownIdentity, keyDeriver: SessionAffinityKeyDeriver): string {
   return [
     'ai-gateway',
     'cooldown',
     safeKeySegment(input.deployment),
-    hashIdentity(input.webId),
-    hashIdentity(input.credentialId),
+    keyDeriver.hashWebId(input.webId),
+    keyDeriver.hashCredentialId(input.credentialId),
   ].join(':');
 }
 
@@ -51,14 +107,4 @@ export function isExpired(date: Date | undefined, now: Date): boolean {
 
 function safeKeySegment(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9._-]+/gu, '_');
-}
-
-function hashIdentity(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  let hash = 0x811c9dc5;
-  for (const byte of bytes) {
-    hash ^= byte;
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
 }

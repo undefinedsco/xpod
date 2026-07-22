@@ -4,8 +4,10 @@ import { getLoggerFor } from 'global-logger-factory';
 import {
   affinityStorageKey,
   cooldownStorageKey,
+  createSessionAffinityKeyDeriver,
   isExpired,
   type CredentialCooldownIdentity,
+  type SessionAffinityKeyDeriver,
   type SessionAffinityEntry,
   type SessionAffinityIdentity,
   type SessionAffinityStore,
@@ -17,6 +19,8 @@ import {
 
 export interface RedisSessionAffinityStoreOptions {
   client: string | RedisSessionAffinityRedisClient;
+  secret?: string | Uint8Array;
+  keyDeriver?: SessionAffinityKeyDeriver;
   namespace?: string;
   ttlMs?: number;
   now?: () => Date;
@@ -37,12 +41,14 @@ export class RedisSessionAffinityStore implements SessionAffinityStore {
   private readonly client: RedisSessionAffinityRedisClient;
   private readonly ownClient: Redis | undefined;
   private readonly prefix: string;
+  private readonly keyDeriver: SessionAffinityKeyDeriver;
   private readonly ttlMs: number;
   private readonly now: () => Date;
   private shuttingDown = false;
 
   public constructor(options: RedisSessionAffinityStoreOptions) {
     this.prefix = options.namespace ?? 'xpod:';
+    this.keyDeriver = createSessionAffinityKeyDeriver(options);
     this.ttlMs = options.ttlMs ?? 60 * 60 * 1000;
     this.now = options.now ?? (() => new Date());
     if (typeof options.client === 'string') {
@@ -69,8 +75,16 @@ export class RedisSessionAffinityStore implements SessionAffinityStore {
     });
   }
 
+  public affinityKey(input: SessionAffinityIdentity): string {
+    return affinityStorageKey(input, this.keyDeriver);
+  }
+
+  public cooldownKey(input: CredentialCooldownIdentity): string {
+    return cooldownStorageKey(input, this.keyDeriver);
+  }
+
   public async get(input: SessionAffinityIdentity): Promise<SessionAffinityEntry | undefined> {
-    const raw = await this.client.get(this.toKey(affinityStorageKey(input)));
+    const raw = await this.client.get(this.toKey(this.affinityKey(input)));
     const entry = this.parseAffinity(raw);
     if (!entry) {
       return undefined;
@@ -88,31 +102,35 @@ export class RedisSessionAffinityStore implements SessionAffinityStore {
 
   public async set(input: SessionAffinityEntry): Promise<void> {
     const expiresAt = input.expiresAt ?? new Date(this.now().getTime() + this.ttlMs);
-    await this.setWithTtl(this.toKey(affinityStorageKey(input)), {
+    await this.setWithTtl(this.toKey(this.affinityKey(input)), {
       ...input,
       expiresAt: expiresAt.toISOString(),
     }, expiresAt);
   }
 
   public async delete(input: SessionAffinityIdentity): Promise<void> {
-    await this.client.del(this.toKey(affinityStorageKey(input)));
+    await this.client.del(this.toKey(this.affinityKey(input)));
   }
 
   public async getCooldown(input: CredentialCooldownIdentity): Promise<Date | undefined> {
-    const raw = await this.client.get(this.toKey(cooldownStorageKey(input)));
+    const raw = await this.client.get(this.toKey(this.cooldownKey(input)));
     if (!raw) {
       return undefined;
     }
     const until = new Date(raw);
     if (!Number.isFinite(until.getTime()) || isExpired(until, this.now())) {
-      await this.client.del(this.toKey(cooldownStorageKey(input)));
+      await this.client.del(this.toKey(this.cooldownKey(input)));
       return undefined;
     }
     return until;
   }
 
   public async setCooldown(input: CredentialCooldownIdentity & { until: Date }): Promise<void> {
-    await this.setWithTtl(this.toKey(cooldownStorageKey(input)), input.until.toISOString(), input.until);
+    await this.setWithTtl(this.toKey(this.cooldownKey(input)), input.until.toISOString(), input.until);
+  }
+
+  public debugAffinityKey(input: SessionAffinityIdentity): string {
+    return this.affinityKey(input);
   }
 
   private async setWithTtl(key: string, value: unknown, expiresAt: Date): Promise<void> {

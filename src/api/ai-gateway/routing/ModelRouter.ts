@@ -6,7 +6,6 @@ import {
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
 import {
-  affinityStorageKey,
   type SessionAffinityStore,
 } from './SessionAffinityStore';
 
@@ -136,7 +135,7 @@ export class ModelRouter {
       model: target.model,
       credential: selected,
       source: target.source,
-      affinityKey: input.conversationId ? affinityStorageKey({
+      affinityKey: input.conversationId ? this.affinityStore.affinityKey({
         deployment: input.deployment,
         webId: input.webId,
         conversationId: input.conversationId,
@@ -188,7 +187,17 @@ export class ModelRouter {
       }
 
       const explicit = this.parseExplicitProviderModel(requestedModel);
-      if (explicit && this.registry.getProvider(explicit.providerId)) {
+      if (explicit && !this.registry.getProvider(explicit.providerId)) {
+        throw new GatewayProtocolError('Unknown provider in explicit model route', {
+          code: 'invalid_request',
+          status: 400,
+          details: {
+            provider: explicit.providerId,
+            model: explicit.model,
+          },
+        });
+      }
+      if (explicit) {
         return {
           ...explicit,
           source: 'explicit-provider',
@@ -233,16 +242,18 @@ export class ModelRouter {
     model: string,
     candidates: GatewayCredentialCandidate[],
   ): ResolvedModelTarget | undefined {
-    for (const match of this.registry.findModel(model)) {
-      if (candidates.some((candidate) =>
-        normalizeProviderId(candidate.provider) === normalizeProviderId(match.provider.id)
-        && credentialSupportsModel(candidate, match.model.id))) {
-        return {
-          providerId: normalizeProviderId(match.provider.id),
-          model: match.model.id,
-          source: 'exact-model',
-        };
-      }
+    const registryMatches = this.registry.findModel(model);
+    if (registryMatches.length > 0) {
+      const candidateMatch = registryMatches.find((match) =>
+        candidates.some((candidate) =>
+          normalizeProviderId(candidate.provider) === normalizeProviderId(match.provider.id)
+          && credentialSupportsModel(candidate, match.model.id)));
+      const match = candidateMatch ?? registryMatches[0];
+      return {
+        providerId: normalizeProviderId(match.provider.id),
+        model: match.model.id,
+        source: 'exact-model',
+      };
     }
 
     const candidate = candidates.find((item) => credentialSupportsModel(item, model));

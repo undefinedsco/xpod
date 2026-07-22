@@ -14,6 +14,8 @@ import { RedisSessionAffinityStore } from '../../../src/api/ai-gateway/routing/R
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
+const AFFINITY_SECRET = '0123456789abcdef0123456789abcdef';
+const OTHER_AFFINITY_SECRET = 'abcdef0123456789abcdef0123456789';
 
 function credential(input: Partial<GatewayCredentialCandidate> & {
   id: string;
@@ -44,7 +46,7 @@ function router(input: {
 } = {}): ModelRouter {
   return new ModelRouter({
     registry: input.registry ?? createDefaultProviderRegistry(),
-    affinityStore: new InMemorySessionAffinityStore(),
+    affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
     credentials: async() => input.credentials ?? [],
     defaultProvider: input.defaultProvider,
     defaultModel: input.defaultModel,
@@ -215,6 +217,49 @@ describe('ModelRouter', () => {
     });
   });
 
+  it('does not let unrestricted credentials from another provider claim registry-owned exact models', async () => {
+    const modelRouter = router({
+      defaultProvider: 'anthropic',
+      defaultModel: 'claude-sonnet-4-5-20250929',
+      credentials: [
+        credential({ id: 'cred_anthropic', provider: 'anthropic', models: [] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 403,
+      details: {
+        provider: 'openai',
+        model: 'gpt-5',
+      },
+    });
+  });
+
+  it('rejects explicit provider/model routes when the provider is not registered', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({ id: 'cred_openai', provider: 'openai', models: ['gpt-5'] }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'foo/bar',
+    })).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
+      details: {
+        provider: 'foo',
+      },
+    });
+  });
+
   it('skips disabled, expired, exhausted and cooling credentials unless explicitly requested', async () => {
     const now = new Date('2026-07-23T00:00:00.000Z');
     const modelRouter = router({
@@ -285,6 +330,7 @@ describe('ModelRouter', () => {
 
   it('keeps conversation affinity isolated by deployment and WebID without using raw prompt text', async () => {
     const affinityStore = new InMemorySessionAffinityStore({
+      secret: AFFINITY_SECRET,
       now: () => new Date('2026-07-23T00:00:00.000Z'),
     });
     const modelRouter = new ModelRouter({
@@ -334,6 +380,7 @@ describe('ModelRouter', () => {
   it('expires in-memory affinity entries and records cooldowns with isolated keys', async () => {
     let now = new Date('2026-07-23T00:00:00.000Z');
     const store = new InMemorySessionAffinityStore({
+      secret: AFFINITY_SECRET,
       ttlMs: 1_000,
       now: () => now,
     });
@@ -381,6 +428,7 @@ describe('ModelRouter', () => {
   it('skips credentials cooled through the affinity store with WebID and deployment isolation', async () => {
     let now = new Date('2026-07-23T00:00:00.000Z');
     const affinityStore = new InMemorySessionAffinityStore({
+      secret: AFFINITY_SECRET,
       now: () => now,
     });
     const modelRouter = new ModelRouter({
@@ -435,6 +483,7 @@ describe('ModelRouter', () => {
   it('uses the stricter value between candidate cooldownUntil and store cooldown', async () => {
     let now = new Date('2026-07-23T00:00:00.000Z');
     const affinityStore = new InMemorySessionAffinityStore({
+      secret: AFFINITY_SECRET,
       now: () => now,
     });
     const modelRouter = new ModelRouter({
@@ -497,6 +546,7 @@ describe('ModelRouter', () => {
     };
     const store = new RedisSessionAffinityStore({
       client: redis,
+      secret: AFFINITY_SECRET,
       now: () => new Date('2026-07-23T00:00:00.000Z'),
     });
 
@@ -516,5 +566,48 @@ describe('ModelRouter', () => {
       webId: WEB_ID,
       credentialId: 'cred_a',
     })).resolves.toEqual(new Date('2026-07-23T00:05:00.000Z'));
+  });
+
+  it('derives stable HMAC affinity keys with secret isolation and no raw identity material', async () => {
+    const first = new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET });
+    const sameSecret = new RedisSessionAffinityStore({
+      client: {
+        async get(): Promise<string | null> { return null; },
+        async set(): Promise<unknown> { return 'OK'; },
+        async del(): Promise<unknown> { return 0; },
+      },
+      secret: AFFINITY_SECRET,
+    });
+    const otherSecret = new InMemorySessionAffinityStore({ secret: OTHER_AFFINITY_SECRET });
+    const identity = {
+      deployment: 'cloud',
+      webId: WEB_ID,
+      conversationId: 'chat/index.ttl#thread_1',
+      provider: 'openai',
+    };
+
+    expect(first.debugAffinityKey(identity)).toBe(sameSecret.debugAffinityKey(identity));
+    expect(first.debugAffinityKey(identity)).not.toBe(otherSecret.debugAffinityKey(identity));
+    expect(first.debugAffinityKey(identity)).toMatch(/:web_[a-f0-9]{64}:openai:conv_[a-f0-9]{64}$/u);
+    expect(first.debugAffinityKey(identity)).not.toContain(WEB_ID);
+    expect(first.debugAffinityKey(identity)).not.toContain('thread_1');
+    expect(first.debugAffinityKey(identity)).not.toContain('prompt');
+    const cooldownIdentity = {
+      deployment: 'cloud',
+      webId: WEB_ID,
+      credentialId: 'settings/credentials.ttl#cred_openai_api_key',
+    };
+    expect(first.cooldownKey(cooldownIdentity)).toBe(sameSecret.cooldownKey(cooldownIdentity));
+    expect(first.cooldownKey(cooldownIdentity)).not.toBe(otherSecret.cooldownKey(cooldownIdentity));
+    expect(first.cooldownKey(cooldownIdentity)).toMatch(/:web_[a-f0-9]{64}:cred_[a-f0-9]{64}$/u);
+    expect(first.cooldownKey(cooldownIdentity)).not.toContain('cred_openai_api_key');
+    expect(() => new InMemorySessionAffinityStore({ secret: 'too-short' })).toThrow(/128-bit/);
+    expect(() => new RedisSessionAffinityStore({
+      client: {
+        async get(): Promise<string | null> { return null; },
+        async set(): Promise<unknown> { return 'OK'; },
+        async del(): Promise<unknown> { return 0; },
+      },
+    })).toThrow(/secret/);
   });
 });
