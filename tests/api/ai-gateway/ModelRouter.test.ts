@@ -378,6 +378,106 @@ describe('ModelRouter', () => {
     })).toBeUndefined();
   });
 
+  it('skips credentials cooled through the affinity store with WebID and deployment isolation', async () => {
+    let now = new Date('2026-07-23T00:00:00.000Z');
+    const affinityStore = new InMemorySessionAffinityStore({
+      now: () => now,
+    });
+    const modelRouter = new ModelRouter({
+      registry: createDefaultProviderRegistry(),
+      affinityStore,
+      credentials: async() => [
+        credential({ id: 'cred_a', provider: 'openai', models: ['gpt-5'], priority: 1 }),
+        credential({ id: 'cred_b', provider: 'openai', models: ['gpt-5'], priority: 2 }),
+      ],
+      now: () => now,
+    });
+
+    await modelRouter.recordCooldown({
+      deployment: 'cloud',
+      webId: WEB_ID,
+      credentialId: 'cred_a',
+      until: new Date('2026-07-23T00:05:00.000Z'),
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({
+      credential: { id: 'cred_b' },
+    });
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({
+      credential: { id: 'cred_a' },
+    });
+    await expect(modelRouter.route({
+      webId: OTHER_WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({
+      credential: { id: 'cred_a' },
+    });
+
+    now = new Date('2026-07-23T00:06:00.000Z');
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({
+      credential: { id: 'cred_a' },
+    });
+  });
+
+  it('uses the stricter value between candidate cooldownUntil and store cooldown', async () => {
+    let now = new Date('2026-07-23T00:00:00.000Z');
+    const affinityStore = new InMemorySessionAffinityStore({
+      now: () => now,
+    });
+    const modelRouter = new ModelRouter({
+      registry: createDefaultProviderRegistry(),
+      affinityStore,
+      credentials: async() => [
+        credential({
+          id: 'cred_a',
+          provider: 'openai',
+          models: ['gpt-5'],
+          priority: 1,
+          cooldownUntil: new Date('2026-07-23T00:01:00.000Z'),
+        }),
+        credential({ id: 'cred_b', provider: 'openai', models: ['gpt-5'], priority: 2 }),
+      ],
+      now: () => now,
+    });
+    await modelRouter.recordCooldown({
+      deployment: 'cloud',
+      webId: WEB_ID,
+      credentialId: 'cred_a',
+      until: new Date('2026-07-23T00:05:00.000Z'),
+    });
+
+    now = new Date('2026-07-23T00:02:00.000Z');
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({
+      credential: { id: 'cred_b' },
+    });
+
+    now = new Date('2026-07-23T00:06:00.000Z');
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({
+      credential: { id: 'cred_a' },
+    });
+  });
+
   it('uses Redis-compatible PX TTL storage without double-encoding cooldown timestamps', async () => {
     const calls: Array<{ key: string; value: string; args: unknown[] }> = [];
     const values = new Map<string, string>();

@@ -107,7 +107,7 @@ export class ModelRouter {
     const providerCandidates = candidates
       .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id));
     const selected = input.explicitCredentialId
-      ? this.selectExplicitCredential(providerCandidates, input.explicitCredentialId, target.model)
+      ? await this.selectExplicitCredential(input, providerCandidates, input.explicitCredentialId, target.model)
       : await this.selectCredential(input, providerCandidates, target);
 
     if (!selected) {
@@ -302,13 +302,14 @@ export class ModelRouter {
     return undefined;
   }
 
-  private selectExplicitCredential(
+  private async selectExplicitCredential(
+    input: ModelRouteInput,
     candidates: GatewayCredentialCandidate[],
     credentialId: string,
     model: string,
-  ): GatewayCredentialCandidate {
+  ): Promise<GatewayCredentialCandidate> {
     const selected = candidates.find((candidate) => candidate.id === credentialId || candidate.credentialIri === credentialId);
-    if (!selected || !this.isCredentialUsable(selected, model)) {
+    if (!selected || !await this.isCredentialUsable(input, selected, model)) {
       throw new GatewayProtocolError('Requested credential is not available for this model', {
         code: 'credential_unavailable',
         status: 403,
@@ -323,9 +324,13 @@ export class ModelRouter {
     candidates: GatewayCredentialCandidate[],
     target: ResolvedModelTarget,
   ): Promise<GatewayCredentialCandidate | undefined> {
-    const usable = candidates
-      .filter((candidate) => this.isCredentialUsable(candidate, target.model))
-      .sort(compareCredentialPriority);
+    const usable: GatewayCredentialCandidate[] = [];
+    for (const candidate of candidates) {
+      if (await this.isCredentialUsable(input, candidate, target.model)) {
+        usable.push(candidate);
+      }
+    }
+    usable.sort(compareCredentialPriority);
 
     if (input.conversationId) {
       const affinity = await this.affinityStore.get({
@@ -345,7 +350,11 @@ export class ModelRouter {
     return usable[0];
   }
 
-  private isCredentialUsable(candidate: GatewayCredentialCandidate, model: string): boolean {
+  private async isCredentialUsable(
+    input: ModelRouteInput,
+    candidate: GatewayCredentialCandidate,
+    model: string,
+  ): Promise<boolean> {
     if (!candidate.enabled) {
       return false;
     }
@@ -355,10 +364,29 @@ export class ModelRouter {
     if (candidate.quota?.status === 'exhausted') {
       return false;
     }
-    if (candidate.cooldownUntil && candidate.cooldownUntil.getTime() > this.now().getTime()) {
+    const cooldownUntil = await this.effectiveCooldownUntil(input, candidate);
+    if (cooldownUntil && cooldownUntil.getTime() > this.now().getTime()) {
       return false;
     }
     return credentialSupportsModel(candidate, model);
+  }
+
+  private async effectiveCooldownUntil(
+    input: ModelRouteInput,
+    candidate: GatewayCredentialCandidate,
+  ): Promise<Date | undefined> {
+    const storedCooldown = await this.affinityStore.getCooldown({
+      deployment: input.deployment,
+      webId: input.webId,
+      credentialId: candidate.id,
+    });
+    const futureCooldowns = [ candidate.cooldownUntil, storedCooldown ]
+      .filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
+    if (futureCooldowns.length === 0) {
+      return undefined;
+    }
+    return futureCooldowns.reduce((latest, value) =>
+      value.getTime() > latest.getTime() ? value : latest);
   }
 }
 
