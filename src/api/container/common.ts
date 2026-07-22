@@ -16,7 +16,8 @@ import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthent
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
-import { GatewayApiKeyAuthenticator, InMemoryGatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
@@ -78,7 +79,7 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewayAccessKeyRepository: asFunction(() => {
-      return new InMemoryGatewayAccessKeyRepository();
+      return new PodGatewayAccessKeyRepository();
     }).singleton(),
 
     authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, config }: ApiContainerCradle) => {

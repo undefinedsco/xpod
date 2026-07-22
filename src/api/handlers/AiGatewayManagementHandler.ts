@@ -8,29 +8,28 @@ import {
 } from '../ai-gateway/auth/GatewayPrincipal';
 import {
   createGatewayApiKey,
-  createGatewayKeyId,
+  createGatewayKeyLocator,
   type GatewayDeployment,
 } from '../ai-gateway/auth/GatewayApiKey';
 import type {
   GatewayAccessKeyRecord,
   GatewayAccessKeyRepository,
 } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { DEFAULT_GATEWAY_API_KEY_SCOPES } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 
 export interface AiGatewayManagementHandlerOptions {
   repository: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   now?: () => Date;
-  keyId?: () => string;
+  keyId?: (owner: string) => string;
 }
-
-const DEFAULT_SCOPES = ['gateway:invoke'] as const;
 
 export function registerAiGatewayManagementRoutes(
   server: ApiServer,
   options: AiGatewayManagementHandlerOptions,
 ): void {
   const now = options.now ?? (() => new Date());
-  const createKeyId = options.keyId ?? createGatewayKeyId;
+  const createKeyId = options.keyId ?? createGatewayKeyLocator;
 
   server.post('/api/ai/gateway/keys', async (request, response) => {
     if (!authorizeGatewayKeyManagement(request, response)) {
@@ -61,7 +60,7 @@ export function registerAiGatewayManagementRoutes(
 
     const issued = await createGatewayApiKey({
       deployment: options.deployment,
-      keyId: createKeyId(),
+      keyId: createKeyId(owner),
     });
     const createdAt = now();
     const record = await options.repository.create({
@@ -71,7 +70,7 @@ export function registerAiGatewayManagementRoutes(
       createdAt,
       expiresAt,
       name: normalizeOptionalString(payload.name),
-    });
+    }, { auth: request.auth });
 
     sendJson(response, 201, {
       key: issued.plaintext,
@@ -89,7 +88,7 @@ export function registerAiGatewayManagementRoutes(
       sendJson(response, 400, { error: 'Gateway key owner WebID is required' });
       return;
     }
-    const records = await options.repository.listByOwner(owner);
+    const records = await options.repository.listByOwner(owner, { auth: request.auth });
     sendJson(response, 200, {
       data: records.map(publicRecord),
     });
@@ -111,7 +110,7 @@ export function registerAiGatewayManagementRoutes(
       sendJson(response, 403, { error: 'Cannot revoke a gateway key owned by another WebID' });
       return;
     }
-    const revoked = await options.repository.revoke(keyId, now());
+    const revoked = await options.repository.revoke(keyId, now(), { auth: request.auth });
     sendJson(response, 200, {
       record: revoked ? publicRecord(revoked) : undefined,
     });
@@ -147,7 +146,7 @@ function ownerForList(request: AuthenticatedRequest): string | undefined {
 
 function normalizeScopes(value: unknown): string[] | undefined {
   if (value === undefined) {
-    return [...DEFAULT_SCOPES];
+    return [...DEFAULT_GATEWAY_API_KEY_SCOPES];
   }
   if (!Array.isArray(value) || value.length === 0) {
     return undefined;

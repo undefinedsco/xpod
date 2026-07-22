@@ -92,3 +92,14 @@ export function isServiceAuth(ctx: AuthContext): ctx is ServiceAuthContext {
 export function hasScope(ctx: AuthContext, scope: string): boolean {
   return ctx.type === 'service' && ctx.scopes.includes(scope);
 }
+
+/**
+ * Gateway API keys carry explicit API scopes. Normal Solid callers remain
+ * authorized by the Solid layer and are not narrowed here.
+ */
+export function hasGatewayScope(ctx: AuthContext, scope: string): boolean {
+  if (ctx.type !== 'solid' || ctx.viaGatewayApiKey !== true) {
+    return true;
+  }
+  return ctx.scopes?.includes(scope) === true;
+}

@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   GatewayApiKeyAuthenticator,
-  InMemoryGatewayAccessKeyRepository,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import {
   createGatewayApiKey,
   parseGatewayApiKey,
@@ -62,7 +62,7 @@ describe('GatewayApiKeyAuthenticator', () => {
     await repository.create({
       ...issued.record,
       owner: WEB_ID,
-      scopes: ['gateway:invoke', 'models:read'],
+      scopes: ['models:read', 'inference:write'],
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
     });
     const authenticator = new GatewayApiKeyAuthenticator({
@@ -81,7 +81,7 @@ describe('GatewayApiKeyAuthenticator', () => {
         accountId: WEB_ID,
         viaGatewayApiKey: true,
         gatewayKeyId: 'gak_active',
-        scopes: ['gateway:invoke', 'models:read'],
+        scopes: ['models:read', 'inference:write'],
       },
     });
     await expect(repository.findById('gak_active')).resolves.toMatchObject({
@@ -96,19 +96,19 @@ describe('GatewayApiKeyAuthenticator', () => {
     const expired = await createGatewayApiKey({ deployment: 'cloud', keyId: 'gak_expired' });
     const revoked = await createGatewayApiKey({ deployment: 'cloud', keyId: 'gak_revoked' });
     const noScope = await createGatewayApiKey({ deployment: 'cloud', keyId: 'gak_no_scope' });
-    await repository.create({ ...active.record, owner: WEB_ID, scopes: ['gateway:invoke'], createdAt: new Date() });
-    await repository.create({ ...local.record, owner: WEB_ID, scopes: ['gateway:invoke'], createdAt: new Date() });
+    await repository.create({ ...active.record, owner: WEB_ID, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
+    await repository.create({ ...local.record, owner: WEB_ID, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
     await repository.create({
       ...expired.record,
       owner: WEB_ID,
-      scopes: ['gateway:invoke'],
+      scopes: ['models:read', 'inference:write'],
       createdAt: new Date('2026-07-22T00:00:00.000Z'),
       expiresAt: new Date('2026-07-22T01:00:00.000Z'),
     });
     await repository.create({
       ...revoked.record,
       owner: WEB_ID,
-      scopes: ['gateway:invoke'],
+      scopes: ['models:read', 'inference:write'],
       createdAt: new Date(),
       revokedAt: new Date('2026-07-22T01:00:00.000Z'),
     });
@@ -116,7 +116,7 @@ describe('GatewayApiKeyAuthenticator', () => {
     const authenticator = new GatewayApiKeyAuthenticator({
       repository,
       deployment: 'cloud',
-      requiredScopes: ['gateway:invoke'],
+      requiredScopes: ['models:read', 'inference:write'],
       now: () => new Date('2026-07-23T00:00:00.000Z'),
     });
 

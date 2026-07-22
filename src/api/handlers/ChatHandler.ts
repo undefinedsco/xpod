@@ -3,7 +3,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { AuthContext } from '../auth/AuthContext';
-import { getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
+import { getWebId, getAccountId, getDisplayName, hasGatewayScope } from '../auth/AuthContext';
 
 /**
  * Chat completion request (OpenAI-compatible)
@@ -80,6 +80,9 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
   // POST /api/chat/completions
   server.post('/v1/chat/completions', async (request, response, _params) => {
     const auth = request.auth!;
+    if (!requireGatewayScope(auth, response, 'inference:write')) {
+      return;
+    }
     const body = await readJsonBody(request);
 
     if (!body || typeof body !== 'object') {
@@ -211,6 +214,9 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
   // POST /v1/responses - Create a response
   server.post('/v1/responses', async (request, response, _params) => {
     const auth = request.auth!;
+    if (!requireGatewayScope(auth, response, 'inference:write')) {
+      return;
+    }
     const body = await readJsonBody(request);
     const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
     const displayName = getDisplayName(auth) || userId;
@@ -234,6 +240,9 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
   // POST /v1/messages - Create a message
   server.post('/v1/messages', async (request, response, _params) => {
     const auth = request.auth!;
+    if (!requireGatewayScope(auth, response, 'inference:write')) {
+      return;
+    }
     const body = await readJsonBody(request);
     const userId = getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
     const displayName = getDisplayName(auth) || userId;
@@ -256,6 +265,9 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
 
   // GET /v1/models - List available models (OpenAI-compatible)
   server.get('/v1/models', async (request, response, _params) => {
+    if (!requireGatewayScope(request.auth!, response, 'models:read')) {
+      return;
+    }
     if (!chatService) {
       sendJson(response, 503, { error: 'Chat service not configured' });
       return;
@@ -273,6 +285,20 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
       sendJson(response, 500, { error: 'Failed to list models' });
     }
   });
+}
+
+function requireGatewayScope(auth: AuthContext, response: ServerResponse, scope: string): boolean {
+  if (hasGatewayScope(auth, scope)) {
+    return true;
+  }
+  sendJson(response, 403, {
+    error: {
+      message: `Missing required scope: ${scope}`,
+      type: 'insufficient_scope',
+      code: 'insufficient_scope',
+    },
+  });
+  return false;
 }
 
 async function readJsonBody(request: AuthenticatedRequest): Promise<unknown> {

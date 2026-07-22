@@ -1,9 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { Authenticator, AuthResult } from '../../auth/Authenticator';
-import type { SolidAuthContext } from '../../auth/AuthContext';
+import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
 import {
   type GatewayDeployment,
-  hashGatewayApiKeySecret,
   parseGatewayApiKey,
   verifyGatewayApiKeySecret,
 } from './GatewayApiKey';
@@ -21,11 +20,15 @@ export interface GatewayAccessKeyRecord {
   name?: string;
 }
 
+export interface GatewayAccessKeyRepositoryContext {
+  auth?: AuthContext;
+}
+
 export interface GatewayAccessKeyRepository {
-  create(record: GatewayAccessKeyRecord): Promise<GatewayAccessKeyRecord>;
+  create(record: GatewayAccessKeyRecord, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord>;
   findById(id: string): Promise<GatewayAccessKeyRecord | undefined>;
-  listByOwner(owner: string): Promise<GatewayAccessKeyRecord[]>;
-  revoke(id: string, revokedAt: Date): Promise<GatewayAccessKeyRecord | undefined>;
+  listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
+  revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   touchLastUsed(id: string, lastUsedAt: Date): Promise<void>;
   verifySecretHashForTimingOnly(secret: string): Promise<void>;
 }
@@ -38,6 +41,7 @@ export interface GatewayApiKeyAuthenticatorOptions {
 }
 
 const INVALID_GATEWAY_API_KEY = 'Invalid gateway API key';
+export const DEFAULT_GATEWAY_API_KEY_SCOPES = ['models:read', 'inference:write'] as const;
 
 export class GatewayApiKeyAuthenticator implements Authenticator {
   private readonly repository: GatewayAccessKeyRepository;
@@ -48,7 +52,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
   public constructor(options: GatewayApiKeyAuthenticatorOptions) {
     this.repository = options.repository;
     this.deployment = options.deployment;
-    this.requiredScopes = options.requiredScopes ?? ['gateway:invoke'];
+    this.requiredScopes = options.requiredScopes ?? [...DEFAULT_GATEWAY_API_KEY_SCOPES];
     this.now = options.now ?? (() => new Date());
   }
 
@@ -104,50 +108,6 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
   }
 }
 
-export class InMemoryGatewayAccessKeyRepository implements GatewayAccessKeyRepository {
-  private readonly records = new Map<string, GatewayAccessKeyRecord>();
-  private dummyHash?: Promise<string>;
-
-  public async create(record: GatewayAccessKeyRecord): Promise<GatewayAccessKeyRecord> {
-    const stored = cloneRecord(record);
-    this.records.set(record.id, stored);
-    return cloneRecord(stored);
-  }
-
-  public async findById(id: string): Promise<GatewayAccessKeyRecord | undefined> {
-    const record = this.records.get(id);
-    return record ? cloneRecord(record) : undefined;
-  }
-
-  public async listByOwner(owner: string): Promise<GatewayAccessKeyRecord[]> {
-    return [...this.records.values()]
-      .filter((record) => record.owner === owner)
-      .map(cloneRecord)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  }
-
-  public async revoke(id: string, revokedAt: Date): Promise<GatewayAccessKeyRecord | undefined> {
-    const record = this.records.get(id);
-    if (!record) {
-      return undefined;
-    }
-    record.revokedAt = new Date(revokedAt);
-    return cloneRecord(record);
-  }
-
-  public async touchLastUsed(id: string, lastUsedAt: Date): Promise<void> {
-    const record = this.records.get(id);
-    if (record) {
-      record.lastUsedAt = new Date(lastUsedAt);
-    }
-  }
-
-  public async verifySecretHashForTimingOnly(secret: string): Promise<void> {
-    this.dummyHash ??= hashGatewayApiKeySecret('xpod-gateway-dummy-secret');
-    await verifyGatewayApiKeySecret(secret, await this.dummyHash);
-  }
-}
-
 function invalidGatewayApiKey(): AuthResult {
   return { success: false, error: INVALID_GATEWAY_API_KEY };
 }
@@ -158,19 +118,4 @@ function isExpired(record: GatewayAccessKeyRecord, now: Date): boolean {
 
 function hasRequiredScopes(scopes: string[], requiredScopes: string[]): boolean {
   return requiredScopes.every((scope) => scopes.includes(scope));
-}
-
-function cloneRecord(record: GatewayAccessKeyRecord): GatewayAccessKeyRecord {
-  return {
-    ...record,
-    scopes: [...record.scopes],
-    createdAt: new Date(record.createdAt),
-    expiresAt: cloneOptionalDate(record.expiresAt),
-    lastUsedAt: cloneOptionalDate(record.lastUsedAt),
-    revokedAt: cloneOptionalDate(record.revokedAt),
-  };
-}
-
-function cloneOptionalDate(value: Date | undefined): Date | undefined {
-  return value ? new Date(value) : undefined;
 }

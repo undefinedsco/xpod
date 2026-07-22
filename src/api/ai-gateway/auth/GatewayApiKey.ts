@@ -61,6 +61,30 @@ export function createGatewayKeyId(): string {
   return `gak_${randomBase64Url(KEY_ID_BYTES)}`;
 }
 
+export function createGatewayKeyLocator(owner: string): string {
+  const locator = Buffer.from(JSON.stringify({
+    v: 1,
+    o: owner,
+    n: randomBase64Url(KEY_ID_BYTES),
+  })).toString('base64url').replaceAll('_', '-');
+  return `gak_${locator}`;
+}
+
+export function decodeGatewayKeyLocatorOwner(keyId: string): string | undefined {
+  if (!keyId.startsWith('gak_')) {
+    return undefined;
+  }
+  const encoded = keyId.slice(4).replaceAll('-', '_');
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Record<string, unknown>;
+    return parsed.v === 1 && typeof parsed.o === 'string' && parsed.o.trim()
+      ? parsed.o
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function formatGatewayApiKey(parsed: ParsedGatewayApiKey): string {
   assertDeployment(parsed.deployment);
   if (!parsed.keyId || parsed.keyId.includes(' ') || parsed.keyId.includes('/')) {

@@ -2,7 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
-import { InMemoryGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { InMemoryGatewayAccessKeyRepository } from '../ai-gateway/InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 
@@ -65,7 +65,7 @@ describe('AiGatewayManagementHandler', () => {
       accountId: WEB_ID,
     }, {
       name: 'Codex',
-      scopes: ['gateway:invoke', 'models:read'],
+      scopes: ['models:read', 'inference:write'],
       expiresAt: '2026-08-01T00:00:00.000Z',
     }), res, {});
 
@@ -76,7 +76,7 @@ describe('AiGatewayManagementHandler', () => {
       id: 'gak_created',
       owner: WEB_ID,
       deployment: 'cloud',
-      scopes: ['gateway:invoke', 'models:read'],
+      scopes: ['models:read', 'inference:write'],
       createdAt: '2026-07-23T00:00:00.000Z',
       expiresAt: '2026-08-01T00:00:00.000Z',
     });
@@ -95,7 +95,7 @@ describe('AiGatewayManagementHandler', () => {
     await routes['POST /api/ai/gateway/keys'](request({
       type: 'solid',
       webId: WEB_ID,
-    }, { scopes: ['gateway:invoke'] }), response(), {});
+    }, { scopes: ['models:read', 'inference:write'] }), response(), {});
     const res = response();
 
     await routes['GET /api/ai/gateway/keys'](request({
@@ -109,10 +109,31 @@ describe('AiGatewayManagementHandler', () => {
       id: 'gak_listed',
       owner: WEB_ID,
       deployment: 'local',
-      scopes: ['gateway:invoke'],
+      scopes: ['models:read', 'inference:write'],
     });
     expect(JSON.stringify(body)).not.toContain('secretHash');
     expect(JSON.stringify(body)).not.toContain('xpod_gw_');
+  });
+
+  it('defaults created keys to models:read plus inference:write only', async () => {
+    const repository = new InMemoryGatewayAccessKeyRepository();
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository,
+      deployment: 'local',
+      keyId: () => 'gak_default_scopes',
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/keys'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {}), res, {});
+
+    expect(res.statusCode).toBe(201);
+    await expect(repository.findById('gak_default_scopes')).resolves.toMatchObject({
+      scopes: ['models:read', 'inference:write'],
+    });
   });
 
   it('revokes a key owned by the current Solid WebID', async () => {
@@ -125,7 +146,7 @@ describe('AiGatewayManagementHandler', () => {
       keyId: () => 'gak_revoke',
     });
     await routes['POST /api/ai/gateway/keys'](request({ type: 'solid', webId: WEB_ID }, {
-      scopes: ['gateway:invoke'],
+      scopes: ['models:read', 'inference:write'],
     }), response(), {});
     const res = response();
 
@@ -151,7 +172,7 @@ describe('AiGatewayManagementHandler', () => {
       type: 'solid',
       webId: WEB_ID,
       viaGatewayApiKey: true,
-    } as any, { scopes: ['gateway:invoke'] }), res, {});
+    } as any, { scopes: ['models:read', 'inference:write'] }), res, {});
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage gateway keys' });
@@ -174,7 +195,7 @@ describe('AiGatewayManagementHandler', () => {
       scopes: ['gateway:keys:write'],
     }, {
       owner: WEB_ID,
-      scopes: ['gateway:invoke'],
+      scopes: ['models:read', 'inference:write'],
     }), res, {});
 
     expect(res.statusCode).toBe(201);
