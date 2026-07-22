@@ -117,7 +117,9 @@ describe('PodGatewayAccessKeyRepository', () => {
   it('keeps key locators opaque and bound to the platform secret', () => {
     const locator = createGatewayKeyLocator(ALICE, 'cloud', codec);
     const wrongCodec = new AesGatewayKeyLocatorCodec('wrong-secret');
-    const tampered = `${locator.slice(0, -1)}${locator.endsWith('A') ? 'B' : 'A'}`;
+    const parts = locator.split('.');
+    parts[2] = `${parts[2].slice(0, 4)}${parts[2][4] === 'A' ? 'B' : 'A'}${parts[2].slice(5)}`;
+    const tampered = parts.join('.');
 
     expect(locator).not.toContain(ALICE);
     expect(Buffer.from(locator).toString('utf8')).not.toContain(ALICE);

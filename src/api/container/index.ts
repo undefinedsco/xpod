@@ -117,6 +117,9 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
+    gatewayLocatorSecret: process.env.XPOD_GATEWAY_LOCATOR_SECRET,
+    gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
+    gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',
       mode: process.env.XPOD_INNGEST_MODE === 'spawn' || process.env.XPOD_INNGEST_MODE === 'managed'

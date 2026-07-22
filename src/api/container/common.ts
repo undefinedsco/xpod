@@ -19,6 +19,7 @@ import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
+import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
@@ -80,12 +81,20 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewayAccessKeyRepository: asFunction(({ config }: ApiContainerCradle) => {
-      const locatorSecret = process.env.XPOD_GATEWAY_LOCATOR_SECRET ?? config.serviceToken ?? config.nodeToken;
+      const locatorSecret = config.gatewayLocatorSecret ?? config.serviceToken ?? config.nodeToken;
       if (!locatorSecret) {
         throw new Error('XPOD_GATEWAY_LOCATOR_SECRET or service token is required for Gateway API key locator encryption');
       }
+      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
+        throw new Error('XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET are required for Gateway API key Pod access');
+      }
       return new PodGatewayAccessKeyRepository({
         locatorCodec: new AesGatewayKeyLocatorCodec(locatorSecret),
+        internalPodAccess: new ClientCredentialsInternalPodAccessTokenProvider({
+          tokenEndpoint: config.cssTokenEndpoint,
+          clientId: config.gatewayInternalClientId,
+          clientSecret: config.gatewayInternalClientSecret,
+        }),
       });
     }).singleton(),
 

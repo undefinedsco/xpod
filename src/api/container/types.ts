@@ -96,6 +96,13 @@ export interface ApiContainerConfig {
   /** CSS Token 端点 */
   cssTokenEndpoint: string;
 
+  /** Gateway locator encryption secret. Internal platform secret; not a user/provider AI credential. */
+  gatewayLocatorSecret?: string;
+
+  /** Internal service client used to read user-owned private Pod gateway-key hashes. */
+  gatewayInternalClientId?: string;
+  gatewayInternalClientSecret?: string;
+
   /** 子域名功能配置 (cloud 模式) */
   subdomain?: {
     /** 节点域名根域名 (如 undefineds.site)，有值即启用子域名功能 */
