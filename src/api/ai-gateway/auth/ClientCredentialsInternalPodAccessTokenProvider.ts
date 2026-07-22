@@ -1,4 +1,5 @@
 import type { InternalPodAccessTokenProvider } from './PodGatewayAccessKeyRepository';
+import { extractAuthoritativeWebIdFromTokenResponse } from '../../auth/TokenIdentity';
 
 export interface ClientCredentialsInternalPodAccessTokenProviderOptions {
   tokenEndpoint: string;
@@ -68,6 +69,13 @@ export class ClientCredentialsInternalPodAccessTokenProvider implements Internal
     const accessToken = typeof body.access_token === 'string' ? body.access_token : undefined;
     if (!accessToken) {
       throw new Error('Gateway internal Pod token response missing access_token');
+    }
+    const tokenWebId = extractAuthoritativeWebIdFromTokenResponse(body);
+    if (!tokenWebId) {
+      throw new Error('Gateway internal Pod token response missing authoritative WebID');
+    }
+    if (tokenWebId !== owner) {
+      throw new Error('Gateway internal Pod token WebID does not match requested owner');
     }
     const tokenType: CachedToken['tokenType'] = body.token_type === 'DPoP' ? 'DPoP' : 'Bearer';
     const expiresIn = typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
