@@ -129,7 +129,7 @@ const XSD_INTEGER = 'http://www.w3.org/2001/XMLSchema#integer';
 const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const RDF_LANG_STRING = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString';
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
-const POSTGRES_RDF_SCHEMA_VERSION = 1;
+const POSTGRES_RDF_SCHEMA_VERSION = 2;
 const POSTGRES_RDF3X_SCHEMA_VERSION = 1;
 const PG_STRING_ESCAPE = '\u001f';
 const RDF_QUERY_RESULT_CACHE_TABLE = 'rdf_query_result_cache';
@@ -1145,9 +1145,10 @@ class PostgresRdfTermDictionary {
   }
 
   public async initialize(): Promise<void> {
+    await this.executor.exec('CREATE SEQUENCE IF NOT EXISTS rdf_term_key_sequence');
     await this.executor.exec(`
       CREATE TABLE IF NOT EXISTS rdf_terms (
-        id BIGSERIAL PRIMARY KEY,
+        id BIGINT PRIMARY KEY,
         kind TEXT NOT NULL,
         value TEXT NOT NULL,
         value_head TEXT NOT NULL,
@@ -1178,6 +1179,7 @@ class PostgresRdfTermDictionary {
 
     const inserted = await this.executor.query<{ id: number }>(`
       INSERT INTO rdf_terms (
+        id,
         kind,
         value,
         value_head,
@@ -1187,7 +1189,14 @@ class PostgresRdfTermDictionary {
         normalized_text,
         numeric_value
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES (
+        (nextval('rdf_term_key_sequence') << 2) | CASE $1
+          WHEN 'iri' THEN 1
+          WHEN 'blank' THEN 2
+          WHEN 'literal' THEN 3
+        END,
+        $1, $2, $3, $4, $5, $6, $7, $8
+      )
       ON CONFLICT (hash) DO NOTHING
       RETURNING id
     `, [
@@ -1287,6 +1296,7 @@ class PostgresRdfTermDictionary {
     for (const chunk of chunkArray(missingEntries, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
       await this.executor.exec(`
         INSERT INTO rdf_terms (
+          id,
           kind,
           value,
           value_head,
@@ -1297,6 +1307,11 @@ class PostgresRdfTermDictionary {
           numeric_value
         )
         SELECT
+          (nextval('rdf_term_key_sequence') << 2) | CASE kind
+            WHEN 'iri' THEN 1
+            WHEN 'blank' THEN 2
+            WHEN 'literal' THEN 3
+          END,
           kind,
           value,
           value_head,
@@ -1432,6 +1447,7 @@ class PostgresRdfTermDictionary {
 
       await this.executor.exec(`
         INSERT INTO rdf_terms (
+          id,
           kind,
           value,
           value_head,
@@ -1442,6 +1458,11 @@ class PostgresRdfTermDictionary {
           numeric_value
         )
         SELECT DISTINCT
+          (nextval('rdf_term_key_sequence') << 2) | CASE kind
+            WHEN 'iri' THEN 1
+            WHEN 'blank' THEN 2
+            WHEN 'literal' THEN 3
+          END,
           kind,
           value,
           value_head,
@@ -1828,6 +1849,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
           if (this.pgOptions.readOnlyExistingSchema) {
             await runPhase('schema', () => this.assertExistingSchema());
           } else {
+            await runPhase('schema-compatibility', () =>
+              this.ensureCompatibleSchemaVersion(this.requireExecutor()));
             await runPhase('term-dictionary', () => this.termDictionary!.initialize());
             await runPhase('schema', () => this.initializeSchema());
           }
@@ -3317,6 +3340,11 @@ export class PostgresRdfEngine implements RdfEngineLike {
       INSERT INTO rdf_index_metadata (key, value)
       VALUES ('data_version', '0')
       ON CONFLICT (key) DO NOTHING
+    `);
+    await executor.exec(`
+      INSERT INTO rdf_index_metadata (key, value)
+      VALUES ('term_id_encoding', 'kind-tagged-v1')
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     `);
     await this.initializeQueryResultCacheSchema(executor);
     await this.initializeMaterializedResultCacheSchema(executor);

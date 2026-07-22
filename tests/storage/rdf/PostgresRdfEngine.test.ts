@@ -71,6 +71,20 @@ function canonicalRdfSeedDigest(quads: ReturnType<typeof buildRdfModelsBenchmark
 }
 
 describe('PostgresRdfEngine', () => {
+  it('allocates PostgreSQL RDF term ids with an explicit kind tag', async () => {
+    const source = await readFile(
+      path.resolve(__dirname, '../../../src/storage/rdf/PostgresRdfEngine.ts'),
+      'utf8',
+    );
+
+    expect(source).toContain("CREATE SEQUENCE IF NOT EXISTS rdf_term_key_sequence");
+    expect(source).toContain("nextval('rdf_term_key_sequence') << 2");
+    expect(source).toContain("WHEN 'iri' THEN 1");
+    expect(source).toContain("WHEN 'blank' THEN 2");
+    expect(source).toContain("WHEN 'literal' THEN 3");
+    expect(source).toContain("VALUES ('term_id_encoding', 'kind-tagged-v1')");
+  });
+
   it('covers shared models resource surfaces in the RDF benchmark definitions', () => {
     const scanCaseNames = new Set(rdfModelsBenchmarkCasesForProfile('default').map((testCase) => testCase.name));
     const queryCaseNames = new Set(rdfModelsQueryBenchmarkCasesForProfile('default').map((testCase) => testCase.name));
