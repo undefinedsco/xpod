@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes as nodeRandomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { credentialResource } from '@undefineds.co/models';
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
@@ -71,13 +71,6 @@ export interface RefreshInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
-}
-
-export interface RevokeInput {
-  webId: string;
-  deployment: GatewayDeployment;
-  provider: string;
-  refreshToken?: string;
 }
 
 export interface DisconnectInput {
@@ -258,7 +251,6 @@ export interface ProviderConnectAdapter {
     current: ConnectCredentialRecord,
     secret: ProviderSecret,
   ): Promise<ConnectCredentialRecord | undefined>;
-  revoke?(input: RevokeInput): Promise<void>;
   disconnect?(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined>;
 }
 
@@ -276,22 +268,39 @@ interface ConnectAttempt {
   codeVerifier?: string;
   deviceCode?: string;
   intervalSeconds?: number;
+  currentPollIntervalSeconds?: number;
+  nextPollAt?: Date;
+  pollClaimedAt?: Date;
+  lastPollStatus?: ConnectAttemptStatus;
+}
+
+interface PollClaimResult {
+  attempt: ConnectAttempt;
+  claimed: boolean;
 }
 
 export class InMemoryConnectAttemptStore {
   private readonly attempts = new Map<string, ConnectAttempt>();
+  private readonly maxAttempts = 1_000;
 
   public async create(attempt: ConnectAttempt): Promise<ConnectAttempt> {
+    this.pruneExpired(new Date());
     this.attempts.set(attempt.id, cloneAttempt(attempt));
+    this.pruneBounded();
     return cloneAttempt(attempt);
   }
 
-  public async get(id: string): Promise<ConnectAttempt | undefined> {
+  public async get(id: string, now?: Date): Promise<ConnectAttempt | undefined> {
+    this.pruneExpired(new Date());
     const attempt = this.attempts.get(id);
+    if (attempt && now && attempt.expiresAt.getTime() <= now.getTime()) {
+      this.attempts.delete(id);
+    }
     return attempt ? cloneAttempt(attempt) : undefined;
   }
 
   public async consume(id: string, now: Date): Promise<ConnectAttempt> {
+    this.pruneExpired(now, id);
     const attempt = this.attempts.get(id);
     if (!attempt) {
       throw new Error('Connect attempt not found');
@@ -300,10 +309,79 @@ export class InMemoryConnectAttemptStore {
       throw new Error('Connect attempt already consumed');
     }
     if (attempt.expiresAt.getTime() <= now.getTime()) {
+      this.attempts.delete(id);
       throw new Error('Connect attempt expired');
     }
     attempt.consumedAt = new Date(now);
     return cloneAttempt(attempt);
+  }
+
+  public async claimPoll(id: string, now: Date): Promise<PollClaimResult> {
+    this.pruneExpired(now, id);
+    const attempt = this.attempts.get(id);
+    if (!attempt) {
+      throw new Error('Connect attempt not found');
+    }
+    if (attempt.consumedAt) {
+      throw new Error('Connect attempt already consumed');
+    }
+    if (attempt.expiresAt.getTime() <= now.getTime()) {
+      this.attempts.delete(id);
+      throw new Error('Connect attempt expired');
+    }
+    if (attempt.nextPollAt && attempt.nextPollAt.getTime() > now.getTime()) {
+      return { attempt: cloneAttempt(attempt), claimed: false };
+    }
+    if (attempt.pollClaimedAt) {
+      return { attempt: cloneAttempt(attempt), claimed: false };
+    }
+    attempt.pollClaimedAt = new Date(now);
+    return { attempt: cloneAttempt(attempt), claimed: true };
+  }
+
+  public async updatePollSchedule(
+    id: string,
+    patch: {
+      intervalSeconds: number;
+      nextPollAt: Date;
+      lastPollStatus: ConnectAttemptStatus;
+    },
+  ): Promise<ConnectAttempt | undefined> {
+    const attempt = this.attempts.get(id);
+    if (!attempt || attempt.consumedAt) {
+      return undefined;
+    }
+    attempt.intervalSeconds = patch.intervalSeconds;
+    attempt.currentPollIntervalSeconds = patch.intervalSeconds;
+    attempt.nextPollAt = new Date(patch.nextPollAt);
+    attempt.lastPollStatus = patch.lastPollStatus;
+    attempt.pollClaimedAt = undefined;
+    return cloneAttempt(attempt);
+  }
+
+  public async releasePollClaim(id: string): Promise<void> {
+    const attempt = this.attempts.get(id);
+    if (attempt) {
+      attempt.pollClaimedAt = undefined;
+    }
+  }
+
+  private pruneExpired(now: Date, exceptId?: string): void {
+    for (const [id, attempt] of this.attempts) {
+      if (id !== exceptId && attempt.expiresAt.getTime() <= now.getTime()) {
+        this.attempts.delete(id);
+      }
+    }
+  }
+
+  private pruneBounded(): void {
+    while (this.attempts.size > this.maxAttempts) {
+      const oldest = this.attempts.keys().next().value;
+      if (typeof oldest !== 'string') {
+        return;
+      }
+      this.attempts.delete(oldest);
+    }
   }
 }
 
@@ -437,7 +515,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
   }
 
   protected async loadAttemptForStatus(input: PollDeviceInput, mode: ConnectMode): Promise<ConnectAttempt> {
-    const attempt = await this.attempts.get(input.attemptId);
+    const attempt = await this.attempts.get(input.attemptId, this.now());
     if (!attempt) {
       throw new Error('Connect attempt not found');
     }
@@ -456,7 +534,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     if (attempt.state !== input.state) {
       throw new Error('Invalid Connect attempt state');
     }
-    if (attempt.signature !== input.signature || attempt.signature !== signAttempt(attempt, this.signingSecret)) {
+    if (!signatureMatches(input.signature, signAttempt(attempt, this.signingSecret))) {
       throw new Error('Invalid Connect attempt signature');
     }
     return attempt;
@@ -501,7 +579,6 @@ export interface KimiDeviceCodeConnectAdapterOptions extends Omit<BrowserAssiste
   clientId: string;
   deviceAuthorizationEndpoint?: string;
   tokenEndpoint?: string;
-  revokeEndpoint?: string;
 }
 
 export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAdapter {
@@ -509,7 +586,6 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
   private readonly clientId: string;
   private readonly deviceAuthorizationEndpoint: string;
   private readonly tokenEndpoint: string;
-  private readonly revokeEndpoint: string;
 
   public constructor(options: KimiDeviceCodeConnectAdapterOptions) {
     super({
@@ -521,10 +597,8 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     this.clientId = options.clientId;
     this.deviceAuthorizationEndpoint = options.deviceAuthorizationEndpoint ?? 'https://auth.kimi.com/api/oauth/device_authorization';
     this.tokenEndpoint = options.tokenEndpoint ?? 'https://auth.kimi.com/api/oauth/token';
-    this.revokeEndpoint = options.revokeEndpoint ?? 'https://auth.kimi.com/api/oauth/revoke';
-    for (const endpoint of [this.deviceAuthorizationEndpoint, this.tokenEndpoint, this.revokeEndpoint]) {
-      assertKimiEndpoint(endpoint);
-    }
+    assertKimiEndpoint(this.deviceAuthorizationEndpoint, '/api/oauth/device_authorization');
+    assertKimiEndpoint(this.tokenEndpoint, '/api/oauth/token');
   }
 
   public override async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
@@ -554,6 +628,8 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       codeVerifier: verifier,
       deviceCode: stringFrom(body.device_code),
       intervalSeconds: numberFrom(body.interval, 5),
+      currentPollIntervalSeconds: numberFrom(body.interval, 5),
+      nextPollAt: new Date(now.getTime() + numberFrom(body.interval, 5) * 1000),
     });
     return {
       mode: 'deviceCodeOAuth',
@@ -575,42 +651,62 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
 
   public async pollDevice(input: PollDeviceInput): Promise<ConnectBeginResult> {
     const attempt = await this.loadConsumableAttempt(input, 'deviceCodeOAuth');
-    const response = await this.fetchImpl(this.tokenEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-        device_code: attempt.deviceCode ?? '',
-        client_id: this.clientId,
-        code_verifier: attempt.codeVerifier ?? '',
-      }),
-    });
-    const body = await safeJson(response);
-    if (!response.ok) {
-      if (body.error === 'authorization_pending') {
-        return pendingResult(input, 'authorization_pending');
-      }
-      if (body.error === 'slow_down') {
-        return pendingResult(input, 'slow_down', (attempt.intervalSeconds ?? 5) + 5);
-      }
-      if (body.error === 'expired_token') {
-        await this.attempts.consume(input.attemptId, this.nowForConsume());
-        return pendingResult(input, 'expired');
-      }
-      throw new Error(`Kimi device token failed: ${safeProviderError(body)}`);
+    const now = this.nowForConsume();
+    const claim = await this.attempts.claimPoll(input.attemptId, now);
+    if (!claim.claimed) {
+      return pendingResult(
+        input,
+        claim.attempt.lastPollStatus === 'slow_down' ? 'slow_down' : 'authorization_pending',
+        claim.attempt.currentPollIntervalSeconds ?? claim.attempt.intervalSeconds,
+      );
     }
-    await this.attempts.consume(input.attemptId, this.nowForConsume());
-    requireStringField(body, 'access_token');
-    requireStringField(body, 'refresh_token');
-    const record = await this.storeOAuthCredential(input, body, attempt.expectedCredentialVersion);
-    return {
-      mode: 'deviceCodeOAuth',
-      status: 'completed',
-      provider: 'kimi',
-      deployment: input.deployment,
-      attemptId: input.attemptId,
-      credentialId: record.id,
-    };
+    try {
+      const response = await this.fetchImpl(this.tokenEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          device_code: attempt.deviceCode ?? '',
+          client_id: this.clientId,
+          code_verifier: attempt.codeVerifier ?? '',
+        }),
+      });
+      const body = await safeJson(response);
+      if (!response.ok) {
+        if (body.error === 'authorization_pending' || body.error === 'slow_down') {
+          const status = body.error;
+          const intervalSeconds = status === 'slow_down'
+            ? (attempt.currentPollIntervalSeconds ?? attempt.intervalSeconds ?? 5) + 5
+            : (attempt.currentPollIntervalSeconds ?? attempt.intervalSeconds ?? 5);
+          await this.attempts.updatePollSchedule(input.attemptId, {
+            intervalSeconds,
+            nextPollAt: new Date(now.getTime() + intervalSeconds * 1000),
+            lastPollStatus: status,
+          });
+          return pendingResult(input, status, intervalSeconds);
+        }
+        if (body.error === 'expired_token') {
+          await this.attempts.consume(input.attemptId, this.nowForConsume());
+          return pendingResult(input, 'expired');
+        }
+        throw new Error(`Kimi device token failed: ${safeProviderError(body)}`);
+      }
+      await this.attempts.consume(input.attemptId, this.nowForConsume());
+      requireStringField(body, 'access_token');
+      requireStringField(body, 'refresh_token');
+      const record = await this.storeOAuthCredential(input, body, attempt.expectedCredentialVersion);
+      return {
+        mode: 'deviceCodeOAuth',
+        status: 'completed',
+        provider: 'kimi',
+        deployment: input.deployment,
+        attemptId: input.attemptId,
+        credentialId: record.id,
+      };
+    } catch (error) {
+      await this.attempts.releasePollClaim(input.attemptId);
+      throw error;
+    }
   }
 
   public override async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
@@ -623,7 +719,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       attemptId: attempt.id,
       expiresAt: attempt.expiresAt.toISOString(),
       deviceCode: attempt.deviceCode,
-      intervalSeconds: attempt.intervalSeconds,
+      intervalSeconds: attempt.currentPollIntervalSeconds ?? attempt.intervalSeconds,
     };
   }
 
@@ -664,30 +760,6 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     requireStringField(body, 'access_token');
     requireStringField(body, 'refresh_token');
     return this.storeOAuthCredential(input, body, current.version);
-  }
-
-  public async revoke(input: RevokeInput): Promise<void> {
-    if (!input.refreshToken) {
-      await this.credentialRepository.disconnect({
-        webId: input.webId,
-        provider: 'kimi',
-        deployment: input.deployment,
-      });
-      return;
-    }
-    await this.fetchImpl(this.revokeEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        token: input.refreshToken,
-        client_id: this.clientId,
-      }),
-    });
-    await this.credentialRepository.disconnect({
-      webId: input.webId,
-      provider: 'kimi',
-      deployment: input.deployment,
-    });
   }
 
   public override async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
@@ -1013,6 +1085,12 @@ function signAttempt(
     .digest('base64url');
 }
 
+function signatureMatches(actual: string, expected: string): boolean {
+  const actualBuffer = Buffer.from(actual, 'utf8');
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
 function codeChallenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url');
 }
@@ -1035,6 +1113,8 @@ function cloneAttempt(attempt: ConnectAttempt): ConnectAttempt {
     ...attempt,
     expiresAt: new Date(attempt.expiresAt),
     consumedAt: attempt.consumedAt ? new Date(attempt.consumedAt) : undefined,
+    nextPollAt: attempt.nextPollAt ? new Date(attempt.nextPollAt) : undefined,
+    pollClaimedAt: attempt.pollClaimedAt ? new Date(attempt.pollClaimedAt) : undefined,
   };
 }
 
@@ -1083,8 +1163,27 @@ function expiresAtFrom(expiresIn: unknown, now: Date): Date | undefined {
 }
 
 function safeProviderError(body: Record<string, unknown>): string {
-  return stringFrom(body.error) || stringFrom(body.error_description) || 'provider_error';
+  const code = stringFrom(body.error);
+  if (SAFE_PROVIDER_ERROR_CODES.has(code)) {
+    return code;
+  }
+  if (!code) {
+    return 'provider_error';
+  }
+  if (code.endsWith('_error')) {
+    return 'provider_error';
+  }
+  return 'provider_error';
 }
+
+const SAFE_PROVIDER_ERROR_CODES = new Set([
+  'authorization_pending',
+  'slow_down',
+  'expired_token',
+  'access_denied',
+  'invalid_grant',
+  'invalid_client',
+]);
 
 function pendingResult(
   input: PollDeviceInput,
@@ -1101,9 +1200,16 @@ function pendingResult(
   };
 }
 
-function assertKimiEndpoint(endpoint: string): void {
+function assertKimiEndpoint(endpoint: string, pathname: string): void {
   const url = new URL(endpoint);
-  if (url.protocol !== 'https:' || url.hostname !== 'auth.kimi.com') {
+  if (
+    url.origin !== 'https://auth.kimi.com'
+    || url.pathname !== pathname
+    || url.search
+    || url.hash
+    || url.username
+    || url.password
+  ) {
     throw new Error('Kimi Connect endpoint is not allowlisted');
   }
 }

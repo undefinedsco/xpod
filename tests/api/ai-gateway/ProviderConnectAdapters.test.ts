@@ -109,6 +109,7 @@ describe('Provider Connect capabilities', () => {
       configured: false,
       experimental: true,
       publicCallbackSupported: false,
+      remoteRevocationSupported: false,
     });
     expect(registry.requireProvider('deepseek').connect).toMatchObject({
       mode: 'connectUnsupported',
@@ -266,7 +267,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       state: begun.state,
       signature: begun.signature,
       apiKey: 'sk-expired',
-    })).rejects.toThrow(/expired/i);
+    })).rejects.toThrow(/not found/i);
 
     now = new Date('2026-07-23T01:00:00.000Z');
     const fresh = await adapter.begin({
@@ -292,6 +293,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
 
 describe('KimiDeviceCodeConnectAdapter', () => {
   it('starts OAuth device authorization with PKCE, polls slow_down/pending/expired, refreshes and revokes against allowlisted Kimi endpoints', async () => {
+    let now = new Date('2026-07-23T00:00:00.000Z');
     const calls: Array<{ url: string; body: URLSearchParams }> = [];
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       const body = new URLSearchParams(String(init?.body ?? ''));
@@ -342,7 +344,7 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       vault: vault(),
       deployment: 'cloud',
       clientId: 'xpod-kimi-device-client',
-      now: () => new Date('2026-07-23T00:00:00.000Z'),
+      now: () => now,
       randomBytes: () => Buffer.alloc(32, 11),
       signingSecret: 'connect-signing-secret',
     });
@@ -361,6 +363,18 @@ describe('KimiDeviceCodeConnectAdapter', () => {
     });
     expect(begun.pkceChallenge).toMatch(/^[A-Za-z0-9_-]+$/);
 
+    now = new Date('2026-07-23T00:00:00.500Z');
+    await expect(adapter.pollDevice({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      attemptId: begun.attemptId,
+      state: begun.state,
+      signature: begun.signature,
+    })).resolves.toMatchObject({ status: 'authorization_pending', intervalSeconds: 1 });
+    expect(calls).toHaveLength(1);
+
+    now = new Date('2026-07-23T00:00:01.000Z');
     await expect(adapter.pollDevice({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -369,6 +383,19 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       state: begun.state,
       signature: begun.signature,
     })).resolves.toMatchObject({ status: 'authorization_pending' });
+    expect(calls).toHaveLength(2);
+
+    await expect(adapter.pollDevice({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      attemptId: begun.attemptId,
+      state: begun.state,
+      signature: begun.signature,
+    })).resolves.toMatchObject({ status: 'authorization_pending', intervalSeconds: 1 });
+    expect(calls).toHaveLength(2);
+
+    now = new Date('2026-07-23T00:00:02.000Z');
     await expect(adapter.pollDevice({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -377,6 +404,8 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       state: begun.state,
       signature: begun.signature,
     })).resolves.toMatchObject({ status: 'slow_down', intervalSeconds: 6 });
+
+    now = new Date('2026-07-23T00:00:08.000Z');
     await expect(adapter.pollDevice({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -432,8 +461,9 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       deployment: 'cloud',
       provider: 'kimi',
     })).resolves.toMatchObject({ status: 'active' });
-    await adapter.revoke({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', refreshToken: 'kimi-refresh-next' });
-    expect(calls.some((call) => call.url === 'https://auth.kimi.com/api/oauth/revoke')).toBe(true);
+    await adapter.disconnect({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi' });
+    expect(calls.some((call) => call.url.endsWith('/api/oauth/revoke'))).toBe(false);
+    expect(repository.rows.at(-1)).toMatchObject({ status: 'revoked' });
   });
 
   it('fails Kimi 2xx device responses that are empty, HTML, or missing required fields', async () => {
@@ -461,6 +491,169 @@ describe('KimiDeviceCodeConnectAdapter', () => {
         requestedMode: 'deviceCodeOAuth',
       })).rejects.toThrow(/json|required field/i);
     }
+  });
+
+  it('rejects Kimi endpoint overrides outside the exact official OAuth paths', () => {
+    const base = {
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: new RecordingCredentialRepository(),
+      vault: vault(),
+      deployment: 'cloud' as const,
+      clientId: 'xpod-kimi-device-client',
+      signingSecret: 'connect-signing-secret',
+    };
+    for (const override of [
+      { deviceAuthorizationEndpoint: 'https://auth.kimi.com/api/oauth/device_authorization?debug=1' },
+      { deviceAuthorizationEndpoint: 'https://user:pass@auth.kimi.com/api/oauth/device_authorization' },
+      { tokenEndpoint: 'https://auth.kimi.com/api/oauth/token#frag' },
+      { tokenEndpoint: 'https://auth.kimi.com/api/oauth/revoke' },
+      { tokenEndpoint: 'https://auth.kimi.com/other/token' },
+      { tokenEndpoint: 'https://evil.example/api/oauth/token' },
+    ]) {
+      expect(() => new KimiDeviceCodeConnectAdapter({
+        ...base,
+        ...override,
+      })).toThrow(/allowlisted|endpoint/i);
+    }
+  });
+
+  it('redacts provider error descriptions from exceptions and reauth reasons', async () => {
+    const repository = new RecordingCredentialRepository();
+    const sharedVault = vault();
+    const credentialIri = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-kimi';
+    const encryptedSecret = await sharedVault.seal(
+      { webId: WEB_ID },
+      credentialIri,
+      'kimi',
+      { type: 'deviceCodeOAuth', refreshToken: 'sealed-refresh-token' },
+    );
+    const current = await repository.upsertConnectedCredential({
+      id: 'settings/ai/credentials/kimi.ttl#cloud-kimi',
+      credentialIri,
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      authMode: 'deviceCodeOAuth',
+      encryptedSecret,
+      status: 'active',
+    });
+    const adapter = new KimiDeviceCodeConnectAdapter({
+      fetch: (async (url: string) => {
+        if (url === 'https://auth.kimi.com/api/oauth/device_authorization') {
+          return Response.json({
+            device_code: 'kimi-device-code',
+            user_code: 'KIMI-123',
+            verification_uri_complete: 'https://kimi.moonshot.cn/device?user_code=KIMI-123',
+            expires_in: 300,
+            interval: 0,
+          });
+        }
+        return Response.json({
+          error: 'invalid_grant',
+          error_description: 'leaked sk-live api_key device-code refresh-token',
+        }, { status: 400 });
+      }) as typeof fetch,
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      vault: sharedVault,
+      deployment: 'cloud',
+      clientId: 'xpod-kimi-device-client',
+      signingSecret: 'connect-signing-secret',
+      randomBytes: () => Buffer.alloc(32, 12),
+    });
+    const begun = await adapter.begin({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      requestedMode: 'deviceCodeOAuth',
+    });
+
+    await expect(adapter.pollDevice({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      attemptId: begun.attemptId,
+      state: begun.state,
+      signature: begun.signature,
+    })).rejects.toThrow(/invalid_grant/i);
+    await expect(adapter.pollDevice({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      attemptId: begun.attemptId,
+      state: begun.state,
+      signature: begun.signature,
+    })).rejects.not.toThrow(/sk-live|api_key|device-code|refresh-token/i);
+
+    await adapter.refresh({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+    }, current, { type: 'deviceCodeOAuth', refreshToken: 'sealed-refresh-token' });
+
+    expect(repository.rows.at(-1)?.metadata?.reauthReason).toBe('invalid_grant');
+    expect(JSON.stringify(repository.rows)).not.toContain('sk-live');
+    expect(JSON.stringify(repository.rows)).not.toContain('api_key');
+    expect(JSON.stringify(repository.rows)).not.toContain('device-code');
+    expect(JSON.stringify(repository.rows)).not.toContain('refresh-token');
+  });
+
+  it('coalesces concurrent eligible Kimi polls into one provider request', async () => {
+    let now = new Date('2026-07-23T00:00:00.000Z');
+    let tokenCalls = 0;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const body = new URLSearchParams(String(init?.body ?? ''));
+      if (url === 'https://auth.kimi.com/api/oauth/device_authorization') {
+        return Response.json({
+          device_code: 'kimi-device-code',
+          user_code: 'KIMI-123',
+          verification_uri_complete: 'https://kimi.moonshot.cn/device?user_code=KIMI-123',
+          expires_in: 300,
+          interval: 0,
+        });
+      }
+      if (body.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code') {
+        tokenCalls += 1;
+        await Promise.resolve();
+        return Response.json({ error: 'authorization_pending' }, { status: 400 });
+      }
+      return Response.json({ error: 'unexpected' }, { status: 500 });
+    });
+    const adapter = new KimiDeviceCodeConnectAdapter({
+      fetch: fetchMock as typeof fetch,
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: new RecordingCredentialRepository(),
+      vault: vault(),
+      deployment: 'cloud',
+      clientId: 'xpod-kimi-device-client',
+      now: () => now,
+      randomBytes: () => Buffer.alloc(32, 14),
+      signingSecret: 'connect-signing-secret',
+    });
+    const begun = await adapter.begin({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      requestedMode: 'deviceCodeOAuth',
+    });
+    now = new Date('2026-07-23T00:00:01.000Z');
+    const input = {
+      webId: WEB_ID,
+      deployment: 'cloud' as const,
+      provider: 'kimi',
+      attemptId: begun.attemptId!,
+      state: begun.state!,
+      signature: begun.signature!,
+    };
+
+    await expect(Promise.all([
+      adapter.pollDevice(input),
+      adapter.pollDevice(input),
+    ])).resolves.toEqual([
+      expect.objectContaining({ status: 'authorization_pending' }),
+      expect.objectContaining({ status: 'authorization_pending' }),
+    ]);
+    expect(tokenCalls).toBe(1);
   });
 });
 

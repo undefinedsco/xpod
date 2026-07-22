@@ -99,18 +99,41 @@ describe('Gateway internal Pod access container config', () => {
     });
   });
 
-  it('fails fast when Connect is enabled without the platform credential wrapper or Kimi client id', () => {
+  it('fails fast when Connect is enabled without the platform credential wrapper', () => {
     expect(() => createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayKimiClientId: 'xpod-kimi-client',
       aiGatewayCredentialKeyWrapperFactory: undefined,
     })).resolve('providerConnectService')).toThrow(/CredentialKeyWrapperFactory/i);
+  });
 
-    expect(() => createApiContainer(baseConfig({
+  it('keeps browser-assisted Connect usable when only the optional Kimi client id is missing', async () => {
+    const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayCredentialKeyWrapperFactory: () => new TestKeyWrapper(),
       aiGatewayKimiClientId: undefined,
-    })).resolve('providerConnectService')).toThrow(/KIMI_CLIENT_ID/);
+      aiGatewayConnectSigningSecret: 'connect-signing-secret',
+    })).resolve('providerConnectService');
+
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({
+      status: 'pending',
+      mode: 'browserAssistedApiKey',
+    });
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'kimi',
+      requestedMode: 'deviceCodeOAuth',
+    })).resolves.toMatchObject({
+      status: 'unsupported',
+      mode: 'deviceCodeOAuth',
+      message: expect.stringMatching(/not_configured|client id/i),
+    });
   });
 
   it('constructs the configured provider Connect service with injected platform wrapper and Kimi client id', async () => {

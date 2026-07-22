@@ -12,6 +12,7 @@ export interface ProviderConnectCapability {
   experimental?: boolean;
   requiresAuthenticatedManagementApi?: boolean;
   publicCallbackSupported?: boolean;
+  remoteRevocationSupported?: boolean;
   notes?: string[];
 }
 
@@ -223,6 +224,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       configured: false,
       experimental: true,
       publicCallbackSupported: false,
+      remoteRevocationSupported: false,
       notes: ['Requires an Xpod/Moonshot-issued device-code OAuth client id; do not reuse the official Kimi CLI client id.'],
     },
     protocols: ['chatCompletions'],

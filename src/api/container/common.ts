@@ -134,9 +134,6 @@ export function registerCommonServices(
       if (!signingSecret) {
         throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
       }
-      if (!config.aiGatewayKimiClientId) {
-        throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_KIMI_CLIENT_ID for Kimi device-code OAuth');
-      }
       if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
         throw new Error('AI Gateway Connect requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod access');
       }
@@ -150,49 +147,54 @@ export function registerCommonServices(
         keyWrapper: config.aiGatewayCredentialKeyWrapperFactory(),
       });
       const attempts = new InMemoryConnectAttemptStore();
+      const adapters = [
+        new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'openai',
+          consoleUrl: 'https://platform.openai.com/api-keys',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'anthropic',
+          consoleUrl: 'https://console.anthropic.com/settings/keys',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'bailian',
+          consoleUrl: 'https://bailian.console.aliyun.com/',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+      ];
+      if (config.aiGatewayKimiClientId) {
+        adapters.push(new KimiDeviceCodeConnectAdapter({
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+          clientId: config.aiGatewayKimiClientId,
+        }));
+      }
       return new ProviderConnectService({
         registry: createDefaultGatewayProviderRegistry({
           connect: {
-            kimi: { configured: true },
+            kimi: config.aiGatewayKimiClientId
+              ? { configured: true }
+              : { configured: false, notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'] },
           },
         }),
-        adapters: [
-          new BrowserAssistedApiKeyConnectAdapter({
-            provider: 'openai',
-            consoleUrl: 'https://platform.openai.com/api-keys',
-            attempts,
-            credentialRepository,
-            vault,
-            deployment: config.edition,
-            signingSecret,
-          }),
-          new BrowserAssistedApiKeyConnectAdapter({
-            provider: 'anthropic',
-            consoleUrl: 'https://console.anthropic.com/settings/keys',
-            attempts,
-            credentialRepository,
-            vault,
-            deployment: config.edition,
-            signingSecret,
-          }),
-          new BrowserAssistedApiKeyConnectAdapter({
-            provider: 'bailian',
-            consoleUrl: 'https://bailian.console.aliyun.com/',
-            attempts,
-            credentialRepository,
-            vault,
-            deployment: config.edition,
-            signingSecret,
-          }),
-          new KimiDeviceCodeConnectAdapter({
-            attempts,
-            credentialRepository,
-            vault,
-            deployment: config.edition,
-            signingSecret,
-            clientId: config.aiGatewayKimiClientId,
-          }),
-        ],
+        adapters,
         credentialRepository,
         vault,
       });
