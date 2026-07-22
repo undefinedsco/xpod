@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
 import { drizzle } from '@undefineds.co/drizzle-solid';
-import { credentialResource } from '@undefineds.co/models';
+import { aiRuntimeRepository, credentialResource } from '@undefineds.co/models';
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
@@ -152,7 +152,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     deployment: GatewayDeployment;
   }): Promise<ConnectCredentialRecord | undefined> {
     const db = await this.dbForOwner(input.webId);
-    const id = credentialIdFor(input.deployment, input.provider);
+    const id = aiRuntimeRepository.credentialId(input);
     const row = await db.findById<Record<string, unknown>>(credentialResource, id);
     const record = row ? recordFromCredentialRow(row) : undefined;
     if (!record || record.status !== 'active' || record.reauthRequired) {
@@ -189,7 +189,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     expectedVersion?: number;
   }): Promise<ConnectCredentialRecord | undefined> {
     const db = await this.dbForOwner(input.webId);
-    const id = credentialIdFor(input.deployment, input.provider);
+    const id = aiRuntimeRepository.credentialId(input);
     const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
     if (!existing) {
       return undefined;
@@ -208,7 +208,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
 
   public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
     const db = await this.dbForOwner(input.webId);
-    const id = credentialIdFor(input.deployment, input.provider);
+    const id = aiRuntimeRepository.credentialId(input);
     const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
     if (!existing) {
       return undefined;
@@ -448,7 +448,10 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     }
     const attempt = await this.loadConsumableAttempt(input, 'browserAssistedApiKey');
     const consumed = await this.attempts.consume(input.attemptId, this.now());
-    const credentialIri = credentialIriFor(input.webId, input.deployment, this.provider);
+    const credentialIri = aiRuntimeRepository.credentialIri(input.webId, {
+      deployment: input.deployment,
+      provider: this.provider,
+    });
     const encryptedSecret = await this.vault.seal(
       principal(input.webId),
       credentialIri,
@@ -456,7 +459,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       { type: 'apiKey', apiKey: input.apiKey },
     );
     const record = await this.credentialRepository.upsertConnectedCredential({
-      id: credentialIdFor(input.deployment, this.provider),
+      id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: this.provider }),
       credentialIri,
       webId: input.webId,
       provider: this.provider,
@@ -779,7 +782,10 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     body: Record<string, unknown>,
     expectedVersion?: number,
   ): Promise<ConnectCredentialRecord> {
-    const credentialIri = credentialIriFor(input.webId, input.deployment, 'kimi');
+    const credentialIri = aiRuntimeRepository.credentialIri(input.webId, {
+      deployment: input.deployment,
+      provider: 'kimi',
+    });
     const expiresAt = expiresAtFrom(body.expires_in, this.now());
     const secret: ProviderSecret = {
       type: 'deviceCodeOAuth',
@@ -791,7 +797,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     };
     const encryptedSecret = await this.vault.seal(principal(input.webId), credentialIri, 'kimi', secret);
     return this.credentialRepository.upsertConnectedCredential({
-      id: credentialIdFor(input.deployment, 'kimi'),
+      id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: 'kimi' }),
       credentialIri,
       webId: input.webId,
       provider: 'kimi',
@@ -1093,15 +1099,6 @@ function signatureMatches(actual: string, expected: string): boolean {
 
 function codeChallenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url');
-}
-
-function credentialIdFor(deployment: GatewayDeployment, provider: string): string {
-  return `settings/ai/credentials/${normalizeProvider(provider)}.ttl#${deployment}-${normalizeProvider(provider)}`;
-}
-
-function credentialIriFor(webId: string, deployment: GatewayDeployment, provider: string): string {
-  const base = webId.includes('/profile/') ? webId.slice(0, webId.indexOf('/profile/') + 1) : `${webId.replace(/[#/]+$/u, '')}/`;
-  return new URL(credentialIdFor(deployment, provider), base).toString();
 }
 
 function principal(webId: string): GatewayPrincipal {

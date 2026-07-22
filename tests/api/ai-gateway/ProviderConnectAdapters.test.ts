@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
 import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import { aiRuntimeRepository } from '@undefineds.co/models';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   DeepSeekConnectAdapter,
@@ -183,7 +184,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
     });
 
     expect(completed.status).toBe('completed');
-    expect(completed.credentialId).toBe('settings/ai/credentials/openai.ttl#cloud-openai');
+    expect(completed.credentialId).toBe('credentials.ttl#cloud-openai');
     expect(repository.rows).toHaveLength(1);
     expect(repository.rows[0]).toMatchObject({
       webId: WEB_ID,
@@ -520,7 +521,10 @@ describe('KimiDeviceCodeConnectAdapter', () => {
   it('redacts provider error descriptions from exceptions and reauth reasons', async () => {
     const repository = new RecordingCredentialRepository();
     const sharedVault = vault();
-    const credentialIri = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-kimi';
+    const credentialIri = aiRuntimeRepository.credentialIri(WEB_ID, {
+      deployment: 'cloud',
+      provider: 'kimi',
+    });
     const encryptedSecret = await sharedVault.seal(
       { webId: WEB_ID },
       credentialIri,
@@ -707,7 +711,7 @@ describe('ProviderConnectService', () => {
       { type: 'deviceCodeOAuth', refreshToken: 'sealed-refresh-token' },
     );
     await repository.upsertConnectedCredential({
-      id: 'settings/ai/credentials/kimi.ttl#cloud-kimi',
+      id: aiRuntimeRepository.credentialId({ deployment: 'cloud', provider: 'kimi' }),
       credentialIri,
       webId: WEB_ID,
       provider: 'kimi',
@@ -808,7 +812,7 @@ describe('ProviderConnectService', () => {
 
     const stored = [...rows.values()][0];
     expect(stored).toMatchObject({
-      id: 'settings/ai/credentials/openai.ttl#cloud-openai',
+      id: 'credentials.ttl#cloud-openai',
       provider: 'openai',
       authMode: 'apiKey',
       status: 'active',
@@ -816,6 +820,7 @@ describe('ProviderConnectService', () => {
       wrappedDataKey: expect.any(String),
       keyVersion: '1',
     });
+    expect(JSON.stringify(stored)).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');
     expect(JSON.stringify(stored)).not.toContain('sk-pod-backed-secret');
     const active = await repository.getActiveCredential({
       webId: WEB_ID,
