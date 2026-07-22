@@ -29,6 +29,15 @@ import {
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
+import {
+  AnthropicQuotaAdapter,
+  BailianQuotaAdapter,
+  DeepSeekQuotaAdapter,
+  KimiQuotaAdapter,
+  OpenAiQuotaAdapter,
+  PodQuotaSnapshotRepository,
+  ProviderQuotaService,
+} from '../ai-gateway/quota';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
@@ -197,6 +206,37 @@ export function registerCommonServices(
         adapters,
         credentialRepository,
         vault,
+      });
+    }).singleton(),
+
+    providerQuotaService: asFunction(({ config }: ApiContainerCradle) => {
+      if (!config.aiGatewayConnectEnabled) {
+        return undefined;
+      }
+      if (!config.aiGatewayCredentialKeyWrapperFactory) {
+        throw new Error('AI Gateway quota requires an aiGatewayCredentialKeyWrapperFactory platform wrapper');
+      }
+      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
+        throw new Error('AI Gateway quota requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod access');
+      }
+      const internalPodAccess = new ClientCredentialsInternalPodAccessTokenProvider({
+        tokenEndpoint: config.cssTokenEndpoint,
+        clientId: config.gatewayInternalClientId,
+        clientSecret: config.gatewayInternalClientSecret,
+      });
+      return new ProviderQuotaService({
+        repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
+        credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
+        vault: new WebCryptoCredentialVault({
+          keyWrapper: config.aiGatewayCredentialKeyWrapperFactory(),
+        }),
+        adapters: [
+          new OpenAiQuotaAdapter(),
+          new AnthropicQuotaAdapter(),
+          new KimiQuotaAdapter(),
+          new BailianQuotaAdapter(),
+          new DeepSeekQuotaAdapter(),
+        ],
       });
     }).singleton(),
 

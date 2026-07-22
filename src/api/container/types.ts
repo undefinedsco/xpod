@@ -38,6 +38,7 @@ import type { AuthMode } from '../../authorization/AuthMode';
 import type { RdfEngineLike } from '../../storage/rdf';
 import type { KeyWrapper } from '../ai-gateway/credentials/KeyWrapper';
 import type { ProviderConnectService } from '../ai-gateway/connect';
+import type { ProviderQuotaService } from '../ai-gateway/quota';
 
 /**
  * 容器配置
@@ -211,6 +212,7 @@ export interface ApiContainerCradle {
   serviceTokenRepo: ServiceTokenRepositoryPort;
   gatewayAccessKeyRepository: GatewayAccessKeyRepository;
   providerConnectService: ProviderConnectService;
+  providerQuotaService?: ProviderQuotaService;
 
   // 业务服务
   chatService: VercelChatService;

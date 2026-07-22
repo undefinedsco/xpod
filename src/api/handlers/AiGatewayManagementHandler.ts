@@ -22,11 +22,13 @@ import type {
   ConnectBeginInput,
   ProviderConnectService,
 } from '../ai-gateway/connect';
+import type { ProviderQuotaService } from '../ai-gateway/quota';
 
 export interface AiGatewayManagementHandlerOptions {
   repository: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
+  quotaService?: ProviderQuotaService;
   now?: () => Date;
   keyId?: (owner: string) => string;
   jsonBodyLimitBytes?: number;
@@ -278,6 +280,55 @@ export function registerAiGatewayManagementRoutes(
       error: 'Public Connect callback is unsupported for current provider Connect modes',
     });
   }, { public: true });
+
+  server.get('/api/ai/gateway/providers/:provider/quota/status', async (request, response, params) => {
+    if (!authorizeProviderQuota(request, response)) {
+      return;
+    }
+    const quotaService = requireQuotaService(options, response);
+    if (!quotaService) {
+      return;
+    }
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    try {
+      const result = await quotaService.status({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialIri: normalizeOptionalString(url.searchParams.get('credentialIri')),
+        refresh: false,
+      });
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendQuotaError(response, error);
+    }
+  });
+
+  server.post('/api/ai/gateway/providers/:provider/quota/refresh', async (request, response, params) => {
+    if (!authorizeProviderQuota(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const quotaService = requireQuotaService(options, response);
+    if (!quotaService) {
+      return;
+    }
+    try {
+      const result = await quotaService.status({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialIri: normalizeOptionalString(body.credentialIri),
+        refresh: true,
+      });
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendQuotaError(response, error);
+    }
+  });
 }
 
 function authorizeGatewayKeyManagement(
@@ -318,6 +369,25 @@ function authorizeProviderConnect(
   return true;
 }
 
+function authorizeProviderQuota(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+): request is AuthenticatedRequest & { auth: Extract<NonNullable<AuthenticatedRequest['auth']>, { type: 'solid' }> } {
+  if (!request.auth) {
+    sendJson(response, 401, { error: 'Authentication required' });
+    return false;
+  }
+  if (isGatewayApiKeyPrincipal(request.auth)) {
+    sendJson(response, 403, { error: 'Gateway API keys cannot manage provider quota state' });
+    return false;
+  }
+  if (request.auth.type !== 'solid' || !request.auth.webId) {
+    sendJson(response, 403, { error: 'Provider quota requires the current Solid identity' });
+    return false;
+  }
+  return true;
+}
+
 function requireConnectService(
   options: AiGatewayManagementHandlerOptions,
   response: ServerResponse,
@@ -327,6 +397,30 @@ function requireConnectService(
     return undefined;
   }
   return options.connectService;
+}
+
+function requireQuotaService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderQuotaService | undefined {
+  if (!options.quotaService) {
+    sendJson(response, 503, { error: 'AI provider quota service is not configured' });
+    return undefined;
+  }
+  return options.quotaService;
+}
+
+function sendQuotaError(response: ServerResponse, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'quota_credential_not_found') {
+    sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+    return;
+  }
+  if (message.startsWith('quota_adapter_not_found:')) {
+    sendJson(response, 404, { error: 'Provider quota adapter not found' });
+    return;
+  }
+  sendJson(response, 500, { error: 'Provider quota lookup failed' });
 }
 
 async function readJsonObject(

@@ -1,0 +1,648 @@
+import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import {
+  aiGatewayRepository,
+  quotaSnapshotResource,
+  type QuotaSnapshotRow,
+} from '@undefineds.co/models';
+import type { AuthContext } from '../../auth/AuthContext';
+import { isSolidAuth } from '../../auth/AuthContext';
+import type { GatewayDeployment } from '../auth/GatewayApiKey';
+import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
+import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
+import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
+
+export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
+
+export interface QuotaWindow {
+  name: string;
+  used?: number;
+  limit?: number;
+  remaining?: number;
+  resetsAt?: string;
+}
+
+export interface NormalizedQuotaSnapshot {
+  id?: string;
+  credential: string;
+  status: QuotaSnapshotStatus;
+  balance?: number;
+  windows: QuotaWindow[];
+  observedAt: string;
+  expiresAt: string;
+  source: string;
+  stale?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface QuotaCredentialRecord extends ConnectCredentialRecord {
+  baseUrl?: string;
+  proxy?: string;
+}
+
+export interface ProviderQuotaFetchInput {
+  credential: QuotaCredentialRecord;
+  secret: ProviderSecret;
+  now: Date;
+  signal?: AbortSignal;
+}
+
+export interface ProviderQuotaAdapter {
+  readonly provider: string;
+  fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot>;
+}
+
+export interface QuotaSnapshotRepository {
+  findFresh(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri: string;
+    now: Date;
+  }): Promise<NormalizedQuotaSnapshot | undefined>;
+  findLatest(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri: string;
+  }): Promise<NormalizedQuotaSnapshot | undefined>;
+  upsert(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    snapshot: NormalizedQuotaSnapshot;
+  }): Promise<NormalizedQuotaSnapshot>;
+}
+
+export interface ProviderQuotaStatusInput {
+  webId: string;
+  deployment: GatewayDeployment;
+  provider: string;
+  credentialIri?: string;
+  refresh?: boolean;
+  now?: Date;
+  signal?: AbortSignal;
+}
+
+export interface ProviderQuotaServiceOptions {
+  repository: QuotaSnapshotRepository;
+  vault: CredentialVault;
+  adapters: ProviderQuotaAdapter[];
+  credentialRepository?: PodCredentialRepository;
+  credentials?: QuotaCredentialRecord[];
+  now?: () => Date;
+}
+
+export class ProviderQuotaService {
+  private readonly repository: QuotaSnapshotRepository;
+  private readonly vault: CredentialVault;
+  private readonly adapters = new Map<string, ProviderQuotaAdapter>();
+  private readonly credentialRepository?: PodCredentialRepository;
+  private readonly credentials: QuotaCredentialRecord[];
+  private readonly now: () => Date;
+
+  public constructor(options: ProviderQuotaServiceOptions) {
+    this.repository = options.repository;
+    this.vault = options.vault;
+    this.credentialRepository = options.credentialRepository;
+    this.credentials = options.credentials ?? [];
+    this.now = options.now ?? (() => new Date());
+    for (const adapter of options.adapters) {
+      this.adapters.set(normalizeProvider(adapter.provider), adapter);
+    }
+  }
+
+  public async status(input: ProviderQuotaStatusInput): Promise<NormalizedQuotaSnapshot> {
+    const provider = normalizeProvider(input.provider);
+    const now = input.now ?? this.now();
+    const credential = await this.resolveCredential({
+      webId: input.webId,
+      deployment: input.deployment,
+      provider,
+      credentialIri: input.credentialIri,
+    });
+
+    if (!input.refresh) {
+      const cached = await this.repository.findFresh({
+        webId: input.webId,
+        deployment: input.deployment,
+        provider,
+        credentialIri: credential.credentialIri,
+        now,
+      });
+      if (cached) {
+        return { ...cached, stale: false };
+      }
+      const latest = await this.repository.findLatest({
+        webId: input.webId,
+        deployment: input.deployment,
+        provider,
+        credentialIri: credential.credentialIri,
+      });
+      if (latest) {
+        return { ...latest, stale: true };
+      }
+    }
+
+    const adapter = this.adapters.get(provider);
+    if (!adapter) {
+      throw new Error(`quota_adapter_not_found:${provider}`);
+    }
+    const secret = await this.vault.open(
+      { webId: input.webId },
+      credential.credentialIri,
+      provider,
+      credential.encryptedSecret,
+    );
+    const snapshot = await adapter.fetch({
+      credential,
+      secret,
+      now,
+      signal: input.signal,
+    });
+    return this.repository.upsert({
+      webId: input.webId,
+      deployment: input.deployment,
+      provider,
+      snapshot,
+    });
+  }
+
+  private async resolveCredential(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri?: string;
+  }): Promise<QuotaCredentialRecord> {
+    const listed = this.credentials.find((candidate) =>
+      candidate.webId === input.webId
+      && candidate.deployment === input.deployment
+      && normalizeProvider(candidate.provider) === input.provider
+      && (!input.credentialIri || candidate.credentialIri === input.credentialIri));
+    if (listed) {
+      return listed;
+    }
+
+    const active = await this.credentialRepository?.getActiveCredential({
+      webId: input.webId,
+      deployment: input.deployment,
+      provider: input.provider,
+    });
+    if (
+      active
+      && (!input.credentialIri || active.credentialIri === input.credentialIri)
+    ) {
+      return active as QuotaCredentialRecord;
+    }
+    throw new Error('quota_credential_not_found');
+  }
+}
+
+export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository {
+  public readonly rows: Array<NormalizedQuotaSnapshot & {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+  }> = [];
+
+  public async findFresh(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri: string;
+    now: Date;
+  }): Promise<NormalizedQuotaSnapshot | undefined> {
+    const latest = await this.findLatest(input);
+    if (!latest || new Date(latest.expiresAt).getTime() <= input.now.getTime()) {
+      return undefined;
+    }
+    return latest;
+  }
+
+  public async findLatest(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri: string;
+  }): Promise<NormalizedQuotaSnapshot | undefined> {
+    const row = this.rows
+      .filter((candidate) =>
+        candidate.webId === input.webId
+        && candidate.deployment === input.deployment
+        && normalizeProvider(candidate.provider) === normalizeProvider(input.provider)
+        && candidate.credential === input.credentialIri)
+      .sort((a, b) => new Date(b.observedAt).getTime() - new Date(a.observedAt).getTime())[0];
+    return row ? publicSnapshot(row) : undefined;
+  }
+
+  public async upsert(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    snapshot: NormalizedQuotaSnapshot;
+  }): Promise<NormalizedQuotaSnapshot> {
+    const id = input.snapshot.id ?? quotaSnapshotId(input.webId, input.deployment, input.provider, input.snapshot.credential);
+    const next = {
+      ...sanitizeSnapshot(input.snapshot),
+      id,
+      webId: input.webId,
+      deployment: input.deployment,
+      provider: normalizeProvider(input.provider),
+      stale: false,
+    };
+    const index = this.rows.findIndex((row) => row.id === id);
+    if (index === -1) {
+      this.rows.push(next);
+    } else {
+      this.rows[index] = next;
+    }
+    return publicSnapshot(next);
+  }
+}
+
+type QuotaSnapshotDb = {
+  init?: (...resources: unknown[]) => Promise<void>;
+  select(): {
+    from(resource: typeof quotaSnapshotResource): {
+      where(condition: unknown): { execute(): Promise<QuotaSnapshotRow[]> };
+    };
+  };
+  findById<TRow>(resource: typeof quotaSnapshotResource, id: string): Promise<TRow | null>;
+  findByIri<TRow>(resource: typeof quotaSnapshotResource, iri: string): Promise<TRow | null>;
+  updateById<TRow>(resource: typeof quotaSnapshotResource, id: string, patch: unknown): Promise<TRow | null>;
+  updateByIri<TRow>(resource: typeof quotaSnapshotResource, iri: string, patch: unknown): Promise<TRow | null>;
+  insert(resource: typeof quotaSnapshotResource): {
+    values(value: unknown): { execute(): Promise<QuotaSnapshotRow[]> };
+  };
+};
+
+export interface PodQuotaSnapshotRepositoryOptions {
+  internalPodAccess?: InternalPodAccessTokenProvider;
+  dbFactory?: (input: {
+    owner: string;
+    auth?: AuthContext;
+    fetch: typeof fetch;
+  }) => Promise<QuotaSnapshotDb>;
+}
+
+export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
+  private readonly dbFactory: NonNullable<PodQuotaSnapshotRepositoryOptions['dbFactory']>;
+  private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+
+  public constructor(options: PodQuotaSnapshotRepositoryOptions = {}) {
+    this.internalPodAccess = options.internalPodAccess;
+    this.dbFactory = options.dbFactory ?? createDefaultQuotaSnapshotDb;
+  }
+
+  public async findFresh(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri: string;
+    now: Date;
+  }): Promise<NormalizedQuotaSnapshot | undefined> {
+    const db = await this.dbForOwner(input.webId);
+    const row = await aiGatewayRepository.findFreshQuotaSnapshot(db as never, {
+      credential: input.credentialIri,
+      now: input.now,
+    });
+    if (!row || !rowBelongsToScope(row, input)) {
+      return undefined;
+    }
+    return snapshotFromRow(row, false);
+  }
+
+  public async findLatest(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri: string;
+  }): Promise<NormalizedQuotaSnapshot | undefined> {
+    const db = await this.dbForOwner(input.webId);
+    const rows = await db
+      .select()
+      .from(quotaSnapshotResource)
+      .where(eq(quotaSnapshotResource.credential, input.credentialIri))
+      .execute();
+    const row = rows
+      .filter((candidate) => rowBelongsToScope(candidate, input))
+      .sort((a, b) => toMs(b.observedAt) - toMs(a.observedAt))[0];
+    return row ? snapshotFromRow(row, true) : undefined;
+  }
+
+  public async upsert(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    snapshot: NormalizedQuotaSnapshot;
+  }): Promise<NormalizedQuotaSnapshot> {
+    const db = await this.dbForOwner(input.webId);
+    const snapshot = sanitizeSnapshot({
+      ...input.snapshot,
+      id: input.snapshot.id ?? quotaSnapshotId(input.webId, input.deployment, input.provider, input.snapshot.credential),
+      metadata: {
+        ...input.snapshot.metadata,
+        webId: input.webId,
+        deployment: input.deployment,
+        provider: normalizeProvider(input.provider),
+      },
+    });
+    await aiGatewayRepository.upsertQuotaSnapshot(db as never, {
+      id: snapshot.id!,
+      credential: snapshot.credential,
+      status: snapshot.status,
+      balance: snapshot.balance,
+      windows: JSON.stringify(snapshot.windows),
+      observedAt: new Date(snapshot.observedAt),
+      expiresAt: new Date(snapshot.expiresAt),
+      source: snapshot.source,
+    } as never);
+    return { ...snapshot, stale: false };
+  }
+
+  private async dbForOwner(owner: string, auth?: AuthContext): Promise<QuotaSnapshotDb> {
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
+    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
+    await db.init?.(quotaSnapshotResource);
+    return db;
+  }
+
+  private async resolveTrustedFetch(owner: string, auth: AuthContext | undefined): Promise<typeof fetch> {
+    const authFetch = createAuthFetch(auth);
+    if (authFetch) {
+      return authFetch;
+    }
+    const internalFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    if (internalFetch) {
+      return internalFetch;
+    }
+    throw new Error('Internal Pod access is not configured for AI Gateway quota snapshots');
+  }
+}
+
+export function unsupportedQuotaSnapshot(
+  input: {
+    credential: string;
+    source: string;
+    now: Date;
+    ttlMs?: number;
+    metadata?: Record<string, unknown>;
+  },
+): NormalizedQuotaSnapshot {
+  return {
+    credential: input.credential,
+    status: 'unsupported',
+    windows: [],
+    observedAt: input.now.toISOString(),
+    expiresAt: new Date(input.now.getTime() + (input.ttlMs ?? 60 * 60_000)).toISOString(),
+    source: input.source,
+    metadata: input.metadata,
+  };
+}
+
+export function errorQuotaSnapshot(
+  input: {
+    credential: string;
+    source: string;
+    now: Date;
+    status?: number;
+    retryAfter?: string | null;
+    ttlMs?: number;
+    metadata?: Record<string, unknown>;
+  },
+): NormalizedQuotaSnapshot {
+  return {
+    credential: input.credential,
+    status: 'error',
+    windows: [],
+    observedAt: input.now.toISOString(),
+    expiresAt: new Date(input.now.getTime() + (input.ttlMs ?? 5 * 60_000)).toISOString(),
+    source: input.source,
+    metadata: {
+      ...input.metadata,
+      ...(input.status ? { providerStatusCode: input.status } : {}),
+      ...(input.status === 429 ? {
+        cooldown: {
+          reason: 'rate_limited',
+          ...(retryAfterSeconds(input.retryAfter) !== undefined ? { retryAfterSeconds: retryAfterSeconds(input.retryAfter) } : {}),
+        },
+      } : {}),
+    },
+  };
+}
+
+export function apiKeyFromSecret(secret: ProviderSecret): string | undefined {
+  const apiKey = secret.apiKey;
+  return typeof apiKey === 'string' && apiKey.trim() ? apiKey : undefined;
+}
+
+export async function fetchJsonWithBearer(input: {
+  fetch: typeof fetch;
+  url: string;
+  apiKey: string;
+  signal?: AbortSignal;
+  proxy?: string;
+}): Promise<{ ok: true; body: unknown } | { ok: false; status: number; retryAfter?: string | null }> {
+  const headers = new Headers();
+  headers.set('Authorization', `Bearer ${input.apiKey}`);
+  const response = await input.fetch(input.url, {
+    method: 'GET',
+    headers,
+    signal: input.signal,
+  });
+  if (!response.ok) {
+    await response.text().catch(() => '');
+    return {
+      ok: false,
+      status: response.status,
+      retryAfter: response.headers.get('Retry-After') ?? response.headers.get('retry-after'),
+    };
+  }
+  return { ok: true, body: await response.json() };
+}
+
+export function numeric(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+export function normalizeProvider(provider: string): string {
+  return provider.trim().toLowerCase();
+}
+
+export function quotaSnapshotId(
+  webId: string,
+  deployment: GatewayDeployment,
+  provider: string,
+  credentialIri: string,
+): string {
+  const encoded = Buffer
+    .from(`${webId}\n${deployment}\n${normalizeProvider(provider)}\n${credentialIri}`)
+    .toString('base64url')
+    .slice(0, 96);
+  return `ai/gateway/quota.ttl#${encoded}`;
+}
+
+function retryAfterSeconds(value: string | null | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return seconds;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return undefined;
+  }
+  return Math.max(0, Math.ceil((date.getTime() - Date.now()) / 1000));
+}
+
+function sanitizeSnapshot(snapshot: NormalizedQuotaSnapshot): NormalizedQuotaSnapshot {
+  return {
+    ...snapshot,
+    windows: snapshot.windows.map((window) => ({ ...window })),
+    metadata: snapshot.metadata ? sanitizeMetadata(snapshot.metadata) : undefined,
+  };
+}
+
+function sanitizeMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(metadata, (_key, value) => {
+    if (typeof value === 'string' && /secret|sk-|api[_-]?key/i.test(value)) {
+      return '[redacted]';
+    }
+    return value;
+  })) as Record<string, unknown>;
+}
+
+function publicSnapshot(snapshot: NormalizedQuotaSnapshot): NormalizedQuotaSnapshot {
+  return sanitizeSnapshot(snapshot);
+}
+
+function snapshotFromRow(row: QuotaSnapshotRow, stale: boolean): NormalizedQuotaSnapshot {
+  return sanitizeSnapshot({
+    id: String(row.id),
+    credential: String(row.credential),
+    status: row.status === 'available' || row.status === 'unsupported' ? row.status : 'error',
+    balance: typeof row.balance === 'number' ? row.balance : undefined,
+    windows: parseWindows(row.windows),
+    observedAt: toIso(row.observedAt),
+    expiresAt: toIso(row.expiresAt),
+    source: typeof row.source === 'string' ? row.source : '',
+    stale,
+  });
+}
+
+function parseWindows(value: unknown): QuotaWindow[] {
+  if (typeof value !== 'string') {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => item && typeof item === 'object' && typeof item.name === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function toIso(value: unknown): string {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return new Date(0).toISOString();
+}
+
+function toMs(value: unknown): number {
+  return new Date(toIso(value)).getTime();
+}
+
+function rowBelongsToScope(row: QuotaSnapshotRow, input: {
+  webId?: string;
+  deployment: GatewayDeployment;
+  provider: string;
+  credentialIri?: string;
+}): boolean {
+  const id = String(row.id ?? '');
+  const source = String(row.source ?? '');
+  const scope = scopeFromQuotaSnapshotId(id);
+  if (!scope) {
+    return false;
+  }
+  return (!input.webId || scope.webId === input.webId)
+    && scope.deployment === input.deployment
+    && scope.provider === normalizeProvider(input.provider)
+    && (!input.credentialIri || scope.credentialIri === input.credentialIri)
+    && source.startsWith(`${normalizeProvider(input.provider)}:`);
+}
+
+function scopeFromQuotaSnapshotId(id: string): {
+  webId: string;
+  deployment: GatewayDeployment;
+  provider: string;
+  credentialIri: string;
+} | undefined {
+  const marker = 'ai/gateway/quota.ttl#';
+  if (!id.startsWith(marker)) {
+    return undefined;
+  }
+  try {
+    const decoded = Buffer.from(id.slice(marker.length), 'base64url').toString('utf8');
+    const [webId, deployment, provider, credentialIri] = decoded.split('\n');
+    if ((deployment !== 'cloud' && deployment !== 'local') || !webId || !provider || !credentialIri) {
+      return undefined;
+    }
+    return {
+      webId,
+      deployment,
+      provider: normalizeProvider(provider),
+      credentialIri,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function createDefaultQuotaSnapshotDb(input: {
+  owner: string;
+  auth?: AuthContext;
+  fetch: typeof fetch;
+}): Promise<QuotaSnapshotDb> {
+  return Promise.resolve(drizzle(
+    {
+      fetch: input.fetch,
+      info: { webId: input.owner, isLoggedIn: true },
+    } as any,
+    {
+      schema: {
+        quotaSnapshot: quotaSnapshotResource,
+      },
+    },
+  ) as unknown as QuotaSnapshotDb);
+}
+
+function createAuthFetch(auth: AuthContext | undefined): typeof fetch | undefined {
+  if (auth && isSolidAuth(auth) && auth.accessToken) {
+    const scheme = auth.tokenType ?? 'Bearer';
+    return async (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (!headers.has('Authorization')) {
+        headers.set('Authorization', `${scheme} ${auth.accessToken}`);
+      }
+      return fetch(input, { ...init, headers });
+    };
+  }
+  return undefined;
+}
