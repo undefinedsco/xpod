@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
+import { webcrypto } from 'node:crypto';
 import { CloudKmsWrapper, type CloudKmsClient } from '../../../src/api/ai-gateway/credentials/CloudKmsWrapper';
-import { LocalKeychainWrapper, type LocalSecureStore } from '../../../src/api/ai-gateway/credentials/LocalKeychainWrapper';
-import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
+import {
+  LOCAL_KEYCHAIN_WRAP_AAD_PURPOSE,
+  LOCAL_KEYCHAIN_WRAP_AAD_VERSION,
+  LocalKeychainWrapper,
+  type LocalSecureStore,
+} from '../../../src/api/ai-gateway/credentials/LocalKeychainWrapper';
+import {
+  CREDENTIAL_SECRET_AAD_PURPOSE,
+  CREDENTIAL_SECRET_AAD_VERSION,
+  WebCryptoCredentialVault,
+} from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
 import type {
   EncryptedCredentialSecret,
   KeyWrapContext,
@@ -47,6 +57,32 @@ class RecordingKeyWrapper implements KeyWrapper {
   }
 }
 
+class ReferenceCapturingKeyWrapper implements KeyWrapper {
+  public wrappedDekReference?: Uint8Array;
+  public unwrappedDekReference?: Uint8Array;
+  private readonly keys = new Map<string, Uint8Array>();
+
+  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
+    this.wrappedDekReference = dek;
+    const keyId = `${context.webId}|${context.credentialIri}|${context.provider}`;
+    this.keys.set(keyId, new Uint8Array(dek));
+    return {
+      algorithm: 'reference-test-wrapper',
+      keyId,
+      wrappedDek: Buffer.from(keyId).toString('base64url'),
+    };
+  }
+
+  public async unwrapDek(context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
+    const dek = this.keys.get(wrapped.keyId);
+    if (!dek) {
+      throw new Error('missing captured DEK');
+    }
+    this.unwrappedDekReference = new Uint8Array(dek);
+    return this.unwrappedDekReference;
+  }
+}
+
 describe('WebCryptoCredentialVault', () => {
   it('seals and opens provider secrets without serializing plaintext into the Pod payload', async () => {
     const wrapper = new RecordingKeyWrapper();
@@ -60,6 +96,8 @@ describe('WebCryptoCredentialVault', () => {
     const encrypted = await vault.seal(principal, credentialIri, provider, secret);
 
     expect(encrypted.algorithm).toBe('AES-256-GCM');
+    expect(encrypted.aadPurpose).toBe(CREDENTIAL_SECRET_AAD_PURPOSE);
+    expect(encrypted.aadVersion).toBe(CREDENTIAL_SECRET_AAD_VERSION);
     expect(encrypted.webId).toBe(principal.webId);
     expect(encrypted.credentialIri).toBe(credentialIri);
     expect(encrypted.provider).toBe(provider);
@@ -98,6 +136,24 @@ describe('WebCryptoCredentialVault', () => {
       .rejects.toThrow(/credential secret could not be decrypted/i);
     await expect(vault.open(principal, credentialIri, 'anthropic', encrypted))
       .rejects.toThrow(/credential secret could not be decrypted/i);
+  });
+
+  it('binds credential ciphertext to a fixed purpose and version domain', async () => {
+    const wrapper = new RecordingKeyWrapper();
+    const vault = new WebCryptoCredentialVault({ keyWrapper: wrapper });
+    const encrypted = await vault.seal(principal, credentialIri, provider, {
+      type: 'apiKey',
+      apiKey: 'domain-bound-secret',
+    });
+
+    await expect(vault.open(principal, credentialIri, provider, {
+      ...encrypted,
+      aadPurpose: 'xpod.ai-gateway.other-purpose',
+    })).rejects.toThrow(/credential secret could not be decrypted/i);
+    await expect(vault.open(principal, credentialIri, provider, {
+      ...encrypted,
+      aadVersion: 'v0',
+    })).rejects.toThrow(/credential secret could not be decrypted/i);
   });
 
   it('fails closed on ciphertext tampering without leaking plaintext in errors or logs', async () => {
@@ -147,6 +203,48 @@ describe('WebCryptoCredentialVault', () => {
     });
   });
 
+  it('zeros owned DEK and serialized/decrypted plaintext byte buffers after use', async () => {
+    const wrapper = new ReferenceCapturingKeyWrapper();
+    const vault = new WebCryptoCredentialVault({ keyWrapper: wrapper });
+    const capturedSealPlaintexts: Uint8Array[] = [];
+    const originalEncrypt = webcrypto.subtle.encrypt.bind(webcrypto.subtle);
+    const encryptPassthrough = vi.spyOn(webcrypto.subtle, 'encrypt').mockImplementation(async (algorithm, key, data) => {
+      capturedSealPlaintexts.push(data as Uint8Array);
+      return await originalEncrypt(algorithm, key, data);
+    });
+
+    const encrypted = await vault.seal(principal, credentialIri, provider, {
+      type: 'apiKey',
+      apiKey: 'cleanup-secret',
+    });
+    encryptPassthrough.mockRestore();
+
+    expect(wrapper.wrappedDekReference).toBeDefined();
+    expect([...wrapper.wrappedDekReference!].every((byte) => byte === 0)).toBe(true);
+    expect(capturedSealPlaintexts).toHaveLength(1);
+    expect([...capturedSealPlaintexts[0]].every((byte) => byte === 0)).toBe(true);
+
+    const decodedPlaintexts: Uint8Array[] = [];
+    const originalDecode = TextDecoder.prototype.decode;
+    const decodeSpy = vi.spyOn(TextDecoder.prototype, 'decode').mockImplementation(function decode(input, options) {
+      if (input instanceof Uint8Array) {
+        decodedPlaintexts.push(input);
+      }
+      return originalDecode.call(this, input, options);
+    });
+    await vault.open(principal, credentialIri, provider, encrypted);
+    decodeSpy.mockRestore();
+
+    expect(wrapper.unwrappedDekReference).toBeDefined();
+    expect([...wrapper.unwrappedDekReference!].every((byte) => byte === 0)).toBe(true);
+    expect(decodedPlaintexts).toHaveLength(1);
+    expect([...decodedPlaintexts[0]].every((byte) => byte === 0)).toBe(true);
+
+    await vault.rewrap(principal, encrypted);
+    expect(wrapper.unwrappedDekReference).toBeDefined();
+    expect([...wrapper.unwrappedDekReference!].every((byte) => byte === 0)).toBe(true);
+  });
+
   it('uses an injected local secure-store boundary to wrap and unwrap DEKs', async () => {
     const secrets = new Map<string, string>();
     const secureStore: LocalSecureStore = {
@@ -170,11 +268,113 @@ describe('WebCryptoCredentialVault', () => {
     expect(encrypted.dekWrapAlgorithm).toBe('local-keychain-aes-256-gcm');
     expect(encrypted.keyId).toBe('xpod-local-ai-gateway-master');
     expect(encrypted.keyVersion).toBe('local-v1');
+    expect(encrypted.metadata).toMatchObject({
+      purpose: LOCAL_KEYCHAIN_WRAP_AAD_PURPOSE,
+      version: LOCAL_KEYCHAIN_WRAP_AAD_VERSION,
+    });
     await expect(vault.open(principal, credentialIri, provider, encrypted)).resolves.toMatchObject({
       apiKey: 'local-secret',
     });
     await expect(vault.open(principal, credentialIri, 'anthropic', encrypted))
       .rejects.toThrow(/credential secret could not be decrypted/i);
+  });
+
+  it('keeps concurrent first local seals on the same master key', async () => {
+    const secrets = new Map<string, string>();
+    const getSecret = vi.fn(async (key: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return secrets.get(key) ?? null;
+    });
+    const secureStore: LocalSecureStore = {
+      getSecret,
+      setSecret: vi.fn(async (key, value) => {
+        secrets.set(key, value);
+      }),
+    };
+    const firstWrapper = new LocalKeychainWrapper({
+      secureStore,
+      keyId: 'xpod-concurrent-master',
+    });
+    const secondWrapper = new LocalKeychainWrapper({
+      secureStore,
+      keyId: 'xpod-concurrent-master',
+    });
+    const firstVault = new WebCryptoCredentialVault({ keyWrapper: firstWrapper });
+    const secondVault = new WebCryptoCredentialVault({ keyWrapper: secondWrapper });
+
+    const [first, second] = await Promise.all([
+      firstVault.seal(principal, credentialIri, provider, { type: 'apiKey', apiKey: 'first' }),
+      secondVault.seal(principal, credentialIri, provider, { type: 'apiKey', apiKey: 'second' }),
+    ]);
+
+    expect(secureStore.setSecret).toHaveBeenCalledTimes(1);
+    await expect(firstVault.open(principal, credentialIri, provider, first)).resolves.toMatchObject({ apiKey: 'first' });
+    await expect(secondVault.open(principal, credentialIri, provider, second)).resolves.toMatchObject({ apiKey: 'second' });
+  });
+
+  it('uses atomic secure-store getOrCreate when the injected boundary provides it', async () => {
+    const secrets = new Map<string, string>();
+    const secureStore: LocalSecureStore = {
+      getSecret: vi.fn(async (key) => secrets.get(key) ?? null),
+      setSecret: vi.fn(async (key, value) => {
+        secrets.set(key, value);
+      }),
+      getOrCreateSecret: vi.fn(async (key, create) => {
+        const existing = secrets.get(key);
+        if (existing) {
+          return existing;
+        }
+        const created = await create();
+        secrets.set(key, created);
+        return created;
+      }),
+    };
+    const vault = new WebCryptoCredentialVault({
+      keyWrapper: new LocalKeychainWrapper({
+        secureStore,
+        keyId: 'xpod-atomic-master',
+      }),
+    });
+
+    const encrypted = await vault.seal(principal, credentialIri, provider, {
+      type: 'apiKey',
+      apiKey: 'atomic-secret',
+    });
+
+    expect(secureStore.getOrCreateSecret).toHaveBeenCalledTimes(1);
+    expect(secureStore.setSecret).not.toHaveBeenCalled();
+    await expect(vault.open(principal, credentialIri, provider, encrypted)).resolves.toMatchObject({
+      apiKey: 'atomic-secret',
+    });
+  });
+
+  it('rejects local DEK wrappers whose purpose or version domain is changed', async () => {
+    const secrets = new Map<string, string>();
+    const secureStore: LocalSecureStore = {
+      getSecret: vi.fn(async (key) => secrets.get(key) ?? null),
+      setSecret: vi.fn(async (key, value) => {
+        secrets.set(key, value);
+      }),
+    };
+    const vault = new WebCryptoCredentialVault({
+      keyWrapper: new LocalKeychainWrapper({
+        secureStore,
+        keyId: 'xpod-local-domain-master',
+      }),
+    });
+    const encrypted = await vault.seal(principal, credentialIri, provider, {
+      type: 'apiKey',
+      apiKey: 'local-domain-secret',
+    });
+
+    await expect(vault.open(principal, credentialIri, provider, {
+      ...encrypted,
+      metadata: { ...encrypted.metadata, purpose: 'xpod.ai-gateway.other-local-wrap' },
+    })).rejects.toThrow(/credential secret could not be decrypted/i);
+    await expect(vault.open(principal, credentialIri, provider, {
+      ...encrypted,
+      metadata: { ...encrypted.metadata, version: 'v0' },
+    })).rejects.toThrow(/credential secret could not be decrypted/i);
   });
 
   it('delegates Cloud wrapping to an injected KMS client with credential-bound context', async () => {

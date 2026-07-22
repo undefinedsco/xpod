@@ -4,9 +4,13 @@ import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from './KeyWrapper';
 const LOCAL_MASTER_KEY_BYTES = 32;
 const LOCAL_WRAP_NONCE_BYTES = 12;
 
+export const LOCAL_KEYCHAIN_WRAP_AAD_PURPOSE = 'xpod.ai-gateway.local-keychain-dek-wrap';
+export const LOCAL_KEYCHAIN_WRAP_AAD_VERSION = 'v1';
+
 export interface LocalSecureStore {
   getSecret(key: string): Promise<string | null>;
   setSecret(key: string, value: string): Promise<void>;
+  getOrCreateSecret?(key: string, create: () => Promise<string>): Promise<string>;
 }
 
 export interface LocalKeychainWrapperOptions {
@@ -28,21 +32,32 @@ export class LocalKeychainWrapper implements KeyWrapper {
 
   public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
     const masterKey = await this.getOrCreateMasterKey();
-    const nonce = webcrypto.getRandomValues(new Uint8Array(LOCAL_WRAP_NONCE_BYTES));
-    const cryptoKey = await importMasterKey(masterKey, ['encrypt']);
-    const ciphertext = new Uint8Array(await webcrypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: nonce, additionalData: localWrapAad(context, this.keyId) },
-      cryptoKey,
-      dek,
-    ));
+    try {
+      const nonce = webcrypto.getRandomValues(new Uint8Array(LOCAL_WRAP_NONCE_BYTES));
+      const cryptoKey = await importMasterKey(masterKey, ['encrypt']);
+      const ciphertext = new Uint8Array(await webcrypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: nonce, additionalData: localWrapAad(context, this.keyId) },
+        cryptoKey,
+        dek,
+      ));
 
-    return {
-      algorithm: 'local-keychain-aes-256-gcm',
-      keyId: this.keyId,
-      keyVersion: this.keyVersion,
-      wrappedDek: encodeBase64Url(ciphertext),
-      metadata: { nonce: encodeBase64Url(nonce) },
-    };
+      return {
+        algorithm: 'local-keychain-aes-256-gcm',
+        keyId: this.keyId,
+        keyVersion: this.keyVersion,
+        wrappedDek: encodeBase64Url(ciphertext),
+        metadata: {
+          nonce: encodeBase64Url(nonce),
+          purpose: LOCAL_KEYCHAIN_WRAP_AAD_PURPOSE,
+          version: LOCAL_KEYCHAIN_WRAP_AAD_VERSION,
+        },
+      };
+    } finally {
+      // This wipes only the decoded master-key bytes owned by this wrapper call.
+      // The secure-store string and WebCrypto internal/native copies are outside
+      // JavaScript's reliable zeroization boundary.
+      masterKey.fill(0);
+    }
   }
 
   public async unwrapDek(context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
@@ -53,28 +68,38 @@ export class LocalKeychainWrapper implements KeyWrapper {
     if (!nonce) {
       throw new Error('missing local keychain wrap nonce');
     }
+    if (
+      wrapped.metadata?.purpose !== LOCAL_KEYCHAIN_WRAP_AAD_PURPOSE
+      || wrapped.metadata?.version !== LOCAL_KEYCHAIN_WRAP_AAD_VERSION
+    ) {
+      throw new Error('local keychain wrap domain mismatch');
+    }
     const masterKey = await this.getExistingMasterKey(wrapped.keyId);
-    const cryptoKey = await importMasterKey(masterKey, ['decrypt']);
-    const dek = await webcrypto.subtle.decrypt(
-      {
-        name: 'AES-GCM',
-        iv: decodeBase64Url(nonce),
-        additionalData: localWrapAad(context, wrapped.keyId),
-      },
-      cryptoKey,
-      decodeBase64Url(wrapped.wrappedDek),
-    );
-    return new Uint8Array(dek);
+    try {
+      const cryptoKey = await importMasterKey(masterKey, ['decrypt']);
+      const dek = await webcrypto.subtle.decrypt(
+        {
+          name: 'AES-GCM',
+          iv: decodeBase64Url(nonce),
+          additionalData: localWrapAad(context, wrapped.keyId),
+        },
+        cryptoKey,
+        decodeBase64Url(wrapped.wrappedDek),
+      );
+      return new Uint8Array(dek);
+    } finally {
+      masterKey.fill(0);
+    }
   }
 
   private async getOrCreateMasterKey(): Promise<Uint8Array> {
-    const existing = await this.secureStore.getSecret(this.keyId);
-    if (existing) {
-      return decodeBase64Url(existing);
+    if (this.secureStore.getOrCreateSecret) {
+      return decodeBase64Url(await this.secureStore.getOrCreateSecret(
+        this.keyId,
+        async () => generateMasterKeySecret(),
+      ));
     }
-    const key = webcrypto.getRandomValues(new Uint8Array(LOCAL_MASTER_KEY_BYTES));
-    await this.secureStore.setSecret(this.keyId, encodeBase64Url(key));
-    return key;
+    return decodeBase64Url(await getOrCreateLocalSecret(this.secureStore, this.keyId));
   }
 
   private async getExistingMasterKey(keyId: string): Promise<Uint8Array> {
@@ -98,6 +123,8 @@ async function importMasterKey(keyMaterial: Uint8Array, usages: KeyUsage[]): Pro
 
 function localWrapAad(context: KeyWrapContext, keyId: string): Uint8Array {
   return new TextEncoder().encode(JSON.stringify({
+    purpose: LOCAL_KEYCHAIN_WRAP_AAD_PURPOSE,
+    version: LOCAL_KEYCHAIN_WRAP_AAD_VERSION,
     keyId,
     webId: context.webId,
     credentialIri: context.credentialIri,
@@ -115,4 +142,45 @@ function encodeBase64Url(bytes: Uint8Array): string {
 
 function decodeBase64Url(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, 'base64url'));
+}
+
+const localMasterKeyInitializers = new Map<string, Promise<string>>();
+
+async function getOrCreateLocalSecret(secureStore: LocalSecureStore, keyId: string): Promise<string> {
+  const existing = await secureStore.getSecret(keyId);
+  if (existing) {
+    return existing;
+  }
+
+  const running = localMasterKeyInitializers.get(keyId);
+  if (running) {
+    return await running;
+  }
+
+  const created = (async (): Promise<string> => {
+    const existingInsideSingleflight = await secureStore.getSecret(keyId);
+    if (existingInsideSingleflight) {
+      return existingInsideSingleflight;
+    }
+    const secret = generateMasterKeySecret();
+    await secureStore.setSecret(keyId, secret);
+    return secret;
+  })();
+  localMasterKeyInitializers.set(keyId, created);
+  try {
+    return await created;
+  } finally {
+    if (localMasterKeyInitializers.get(keyId) === created) {
+      localMasterKeyInitializers.delete(keyId);
+    }
+  }
+}
+
+function generateMasterKeySecret(): string {
+  const key = webcrypto.getRandomValues(new Uint8Array(LOCAL_MASTER_KEY_BYTES));
+  try {
+    return encodeBase64Url(key);
+  } finally {
+    key.fill(0);
+  }
 }

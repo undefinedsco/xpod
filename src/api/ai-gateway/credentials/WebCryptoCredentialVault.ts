@@ -7,6 +7,9 @@ const AES_GCM_ALGORITHM = 'AES-256-GCM' as const;
 const DEK_BYTES = 32;
 const NONCE_BYTES = 12;
 
+export const CREDENTIAL_SECRET_AAD_PURPOSE = 'xpod.ai-gateway.credential-secret';
+export const CREDENTIAL_SECRET_AAD_VERSION = 'v1';
+
 export interface CredentialVaultLogger {
   warn(message: string, metadata?: Record<string, unknown>): void;
 }
@@ -34,28 +37,38 @@ export class WebCryptoCredentialVault implements CredentialVault {
     const context = this.createContext(principal, credentialIri, provider);
     const dek = webcrypto.getRandomValues(new Uint8Array(DEK_BYTES));
     const nonce = webcrypto.getRandomValues(new Uint8Array(NONCE_BYTES));
-    const key = await importAesGcmKey(dek, ['encrypt']);
-    const plaintext = new TextEncoder().encode(JSON.stringify(secret));
-    const ciphertext = new Uint8Array(await webcrypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: nonce, additionalData: aadFor(context) },
-      key,
-      plaintext,
-    ));
-    const wrapped = await this.keyWrapper.wrapDek(context, dek);
+    let plaintext: Uint8Array | undefined;
+    try {
+      const key = await importAesGcmKey(dek, ['encrypt']);
+      // This byte array is zeroed after encryption. JSON strings and WebCrypto's
+      // internal/native copies are runtime-managed and cannot be reliably wiped.
+      plaintext = new TextEncoder().encode(JSON.stringify(secret));
+      const ciphertext = new Uint8Array(await webcrypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: nonce, additionalData: credentialAadFor(context) },
+        key,
+        plaintext,
+      ));
+      const wrapped = await this.keyWrapper.wrapDek(context, dek);
 
-    return {
-      algorithm: AES_GCM_ALGORITHM,
-      ciphertext: encodeBase64Url(ciphertext),
-      nonce: encodeBase64Url(nonce),
-      webId: context.webId,
-      credentialIri: context.credentialIri,
-      provider: context.provider,
-      dekWrapAlgorithm: wrapped.algorithm,
-      keyId: wrapped.keyId,
-      keyVersion: wrapped.keyVersion,
-      wrappedDek: wrapped.wrappedDek,
-      metadata: wrapped.metadata,
-    };
+      return {
+        algorithm: AES_GCM_ALGORITHM,
+        aadPurpose: CREDENTIAL_SECRET_AAD_PURPOSE,
+        aadVersion: CREDENTIAL_SECRET_AAD_VERSION,
+        ciphertext: encodeBase64Url(ciphertext),
+        nonce: encodeBase64Url(nonce),
+        webId: context.webId,
+        credentialIri: context.credentialIri,
+        provider: context.provider,
+        dekWrapAlgorithm: wrapped.algorithm,
+        keyId: wrapped.keyId,
+        keyVersion: wrapped.keyVersion,
+        wrappedDek: wrapped.wrappedDek,
+        metadata: wrapped.metadata,
+      };
+    } finally {
+      dek.fill(0);
+      plaintext?.fill(0);
+    }
   }
 
   public async open(
@@ -64,20 +77,25 @@ export class WebCryptoCredentialVault implements CredentialVault {
     provider: string,
     encrypted: EncryptedCredentialSecret,
   ): Promise<ProviderSecret> {
+    let dek: Uint8Array | undefined;
+    let plaintext: Uint8Array | undefined;
     try {
       const context = this.assertContext(principal, credentialIri, provider, encrypted);
       const wrapped = wrappedDataKeyFromEncrypted(encrypted);
-      const dek = await this.keyWrapper.unwrapDek(context, wrapped);
+      dek = await this.keyWrapper.unwrapDek(context, wrapped);
       const key = await importAesGcmKey(dek, ['decrypt']);
-      const plaintext = new Uint8Array(await webcrypto.subtle.decrypt(
+      plaintext = new Uint8Array(await webcrypto.subtle.decrypt(
         {
           name: 'AES-GCM',
           iv: decodeBase64Url(encrypted.nonce),
-          additionalData: aadFor(context),
+          additionalData: credentialAadFor(context),
         },
         key,
         decodeBase64Url(encrypted.ciphertext),
       ));
+      // The decrypted byte array is zeroed after JSON parsing. The decoded JSON
+      // string and parsed object are intentionally short-lived but cannot be
+      // forcibly wiped by JavaScript.
       const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext));
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('decrypted credential secret is not an object');
@@ -86,6 +104,9 @@ export class WebCryptoCredentialVault implements CredentialVault {
     } catch (error) {
       this.logOpenFailure(principal, credentialIri, provider, error);
       throw new CredentialVaultError();
+    } finally {
+      dek?.fill(0);
+      plaintext?.fill(0);
     }
   }
 
@@ -93,9 +114,10 @@ export class WebCryptoCredentialVault implements CredentialVault {
     principal: GatewayPrincipal,
     encrypted: EncryptedCredentialSecret,
   ): Promise<EncryptedCredentialSecret> {
+    let dek: Uint8Array | undefined;
     try {
       const context = this.assertContext(principal, encrypted.credentialIri, encrypted.provider, encrypted);
-      const dek = await this.keyWrapper.unwrapDek(context, wrappedDataKeyFromEncrypted(encrypted));
+      dek = await this.keyWrapper.unwrapDek(context, wrappedDataKeyFromEncrypted(encrypted));
       const wrapped = await this.keyWrapper.wrapDek(context, dek);
       return {
         ...encrypted,
@@ -108,6 +130,8 @@ export class WebCryptoCredentialVault implements CredentialVault {
     } catch (error) {
       this.logRewrapFailure(principal, encrypted, error);
       throw new CredentialVaultError('Credential secret could not be rewrapped');
+    } finally {
+      dek?.fill(0);
     }
   }
 
@@ -132,6 +156,8 @@ export class WebCryptoCredentialVault implements CredentialVault {
     const context = this.createContext(principal, credentialIri, provider);
     if (
       encrypted.algorithm !== AES_GCM_ALGORITHM
+      || encrypted.aadPurpose !== CREDENTIAL_SECRET_AAD_PURPOSE
+      || encrypted.aadVersion !== CREDENTIAL_SECRET_AAD_VERSION
       || encrypted.webId !== context.webId
       || encrypted.credentialIri !== context.credentialIri
       || encrypted.provider !== context.provider
@@ -179,8 +205,10 @@ function wrappedDataKeyFromEncrypted(encrypted: EncryptedCredentialSecret): Wrap
   };
 }
 
-function aadFor(context: KeyWrapContext): Uint8Array {
+function credentialAadFor(context: KeyWrapContext): Uint8Array {
   return new TextEncoder().encode(JSON.stringify({
+    purpose: CREDENTIAL_SECRET_AAD_PURPOSE,
+    version: CREDENTIAL_SECRET_AAD_VERSION,
     webId: context.webId,
     credentialIri: context.credentialIri,
     provider: context.provider,
