@@ -31,7 +31,7 @@ export class AnthropicRuntimeAdapter extends BaseProviderRuntimeAdapter {
     try {
       yield* parseAnthropicMessagesSse(this.transport.postSse({
         url: `${baseUrl}/messages`,
-        body: toAnthropicBody(input.request),
+        body: toAnthropicBody(input.request, { maxOutputTokensDefault: this.maxOutputTokensDefault }),
         headers,
         proxy: input.credential?.proxy,
         signal: input.signal,

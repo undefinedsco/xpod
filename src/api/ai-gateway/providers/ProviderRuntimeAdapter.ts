@@ -34,6 +34,7 @@ export interface ProviderRuntimeAdapter {
 
 export interface ProviderRuntimeAdapterOptions {
   transport?: ProviderHttpTransport;
+  maxOutputTokensDefault?: number;
 }
 
 export interface CompatibleChatAdapterOptions extends ProviderRuntimeAdapterOptions {
@@ -52,9 +53,11 @@ export interface CompatibleChatAdapterOptions extends ProviderRuntimeAdapterOpti
 export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapter {
   public abstract readonly provider: string;
   protected readonly transport: ProviderHttpTransport;
+  protected readonly maxOutputTokensDefault: number;
 
   protected constructor(options: ProviderRuntimeAdapterOptions = {}) {
     this.transport = options.transport ?? new ProviderHttpTransport();
+    this.maxOutputTokensDefault = options.maxOutputTokensDefault ?? 4096;
   }
 
   public abstract execute(input: ProviderRuntimeExecuteInput): AsyncIterable<GatewayEvent>;
@@ -153,7 +156,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
         body,
         proxy: input.credential?.proxy,
         signal: input.signal,
-      }));
+      }), input.apiKey);
     } catch (error) {
       this.handleTransportError(error, input.apiKey);
     }
@@ -221,6 +224,7 @@ export function toResponsesBody(request: GatewayRequest): Record<string, unknown
     stream: true,
     ...(request.instructions ? { instructions: request.instructions } : {}),
     ...(request.previousResponseId ? { previous_response_id: request.previousResponseId } : {}),
+    ...(request.maxOutputTokens !== undefined ? { max_output_tokens: request.maxOutputTokens } : {}),
     ...(request.reasoning?.effort ? { reasoning: { effort: request.reasoning.effort } } : {}),
     input: request.messages.map((message) => ({
       role: message.role,
@@ -232,11 +236,13 @@ export function toResponsesBody(request: GatewayRequest): Record<string, unknown
   };
 }
 
-export function toAnthropicBody(request: GatewayRequest): Record<string, unknown> {
+export function toAnthropicBody(request: GatewayRequest, options: { maxOutputTokensDefault?: number } = {}): Record<string, unknown> {
+  const maxTokens = request.maxOutputTokens ?? options.maxOutputTokensDefault ?? 4096;
   return {
     ...request.protocolExtensions.anthropic,
     model: request.model,
     stream: true,
+    max_tokens: maxTokens,
     ...(request.instructions ? { system: request.instructions } : {}),
     messages: request.messages.map((message) => ({
       role: message.role === 'tool' ? 'user' : message.role,
@@ -267,6 +273,7 @@ export function toChatCompletionsBody(
     ...options.extraReasoningBody,
     model: request.model,
     stream: true,
+    ...(request.maxOutputTokens !== undefined ? { max_tokens: request.maxOutputTokens } : {}),
     ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
     messages: [
       ...(request.instructions ? [{ role: 'system', content: request.instructions }] : []),
@@ -341,6 +348,7 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
 export async function* parseAnthropicMessagesSse(events: AsyncIterable<ProviderSseEvent>, secret?: string): AsyncIterable<GatewayEvent> {
   const toolArguments = new ToolArgumentTracker();
   const toolBlocks = new Map<number, string>();
+  let latestStopReason: string | undefined;
   for await (const event of events) {
     const payload = parseJsonSseData(event.data);
     if (!payload) {
@@ -403,12 +411,14 @@ export async function* parseAnthropicMessagesSse(events: AsyncIterable<ProviderS
         yield { type: 'tool.completed', callId };
       }
     } else if (type === 'message_delta') {
+      const delta = objectField(payload, 'delta');
+      latestStopReason = stringField(delta, 'stop_reason') ?? latestStopReason;
       const usage = parseAnthropicUsage(objectField(payload, 'usage'));
       if (usage) {
         yield { type: 'usage', usage };
       }
     } else if (type === 'message_stop') {
-      yield { type: 'response.completed', finishReason: stringField(payload, 'stop_reason') ?? 'stop' };
+      yield { type: 'response.completed', finishReason: stringField(payload, 'stop_reason') ?? latestStopReason ?? 'stop' };
     } else if (type === 'error') {
       throw providerStreamError(payload, anthopicErrorStatus(payload), secret);
     }

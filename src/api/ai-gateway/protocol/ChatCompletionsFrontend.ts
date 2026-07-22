@@ -21,6 +21,8 @@ const CHAT_COMPLETIONS_NORMALIZED_KEYS = [
   'messages',
   'tools',
   'reasoning_effort',
+  'max_tokens',
+  'max_completion_tokens',
   'stream',
 ] as const;
 
@@ -50,6 +52,7 @@ export class ChatCompletionsFrontend implements GatewayProtocolFrontend {
       reasoning: record.reasoning_effort === undefined
         ? undefined
         : { effort: String(record.reasoning_effort) },
+      maxOutputTokens: numberOrUndefined(record.max_completion_tokens) ?? numberOrUndefined(record.max_tokens),
       stream: booleanValue(record.stream),
       protocolExtensions: extractExtension(record, this.protocol, CHAT_COMPLETIONS_NORMALIZED_KEYS),
     };
@@ -58,6 +61,10 @@ export class ChatCompletionsFrontend implements GatewayProtocolFrontend {
   public createEventSerializer(): GatewayEventSerializer {
     return new ChatCompletionsEventSerializer();
   }
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 class ChatCompletionsEventSerializer implements GatewayEventSerializer {

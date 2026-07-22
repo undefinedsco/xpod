@@ -129,11 +129,14 @@ export async function* parseSseStream(stream: ReadableStream<Uint8Array>): Async
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let completed = false;
+  let failure: unknown;
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
+        completed = true;
         break;
       }
       buffer += decoder.decode(value, { stream: true });
@@ -153,7 +156,19 @@ export async function* parseSseStream(stream: ReadableStream<Uint8Array>): Async
     if (parsed) {
       yield parsed;
     }
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
+    if (!completed) {
+      try {
+        await reader.cancel();
+      } catch (cancelError) {
+        if (failure === undefined) {
+          throw cancelError;
+        }
+      }
+    }
     reader.releaseLock();
   }
 }

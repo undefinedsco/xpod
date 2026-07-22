@@ -13,6 +13,7 @@ import {
   ProviderRegistry,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
+import { parseSseStream } from '../../../src/api/service/provider-http-transport';
 
 interface CapturedRequest {
   url: string;
@@ -236,6 +237,20 @@ describe('Provider runtime adapters', () => {
       code: 'provider_error',
       status: 503,
     });
+
+    const stopReasonFixture = fetchFixture(new Response(jsonSse([
+      { type: 'message_start', message: { id: 'msg_stop' } },
+      { type: 'message_delta', delta: { stop_reason: 'max_tokens' } },
+      { type: 'message_stop' },
+      '[DONE]',
+    ]), { status: 200 }));
+    const stopReasonAdapter = new AnthropicRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: stopReasonFixture.fetch }),
+    });
+    await expect(collect(stopReasonAdapter.execute({
+      request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
+      apiKey: 'sk-ant-secret',
+    }))).resolves.toContainEqual({ type: 'response.completed', finishReason: 'max_tokens' });
   });
 
   it('handles Kimi chat deltas and maps reasoning only when the live registry model allows it', async () => {
@@ -597,7 +612,7 @@ describe('Provider runtime adapters', () => {
     }
   });
 
-  it('redacts secrets from streaming provider errors', async () => {
+  it('redacts secrets from streaming provider errors across native and OpenAI-compatible adapters', async () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { type: 'error', error: { type: 'rate_limit_error', message: 'secret is sk-stream-secret' } },
     ]), { status: 200 }));
@@ -607,6 +622,94 @@ describe('Provider runtime adapters', () => {
       request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
       apiKey: 'sk-stream-secret',
     }))).rejects.not.toThrow(/sk-stream-secret/);
+
+    for (const factory of [
+      (transport: ProviderHttpTransport) => new KimiRuntimeAdapter({ transport }),
+      (transport: ProviderHttpTransport) => new DeepSeekRuntimeAdapter({ transport }),
+    ]) {
+      const compatibleFixture = fetchFixture(() => new Response(jsonSse([
+        { error: { type: 'rate_limit_error', message: 'secret is sk-compatible-secret' } },
+      ]), { status: 200 }));
+      const compatible = factory(new ProviderHttpTransport({ fetch: compatibleFixture.fetch }));
+      await expect(collect(compatible.execute({
+        request: baseRequest({
+          model: compatible.provider === 'kimi' ? 'kimi-k2' : 'deepseek-chat',
+          reasoning: undefined,
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'no image' }] }],
+        }),
+        apiKey: 'sk-compatible-secret',
+      }))).rejects.not.toThrow(/sk-compatible-secret/);
+    }
+  });
+
+  it('normalizes max output tokens into provider request bodies and preserves unknown protocol extensions', async () => {
+    const anthropicFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const anthropic = new AnthropicRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: anthropicFixture.fetch }),
+      maxOutputTokensDefault: 2048,
+    });
+    await collect(anthropic.execute({
+      request: baseRequest({
+        model: 'claude-sonnet-4-5-20250929',
+        maxOutputTokens: 777,
+        protocolExtensions: { anthropic: { top_k: 5 } },
+      }),
+      apiKey: 'sk-ant-secret',
+    }));
+    expect(anthropicFixture.captured[0].body).toMatchObject({
+      max_tokens: 777,
+      top_k: 5,
+    });
+
+    const defaultFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const defaultAnthropic = new AnthropicRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: defaultFixture.fetch }),
+      maxOutputTokensDefault: 4096,
+    });
+    await collect(defaultAnthropic.execute({
+      request: baseRequest({ model: 'claude-sonnet-4-5-20250929', maxOutputTokens: undefined }),
+      apiKey: 'sk-ant-secret',
+    }));
+    expect(defaultFixture.captured[0].body.max_tokens).toBe(4096);
+
+    const bailianCoding = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const bailian = new BailianRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: bailianCoding.fetch }),
+      maxOutputTokensDefault: 1234,
+    });
+    await collect(bailian.execute({
+      request: baseRequest({
+        model: 'qwen-coder-plus',
+        maxOutputTokens: undefined,
+      }),
+      apiKey: 'sk-sp-bailian',
+      credential: {
+        keyType: 'codingPlan',
+        baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+      },
+    }));
+    expect(bailianCoding.captured[0].body.max_tokens).toBe(1234);
+  });
+
+  it('cancels the SSE reader when a consumer returns early', async () => {
+    let canceled = false;
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"ok":true}\n\n'));
+      },
+      cancel() {
+        canceled = true;
+      },
+    });
+
+    const iterator = parseSseStream(stream)[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { data: '{"ok":true}' },
+    });
+    await iterator.return?.();
+    expect(canceled).toBe(true);
   });
 
   it('passes AbortSignal to upstream fetch and rejects unsafe configured provider endpoints', async () => {

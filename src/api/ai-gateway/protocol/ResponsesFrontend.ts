@@ -21,6 +21,7 @@ const RESPONSES_NORMALIZED_KEYS = [
   'input',
   'tools',
   'reasoning',
+  'max_output_tokens',
   'previous_response_id',
   'stream',
 ] as const;
@@ -54,6 +55,7 @@ export class ResponsesFrontend implements GatewayProtocolFrontend {
             exposeSummary: reasoning.summary !== undefined && reasoning.summary !== false,
           }
         : undefined,
+      maxOutputTokens: numberOrUndefined(record.max_output_tokens),
       previousResponseId: stringOrUndefined(record.previous_response_id),
       stream: booleanValue(record.stream),
       protocolExtensions: extractExtension(record, this.protocol, RESPONSES_NORMALIZED_KEYS),
@@ -63,6 +65,10 @@ export class ResponsesFrontend implements GatewayProtocolFrontend {
   public createEventSerializer(): GatewayEventSerializer {
     return new ResponsesEventSerializer();
   }
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 class ResponsesEventSerializer implements GatewayEventSerializer {

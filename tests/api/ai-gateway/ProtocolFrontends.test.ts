@@ -30,6 +30,7 @@ describe('AI Gateway protocol frontends', () => {
         },
       ],
       reasoning: { effort: 'high', summary: 'auto' },
+      max_output_tokens: 1234,
       previous_response_id: 'resp_previous',
       stream: true,
       store: false,
@@ -42,6 +43,7 @@ describe('AI Gateway protocol frontends', () => {
       stream: true,
       previousResponseId: 'resp_previous',
       reasoning: { effort: 'high', exposeSummary: true },
+      maxOutputTokens: 1234,
     });
     expect(request.messages[0]).toEqual({
       role: 'user',
@@ -89,6 +91,7 @@ describe('AI Gateway protocol frontends', () => {
         },
       ],
       thinking: { type: 'enabled', budget_tokens: 4096 },
+      max_tokens: 8192,
       stream: true,
       top_k: 5,
     });
@@ -96,6 +99,7 @@ describe('AI Gateway protocol frontends', () => {
     expect(request.model).toBe('claude-sonnet-4.5');
     expect(request.instructions).toBe('Use terse output.');
     expect(request.reasoning).toEqual({ effort: '4096' });
+    expect(request.maxOutputTokens).toBe(8192);
     expect(request.messages[0].content).toEqual([
       { type: 'text', text: 'What is in this file?' },
       {
@@ -137,6 +141,7 @@ describe('AI Gateway protocol frontends', () => {
         },
       ],
       reasoning_effort: 'medium',
+      max_completion_tokens: 2048,
       stream: true,
       parallel_tool_calls: true,
       response_format: { type: 'json_object' },
@@ -147,6 +152,7 @@ describe('AI Gateway protocol frontends', () => {
       instructions: 'System instruction.\nDeveloper instruction.',
       stream: true,
       reasoning: { effort: 'medium' },
+      maxOutputTokens: 2048,
     });
     expect(request.messages).toEqual([
       {

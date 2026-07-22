@@ -46,8 +46,9 @@ export class MessagesFrontend implements GatewayProtocolFrontend {
       reasoning: thinking
         ? {
             effort: thinking.budget_tokens === undefined ? undefined : String(thinking.budget_tokens),
-          }
+        }
         : undefined,
+      maxOutputTokens: numberOrUndefined(record.max_tokens),
       stream: booleanValue(record.stream),
       protocolExtensions: extractExtension(record, this.protocol, MESSAGES_NORMALIZED_KEYS),
     };
@@ -56,6 +57,10 @@ export class MessagesFrontend implements GatewayProtocolFrontend {
   public createEventSerializer(): GatewayEventSerializer {
     return new MessagesEventSerializer();
   }
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 class MessagesEventSerializer implements GatewayEventSerializer {

@@ -43,6 +43,7 @@ export interface GatewayRequest {
   messages: GatewayMessage[];
   tools: GatewayTool[];
   reasoning?: GatewayReasoningOptions;
+  maxOutputTokens?: number;
   previousResponseId?: string;
   stream: boolean;
   protocolExtensions: Partial<Record<GatewayProtocol, Record<string, unknown>>>;
