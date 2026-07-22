@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
-import { CloudKmsWrapper, type CloudKmsClient } from '../../../src/api/ai-gateway/credentials/CloudKmsWrapper';
+import {
+  CLOUD_KMS_WRAP_CONTEXT_PURPOSE,
+  CLOUD_KMS_WRAP_CONTEXT_VERSION,
+  CloudKmsWrapper,
+  type CloudKmsClient,
+} from '../../../src/api/ai-gateway/credentials/CloudKmsWrapper';
 import {
   LOCAL_KEYCHAIN_WRAP_AAD_PURPOSE,
   LOCAL_KEYCHAIN_WRAP_AAD_VERSION,
@@ -379,14 +384,17 @@ describe('WebCryptoCredentialVault', () => {
 
   it('delegates Cloud wrapping to an injected KMS client with credential-bound context', async () => {
     const encryptedDeks = new Map<string, Uint8Array>();
+    const expectedContext = {
+      purpose: CLOUD_KMS_WRAP_CONTEXT_PURPOSE,
+      version: CLOUD_KMS_WRAP_CONTEXT_VERSION,
+      webId: principal.webId,
+      credentialIri,
+      provider,
+    };
     const kmsClient: CloudKmsClient = {
       encrypt: vi.fn(async (input) => {
         expect(input.keyArn).toBe('arn:example:kms:ai-gateway');
-        expect(input.encryptionContext).toEqual({
-          webId: principal.webId,
-          credentialIri,
-          provider,
-        });
+        expect(input.encryptionContext).toEqual(expectedContext);
         const ciphertext = new Uint8Array(input.plaintext).reverse();
         const encoded = Buffer.from(ciphertext).toString('base64url');
         encryptedDeks.set(encoded, new Uint8Array(input.plaintext));
@@ -397,11 +405,7 @@ describe('WebCryptoCredentialVault', () => {
         };
       }),
       decrypt: vi.fn(async (input) => {
-        expect(input.encryptionContext).toEqual({
-          webId: principal.webId,
-          credentialIri,
-          provider,
-        });
+        expect(input.encryptionContext).toEqual(expectedContext);
         const plaintext = encryptedDeks.get(Buffer.from(input.ciphertext).toString('base64url'));
         if (!plaintext) {
           throw new Error('missing encrypted DEK');
@@ -423,8 +427,21 @@ describe('WebCryptoCredentialVault', () => {
 
     expect(encrypted.dekWrapAlgorithm).toBe('cloud-kms');
     expect(encrypted.keyVersion).toBe('cloud-v1');
+    expect(encrypted.metadata).toMatchObject({
+      keyArn: 'arn:example:kms:ai-gateway',
+      purpose: CLOUD_KMS_WRAP_CONTEXT_PURPOSE,
+      version: CLOUD_KMS_WRAP_CONTEXT_VERSION,
+    });
     await expect(vault.open(principal, credentialIri, provider, encrypted)).resolves.toMatchObject({
       accessToken: 'cloud-access-token',
     });
+    await expect(vault.open(principal, credentialIri, provider, {
+      ...encrypted,
+      metadata: { keyArn: 'arn:example:kms:ai-gateway' },
+    })).rejects.toThrow(/credential secret could not be decrypted/i);
+    await expect(vault.open(principal, credentialIri, provider, {
+      ...encrypted,
+      metadata: { ...encrypted.metadata, purpose: 'xpod.ai-gateway.other-cloud-wrap' },
+    })).rejects.toThrow(/credential secret could not be decrypted/i);
   });
 });

@@ -1,5 +1,8 @@
 import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from './KeyWrapper';
 
+export const CLOUD_KMS_WRAP_CONTEXT_PURPOSE = 'xpod.ai-gateway.cloud-kms-dek-wrap';
+export const CLOUD_KMS_WRAP_CONTEXT_VERSION = 'v1';
+
 export interface CloudKmsEncryptInput {
   keyArn: string;
   plaintext: Uint8Array;
@@ -52,13 +55,23 @@ export class CloudKmsWrapper implements KeyWrapper {
       keyId: encrypted.keyId ?? this.keyArn,
       keyVersion: encrypted.keyVersion,
       wrappedDek: Buffer.from(encrypted.ciphertext).toString('base64url'),
-      metadata: { keyArn: this.keyArn },
+      metadata: {
+        keyArn: this.keyArn,
+        purpose: CLOUD_KMS_WRAP_CONTEXT_PURPOSE,
+        version: CLOUD_KMS_WRAP_CONTEXT_VERSION,
+      },
     };
   }
 
   public async unwrapDek(context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
     if (wrapped.algorithm !== 'cloud-kms') {
       throw new Error('unsupported cloud KMS wrap algorithm');
+    }
+    if (
+      wrapped.metadata?.purpose !== CLOUD_KMS_WRAP_CONTEXT_PURPOSE
+      || wrapped.metadata?.version !== CLOUD_KMS_WRAP_CONTEXT_VERSION
+    ) {
+      throw new Error('cloud KMS wrap domain mismatch');
     }
     const decrypted = await this.kmsClient.decrypt({
       keyArn: wrapped.metadata?.keyArn ?? this.keyArn,
@@ -71,6 +84,8 @@ export class CloudKmsWrapper implements KeyWrapper {
 
 function kmsEncryptionContext(context: KeyWrapContext): Record<string, string> {
   return {
+    purpose: CLOUD_KMS_WRAP_CONTEXT_PURPOSE,
+    version: CLOUD_KMS_WRAP_CONTEXT_VERSION,
     webId: context.webId,
     credentialIri: context.credentialIri,
     provider: context.provider,
