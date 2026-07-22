@@ -108,6 +108,7 @@ describe('Provider Connect capabilities', () => {
     expect(registry.requireProvider('kimi').connect).toMatchObject({
       configured: false,
       experimental: true,
+      publicCallbackSupported: false,
     });
     expect(registry.requireProvider('deepseek').connect).toMatchObject({
       mode: 'connectUnsupported',
@@ -197,6 +198,19 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       webId: WEB_ID,
     });
 
+    await expect(adapter.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      attemptId: begun.attemptId,
+      state: begun.state,
+      signature: begun.signature,
+    })).resolves.toMatchObject({
+      mode: 'browserAssistedApiKey',
+      status: 'completed',
+      provider: 'openai',
+    });
+
     await expect(adapter.completeApiKey({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -230,6 +244,19 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       requestedMode: 'browserAssistedApiKey',
     });
     now = new Date('2026-07-23T00:05:01.000Z');
+
+    await expect(adapter.status({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'anthropic',
+      attemptId: begun.attemptId,
+      state: begun.state,
+      signature: begun.signature,
+    })).resolves.toMatchObject({
+      mode: 'browserAssistedApiKey',
+      status: 'expired',
+      provider: 'anthropic',
+    });
 
     await expect(adapter.completeApiKey({
       webId: WEB_ID,
@@ -358,6 +385,21 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       state: begun.state,
       signature: begun.signature,
     })).resolves.toMatchObject({ status: 'completed' });
+
+    await expect(adapter.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      attemptId: begun.attemptId,
+      state: begun.state,
+      signature: begun.signature,
+    })).resolves.toMatchObject({
+      mode: 'deviceCodeOAuth',
+      status: 'completed',
+      provider: 'kimi',
+      deviceCode: 'kimi-device-code',
+    });
+
     const callsAfterCompletion = calls.length;
     await expect(adapter.pollDevice({
       webId: WEB_ID,

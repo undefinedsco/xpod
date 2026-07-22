@@ -368,7 +368,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     if (!input.apiKey.trim()) {
       throw new Error('API key is required');
     }
-    const attempt = await this.loadValidAttempt(input, 'browserAssistedApiKey');
+    const attempt = await this.loadConsumableAttempt(input, 'browserAssistedApiKey');
     const consumed = await this.attempts.consume(input.attemptId, this.now());
     const credentialIri = credentialIriFor(input.webId, input.deployment, this.provider);
     const encryptedSecret = await this.vault.seal(
@@ -401,10 +401,10 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
   }
 
   public async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const attempt = await this.loadValidAttempt(input, 'browserAssistedApiKey');
+    const attempt = await this.loadAttemptForStatus(input, 'browserAssistedApiKey');
     return {
       mode: attempt.mode,
-      status: attempt.consumedAt ? 'completed' : 'pending',
+      status: this.statusForAttempt(attempt),
       provider: this.provider,
       deployment: input.deployment,
       attemptId: attempt.id,
@@ -436,7 +436,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     return this.attempts.create({ ...attemptWithoutSignature, signature });
   }
 
-  protected async loadValidAttempt(input: PollDeviceInput, mode: ConnectMode): Promise<ConnectAttempt> {
+  protected async loadAttemptForStatus(input: PollDeviceInput, mode: ConnectMode): Promise<ConnectAttempt> {
     const attempt = await this.attempts.get(input.attemptId);
     if (!attempt) {
       throw new Error('Connect attempt not found');
@@ -459,6 +459,11 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     if (attempt.signature !== input.signature || attempt.signature !== signAttempt(attempt, this.signingSecret)) {
       throw new Error('Invalid Connect attempt signature');
     }
+    return attempt;
+  }
+
+  protected async loadConsumableAttempt(input: PollDeviceInput, mode: ConnectMode): Promise<ConnectAttempt> {
+    const attempt = await this.loadAttemptForStatus(input, mode);
     if (attempt.expiresAt.getTime() <= this.now().getTime()) {
       throw new Error('Connect attempt expired');
     }
@@ -466,6 +471,13 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       throw new Error('Connect attempt already consumed');
     }
     return attempt;
+  }
+
+  protected statusForAttempt(attempt: ConnectAttempt): ConnectAttemptStatus {
+    if (attempt.expiresAt.getTime() <= this.now().getTime()) {
+      return 'expired';
+    }
+    return attempt.consumedAt ? 'completed' : 'pending';
   }
 
   protected assertInput(input: ConnectBeginInput, mode: ConnectMode): void {
@@ -562,7 +574,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
   }
 
   public async pollDevice(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const attempt = await this.loadValidAttempt(input, 'deviceCodeOAuth');
+    const attempt = await this.loadConsumableAttempt(input, 'deviceCodeOAuth');
     const response = await this.fetchImpl(this.tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -602,10 +614,10 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
   }
 
   public override async status(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const attempt = await this.loadValidAttempt(input, 'deviceCodeOAuth');
+    const attempt = await this.loadAttemptForStatus(input, 'deviceCodeOAuth');
     return {
       mode: 'deviceCodeOAuth',
-      status: attempt.consumedAt ? 'completed' : 'pending',
+      status: this.statusForAttempt(attempt),
       provider: 'kimi',
       deployment: input.deployment,
       attemptId: attempt.id,

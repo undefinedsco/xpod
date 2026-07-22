@@ -222,7 +222,7 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       apiKeyManagementSupported: true,
       configured: false,
       experimental: true,
-      publicCallbackSupported: true,
+      publicCallbackSupported: false,
       notes: ['Requires an Xpod/Moonshot-issued device-code OAuth client id; do not reuse the official Kimi CLI client id.'],
     },
     protocols: ['chatCompletions'],
