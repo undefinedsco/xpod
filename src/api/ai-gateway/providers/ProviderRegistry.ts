@@ -179,7 +179,6 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     capabilities: {
       toolCalls: true,
       imageInput: true,
-      reasoningEffort: true,
     },
     models: [
       { id: 'kimi-k2', capabilities: { toolCalls: true } },
@@ -216,7 +215,6 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     safeBaseUrls: ['https://api.deepseek.com/v1'],
     capabilities: {
       toolCalls: true,
-      reasoningEffort: true,
     },
     models: [
       { id: 'deepseek-chat', capabilities: { toolCalls: true } },

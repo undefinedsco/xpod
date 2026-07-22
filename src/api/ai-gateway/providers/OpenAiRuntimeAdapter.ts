@@ -30,7 +30,7 @@ export class OpenAiRuntimeAdapter extends BaseProviderRuntimeAdapter {
         body: toResponsesBody(input.request),
         proxy: input.credential?.proxy,
         signal: input.signal,
-      }));
+      }), input.apiKey);
     } catch (error) {
       this.handleTransportError(error, input.apiKey);
     }

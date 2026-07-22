@@ -9,6 +9,7 @@ import {
   ToolArgumentTracker,
 } from '../types';
 import { type ProviderSseEvent, ProviderHttpTransport } from '../../service/provider-http-transport';
+import type { ProviderDescriptor, ProviderModelDescriptor } from './ProviderRegistry';
 
 export interface ProviderRuntimeCredential {
   baseUrl?: string;
@@ -39,10 +40,13 @@ export interface CompatibleChatAdapterOptions extends ProviderRuntimeAdapterOpti
   provider: string;
   defaultBaseUrl: string;
   safeBaseUrls: string[];
+  descriptor?: ProviderDescriptor;
   supportsImages?: boolean;
   supportsDeveloperMessages?: boolean;
   allowToolChoiceRequired?: boolean;
-  allowReasoningEffort?: boolean;
+  reasoningEffortMapper?: (effort: string, request: GatewayRequest, model?: ProviderModelDescriptor) => string | undefined;
+  fallbackReasoningBody?: (effort: string, request: GatewayRequest, model?: ProviderModelDescriptor) => Record<string, unknown>;
+  preserveReasoningContent?: boolean;
 }
 
 export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapter {
@@ -109,7 +113,10 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
   private readonly supportsImages: boolean;
   private readonly supportsDeveloperMessages: boolean;
   private readonly allowToolChoiceRequired: boolean;
-  private readonly allowReasoningEffort: boolean;
+  private readonly descriptor?: ProviderDescriptor;
+  private readonly reasoningEffortMapper?: CompatibleChatAdapterOptions['reasoningEffortMapper'];
+  private readonly fallbackReasoningBody?: CompatibleChatAdapterOptions['fallbackReasoningBody'];
+  private readonly preserveReasoningContent: boolean;
 
   public constructor(options: CompatibleChatAdapterOptions) {
     super(options);
@@ -119,7 +126,10 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
     this.supportsImages = options.supportsImages ?? true;
     this.supportsDeveloperMessages = options.supportsDeveloperMessages ?? true;
     this.allowToolChoiceRequired = options.allowToolChoiceRequired ?? true;
-    this.allowReasoningEffort = options.allowReasoningEffort ?? false;
+    this.descriptor = options.descriptor;
+    this.reasoningEffortMapper = options.reasoningEffortMapper;
+    this.fallbackReasoningBody = options.fallbackReasoningBody;
+    this.preserveReasoningContent = options.preserveReasoningContent ?? false;
   }
 
   public async *execute(input: ProviderRuntimeExecuteInput): AsyncIterable<GatewayEvent> {
@@ -129,9 +139,11 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
       defaultBaseUrl: this.defaultBaseUrl,
       safeBaseUrls: this.safeBaseUrls,
     });
+    const model = this.findRegisteredModel(input.request.model);
     const body = toChatCompletionsBody(input.request, {
-      includeReasoningEffort: this.allowReasoningEffort,
-      preserveReasoningContent: this.provider === 'deepseek',
+      reasoningEffort: this.resolveReasoningEffort(input.request, model),
+      extraReasoningBody: this.resolveFallbackReasoningBody(input.request, model),
+      preserveReasoningContent: this.preserveReasoningContent,
     });
 
     try {
@@ -170,6 +182,35 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
         details: { provider: this.provider, capability: 'tool_choice.required' },
       });
     }
+  }
+
+  private findRegisteredModel(model: string): ProviderModelDescriptor | undefined {
+    return this.descriptor?.models.find((candidate) => candidate.id === model);
+  }
+
+  private resolveReasoningEffort(
+    request: GatewayRequest,
+    model: ProviderModelDescriptor | undefined,
+  ): string | undefined {
+    const effort = request.reasoning?.effort;
+    if (!effort) {
+      return undefined;
+    }
+    if (this.reasoningEffortMapper) {
+      return this.reasoningEffortMapper(effort, request, model);
+    }
+    return undefined;
+  }
+
+  private resolveFallbackReasoningBody(
+    request: GatewayRequest,
+    model: ProviderModelDescriptor | undefined,
+  ): Record<string, unknown> {
+    const effort = request.reasoning?.effort;
+    if (!effort || !this.fallbackReasoningBody) {
+      return {};
+    }
+    return this.fallbackReasoningBody(effort, request, model);
   }
 }
 
@@ -219,13 +260,14 @@ export function toAnthropicBody(request: GatewayRequest): Record<string, unknown
 
 export function toChatCompletionsBody(
   request: GatewayRequest,
-  options: { includeReasoningEffort: boolean; preserveReasoningContent?: boolean },
+  options: { reasoningEffort?: string; extraReasoningBody?: Record<string, unknown>; preserveReasoningContent?: boolean },
 ): Record<string, unknown> {
   return {
     ...request.protocolExtensions.chatCompletions,
+    ...options.extraReasoningBody,
     model: request.model,
     stream: true,
-    ...(options.includeReasoningEffort && request.reasoning?.effort ? { reasoning_effort: request.reasoning.effort } : {}),
+    ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
     messages: [
       ...(request.instructions ? [{ role: 'system', content: request.instructions }] : []),
       ...request.messages.map((message) => toChatMessage(message, options)),
@@ -234,7 +276,7 @@ export function toChatCompletionsBody(
   };
 }
 
-export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSseEvent>): AsyncIterable<GatewayEvent> {
+export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSseEvent>, secret?: string): AsyncIterable<GatewayEvent> {
   const toolArguments = new ToolArgumentTracker();
   for await (const event of events) {
     const payload = parseJsonSseData(event.data);
@@ -291,12 +333,12 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
       }
       yield { type: 'response.completed', finishReason: stringField(response, 'finish_reason') ?? stringField(response, 'status') ?? 'stop' };
     } else if (type === 'error') {
-      throw providerStreamError(payload, 502);
+      throw providerStreamError(payload, 502, secret);
     }
   }
 }
 
-export async function* parseAnthropicMessagesSse(events: AsyncIterable<ProviderSseEvent>): AsyncIterable<GatewayEvent> {
+export async function* parseAnthropicMessagesSse(events: AsyncIterable<ProviderSseEvent>, secret?: string): AsyncIterable<GatewayEvent> {
   const toolArguments = new ToolArgumentTracker();
   const toolBlocks = new Map<number, string>();
   for await (const event of events) {
@@ -339,6 +381,11 @@ export async function* parseAnthropicMessagesSse(events: AsyncIterable<ProviderS
         if (text) {
           yield { type: 'reasoning.delta', text };
         }
+      } else if (deltaType === 'signature_delta') {
+        const signature = stringField(delta, 'signature');
+        if (signature) {
+          yield { type: 'reasoning.signature', provider: 'anthropic', signature };
+        }
       } else if (deltaType === 'input_json_delta' && index !== undefined) {
         const callId = toolBlocks.get(index);
         const partialJson = stringField(delta, 'partial_json');
@@ -363,12 +410,12 @@ export async function* parseAnthropicMessagesSse(events: AsyncIterable<ProviderS
     } else if (type === 'message_stop') {
       yield { type: 'response.completed', finishReason: stringField(payload, 'stop_reason') ?? 'stop' };
     } else if (type === 'error') {
-      throw providerStreamError(payload, anthopicErrorStatus(payload));
+      throw providerStreamError(payload, anthopicErrorStatus(payload), secret);
     }
   }
 }
 
-export async function* parseCompatibleChatSse(events: AsyncIterable<ProviderSseEvent>): AsyncIterable<GatewayEvent> {
+export async function* parseCompatibleChatSse(events: AsyncIterable<ProviderSseEvent>, secret?: string): AsyncIterable<GatewayEvent> {
   const toolArguments = new ToolArgumentTracker();
   const callIdsByIndex = new Map<number, string>();
   const openCallIds = new Set<string>();
@@ -377,8 +424,8 @@ export async function* parseCompatibleChatSse(events: AsyncIterable<ProviderSseE
     if (!payload) {
       continue;
     }
-    if (stringField(payload, 'error')) {
-      throw providerStreamError(payload, 502);
+    if (payload.error) {
+      throw providerStreamError(payload, 502, secret);
     }
     const id = stringField(payload, 'id');
     const choices = Array.isArray(payload.choices) ? payload.choices as Record<string, unknown>[] : [];
@@ -615,9 +662,10 @@ function toChatTool(tool: GatewayTool): Record<string, unknown> {
   };
 }
 
-function providerStreamError(payload: Record<string, unknown>, status: number): GatewayProtocolError {
+function providerStreamError(payload: Record<string, unknown>, status: number, secret?: string): GatewayProtocolError {
   const error = objectField(payload, 'error');
-  const message = stringField(error, 'message') ?? stringField(payload, 'message') ?? 'Provider stream error';
+  const rawMessage = stringField(error, 'message') ?? stringField(payload, 'message') ?? 'Provider stream error';
+  const message = secret ? redactSecret(rawMessage, secret) : rawMessage;
   return new GatewayProtocolError(message, {
     code: 'provider_error',
     status,

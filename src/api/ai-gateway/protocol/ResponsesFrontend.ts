@@ -77,6 +77,12 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
         return { type: 'response.output_text.delta', delta: event.text };
       case 'reasoning.delta':
         return { type: 'response.reasoning_summary_text.delta', delta: event.text };
+      case 'reasoning.signature':
+        return {
+          type: 'response.reasoning_signature.delta',
+          provider: event.provider,
+          signature: event.signature,
+        };
       case 'tool.started':
         this.toolArguments.start(event.callId);
         return {

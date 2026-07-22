@@ -52,6 +52,7 @@ export type GatewayEvent =
   | { type: 'response.started'; id: string }
   | { type: 'text.delta'; text: string }
   | { type: 'reasoning.delta'; text: string }
+  | { type: 'reasoning.signature'; provider: string; signature: string }
   | { type: 'tool.started'; callId: string; name: string }
   | { type: 'tool.arguments.delta'; callId: string; delta: string }
   | { type: 'tool.completed'; callId: string }

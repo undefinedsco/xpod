@@ -70,6 +70,12 @@ class MessagesEventSerializer implements GatewayEventSerializer {
         return { type: 'content_block_delta', delta: { type: 'text_delta', text: event.text }, index: 0 };
       case 'reasoning.delta':
         return { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: event.text }, index: 0 };
+      case 'reasoning.signature':
+        return {
+          type: 'content_block_delta',
+          delta: { type: 'signature_delta', signature: event.signature },
+          index: 0,
+        };
       case 'tool.started': {
         const index = this.toolArguments.start(event.callId);
         return {

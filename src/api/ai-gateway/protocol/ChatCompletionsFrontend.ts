@@ -72,6 +72,8 @@ class ChatCompletionsEventSerializer implements GatewayEventSerializer {
         return { choices: [{ index: 0, delta: { content: event.text } }] };
       case 'reasoning.delta':
         return { choices: [{ index: 0, delta: { reasoning_content: event.text } }] };
+      case 'reasoning.signature':
+        return { choices: [{ index: 0, delta: { reasoning_signature: event.signature } }] };
       case 'tool.started': {
         const index = this.toolArguments.start(event.callId);
         return {
