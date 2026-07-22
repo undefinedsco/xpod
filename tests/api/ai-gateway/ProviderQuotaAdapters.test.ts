@@ -12,9 +12,11 @@ import {
   InMemoryQuotaSnapshotRepository,
   KimiQuotaAdapter,
   OpenAiQuotaAdapter,
+  PodQuotaSnapshotRepository,
   ProviderQuotaService,
   type QuotaCredentialRecord,
 } from '../../../src/api/ai-gateway/quota';
+import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
@@ -107,6 +109,26 @@ describe('ProviderQuotaAdapters', () => {
       ],
     });
     expect(JSON.stringify(snapshot)).not.toContain('percent');
+  });
+
+  it('keeps Kimi quota on the official global endpoint until provider config owns regional variants', async () => {
+    const fetch = jsonFetch((url) => {
+      expect(url).toBe('https://api.moonshot.ai/v1/users/me/balance');
+      return { body: { data: { available_balance: '1.00' } } };
+    });
+    const kimiCredential = {
+      ...await credential('kimi'),
+      baseUrl: 'https://api.moonshot.cn/v1',
+    };
+
+    await expect(new KimiQuotaAdapter({ fetch }).fetch({
+      credential: kimiCredential,
+      secret: { type: 'apiKey', apiKey: 'provider-secret' },
+      now: new Date('2026-07-23T00:00:00.000Z'),
+    })).resolves.toMatchObject({
+      status: 'available',
+      windows: [{ name: 'available_balance', remaining: 1 }],
+    });
   });
 
   it('normalizes DeepSeek official user balance endpoint fields', async () => {
@@ -330,6 +352,121 @@ describe('ProviderQuotaAdapters', () => {
       provider: 'kimi',
       refresh: false,
     })).rejects.toThrow('quota_credential_not_found');
+  });
+
+  it('uses shared persisted scope helpers for Pod quota CRUD without decoding ids', async () => {
+    const now = new Date('2026-07-23T00:00:00.000Z');
+    const rows = new Map<string, any>();
+    const credentialIri = CREDENTIAL_IRI;
+    const scopedId = quotaSnapshotId({
+      owner: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credential: credentialIri,
+    });
+    rows.set('legacy-newer', {
+      id: 'ai/gateway/quota.ttl#legacy-newer',
+      credential: credentialIri,
+      status: 'available',
+      windows: JSON.stringify([{ name: 'legacy', remaining: 999 }]),
+      observedAt: new Date('2026-07-23T00:03:00.000Z'),
+      expiresAt: new Date('2026-07-23T01:00:00.000Z'),
+      source: 'kimi:/v1/users/me/balance',
+    });
+    rows.set(scopedId, {
+      id: scopedId,
+      owner: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credential: credentialIri,
+      status: 'unsupported',
+      windows: JSON.stringify([]),
+      observedAt: now,
+      expiresAt: new Date('2026-07-23T00:05:00.000Z'),
+      source: 'kimi:/v1/users/me/balance',
+    });
+    const calls: Array<[string, unknown, unknown?, unknown?]> = [];
+    const repository = new PodQuotaSnapshotRepository({
+      internalPodAccess: { getTrustedFetch: vi.fn(async () => fetch) },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        select: () => ({
+          from: (resource: unknown) => ({
+            where: (condition: unknown) => {
+              calls.push(['where', resource, condition]);
+              return { execute: async () => [...rows.values()].map((row) => structuredClone(row)) };
+            },
+          }),
+        }),
+        findById: async (resource: unknown, id: string) => {
+          calls.push(['findById', resource, id]);
+          return structuredClone(rows.get(id));
+        },
+        findByIri: async () => null,
+        updateById: async (resource: unknown, id: string, patch: any) => {
+          calls.push(['updateById', resource, id, patch]);
+          const row = rows.get(id);
+          if (!row) return null;
+          Object.assign(row, patch);
+          return structuredClone(row);
+        },
+        updateByIri: async () => null,
+        insert: (resource: unknown) => ({
+          values: (value: any) => {
+            calls.push(['values', resource, value]);
+            return {
+              execute: async () => {
+                rows.set(value.id, structuredClone(value));
+                return [structuredClone(value)];
+              },
+            };
+          },
+        }),
+      } as any),
+    });
+
+    await expect(repository.findFresh({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri,
+      now,
+    })).resolves.toMatchObject({
+      id: scopedId,
+      status: 'unsupported',
+    });
+
+    await repository.upsert({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      snapshot: {
+        credential: credentialIri,
+        status: 'error',
+        windows: [],
+        observedAt: now.toISOString(),
+        expiresAt: new Date('2026-07-23T00:05:00.000Z').toISOString(),
+        source: 'kimi:/v1/users/me/balance',
+      },
+    });
+
+    expect(rows.get(scopedId)).toMatchObject({
+      id: scopedId,
+      owner: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credential: credentialIri,
+      status: 'error',
+    });
+    expect(calls).toEqual(expect.arrayContaining([
+      ['findById', quotaSnapshotResource, scopedId],
+      ['updateById', quotaSnapshotResource, scopedId, expect.objectContaining({
+        owner: WEB_ID,
+        deployment: 'cloud',
+        provider: 'kimi',
+        credential: credentialIri,
+      })],
+    ]));
   });
 });
 

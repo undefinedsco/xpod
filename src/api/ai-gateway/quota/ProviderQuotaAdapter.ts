@@ -1,6 +1,7 @@
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { drizzle } from '@undefineds.co/drizzle-solid';
 import {
   aiGatewayRepository,
+  quotaSnapshotId as buildQuotaSnapshotId,
   quotaSnapshotResource,
   type QuotaSnapshotRow,
 } from '@undefineds.co/models';
@@ -36,7 +37,6 @@ export interface NormalizedQuotaSnapshot {
 
 export interface QuotaCredentialRecord extends ConnectCredentialRecord {
   baseUrl?: string;
-  proxy?: string;
 }
 
 export interface ProviderQuotaFetchInput {
@@ -240,7 +240,12 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     provider: string;
     snapshot: NormalizedQuotaSnapshot;
   }): Promise<NormalizedQuotaSnapshot> {
-    const id = input.snapshot.id ?? quotaSnapshotId(input.webId, input.deployment, input.provider, input.snapshot.credential);
+    const id = input.snapshot.id ?? buildQuotaSnapshotId({
+      owner: input.webId,
+      deployment: input.deployment,
+      provider: input.provider,
+      credential: input.snapshot.credential,
+    });
     const next = {
       ...sanitizeSnapshot(input.snapshot),
       id,
@@ -302,13 +307,13 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   }): Promise<NormalizedQuotaSnapshot | undefined> {
     const db = await this.dbForOwner(input.webId);
     const row = await aiGatewayRepository.findFreshQuotaSnapshot(db as never, {
+      owner: input.webId,
+      deployment: input.deployment,
+      provider: input.provider,
       credential: input.credentialIri,
       now: input.now,
     });
-    if (!row || !rowBelongsToScope(row, input)) {
-      return undefined;
-    }
-    return snapshotFromRow(row, false);
+    return row ? snapshotFromRow(row, false) : undefined;
   }
 
   public async findLatest(input: {
@@ -318,14 +323,12 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     credentialIri: string;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
     const db = await this.dbForOwner(input.webId);
-    const rows = await db
-      .select()
-      .from(quotaSnapshotResource)
-      .where(eq(quotaSnapshotResource.credential, input.credentialIri))
-      .execute();
-    const row = rows
-      .filter((candidate) => rowBelongsToScope(candidate, input))
-      .sort((a, b) => toMs(b.observedAt) - toMs(a.observedAt))[0];
+    const row = await aiGatewayRepository.findLatestQuotaSnapshot(db as never, {
+      owner: input.webId,
+      deployment: input.deployment,
+      provider: input.provider,
+      credential: input.credentialIri,
+    });
     return row ? snapshotFromRow(row, true) : undefined;
   }
 
@@ -338,16 +341,18 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     const db = await this.dbForOwner(input.webId);
     const snapshot = sanitizeSnapshot({
       ...input.snapshot,
-      id: input.snapshot.id ?? quotaSnapshotId(input.webId, input.deployment, input.provider, input.snapshot.credential),
-      metadata: {
-        ...input.snapshot.metadata,
-        webId: input.webId,
+      id: input.snapshot.id ?? buildQuotaSnapshotId({
+        owner: input.webId,
         deployment: input.deployment,
-        provider: normalizeProvider(input.provider),
-      },
+        provider: input.provider,
+        credential: input.snapshot.credential,
+      }),
     });
     await aiGatewayRepository.upsertQuotaSnapshot(db as never, {
       id: snapshot.id!,
+      owner: input.webId,
+      deployment: input.deployment,
+      provider: input.provider,
       credential: snapshot.credential,
       status: snapshot.status,
       balance: snapshot.balance,
@@ -440,7 +445,6 @@ export async function fetchJsonWithBearer(input: {
   url: string;
   apiKey: string;
   signal?: AbortSignal;
-  proxy?: string;
 }): Promise<{ ok: true; body: unknown } | { ok: false; status: number; retryAfter?: string | null }> {
   const headers = new Headers();
   headers.set('Authorization', `Bearer ${input.apiKey}`);
@@ -473,19 +477,6 @@ export function numeric(value: unknown): number | undefined {
 
 export function normalizeProvider(provider: string): string {
   return provider.trim().toLowerCase();
-}
-
-export function quotaSnapshotId(
-  webId: string,
-  deployment: GatewayDeployment,
-  provider: string,
-  credentialIri: string,
-): string {
-  const encoded = Buffer
-    .from(`${webId}\n${deployment}\n${normalizeProvider(provider)}\n${credentialIri}`)
-    .toString('base64url')
-    .slice(0, 96);
-  return `ai/gateway/quota.ttl#${encoded}`;
 }
 
 function retryAfterSeconds(value: string | null | undefined): number | undefined {
@@ -563,56 +554,6 @@ function toIso(value: unknown): string {
     }
   }
   return new Date(0).toISOString();
-}
-
-function toMs(value: unknown): number {
-  return new Date(toIso(value)).getTime();
-}
-
-function rowBelongsToScope(row: QuotaSnapshotRow, input: {
-  webId?: string;
-  deployment: GatewayDeployment;
-  provider: string;
-  credentialIri?: string;
-}): boolean {
-  const id = String(row.id ?? '');
-  const source = String(row.source ?? '');
-  const scope = scopeFromQuotaSnapshotId(id);
-  if (!scope) {
-    return false;
-  }
-  return (!input.webId || scope.webId === input.webId)
-    && scope.deployment === input.deployment
-    && scope.provider === normalizeProvider(input.provider)
-    && (!input.credentialIri || scope.credentialIri === input.credentialIri)
-    && source.startsWith(`${normalizeProvider(input.provider)}:`);
-}
-
-function scopeFromQuotaSnapshotId(id: string): {
-  webId: string;
-  deployment: GatewayDeployment;
-  provider: string;
-  credentialIri: string;
-} | undefined {
-  const marker = 'ai/gateway/quota.ttl#';
-  if (!id.startsWith(marker)) {
-    return undefined;
-  }
-  try {
-    const decoded = Buffer.from(id.slice(marker.length), 'base64url').toString('utf8');
-    const [webId, deployment, provider, credentialIri] = decoded.split('\n');
-    if ((deployment !== 'cloud' && deployment !== 'local') || !webId || !provider || !credentialIri) {
-      return undefined;
-    }
-    return {
-      webId,
-      deployment,
-      provider: normalizeProvider(provider),
-      credentialIri,
-    };
-  } catch {
-    return undefined;
-  }
 }
 
 function createDefaultQuotaSnapshotDb(input: {

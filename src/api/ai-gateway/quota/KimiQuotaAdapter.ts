@@ -36,7 +36,7 @@ export class KimiQuotaAdapter implements ProviderQuotaAdapter {
     }
     const result = await fetchJsonWithBearer({
       fetch: this.fetchFn,
-      url: `${trimTrailingSlash(input.credential.baseUrl ?? KIMI_BASE_URL)}/users/me/balance`,
+      url: `${KIMI_BASE_URL}/users/me/balance`,
       apiKey,
       signal: input.signal,
     });
@@ -73,8 +73,4 @@ function kimiWindows(body: unknown): QuotaWindow[] {
     const remaining = numeric(value);
     return remaining === undefined ? [] : [{ name: String(name), remaining }];
   });
-}
-
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/u, '');
 }

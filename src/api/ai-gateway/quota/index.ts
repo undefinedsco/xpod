@@ -6,7 +6,6 @@ export {
   errorQuotaSnapshot,
   fetchJsonWithBearer,
   numeric,
-  quotaSnapshotId,
   unsupportedQuotaSnapshot,
   type NormalizedQuotaSnapshot,
   type ProviderQuotaAdapter,
