@@ -10,6 +10,7 @@ import {
   parseGatewayApiKey,
   verifyGatewayApiKeySecret,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
+import * as gatewayApiKeyModule from '../../../src/api/ai-gateway/auth/GatewayApiKey';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 
@@ -145,19 +146,19 @@ describe('GatewayApiKeyAuthenticator', () => {
     expect(authenticator.canAuthenticate(requestWith('sk-legacy-client-credential'))).toBe(false);
   });
 
-  it('does not short-circuit timing-safe secret comparison when the repository misses', async () => {
+  it('runs authenticator-owned dummy scrypt verification when the repository misses', async () => {
     const repository = new InMemoryGatewayAccessKeyRepository();
     const authenticator = new GatewayApiKeyAuthenticator({
       repository,
       deployment: 'cloud',
     });
-    const spy = vi.spyOn(repository, 'verifySecretHashForTimingOnly');
+    const spy = vi.spyOn(gatewayApiKeyModule, 'verifyGatewayApiKeySecret');
 
     await expect(authenticator.authenticate(requestWith('xpod_gw_v1_cloud_gak_missing_opaque-secret'))).resolves.toEqual({
       success: false,
       error: 'Invalid gateway API key',
     });
 
-    expect(spy).toHaveBeenCalledWith('opaque-secret');
+    expect(spy).toHaveBeenCalledWith('opaque-secret', expect.stringMatching(/^scrypt\$/));
   });
 });

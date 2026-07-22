@@ -6,9 +6,7 @@ import {
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
 import { isSolidAuth } from '../../auth/AuthContext';
-import {
-  decodeGatewayKeyLocatorOwner,
-} from './GatewayApiKey';
+import type { GatewayKeyLocatorCodec } from './GatewayKeyLocatorCodec';
 import {
   type GatewayAccessKeyRecord,
   type GatewayAccessKeyRepository,
@@ -29,16 +27,27 @@ type GatewayAccessKeyDb = {
 };
 
 export interface PodGatewayAccessKeyRepositoryOptions {
+  locatorCodec: GatewayKeyLocatorCodec;
+  internalPodAccess?: InternalPodAccessTokenProvider;
   dbFactory?: (input: {
     owner: string;
     auth?: AuthContext;
+    fetch: typeof fetch;
   }) => Promise<GatewayAccessKeyDb>;
+}
+
+export interface InternalPodAccessTokenProvider {
+  getTrustedFetch(owner: string): Promise<typeof fetch | undefined>;
 }
 
 export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository {
   private readonly dbFactory: NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>;
+  private readonly locatorCodec: GatewayKeyLocatorCodec;
+  private readonly internalPodAccess?: InternalPodAccessTokenProvider;
 
-  public constructor(options: PodGatewayAccessKeyRepositoryOptions = {}) {
+  public constructor(options: PodGatewayAccessKeyRepositoryOptions) {
+    this.locatorCodec = options.locatorCodec;
+    this.internalPodAccess = options.internalPodAccess;
     this.dbFactory = options.dbFactory ?? createDefaultGatewayAccessKeyDb;
   }
 
@@ -53,12 +62,12 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
   }
 
   public async findById(id: string): Promise<GatewayAccessKeyRecord | undefined> {
-    const owner = decodeGatewayKeyLocatorOwner(id);
-    if (!owner) {
+    const locator = this.locatorCodec.decode(id);
+    if (!locator) {
       return undefined;
     }
     try {
-      const db = await this.dbForOwner(owner);
+      const db = await this.dbForOwner(locator.owner);
       const row = await aiGatewayRepository.findAccessKeyById(db as never, id);
       return row ? recordFromRow(row) : undefined;
     } catch {
@@ -84,11 +93,11 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     revokedAt: Date,
     context?: GatewayAccessKeyRepositoryContext,
   ): Promise<GatewayAccessKeyRecord | undefined> {
-    const owner = decodeGatewayKeyLocatorOwner(id);
-    if (!owner) {
+    const locator = this.locatorCodec.decode(id);
+    if (!locator) {
       return undefined;
     }
-    const db = await this.dbForOwner(owner, context);
+    const db = await this.dbForOwner(locator.owner, context);
     const row = await aiGatewayRepository.revokeAccessKey(db as never, {
       id,
       revokedAt,
@@ -97,37 +106,45 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
   }
 
   public async touchLastUsed(id: string, lastUsedAt: Date): Promise<void> {
-    const owner = decodeGatewayKeyLocatorOwner(id);
-    if (!owner) {
+    const locator = this.locatorCodec.decode(id);
+    if (!locator) {
       return;
     }
-    const db = await this.dbForOwner(owner);
+    const db = await this.dbForOwner(locator.owner);
     await db.updateById(gatewayAccessKeyResource, id, { lastUsedAt });
-  }
-
-  public async verifySecretHashForTimingOnly(_secret: string): Promise<void> {
-    // Pod-backed misses do not have a safe per-owner salt/cost to use. The
-    // authenticator still returns the same external failure envelope.
   }
 
   private async dbForOwner(
     owner: string,
     context?: GatewayAccessKeyRepositoryContext,
   ): Promise<GatewayAccessKeyDb> {
-    const db = await this.dbFactory({ owner, auth: context?.auth });
+    const trustedFetch = await this.resolveTrustedFetch(owner, context?.auth);
+    const db = await this.dbFactory({ owner, auth: context?.auth, fetch: trustedFetch });
     await db.init?.(gatewayAccessKeyResource);
     return db;
+  }
+
+  private async resolveTrustedFetch(owner: string, auth: AuthContext | undefined): Promise<typeof fetch> {
+    const authFetch = createAuthFetch(auth);
+    if (authFetch) {
+      return authFetch;
+    }
+    const internalFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    if (internalFetch) {
+      return internalFetch;
+    }
+    throw new Error('Internal Pod access is not configured for Gateway access keys');
   }
 }
 
 function createDefaultGatewayAccessKeyDb(input: {
   owner: string;
   auth?: AuthContext;
+  fetch: typeof fetch;
 }): Promise<GatewayAccessKeyDb> {
-  const authFetch = createAuthFetch(input.auth);
   return Promise.resolve(drizzle(
     {
-      fetch: authFetch,
+      fetch: input.fetch,
       info: { webId: input.owner, isLoggedIn: true },
     } as any,
     {
@@ -138,7 +155,7 @@ function createDefaultGatewayAccessKeyDb(input: {
   ) as unknown as GatewayAccessKeyDb);
 }
 
-function createAuthFetch(auth: AuthContext | undefined): typeof fetch {
+function createAuthFetch(auth: AuthContext | undefined): typeof fetch | undefined {
   if (auth && isSolidAuth(auth) && auth.accessToken) {
     const scheme = auth.tokenType ?? 'Bearer';
     return async (input, init) => {
@@ -149,7 +166,7 @@ function createAuthFetch(auth: AuthContext | undefined): typeof fetch {
       return fetch(input, { ...init, headers });
     };
   }
-  return fetch;
+  return undefined;
 }
 
 function toGatewayAccessKeyInsert(record: GatewayAccessKeyRecord): Record<string, unknown> {

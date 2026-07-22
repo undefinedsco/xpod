@@ -3,6 +3,7 @@ import type { Authenticator, AuthResult } from '../../auth/Authenticator';
 import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
 import {
   type GatewayDeployment,
+  hashGatewayApiKeySecret,
   parseGatewayApiKey,
   verifyGatewayApiKeySecret,
 } from './GatewayApiKey';
@@ -30,7 +31,6 @@ export interface GatewayAccessKeyRepository {
   listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
   revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   touchLastUsed(id: string, lastUsedAt: Date): Promise<void>;
-  verifySecretHashForTimingOnly(secret: string): Promise<void>;
 }
 
 export interface GatewayApiKeyAuthenticatorOptions {
@@ -48,12 +48,14 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
   private readonly deployment: GatewayDeployment;
   private readonly requiredScopes: string[];
   private readonly now: () => Date;
+  private readonly dummyHash: Promise<string>;
 
   public constructor(options: GatewayApiKeyAuthenticatorOptions) {
     this.repository = options.repository;
     this.deployment = options.deployment;
     this.requiredScopes = options.requiredScopes ?? [...DEFAULT_GATEWAY_API_KEY_SCOPES];
     this.now = options.now ?? (() => new Date());
+    this.dummyHash = hashGatewayApiKeySecret('xpod-gateway-missing-key-dummy-secret');
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
@@ -68,7 +70,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
 
     const record = await this.repository.findById(parsed.keyId);
     if (!record) {
-      await this.repository.verifySecretHashForTimingOnly(parsed.secret);
+      await verifyGatewayApiKeySecret(parsed.secret, await this.dummyHash);
       return invalidGatewayApiKey();
     }
 

@@ -8,7 +8,7 @@ import {
 } from '../ai-gateway/auth/GatewayPrincipal';
 import {
   createGatewayApiKey,
-  createGatewayKeyLocator,
+  createGatewayKeyId,
   type GatewayDeployment,
 } from '../ai-gateway/auth/GatewayApiKey';
 import type {
@@ -29,7 +29,7 @@ export function registerAiGatewayManagementRoutes(
   options: AiGatewayManagementHandlerOptions,
 ): void {
   const now = options.now ?? (() => new Date());
-  const createKeyId = options.keyId ?? createGatewayKeyLocator;
+  const createKeyId = options.keyId ?? (() => createGatewayKeyId());
 
   server.post('/api/ai/gateway/keys', async (request, response) => {
     if (!authorizeGatewayKeyManagement(request, response)) {

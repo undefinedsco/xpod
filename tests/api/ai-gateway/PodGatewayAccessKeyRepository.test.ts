@@ -3,7 +3,6 @@ import { gatewayAccessKeyResource } from '@undefineds.co/models';
 
 import {
   createGatewayApiKey,
-  createGatewayKeyLocator,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
 import {
   GatewayApiKeyAuthenticator,
@@ -11,6 +10,10 @@ import {
 import {
   PodGatewayAccessKeyRepository,
 } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
+import {
+  AesGatewayKeyLocatorCodec,
+  createGatewayKeyLocator,
+} from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
 
 const ALICE = 'https://id.example/alice/profile/card#me';
@@ -99,11 +102,42 @@ function createPodBackedDbFactory() {
   return { dbFactory, calls, pods };
 }
 
+function createInternalPodAccess() {
+  return {
+    fetch: vi.fn(fetch),
+    provider: {
+      getTrustedFetch: vi.fn(async () => fetch),
+    },
+  };
+}
+
 describe('PodGatewayAccessKeyRepository', () => {
+  const codec = new AesGatewayKeyLocatorCodec('test-locator-secret');
+
+  it('keeps key locators opaque and bound to the platform secret', () => {
+    const locator = createGatewayKeyLocator(ALICE, 'cloud', codec);
+    const wrongCodec = new AesGatewayKeyLocatorCodec('wrong-secret');
+    const tampered = `${locator.slice(0, -1)}${locator.endsWith('A') ? 'B' : 'A'}`;
+
+    expect(locator).not.toContain(ALICE);
+    expect(Buffer.from(locator).toString('utf8')).not.toContain(ALICE);
+    expect(wrongCodec.decode(locator)).toBeUndefined();
+    expect(codec.decode(tampered)).toBeUndefined();
+    expect(codec.decode(locator)).toMatchObject({
+      owner: ALICE,
+      deployment: 'cloud',
+    });
+  });
+
   it('persists access keys through the models gatewayAccessKeyResource without storing plaintext', async () => {
     const { dbFactory, calls, pods } = createPodBackedDbFactory();
-    const repository = new PodGatewayAccessKeyRepository({ dbFactory });
-    const keyId = createGatewayKeyLocator(ALICE);
+    const internal = createInternalPodAccess();
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: internal.provider,
+    });
+    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
     const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
 
     await repository.create({
@@ -132,9 +166,14 @@ describe('PodGatewayAccessKeyRepository', () => {
 
   it('authenticates after repository restart by resolving the owner Pod from the opaque key locator', async () => {
     const backing = createPodBackedDbFactory();
-    const keyId = createGatewayKeyLocator(ALICE);
+    const internal = createInternalPodAccess();
+    const keyId = createGatewayKeyLocator(ALICE, 'local', codec);
     const issued = await createGatewayApiKey({ deployment: 'local', keyId });
-    const writer = new PodGatewayAccessKeyRepository({ dbFactory: backing.dbFactory });
+    const writer = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: internal.provider,
+    });
     await writer.create({
       ...issued.record,
       owner: ALICE,
@@ -142,7 +181,11 @@ describe('PodGatewayAccessKeyRepository', () => {
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
     });
 
-    const restartedRepository = new PodGatewayAccessKeyRepository({ dbFactory: backing.dbFactory });
+    const restartedRepository = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: internal.provider,
+    });
     const authenticator = new GatewayApiKeyAuthenticator({
       repository: restartedRepository,
       deployment: 'local',
@@ -162,11 +205,16 @@ describe('PodGatewayAccessKeyRepository', () => {
 
   it('keeps WebID Pods isolated even when another Pod contains the same local id', async () => {
     const backing = createPodBackedDbFactory();
-    const aliceKeyId = createGatewayKeyLocator(ALICE);
-    const bobKeyId = createGatewayKeyLocator(BOB);
+    const internal = createInternalPodAccess();
+    const aliceKeyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
+    const bobKeyId = createGatewayKeyLocator(BOB, 'cloud', codec);
     const aliceKey = await createGatewayApiKey({ deployment: 'cloud', keyId: aliceKeyId });
     const bobKey = await createGatewayApiKey({ deployment: 'cloud', keyId: bobKeyId });
-    const repository = new PodGatewayAccessKeyRepository({ dbFactory: backing.dbFactory });
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: internal.provider,
+    });
     await repository.create({ ...aliceKey.record, owner: ALICE, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
     await repository.create({ ...bobKey.record, owner: BOB, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
 
@@ -177,9 +225,14 @@ describe('PodGatewayAccessKeyRepository', () => {
 
   it('writes revoke and lastUsedAt back to the Pod resource', async () => {
     const backing = createPodBackedDbFactory();
-    const keyId = createGatewayKeyLocator(ALICE);
+    const internal = createInternalPodAccess();
+    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
     const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
-    const repository = new PodGatewayAccessKeyRepository({ dbFactory: backing.dbFactory });
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory,
+      locatorCodec: codec,
+      internalPodAccess: internal.provider,
+    });
     await repository.create({
       ...issued.record,
       owner: ALICE,
@@ -197,6 +250,22 @@ describe('PodGatewayAccessKeyRepository', () => {
     expect(backing.calls).toEqual(expect.arrayContaining([
       expect.objectContaining({ op: 'updateById', resource: gatewayAccessKeyResource, id: keyId }),
     ]));
+  });
+
+  it('fails closed without trusted internal access and does not issue anonymous Pod reads', async () => {
+    const backing = createPodBackedDbFactory();
+    const anonymousFetch = vi.spyOn(globalThis, 'fetch');
+    const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory,
+      locatorCodec: codec,
+    });
+
+    await expect(repository.findById(keyId)).resolves.toBeUndefined();
+
+    expect(backing.dbFactory).not.toHaveBeenCalled();
+    expect(anonymousFetch).not.toHaveBeenCalled();
+    anonymousFetch.mockRestore();
   });
 });
 
