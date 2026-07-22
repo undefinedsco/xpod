@@ -1,7 +1,17 @@
 import type { GatewayProtocol } from '../types';
 
 export type ProviderId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
-export type ProviderAuthMode = 'oauth' | 'deviceCode' | 'console' | 'apiKey';
+export type ProviderAuthMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'apiKey' | 'connectUnsupported';
+export type ProviderConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
+
+export interface ProviderConnectCapability {
+  mode: ProviderConnectMode;
+  label: string;
+  apiKeyManagementSupported: boolean;
+  requiresAuthenticatedManagementApi?: boolean;
+  publicCallbackSupported?: boolean;
+  notes?: string[];
+}
 
 export interface ProviderCapabilities {
   toolCalls?: boolean;
@@ -25,6 +35,7 @@ export interface ProviderDescriptor {
   id: ProviderId;
   label: string;
   authModes: ProviderAuthMode[];
+  connect?: ProviderConnectCapability;
   protocols: GatewayProtocol[];
   defaultBaseUrl: string;
   safeBaseUrls: string[];
@@ -136,7 +147,15 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'openai',
     label: 'OpenAI',
-    authModes: ['oauth', 'apiKey'],
+    authModes: ['browserAssistedApiKey', 'apiKey'],
+    connect: {
+      mode: 'browserAssistedApiKey',
+      label: 'Open official OpenAI API key settings, then submit the key through Xpod management API',
+      apiKeyManagementSupported: true,
+      requiresAuthenticatedManagementApi: true,
+      publicCallbackSupported: false,
+      notes: ['Do not reuse official Codex client IDs or scrape browser cookies.'],
+    },
     protocols: ['responses', 'chatCompletions'],
     defaultBaseUrl: 'https://api.openai.com/v1',
     safeBaseUrls: ['https://api.openai.com/v1'],
@@ -155,7 +174,15 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'anthropic',
     label: 'Anthropic',
-    authModes: ['oauth', 'apiKey'],
+    authModes: ['browserAssistedApiKey', 'apiKey'],
+    connect: {
+      mode: 'browserAssistedApiKey',
+      label: 'Open official Anthropic console keys, then submit the key through Xpod management API',
+      apiKeyManagementSupported: true,
+      requiresAuthenticatedManagementApi: true,
+      publicCallbackSupported: false,
+      notes: ['Do not reuse Claude Code OAuth clients or scrape browser cookies.'],
+    },
     protocols: ['anthropic'],
     defaultBaseUrl: 'https://api.anthropic.com/v1',
     safeBaseUrls: ['https://api.anthropic.com/v1'],
@@ -172,7 +199,13 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'kimi',
     label: 'Kimi',
-    authModes: ['oauth', 'apiKey'],
+    authModes: ['deviceCodeOAuth', 'apiKey'],
+    connect: {
+      mode: 'deviceCodeOAuth',
+      label: 'Kimi Code device-code OAuth',
+      apiKeyManagementSupported: true,
+      publicCallbackSupported: true,
+    },
     protocols: ['chatCompletions'],
     defaultBaseUrl: 'https://api.moonshot.ai/v1',
     safeBaseUrls: ['https://api.moonshot.ai/v1'],
@@ -188,7 +221,15 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'bailian',
     label: 'Alibaba Bailian',
-    authModes: ['oauth', 'apiKey'],
+    authModes: ['browserAssistedApiKey', 'apiKey'],
+    connect: {
+      mode: 'browserAssistedApiKey',
+      label: 'Open official Bailian console keys, then submit the key through Xpod management API',
+      apiKeyManagementSupported: true,
+      requiresAuthenticatedManagementApi: true,
+      publicCallbackSupported: false,
+      notes: ['Bailian browser Connect is API-key assisted unless an official third-party OAuth flow is available.'],
+    },
     protocols: ['anthropic', 'chatCompletions'],
     defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     safeBaseUrls: [
@@ -209,7 +250,13 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
     id: 'deepseek',
     label: 'DeepSeek',
-    authModes: ['apiKey'],
+    authModes: ['connectUnsupported', 'apiKey'],
+    connect: {
+      mode: 'connectUnsupported',
+      label: 'DeepSeek does not expose a supported third-party browser Connect flow',
+      apiKeyManagementSupported: true,
+      publicCallbackSupported: false,
+    },
     protocols: ['chatCompletions'],
     defaultBaseUrl: 'https://api.deepseek.com/v1',
     safeBaseUrls: ['https://api.deepseek.com/v1'],
@@ -270,6 +317,10 @@ function freezeProviderDescriptor(provider: ProviderDescriptor): ProviderDescrip
   return {
     ...provider,
     authModes: [ ...provider.authModes ],
+    connect: provider.connect ? {
+      ...provider.connect,
+      notes: provider.connect.notes ? [ ...provider.connect.notes ] : undefined,
+    } : undefined,
     protocols: [ ...provider.protocols ],
     safeBaseUrls: [ ...provider.safeBaseUrls ],
     capabilities: { ...provider.capabilities },

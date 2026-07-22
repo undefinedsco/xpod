@@ -17,10 +17,16 @@ import type {
   GatewayAccessKeyRepository,
 } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { DEFAULT_GATEWAY_API_KEY_SCOPES } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
+import type {
+  CompleteApiKeyInput,
+  ConnectBeginInput,
+  ProviderConnectService,
+} from '../ai-gateway/connect';
 
 export interface AiGatewayManagementHandlerOptions {
   repository: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
+  connectService?: ProviderConnectService;
   now?: () => Date;
   keyId?: (owner: string) => string;
   jsonBodyLimitBytes?: number;
@@ -125,6 +131,154 @@ export function registerAiGatewayManagementRoutes(
       record: revoked ? publicRecord(revoked) : undefined,
     });
   });
+
+  server.post('/api/ai/gateway/providers/:provider/connect/begin', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const mode = typeof body.mode === 'string' ? body.mode : undefined;
+    if (mode !== 'browserAssistedApiKey' && mode !== 'deviceCodeOAuth' && mode !== 'connectUnsupported') {
+      sendJson(response, 400, { error: 'mode must be a supported Connect mode' });
+      return;
+    }
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    const result = await connectService.begin({
+      webId: request.auth!.webId,
+      deployment: options.deployment,
+      provider: params.provider,
+      requestedMode: mode,
+      expectedCredentialVersion: typeof body.expectedCredentialVersion === 'number'
+        ? body.expectedCredentialVersion
+        : undefined,
+    } satisfies ConnectBeginInput);
+    sendJson(response, 200, result);
+  });
+
+  server.get('/api/ai/gateway/providers/:provider/connect/status/:attemptId', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    const result = await connectService.status({
+      webId: request.auth!.webId,
+      deployment: options.deployment,
+      provider: params.provider,
+      attemptId: decodeURIComponent(params.attemptId),
+      state: url.searchParams.get('state') ?? '',
+      signature: url.searchParams.get('signature') ?? '',
+    });
+    sendJson(response, 200, result);
+  });
+
+  server.post('/api/ai/gateway/providers/:provider/connect/complete-api-key', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const apiKey = normalizeOptionalString(body.apiKey);
+    if (!apiKey) {
+      sendJson(response, 400, { error: 'apiKey is required' });
+      return;
+    }
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    const result = await connectService.completeApiKey({
+      webId: request.auth!.webId,
+      deployment: options.deployment,
+      provider: params.provider,
+      attemptId: stringBody(body.attemptId),
+      state: stringBody(body.state),
+      signature: stringBody(body.signature),
+      apiKey,
+      accountLabel: normalizeOptionalString(body.accountLabel),
+    } satisfies CompleteApiKeyInput);
+    sendJson(response, 200, result);
+  });
+
+  server.post('/api/ai/gateway/providers/:provider/connect/poll', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    const result = await connectService.pollDevice({
+      webId: request.auth!.webId,
+      deployment: options.deployment,
+      provider: params.provider,
+      attemptId: stringBody(body.attemptId),
+      state: stringBody(body.state),
+      signature: stringBody(body.signature),
+    });
+    sendJson(response, 200, result);
+  });
+
+  server.post('/api/ai/gateway/providers/:provider/connect/refresh', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    const record = await connectService.refresh({
+      webId: request.auth!.webId,
+      deployment: options.deployment,
+      provider: params.provider,
+      refreshToken: stringBody(body.refreshToken),
+    });
+    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+  });
+
+  server.delete('/api/ai/gateway/providers/:provider/connect', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    const record = await connectService.disconnect({
+      webId: request.auth!.webId,
+      deployment: options.deployment,
+      provider: params.provider,
+    });
+    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+  });
+
+  server.get('/api/ai/gateway/providers/:provider/connect/callback', async (_request, response) => {
+    // This endpoint is intentionally public only for signed one-time OAuth callbacks.
+    // Browser-assisted API key completion is never accepted here because API keys
+    // must be submitted through the authenticated management API.
+    sendJson(response, 400, {
+      error: 'Public Connect callback is only available for signed OAuth attempts',
+    });
+  }, { public: true });
 }
 
 function authorizeGatewayKeyManagement(
@@ -144,6 +298,54 @@ function authorizeGatewayKeyManagement(
     return false;
   }
   return true;
+}
+
+function authorizeProviderConnect(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+): request is AuthenticatedRequest & { auth: Extract<NonNullable<AuthenticatedRequest['auth']>, { type: 'solid' }> } {
+  if (!request.auth) {
+    sendJson(response, 401, { error: 'Authentication required' });
+    return false;
+  }
+  if (isGatewayApiKeyPrincipal(request.auth)) {
+    sendJson(response, 403, { error: 'Gateway API keys cannot manage provider Connect state' });
+    return false;
+  }
+  if (request.auth.type !== 'solid' || !request.auth.webId) {
+    sendJson(response, 403, { error: 'Provider Connect requires the current Solid identity' });
+    return false;
+  }
+  return true;
+}
+
+function requireConnectService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderConnectService | undefined {
+  if (!options.connectService) {
+    sendJson(response, 503, { error: 'AI provider Connect service is not configured' });
+    return undefined;
+  }
+  return options.connectService;
+}
+
+async function readJsonObject(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+  limitBytes: number,
+): Promise<Record<string, unknown> | undefined> {
+  const bodyResult = await readBoundedJsonBody(request, { limitBytes });
+  if (!bodyResult.ok) {
+    sendJson(response, bodyResult.status, { error: bodyResult.error });
+    return undefined;
+  }
+  const body = bodyResult.value;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    sendJson(response, 400, { error: 'Request body must be a JSON object' });
+    return undefined;
+  }
+  return body as Record<string, unknown>;
 }
 
 function ownerForList(request: AuthenticatedRequest): string | undefined {
@@ -185,6 +387,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function stringBody(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
 function publicRecord(record: GatewayAccessKeyRecord): Record<string, unknown> {
   return {
     id: record.id,
@@ -196,6 +402,36 @@ function publicRecord(record: GatewayAccessKeyRecord): Record<string, unknown> {
     lastUsedAt: record.lastUsedAt?.toISOString(),
     revokedAt: record.revokedAt?.toISOString(),
     name: record.name,
+  };
+}
+
+function publicCredentialRecord(record: {
+  id: string;
+  credentialIri: string;
+  webId: string;
+  provider: string;
+  deployment: string;
+  authMode: string;
+  status: string;
+  accountLabel?: string;
+  expiresAt?: Date;
+  version?: number;
+  reauthRequired?: boolean;
+  metadata?: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    id: record.id,
+    credentialIri: record.credentialIri,
+    webId: record.webId,
+    provider: record.provider,
+    deployment: record.deployment,
+    authMode: record.authMode,
+    status: record.status,
+    accountLabel: record.accountLabel,
+    expiresAt: record.expiresAt?.toISOString(),
+    version: record.version,
+    reauthRequired: record.reauthRequired,
+    metadata: record.metadata,
   };
 }
 

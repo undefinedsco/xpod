@@ -351,4 +351,113 @@ describe('AiGatewayManagementHandler', () => {
     expect(oversized.statusCode).toBe(413);
     expect(JSON.parse(oversized.body)).toEqual({ error: 'Request body too large' });
   });
+
+  it('begins provider Connect for the current Solid WebID only', async () => {
+    const connectService = {
+      begin: vi.fn(async (input: any) => ({
+        mode: input.requestedMode,
+        status: 'pending',
+        provider: input.provider,
+        deployment: input.deployment,
+        attemptId: 'attempt_1',
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      mode: 'browserAssistedApiKey',
+      owner: 'https://id.example/mallory/profile/card#me',
+      expectedCredentialVersion: 7,
+    }), res, {
+      provider: 'openai',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.begin).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+      expectedCredentialVersion: 7,
+    });
+  });
+
+  it('keeps browser-assisted API key completion on authenticated management API, never public callback', async () => {
+    const connectService = {
+      completeApiKey: vi.fn(async () => ({ mode: 'browserAssistedApiKey', status: 'completed' })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'local',
+      connectService,
+    });
+    const callback = response();
+
+    await routes['GET /api/ai/gateway/providers/:provider/connect/callback'](request(undefined), callback, {
+      provider: 'openai',
+    });
+
+    expect(callback.statusCode).toBe(400);
+    expect(JSON.parse(callback.body).error).toMatch(/signed OAuth attempts/i);
+    expect(connectService.completeApiKey).not.toHaveBeenCalled();
+
+    const complete = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/complete-api-key'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      attemptId: 'attempt_1',
+      state: 'state_1',
+      signature: 'sig_1',
+      apiKey: 'sk-submit-only-here',
+      accountLabel: 'Alice',
+    }), complete, {
+      provider: 'openai',
+    });
+
+    expect(complete.statusCode).toBe(200);
+    expect(connectService.completeApiKey).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+      attemptId: 'attempt_1',
+      state: 'state_1',
+      signature: 'sig_1',
+      apiKey: 'sk-submit-only-here',
+      accountLabel: 'Alice',
+    });
+  });
+
+  it('rejects gateway API key principals from managing provider Connect state', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: { begin: vi.fn() } as any,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](request({
+      type: 'solid',
+      webId: WEB_ID,
+      viaGatewayApiKey: true,
+    } as any, {
+      mode: 'browserAssistedApiKey',
+    }), res, {
+      provider: 'openai',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage provider Connect state' });
+  });
 });

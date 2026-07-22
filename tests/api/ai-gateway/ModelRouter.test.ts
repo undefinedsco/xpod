@@ -60,7 +60,8 @@ describe('ProviderRegistry', () => {
 
     expect(registry.requireProvider('openai')).toMatchObject({
       id: 'openai',
-      authModes: ['oauth', 'apiKey'],
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: { mode: 'browserAssistedApiKey' },
       protocols: ['responses', 'chatCompletions'],
       safeBaseUrls: ['https://api.openai.com/v1'],
       capabilities: {
@@ -70,20 +71,24 @@ describe('ProviderRegistry', () => {
       },
     });
     expect(registry.requireProvider('anthropic')).toMatchObject({
-      authModes: ['oauth', 'apiKey'],
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: { mode: 'browserAssistedApiKey' },
       protocols: ['anthropic'],
       safeBaseUrls: ['https://api.anthropic.com/v1'],
     });
     expect(registry.requireProvider('kimi')).toMatchObject({
-      authModes: ['oauth', 'apiKey'],
+      authModes: ['deviceCodeOAuth', 'apiKey'],
+      connect: { mode: 'deviceCodeOAuth' },
       protocols: ['chatCompletions'],
     });
     expect(registry.requireProvider('bailian')).toMatchObject({
-      authModes: ['oauth', 'apiKey'],
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: { mode: 'browserAssistedApiKey' },
       protocols: ['anthropic', 'chatCompletions'],
     });
     expect(registry.requireProvider('deepseek')).toMatchObject({
-      authModes: ['apiKey'],
+      authModes: ['connectUnsupported', 'apiKey'],
+      connect: { mode: 'connectUnsupported' },
       protocols: ['chatCompletions'],
       safeBaseUrls: ['https://api.deepseek.com/v1'],
     });
@@ -94,7 +99,12 @@ describe('ProviderRegistry', () => {
       {
         id: 'openai',
         label: 'OpenAI',
-        authModes: ['oauth', 'apiKey'],
+        authModes: ['browserAssistedApiKey', 'apiKey'],
+        connect: {
+          mode: 'browserAssistedApiKey',
+          label: 'Browser-assisted key setup',
+          apiKeyManagementSupported: true,
+        },
         protocols: ['responses'],
         defaultBaseUrl: 'https://api.openai.com/v1',
         safeBaseUrls: ['https://api.openai.com/v1'],

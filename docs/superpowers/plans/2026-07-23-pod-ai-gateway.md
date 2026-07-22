@@ -312,21 +312,17 @@ Kimi and Bailian select registered regional endpoints. DeepSeek rejects develope
 
 - [ ] **Step 5: Run adapter tests and commit**
 
-### Task 8: Implement Connect lifecycle for OpenAI, Anthropic, Kimi and Bailian
+### Task 8: Implement Connect lifecycle for OpenAI, Anthropic, Kimi, Bailian and DeepSeek capability reporting
 
 **Files:**
-- Create: `src/api/ai-gateway/connect/ProviderConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/ConnectAttemptStore.ts`
-- Create: `src/api/ai-gateway/connect/OpenAiConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/AnthropicConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/KimiConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/BailianConnectAdapter.ts`
+- Create: `src/api/ai-gateway/connect/index.ts`
+- Modify: `src/api/ai-gateway/providers/ProviderRegistry.ts`
 - Modify: `src/api/handlers/AiGatewayManagementHandler.ts`
 - Create: `tests/api/ai-gateway/ProviderConnectAdapters.test.ts`
 
 - [ ] **Step 1: Capture official/opencodex-compatible authorization fixtures and write failing tests**
 
-Test state/PKCE binding, five-minute expiry, one-time consumption, callback WebID/deployment mismatch, token refresh version races, reauth-required state and revocation. DeepSeek must report `connectUnsupported`.
+Do not reuse OpenAI Codex or Claude Code official client ids and do not scrape cookies. Kimi uses official Kimi Code device-code OAuth. OpenAI, Anthropic and Bailian use `browserAssistedApiKey`: LinX opens the official console/dashboard and the current authenticated WebID submits the API key through Xpod management API. This mode must not be labeled OAuth. Test state/signature binding, PKCE only where OAuth applies, five-minute expiry, one-time consumption, callback/WebID/deployment/provider mismatch, token refresh version races, reauth-required state and revocation. DeepSeek must report `connectUnsupported` while keeping authenticated API key management available.
 
 - [ ] **Step 2: Run and verify failure**
 
@@ -334,7 +330,7 @@ Run: `bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts`
 
 - [ ] **Step 3: Implement ConnectAttempt and adapters**
 
-Use provider-specific official OAuth/device/console endpoints and grant types. Do not scrape cookies or persist authorization codes. Encrypt the completed secret before writing the Pod.
+Use provider-specific official device-code endpoints and console URLs only. Do not scrape cookies, do not persist authorization codes, and do not accept API keys on public callbacks. Encrypt the completed secret through `CredentialVault.seal()` before writing the Pod via a narrow Pod credential repository port.
 
 - [ ] **Step 4: Add management routes**
 

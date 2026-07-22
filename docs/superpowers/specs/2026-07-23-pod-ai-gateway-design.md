@@ -7,7 +7,8 @@ Xpod 提供一个由用户 WebID 隔离、以用户 Pod 为凭证事实源的 AI
 第一期交付必须支持：
 
 - Local Xpod 与 Cloud Xpod 使用同一套 Gateway 核心；当前登录 WebID 决定使用哪一个部署，不同时配置两者。
-- OpenAI/Codex、Anthropic/Claude、Kimi、阿里云百炼均支持浏览器 Connect 和手工 API Key。
+- OpenAI/Codex、Anthropic/Claude、阿里云百炼支持 browser-assisted API Key Connect：打开官方控制台，由已登录的当前 WebID 通过 Xpod 管理 API 提交 API Key；不得把这种模式称为 OAuth。
+- Kimi 支持官方 Kimi Code device-code OAuth 和手工 API Key。
 - DeepSeek 支持 API Key；官方未提供第三方 OAuth/Device Code 时不得通过 Cookie 抓取伪造 Connect。
 - `POST /v1/responses`、`POST /v1/messages`、`POST /v1/chat/completions`、`GET /v1/models`。
 - SSE、工具调用、reasoning、图片输入、usage、Responses 状态、compaction、取消和标准错误映射。
@@ -88,7 +89,7 @@ Provider 拆为三个职责：
 
 记录到 Provider Credential 的 URI 关系、观测时间、过期时间、余额、多个额度窗口和 Provider 专属元数据。它是可携带的短期快照，不是假定实时的永久事实。
 
-OAuth state、PKCE verifier、SSE 连接、请求执行状态、会话亲和缓存和高频健康缓存不进入 Pod。
+Connect state、PKCE verifier、SSE 连接、请求执行状态、会话亲和缓存和高频健康缓存不进入 Pod。
 
 ## 凭证加密
 
@@ -107,22 +108,22 @@ Cloud LinX 使用 Solid OIDC access token/DPoP；Local LinX 使用绑定 Local W
 1. LinX 对当前 Provider 调用 connect 管理 API。
 2. Xpod 创建五分钟有效、只能消费一次的 ConnectAttempt。
 3. LinX 打开系统浏览器。
-4. Provider 完成 OAuth、Device Code 或 Console Login。
-5. callback 校验 state、PKCE、WebID、Provider 和部署实例。
-6. Xpod 交换 Token、确认账号身份、加密并写入当前 Pod。
+4. Provider 完成官方 device-code OAuth，或用户在官方 Console 创建 API Key 后回到 LinX。
+5. OAuth callback/poll 校验 state、PKCE、WebID、Provider 和部署实例；browser-assisted API Key 只允许走已认证管理 API，不走 public callback。
+6. Xpod 交换 Token 或接收 API Key、确认账号身份（官方响应提供时）、加密并写入当前 Pod。
 7. LinX 轮询状态或接收本地 deep link 通知。
 
-Local 使用 public client + PKCE/device flow，不把 confidential client secret打进安装包。Cloud 所需 OAuth client secret 放 KMS。失败日志不包含 code、Token、Cookie 或 Provider 错误正文中的秘密。
+Local 的 OAuth 仅用于官方支持的 public client + PKCE/device flow，不把 confidential client secret 打进安装包。Cloud 所需 OAuth client secret 放 KMS。OpenAI Codex/Claude Code 官方 client id 不复用，Cookie 不抓取。失败日志不包含 code、Token、Cookie、API Key 或 Provider 错误正文中的秘密。
 
 第一期 Provider 认证矩阵：
 
-| Provider | 浏览器 Connect | API Key | 首选协议 |
+| Provider | Connect 模式 | API Key | 首选协议 |
 | --- | --- | --- | --- |
-| OpenAI/Codex | 必须 | 必须 | Responses |
-| Anthropic/Claude | 必须 | 必须 | Messages |
-| Kimi | 必须 | 必须 | OpenAI-compatible |
-| 阿里云百炼 | 必须 | 必须 | Messages 或 Chat Completions |
-| DeepSeek | 官方暂不支持 | 必须 | Messages 或 Chat Completions |
+| OpenAI/Codex | `browserAssistedApiKey`，打开官方 API key 页面后通过认证管理 API 提交 | 必须 | Responses |
+| Anthropic/Claude | `browserAssistedApiKey`，打开官方 Console key 页面后通过认证管理 API 提交 | 必须 | Messages |
+| Kimi | `deviceCodeOAuth`（官方 Kimi Code device-code） | 必须 | OpenAI-compatible |
+| 阿里云百炼 | `browserAssistedApiKey`，打开官方百炼控制台后通过认证管理 API 提交 | 必须 | Messages 或 Chat Completions |
+| DeepSeek | `connectUnsupported` | 必须 | Messages 或 Chat Completions |
 
 Connect Credential 与 API Key Credential 不得静默互相回退，避免改变账号或计费来源。
 
