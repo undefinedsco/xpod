@@ -10,6 +10,7 @@ import {
   KimiDeviceCodeConnectAdapter,
   PodConnectedCredentialRepository,
   ProviderConnectService,
+  type ConnectBeginResult,
   type ConnectCredentialRecord,
   type PodCredentialRepository,
 } from '../../../src/api/ai-gateway/connect';
@@ -41,7 +42,7 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     provider: string;
     deployment: 'local' | 'cloud';
   }): Promise<ConnectCredentialRecord | undefined> {
-    const latest = this.rows.findLast((row) =>
+    const latest = latestMatchingRow(this.rows, (row) =>
       row.webId === input.webId
       && row.provider === input.provider
       && row.deployment === input.deployment
@@ -66,7 +67,7 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     deployment: 'local' | 'cloud';
     reason: string;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const latest = this.rows.findLast((row) =>
+    const latest = latestMatchingRow(this.rows, (row) =>
       row.webId === input.webId
       && row.provider === input.provider
       && row.deployment === input.deployment);
@@ -81,7 +82,7 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     provider: string;
     deployment: 'local' | 'cloud';
   }): Promise<ConnectCredentialRecord | undefined> {
-    const latest = this.rows.findLast((row) =>
+    const latest = latestMatchingRow(this.rows, (row) =>
       row.webId === input.webId
       && row.provider === input.provider
       && row.deployment === input.deployment);
@@ -93,6 +94,31 @@ class RecordingCredentialRepository implements PodCredentialRepository {
 
 function vault(): WebCryptoCredentialVault {
   return new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
+}
+
+function latestMatchingRow<T>(rows: T[], predicate: (row: T) => boolean): T | undefined {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (predicate(row)) {
+      return row;
+    }
+  }
+  return undefined;
+}
+
+function requireConnectAttempt(result: ConnectBeginResult): {
+  attemptId: string;
+  state: string;
+  signature: string;
+} {
+  if (!result.attemptId || !result.state || !result.signature) {
+    throw new Error(`Expected signed Connect attempt, got ${JSON.stringify(result)}`);
+  }
+  return {
+    attemptId: result.attemptId,
+    state: result.state,
+    signature: result.signature,
+  };
 }
 
 describe('Provider Connect capabilities', () => {
@@ -151,14 +177,13 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
     expect(begun.state).toHaveLength(43);
     expect(begun.signature).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(begun.pkceChallenge).toBeUndefined();
+    const begunAttempt = requireConnectAttempt(begun);
 
     await expect(adapter.completeApiKey({
       webId: OTHER_WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
       apiKey: 'sk-other-user',
     })).rejects.toThrow(/bound to a different webid/i);
 
@@ -166,8 +191,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
-      attemptId: begun.attemptId,
-      state: begun.state,
+      ...begunAttempt,
       signature: 'tampered',
       apiKey: 'sk-bad-signature',
     })).rejects.toThrow(/invalid connect attempt signature/i);
@@ -176,9 +200,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
       apiKey: 'sk-live-openai-secret',
       accountLabel: 'Alice OpenAI',
     });
@@ -204,9 +226,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({
       mode: 'browserAssistedApiKey',
       status: 'completed',
@@ -217,9 +237,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
       apiKey: 'sk-second-use',
     })).rejects.toThrow(/already consumed/i);
   });
@@ -245,15 +263,14 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       provider: 'anthropic',
       requestedMode: 'browserAssistedApiKey',
     });
+    const begunAttempt = requireConnectAttempt(begun);
     now = new Date('2026-07-23T00:05:01.000Z');
 
     await expect(adapter.status({
       webId: WEB_ID,
       deployment: 'local',
       provider: 'anthropic',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({
       mode: 'browserAssistedApiKey',
       status: 'expired',
@@ -264,9 +281,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'local',
       provider: 'anthropic',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
       apiKey: 'sk-expired',
     })).rejects.toThrow(/not found/i);
 
@@ -278,14 +293,13 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       requestedMode: 'browserAssistedApiKey',
       expectedCredentialVersion: 41,
     });
+    const freshAttempt = requireConnectAttempt(fresh);
 
     await expect(adapter.completeApiKey({
       webId: WEB_ID,
       deployment: 'local',
       provider: 'anthropic',
-      attemptId: fresh.attemptId,
-      state: fresh.state,
-      signature: fresh.signature,
+      ...freshAttempt,
       apiKey: 'sk-version-race',
     })).rejects.toThrow(/credential_version_conflict/i);
     expect(repository.rows).toHaveLength(0);
@@ -363,15 +377,14 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       verificationUriComplete: 'https://kimi.moonshot.cn/device?user_code=KIMI-123',
     });
     expect(begun.pkceChallenge).toMatch(/^[A-Za-z0-9_-]+$/);
+    const begunAttempt = requireConnectAttempt(begun);
 
     now = new Date('2026-07-23T00:00:00.500Z');
     await expect(adapter.pollDevice({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({ status: 'authorization_pending', intervalSeconds: 1 });
     expect(calls).toHaveLength(1);
 
@@ -380,9 +393,7 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({ status: 'authorization_pending' });
     expect(calls).toHaveLength(2);
 
@@ -390,9 +401,7 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({ status: 'authorization_pending', intervalSeconds: 1 });
     expect(calls).toHaveLength(2);
 
@@ -401,9 +410,7 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({ status: 'slow_down', intervalSeconds: 6 });
 
     now = new Date('2026-07-23T00:00:08.000Z');
@@ -411,18 +418,14 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({ status: 'completed' });
 
     await expect(adapter.status({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).resolves.toMatchObject({
       mode: 'deviceCodeOAuth',
       status: 'completed',
@@ -435,9 +438,7 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).rejects.toThrow(/already consumed/i);
     expect(calls).toHaveLength(callsAfterCompletion);
 
@@ -571,22 +572,19 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       provider: 'kimi',
       requestedMode: 'deviceCodeOAuth',
     });
+    const begunAttempt = requireConnectAttempt(begun);
 
     await expect(adapter.pollDevice({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).rejects.toThrow(/invalid_grant/i);
     await expect(adapter.pollDevice({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      attemptId: begun.attemptId,
-      state: begun.state,
-      signature: begun.signature,
+      ...begunAttempt,
     })).rejects.not.toThrow(/sk-live|api_key|device-code|refresh-token/i);
 
     await adapter.refresh({
@@ -640,14 +638,13 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       provider: 'kimi',
       requestedMode: 'deviceCodeOAuth',
     });
+    const begunAttempt = requireConnectAttempt(begun);
     now = new Date('2026-07-23T00:00:01.000Z');
     const input = {
       webId: WEB_ID,
       deployment: 'cloud' as const,
       provider: 'kimi',
-      attemptId: begun.attemptId!,
-      state: begun.state!,
-      signature: begun.signature!,
+      ...begunAttempt,
     };
 
     await expect(Promise.all([
@@ -799,14 +796,13 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
     });
+    const begunAttempt = requireConnectAttempt(begun);
 
     await adapter.completeApiKey({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
-      attemptId: begun.attemptId!,
-      state: begun.state!,
-      signature: begun.signature!,
+      ...begunAttempt,
       apiKey: 'sk-pod-backed-secret',
     });
 
