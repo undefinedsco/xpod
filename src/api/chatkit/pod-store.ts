@@ -10,7 +10,7 @@
  *     #{threadId}                     # Thread (sioc:Thread, sioc:has_parent)
  *   {yyyy}/{MM}/{dd}/messages.ttl     # Messages (meeting:Message)
  */
-import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq, and, asc } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ChatKitStore, StoreContext } from './store';
 import type {
@@ -78,7 +78,6 @@ import { defaultBaseUrlForProvider, defaultEmbeddingModelForProvider } from '../
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import {
-  messageRepository,
   normalizeAIConfigModelId,
   normalizeAIConfigProviderId,
   normalizeAIConfigResourceId,
@@ -1343,9 +1342,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const resolvedThread = await this.resolveThreadRef(thread, context);
 
-    const records = await messageRepository.list(db, {
-      thread: resolvedThread.thread,
-    }) as Array<{
+    const records = await db.select()
+      .from(Message)
+      .where(eq(Message.thread, resolvedThread.thread))
+      .orderBy(asc(Message.createdAt as any))
+      .execute() as Array<{
       id?: string | null;
       chat?: string | null;
       thread?: string | null;
