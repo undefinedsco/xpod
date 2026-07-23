@@ -116,6 +116,7 @@
     "test:integration:lite:up": "docker compose -f docker-compose.standalone.yml up -d --build",
     "test:integration:lite:down": "docker compose -f docker-compose.standalone.yml down",
     "smoke:server:reader-embedding": "bun scripts/smoke-reader-embedding-from-pod.ts",
+    "smoke:ai-connection:codex": "bun scripts/ai-gateway-codex-smoke.ts",
     "build:single": "node scripts/build-single-file.js",
     "build:single:bun": "node scripts/build-bun-single.js",
     "build:single:bun:package": "node scripts/build-platform-package.cjs --current",
