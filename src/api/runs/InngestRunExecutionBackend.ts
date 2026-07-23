@@ -196,6 +196,8 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
           for await (const event of this.runtimeDriver.start(pending.input)) {
             pending.queue.push(event);
           }
+        } catch (error) {
+          pending.queue.push({ type: 'error', message: this.formatError(error) });
         } finally {
           pending.queue.close();
         }

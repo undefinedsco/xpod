@@ -5,8 +5,11 @@ import type { GatewayDeployment } from './GatewayApiKey';
 import { DEFAULT_GATEWAY_API_KEY_SCOPES } from './GatewayApiKeyAuthenticator';
 import { requireCanonicalWebId, type InvocationTokenCodec } from './InvocationTokenCodec';
 
-const DEFAULT_INVOCATION_KEY_TTL_MS = 5 * 60_000;
-const MAX_INVOCATION_KEY_TTL_MS = 5 * 60_000;
+// ACP can remain in an interactive authentication wait for five minutes.
+// Ten minutes covers that boundary plus the resumed turn while retaining a
+// hard fifteen-minute ceiling for every stateless invocation token.
+const DEFAULT_INVOCATION_KEY_TTL_MS = 10 * 60_000;
+const MAX_INVOCATION_KEY_TTL_MS = 15 * 60_000;
 
 export interface AiConnectionInvocationKeyIssuerOptions {
   codec: InvocationTokenCodec;

@@ -8,7 +8,7 @@ const NONCE_BYTES = 12;
 const KEY_BYTES = 32;
 const MAX_TOKEN_LENGTH = 8_192;
 const MAX_CIPHERTEXT_BYTES = 4_096;
-const MAX_TTL_MS = 5 * 60_000;
+const MAX_TTL_MS = 15 * 60_000;
 const MAX_SCOPES = 8;
 
 export interface InvocationTokenClaims {
@@ -110,9 +110,12 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       return undefined;
     }
     try {
-      const nonce = Buffer.from(parts[2], 'base64url');
-      const ciphertext = Buffer.from(parts[3], 'base64url');
-      const tag = Buffer.from(parts[4], 'base64url');
+      const nonce = decodeCanonicalBase64Url(parts[2]);
+      const ciphertext = decodeCanonicalBase64Url(parts[3]);
+      const tag = decodeCanonicalBase64Url(parts[4]);
+      if (!nonce || !ciphertext || !tag) {
+        return undefined;
+      }
       if (
         nonce.length !== NONCE_BYTES
         || ciphertext.length === 0
@@ -163,6 +166,11 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       return undefined;
     }
   }
+}
+
+function decodeCanonicalBase64Url(value: string): Buffer | undefined {
+  const decoded = Buffer.from(value, 'base64url');
+  return decoded.toString('base64url') === value ? decoded : undefined;
 }
 
 function normalizeSecret(input: GatewayKeyLocatorSecret): { kid: string; key: Buffer } {

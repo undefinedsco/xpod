@@ -345,13 +345,26 @@ export class ChatKitService<TContext = StoreContext> {
       context,
     });
     if (!prepared) {
+      yield this.projectRunStateEvent({
+        type: 'error',
+        code: 'client_tool_output_conflict',
+        message: 'Client tool output was already claimed or completed',
+      });
       return;
     }
-    const executionContext = await this.withInvocationAiConnection(context);
-    for await (
-      const event of this.runStateCenter.completePreparedClientToolOutput(prepared, executionContext)
-    ) {
-      yield this.projectRunStateEvent(event);
+    let completed = false;
+    try {
+      const executionContext = await this.withInvocationAiConnection(context);
+      for await (
+        const event of this.runStateCenter.completePreparedClientToolOutput(prepared, executionContext)
+      ) {
+        yield this.projectRunStateEvent(event);
+      }
+      completed = true;
+    } finally {
+      if (!completed) {
+        await this.runStateCenter.releaseClientToolOutput(prepared, context);
+      }
     }
   }
 

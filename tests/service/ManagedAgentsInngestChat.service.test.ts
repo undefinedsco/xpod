@@ -199,6 +199,8 @@ class WorkspaceAgentDriver implements RunExecutionBackend {
 class ToolCallThenTextDriver implements RunExecutionBackend {
   public inputs: RunExecutionInput[] = [];
 
+  public constructor(private continuationFailures = 0) {}
+
   public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
     this.inputs.push(input);
     if (!input.continuation) {
@@ -209,6 +211,10 @@ class ToolCallThenTextDriver implements RunExecutionBackend {
         arguments: JSON.stringify({ prompt: 'choose file' }),
       };
       return;
+    }
+    if (this.continuationFailures > 0) {
+      this.continuationFailures -= 1;
+      throw new Error('simulated continuation runtime failure');
     }
     yield { type: 'text', text: `resumed:${input.continuation.itemId}` };
   }
@@ -1610,7 +1616,7 @@ describe('Managed Agents Inngest Chat backend', () => {
 
   it('projects resumed client tool output back into the assistant message and completes the same Run', async () => {
     const store = new InMemoryStore<StoreContext>();
-    const driver = new ToolCallThenTextDriver();
+    const driver = new ToolCallThenTextDriver(1);
     const backend = new InngestRunExecutionBackend({
       client: new RecordingInngestClient() as any,
       runtimeDriver: driver,
@@ -1631,12 +1637,27 @@ describe('Managed Agents Inngest Chat backend', () => {
     };
     let issuedCount = 0;
     const issuer = {
-      issue: vi.fn(async () => ({
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: `continuation-fixture-secret-${++issuedCount}`,
-        model: 'linx',
-      })),
+      issue: vi.fn(async () => {
+        issuedCount += 1;
+        if (issuedCount === 2) {
+          throw new Error('simulated continuation issuer failure');
+        }
+        return {
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: `continuation-fixture-secret-${issuedCount}`,
+          model: 'linx',
+        };
+      }),
     };
+    const claimContinuation = store.claimClientToolContinuation.bind(store);
+    let successfulClaims = 0;
+    vi.spyOn(store, 'claimClientToolContinuation').mockImplementation(async (...args) => {
+      const claim = await claimContinuation(...args);
+      if (claim) {
+        successfulClaims += 1;
+      }
+      return claim;
+    });
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
@@ -1683,30 +1704,63 @@ describe('Managed Agents Inngest Chat backend', () => {
     const runId = toolItem.metadata.runId as string;
     expect((await store.loadRun(runId, context)).status).toBe(RunStatus.WAITING_INPUT);
 
-    const continued = await service.process(JSON.stringify({
+    const continuationRequest = JSON.stringify({
       type: 'threads.add_client_tool_output',
       params: {
         thread_id: thread.id,
         item_id: toolItem.id,
         output: 'selected README.md',
       },
-    }), context);
-    const continuedChunks: Uint8Array[] = [];
-    for await (const chunk of continued.type === 'streaming' ? continued.stream() : []) {
-      continuedChunks.push(chunk);
+    });
+    const failedIssuance = await service.process(continuationRequest, context);
+    for await (const _chunk of failedIssuance.type === 'streaming' ? failedIssuance.stream() : []) {
+      // Drain the failed issuer response so the durable claim is released.
     }
-    const continuedEvents = parseSseDataLines(continuedChunks);
+    expect((await store.loadRun(runId, context)).status).toBe(RunStatus.WAITING_INPUT);
+    expect((await store.loadItem({ thread_id: thread.id }, toolItem.id, context) as any).status).toBe('pending');
+    expect(driver.inputs).toHaveLength(1);
 
+    const failedExecution = await service.process(continuationRequest, context);
+    for await (const _chunk of failedExecution.type === 'streaming' ? failedExecution.stream() : []) {
+      // Drain the failed runtime response so the durable claim is compensated.
+    }
+    expect((await store.loadRun(runId, context)).status).toBe(RunStatus.WAITING_INPUT);
+    expect((await store.loadItem({ thread_id: thread.id }, toolItem.id, context) as any).status).toBe('pending');
     expect(driver.inputs).toHaveLength(2);
+    expect(successfulClaims).toBe(2);
+
+    const [continuedA, continuedB] = await Promise.all([
+      service.process(continuationRequest, context),
+      service.process(continuationRequest, context),
+    ]);
+    const drain = async (result: Awaited<ReturnType<typeof service.process>>): Promise<any[]> => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of result.type === 'streaming' ? result.stream() : []) {
+        chunks.push(chunk);
+      }
+      return parseSseDataLines(chunks);
+    };
+    const [eventsA, eventsB] = await Promise.all([drain(continuedA), drain(continuedB)]);
+    const continuedEvents = [...eventsA, ...eventsB];
+
+    expect(successfulClaims).toBe(3);
+    expect(continuedEvents).toContainEqual(expect.objectContaining({
+      type: 'error',
+      error: expect.objectContaining({
+        code: 'client_tool_output_conflict',
+      }),
+    }));
+    expect(driver.inputs).toHaveLength(3);
     expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-1');
-    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-2');
+    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-3');
+    expect(driver.inputs[2].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-4');
     expect(JSON.stringify((await store.loadRun(runId, context)).metadata)).not.toContain('continuation-fixture-secret');
-    expect(driver.inputs[1].runId).toBe(runId);
-    expect(driver.inputs[1].continuation).toEqual({
+    expect(driver.inputs[2].runId).toBe(runId);
+    expect(driver.inputs[2].continuation).toEqual({
       kind: 'client_tool_output',
       itemId: toolItem.id,
     });
-    expect(driver.inputs[1].retrievedContext).toEqual({
+    expect(driver.inputs[2].retrievedContext).toEqual({
       query: expect.stringContaining('Continue the previous run after client tool output.'),
       items: [
         {
@@ -1716,7 +1770,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         },
       ],
     });
-    expect(contextRetriever.retrieve).toHaveBeenCalledTimes(2);
+    expect(contextRetriever.retrieve).toHaveBeenCalledTimes(3);
     expect(assistantText(continuedEvents)).toBe(`resumed:${toolItem.id}`);
     expect((await store.loadRun(runId, context)).status).toBe(RunStatus.COMPLETED);
     const steps = await store.loadRunSteps(runId, context);
@@ -1724,19 +1778,12 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(steps.map((step) => step.type)).toContain(RunStepType.CLIENT_TOOL_OUTPUT);
     expect(steps.map((step) => step.type)).toContain(RunStepType.COMPLETED);
 
-    const replayed = await service.process(JSON.stringify({
-      type: 'threads.add_client_tool_output',
-      params: {
-        thread_id: thread.id,
-        item_id: toolItem.id,
-        output: 'replayed output',
-      },
-    }), context);
+    const replayed = await service.process(continuationRequest, context);
     for await (const _chunk of replayed.type === 'streaming' ? replayed.stream() : []) {
       // Drain the replay response.
     }
-    expect(issuer.issue).toHaveBeenCalledTimes(2);
-    expect(driver.inputs).toHaveLength(2);
+    expect(issuer.issue).toHaveBeenCalledTimes(4);
+    expect(driver.inputs).toHaveLength(3);
   });
 
   it('restores runtime input from persisted thread history on each run', async () => {

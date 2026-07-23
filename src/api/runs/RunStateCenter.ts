@@ -1,4 +1,8 @@
-import type { ChatKitStore, StoreContext } from '../chatkit/store';
+import type {
+  ChatKitStore,
+  ClientToolContinuationClaim,
+  StoreContext,
+} from '../chatkit/store';
 import type {
   AssistantMessageItem,
   ClientEffect,
@@ -74,11 +78,11 @@ export interface RunStateCenterOptions<TContext = StoreContext> {
 }
 
 export interface PreparedClientToolOutput {
-  threadRef: ThreadRef;
-  item: ClientToolCallItem;
+  claim: ClientToolContinuationClaim;
   output: string;
-  run: RunRecordData;
 }
+
+const CLIENT_TOOL_CONTINUATION_LEASE_MS = 5 * 60_000;
 
 /**
  * Run is the xpod-side state center for Agent execution.
@@ -265,15 +269,35 @@ export class RunStateCenter<TContext = StoreContext> {
     context: TContext;
   }): Promise<PreparedClientToolOutput | undefined> {
     const { threadRef, itemId, output, context } = input;
-    const item = await this.store.loadItem(threadRef, itemId, context);
-    if (item.type !== 'client_tool_call' || item.status !== 'pending') {
+    if (!this.store.claimClientToolContinuation) {
+      throw new Error('Durable client tool continuation claim capability is required');
+    }
+    const now = nowTimestamp();
+    const claim = await this.store.claimClientToolContinuation({
+      threadRef,
+      itemId,
+      claimId: generateId('client-tool-continuation'),
+      leaseExpiresAt: now + CLIENT_TOOL_CONTINUATION_LEASE_MS,
+      now,
+    }, context);
+    if (!claim) {
       return undefined;
     }
-    const run = await this.resolveWaitingRunForToolOutput(item, threadRef, context);
-    if (!run) {
-      return undefined;
+    return { claim, output };
+  }
+
+  public async releaseClientToolOutput(
+    prepared: PreparedClientToolOutput,
+    context: TContext,
+  ): Promise<boolean> {
+    if (!this.store.releaseClientToolContinuation) {
+      throw new Error('Durable client tool continuation release capability is required');
     }
-    return { threadRef, item, output, run };
+    return this.store.releaseClientToolContinuation(
+      prepared.claim,
+      nowTimestamp(),
+      context,
+    );
   }
 
   public async *completeClientToolOutput(input: {
@@ -286,14 +310,23 @@ export class RunStateCenter<TContext = StoreContext> {
     if (!prepared) {
       return;
     }
-    yield* this.completePreparedClientToolOutput(prepared, input.context);
+    let completed = false;
+    try {
+      yield* this.completePreparedClientToolOutput(prepared, input.context);
+      completed = true;
+    } finally {
+      if (!completed) {
+        await this.releaseClientToolOutput(prepared, input.context);
+      }
+    }
   }
 
   public async *completePreparedClientToolOutput(
     prepared: PreparedClientToolOutput,
     context: TContext,
   ): AsyncIterable<RunStateEvent> {
-    const { threadRef, item, output, run } = prepared;
+    const { threadRef, item, run } = prepared.claim;
+    const { output } = prepared;
 
     const updatedItem: ClientToolCallItem = {
       ...item,
@@ -320,8 +353,6 @@ export class RunStateCenter<TContext = StoreContext> {
       },
     });
     run.status = RunStatus.QUEUED;
-    run.leaseOwner = undefined;
-    run.leaseExpiresAt = undefined;
     run.completedAt = undefined;
     run.error = undefined;
     run.updatedAt = now;
@@ -397,11 +428,7 @@ export class RunStateCenter<TContext = StoreContext> {
       if (result.action === 'return') {
         return;
       }
-      const finalItem = this.finalizeAssistantMessage(assistantState.item, assistantState.fullText, 'incomplete');
-      await this.store.saveItem(threadRef, finalItem, context);
-      await this.finishRun(run, RunStatus.FAILED, context, result.message);
-      yield { type: 'item_done', item: finalItem };
-      return;
+      throw new Error(result.message);
     }
 
     const finalItem = this.finalizeAssistantMessage(assistantState.item, assistantState.fullText, 'completed');
@@ -485,6 +512,8 @@ export class RunStateCenter<TContext = StoreContext> {
     const now = nowTimestamp();
     run.status = status;
     run.completedAt = now;
+    run.leaseOwner = undefined;
+    run.leaseExpiresAt = undefined;
     run.updatedAt = now;
     run.error = error;
     await this.saveRun(run, context);

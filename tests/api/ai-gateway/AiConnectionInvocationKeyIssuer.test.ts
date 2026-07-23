@@ -149,6 +149,13 @@ describe('stateless invocation authentication', () => {
     const locator = createGatewayKeyLocator(WEB_ID, 'local', locatorCodec);
     expect(codec.decode(locator)).toBeUndefined();
     expect(locatorCodec.decode(valid)).toBeUndefined();
+    expect(() => codec.encode({
+      deployment: 'local',
+      webId: WEB_ID,
+      scopes: SCOPES,
+      issuedAt: now,
+      expiresAt: new Date(now.getTime() + 15 * 60_000 + 1),
+    })).toThrow(/TTL/);
 
     const attempts = [
       `${valid.slice(0, -1)}${valid.endsWith('A') ? 'B' : 'A'}`,

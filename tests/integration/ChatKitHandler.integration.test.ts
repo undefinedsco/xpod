@@ -197,12 +197,25 @@ describe('ChatKitHandler Integration', () => {
     const runtimeServer = new ApiServer({ port, authMiddleware });
     const store = new InMemoryStore<StoreContext>();
     const backend = new ToolContinuationRuntimeBackend();
+    const claimContinuation = store.claimClientToolContinuation.bind(store);
+    let successfulClaims = 0;
+    vi.spyOn(store, 'claimClientToolContinuation').mockImplementation(async (...args) => {
+      const claim = await claimContinuation(...args);
+      if (claim) {
+        successfulClaims += 1;
+      }
+      return claim;
+    });
     let issued = 0;
     const issuer = {
-      issue: vi.fn(async () => ({
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: `handler-continuation-${++issued}`,
-      })),
+      issue: vi.fn(async () => {
+        const invocation = ++issued;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return {
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: `handler-continuation-${invocation}`,
+        };
+      }),
     };
     const service = new ChatKitService<StoreContext>({
       store,
@@ -249,7 +262,7 @@ describe('ChatKitHandler Integration', () => {
           output: 'README.md',
         },
       };
-      const continueResponse = await fetch(`http://localhost:${port}/v1/chatkit`, {
+      const sendContinuation = async (): Promise<Response> => fetch(`http://localhost:${port}/v1/chatkit`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -257,25 +270,33 @@ describe('ChatKitHandler Integration', () => {
         },
         body: JSON.stringify(continueRequest),
       });
-      await continueResponse.text();
-      expect(continueResponse.status).toBe(200);
+      const [continueResponse, competingResponse] = await Promise.all([
+        sendContinuation(),
+        sendContinuation(),
+      ]);
+      const continuationBodies = await Promise.all([
+        continueResponse.text(),
+        competingResponse.text(),
+      ]);
+      expect([continueResponse.status, competingResponse.status]).toEqual([200, 200]);
+      expect(continuationBodies.flatMap(parseSse)).toContainEqual(expect.objectContaining({
+        type: 'error',
+        error: expect.objectContaining({
+          code: 'client_tool_output_conflict',
+        }),
+      }));
       expect(backend.inputs[1].continuation).toEqual({
         kind: 'client_tool_output',
         itemId: toolItem.id,
       });
       expect(backend.inputs[1].config.aiConnection?.gatewayKey).toBe('handler-continuation-2');
+      expect(successfulClaims).toBe(1);
 
-      const replayResponse = await fetch(`http://localhost:${port}/v1/chatkit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer test-token',
-        },
-        body: JSON.stringify(continueRequest),
-      });
+      const replayResponse = await sendContinuation();
       await replayResponse.text();
       expect(issuer.issue).toHaveBeenCalledTimes(2);
       expect(backend.inputs).toHaveLength(2);
+      expect(successfulClaims).toBe(1);
     } finally {
       await runtimeServer.stop();
     }
