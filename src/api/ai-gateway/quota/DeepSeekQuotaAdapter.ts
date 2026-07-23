@@ -1,15 +1,15 @@
 import {
   apiKeyFromSecret,
+  decimalAmount,
   errorQuotaSnapshot,
   fetchJsonWithBearer,
-  numeric,
   type NormalizedQuotaSnapshot,
   type ProviderQuotaAdapter,
   type ProviderQuotaFetchInput,
   type QuotaWindow,
 } from './ProviderQuotaAdapter';
 
-const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
 const SOURCE = 'deepseek:/user/balance';
 
 export interface DeepSeekQuotaAdapterOptions {
@@ -36,7 +36,7 @@ export class DeepSeekQuotaAdapter implements ProviderQuotaAdapter {
     }
     const result = await fetchJsonWithBearer({
       fetch: this.fetchFn,
-      url: `${deepSeekApiRoot(input.credential.baseUrl)}/user/balance`,
+      url: DEEPSEEK_BALANCE_URL,
       apiKey,
       signal: input.signal,
     });
@@ -81,12 +81,17 @@ function deepSeekWindows(value: unknown): QuotaWindow[] {
       ['granted_balance', object.granted_balance],
       ['topped_up_balance', object.topped_up_balance],
     ].flatMap(([name, amount]) => {
-      const remaining = numeric(amount);
-      return remaining === undefined ? [] : [{ name: `${currency}.${String(name)}`, remaining }];
+      const balance = decimalAmount(amount);
+      if (!balance.exact) {
+        return [];
+      }
+      return [{
+        name: `${currency}.${String(name)}`,
+        currency,
+        ...(balance.numeric !== undefined ? { remaining: balance.numeric } : {}),
+        remainingExact: balance.exact,
+        ...(balance.displayApprox ? { displayApprox: true } : {}),
+      }];
     });
   });
-}
-
-function deepSeekApiRoot(baseUrl: string | undefined): string {
-  return (baseUrl ?? DEEPSEEK_BASE_URL).replace(/\/v1\/?$/u, '').replace(/\/+$/u, '');
 }

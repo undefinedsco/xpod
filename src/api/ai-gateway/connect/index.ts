@@ -291,7 +291,7 @@ export class InMemoryConnectAttemptStore {
   }
 
   public async get(id: string, now?: Date): Promise<ConnectAttempt | undefined> {
-    this.pruneExpired(new Date());
+    this.pruneExpired(now ?? new Date(), id);
     const attempt = this.attempts.get(id);
     if (attempt && now && attempt.expiresAt.getTime() <= now.getTime()) {
       this.attempts.delete(id);

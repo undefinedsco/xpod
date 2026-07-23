@@ -17,8 +17,13 @@ export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
 export interface QuotaWindow {
   name: string;
   used?: number;
+  usedExact?: string;
   limit?: number;
+  limitExact?: string;
   remaining?: number;
+  remainingExact?: string;
+  displayApprox?: boolean;
+  currency?: string;
   resetsAt?: string;
 }
 
@@ -99,6 +104,7 @@ export class ProviderQuotaService {
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: QuotaCredentialRecord[];
   private readonly now: () => Date;
+  private readonly inFlightRefreshes = new Map<string, Promise<NormalizedQuotaSnapshot>>();
 
   public constructor(options: ProviderQuotaServiceOptions) {
     this.repository = options.repository;
@@ -147,22 +153,70 @@ export class ProviderQuotaService {
     if (!adapter) {
       throw new Error(`quota_adapter_not_found:${provider}`);
     }
-    const secret = await this.vault.open(
-      { webId: input.webId },
-      credential.credentialIri,
-      provider,
-      credential.encryptedSecret,
-    );
-    const snapshot = await adapter.fetch({
-      credential,
-      secret,
-      now,
-      signal: input.signal,
-    });
-    return this.repository.upsert({
+    const refreshKey = quotaRefreshKey({
       webId: input.webId,
       deployment: input.deployment,
       provider,
+      credentialIri: credential.credentialIri,
+    });
+    const inFlight = this.inFlightRefreshes.get(refreshKey);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const refresh = this.fetchAndCache({
+      webId: input.webId,
+      deployment: input.deployment,
+      provider,
+      credential,
+      adapter,
+      now,
+      signal: input.signal,
+    }).finally(() => {
+      this.inFlightRefreshes.delete(refreshKey);
+    });
+    this.inFlightRefreshes.set(refreshKey, refresh);
+    return refresh;
+  }
+
+  private async fetchAndCache(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credential: QuotaCredentialRecord;
+    adapter: ProviderQuotaAdapter;
+    now: Date;
+    signal?: AbortSignal;
+  }): Promise<NormalizedQuotaSnapshot> {
+    const secret = await this.vault.open(
+      { webId: input.webId },
+      input.credential.credentialIri,
+      input.provider,
+      input.credential.encryptedSecret,
+    );
+    let snapshot: NormalizedQuotaSnapshot;
+    try {
+      snapshot = await input.adapter.fetch({
+        credential: input.credential,
+        secret,
+        now: input.now,
+        signal: input.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      snapshot = errorQuotaSnapshot({
+        credential: input.credential.credentialIri,
+        source: quotaErrorSource(input.provider),
+        now: input.now,
+        metadata: { reason: 'provider_quota_unavailable' },
+      });
+    }
+    return this.repository.upsert({
+      webId: input.webId,
+      deployment: input.deployment,
+      provider: input.provider,
       snapshot,
     });
   }
@@ -475,6 +529,36 @@ export function numeric(value: unknown): number | undefined {
   return undefined;
 }
 
+export function decimalAmount(value: unknown): {
+  exact?: string;
+  numeric?: number;
+  displayApprox?: boolean;
+} {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return {
+      exact: String(value),
+      numeric: value,
+      ...(Number.isSafeInteger(value) ? {} : { displayApprox: true }),
+    };
+  }
+  if (typeof value !== 'string') {
+    return {};
+  }
+  const exact = value.trim();
+  if (!exact) {
+    return {};
+  }
+  const parsed = Number(exact);
+  if (!Number.isFinite(parsed) || Math.abs(parsed) > Number.MAX_SAFE_INTEGER) {
+    return { exact };
+  }
+  return {
+    exact,
+    numeric: parsed,
+    ...(/[.eE]/u.test(exact) ? { displayApprox: true } : {}),
+  };
+}
+
 export function normalizeProvider(provider: string): string {
   return provider.trim().toLowerCase();
 }
@@ -492,6 +576,46 @@ function retryAfterSeconds(value: string | null | undefined): number | undefined
     return undefined;
   }
   return Math.max(0, Math.ceil((date.getTime() - Date.now()) / 1000));
+}
+
+function quotaRefreshKey(input: {
+  webId: string;
+  deployment: GatewayDeployment;
+  provider: string;
+  credentialIri: string;
+}): string {
+  return JSON.stringify([
+    input.webId,
+    input.deployment,
+    normalizeProvider(input.provider),
+    input.credentialIri,
+  ]);
+}
+
+function quotaErrorSource(provider: string): string {
+  switch (normalizeProvider(provider)) {
+    case 'kimi':
+      return 'kimi:/v1/users/me/balance';
+    case 'deepseek':
+      return 'deepseek:/user/balance';
+    case 'openai':
+      return 'openai:no-credential-quota-api';
+    case 'anthropic':
+      return 'anthropic:no-credential-quota-api';
+    case 'bailian':
+      return 'bailian:console-only';
+    default:
+      return `${normalizeProvider(provider)}:quota`;
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'name' in error
+    && (error as { name?: unknown }).name === 'AbortError',
+  );
 }
 
 function sanitizeSnapshot(snapshot: NormalizedQuotaSnapshot): NormalizedQuotaSnapshot {

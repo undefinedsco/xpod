@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
 import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
 import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
-import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
+import type { CredentialVault, ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
@@ -14,6 +14,8 @@ import {
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
+  type NormalizedQuotaSnapshot,
+  type ProviderQuotaAdapter,
   type QuotaCredentialRecord,
 } from '../../../src/api/ai-gateway/quota';
 import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
@@ -103,9 +105,9 @@ describe('ProviderQuotaAdapters', () => {
       source: 'kimi:/v1/users/me/balance',
       observedAt: '2026-07-23T00:00:00.000Z',
       windows: [
-        { name: 'available_balance', remaining: 12.5 },
-        { name: 'voucher_balance', remaining: 2.5 },
-        { name: 'cash_balance', remaining: 10 },
+        { name: 'available_balance', remaining: 12.5, remainingExact: '12.50' },
+        { name: 'voucher_balance', remaining: 2.5, remainingExact: '2.50' },
+        { name: 'cash_balance', remaining: 10, remainingExact: '10.00' },
       ],
     });
     expect(JSON.stringify(snapshot)).not.toContain('percent');
@@ -127,8 +129,39 @@ describe('ProviderQuotaAdapters', () => {
       now: new Date('2026-07-23T00:00:00.000Z'),
     })).resolves.toMatchObject({
       status: 'available',
-      windows: [{ name: 'available_balance', remaining: 1 }],
+      windows: [{ name: 'available_balance', remaining: 1, remainingExact: '1.00' }],
     });
+  });
+
+  it('preserves Kimi official decimal strings as authoritative quota amounts', async () => {
+    const fetch = jsonFetch(() => ({
+      body: {
+        data: {
+          available_balance: '9007199254740993.01',
+          voucher_balance: '0.1',
+        },
+      },
+    }));
+
+    const snapshot = await new KimiQuotaAdapter({ fetch }).fetch({
+      credential: await credential('kimi'),
+      secret: { type: 'apiKey', apiKey: 'provider-secret' },
+      now: new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'available_balance',
+        remainingExact: '9007199254740993.01',
+      }),
+      expect.objectContaining({
+        name: 'voucher_balance',
+        remaining: 0.1,
+        remainingExact: '0.1',
+        displayApprox: true,
+      }),
+    ]));
+    expect(snapshot.windows.find((window) => window.name === 'available_balance')).not.toHaveProperty('remaining');
   });
 
   it('normalizes DeepSeek official user balance endpoint fields', async () => {
@@ -160,14 +193,48 @@ describe('ProviderQuotaAdapters', () => {
       status: 'available',
       source: 'deepseek:/user/balance',
       windows: [
-        { name: 'USD.total_balance', remaining: 3.75 },
-        { name: 'USD.granted_balance', remaining: 1.25 },
-        { name: 'USD.topped_up_balance', remaining: 2.5 },
+        { name: 'USD.total_balance', remaining: 3.75, remainingExact: '3.75', currency: 'USD' },
+        { name: 'USD.granted_balance', remaining: 1.25, remainingExact: '1.25', currency: 'USD' },
+        { name: 'USD.topped_up_balance', remaining: 2.5, remainingExact: '2.50', currency: 'USD' },
       ],
       metadata: {
         isAvailable: true,
       },
     });
+  });
+
+  it('always calls the exact DeepSeek balance endpoint and never sends Bearer to credential baseUrl', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.deepseek.com/user/balance');
+      expect(url).not.toContain('attacker.example');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer deepseek-secret');
+      return {
+        body: {
+          is_available: true,
+          balance_infos: [{ currency: 'USD', total_balance: '0.1' }],
+        },
+      };
+    });
+    const deepSeekCredential = {
+      ...await credential('deepseek', { type: 'apiKey', apiKey: 'deepseek-secret' }),
+      baseUrl: 'https://attacker.example/v1',
+      metadata: { balanceUrl: 'https://attacker.example/user/balance' },
+    } as QuotaCredentialRecord;
+
+    const snapshot = await new DeepSeekQuotaAdapter({ fetch }).fetch({
+      credential: deepSeekCredential,
+      secret: { type: 'apiKey', apiKey: 'deepseek-secret' },
+      now: new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual([
+      expect.objectContaining({
+        name: 'USD.total_balance',
+        remaining: 0.1,
+        remainingExact: '0.1',
+        displayApprox: true,
+      }),
+    ]);
   });
 
   it('returns unsupported for providers without credential-scoped official quota API', async () => {
@@ -309,6 +376,176 @@ describe('ProviderQuotaAdapters', () => {
 
     expect(stale).toMatchObject({ status: 'error', stale: true });
     expect(JSON.stringify(repository.rows)).not.toContain('secret-never-cache');
+  });
+
+  it('caches sanitized provider quota fetch failures without leaking network or parse details', async () => {
+    const networkRepository = new InMemoryQuotaSnapshotRepository();
+    const networkCredential = await credential('kimi', { type: 'apiKey', apiKey: 'secret-never-cache' });
+    const networkService = new ProviderQuotaService({
+      repository: networkRepository,
+      vault: createVault(),
+      adapters: [
+        new KimiQuotaAdapter({
+          fetch: vi.fn(async () => {
+            throw new TypeError('getaddrinfo ENOTFOUND attacker.example secret-never-cache raw-body');
+          }) as unknown as typeof fetch,
+        }),
+      ],
+      credentials: [networkCredential],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await expect(networkService.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      refresh: true,
+    })).resolves.toMatchObject({
+      status: 'error',
+      source: 'kimi:/v1/users/me/balance',
+      metadata: { reason: 'provider_quota_unavailable' },
+    });
+    expect(networkRepository.rows).toHaveLength(1);
+    expect(JSON.stringify(networkRepository.rows)).not.toMatch(/secret-never-cache|attacker\.example|raw-body|ENOTFOUND/i);
+
+    const jsonRepository = new InMemoryQuotaSnapshotRepository();
+    const jsonCredential = await credential('deepseek', { type: 'apiKey', apiKey: 'deepseek-secret' });
+    const jsonService = new ProviderQuotaService({
+      repository: jsonRepository,
+      vault: createVault(),
+      adapters: [
+        new DeepSeekQuotaAdapter({
+          fetch: vi.fn(async () => new Response('not-json', { status: 200 })) as unknown as typeof fetch,
+        }),
+      ],
+      credentials: [jsonCredential],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await expect(jsonService.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'deepseek',
+      refresh: true,
+    })).resolves.toMatchObject({
+      status: 'error',
+      source: 'deepseek:/user/balance',
+      metadata: { reason: 'provider_quota_unavailable' },
+    });
+    expect(jsonRepository.rows).toHaveLength(1);
+    expect(JSON.stringify(jsonRepository.rows)).not.toMatch(/not-json|SyntaxError|Unexpected/i);
+  });
+
+  it('propagates aborted quota refreshes and does not cache cancellation snapshots', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const kimiCredential = await credential('kimi');
+    const abortError = new DOMException('The operation was aborted', 'AbortError');
+    const service = new ProviderQuotaService({
+      repository,
+      vault: createVault(),
+      adapters: [
+        new KimiQuotaAdapter({
+          fetch: vi.fn(async () => {
+            throw abortError;
+          }) as unknown as typeof fetch,
+        }),
+      ],
+      credentials: [kimiCredential],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await expect(service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      refresh: true,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(repository.rows).toHaveLength(0);
+  });
+
+  it('deduplicates concurrent refreshes by identity deployment provider and credential only while in flight', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const firstCredential = await credential('kimi');
+    const secondCredential: QuotaCredentialRecord = {
+      ...await credential('kimi'),
+      id: 'kimi-credential-two',
+      credentialIri: 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi-two',
+    };
+    let releaseFetch: (() => void) | undefined;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const vault: CredentialVault = {
+      seal: vi.fn(),
+      rewrap: vi.fn(),
+      open: vi.fn(async () => ({ type: 'apiKey', apiKey: 'provider-secret' })),
+    } as unknown as CredentialVault;
+    const adapter: ProviderQuotaAdapter = {
+      provider: 'kimi',
+      fetch: vi.fn(async (input): Promise<NormalizedQuotaSnapshot> => {
+        await fetchGate;
+        return {
+          credential: input.credential.credentialIri,
+          status: 'available',
+          windows: [{ name: 'available_balance', remaining: 1, remainingExact: '1.00' }],
+          observedAt: input.now.toISOString(),
+          expiresAt: new Date(input.now.getTime() + 5 * 60_000).toISOString(),
+          source: 'kimi:/v1/users/me/balance',
+        };
+      }),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      adapters: [adapter],
+      credentials: [firstCredential, secondCredential],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    const sameScopeA = service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: firstCredential.credentialIri,
+      refresh: true,
+    });
+    const sameScopeB = service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: firstCredential.credentialIri,
+      refresh: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(adapter.fetch).toHaveBeenCalledTimes(1);
+    expect(vault.open).toHaveBeenCalledTimes(1);
+    releaseFetch?.();
+    await expect(Promise.all([sameScopeA, sameScopeB])).resolves.toHaveLength(2);
+    expect(repository.rows.filter((row) => row.credential === firstCredential.credentialIri)).toHaveLength(1);
+
+    const [differentScopeA, differentScopeB] = await Promise.all([
+      service.status({
+        webId: WEB_ID,
+        deployment: 'cloud',
+        provider: 'kimi',
+        credentialIri: firstCredential.credentialIri,
+        refresh: true,
+      }),
+      service.status({
+        webId: WEB_ID,
+        deployment: 'cloud',
+        provider: 'kimi',
+        credentialIri: secondCredential.credentialIri,
+        refresh: true,
+      }),
+    ]);
+
+    expect(differentScopeA.credential).toBe(firstCredential.credentialIri);
+    expect(differentScopeB.credential).toBe(secondCredential.credentialIri);
+    expect(vault.open).toHaveBeenCalledTimes(3);
+    expect(adapter.fetch).toHaveBeenCalledTimes(3);
   });
 
   it('isolates quota snapshots by current WebID, deployment, provider and credential', async () => {

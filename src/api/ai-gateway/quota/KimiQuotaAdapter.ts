@@ -1,8 +1,8 @@
 import {
   apiKeyFromSecret,
+  decimalAmount,
   errorQuotaSnapshot,
   fetchJsonWithBearer,
-  numeric,
   type NormalizedQuotaSnapshot,
   type ProviderQuotaAdapter,
   type ProviderQuotaFetchInput,
@@ -70,7 +70,15 @@ function kimiWindows(body: unknown): QuotaWindow[] {
     ['voucher_balance', object.voucher_balance],
     ['cash_balance', object.cash_balance],
   ].flatMap(([name, value]) => {
-    const remaining = numeric(value);
-    return remaining === undefined ? [] : [{ name: String(name), remaining }];
+    const amount = decimalAmount(value);
+    if (!amount.exact) {
+      return [];
+    }
+    return [{
+      name: String(name),
+      ...(amount.numeric !== undefined ? { remaining: amount.numeric } : {}),
+      remainingExact: amount.exact,
+      ...(amount.displayApprox ? { displayApprox: true } : {}),
+    }];
   });
 }
