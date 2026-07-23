@@ -43,6 +43,7 @@ describe('Gateway internal Pod access container config', () => {
       process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS = 'old-1:previous-secret,old-2:older-secret';
       process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID = 'internal-client';
       process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET = 'internal-secret';
+      process.env.XPOD_AI_GATEWAY_INFERENCE_ENABLED = 'true';
 
       const config = loadConfigFromEnv();
 
@@ -54,6 +55,7 @@ describe('Gateway internal Pod access container config', () => {
       ]);
       expect(config.gatewayInternalClientId).toBe('internal-client');
       expect(config.gatewayInternalClientSecret).toBe('internal-secret');
+      expect(config.aiGatewayInferenceEnabled).toBe(true);
     } finally {
       process.env = previous;
     }
@@ -83,6 +85,26 @@ describe('Gateway internal Pod access container config', () => {
     const container = createApiContainer(baseConfig());
 
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
+  });
+
+  it('fails fast for inference when enabled without the platform credential wrapper', () => {
+    const container = createApiContainer(baseConfig({
+      aiGatewayInferenceEnabled: true,
+      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
+      aiGatewayCredentialKeyWrapperFactory: undefined,
+    }));
+
+    expect(() => container.resolve('aiGatewayService')).toThrow(/credentialKeyWrapperFactory/i);
+  });
+
+  it('constructs the inference gateway service when enabled dependencies are configured', () => {
+    const container = createApiContainer(baseConfig({
+      aiGatewayInferenceEnabled: true,
+      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
+      aiGatewayCredentialKeyWrapperFactory: () => new TestKeyWrapper(),
+    }));
+
+    expect(container.resolve('aiGatewayService')).toBeTruthy();
   });
 
   it('constructs a disabled provider Connect service by default without requiring platform wrappers', async () => {

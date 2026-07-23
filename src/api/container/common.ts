@@ -21,6 +21,7 @@ import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAcce
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import { WebCryptoCredentialVault } from '../ai-gateway/credentials/WebCryptoCredentialVault';
+import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
@@ -29,6 +30,10 @@ import {
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
+import { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
+import { InMemorySessionAffinityStore } from '../ai-gateway/routing/InMemorySessionAffinityStore';
+import { RedisSessionAffinityStore } from '../ai-gateway/routing/RedisSessionAffinityStore';
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
@@ -206,6 +211,67 @@ export function registerCommonServices(
         adapters,
         credentialRepository,
         vault,
+      });
+    }).singleton(),
+
+    gatewayProviderRegistry: asFunction(() => {
+      return createDefaultGatewayProviderRegistry();
+    }).singleton(),
+
+    gatewayCredentialStore: asFunction(({ config }: ApiContainerCradle) => {
+      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
+        throw new Error('AI Gateway inference requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod credential access');
+      }
+      return new PodConnectedCredentialRepository({
+        internalPodAccess: new ClientCredentialsInternalPodAccessTokenProvider({
+          tokenEndpoint: config.cssTokenEndpoint,
+          clientId: config.gatewayInternalClientId,
+          clientSecret: config.gatewayInternalClientSecret,
+        }),
+      });
+    }).singleton(),
+
+    gatewayRuntimeRegistry: asFunction(({ gatewayProviderRegistry }: ApiContainerCradle) => {
+      return new ProviderRuntimeRegistry({ registry: gatewayProviderRegistry });
+    }).singleton(),
+
+    gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
+      const secret = config.gatewayLocatorSecret;
+      if (!secret) {
+        throw new Error('AI Gateway inference requires XPOD_GATEWAY_LOCATOR_SECRET for session affinity hashing');
+      }
+      if (config.redisUrl) {
+        return new RedisSessionAffinityStore({
+          client: config.redisUrl,
+          secret,
+        });
+      }
+      return new InMemorySessionAffinityStore({ secret });
+    }).singleton(),
+
+    aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
+      const { config } = cradle;
+      if (!config.aiGatewayCredentialKeyWrapperFactory) {
+        throw new Error('AI Gateway inference requires an aiGatewayCredentialKeyWrapperFactory platform wrapper');
+      }
+      const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
+      const gatewayCredentialStore = cradle.gatewayCredentialStore;
+      const gatewayRuntimeRegistry = cradle.gatewayRuntimeRegistry;
+      const gatewaySessionAffinityStore = cradle.gatewaySessionAffinityStore;
+      const router = new ModelRouter({
+        registry: gatewayProviderRegistry,
+        affinityStore: gatewaySessionAffinityStore,
+        credentials: gatewayCredentialStore.listCredentials.bind(gatewayCredentialStore),
+      });
+      return new AiGatewayService({
+        deployment: config.edition,
+        registry: gatewayProviderRegistry,
+        router,
+        credentials: gatewayCredentialStore,
+        runtimes: gatewayRuntimeRegistry,
+        vault: new WebCryptoCredentialVault({
+          keyWrapper: config.aiGatewayCredentialKeyWrapperFactory(),
+        }),
       });
     }).singleton(),
 

@@ -39,6 +39,10 @@ import type { RdfEngineLike } from '../../storage/rdf';
 import type { KeyWrapper } from '../ai-gateway/credentials/KeyWrapper';
 import type { ProviderConnectService } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
+import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiGatewayService';
+import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
+import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 
 /**
  * 容器配置
@@ -110,6 +114,8 @@ export interface ApiContainerConfig {
 
   /** AI Provider Connect is disabled by default for backwards-compatible startup. */
   aiGatewayConnectEnabled?: boolean;
+  /** AI inference routes use the Pod-backed Gateway core only when enabled. */
+  aiGatewayInferenceEnabled?: boolean;
   /** Platform signing secret for short-lived provider Connect attempts. */
   aiGatewayConnectSigningSecret?: string;
   /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
@@ -213,6 +219,11 @@ export interface ApiContainerCradle {
   gatewayAccessKeyRepository: GatewayAccessKeyRepository;
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;
+  gatewayProviderRegistry: GatewayProviderRegistry;
+  gatewayCredentialStore: GatewayCredentialStore;
+  gatewayRuntimeRegistry: ProviderRuntimeRegistry;
+  gatewaySessionAffinityStore: SessionAffinityStore;
+  aiGatewayService: AiGatewayService;
 
   // 业务服务
   chatService: VercelChatService;

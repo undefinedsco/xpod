@@ -1,0 +1,154 @@
+import type { ServerResponse } from 'node:http';
+import { getLoggerFor } from 'global-logger-factory';
+import type { ApiServer } from '../ApiServer';
+import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
+import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
+import type { AiGatewayService } from '../ai-gateway/AiGatewayService';
+import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend } from '../ai-gateway/types';
+
+export interface AiGatewayHandlerOptions {
+  service: AiGatewayService;
+  jsonBodyLimitBytes?: number;
+}
+
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+
+export function registerAiGatewayRoutes(
+  server: ApiServer,
+  options: AiGatewayHandlerOptions,
+): void {
+  const handler = new AiGatewayHandler(options);
+  server.post('/v1/responses', (request, response) => handler.handleInference(request, response, 'responses'));
+  server.post('/v1/messages', (request, response) => handler.handleInference(request, response, 'anthropic'));
+  server.post('/v1/chat/completions', (request, response) => handler.handleInference(request, response, 'chatCompletions'));
+  server.get('/v1/models', (request, response) => handler.handleModels(request, response));
+}
+
+export class AiGatewayHandler {
+  private readonly logger = getLoggerFor(this);
+  private readonly service: AiGatewayService;
+  private readonly jsonBodyLimitBytes: number;
+
+  public constructor(options: AiGatewayHandlerOptions) {
+    this.service = options.service;
+    this.jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? DEFAULT_JSON_BODY_LIMIT_BYTES;
+  }
+
+  public async handleInference(
+    request: AuthenticatedRequest,
+    response: ServerResponse,
+    protocol: GatewayProtocol,
+  ): Promise<void> {
+    const bodyResult = await readBoundedJsonBody(request, { limitBytes: this.jsonBodyLimitBytes });
+    if (!bodyResult.ok) {
+      this.sendGatewayError(response, new GatewayProtocolError(bodyResult.error, {
+        code: 'invalid_request',
+        status: bodyResult.status,
+      }));
+      return;
+    }
+
+    const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    request.once('close', abort);
+
+    try {
+      const stream = isStreamRequest(bodyResult.value);
+      if (!stream) {
+        const result = await this.service.complete({
+          auth: request.auth!,
+          protocol,
+          body: bodyResult.value,
+          signal: controller.signal,
+        });
+        sendJson(response, 200, result);
+        return;
+      }
+
+      const execution = await this.service.execute({
+        auth: request.auth!,
+        protocol,
+        body: bodyResult.value,
+        signal: controller.signal,
+      });
+      await this.sendEventStream(response, execution.frontend, execution.events);
+    } catch (error) {
+      if (response.headersSent) {
+        this.writeTerminalStreamError(response, error);
+        return;
+      }
+      this.sendGatewayError(response, error);
+    } finally {
+      request.off('close', abort);
+    }
+  }
+
+  public async handleModels(
+    request: AuthenticatedRequest,
+    response: ServerResponse,
+  ): Promise<void> {
+    try {
+      const models = await this.service.listModels(request.auth!);
+      sendJson(response, 200, {
+        object: 'list',
+        data: models,
+      });
+    } catch (error) {
+      this.sendGatewayError(response, error);
+    }
+  }
+
+  private async sendEventStream(
+    response: ServerResponse,
+    frontend: GatewayProtocolFrontend,
+    events: AsyncIterable<GatewayEvent>,
+  ): Promise<void> {
+    response.statusCode = 200;
+    response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    response.setHeader('Cache-Control', 'no-cache, no-transform');
+    response.setHeader('Connection', 'keep-alive');
+    const serializer = frontend.createEventSerializer();
+    try {
+      for await (const event of events) {
+        response.write(`data: ${JSON.stringify(serializer.serializeEvent(event))}\n\n`);
+      }
+      response.write('data: [DONE]\n\n');
+    } catch (error) {
+      this.writeTerminalStreamError(response, error);
+    } finally {
+      response.end();
+    }
+  }
+
+  private writeTerminalStreamError(response: ServerResponse, error: unknown): void {
+    const payload = normalizeGatewayError(error);
+    response.write(`data: ${JSON.stringify({ error: payload.error })}\n\n`);
+    response.write('data: [DONE]\n\n');
+    if (!response.writableEnded) {
+      response.end();
+    }
+  }
+
+  private sendGatewayError(response: ServerResponse, error: unknown): void {
+    const payload = normalizeGatewayError(error);
+    this.logger.warn(`AI Gateway request failed: ${payload.error.code}`);
+    sendJson(response, payload.error.status, {
+      error: {
+        code: payload.error.code,
+        message: payload.error.message,
+        ...(payload.error.details ? { details: payload.error.details } : {}),
+      },
+    });
+  }
+}
+
+function isStreamRequest(body: unknown): boolean {
+  return Boolean(body && typeof body === 'object' && !Array.isArray(body) && (body as { stream?: unknown }).stream === true);
+}
+
+function sendJson(response: ServerResponse, status: number, data: unknown): void {
+  response.statusCode = status;
+  response.setHeader('Content-Type', 'application/json');
+  response.end(JSON.stringify(data));
+}

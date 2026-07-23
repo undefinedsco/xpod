@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes, type ChatCompletionResponse } from '../../src/api/handlers/ChatHandler';
+import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from '../../src/api/ai-gateway/protocol';
 import { getFreePort } from '../../src/runtime/port-finder';
 
 const authMiddleware = new AuthMiddleware({
@@ -231,5 +232,141 @@ describe('ChatHandler without service', () => {
     expect(response.status).toBe(503);
     const data = await response.json() as any;
     expect(data.error).toBe('Chat service not configured');
+  });
+});
+
+describe('ChatHandler delegates public v1 AI routes to AiGatewayHandler when configured', () => {
+  let server: ApiServer;
+  let port: number;
+  let baseUrl: string;
+
+  const legacyChatService = {
+    complete: vi.fn(),
+    stream: vi.fn(),
+    listModels: vi.fn(),
+  };
+  const aiGatewayService = {
+    complete: vi.fn(async({ protocol }: any) => protocol === 'anthropic'
+      ? {
+          id: 'msg_gateway',
+          type: 'message',
+          role: 'assistant',
+          model: 'gpt-5',
+          content: [{ type: 'text', text: 'message ok' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }
+      : protocol === 'responses'
+        ? {
+            id: 'resp_gateway',
+            object: 'response',
+            status: 'completed',
+            model: 'gpt-5',
+            output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'response ok' }] }],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          }
+        : {
+            id: 'chatcmpl_gateway',
+            object: 'chat.completion',
+            created: 0,
+            model: 'gpt-5',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'chat ok' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+    execute: vi.fn(async({ protocol }: any) => ({
+      protocol,
+      frontend: protocol === 'responses'
+        ? new ResponsesFrontend()
+        : protocol === 'anthropic'
+          ? new MessagesFrontend()
+          : new ChatCompletionsFrontend(),
+      request: {
+        model: 'gpt-5',
+        messages: [],
+        tools: [],
+        stream: true,
+        protocolExtensions: {},
+      },
+      route: {},
+      events: (async function*() {
+        yield { type: 'response.started', id: 'stream_gateway' };
+        yield { type: 'text.delta', text: 'stream ok' };
+        yield { type: 'response.completed', finishReason: 'stop' };
+      })(),
+    })),
+    listModels: vi.fn(async() => [{ id: 'gpt-5', object: 'model', owned_by: 'openai' }]),
+  };
+
+  beforeAll(async () => {
+    port = await getFreePort(12000);
+    baseUrl = `http://localhost:${port}`;
+    server = new ApiServer({ port, authMiddleware });
+    registerChatRoutes(server, {
+      chatService: legacyChatService as any,
+      aiGatewayService: aiGatewayService as any,
+    });
+    await server.start();
+  });
+
+  beforeEach(() => {
+    legacyChatService.complete.mockClear();
+    legacyChatService.stream.mockClear();
+    legacyChatService.listModels.mockClear();
+    aiGatewayService.complete.mockClear();
+    aiGatewayService.execute.mockClear();
+    aiGatewayService.listModels.mockClear();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  it('delegates non-streaming responses, messages, chat completions and models to the gateway service', async () => {
+    const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' };
+    const [responses, messages, chat, models] = await Promise.all([
+      fetch(`${baseUrl}/v1/responses`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: 'gpt-5', input: 'hi' }),
+      }),
+      fetch(`${baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: 'gpt-5', max_tokens: 64, messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      fetch(`${baseUrl}/v1/models`, {
+        headers: { 'Authorization': 'Bearer test-token' },
+      }),
+    ]);
+
+    expect(responses.status).toBe(200);
+    expect(messages.status).toBe(200);
+    expect(chat.status).toBe(200);
+    expect(models.status).toBe(200);
+    expect(aiGatewayService.complete).toHaveBeenCalledTimes(3);
+    expect(aiGatewayService.listModels).toHaveBeenCalledOnce();
+    expect(legacyChatService.complete).not.toHaveBeenCalled();
+    expect(legacyChatService.listModels).not.toHaveBeenCalled();
+  });
+
+  it('delegates streaming chat completions to gateway SSE serialization', async () => {
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
+      body: JSON.stringify({ model: 'gpt-5', stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const text = await response.text();
+    expect(text).toContain('stream ok');
+    expect(text.trim().endsWith('data: [DONE]')).toBe(true);
+    expect(aiGatewayService.execute).toHaveBeenCalledOnce();
+    expect(legacyChatService.stream).not.toHaveBeenCalled();
   });
 });

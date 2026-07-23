@@ -4,6 +4,8 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { ApiServer } from '../ApiServer';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, getAccountId, getDisplayName, hasGatewayScope } from '../auth/AuthContext';
+import type { AiGatewayService } from '../ai-gateway/AiGatewayService';
+import { registerAiGatewayRoutes } from './AiGatewayHandler';
 
 /**
  * Chat completion request (OpenAI-compatible)
@@ -47,6 +49,8 @@ export interface ChatCompletionResponse {
 }
 
 export interface ChatHandlerOptions {
+  aiGatewayService?: AiGatewayService;
+  aiGatewayJsonBodyLimitBytes?: number;
   /**
    * Backend chat service to delegate to (e.g., OpenAI, local model)
    */
@@ -74,6 +78,14 @@ export interface ChatHandlerOptions {
  * Supports both Solid Token (frontend) and CSS client credentials (third-party)
  */
 export function registerChatRoutes(server: ApiServer, options: ChatHandlerOptions): void {
+  if (options.aiGatewayService) {
+    registerAiGatewayRoutes(server, {
+      service: options.aiGatewayService,
+      jsonBodyLimitBytes: options.aiGatewayJsonBodyLimitBytes,
+    });
+    return;
+  }
+
   const logger = getLoggerFor('ChatHandler');
   const chatService = options.chatService;
 

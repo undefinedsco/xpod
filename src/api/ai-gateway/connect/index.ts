@@ -161,6 +161,48 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     return record;
   }
 
+  public async listCredentials(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+  }): Promise<Array<{
+    id: string;
+    credentialIri: string;
+    provider: string;
+    authMode: 'apiKey' | 'deviceCodeOAuth';
+    enabled: boolean;
+    priority?: number;
+    models?: string[];
+    defaultModel?: string;
+    health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
+    quota?: { status: 'available' | 'unsupported' | 'exhausted' | 'error' };
+    encryptedSecret: EncryptedCredentialSecret;
+    runtimeCredential?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }>> {
+    const db = await this.dbForOwner(input.webId);
+    const rows = await db.select().from(credentialResource).where(undefined).execute();
+    return rows
+      .map(recordFromCredentialRow)
+      .filter((record) => record.webId === input.webId)
+      .filter((record) => record.deployment === input.deployment)
+      .filter((record) => record.status === 'active')
+      .map((record) => ({
+        id: record.id,
+        credentialIri: record.credentialIri,
+        provider: record.provider,
+        authMode: record.authMode,
+        enabled: !record.reauthRequired,
+        models: modelsFromMetadata(record.metadata),
+        defaultModel: defaultModelFromMetadata(record.metadata),
+        priority: priorityFromMetadata(record.metadata),
+        health: record.reauthRequired ? 'reauthRequired' : 'healthy',
+        quota: { status: 'available' },
+        encryptedSecret: record.encryptedSecret,
+        runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
+        metadata: record.metadata,
+      }));
+  }
+
   public async upsertConnectedCredential(record: ConnectCredentialRecord): Promise<ConnectCredentialRecord> {
     const db = await this.dbForOwner(record.webId);
     const existing = await db.findById<Record<string, unknown>>(credentialResource, record.id);
@@ -1028,7 +1070,51 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : undefined,
     version: versionFromRow(row),
     reauthRequired: row.reauthRequired === true || row.reauthRequired === 'true',
+    metadata: metadataFromRow(row),
   };
+}
+
+function metadataFromRow(row: Record<string, unknown>): Record<string, unknown> | undefined {
+  const value = row.metadata;
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function modelsFromMetadata(metadata: Record<string, unknown> | undefined): string[] | undefined {
+  const value = metadata?.models;
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
+}
+
+function defaultModelFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
+  const value = metadata?.defaultModel;
+  return typeof value === 'string' ? value : undefined;
+}
+
+function priorityFromMetadata(metadata: Record<string, unknown> | undefined): number | undefined {
+  const value = metadata?.priority;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  const value = metadata?.runtimeCredential;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
