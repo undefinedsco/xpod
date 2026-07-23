@@ -697,6 +697,49 @@ describe('ProviderConnectService', () => {
     });
   });
 
+  it('summarizes one effective connection per provider for the current identity', async () => {
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [],
+      credentialRepository: {
+        getCredential: vi.fn(async ({ provider }: { provider: string }) => provider === 'openai' ? ({
+          id: 'credential_openai',
+          credentialIri: 'https://id.example/alice/settings/ai/credentials/openai.ttl#cloud-openai',
+          webId: WEB_ID,
+          provider,
+          deployment: 'cloud',
+          authMode: 'apiKey',
+          encryptedSecret: { ciphertext: 'not-public' },
+          status: 'active',
+          accountLabel: 'Alice',
+          version: 3,
+          reauthRequired: true,
+        }) : undefined),
+        getActiveCredential: vi.fn(),
+        upsertConnectedCredential: vi.fn(),
+        markReauthRequired: vi.fn(),
+        disconnect: vi.fn(),
+      } as any,
+    });
+
+    await expect(service.listProviders({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: 'openai',
+        status: 'reauthRequired',
+        authMode: 'apiKey',
+        accountLabel: 'Alice',
+        version: 3,
+      }),
+      expect.objectContaining({
+        provider: 'deepseek',
+        status: 'disconnected',
+      }),
+    ]));
+  });
+
   it('refreshes by opening the sealed Pod credential and never accepting a plaintext refresh token in the API input', async () => {
     const repository = new RecordingCredentialRepository();
     const sharedVault = vault();

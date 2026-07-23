@@ -134,6 +134,23 @@ export function registerAiGatewayManagementRoutes(
     });
   });
 
+  server.get('/api/ai/connections/providers', async (request, response) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    const providers = await connectService.listProviders({
+      webId: request.auth!.webId,
+      deployment: options.deployment,
+    });
+    sendJson(response, 200, {
+      data: publicConnectResult(providers),
+    });
+  });
+
   server.post('/api/ai/gateway/providers/:provider/connect/begin', async (request, response, params) => {
     if (!authorizeProviderConnect(request, response)) {
       return;
@@ -514,7 +531,6 @@ function publicCredentialRecord(record: {
   return {
     id: record.id,
     credentialIri: record.credentialIri,
-    webId: record.webId,
     provider: record.provider,
     authMode: record.authMode,
     status: record.status,
@@ -522,7 +538,6 @@ function publicCredentialRecord(record: {
     expiresAt: record.expiresAt?.toISOString(),
     version: record.version,
     reauthRequired: record.reauthRequired,
-    metadata: record.metadata,
   };
 }
 
@@ -535,7 +550,12 @@ function publicConnectResult(value: unknown): unknown {
   }
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => key !== 'deployment')
+      .filter(([key]) => ![
+        'deployment',
+        'webId',
+        'encryptedSecret',
+        'metadata',
+      ].includes(key))
       .map(([key, item]) => [key, publicConnectResult(item)]),
   );
 }

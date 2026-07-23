@@ -88,7 +88,6 @@ describe('AiGatewayManagementHandler', () => {
     expect(body.record).toMatchObject({
       id: 'gak_created',
       owner: WEB_ID,
-      deployment: 'cloud',
       scopes: ['models:read', 'inference:write'],
       createdAt: '2026-07-23T00:00:00.000Z',
       expiresAt: '2026-08-01T00:00:00.000Z',
@@ -233,7 +232,6 @@ describe('AiGatewayManagementHandler', () => {
     expect(body.data[0]).toMatchObject({
       id: 'gak_listed',
       owner: WEB_ID,
-      deployment: 'local',
       scopes: ['models:read', 'inference:write'],
     });
     expect(JSON.stringify(body)).not.toContain('secretHash');
@@ -394,6 +392,65 @@ describe('AiGatewayManagementHandler', () => {
       expectedCredentialVersion: 7,
     });
     expect(JSON.parse(res.body)).not.toHaveProperty('deployment');
+  });
+
+  it('lists effective provider connections for the current identity without infrastructure fields', async () => {
+    const connectService = {
+      listProviders: vi.fn(async () => [
+        {
+          provider: 'openai',
+          status: 'connected',
+          authMode: 'apiKey',
+          accountLabel: 'Alice',
+          deployment: 'cloud',
+          webId: WEB_ID,
+          connect: {
+            modes: ['browserAssistedApiKey', 'apiKey'],
+            configured: true,
+          },
+        },
+        {
+          provider: 'deepseek',
+          status: 'disconnected',
+          connect: {
+            modes: ['apiKey'],
+            configured: true,
+          },
+        },
+      ]),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['GET /api/ai/connections/providers'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, {});
+
+    expect(connectService.listProviders).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      data: [
+        expect.objectContaining({
+          provider: 'openai',
+          status: 'connected',
+          accountLabel: 'Alice',
+        }),
+        expect.objectContaining({
+          provider: 'deepseek',
+          status: 'disconnected',
+        }),
+      ],
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('deployment');
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('webId');
   });
 
   it('keeps deployment internal in Connect status and poll responses', async () => {

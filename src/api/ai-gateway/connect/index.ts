@@ -98,6 +98,11 @@ export interface ConnectCredentialRecord {
 }
 
 export interface PodCredentialRepository {
+  getCredential?(input: {
+    webId: string;
+    provider: string;
+    deployment: GatewayDeployment;
+  }): Promise<ConnectCredentialRecord | undefined>;
   getActiveCredential(input: {
     webId: string;
     provider: string;
@@ -160,7 +165,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     this.dbFactory = options.dbFactory ?? createDefaultConnectedCredentialDb;
   }
 
-  public async getActiveCredential(input: {
+  public async getCredential(input: {
     webId: string;
     provider: string;
     deployment: GatewayDeployment;
@@ -169,10 +174,19 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const id = aiRuntimeRepository.credentialId(input);
     const row = await db.findById<Record<string, unknown>>(credentialResource, id);
     const record = row ? recordFromCredentialRow(row) : undefined;
-    if (!record || record.status !== 'active' || record.reauthRequired) {
+    if (!record) {
       return undefined;
     }
     return record;
+  }
+
+  public async getActiveCredential(input: {
+    webId: string;
+    provider: string;
+    deployment: GatewayDeployment;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const record = await this.getCredential(input);
+    return record?.status === 'active' && !record.reauthRequired ? record : undefined;
   }
 
   public async listCredentials(input: {
@@ -933,6 +947,22 @@ export interface ProviderConnectServiceOptions {
   vault?: CredentialVault;
 }
 
+export interface ProviderConnectionSummary {
+  provider: string;
+  status: 'connected' | 'disconnected' | 'reauthRequired';
+  authMode?: 'apiKey' | 'deviceCodeOAuth';
+  accountLabel?: string;
+  expiresAt?: string;
+  reauthRequired?: boolean;
+  credentialIri?: string;
+  version?: number;
+  connect: {
+    modes: string[];
+    configured: boolean;
+    message?: string;
+  };
+}
+
 export class ProviderConnectService {
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
@@ -964,6 +994,48 @@ export class ProviderConnectService {
       });
     }
     return this.requireAdapter(input.provider).begin(input);
+  }
+
+  public async listProviders(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+  }): Promise<ProviderConnectionSummary[]> {
+    return Promise.all(this.registry.listProviders().map(async (descriptor) => {
+      const credential = this.credentialRepository?.getCredential
+        ? await this.credentialRepository.getCredential({
+          ...input,
+          provider: descriptor.id,
+        })
+        : await this.credentialRepository?.getActiveCredential({
+          ...input,
+          provider: descriptor.id,
+        });
+      const active = credential?.status === 'active';
+      const reauthRequired = active && credential.reauthRequired === true;
+      const modes = Array.from(new Set([
+        ...descriptor.authModes.filter((mode) => mode !== 'connectUnsupported'),
+        ...(descriptor.connect?.apiKeyManagementSupported ? ['apiKey'] : []),
+      ]));
+      return {
+        provider: descriptor.id,
+        status: reauthRequired
+          ? 'reauthRequired' as const
+          : active
+            ? 'connected' as const
+            : 'disconnected' as const,
+        authMode: active ? credential.authMode : undefined,
+        accountLabel: active ? credential.accountLabel : undefined,
+        expiresAt: active ? credential.expiresAt?.toISOString() : undefined,
+        reauthRequired: reauthRequired || undefined,
+        credentialIri: active ? credential.credentialIri : undefined,
+        version: active ? credential.version : undefined,
+        connect: {
+          modes,
+          configured: descriptor.connect?.configured !== false,
+          message: descriptor.connect?.notes?.join(' ') || undefined,
+        },
+      };
+    }));
   }
 
   public completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
