@@ -3,7 +3,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
-import { VercelChatService } from '../../src/api/service/VercelChatService';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import type { StoreContext } from '../../src/api/chatkit/store';
 import { Provider } from '../../src/ai/schema/provider';
@@ -190,51 +189,23 @@ describe('AI config data interop side effects', () => {
   describe('/v1/chat/completions side effect', () => {
     let server: ApiServer;
     let baseUrl: string;
-    let originalFetch: typeof fetch;
-    let aiRequestHeaders: Record<string, string> | undefined;
-    let aiRequestBody: any;
-    let db: ReturnType<typeof createMockDb>;
+    let gatewayComplete: ReturnType<typeof vi.fn>;
 
     beforeAll(async () => {
       const port = await getFreePort(12100);
-      const aiPort = await getFreePort(port + 1);
       baseUrl = `http://127.0.0.1:${port}`;
-      const aiBaseUrl = `http://127.0.0.1:${aiPort}/v1`;
-
-      originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input, init) => {
-        const target = typeof input === 'string'
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : input.url;
-        if (target === `${aiBaseUrl}/chat/completions`) {
-          aiRequestHeaders = Object.fromEntries(new Headers(init?.headers).entries());
-          aiRequestBody = JSON.parse(String(init?.body));
-          return new Response(JSON.stringify({
-            id: 'chatcmpl-from-written-secret',
-            object: 'chat.completion',
-            created: 123,
-            model: 'gpt-4o-mini',
-            choices: [{
-              index: 0,
-              message: { role: 'assistant', content: 'chat used written key' },
-              finish_reason: 'stop',
-            }],
-            usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
-          }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-        return originalFetch(input, init);
-      };
-
-      db = createMockDb({ baseUrl: aiBaseUrl });
-      const store = new PodChatKitStore({ tokenEndpoint: `${podRoot}.oidc/token` });
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(db);
-
-      const chatService = new VercelChatService(store);
+      gatewayComplete = vi.fn().mockResolvedValue({
+        id: 'chatcmpl-from-gateway',
+        object: 'chat.completion',
+        created: 123,
+        model: 'gpt-4o-mini',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'chat used gateway' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      });
       const authMiddleware = new AuthMiddleware({
         authenticator: {
           canAuthenticate: () => true,
@@ -251,16 +222,21 @@ describe('AI config data interop side effects', () => {
       });
 
       server = new ApiServer({ port, authMiddleware });
-      registerChatRoutes(server, { chatService });
+      registerChatRoutes(server, {
+        aiGatewayService: {
+          complete: gatewayComplete,
+          execute: vi.fn(),
+          listModels: vi.fn(),
+        } as any,
+      });
       await server.start();
     });
 
     afterAll(async () => {
       await server?.stop();
-      globalThis.fetch = originalFetch;
     });
 
-    it('uses the written Credential apiKey for a chat completion request', async () => {
+    it('routes chat completion requests through AiGatewayService instead of Pod provider secrets', async () => {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
@@ -272,34 +248,32 @@ describe('AI config data interop side effects', () => {
 
       expect(response.status).toBe(200);
       const body = await response.json() as any;
-      expect(body.choices[0].message.content).toBe('chat used written key');
-      expect(aiRequestHeaders?.authorization).toBe('Bearer sk-from-pod');
-      expect(aiRequestBody).toEqual({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'ping' }],
-      });
-      expect(db.updateById).toHaveBeenCalledWith(
-        Credential,
-        'credentials.ttl#openai-key',
-        expect.objectContaining({
-          status: CredentialStatus.ACTIVE,
-          failCount: 0,
-        }),
-      );
+      expect(body.choices[0].message.content).toBe('chat used gateway');
+      expect(gatewayComplete).toHaveBeenCalledWith(expect.objectContaining({
+        protocol: 'chatCompletions',
+        body: {
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'user', content: 'ping' }],
+        },
+      }));
     });
   });
 
   describe('/v1/models side effect', () => {
     let server: ApiServer;
     let baseUrl: string;
+    let gatewayListModels: ReturnType<typeof vi.fn>;
 
     beforeAll(async () => {
       const port = await getFreePort(12000);
       baseUrl = `http://127.0.0.1:${port}`;
-      const store = new PodChatKitStore({ tokenEndpoint: `${podRoot}.oidc/token` });
-      vi.spyOn(store as any, 'getDb').mockResolvedValue(createMockDb());
-
-      const chatService = new VercelChatService(store);
+      gatewayListModels = vi.fn().mockResolvedValue([
+        {
+          id: 'gpt-4o-mini',
+          object: 'model',
+          owned_by: 'openai',
+        },
+      ]);
       const authMiddleware = new AuthMiddleware({
         authenticator: {
           canAuthenticate: () => true,
@@ -316,7 +290,13 @@ describe('AI config data interop side effects', () => {
       });
 
       server = new ApiServer({ port, authMiddleware });
-      registerChatRoutes(server, { chatService });
+      registerChatRoutes(server, {
+        aiGatewayService: {
+          complete: vi.fn(),
+          execute: vi.fn(),
+          listModels: gatewayListModels,
+        } as any,
+      });
       await server.start();
     });
 
@@ -324,7 +304,7 @@ describe('AI config data interop side effects', () => {
       await server?.stop();
     });
 
-    it('exposes Pod-defined models through the OpenAI-compatible models endpoint', async () => {
+    it('exposes AiGatewayService models through the OpenAI-compatible models endpoint', async () => {
       const response = await fetch(`${baseUrl}/v1/models`, {
         headers: { Authorization: 'Bearer test' },
       });
@@ -335,10 +315,10 @@ describe('AI config data interop side effects', () => {
         expect.objectContaining({
           id: 'gpt-4o-mini',
           object: 'model',
-          provider: 'openai',
-          owned_by: 'OpenAI',
+          owned_by: 'openai',
         }),
       ]);
+      expect(gatewayListModels).toHaveBeenCalled();
     });
   });
 });

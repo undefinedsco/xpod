@@ -366,8 +366,8 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    chatKitAiProvider: asFunction(({ chatKitStore }: ApiContainerCradle) => {
-      return new VercelAiProvider({ store: chatKitStore });
+    chatKitAiProvider: asFunction(({ chatKitStore, aiGatewayService }: ApiContainerCradle) => {
+      return new VercelAiProvider({ store: chatKitStore, aiGatewayService });
     }).singleton(),
 
     runAuthContextRegistry: asFunction(() => {
@@ -478,8 +478,8 @@ export function registerCommonServices(
     }).singleton(),
 
     // 业务服务
-    chatService: asFunction(({ chatKitStore }: ApiContainerCradle) => {
-      return new VercelChatService(chatKitStore);
+    chatService: asFunction(({ chatKitStore, aiGatewayService }: ApiContainerCradle) => {
+      return new VercelChatService(chatKitStore, { aiGatewayService });
     }).singleton(),
 
 

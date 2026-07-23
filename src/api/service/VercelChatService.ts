@@ -1,703 +1,156 @@
-import { createOpenAI } from '@ai-sdk/openai';
-import { generateText, streamText } from 'ai';
 import { getLoggerFor } from 'global-logger-factory';
-import { ProxyAgent } from 'undici';
 import type { ChatCompletionRequest, ChatCompletionResponse } from '../handlers/ChatHandler';
 import type { PodChatKitStore } from '../chatkit/pod-store';
-import type { StoreContext } from '../chatkit/store';
-import { type AuthContext, getWebId, getAccountId, getDisplayName } from '../auth/AuthContext';
-import { CredentialStatus } from '../../credential/schema/types';
+import { type AuthContext, getAccountId, getWebId } from '../auth/AuthContext';
+import type { AiGatewayService } from '../ai-gateway/AiGatewayService';
+import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend } from '../ai-gateway/types';
 import type { UsageRepository } from '../../storage/quota/UsageRepository';
 import type { QuotaService } from '../../quota/QuotaService';
-import {
-  getDefaultBaseUrl,
-} from './provider-registry';
-import {
-  getAiGatewayApiKey,
-  getAiGatewayBaseUrl,
-  getPlatformApiBaseUrl,
-  getPlatformApiKey,
-  getPlatformDefaultModel,
-  getPlatformGenerationTimeoutMs,
-  getPlatformQueryTimeoutMs,
-} from './platform-ai-config';
-import {
-  buildChatCompletionsBodyFromMessages,
-  extractPromptFromMessagesBody,
-  extractPromptFromResponsesBody,
-  mapChatCompletionToMessagesResponse,
-  sanitizeAiGatewayResponsesBody,
-} from './chat-protocol-adapters';
-import { AiGatewayTransport } from './ai-gateway-transport';
-import { ProviderHttpTransport } from './provider-http-transport';
-import {
-  resolveChatExecutionRoute,
-  resolveMessagesProviderRoute,
-  resolveResponsesProviderRoute,
-} from './chat-routing';
 
-// Create a proxy-aware fetch function
-function createProxyFetch(proxyUrl: string): typeof fetch {
-  const agent = new ProxyAgent(proxyUrl);
-  return (url, init) => fetch(url, { ...init, dispatcher: agent } as any);
+export interface VercelChatServiceOptions {
+  aiGatewayService?: Pick<AiGatewayService, 'complete' | 'execute' | 'listModels'>;
 }
 
-interface ProviderConfig {
-  baseURL: string;
-  apiKey: string;
-  proxy?: string;
-  credentialId?: string;
-}
-
+/**
+ * @deprecated Compatibility facade for legacy internal ChatService callers.
+ *
+ * Public `/v1/*` routes are owned by AiGatewayHandler. This class only keeps
+ * older ChatKit/internal call sites working while routing every inference and
+ * model-list request through the unified AI Connection gateway runtime.
+ */
 export class VercelChatService {
   private readonly logger = getLoggerFor(this);
   private usageRepo?: UsageRepository;
   private quotaService?: QuotaService;
-  private readonly aiGatewayTransport: AiGatewayTransport;
-  private readonly providerHttpTransport = new ProviderHttpTransport();
+  private readonly aiGatewayService?: Pick<AiGatewayService, 'complete' | 'execute' | 'listModels'>;
 
-  public constructor(private readonly store: PodChatKitStore) {
-    this.logger.info('Initializing VercelChatService with Pod-based config support');
-    this.aiGatewayTransport = new AiGatewayTransport({
-      getBaseUrl: () => this.getAiGatewayBaseUrl(),
-      getApiKey: () => this.getAiGatewayApiKey(),
-      getQueryTimeoutMs: () => this.getAiGatewayQueryTimeoutMs(),
-      getGenerationTimeoutMs: () => this.getAiGatewayGenerationTimeoutMs(),
-    });
+  public constructor(
+    private readonly _store: PodChatKitStore,
+    options: VercelChatServiceOptions = {},
+  ) {
+    this.logger.info('Initializing legacy VercelChatService facade with AI Connection gateway runtime');
+    this.aiGatewayService = options.aiGatewayService;
   }
 
   /**
-   * Set optional usage tracking dependencies (injected after construction)
+   * Set optional usage tracking dependencies (injected after construction).
    */
   public setUsageTracking(usageRepo: UsageRepository, quotaService: QuotaService): void {
     this.usageRepo = usageRepo;
     this.quotaService = quotaService;
   }
 
-  /**
-   * Create a StoreContext from AuthContext for Pod operations
-   */
-  private createStoreContext(auth: AuthContext): StoreContext {
-    return {
-      userId: getWebId(auth) ?? getAccountId(auth) ?? 'anonymous',
-      auth,
-    };
-  }
-
-  private getAiGatewayBaseUrl(): string | null {
-    return getAiGatewayBaseUrl() ?? null;
-  }
-
-  private getAiGatewayQueryTimeoutMs(): number {
-    return getPlatformQueryTimeoutMs();
-  }
-
-  private getAiGatewayGenerationTimeoutMs(): number {
-    return getPlatformGenerationTimeoutMs();
-  }
-
-  private getAiGatewayApiKey(): string | null {
-    return getAiGatewayApiKey() ?? null;
-  }
-
-  private async shouldUseAiGateway(model?: string): Promise<boolean> {
-    return this.aiGatewayTransport.shouldHandleModel(model);
-  }
-
-  private toModelId(model: any): string {
-    return typeof model?.id === 'string' ? model.id : JSON.stringify(model);
-  }
-
-  private pushModelsWithDedup(models: any[], seenModelIds: Set<string>, items: any[]): void {
-    for (const model of items) {
-      const modelId = this.toModelId(model);
-      if (seenModelIds.has(modelId)) {
-        continue;
-      }
-      seenModelIds.add(modelId);
-      models.push(model);
-    }
-  }
-
-  private async forwardAiGatewayJson(path: string, body: unknown, _auth: AuthContext): Promise<any> {
-    return this.aiGatewayTransport.sendJson(path, body);
-  }
-
-  private async forwardAiGatewayStream(path: string, body: unknown, _auth: AuthContext): Promise<{
-    toTextStreamResponse: () => Response;
-  }> {
-    return this.aiGatewayTransport.sendStream(path, body);
-  }
-
-  private getProviderChatCompletionsUrl(baseURL: string): string {
-    const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
-    return cleanBaseUrl.endsWith('/chat/completions')
-      ? cleanBaseUrl
-      : `${cleanBaseUrl}/chat/completions`;
-  }
-
-  private extractTotalTokens(usage: any): number {
-    if (!usage || typeof usage !== 'object') {
-      return 0;
-    }
-
-    if (typeof usage.total_tokens === 'number') {
-      return usage.total_tokens;
-    }
-    if (typeof usage.totalTokens === 'number') {
-      return usage.totalTokens;
-    }
-    if (typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number') {
-      return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-    }
-    if (typeof usage.prompt_tokens === 'number' || typeof usage.completion_tokens === 'number') {
-      return (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
-    }
-
-    return 0;
-  }
-
-  private recordForwardedUsage(accountId: string | undefined, podId: string, payload: any): void {
-    const totalTokens = this.extractTotalTokens(payload?.usage);
-    if (accountId && totalTokens > 0) {
-      this.recordTokenUsage(accountId, podId, totalTokens);
-    }
-  }
-
-  private async getProviderConfig(context: StoreContext): Promise<ProviderConfig | null> {
-    let config: Awaited<ReturnType<PodChatKitStore['getAiConfig']>> | undefined;
-    try {
-      config = await this.store.getAiConfig(context);
-      this.logger.info(`Pod config: ${JSON.stringify(config)}`);
-    } catch (error) {
-      this.logger.warn(`Failed to get Pod config, falling back to defaults: ${error}`);
-      config = undefined;
-    }
-
-    // Priority: Pod config > Platform Provider
-    if (config?.apiKey) {
-      const baseURL = config.baseUrl || getDefaultBaseUrl();
-      const proxy = config.proxyUrl;
-      this.logger.info(`Provider config: baseURL=${baseURL}, proxy=${proxy || 'none'} (source=pod)`);
-      return { baseURL, apiKey: config.apiKey, proxy, credentialId: config.credentialId };
-    }
-
-    // 平台 Provider
-    const platformBase = getPlatformApiBaseUrl();
-    if (platformBase) {
-      this.logger.info(`Provider config: baseURL=${platformBase}, proxy=none (source=platform)`);
-      return { baseURL: platformBase, apiKey: getPlatformApiKey(), proxy: undefined, credentialId: undefined };
-    }
-
-    this.logger.warn('No AI provider config found in Pod or DEFAULT_API_BASE');
-    return null;
-  }
-
-  private async getProvider(context: StoreContext) {
-    const providerConfig = await this.getProviderConfig(context);
-    if (!providerConfig) {
-      const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
-      (err as any).code = 'model_not_configured';
-      throw err;
-    }
-
-    const { baseURL, apiKey, proxy } = providerConfig;
-
-    this.logger.debug(`Using AI Provider: ${baseURL} (key length: ${apiKey?.length || 0}, proxy: ${proxy || 'none'})`);
-
-    const options: any = { baseURL, apiKey };
-    if (proxy) {
-      options.fetch = createProxyFetch(proxy);
-    }
-
-    return createOpenAI(options);
-  }
-
   public async complete(request: ChatCompletionRequest, auth: AuthContext): Promise<ChatCompletionResponse> {
-    const { model } = request;
-    const context = this.createStoreContext(auth);
     const accountId = getAccountId(auth);
     if (accountId) {
       await this.checkTokenQuota(accountId);
     }
 
-    if (await resolveChatExecutionRoute({ model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
-      this.logger.info(`Forwarding chat completion for model ${model} to ai-gateway`);
-      const result = await this.forwardAiGatewayJson('/v1/chat/completions', request, auth) as ChatCompletionResponse;
-      this.recordForwardedUsage(accountId, String(context.userId), result);
-      return result;
-    }
-
-    const config = await this.getProviderConfig(context);
-    if (!config) {
-      const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
-      (err as any).code = 'model_not_configured';
-      throw err;
-    }
-
-    try {
-      const result = await this.providerHttpTransport.postJson({
-        url: this.getProviderChatCompletionsUrl(config.baseURL),
-        apiKey: config.apiKey,
-        proxy: config.proxy,
-        body: request,
-      }) as ChatCompletionResponse;
-
-      // Record successful API call
-      if (config?.credentialId) {
-        this.store.recordCredentialSuccess(context, config.credentialId).catch((err) => {
-          this.logger.debug(`Failed to record credential success: ${err}`);
-        });
-      }
-
-      // Record token usage
-      const totalTokens = this.extractTotalTokens(result.usage);
-      if (accountId && totalTokens > 0) {
-        this.recordTokenUsage(accountId, String(context.userId), totalTokens);
-      }
-
-      return result;
-    } catch (error) {
-      this.logger.error(`AI completion failed: ${error}`);
-
-      // Handle error and update credential status
-      if (config?.credentialId) {
-        await this.handleApiError(error, context, config.credentialId);
-      }
-
-      throw error;
-    }
+    const result = await this.completeViaGateway('chatCompletions', request, auth) as unknown as ChatCompletionResponse;
+    this.recordForwardedUsage(accountId, this.podUsageScope(auth), result);
+    return result;
   }
 
-  public async stream(request: ChatCompletionRequest, auth: AuthContext): Promise<any> {
-    const { model } = request;
-    const context = this.createStoreContext(auth);
-
-    if (await resolveChatExecutionRoute({ model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
-      this.logger.info(`Forwarding chat stream for model ${model} to ai-gateway`);
-      return this.forwardAiGatewayStream('/v1/chat/completions', request, auth);
-    }
-
-    const config = await this.getProviderConfig(context);
-
-    if (!config) {
-      const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
-      (err as any).code = 'model_not_configured';
-      throw err;
-    }
-
-    const response = await this.providerHttpTransport.postStream({
-      url: this.getProviderChatCompletionsUrl(config.baseURL),
-      apiKey: config.apiKey,
-      proxy: config.proxy,
+  public async stream(request: ChatCompletionRequest, auth: AuthContext): Promise<{
+    toTextStreamResponse: () => Response;
+  }> {
+    const gateway = this.requireAiGatewayService();
+    const execution = await gateway.execute({
+      auth,
+      protocol: 'chatCompletions',
       body: request,
-      headers: {
-        Accept: 'text/event-stream',
-      },
     });
-
     return {
-      toTextStreamResponse: () => new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: new Headers(response.headers),
-      }),
+      toTextStreamResponse: () => gatewayEventsToTextStreamResponse(execution.frontend, execution.events),
     };
   }
 
-  public async responses(body: any, auth: AuthContext): Promise<any> {
-    const context = this.createStoreContext(auth);
-    const displayName = getDisplayName(auth) || context.userId;
-    const accountId = getAccountId(auth);
-
-    if (await resolveChatExecutionRoute({ model: body?.model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
-      this.logger.info(`Forwarding responses request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
-      const sanitizedBody = sanitizeAiGatewayResponsesBody(body);
-      const result = await this.forwardAiGatewayJson('/v1/responses', sanitizedBody, auth);
-      this.recordForwardedUsage(accountId, String(context.userId), result);
-      return result;
-    }
-
-    const providerConfig = await this.getProviderConfig(context);
-    if (!providerConfig) {
-      const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
-      (err as any).code = 'model_not_configured';
-      throw err;
-    }
-
-    const { baseURL } = providerConfig;
-
-    // Only OpenAI natively supports /v1/responses; all others go through Chat Completions
-    if (resolveResponsesProviderRoute(baseURL) === 'chat-fallback') {
-      this.logger.info(`Provider ${baseURL} does not support Responses API, converting to Chat Completions for ${displayName} (acc: ${accountId})`);
-      return this.responsesViaCompletions(body, context, providerConfig);
-    }
-
-    const { apiKey, proxy, credentialId } = providerConfig;
-
-    // Remove trailing slash if present
-    const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
-    const url = `${cleanBaseUrl}/responses`;
-
-    this.logger.info(`Proxying responses request to ${url} for ${displayName} (acc: ${accountId}), proxy: ${proxy || 'none'}`);
-
-    try {
-      const result = await this.providerHttpTransport.postJson({
-        url,
-        apiKey,
-        proxy,
-        body,
-      });
-      if (credentialId) {
-        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
-      }
-      return result;
-    } catch (error) {
-      const status = (error as any)?.status;
-      const headers = (error as any)?.headers;
-      const bodyText = (error as any)?.body;
-      if (typeof status === 'number') {
-        this.logger.error(`Responses API failed: ${status} ${bodyText ?? ''}`);
-        if (credentialId) {
-          await this.handleApiError(
-            { status, headers },
-            context,
-            credentialId,
-          );
-        }
-      } else if (credentialId) {
-        await this.handleApiError(error, context, credentialId);
-      }
-      throw error;
-    }
+  public async responses(body: unknown, auth: AuthContext): Promise<Record<string, unknown>> {
+    const result = await this.completeViaGateway('responses', body, auth);
+    this.recordForwardedUsage(getAccountId(auth), this.podUsageScope(auth), result);
+    return result;
   }
 
-  public async messages(body: any, auth: AuthContext): Promise<any> {
-    const context = this.createStoreContext(auth);
-    const displayName = getDisplayName(auth) || context.userId;
-    const accountId = getAccountId(auth);
-
-    if (await resolveChatExecutionRoute({ model: body?.model, shouldUseAiGateway: this.shouldUseAiGateway.bind(this) }) === 'ai-gateway') {
-      this.logger.info(`Forwarding messages request for model ${body?.model} to ai-gateway for ${displayName} (acc: ${accountId})`);
-      const completionBody = buildChatCompletionsBodyFromMessages(body);
-      const completion = await this.forwardAiGatewayJson('/v1/chat/completions', completionBody, auth);
-      const result = mapChatCompletionToMessagesResponse(body, completion);
-      this.recordForwardedUsage(accountId, String(context.userId), result);
-      return result;
-    }
-
-    const providerConfig = await this.getProviderConfig(context);
-    if (!providerConfig) {
-      const err = new Error('No AI provider configured. Please configure Pod AI provider or set DEFAULT_API_BASE.');
-      (err as any).code = 'model_not_configured';
-      throw err;
-    }
-
-    const { baseURL } = providerConfig;
-
-    // Only Anthropic natively supports /v1/messages; all others go through Chat Completions
-    if (resolveMessagesProviderRoute(baseURL) === 'chat-fallback') {
-      this.logger.info(`Provider ${baseURL} does not support Messages API, converting to Chat Completions for ${displayName} (acc: ${accountId})`);
-      return this.messagesViaCompletions(body, context, providerConfig);
-    }
-
-    const { apiKey, proxy, credentialId } = providerConfig;
-
-    // Remove trailing slash if present
-    const cleanBaseUrl = baseURL.endsWith('/') ? baseURL.slice(0, -1) : baseURL;
-    const url = `${cleanBaseUrl}/messages`;
-
-    this.logger.info(`Proxying messages request to ${url} for ${displayName} (acc: ${accountId}), proxy: ${proxy || 'none'}`);
-
-    try {
-      const result = await this.providerHttpTransport.postJson({
-        url,
-        apiKey,
-        proxy,
-        body,
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-      });
-      if (credentialId) {
-        this.store.recordCredentialSuccess(context, credentialId).catch(() => {});
-      }
-      return result;
-    } catch (error) {
-      const status = (error as any)?.status;
-      const headers = (error as any)?.headers;
-      const bodyText = (error as any)?.body;
-      if (typeof status === 'number') {
-        this.logger.error(`Messages API failed: ${status} ${bodyText ?? ''}`);
-        if (credentialId) {
-          await this.handleApiError(
-            { status, headers },
-            context,
-            credentialId,
-          );
-        }
-      } else if (credentialId) {
-        await this.handleApiError(error, context, credentialId);
-      }
-      throw error;
-    }
+  public async messages(body: unknown, auth: AuthContext): Promise<Record<string, unknown>> {
+    const result = await this.completeViaGateway('anthropic', body, auth);
+    this.recordForwardedUsage(getAccountId(auth), this.podUsageScope(auth), result);
+    return result;
   }
 
-
-
-
-  private async responsesViaCompletions(
-    body: any,
-    context: StoreContext,
-    providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
-  ): Promise<any> {
-    const prompt = extractPromptFromResponsesBody(body);
-    const model = body?.model || getPlatformDefaultModel();
-
-    const provider = await this.getProvider(context);
-    const result = await generateText({
-      model: provider.chat(model),
-      messages: [{ role: 'user' as const, content: prompt }],
-      ...(body?.temperature != null ? { temperature: body.temperature } : {}),
-      ...(body?.max_output_tokens != null ? { maxTokens: body.max_output_tokens } : {}),
-    } as any);
-
-    if (providerConfig.credentialId) {
-      this.store.recordCredentialSuccess(context, providerConfig.credentialId).catch(() => {});
+  public async listModels(auth?: AuthContext): Promise<any[]> {
+    if (!auth) {
+      return [];
     }
-
-    const outputText = result.text;
-    const now = Math.floor(Date.now() / 1000);
-    return {
-      id: `resp_${Date.now()}`,
-      object: 'response',
-      created: now,
-      status: 'completed',
-      model,
-      output: [{
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: outputText }],
-      }],
-      usage: {
-        input_tokens: (result.usage as any)?.promptTokens ?? prompt.length,
-        output_tokens: (result.usage as any)?.completionTokens ?? outputText.length,
-        total_tokens: (result.usage as any)?.totalTokens ?? (prompt.length + outputText.length),
-      },
-    };
+    return await this.requireAiGatewayService().listModels(auth);
   }
 
-  private async messagesViaCompletions(
-    body: any,
-    context: StoreContext,
-    providerConfig: { baseURL: string; apiKey: string; proxy?: string; credentialId?: string },
-  ): Promise<any> {
-    const prompt = extractPromptFromMessagesBody(body);
-    const model = body?.model || getPlatformDefaultModel();
-
-    const coreMessages: any[] = [];
-    if (body?.system) {
-      const systemText = typeof body.system === 'string'
-        ? body.system
-        : Array.isArray(body.system)
-          ? body.system.map((b: any) => b?.text ?? '').join('\n')
-          : '';
-      if (systemText) {
-        coreMessages.push({ role: 'system', content: systemText });
-      }
-    }
-    if (Array.isArray(body?.messages)) {
-      for (const msg of body.messages) {
-        if (msg?.role && msg?.content != null) {
-          const content = typeof msg.content === 'string'
-            ? msg.content
-            : Array.isArray(msg.content)
-              ? msg.content.filter((p: any) => p?.type === 'text').map((p: any) => p.text).join('\n')
-              : String(msg.content);
-          coreMessages.push({ role: msg.role, content });
-        }
-      }
-    }
-    if (coreMessages.length === 0) {
-      coreMessages.push({ role: 'user', content: prompt });
-    }
-
-    const provider = await this.getProvider(context);
-    const result = await generateText({
-      model: provider.chat(model),
-      messages: coreMessages,
-      ...(body?.temperature != null ? { temperature: body.temperature } : {}),
-      ...(body?.max_tokens != null ? { maxTokens: body.max_tokens } : {}),
-    } as any);
-
-    if (providerConfig.credentialId) {
-      this.store.recordCredentialSuccess(context, providerConfig.credentialId).catch(() => {});
-    }
-
-    const text = result.text;
-    return {
-      id: `msg_${Date.now()}`,
-      type: 'message',
-      role: 'assistant',
-      model,
-      content: [{ type: 'text', text }],
-      stop_reason: 'end_turn',
-      stop_sequence: null,
-      usage: {
-        input_tokens: (result.usage as any)?.promptTokens ?? prompt.length,
-        output_tokens: (result.usage as any)?.completionTokens ?? text.length,
-      },
-    };
+  private async completeViaGateway(
+    protocol: GatewayProtocol,
+    body: unknown,
+    auth: AuthContext,
+  ): Promise<Record<string, unknown>> {
+    return await this.requireAiGatewayService().complete({
+      auth,
+      protocol,
+      body,
+    });
   }
 
-  public async listModels(_auth?: AuthContext): Promise<any[]> {
-    const models: any[] = [];
-    const seenModelIds = new Set<string>();
+  private requireAiGatewayService(): Pick<AiGatewayService, 'complete' | 'execute' | 'listModels'> {
+    if (!this.aiGatewayService) {
+      throw new Error('AiGatewayService is required for legacy ChatKit AI inference');
+    }
+    return this.aiGatewayService;
+  }
 
-    if (_auth) {
-      try {
-        const context = this.createStoreContext(_auth);
-        const userModels = await this.store.listAvailableModels(context);
-        this.pushModelsWithDedup(models, seenModelIds, userModels);
-      } catch (error) {
-        this.logger.warn(`Failed to load user Pod models: ${error}`);
-      }
+  private podUsageScope(auth: AuthContext): string {
+    return getWebId(auth) ?? getAccountId(auth) ?? 'anonymous';
+  }
+
+  private extractTotalTokens(usage: unknown): number {
+    if (!usage || typeof usage !== 'object') {
+      return 0;
     }
 
-    const aiGatewayModels = await this.aiGatewayTransport.listModels();
-    if (aiGatewayModels) {
-      this.pushModelsWithDedup(models, seenModelIds, aiGatewayModels);
+    const record = usage as Record<string, unknown>;
+    if (typeof record.total_tokens === 'number') {
+      return record.total_tokens;
+    }
+    if (typeof record.totalTokens === 'number') {
+      return record.totalTokens;
+    }
+    if (typeof record.input_tokens === 'number' || typeof record.output_tokens === 'number') {
+      return (Number(record.input_tokens) || 0) + (Number(record.output_tokens) || 0);
+    }
+    if (typeof record.prompt_tokens === 'number' || typeof record.completion_tokens === 'number') {
+      return (Number(record.prompt_tokens) || 0) + (Number(record.completion_tokens) || 0);
     }
 
-    // 平台 Provider 模型（从 DEFAULT_API_BASE 获取）
-    const platformBase = getPlatformApiBaseUrl();
-    const platformKey = getPlatformApiKey();
-    const aiGatewayBase = this.getAiGatewayBaseUrl();
-    const normalizedAiGatewayModelsUrl = aiGatewayBase
-      ? this.aiGatewayTransport.buildUrl('/v1/models')
+    return 0;
+  }
+
+  private recordForwardedUsage(accountId: string | undefined, podId: string, payload: unknown): void {
+    const usage = payload && typeof payload === 'object'
+      ? (payload as { usage?: unknown }).usage
       : undefined;
-    const normalizedPlatformModelsUrl = platformBase
-      ? `${platformBase.replace(/\/$/, '')}/models`
-      : undefined;
-    if (platformBase && normalizedPlatformModelsUrl !== normalizedAiGatewayModelsUrl) {
-      try {
-        const url = normalizedPlatformModelsUrl!;
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (platformKey) {
-          headers['Authorization'] = `Bearer ${platformKey}`;
-        }
-        const resp = await fetch(url, { headers });
-        if (resp.ok) {
-          const data = await resp.json() as { data?: any[] };
-          if (Array.isArray(data.data)) {
-            this.pushModelsWithDedup(models, seenModelIds, data.data);
-          }
-        } else {
-          this.logger.warn(`Failed to fetch platform models: ${resp.status}`);
-        }
-      } catch (error) {
-        this.logger.warn(`Failed to fetch platform models: ${error}`);
-      }
-    }
-
-    return models;
-  }
-  /**
-   * Handle API errors and update credential status accordingly
-   */
-  private async handleApiError(
-    error: unknown,
-    context: StoreContext,
-    credentialId: string,
-  ): Promise<void> {
-    const errorInfo = this.parseApiError(error);
-
-    if (errorInfo.statusCode === 429) {
-      // Rate limit error - mark credential as rate limited
-      const resetAt = errorInfo.retryAfter
-        ? new Date(Date.now() + errorInfo.retryAfter * 1000)
-        : new Date(Date.now() + 60000); // Default 1 minute cooldown
-
-      this.logger.warn(`Rate limit hit for credential ${credentialId}, reset at: ${resetAt.toISOString()}`);
-
-      await this.store.updateCredentialStatus(
-        context,
-        credentialId,
-        CredentialStatus.RATE_LIMITED,
-        { rateLimitResetAt: resetAt },
-      );
-    } else if (errorInfo.statusCode === 401 || errorInfo.statusCode === 403) {
-      // Auth error - mark credential as inactive
-      this.logger.warn(`Auth error for credential ${credentialId}, marking as inactive`);
-
-      await this.store.updateCredentialStatus(
-        context,
-        credentialId,
-        CredentialStatus.INACTIVE,
-        { incrementFailCount: true },
-      );
-    } else if (errorInfo.statusCode >= 500) {
-      // Server error - increment fail count but keep active
-      this.logger.warn(`Server error ${errorInfo.statusCode} for credential ${credentialId}`);
-
-      await this.store.updateCredentialStatus(
-        context,
-        credentialId,
-        CredentialStatus.ACTIVE,
-        { incrementFailCount: true },
-      );
+    const totalTokens = this.extractTotalTokens(usage);
+    if (accountId && totalTokens > 0) {
+      this.recordTokenUsage(accountId, podId, totalTokens);
     }
   }
 
   /**
-   * Parse error to extract status code and retry-after header
-   */
-  private parseApiError(error: unknown): { statusCode: number; retryAfter?: number } {
-    // Handle different error formats from AI SDK
-    if (error && typeof error === 'object') {
-      const err = error as any;
-
-      // Direct status code
-      if (typeof err.status === 'number') {
-        return {
-          statusCode: err.status,
-          retryAfter: err.retryAfter || err.headers?.['retry-after'],
-        };
-      }
-
-      // Nested response object
-      if (err.response && typeof err.response.status === 'number') {
-        return {
-          statusCode: err.response.status,
-          retryAfter: err.response.headers?.get?.('retry-after'),
-        };
-      }
-
-      // Error message parsing (fallback)
-      if (err.message) {
-        const match = err.message.match(/(\d{3})/);
-        if (match) {
-          return { statusCode: parseInt(match[1], 10) };
-        }
-      }
-    }
-
-    return { statusCode: 0 };
-  }
-
-  /**
-   * Check if account has remaining token quota
+   * Check if account has remaining token quota.
    */
   private async checkTokenQuota(accountId: string): Promise<void> {
     if (!this.quotaService || !this.usageRepo) {
-      return; // No quota enforcement if not configured
+      return;
     }
 
     try {
       const quota = await this.quotaService.getAccountQuota(accountId);
       if (!quota.tokenLimitMonthly) {
-        return; // No limit set
+        return;
       }
 
       const usage = await this.usageRepo.getAccountUsage(accountId);
@@ -712,13 +165,12 @@ export class VercelChatService {
       if ((error as any).code === 'quota_exceeded') {
         throw error;
       }
-      // Log but don't block on quota check errors
       this.logger.warn(`Token quota check failed: ${error}`);
     }
   }
 
   /**
-   * Record token usage (fire-and-forget)
+   * Record token usage (fire-and-forget).
    */
   private recordTokenUsage(accountId: string, podId: string, tokens: number): void {
     if (!this.usageRepo) {
@@ -729,4 +181,32 @@ export class VercelChatService {
       this.logger.warn(`Failed to record token usage: ${err}`);
     });
   }
+}
+
+function gatewayEventsToTextStreamResponse(
+  frontend: GatewayProtocolFrontend,
+  events: AsyncIterable<GatewayEvent>,
+): Response {
+  const encoder = new TextEncoder();
+  const serializer = frontend.createEventSerializer();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for await (const event of events) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(serializer.serializeEvent(event))}\n\n`));
+        }
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    },
+  });
 }

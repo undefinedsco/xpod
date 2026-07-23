@@ -1,20 +1,34 @@
 /**
- * AI Provider 降级逻辑单元测试
+ * ChatKit direct AI fallback adapter tests.
  *
- * 测试 VercelAiProvider 的配置获取和降级逻辑
+ * The adapter must use the unified AI Connection gateway runtime. It must not
+ * reopen Pod provider credentials or fall back to platform API-key env vars.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { VercelAiProvider } from '../../src/api/chatkit/ai-provider';
 import type { PodChatKitStore } from '../../src/api/chatkit/pod-store';
+import type { GatewayEvent } from '../../src/api/ai-gateway/types';
 
-describe('VercelAiProvider', () => {
+const solidContext = {
+  auth: {
+    type: 'solid' as const,
+    webId: 'http://localhost:3310/test/profile/card#me',
+    accountId: 'account-1',
+    accessToken: 'solid-access-token',
+    tokenType: 'Bearer' as const,
+    scopes: ['inference:write'],
+  },
+};
+
+describe('VercelAiProvider gateway fallback adapter', () => {
   const savedEnv: Record<string, string | undefined> = {};
   const envKeysToManage = [
     'DEFAULT_API_KEY',
     'DEFAULT_API_BASE',
     'DEFAULT_PROVIDER',
     'DEFAULT_MODEL',
+    'OPENAI_API_KEY',
   ];
 
   beforeEach(() => {
@@ -32,115 +46,83 @@ describe('VercelAiProvider', () => {
         delete process.env[key];
       }
     }
+    vi.restoreAllMocks();
   });
 
-  function createMockStore(config?: {
-    apiKey?: string;
-    baseUrl?: string;
-    proxyUrl?: string;
-    credentialId?: string;
-  }): PodChatKitStore {
+  function createMockStore(): PodChatKitStore {
     return {
-      getAiConfig: vi.fn().mockResolvedValue(config),
+      getAiConfig: vi.fn().mockResolvedValue({
+        apiKey: 'legacy-pod-key-that-must-not-be-read',
+        baseUrl: 'https://legacy-provider.example/v1',
+      }),
       updateCredentialStatus: vi.fn().mockResolvedValue(undefined),
     } as unknown as PodChatKitStore;
   }
 
-  describe('getProviderConfig', () => {
-    it('should return null when no config available', async () => {
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
+  it('streams text through AiGatewayService without Pod or env provider fallback', async () => {
+    process.env.DEFAULT_API_BASE = 'https://legacy-env-provider.example/v1';
+    process.env.DEFAULT_API_KEY = 'legacy-env-key';
+    process.env.OPENAI_API_KEY = 'legacy-openai-env-key';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const store = createMockStore();
+    const gateway = {
+      execute: vi.fn(async(input: any) => ({
+        protocol: input.protocol,
+        frontend: {},
+        request: { model: 'linx' },
+        route: {},
+        events: (async function*(): AsyncIterable<GatewayEvent> {
+          yield { type: 'response.started', id: 'chatcmpl-1' };
+          yield { type: 'text.delta', text: 'hello' };
+          yield { type: 'text.delta', text: ' world' };
+          yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 } };
+          yield { type: 'response.completed', finishReason: 'stop' };
+        })(),
+      })),
+    };
+    const provider = new VercelAiProvider({ store, aiGatewayService: gateway as any });
 
-      const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
-      const config = await getProviderConfig(undefined);
+    const chunks: string[] = [];
+    for await (const chunk of provider.streamResponse([
+      { role: 'system', content: 'Be brief' },
+      { role: 'user', content: 'ping' },
+    ], {
+      model: 'linx',
+      temperature: 0.2,
+      maxTokens: 64,
+      context: solidContext,
+    })) {
+      chunks.push(chunk);
+    }
 
-      expect(config).toBeNull();
-    });
+    expect(chunks.join('')).toBe('hello world');
+    expect(gateway.execute).toHaveBeenCalledWith(expect.objectContaining({
+      auth: solidContext.auth,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'linx',
+        messages: [
+          { role: 'system', content: 'Be brief' },
+          { role: 'user', content: 'ping' },
+        ],
+        stream: true,
+        temperature: 0.2,
+        max_tokens: 64,
+      },
+    }));
+    expect((store.getAiConfig as any)).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 
-    it('should return config from Pod when available', async () => {
-      const podConfig = {
-        apiKey: 'pod-api-key',
-        baseUrl: 'https://custom.api.com/v1',
-        proxyUrl: 'http://proxy.example.com',
-        credentialId: 'cred-123',
-      };
-      const store = createMockStore(podConfig);
-      const provider = new VercelAiProvider({ store });
+  it('fails closed when no AiGatewayService is injected', async () => {
+    const store = createMockStore();
+    const provider = new VercelAiProvider({ store });
 
-      const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
-      const mockContext = { auth: { webId: 'http://example.com/profile#me' } };
-      const config = await getProviderConfig(mockContext);
+    const iterator = provider.streamResponse([
+      { role: 'user', content: 'ping' },
+    ], { context: solidContext });
 
-      expect(config).not.toBeNull();
-      expect(config.apiKey).toBe('pod-api-key');
-      expect(config.baseURL).toBe('https://custom.api.com/v1');
-      expect(config.proxy).toBe('http://proxy.example.com');
-      expect(config.credentialId).toBe('cred-123');
-    });
-
-    it('should use DEFAULT_API_BASE as platform Provider fallback', async () => {
-      process.env.DEFAULT_API_BASE = 'https://platform.api.com/v1';
-      process.env.DEFAULT_API_KEY = 'platform-key';
-
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
-      const config = await getProviderConfig(undefined);
-
-      expect(config).not.toBeNull();
-      expect(config.baseURL).toBe('https://platform.api.com/v1');
-      expect(config.apiKey).toBe('platform-key');
-    });
-
-    it('should use DEFAULT_API_BASE with empty apiKey when DEFAULT_API_KEY is not set', async () => {
-      process.env.DEFAULT_API_BASE = 'https://platform.api.com/v1';
-
-      const store = createMockStore(undefined);
-      const provider = new VercelAiProvider({ store });
-
-      const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
-      const config = await getProviderConfig(undefined);
-
-      expect(config).not.toBeNull();
-      expect(config.baseURL).toBe('https://platform.api.com/v1');
-      expect(config.apiKey).toBe('');
-    });
-
-    it('should prioritize Pod config over platform Provider', async () => {
-      process.env.DEFAULT_API_BASE = 'https://platform.api.com/v1';
-      process.env.DEFAULT_API_KEY = 'platform-key';
-
-      const podConfig = {
-        apiKey: 'pod-key',
-        baseUrl: 'https://pod.api.com/v1',
-      };
-      const store = createMockStore(podConfig);
-      const provider = new VercelAiProvider({ store });
-
-      const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
-      const mockContext = { auth: { webId: 'http://example.com/profile#me' } };
-      const config = await getProviderConfig(mockContext);
-
-      expect(config).not.toBeNull();
-      expect(config.apiKey).toBe('pod-key');
-      expect(config.baseURL).toBe('https://pod.api.com/v1');
-    });
-
-    it('should use default baseURL when Pod config has apiKey but no baseUrl', async () => {
-      const podConfig = {
-        apiKey: 'pod-key-only',
-      };
-      const store = createMockStore(podConfig);
-      const provider = new VercelAiProvider({ store });
-
-      const getProviderConfig = (provider as any).getProviderConfig.bind(provider);
-      const mockContext = { auth: { webId: 'http://example.com/profile#me' } };
-      const config = await getProviderConfig(mockContext);
-
-      expect(config).not.toBeNull();
-      expect(config.apiKey).toBe('pod-key-only');
-      expect(config.baseURL).toBe('https://openrouter.ai/api/v1');
-    });
+    await expect(iterator.next()).rejects.toThrow('AiGatewayService is required');
+    expect((store.getAiConfig as any)).not.toHaveBeenCalled();
   });
 });

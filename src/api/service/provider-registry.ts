@@ -2,8 +2,8 @@
  * Backwards-compatible provider capability helpers.
  *
  * New AI Gateway routing owns provider descriptors in
- * src/api/ai-gateway/providers/ProviderRegistry.ts. Keep this module as a
- * thin compatibility facade for legacy VercelChatService/chat-routing callers.
+ * src/api/ai-gateway/providers/ProviderRegistry.ts. Keep this module only for
+ * legacy runtime surfaces that still need default base URL constants.
  */
 
 import {
