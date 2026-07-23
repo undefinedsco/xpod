@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerChatRoutes } from '../../../src/api/handlers/ChatHandler';
@@ -36,13 +37,16 @@ function request(scopes: string[], body?: unknown): AuthenticatedRequest {
 }
 
 function response(): any {
-  return {
+  return Object.assign(new EventEmitter(), {
     statusCode: 0,
+    destroyed: false,
+    writableEnded: false,
     setHeader: vi.fn(),
     end: vi.fn(function(this: any, payload?: string) {
       this.body = payload;
+      this.writableEnded = true;
     }),
-  };
+  });
 }
 
 describe('ChatHandler gateway-key scopes', () => {

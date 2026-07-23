@@ -123,7 +123,6 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
     gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
     aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
-    aiGatewayInferenceEnabled: process.env.XPOD_AI_GATEWAY_INFERENCE_ENABLED === 'true',
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
     aiGatewayKimiClientId: process.env.XPOD_AI_GATEWAY_KIMI_CLIENT_ID,
     inngest: {

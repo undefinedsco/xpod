@@ -51,7 +51,7 @@ export class AiGatewayHandler {
 
     const controller = new AbortController();
     const abort = (): void => controller.abort();
-    request.once('close', abort);
+    response.once('close', abort);
 
     try {
       const stream = isStreamRequest(bodyResult.value);
@@ -74,13 +74,16 @@ export class AiGatewayHandler {
       });
       await this.sendEventStream(response, execution.frontend, execution.events);
     } catch (error) {
+      if (controller.signal.aborted || response.destroyed) {
+        return;
+      }
       if (response.headersSent) {
-        this.writeTerminalStreamError(response, error);
+        await this.writeTerminalStreamError(response, error);
         return;
       }
       this.sendGatewayError(response, error);
     } finally {
-      request.off('close', abort);
+      response.off('close', abort);
     }
   }
 
@@ -105,15 +108,30 @@ export class AiGatewayHandler {
     events: AsyncIterable<GatewayEvent>,
   ): Promise<void> {
     const iterator = events[Symbol.asyncIterator]();
+    let disconnected = false;
+    let iteratorReturned = false;
+    const returnIterator = async(): Promise<void> => {
+      if (!iteratorReturned) {
+        iteratorReturned = true;
+        await iterator.return?.();
+      }
+    };
+    const onClose = (): void => {
+      disconnected = true;
+      void returnIterator();
+    };
+    response.once('close', onClose);
     let first: IteratorResult<GatewayEvent>;
     try {
       first = await iterator.next();
     } catch (error) {
-      await iterator.return?.();
+      await returnIterator();
+      response.off('close', onClose);
       throw error;
     }
     if (first.done) {
-      await iterator.return?.();
+      await returnIterator();
+      response.off('close', onClose);
       throw new GatewayProtocolError('Provider stream ended before emitting any gateway event', {
         code: 'provider_error',
         status: 502,
@@ -126,27 +144,32 @@ export class AiGatewayHandler {
     response.setHeader('Connection', 'keep-alive');
     const serializer = frontend.createEventSerializer();
     try {
-      response.write(`data: ${JSON.stringify(serializer.serializeEvent(first.value))}\n\n`);
+      await writeWithBackpressure(response, `data: ${JSON.stringify(serializer.serializeEvent(first.value))}\n\n`);
       for (;;) {
         const next = await iterator.next();
         if (next.done) {
           break;
         }
-        response.write(`data: ${JSON.stringify(serializer.serializeEvent(next.value))}\n\n`);
+        await writeWithBackpressure(response, `data: ${JSON.stringify(serializer.serializeEvent(next.value))}\n\n`);
       }
-      response.write('data: [DONE]\n\n');
+      await writeWithBackpressure(response, 'data: [DONE]\n\n');
     } catch (error) {
-      await iterator.return?.();
-      this.writeTerminalStreamError(response, error);
+      await returnIterator();
+      if (!disconnected) {
+        await this.writeTerminalStreamError(response, error);
+      }
     } finally {
-      response.end();
+      response.off('close', onClose);
+      if (!disconnected && !response.writableEnded) {
+        response.end();
+      }
     }
   }
 
-  private writeTerminalStreamError(response: ServerResponse, error: unknown): void {
+  private async writeTerminalStreamError(response: ServerResponse, error: unknown): Promise<void> {
     const payload = normalizeGatewayError(error);
-    response.write(`data: ${JSON.stringify({ error: payload.error })}\n\n`);
-    response.write('data: [DONE]\n\n');
+    await writeWithBackpressure(response, `data: ${JSON.stringify({ error: payload.error })}\n\n`);
+    await writeWithBackpressure(response, 'data: [DONE]\n\n');
     if (!response.writableEnded) {
       response.end();
     }
@@ -163,6 +186,31 @@ export class AiGatewayHandler {
       },
     });
   }
+}
+
+async function writeWithBackpressure(response: ServerResponse, chunk: string): Promise<void> {
+  if (response.destroyed || response.writableEnded) {
+    throw new Error('Response stream closed');
+  }
+  if (response.write(chunk)) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const onDrain = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onClose = (): void => {
+      cleanup();
+      reject(new Error('Response stream closed'));
+    };
+    const cleanup = (): void => {
+      response.off('drain', onDrain);
+      response.off('close', onClose);
+    };
+    response.once('drain', onDrain);
+    response.once('close', onClose);
+  });
 }
 
 function isStreamRequest(body: unknown): boolean {

@@ -160,7 +160,7 @@ export function registerAiGatewayManagementRoutes(
         ? body.expectedCredentialVersion
         : undefined,
     } satisfies ConnectBeginInput);
-    sendJson(response, 200, result);
+    sendJson(response, 200, publicConnectResult(result));
   });
 
   server.get('/api/ai/gateway/providers/:provider/connect/status/:attemptId', async (request, response, params) => {
@@ -180,7 +180,7 @@ export function registerAiGatewayManagementRoutes(
       state: url.searchParams.get('state') ?? '',
       signature: url.searchParams.get('signature') ?? '',
     });
-    sendJson(response, 200, result);
+    sendJson(response, 200, publicConnectResult(result));
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/complete-api-key', async (request, response, params) => {
@@ -210,7 +210,7 @@ export function registerAiGatewayManagementRoutes(
       apiKey,
       accountLabel: normalizeOptionalString(body.accountLabel),
     } satisfies CompleteApiKeyInput);
-    sendJson(response, 200, result);
+    sendJson(response, 200, publicConnectResult(result));
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/poll', async (request, response, params) => {
@@ -233,7 +233,7 @@ export function registerAiGatewayManagementRoutes(
       state: stringBody(body.state),
       signature: stringBody(body.signature),
     });
-    sendJson(response, 200, result);
+    sendJson(response, 200, publicConnectResult(result));
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/refresh', async (request, response, params) => {
@@ -517,7 +517,6 @@ function publicCredentialRecord(record: {
     credentialIri: record.credentialIri,
     webId: record.webId,
     provider: record.provider,
-    deployment: record.deployment,
     authMode: record.authMode,
     status: record.status,
     accountLabel: record.accountLabel,
@@ -526,6 +525,20 @@ function publicCredentialRecord(record: {
     reauthRequired: record.reauthRequired,
     metadata: record.metadata,
   };
+}
+
+function publicConnectResult(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(publicConnectResult);
+  }
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== 'deployment')
+      .map(([key, item]) => [key, publicConnectResult(item)]),
+  );
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {

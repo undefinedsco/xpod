@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream';
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AiGatewayService, type GatewayCredentialStore } from '../../../src/api/ai-gateway/AiGatewayService';
@@ -51,27 +52,33 @@ function request(path: string, body?: unknown, auth: AuthenticatedRequest['auth'
   return req;
 }
 
-function response(): any {
-  return {
+function response(options: { backpressureOnWrite?: number } = {}): any {
+  const emitter = new EventEmitter();
+  return Object.assign(emitter, {
     statusCode: 0,
     headers: {} as Record<string, string>,
     chunks: [] as string[],
     ended: false,
+    writableEnded: false,
+    destroyed: false,
+    writeCount: 0,
     setHeader(name: string, value: string) {
       this.headers[name.toLowerCase()] = value;
     },
     write(chunk: unknown) {
+      this.writeCount += 1;
       this.chunks.push(Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk));
-      return true;
+      return this.writeCount !== options.backpressureOnWrite;
     },
     end(payload?: unknown) {
       if (payload !== undefined) {
         this.write(payload);
       }
       this.ended = true;
+      this.writableEnded = true;
       this.body = this.chunks.join('');
     },
-  };
+  });
 }
 
 function createServer(): { server: ApiServer; routes: Record<string, Function> } {
@@ -302,6 +309,90 @@ describe('AiGatewayHandler', () => {
     expect(chat.body.trim().endsWith('data: [DONE]')).toBe(true);
   });
 
+  it('waits for response drain before pulling the next upstream event', async () => {
+    const { routes } = createFixture();
+    const req = request('/v1/chat/completions', {
+      model: 'gpt-5',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const res = response({ backpressureOnWrite: 1 });
+    let settled = false;
+    const pending = routes['POST /v1/chat/completions'](req, res, {}).then(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => expect(res.writeCount).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    expect(res.writeCount).toBe(1);
+
+    res.emit('drain');
+    await pending;
+    expect(res.ended).toBe(true);
+    expect(res.body.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  it('aborts upstream and returns its iterator when the response closes', async () => {
+    const { server, routes } = createServer();
+    let upstreamAborted = false;
+    let iteratorReturned = false;
+    let releaseNext!: () => void;
+    const nextGate = new Promise<void>((resolve) => {
+      releaseNext = resolve;
+    });
+    const service = {
+      execute: vi.fn(),
+      complete: vi.fn(),
+      listModels: vi.fn(),
+    };
+    service.execute.mockImplementation(async({ signal }: { signal: AbortSignal }) => {
+      signal.addEventListener('abort', () => {
+        upstreamAborted = true;
+      }, { once: true });
+      return {
+        frontend: new ChatCompletionsFrontend(),
+        events: {
+          [Symbol.asyncIterator]() {
+            let index = 0;
+            return {
+              async next() {
+                if (index++ === 0) {
+                  return { done: false, value: { type: 'response.started', id: 'resp_1' } as GatewayEvent };
+                }
+                await nextGate;
+                return { done: true, value: undefined };
+              },
+              async return() {
+                iteratorReturned = true;
+                releaseNext();
+                return { done: true, value: undefined };
+              },
+            };
+          },
+        },
+      };
+    });
+    registerAiGatewayRoutes(server, { service: service as any });
+    const req = request('/v1/chat/completions', {
+      model: 'gpt-5',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const res = response();
+    const pending = routes['POST /v1/chat/completions'](req, res, {});
+
+    await vi.waitFor(() => expect(res.writeCount).toBe(1));
+    res.emit('close');
+    await pending;
+
+    expect(upstreamAborted).toBe(true);
+    expect(iteratorReturned).toBe(true);
+    expect(res.ended).toBe(false);
+    expect(res.listenerCount('close')).toBe(0);
+    expect(res.listenerCount('drain')).toBe(0);
+  });
+
   it('returns normalized HTTP JSON without SSE headers when streaming fails before the first event', async () => {
     const { server, routes } = createServer();
     const service = {
@@ -401,10 +492,14 @@ describe('AiGatewayHandler', () => {
       stream: true,
       messages: [{ role: 'user', content: 'hi' }],
     });
-    const promise = callRoute(routes, 'POST /v1/chat/completions', req);
+    const res = response();
+    const promise = routes['POST /v1/chat/completions'](req, res, {});
 
-    await new Promise((resolve) => setTimeout(resolve, 1));
-    req.emit('close');
+    for (let index = 0; index < 50 && res.writeCount === 0; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(res.writeCount).toBeGreaterThan(0);
+    res.emit('close');
     await promise;
 
     expect(onAbort).toHaveBeenCalledOnce();
@@ -439,7 +534,7 @@ describe('AiGatewayHandler', () => {
     expect(ok.statusCode).toBe(200);
     const body = JSON.parse(ok.body);
     expect(body.data.map((model: any) => model.id)).toContain('gpt-5');
-    expect(body.data.map((model: any) => model.id)).toContain('gpt-4.1');
+    expect(body.data.map((model: any) => model.id)).not.toContain('gpt-4.1');
     expect(body.data.map((model: any) => model.id)).not.toContain('deepseek-chat');
 
     const forbidden = await callRoute(routes, 'GET /v1/models', request('/v1/models', undefined, {

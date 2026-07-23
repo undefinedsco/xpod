@@ -114,8 +114,6 @@ export interface ApiContainerConfig {
 
   /** AI Provider Connect is disabled by default for backwards-compatible startup. */
   aiGatewayConnectEnabled?: boolean;
-  /** AI inference routes use the Pod-backed Gateway core only when enabled. */
-  aiGatewayInferenceEnabled?: boolean;
   /** Platform signing secret for short-lived provider Connect attempts. */
   aiGatewayConnectSigningSecret?: string;
   /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */

@@ -376,6 +376,7 @@ describe('AiGatewayManagementHandler', () => {
     }, {
       mode: 'browserAssistedApiKey',
       owner: 'https://id.example/mallory/profile/card#me',
+      deployment: 'local',
       expectedCredentialVersion: 7,
     }), res, {
       provider: 'openai',
@@ -389,6 +390,50 @@ describe('AiGatewayManagementHandler', () => {
       requestedMode: 'browserAssistedApiKey',
       expectedCredentialVersion: 7,
     });
+    expect(JSON.parse(res.body)).not.toHaveProperty('deployment');
+  });
+
+  it('keeps deployment internal in Connect status and poll responses', async () => {
+    const connectService = {
+      status: vi.fn(async() => ({
+        attemptId: 'attempt_1',
+        deployment: 'cloud',
+        status: 'pending',
+        credential: { id: 'cred_1', deployment: 'cloud' },
+      })),
+      pollDevice: vi.fn(async() => ({
+        attemptId: 'attempt_1',
+        deployment: 'cloud',
+        status: 'completed',
+        credential: { id: 'cred_1', deployment: 'cloud' },
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+    const statusRequest = request(auth);
+    statusRequest.url = '/api/ai/gateway/providers/kimi/connect/status/attempt_1?state=s&signature=sig';
+    const statusResponse = response();
+    await routes['GET /api/ai/gateway/providers/:provider/connect/status/:attemptId'](
+      statusRequest,
+      statusResponse,
+      { provider: 'kimi', attemptId: 'attempt_1' },
+    );
+    const pollResponse = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/poll'](request(auth, {
+      attemptId: 'attempt_1',
+      state: 's',
+      signature: 'sig',
+    }), pollResponse, { provider: 'kimi' });
+
+    expect(JSON.stringify(JSON.parse(statusResponse.body))).not.toContain('deployment');
+    expect(JSON.stringify(JSON.parse(pollResponse.body))).not.toContain('deployment');
+    expect(connectService.status).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
+    expect(connectService.pollDevice).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
   });
 
   it('keeps browser-assisted API key completion on authenticated management API, never public callback', async () => {
@@ -436,6 +481,7 @@ describe('AiGatewayManagementHandler', () => {
       apiKey: 'sk-submit-only-here',
       accountLabel: 'Alice',
     });
+    expect(JSON.parse(complete.body)).not.toHaveProperty('deployment');
   });
 
   it('rejects gateway API key principals from managing provider Connect state', async () => {

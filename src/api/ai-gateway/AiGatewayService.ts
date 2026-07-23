@@ -161,30 +161,61 @@ export class AiGatewayService {
       webId: principal.webId,
       deployment: this.deployment,
     });
-    const activeProviders = new Set(
-      credentials
-        .filter(isCredentialModelVisible)
-        .map((credential) => normalizeProviderId(credential.provider)),
-    );
+    const activeCredentialModels = new Map<string, Set<string> | undefined>();
+    for (const credential of credentials) {
+      if (!isCredentialModelVisible(credential, this.now())) {
+        continue;
+      }
+      const providerId = normalizeProviderId(credential.provider);
+      const allowedModels = credential.models ?? [];
+      if (allowedModels.length === 0) {
+        activeCredentialModels.set(providerId, undefined);
+        continue;
+      }
+      const existing = activeCredentialModels.get(providerId);
+      if (existing === undefined && activeCredentialModels.has(providerId)) {
+        continue;
+      }
+      const models = existing ?? new Set<string>();
+      for (const model of allowedModels) {
+        models.add(model);
+      }
+      activeCredentialModels.set(providerId, models);
+    }
     const seen = new Set<string>();
     const models: GatewayModelListItem[] = [];
     for (const provider of this.registry.listProviders()) {
-      if (!activeProviders.has(normalizeProviderId(provider.id))) {
+      const providerId = normalizeProviderId(provider.id);
+      if (!activeCredentialModels.has(providerId)) {
         continue;
       }
-      for (const model of provider.models) {
-        if (seen.has(model.id)) {
-          continue;
-        }
-        seen.add(model.id);
-        models.push({
+      const allowedModels = activeCredentialModels.get(providerId);
+      const providerModelItems = provider.models
+        .filter((model) => allowedModels === undefined || allowedModels.has(model.id))
+        .map((model) => ({
           id: model.id,
-          object: 'model',
+          object: 'model' as const,
           owned_by: provider.id,
           ...(model.contextWindow !== undefined ? { context_window: model.contextWindow } : {}),
           ...(model.capabilities ? { capabilities: model.capabilities } : {}),
           ...(model.protocols ? { protocols: model.protocols } : {}),
-        });
+        }));
+      const registryModelIds = new Set(provider.models.map((model) => model.id));
+      const credentialOnlyModelItems = allowedModels === undefined
+        ? []
+        : Array.from(allowedModels)
+          .filter((model) => !registryModelIds.has(model))
+          .map((model) => ({
+            id: model,
+            object: 'model' as const,
+            owned_by: provider.id,
+          }));
+      for (const model of [ ...providerModelItems, ...credentialOnlyModelItems ]) {
+        if (seen.has(model.id)) {
+          continue;
+        }
+        seen.add(model.id);
+        models.push(model);
       }
     }
     return models;
@@ -241,23 +272,19 @@ export class AiGatewayService {
     failedRoute: ModelRouteResult,
     attempted: Set<string>,
   ): Promise<ModelRouteResult | undefined> {
-    const candidates = await this.credentials.listCredentials({ webId, deployment: this.deployment });
-    const next = candidates
-      .filter((credential) => normalizeProviderId(credential.provider) === normalizeProviderId(failedRoute.provider.id))
-      .filter((credential) => !attempted.has(credential.id))
-      .sort((left, right) => (left.priority ?? 100) - (right.priority ?? 100))[0];
-    if (!next) {
-      return undefined;
+    try {
+      return await this.router.route({
+        webId,
+        deployment: this.deployment,
+        model: `${failedRoute.provider.id}/${failedRoute.model}`,
+        conversationId: conversationIdFor(request),
+      }, attempted);
+    } catch (error) {
+      if (error instanceof GatewayProtocolError && error.code === 'credential_unavailable') {
+        return undefined;
+      }
+      throw error;
     }
-    return {
-      ...failedRoute,
-      credential: next,
-      failover: {
-        allowedBeforeFirstEvent: true,
-        committed: false,
-        clientEventEmitted: false,
-      },
-    };
   }
 
   private async openApiKey(
@@ -326,10 +353,11 @@ export class AiGatewayService {
   }
 }
 
-function isCredentialModelVisible(credential: StoredGatewayCredential): boolean {
+function isCredentialModelVisible(credential: StoredGatewayCredential, now: Date): boolean {
   return credential.enabled
     && (!credential.health || credential.health === 'healthy')
-    && credential.quota?.status !== 'exhausted';
+    && credential.quota?.status !== 'exhausted'
+    && (!credential.cooldownUntil || credential.cooldownUntil.getTime() <= now.getTime());
 }
 
 function validateGatewayRequest(request: GatewayRequest, protocol: GatewayProtocol): void {

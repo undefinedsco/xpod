@@ -338,6 +338,46 @@ describe('ModelRouter', () => {
     });
   });
 
+  it('uses the same route filtering when excluding failed credentials for failover', async () => {
+    const now = new Date('2026-07-23T00:00:00.000Z');
+    const modelRouter = router({
+      now,
+      credentials: [
+        credential({ id: 'failed', provider: 'openai', models: ['gpt-5'], priority: 1 }),
+        credential({ id: 'disabled', provider: 'openai', enabled: false, models: ['gpt-5'], priority: 2 }),
+        credential({ id: 'reauth', provider: 'openai', health: 'reauthRequired', models: ['gpt-5'], priority: 3 }),
+        credential({ id: 'quota', provider: 'openai', quota: { status: 'exhausted' }, models: ['gpt-5'], priority: 4 }),
+        credential({
+          id: 'cooling',
+          provider: 'openai',
+          cooldownUntil: new Date('2026-07-23T00:05:00.000Z'),
+          models: ['gpt-5'],
+          priority: 5,
+        }),
+        credential({ id: 'wrong_model', provider: 'openai', models: ['gpt-4.1'], priority: 6 }),
+        credential({ id: 'healthy', provider: 'openai', models: ['gpt-5'], priority: 7 }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    }, new Set(['failed']))).resolves.toMatchObject({
+      credential: { id: 'healthy' },
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+      explicitCredentialId: 'failed',
+    }, new Set(['failed']))).rejects.toMatchObject({
+      code: 'credential_unavailable',
+      status: 403,
+    });
+  });
+
   it('keeps conversation affinity isolated by deployment and WebID without using raw prompt text', async () => {
     const affinityStore = new InMemorySessionAffinityStore({
       secret: AFFINITY_SECRET,

@@ -96,7 +96,10 @@ export class ModelRouter {
     this.now = options.now ?? (() => new Date());
   }
 
-  public async route(input: ModelRouteInput): Promise<ModelRouteResult> {
+  public async route(
+    input: ModelRouteInput,
+    excludeCredentialIds: ReadonlySet<string> = new Set(),
+  ): Promise<ModelRouteResult> {
     const candidates = await this.credentials({
       webId: input.webId,
       deployment: input.deployment,
@@ -104,7 +107,8 @@ export class ModelRouter {
     const target = this.resolveTarget(input, candidates);
     const provider = this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
-      .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id));
+      .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))
+      .filter((candidate) => !excludeCredentialIds.has(candidate.id) && !excludeCredentialIds.has(candidate.credentialIri));
     const selected = input.explicitCredentialId
       ? await this.selectExplicitCredential(input, providerCandidates, input.explicitCredentialId, target.model)
       : await this.selectCredential(input, providerCandidates, target);
