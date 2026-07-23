@@ -488,7 +488,6 @@ function publicRecord(record: GatewayAccessKeyRecord): Record<string, unknown> {
   return {
     id: record.id,
     owner: record.owner,
-    deployment: record.deployment,
     scopes: record.scopes,
     createdAt: record.createdAt.toISOString(),
     expiresAt: record.expiresAt?.toISOString(),

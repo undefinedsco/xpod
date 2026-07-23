@@ -178,6 +178,7 @@ describe('AiGatewayManagementHandler', () => {
 
     const created = JSON.parse(createRes.body);
     expect(codec.decode(created.record.id)).toMatchObject({ owner: WEB_ID, deployment: 'cloud' });
+    expect(created.record).not.toHaveProperty('deployment');
     await expect(new GatewayApiKeyAuthenticator({
       repository,
       deployment: 'cloud',
@@ -194,6 +195,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(listRes.body).data).toEqual([
       expect.objectContaining({ id: created.record.id, name: 'Codex laptop' }),
     ]);
+    expect(JSON.parse(listRes.body).data[0]).not.toHaveProperty('deployment');
 
     const revokeRes = response();
     await routes['DELETE /api/ai/gateway/keys/:keyId'](request({ type: 'solid', webId: WEB_ID }), revokeRes, {
@@ -204,6 +206,7 @@ describe('AiGatewayManagementHandler', () => {
       revokedAt: '2026-07-23T00:00:00.000Z',
       name: 'Codex laptop',
     });
+    expect(JSON.parse(revokeRes.body).record).not.toHaveProperty('deployment');
   });
 
   it('lists keys without plaintext or secret hash for the current owner', async () => {
