@@ -3,6 +3,19 @@ import { createServer } from 'node:net';
 import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatKitRoutes } from '../../src/api/handlers/ChatKitHandler';
+import { ChatKitService } from '../../src/api/chatkit/service';
+import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
+import type { RunExecutionBackend, RunExecutionInput } from '../../src/api/runs/RunExecutionBackend';
+import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
+
+class RecordingRuntimeBackend implements RunExecutionBackend {
+  public readonly inputs: RunExecutionInput[] = [];
+
+  public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
+    this.inputs.push(input);
+    yield { type: 'text', text: 'ok' };
+  }
+}
 
 const authMiddleware = new AuthMiddleware({
   authenticator: {
@@ -86,5 +99,78 @@ describe('ChatKitHandler Integration', () => {
 
     expect(response.status).toBe(200);
     expect(chatKitService.process).toHaveBeenCalledTimes(1);
+  });
+
+  it('issues a transient key from the authenticated handler context before runtime execution', async () => {
+    const port = await getFreePort();
+    const runtimeServer = new ApiServer({ port, authMiddleware });
+    const store = new InMemoryStore<StoreContext>();
+    const backend = new RecordingRuntimeBackend();
+    const issuer = {
+      issue: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'handler-invocation-secret',
+        model: 'linx',
+      })),
+    };
+    const service = new ChatKitService<StoreContext>({
+      store,
+      enableAgentRuntime: true,
+      runExecutionBackend: backend,
+      aiConnectionInvocationKeyIssuer: issuer,
+      requireAiConnectionInvocationKeyIssuer: true,
+    });
+    registerChatKitRoutes(runtimeServer, { chatKitService: service });
+    await runtimeServer.start();
+
+    try {
+      const response = await fetch(`http://localhost:${port}/v1/chatkit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-token',
+        },
+        body: JSON.stringify({
+          type: 'threads.create',
+          params: {
+            workspace: `file://localhost${process.cwd()}`,
+            input: {
+              content: [{ type: 'input_text', text: 'run securely' }],
+            },
+          },
+          metadata: {
+            runtime: {
+              runner: { type: 'pi', protocol: 'pi' },
+              aiConnection: {
+                baseUrl: 'http://127.0.0.1:3000/v1',
+                model: 'linx',
+              },
+            },
+          },
+        }),
+      });
+      await response.text();
+
+      expect(response.status).toBe(200);
+      expect(issuer.issue).toHaveBeenCalledWith(expect.objectContaining({
+        auth: expect.objectContaining({
+          type: 'solid',
+          webId: 'https://example.com/user#me',
+        }),
+      }));
+      expect(backend.inputs[0].config.aiConnection?.gatewayKey).toBe('handler-invocation-secret');
+      const run = await store.loadRun(backend.inputs[0].runId, {
+        userId: 'https://example.com/user#me',
+        auth: {
+          type: 'solid',
+          webId: 'https://example.com/user#me',
+          accountId: 'user-1',
+        },
+      });
+      expect(JSON.stringify(run.metadata)).not.toContain('handler-invocation-secret');
+      expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
+    } finally {
+      await runtimeServer.stop();
+    }
   });
 });

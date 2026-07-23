@@ -374,6 +374,50 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(events.some((event) => event.type === 'thread.item.done' && event.item?.type === 'assistant_message')).toBe(true);
   });
 
+  it('fails closed before runtime execution when the invocation key producer is required but missing', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const driver = new WorkspaceAgentDriver();
+    const service = new ChatKitService<StoreContext>({
+      store,
+      enableAgentRuntime: true,
+      runExecutionBackend: driver,
+      requireAiConnectionInvocationKeyIssuer: true,
+    });
+
+    const result = await service.process(JSON.stringify({
+      type: 'threads.create',
+      params: {
+        workspace: workspaceRef,
+        input: {
+          content: [{ type: 'input_text', text: 'must not execute' }],
+        },
+      },
+      metadata: {
+        runtime: {
+          runner: { type: 'pi', protocol: 'pi' },
+        },
+      },
+    }), {
+      userId: 'alice',
+      auth: {
+        type: 'solid',
+        webId: 'https://pod.example/alice/profile/card#me',
+      },
+    });
+
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of result.type === 'streaming' ? result.stream() : []) {
+      chunks.push(chunk);
+    }
+    expect(driver.inputs).toHaveLength(0);
+    expect(parseSseDataLines(chunks)).toContainEqual(expect.objectContaining({
+      type: 'error',
+      error: expect.objectContaining({
+        message: expect.stringContaining('invocation key issuer is required'),
+      }),
+    }));
+  });
+
   it('retrieves product context before starting a Chat Agent Run', async () => {
     const store = new InMemoryStore<StoreContext>();
     const driver = new WorkspaceAgentDriver();
@@ -499,18 +543,22 @@ describe('Managed Agents Inngest Chat backend', () => {
       runtimeDriver: driver,
       executeInline: true,
     });
+    const invocationKeyIssuer = {
+      issue: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'invocation-fixture-secret',
+        model: 'linx',
+      })),
+    };
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: backend,
+      aiConnectionInvocationKeyIssuer: invocationKeyIssuer,
+      requireAiConnectionInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'u1',
-      aiConnection: {
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'invocation-fixture-secret',
-        model: 'linx',
-      },
       auth: {
         type: 'solid',
         webId: 'http://localhost/alice/profile/card#me',
@@ -559,6 +607,11 @@ describe('Managed Agents Inngest Chat backend', () => {
       thread: 'http://localhost/alice/.data/' + (run.metadata?.threadId as string),
     });
     expect(extractResourceLocalId(run.id)).toMatch(/^run_/);
+    expect(invocationKeyIssuer.issue).toHaveBeenCalledWith(expect.objectContaining({
+      auth: expect.objectContaining({
+        webId: 'http://localhost/alice/profile/card#me',
+      }),
+    }));
     expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('invocation-fixture-secret');
     expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
     expect(JSON.stringify(run.metadata)).not.toContain('metadata-fixture-secret');
@@ -985,10 +1038,9 @@ describe('Managed Agents Inngest Chat backend', () => {
     const driver = new WorkspaceAgentDriver();
     const context = {
       userId: 'u1',
-      aiConnection: {
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'durable-fixture-secret',
-        model: 'linx',
+      auth: {
+        type: 'solid',
+        webId: 'https://pod.example/alice/profile/card#me',
       },
     };
     const backend = new InngestRunExecutionBackend({
@@ -996,6 +1048,13 @@ describe('Managed Agents Inngest Chat backend', () => {
       runtimeDriver: driver,
       store,
       contextResolver: () => context,
+      aiConnectionInvocationKeyIssuer: {
+        issue: vi.fn(async () => ({
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: 'durable-fixture-secret',
+          model: 'linx',
+        })),
+      },
       durableDelivery: true,
       executeInline: false,
     });

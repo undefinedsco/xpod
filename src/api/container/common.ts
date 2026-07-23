@@ -20,6 +20,7 @@ import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuth
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import {
   BrowserAssistedApiKeyConnectAdapter,
@@ -67,6 +68,14 @@ function resolveCssServiceBaseUrl(): string {
   }
 
   return 'http://localhost:3000/';
+}
+
+function resolveAiConnectionBaseUrl(config: ApiContainerCradle['config']): string {
+  const origin = config.publicUrl
+    ?? process.env.XPOD_PUBLIC_URL
+    ?? process.env.CSS_BASE_URL
+    ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
+  return new URL('/v1', origin.endsWith('/') ? origin : `${origin}/`).toString().replace(/\/$/u, '');
 }
 
 /**
@@ -122,6 +131,14 @@ export function registerCommonServices(
           clientId: config.gatewayInternalClientId,
           clientSecret: config.gatewayInternalClientSecret,
         }),
+      });
+    }).singleton(),
+
+    aiConnectionInvocationKeyIssuer: asFunction(({ config, gatewayAccessKeyRepository }: ApiContainerCradle) => {
+      return new AiConnectionInvocationKeyIssuer({
+        repository: gatewayAccessKeyRepository,
+        deployment: config.edition,
+        baseUrl: resolveAiConnectionBaseUrl(config),
       });
     }).singleton(),
 
@@ -400,7 +417,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService }: ApiContainerCradle) => {
+    runExecutionBackend: asFunction(({ config, inngestRuntimeConfig, chatKitStore, taskAuthBindingService, runAuthContextRegistry, runContextRetriever, rdfSearchIndexingService, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
       return new InngestRunExecutionBackend({
         baseUrl: inngestRuntimeConfig?.baseUrl,
         eventKey: inngestRuntimeConfig?.eventKey,
@@ -409,6 +426,7 @@ export function registerCommonServices(
         durableDelivery: inngestRuntimeConfig?.durableDelivery ?? false,
         store: chatKitStore,
         contextRetriever: runContextRetriever,
+        aiConnectionInvocationKeyIssuer,
         contextRecorder: (context) => runAuthContextRegistry.remember(context),
         contextResolver: async (data) => {
           const fallback = runAuthContextRegistry.resolve({ webId: data.webId });
@@ -425,21 +443,25 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider, runExecutionBackend, runContextRetriever }: ApiContainerCradle) => {
+    chatKitService: asFunction(({ chatKitStore, chatKitAiProvider, runExecutionBackend, runContextRetriever, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
       return new ChatKitService({
         store: chatKitStore,
         aiProvider: chatKitAiProvider,
         enableAgentRuntime: true,
         runExecutionBackend,
         contextRetriever: runContextRetriever,
+        aiConnectionInvocationKeyIssuer,
+        requireAiConnectionInvocationKeyIssuer: true,
       });
     }).singleton(),
 
-    taskService: asFunction(({ chatKitStore, runExecutionBackend, runContextRetriever }: ApiContainerCradle) => {
+    taskService: asFunction(({ chatKitStore, runExecutionBackend, runContextRetriever, aiConnectionInvocationKeyIssuer }: ApiContainerCradle) => {
       return new TaskService({
         store: chatKitStore,
         executionBackend: runExecutionBackend,
         contextRetriever: runContextRetriever,
+        aiConnectionInvocationKeyIssuer,
+        requireAiConnectionInvocationKeyIssuer: true,
       });
     }).singleton(),
 

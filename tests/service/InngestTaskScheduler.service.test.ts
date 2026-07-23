@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import { InngestRunExecutionBackend } from '../../src/api/runs/InngestRunExecutionBackend';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
@@ -190,9 +190,18 @@ describe('Inngest Task scheduler', () => {
       durableDelivery: false,
       executeInline: true,
     });
+    const invocationKeyIssuer = {
+      issue: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'scheduled-task-invocation-secret',
+        model: 'linx',
+      })),
+    };
     const taskService = new TaskService({
       store,
       executionBackend: runBackend,
+      aiConnectionInvocationKeyIssuer: invocationKeyIssuer,
+      requireAiConnectionInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'alice',
@@ -241,5 +250,12 @@ describe('Inngest Task scheduler', () => {
     expect(result).toHaveLength(1);
     expect(result[0].run.status).toBe(RunStatus.COMPLETED);
     expect(runtimeDriver.inputs).toHaveLength(1);
+    expect(invocationKeyIssuer.issue).toHaveBeenCalledWith(expect.objectContaining({
+      auth: expect.objectContaining({
+        webId: 'http://localhost/alice/profile/card#me',
+      }),
+    }));
+    expect(runtimeDriver.inputs[0].config.aiConnection?.gatewayKey).toBe('scheduled-task-invocation-secret');
+    expect(JSON.stringify(result[0].run.metadata)).not.toContain('scheduled-task-invocation-secret');
   });
 });
