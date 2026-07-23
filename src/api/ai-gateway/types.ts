@@ -61,7 +61,7 @@ export type GatewayEvent =
   | { type: 'response.completed'; finishReason: string };
 
 export interface GatewayEventSerializer {
-  serializeEvent(event: GatewayEvent): Record<string, unknown>;
+  serializeEvent(event: GatewayEvent): Record<string, unknown> | Record<string, unknown>[];
 }
 
 export interface GatewayProtocolFrontend {
@@ -344,6 +344,11 @@ export class ToolArgumentTracker {
     const index = this.requireStarted(callId);
     this.chunks.set(callId, `${this.chunks.get(callId) ?? ''}${delta}`);
     return index;
+  }
+
+  public argumentsFor(callId: string): string {
+    this.requireStarted(callId);
+    return this.chunks.get(callId) ?? '';
   }
 
   public complete(callId: string): number {

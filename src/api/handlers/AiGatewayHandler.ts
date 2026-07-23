@@ -144,13 +144,13 @@ export class AiGatewayHandler {
     response.setHeader('Connection', 'keep-alive');
     const serializer = frontend.createEventSerializer();
     try {
-      await writeWithBackpressure(response, `data: ${JSON.stringify(serializer.serializeEvent(first.value))}\n\n`);
+      await writeSerializedEvents(response, serializer.serializeEvent(first.value));
       for (;;) {
         const next = await iterator.next();
         if (next.done) {
           break;
         }
-        await writeWithBackpressure(response, `data: ${JSON.stringify(serializer.serializeEvent(next.value))}\n\n`);
+        await writeSerializedEvents(response, serializer.serializeEvent(next.value));
       }
       await writeWithBackpressure(response, 'data: [DONE]\n\n');
     } catch (error) {
@@ -185,6 +185,15 @@ export class AiGatewayHandler {
         ...(payload.error.details ? { details: payload.error.details } : {}),
       },
     });
+  }
+}
+
+async function writeSerializedEvents(
+  response: ServerResponse,
+  serialized: Record<string, unknown> | Record<string, unknown>[],
+): Promise<void> {
+  for (const event of Array.isArray(serialized) ? serialized : [serialized]) {
+    await writeWithBackpressure(response, `data: ${JSON.stringify(event)}\n\n`);
   }
 }
 

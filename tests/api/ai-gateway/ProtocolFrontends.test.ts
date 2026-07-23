@@ -202,14 +202,57 @@ describe('AI Gateway protocol frontends', () => {
     const messagesStream = messages.createEventSerializer();
     const chatStream = chat.createEventSerializer();
 
-    expect(events.map((event) => responsesStream.serializeEvent(event))).toEqual([
+    expect(events.flatMap((event) => responsesStream.serializeEvent(event))).toEqual([
       { type: 'response.created', response: { id: 'resp_1' } },
-      { type: 'response.output_text.delta', delta: '{"not buffered text"' },
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { id: 'msg_0', type: 'message', role: 'assistant', content: [] },
+      },
+      {
+        type: 'response.content_part.added',
+        item_id: 'msg_0',
+        output_index: 0,
+        content_index: 0,
+        part: { type: 'output_text', text: '' },
+      },
+      {
+        type: 'response.output_text.delta',
+        item_id: 'msg_0',
+        output_index: 0,
+        content_index: 0,
+        delta: '{"not buffered text"',
+      },
       { type: 'response.reasoning_summary_text.delta', delta: 'reasoning chunk' },
-      { type: 'response.output_item.added', item: { type: 'function_call', call_id: 'call_1', name: 'lookup' } },
-      { type: 'response.function_call_arguments.delta', call_id: 'call_1', delta: '{"q":' },
-      { type: 'response.function_call_arguments.delta', call_id: 'call_1', delta: '"xpod"}' },
-      { type: 'response.output_item.done', call_id: 'call_1' },
+      {
+        type: 'response.output_item.added',
+        output_index: 1,
+        item: { id: 'fc_call_1', type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '' },
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        item_id: 'fc_call_1',
+        output_index: 1,
+        delta: '{"q":',
+      },
+      {
+        type: 'response.function_call_arguments.delta',
+        item_id: 'fc_call_1',
+        output_index: 1,
+        delta: '"xpod"}',
+      },
+      {
+        type: 'response.function_call_arguments.done',
+        item_id: 'fc_call_1',
+        output_index: 1,
+        name: 'lookup',
+        arguments: '{"q":"xpod"}',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 1,
+        item: { id: 'fc_call_1', type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"q":"xpod"}' },
+      },
       {
         type: 'response.usage',
         usage: {
@@ -219,7 +262,24 @@ describe('AI Gateway protocol frontends', () => {
           input_tokens_details: { cached_tokens: 3 },
         },
       },
-      { type: 'response.completed', response: { status: 'completed', finish_reason: 'stop' } },
+      {
+        type: 'response.content_part.done',
+        item_id: 'msg_0',
+        output_index: 0,
+        content_index: 0,
+        part: { type: 'output_text', text: '{"not buffered text"' },
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          id: 'msg_0',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: '{"not buffered text"' }],
+        },
+      },
+      { type: 'response.completed', response: { id: 'resp_1', status: 'completed', finish_reason: 'stop' } },
     ]);
 
     expect(events.map((event) => messagesStream.serializeEvent(event))).toContainEqual({
@@ -279,7 +339,26 @@ describe('AI Gateway protocol frontends', () => {
     secondStream.serializeEvent({ type: 'tool.started', callId: 'call_repeat', name: 'lookup' });
     secondStream.serializeEvent({ type: 'tool.arguments.delta', callId: 'call_repeat', delta: '{"q":"two"}' });
     expect(secondStream.serializeEvent({ type: 'tool.completed', callId: 'call_repeat' }))
-      .toEqual({ type: 'response.output_item.done', call_id: 'call_repeat' });
+      .toEqual([
+        {
+          type: 'response.function_call_arguments.done',
+          item_id: 'fc_call_repeat',
+          output_index: 0,
+          name: 'lookup',
+          arguments: '{"q":"two"}',
+        },
+        {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            id: 'fc_call_repeat',
+            type: 'function_call',
+            call_id: 'call_repeat',
+            name: 'lookup',
+            arguments: '{"q":"two"}',
+          },
+        },
+      ]);
   });
 
   it('serializes Chat Completions usage with native prompt and completion token keys', () => {

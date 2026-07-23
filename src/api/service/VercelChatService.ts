@@ -231,7 +231,10 @@ function gatewayExecutionToTextStreamResponse(
           break;
         }
         const event = result.value;
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(serializer.serializeEvent(event))}\n\n`));
+        const serialized = serializer.serializeEvent(event);
+        for (const item of Array.isArray(serialized) ? serialized : [serialized]) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(item)}\n\n`));
+        }
       }
       if (cancelRequested) {
         return;

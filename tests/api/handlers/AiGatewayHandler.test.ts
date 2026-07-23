@@ -334,7 +334,8 @@ describe('AiGatewayHandler', () => {
     }));
 
     expect(responses.headers['content-type']).toContain('text/event-stream');
-    expect(responses.body).toContain('data: {"type":"response.output_text.delta","delta":"hel"}');
+    expect(responses.body).toContain('data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_0","type":"message","role":"assistant","content":[]}}');
+    expect(responses.body).toContain('data: {"type":"response.output_text.delta","item_id":"msg_0","output_index":0,"content_index":0,"delta":"hel"}');
     expect(responses.body.trim().endsWith('data: [DONE]')).toBe(true);
     expect(messages.body).toContain('"type":"message_start"');
     expect(messages.body.trim().endsWith('data: [DONE]')).toBe(true);

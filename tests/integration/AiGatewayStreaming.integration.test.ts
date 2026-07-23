@@ -204,16 +204,30 @@ describe('AI Connection streaming integration', () => {
       'response.created',
       'response.reasoning_summary_text.delta',
       'response.reasoning_signature.delta',
+      'response.output_item.added',
+      'response.content_part.added',
       'response.output_text.delta',
       'response.output_item.added',
       'response.function_call_arguments.delta',
+      'response.function_call_arguments.done',
       'response.output_item.done',
       'response.usage',
+      'response.content_part.done',
+      'response.output_item.done',
       'response.completed',
       '[DONE]',
     ]);
-    expect(events[5]).toMatchObject({ call_id: 'call_1', delta: '{"q":"xpod"}' });
-    expect(events[7]).toMatchObject({ usage: { input_tokens: 3, output_tokens: 5, total_tokens: 8 } });
+    expect(events[7]).toMatchObject({
+      item_id: 'fc_call_1',
+      output_index: 1,
+      delta: '{"q":"xpod"}',
+    });
+    expect(events[8]).toMatchObject({
+      item_id: 'fc_call_1',
+      output_index: 1,
+      arguments: '{"q":"xpod"}',
+    });
+    expect(events[10]).toMatchObject({ usage: { input_tokens: 3, output_tokens: 5, total_tokens: 8 } });
   });
 
   it('streams converted Messages and Chat Completions protocol shapes without reordering tool events', async() => {

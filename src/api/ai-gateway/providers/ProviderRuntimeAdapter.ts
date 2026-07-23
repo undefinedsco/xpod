@@ -285,6 +285,7 @@ export function toChatCompletionsBody(
 
 export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSseEvent>, secret?: string): AsyncIterable<GatewayEvent> {
   const toolArguments = new ToolArgumentTracker();
+  const itemCallIds = new Map<string, string>();
   for await (const event of events) {
     const payload = parseJsonSseData(event.data);
     if (!payload) {
@@ -296,6 +297,7 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
       const id = stringField(response, 'id');
       if (id) {
         toolArguments.reset();
+        itemCallIds.clear();
         yield { type: 'response.started', id };
       }
     } else if (type === 'response.output_text.delta') {
@@ -312,14 +314,19 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
       const item = objectField(payload, 'item');
       if (stringField(item, 'type') === 'function_call') {
         const callId = stringField(item, 'call_id') ?? stringField(item, 'id');
+        const itemId = stringField(item, 'id');
         const name = stringField(item, 'name');
         if (callId && name) {
           toolArguments.start(callId);
+          if (itemId) {
+            itemCallIds.set(itemId, callId);
+          }
           yield { type: 'tool.started', callId, name };
         }
       }
     } else if (type === 'response.function_call_arguments.delta') {
-      const callId = stringField(payload, 'call_id') ?? stringField(payload, 'item_id');
+      const itemId = stringField(payload, 'item_id');
+      const callId = stringField(payload, 'call_id') ?? (itemId ? itemCallIds.get(itemId) : undefined);
       const delta = stringField(payload, 'delta');
       if (callId && delta !== undefined) {
         toolArguments.append(callId, delta);
@@ -327,8 +334,21 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
       }
     } else if (type === 'response.output_item.done') {
       const item = objectField(payload, 'item');
-      const callId = stringField(payload, 'call_id') ?? stringField(item, 'call_id') ?? stringField(item, 'id');
-      if (callId) {
+      if (stringField(item, 'type') === 'function_call') {
+        const callId = stringField(payload, 'call_id') ?? stringField(item, 'call_id') ?? stringField(item, 'id');
+        if (callId) {
+          toolArguments.complete(callId);
+          const itemId = stringField(item, 'id');
+          if (itemId) {
+            itemCallIds.delete(itemId);
+          }
+          yield { type: 'tool.completed', callId };
+        }
+      } else {
+        const callId = stringField(payload, 'call_id');
+        if (!callId) {
+          continue;
+        }
         toolArguments.complete(callId);
         yield { type: 'tool.completed', callId };
       }

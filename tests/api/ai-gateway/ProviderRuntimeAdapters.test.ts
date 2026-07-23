@@ -124,14 +124,26 @@ describe('Provider runtime adapters', () => {
     const fixture = fetchFixture(new Response(jsonSse([
       { type: 'response.created', response: { id: 'resp_openai' } },
       { type: 'response.output_text.delta', delta: 'hel' },
+      { type: 'response.output_item.done', item: { id: 'msg_1', type: 'message' } },
       { type: 'response.reasoning_summary_text.delta', delta: 'thinking' },
       {
         type: 'response.output_item.added',
-        item: { type: 'function_call', call_id: 'call_1', name: 'lookup' },
+        output_index: 1,
+        item: { id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'lookup' },
       },
-      { type: 'response.function_call_arguments.delta', call_id: 'call_1', delta: '{"q":' },
-      { type: 'response.function_call_arguments.delta', call_id: 'call_1', delta: '"xpod"}' },
-      { type: 'response.output_item.done', item: { type: 'function_call', call_id: 'call_1' } },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_1', output_index: 1, delta: '{"q":' },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc_1', output_index: 1, delta: '"xpod"}' },
+      {
+        type: 'response.function_call_arguments.done',
+        item_id: 'fc_1',
+        output_index: 1,
+        arguments: '{"q":"xpod"}',
+      },
+      {
+        type: 'response.output_item.done',
+        output_index: 1,
+        item: { id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"q":"xpod"}' },
+      },
       {
         type: 'response.completed',
         response: {
