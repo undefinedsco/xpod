@@ -122,6 +122,24 @@ describe('VercelChatService AI Connection gateway adapter', () => {
     return { service, store, gateway, usageRepo, quotaService };
   }
 
+  async function waitUntil(assertion: () => void): Promise<void> {
+    const deadline = Date.now() + 1_000;
+    let lastError: unknown;
+    while (Date.now() < deadline) {
+      try {
+        assertion();
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error(String(lastError));
+  }
+
   it('routes chat completions through AiGatewayService and records returned usage', async () => {
     process.env.DEFAULT_API_BASE = 'https://legacy-env-provider.example/v1';
     process.env.DEFAULT_API_KEY = 'legacy-env-key';
@@ -146,7 +164,7 @@ describe('VercelChatService AI Connection gateway adapter', () => {
       },
     }));
     expect(quotaService.getAccountQuota).toHaveBeenCalledWith('account-1');
-    await vi.waitFor(() => {
+    await waitUntil(() => {
       expect(usageRepo.incrementTokenUsage).toHaveBeenCalledWith(
         'account-1',
         'http://localhost:3310/test/profile/card#me',
@@ -211,6 +229,47 @@ describe('VercelChatService AI Connection gateway adapter', () => {
         stream: true,
       },
     }));
+  });
+
+  it('defers stream execution until response start and aborts gateway iteration on cancel', async () => {
+    const { service, gateway } = createService();
+    let observedSignal: AbortSignal | undefined;
+    const iteratorReturn = vi.fn(async() => ({ done: true, value: undefined }));
+    const iterator = {
+      next: vi.fn(async() => new Promise<IteratorResult<GatewayEvent>>(() => undefined)),
+      return: iteratorReturn,
+    };
+    gateway.execute.mockImplementationOnce(async(input: GatewayExecutionInput) => {
+      observedSignal = input.signal;
+      return {
+        protocol: input.protocol,
+        frontend: new FakeFrontend(),
+        request: { model: 'linx' } as any,
+        route: {} as any,
+        events: {
+          [Symbol.asyncIterator]: () => iterator,
+        },
+      };
+    });
+
+    const result = await service.stream({
+      model: 'linx',
+      messages: [{ role: 'user', content: 'ping' }],
+      stream: true,
+    }, solidAuth as any);
+
+    expect(gateway.execute).not.toHaveBeenCalled();
+
+    const response = result.toTextStreamResponse();
+    expect(response.body).not.toBeNull();
+    await waitUntil(() => expect(gateway.execute).toHaveBeenCalledWith(expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    })));
+
+    await response.body!.cancel();
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(iteratorReturn).toHaveBeenCalled();
   });
 
   it('lists only AiGatewayService models', async () => {

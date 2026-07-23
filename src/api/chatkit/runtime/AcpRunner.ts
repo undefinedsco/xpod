@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as readline from 'node:readline';
 import { getLoggerFor } from 'global-logger-factory';
+import { sanitizeRuntimeEnv } from '../../../runtime/safe-env';
 
 type JsonRpcId = number;
 
@@ -60,7 +61,7 @@ export class AcpRunner extends EventEmitter {
     this.proc = spawn(options.command, options.args, {
       cwd: options.cwd,
       env: {
-        ...process.env,
+        ...sanitizeRuntimeEnv(process.env),
         ...(options.env ?? {}),
         FORCE_COLOR: process.env.FORCE_COLOR ?? '0',
       } as NodeJS.ProcessEnv,

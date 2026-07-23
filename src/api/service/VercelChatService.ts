@@ -3,7 +3,7 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from '../handlers/
 import type { PodChatKitStore } from '../chatkit/pod-store';
 import { type AuthContext, getAccountId, getWebId } from '../auth/AuthContext';
 import type { AiGatewayService } from '../ai-gateway/AiGatewayService';
-import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend } from '../ai-gateway/types';
+import type { GatewayEvent, GatewayProtocol } from '../ai-gateway/types';
 import type { UsageRepository } from '../../storage/quota/UsageRepository';
 import type { QuotaService } from '../../quota/QuotaService';
 
@@ -55,13 +55,12 @@ export class VercelChatService {
     toTextStreamResponse: () => Response;
   }> {
     const gateway = this.requireAiGatewayService();
-    const execution = await gateway.execute({
-      auth,
-      protocol: 'chatCompletions',
-      body: request,
-    });
     return {
-      toTextStreamResponse: () => gatewayEventsToTextStreamResponse(execution.frontend, execution.events),
+      toTextStreamResponse: () => gatewayExecutionToTextStreamResponse(gateway, {
+        auth,
+        protocol: 'chatCompletions',
+        body: request,
+      }),
     };
   }
 
@@ -183,23 +182,63 @@ export class VercelChatService {
   }
 }
 
-function gatewayEventsToTextStreamResponse(
-  frontend: GatewayProtocolFrontend,
-  events: AsyncIterable<GatewayEvent>,
+function gatewayExecutionToTextStreamResponse(
+  gateway: Pick<AiGatewayService, 'execute'>,
+  input: {
+    auth: AuthContext;
+    protocol: GatewayProtocol;
+    body: unknown;
+  },
 ): Response {
   const encoder = new TextEncoder();
-  const serializer = frontend.createEventSerializer();
+  const abortController = new AbortController();
+  let iterator: AsyncIterator<GatewayEvent> | undefined;
+  let returned = false;
+
+  const returnIterator = async (): Promise<void> => {
+    if (returned) {
+      return;
+    }
+    returned = true;
+    await iterator?.return?.();
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        for await (const event of events) {
+        const execution = await gateway.execute({
+          ...input,
+          signal: abortController.signal,
+        });
+        const serializer = execution.frontend.createEventSerializer();
+        iterator = execution.events[Symbol.asyncIterator]();
+        while (true) {
+          const result = await iterator.next();
+          if (result.done) {
+            break;
+          }
+          const event = result.value;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(serializer.serializeEvent(event))}\n\n`));
         }
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
       } catch (error) {
-        controller.error(error);
+        if (abortController.signal.aborted) {
+          try {
+            controller.close();
+          } catch {
+            // Stream may already be closed by cancel().
+          }
+        } else {
+          controller.error(error);
+        }
+      } finally {
+        await returnIterator();
       }
+    },
+    async cancel() {
+      abortController.abort();
+      await returnIterator();
     },
   });
   return new Response(stream, {

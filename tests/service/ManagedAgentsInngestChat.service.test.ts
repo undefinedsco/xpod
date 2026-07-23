@@ -23,6 +23,22 @@ import { LocalSolidFS, type MaterializedWorkspace, type SolidFS, type SolidFsPre
 
 const workspaceRef = `file://localhost${process.cwd()}`;
 
+function piAiConnectionAgentConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'agent-pi-ai-connection',
+    displayName: 'Pi AI Connection Agent',
+    systemPrompt: '',
+    executorType: 'codex' as const,
+    apiKey: 'gateway-key',
+    baseUrl: 'http://127.0.0.1:3000/v1',
+    model: 'linx',
+    mcpServers: {},
+    skills: [],
+    enabled: true,
+    ...overrides,
+  };
+}
+
 const {
   piSdkMock,
   createAgentSessionMock,
@@ -35,6 +51,8 @@ const {
   disposeMock,
   sessionManagerInMemoryMock,
   sessionManagerCreateMock,
+  setRuntimeApiKeyMock,
+  registerProviderMock,
 } = (() => {
   const replaceMessagesMock = vi.fn();
   const promptMock = vi.fn(async () => undefined);
@@ -54,19 +72,21 @@ const {
   const reloadMock = vi.fn(async () => undefined);
   const sessionManagerInMemoryMock = vi.fn(() => ({ kind: 'memory-session' }));
   const sessionManagerCreateMock = vi.fn(() => ({ kind: 'file-session' }));
+  const setRuntimeApiKeyMock = vi.fn();
+  const registerProviderMock = vi.fn();
 
   class AuthStorageMock {
     static inMemory() {
       return new AuthStorageMock();
     }
 
-    setRuntimeApiKey() {}
+    setRuntimeApiKey = setRuntimeApiKeyMock;
   }
 
   class ModelRegistryMock {
     constructor() {}
 
-    registerProvider() {}
+    registerProvider = registerProviderMock;
   }
 
   class SettingsManagerMock {
@@ -141,6 +161,8 @@ const {
     disposeMock,
     sessionManagerInMemoryMock,
     sessionManagerCreateMock,
+    setRuntimeApiKeyMock,
+    registerProviderMock,
   };
 })();
 
@@ -287,6 +309,8 @@ describe('Managed Agents Inngest Chat backend', () => {
     disposeMock.mockClear();
     sessionManagerInMemoryMock.mockClear();
     sessionManagerCreateMock.mockClear();
+    setRuntimeApiKeyMock.mockClear();
+    registerProviderMock.mockClear();
   });
 
   it('routes a workspace agent chat through Inngest before executing the runtime driver', async () => {
@@ -1681,7 +1705,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       expect(events).toEqual([
         {
           type: 'error',
-          message: expect.stringContaining('No API key configured for pi Agent Runtime'),
+          message: expect.stringContaining('AI Connection'),
         },
       ]);
     } finally {
@@ -1692,6 +1716,89 @@ describe('Managed Agents Inngest Chat backend', () => {
       if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
       else process.env.DEFAULT_API_BASE = originalBase;
     }
+  });
+
+  it('ignores ambient provider credentials and requires invocation-scoped AI Connection for pi', async () => {
+    const originalKey = process.env.DEFAULT_API_KEY;
+    const originalBase = process.env.DEFAULT_API_BASE;
+    const originalOpenAiKey = process.env.OPENAI_API_KEY;
+    try {
+      process.env.DEFAULT_API_KEY = 'ambient-default-key';
+      process.env.DEFAULT_API_BASE = 'https://ambient-default.example/v1';
+      process.env.OPENAI_API_KEY = 'ambient-openai-key';
+
+      const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+      const events: AgentRuntimeEvent[] = [];
+      for await (
+        const event of driver.start({
+          runId: 'run_pi_ambient_ignored',
+          threadId: 'thread_pi_ambient_ignored',
+          prompt: 'hello',
+          conversation: [],
+          config: {
+            workspace: workspaceRef,
+            runner: { type: 'pi', protocol: 'pi' },
+          },
+        })
+      ) {
+        events.push(event);
+      }
+
+      expect(events).toEqual([
+        {
+          type: 'error',
+          message: expect.stringContaining('AI Connection'),
+        },
+      ]);
+      expect(setRuntimeApiKeyMock).not.toHaveBeenCalled();
+      expect(registerProviderMock).not.toHaveBeenCalled();
+    } finally {
+      if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
+      else process.env.DEFAULT_API_KEY = originalKey;
+      if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;
+      else process.env.DEFAULT_API_BASE = originalBase;
+      if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAiKey;
+    }
+  });
+
+  it('registers only the xpod AI Connection provider for pi runtime', async () => {
+    const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+    const events: AgentRuntimeEvent[] = [];
+    for await (
+      const event of driver.start({
+        runId: 'run_pi_ai_connection',
+        threadId: 'thread_pi_ai_connection',
+        prompt: 'current prompt',
+        conversation: [],
+        config: {
+          workspace: workspaceRef,
+          runner: { type: 'pi', protocol: 'pi' },
+          agentConfig: {
+            id: 'agent-ai-connection',
+            displayName: 'Agent AI Connection',
+            systemPrompt: '',
+            executorType: 'codex',
+            apiKey: 'gateway-key',
+            baseUrl: 'http://127.0.0.1:3000/v1',
+            model: 'linx',
+            mcpServers: {},
+            skills: [],
+            enabled: true,
+          },
+        },
+      })
+    ) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([]);
+    expect(setRuntimeApiKeyMock).toHaveBeenCalledWith('xpod', 'gateway-key');
+    expect(registerProviderMock).toHaveBeenCalledWith('xpod', expect.objectContaining({
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      apiKey: 'gateway-key',
+      api: 'openai-completions',
+    }));
   });
 
   it('restores Xpod conversation into a fresh pi session for each run', async () => {
@@ -1719,6 +1826,10 @@ describe('Managed Agents Inngest Chat backend', () => {
           config: {
             workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         })
       ) {
@@ -1739,7 +1850,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           role: 'assistant',
           content: [{ type: 'text', text: 'previous assistant' }],
           api: 'openai-responses',
-          provider: 'openai',
+          provider: 'xpod',
           model: 'gpt-test',
           usage: {
             input: 0,
@@ -1830,6 +1941,10 @@ describe('Managed Agents Inngest Chat backend', () => {
           config: {
             workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         })
       ) {
@@ -1908,6 +2023,10 @@ describe('Managed Agents Inngest Chat backend', () => {
           config: {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         })
       ) {
@@ -2004,6 +2123,10 @@ describe('Managed Agents Inngest Chat backend', () => {
           config: {
             workspace: sourceWorkspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         })
       ) {
@@ -2073,6 +2196,10 @@ describe('Managed Agents Inngest Chat backend', () => {
           config: {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         })
       ) {
@@ -2126,6 +2253,10 @@ describe('Managed Agents Inngest Chat backend', () => {
           config: {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         })
       ) {
@@ -2185,6 +2316,10 @@ describe('Managed Agents Inngest Chat backend', () => {
           config: {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         })
       ) {
@@ -2225,6 +2360,10 @@ describe('Managed Agents Inngest Chat backend', () => {
         config: {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
+          agentConfig: piAiConnectionAgentConfig({
+            baseUrl: 'https://api.openai.com/v1',
+            model: 'gpt-test',
+          }),
         },
       };
 
@@ -2340,6 +2479,10 @@ describe('Managed Agents Inngest Chat backend', () => {
         metadata: {
           runtime: {
             runner: { type: 'codex', protocol: 'pi' },
+            agentConfig: piAiConnectionAgentConfig({
+              baseUrl: 'https://api.openai.com/v1',
+              model: 'gpt-test',
+            }),
           },
         },
       }), { userId: 'u1' });
@@ -2421,6 +2564,10 @@ describe('Managed Agents Inngest Chat backend', () => {
         config: {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
+          agentConfig: piAiConnectionAgentConfig({
+            baseUrl: 'https://api.openai.com/v1',
+            model: 'gpt-test',
+          }),
         },
       };
 
@@ -2509,6 +2656,10 @@ describe('Managed Agents Inngest Chat backend', () => {
         config: {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
+          agentConfig: piAiConnectionAgentConfig({
+            baseUrl: 'https://api.openai.com/v1',
+            model: 'gpt-test',
+          }),
         },
       };
 

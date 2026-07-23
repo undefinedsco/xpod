@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ResolvedAgentConfig } from '../../../agents/config/types';
 import type { McpServerConfig } from '../../../agents/types';
+import { requireAiConnectionRuntimeConfig } from '../../../runtime/safe-env';
 
 export interface CodexRuntimeProjection {
   codexHome: string;
@@ -22,37 +23,26 @@ export class CodexRuntimeProjector {
   private readonly logger = getLoggerFor(this);
 
   public project(options: CodexRuntimeProjection): void {
-    this.ensureDir(options.codexHome);
+    const connection = requireAiConnectionRuntimeConfig(options, 'Codex runtime projection');
+    this.ensureRequiredDir(options.codexHome, 'Codex home');
+    this.writeConfigAndAuth({
+      ...options,
+      ...connection,
+    });
     this.projectSkills(options.codexHome, options.agentConfig);
-    this.writeConfigAndAuth(options);
   }
 
-  private writeConfigAndAuth(options: CodexRuntimeProjection): void {
+  private writeConfigAndAuth(options: CodexRuntimeProjection & { baseUrl: string; apiKey: string }): void {
     const configPath = path.join(options.codexHome, 'config.toml');
     const authPath = path.join(options.codexHome, 'auth.json');
 
-    try {
-      const baseUrl = options.baseUrl?.trim();
-      if (baseUrl) {
-        fs.writeFileSync(configPath, this.renderConfigToml({
-          baseUrl,
-          wireApi: options.wireApi ?? 'responses',
-          model: options.model,
-          mcpServers: options.agentConfig?.mcpServers,
-        }), { encoding: 'utf8' });
-      }
-    } catch (error) {
-      this.logger.debug(`Failed to write Codex config.toml: ${String(error)}`);
-    }
-
-    try {
-      const apiKey = options.apiKey?.trim();
-      if (apiKey) {
-        fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: apiKey }), { encoding: 'utf8' });
-      }
-    } catch (error) {
-      this.logger.debug(`Failed to write Codex auth.json: ${String(error)}`);
-    }
+    this.writeRequiredFile(configPath, this.renderConfigToml({
+      baseUrl: options.baseUrl,
+      wireApi: options.wireApi ?? 'responses',
+      model: options.model,
+      mcpServers: options.agentConfig?.mcpServers,
+    }), 'config.toml');
+    this.writeRequiredFile(authPath, JSON.stringify({ OPENAI_API_KEY: options.apiKey }), 'auth.json');
   }
 
   private renderConfigToml(options: {
@@ -79,12 +69,18 @@ export class CodexRuntimeProjector {
 
   private projectSkills(codexHome: string, agentConfig?: ResolvedAgentConfig): void {
     const skillsRoot = path.join(codexHome, 'skills');
-    this.ensureDir(skillsRoot);
+    if (!this.ensureOptionalDir(skillsRoot)) {
+      return;
+    }
 
     for (const skill of agentConfig?.skills ?? []) {
-      const skillDir = path.join(skillsRoot, this.sanitizeFileSegment(skill.name));
-      this.ensureDir(skillDir);
-      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), skill.content, { encoding: 'utf8' });
+      try {
+        const skillDir = path.join(skillsRoot, this.sanitizeFileSegment(skill.name));
+        fs.mkdirSync(skillDir, { recursive: true });
+        fs.writeFileSync(path.join(skillDir, 'SKILL.md'), skill.content, { encoding: 'utf8' });
+      } catch (error) {
+        this.logger.debug(`Failed to project optional Codex skill '${skill.name}': ${String(error)}`);
+      }
     }
   }
 
@@ -143,11 +139,33 @@ export class CodexRuntimeProjector {
     return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'skill';
   }
 
-  private ensureDir(dir: string): void {
+  private ensureRequiredDir(dir: string, label: string): void {
     try {
       fs.mkdirSync(dir, { recursive: true });
-    } catch {
-      // best-effort: agent binaries may create runtime directories themselves
+    } catch (error) {
+      throw new Error(`Failed to create required ${label} directory at ${dir}: ${this.errorMessage(error)}`);
     }
+  }
+
+  private ensureOptionalDir(dir: string): boolean {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      return true;
+    } catch (error) {
+      this.logger.debug(`Failed to create optional Codex directory at ${dir}: ${String(error)}`);
+      return false;
+    }
+  }
+
+  private writeRequiredFile(filePath: string, content: string, label: string): void {
+    try {
+      fs.writeFileSync(filePath, content, { encoding: 'utf8' });
+    } catch (error) {
+      throw new Error(`Failed to write required Codex ${label} at ${filePath}: ${this.errorMessage(error)}`);
+    }
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

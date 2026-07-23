@@ -10,6 +10,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Sandbox, SandboxConfig, SandboxResult } from './types';
+import { sanitizeRuntimeEnv } from '../../runtime/safe-env';
 
 let sandboxExecAvailable: boolean | undefined;
 
@@ -41,7 +42,7 @@ export class MacOSSandbox implements Sandbox {
     const childProcess = spawn('sandbox-exec', ['-f', profilePath, config.command, ...config.args], {
       cwd: config.workdir,
       env: {
-        ...process.env,
+        ...sanitizeRuntimeEnv(process.env),
         ...config.env,
         TERM: 'xterm-256color',
       },
