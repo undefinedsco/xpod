@@ -42,6 +42,12 @@ async function runSmoke(runner: RunnerType): Promise<{
   runtimeError?: string;
 }> {
   const store = new InMemoryStore();
+  const persistedRunJson: string[] = [];
+  const saveRun = store.saveRun.bind(store);
+  store.saveRun = async (run, context) => {
+    persistedRunJson.push(JSON.stringify(run));
+    await saveRun(run, context);
+  };
   const aiProvider: AiProvider = {
     async *streamResponse() {
       throw new Error('aiProvider should not be used when PTY runtime is enabled');
@@ -73,19 +79,30 @@ async function runSmoke(runner: RunnerType): Promise<{
             displayName: `Smoke ${runner}`,
             systemPrompt: '',
             executorType: runner,
-            apiKey: process.env.AI_CONNECTION_API_KEY,
-            baseUrl: process.env.AI_CONNECTION_BASE_URL,
             model: process.env.DEFAULT_MODEL ?? 'linx',
             mcpServers: {},
             skills: [],
             enabled: true,
+          },
+          aiConnection: {
+            baseUrl: process.env.AI_CONNECTION_BASE_URL,
+            model: process.env.DEFAULT_MODEL ?? 'linx',
           },
         }),
       },
     },
   };
 
-  const result = await svc.process(JSON.stringify(req), { userId: 'u1' });
+  const result = await svc.process(JSON.stringify(req), {
+    userId: 'u1',
+    ...(runner === 'codebuddy' ? {} : {
+      aiConnection: {
+        baseUrl: process.env.AI_CONNECTION_BASE_URL,
+        gatewayKey: process.env.AI_CONNECTION_API_KEY,
+        model: process.env.DEFAULT_MODEL ?? 'linx',
+      },
+    }),
+  });
   expect(result.type).toBe('streaming');
   if (result.type !== 'streaming') {
     return {
@@ -130,6 +147,8 @@ async function runSmoke(runner: RunnerType): Promise<{
       }
     }
   }
+  expect(persistedRunJson.join('\n')).not.toContain('gatewayKey');
+  expect(persistedRunJson.join('\n')).not.toContain(process.env.AI_CONNECTION_API_KEY ?? '__missing__');
 
   return { sawAnyEvent, sawAssistantDone, assistantText, sawAuthRequired, runtimeError };
 }

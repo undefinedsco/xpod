@@ -29,12 +29,19 @@ function piAiConnectionAgentConfig(overrides: Record<string, unknown> = {}) {
     displayName: 'Pi AI Connection Agent',
     systemPrompt: '',
     executorType: 'codex' as const,
-    apiKey: 'gateway-key',
-    baseUrl: 'http://127.0.0.1:3000/v1',
     model: 'linx',
     mcpServers: {},
     skills: [],
     enabled: true,
+    ...overrides,
+  };
+}
+
+function piAiConnection(overrides: Record<string, unknown> = {}) {
+  return {
+    baseUrl: 'http://127.0.0.1:3000/v1',
+    gatewayKey: 'gateway-key',
+    model: 'linx',
     ...overrides,
   };
 }
@@ -499,6 +506,11 @@ describe('Managed Agents Inngest Chat backend', () => {
     });
     const context = {
       userId: 'u1',
+      aiConnection: {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'invocation-fixture-secret',
+        model: 'linx',
+      },
       auth: {
         type: 'solid',
         webId: 'http://localhost/alice/profile/card#me',
@@ -516,6 +528,16 @@ describe('Managed Agents Inngest Chat backend', () => {
       metadata: {
         runtime: {
           runner: { type: 'codex', protocol: 'pi' },
+          aiConnection: {
+            baseUrl: 'http://127.0.0.1:3000/v1',
+            gatewayKey: 'metadata-fixture-secret',
+            model: 'linx',
+          },
+          diagnostics: {
+            nested: {
+              gatewayKey: 'nested-fixture-secret',
+            },
+          },
         },
       },
     }), context);
@@ -537,6 +559,11 @@ describe('Managed Agents Inngest Chat backend', () => {
       thread: 'http://localhost/alice/.data/' + (run.metadata?.threadId as string),
     });
     expect(extractResourceLocalId(run.id)).toMatch(/^run_/);
+    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('invocation-fixture-secret');
+    expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
+    expect(JSON.stringify(run.metadata)).not.toContain('metadata-fixture-secret');
+    expect(JSON.stringify(run.metadata)).not.toContain('invocation-fixture-secret');
+    expect(JSON.stringify(run.metadata)).not.toContain('nested-fixture-secret');
     expect(events.map((event) => event.type)).toEqual([
       RunStepType.CREATED,
       RunStepType.STARTED,
@@ -956,7 +983,14 @@ describe('Managed Agents Inngest Chat backend', () => {
   it('restores and executes an Inngest run from store without a pending stream', async () => {
     const store = new InMemoryStore<StoreContext>();
     const driver = new WorkspaceAgentDriver();
-    const context = { userId: 'u1' };
+    const context = {
+      userId: 'u1',
+      aiConnection: {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'durable-fixture-secret',
+        model: 'linx',
+      },
+    };
     const backend = new InngestRunExecutionBackend({
       client: new RecordingInngestClient() as any,
       runtimeDriver: driver,
@@ -1009,6 +1043,10 @@ describe('Managed Agents Inngest Chat backend', () => {
         runtimeConfig: {
           workspace: workspaceRef,
           runner: { type: 'codex', protocol: 'acp' },
+          aiConnection: {
+            baseUrl: 'http://127.0.0.1:3000/v1',
+            model: 'linx',
+          },
         },
       },
       createdAt: now,
@@ -1060,6 +1098,8 @@ describe('Managed Agents Inngest Chat backend', () => {
       },
       conversation: [],
     });
+    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('durable-fixture-secret');
+    expect(JSON.stringify((await store.loadRun(run.id, context)).metadata)).not.toContain('durable-fixture-secret');
 
     const completedRun = await store.loadRun(run.id, context);
     expect(completedRun.status).toBe(RunStatus.COMPLETED);
@@ -1536,7 +1576,14 @@ describe('Managed Agents Inngest Chat backend', () => {
       runExecutionBackend: backend,
       contextRetriever,
     });
-    const context = { userId: 'u1' };
+    const context = {
+      userId: 'u1',
+      aiConnection: {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'continuation-fixture-secret',
+        model: 'linx',
+      },
+    };
 
     const first = await service.process(JSON.stringify({
       type: 'threads.create',
@@ -1549,6 +1596,10 @@ describe('Managed Agents Inngest Chat backend', () => {
       metadata: {
         runtime: {
           runner: { type: 'codex', protocol: 'acp' },
+          aiConnection: {
+            baseUrl: 'http://127.0.0.1:3000/v1',
+            model: 'linx',
+          },
         },
       },
     }), context);
@@ -1579,6 +1630,9 @@ describe('Managed Agents Inngest Chat backend', () => {
     const continuedEvents = parseSseDataLines(continuedChunks);
 
     expect(driver.inputs).toHaveLength(2);
+    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret');
+    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret');
+    expect(JSON.stringify((await store.loadRun(runId, context)).metadata)).not.toContain('continuation-fixture-secret');
     expect(driver.inputs[1].runId).toBe(runId);
     expect(driver.inputs[1].continuation).toEqual({
       kind: 'client_tool_output',
@@ -1779,13 +1833,12 @@ describe('Managed Agents Inngest Chat backend', () => {
             displayName: 'Agent AI Connection',
             systemPrompt: '',
             executorType: 'codex',
-            apiKey: 'gateway-key',
-            baseUrl: 'http://127.0.0.1:3000/v1',
             model: 'linx',
             mcpServers: {},
             skills: [],
             enabled: true,
           },
+          aiConnection: piAiConnection(),
         },
       })
     ) {
@@ -1827,6 +1880,9 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
@@ -1942,6 +1998,9 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'codex', protocol: 'acp' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
@@ -2024,6 +2083,9 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
@@ -2124,6 +2186,9 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: sourceWorkspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
@@ -2197,6 +2262,9 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
@@ -2254,6 +2322,9 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
@@ -2317,6 +2388,9 @@ describe('Managed Agents Inngest Chat backend', () => {
             workspace: workspaceRef,
             runner: { type: 'pi', protocol: 'pi' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
@@ -2361,6 +2435,9 @@ describe('Managed Agents Inngest Chat backend', () => {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
           agentConfig: piAiConnectionAgentConfig({
+            model: 'gpt-test',
+          }),
+          aiConnection: piAiConnection({
             baseUrl: 'https://api.openai.com/v1',
             model: 'gpt-test',
           }),
@@ -2480,12 +2557,21 @@ describe('Managed Agents Inngest Chat backend', () => {
           runtime: {
             runner: { type: 'codex', protocol: 'pi' },
             agentConfig: piAiConnectionAgentConfig({
+              model: 'gpt-test',
+            }),
+            aiConnection: piAiConnection({
               baseUrl: 'https://api.openai.com/v1',
               model: 'gpt-test',
             }),
           },
         },
-      }), { userId: 'u1' });
+      }), {
+        userId: 'u1',
+        aiConnection: piAiConnection({
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-test',
+        }),
+      });
 
       const chunks: Uint8Array[] = [];
       for await (const chunk of result.type === 'streaming' ? result.stream() : []) {
@@ -2565,6 +2651,9 @@ describe('Managed Agents Inngest Chat backend', () => {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
           agentConfig: piAiConnectionAgentConfig({
+            model: 'gpt-test',
+          }),
+          aiConnection: piAiConnection({
             baseUrl: 'https://api.openai.com/v1',
             model: 'gpt-test',
           }),
@@ -2657,6 +2746,9 @@ describe('Managed Agents Inngest Chat backend', () => {
           workspace: workspaceRef,
           runner: { type: 'pi', protocol: 'pi' },
           agentConfig: piAiConnectionAgentConfig({
+            model: 'gpt-test',
+          }),
+          aiConnection: piAiConnection({
             baseUrl: 'https://api.openai.com/v1',
             model: 'gpt-test',
           }),

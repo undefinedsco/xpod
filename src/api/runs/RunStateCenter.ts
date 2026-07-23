@@ -16,7 +16,14 @@ import {
   toThreadRef,
   nowTimestamp,
 } from '../chatkit/types';
-import type { AgentRuntimeConfig, RunnerProtocol, RunnerType } from './AgentRuntimeTypes';
+import {
+  deepScrubGatewayKey,
+  toPersistedAgentRuntimeConfig,
+  withInvocationAiConnection,
+  type AgentRuntimeConfig,
+  type RunnerProtocol,
+  type RunnerType,
+} from './AgentRuntimeTypes';
 import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import { InngestRunExecutionBackend } from './InngestRunExecutionBackend';
 import type {
@@ -112,7 +119,7 @@ export class RunStateCenter<TContext = StoreContext> {
       throw new Error('Invalid thread runtime: workspace reference is required');
     }
 
-    return {
+    return withInvocationAiConnection({
       ...runtime,
       workspace,
       runner: {
@@ -121,7 +128,7 @@ export class RunStateCenter<TContext = StoreContext> {
         protocol,
       },
       agentConfig: runtime.agentConfig,
-    } as AgentRuntimeConfig;
+    } as AgentRuntimeConfig, context);
   }
 
   public getDefaultAgentRuntimeConfig(context: TContext): AgentRuntimeConfig | null {
@@ -318,7 +325,7 @@ export class RunStateCenter<TContext = StoreContext> {
     await this.markRunStarted(run, context);
     const continuationPrompt = this.buildContinuationPrompt(updatedItem);
     const conversation = await this.loadConversation(threadRef, String(run.metadata?.userMessageId ?? updatedItem.id), context);
-    const runtimeConfig = this.resolveRuntimeConfigForContinuation(run);
+    const runtimeConfig = this.resolveRuntimeConfigForContinuation(run, context);
     const retrievedContext = await this.retrieveRunContext({
       runId: run.id,
       threadId: this.extractThreadIdFromRef(threadRef),
@@ -414,7 +421,7 @@ export class RunStateCenter<TContext = StoreContext> {
       metadata: {
         threadId: thread.id,
         userMessageId: userMessage.id,
-        runtimeConfig,
+        runtimeConfig: toPersistedAgentRuntimeConfig(runtimeConfig),
       },
       createdAt: now,
       updatedAt: now,
@@ -630,7 +637,7 @@ export class RunStateCenter<TContext = StoreContext> {
   }
 
   private async saveRun(run: RunRecordData, context: TContext): Promise<void> {
-    await this.runStore?.saveRun(run, context);
+    await this.runStore?.saveRun(deepScrubGatewayKey(run), context);
   }
 
   private async appendRunStep(
@@ -765,10 +772,10 @@ export class RunStateCenter<TContext = StoreContext> {
     return `Continue the previous run after client tool output.\n\nTool: ${item.name}\nOutput:\n${item.output ?? ''}`;
   }
 
-  private resolveRuntimeConfigForContinuation(run: RunRecordData): AgentRuntimeConfig {
+  private resolveRuntimeConfigForContinuation(run: RunRecordData, context: TContext): AgentRuntimeConfig {
     const runtimeConfig = run.metadata?.runtimeConfig;
     if (runtimeConfig && typeof runtimeConfig === 'object') {
-      return runtimeConfig as AgentRuntimeConfig;
+      return withInvocationAiConnection(runtimeConfig as AgentRuntimeConfig, context);
     }
     if (!isWorkspaceRef(run.workspace)) {
       throw new Error('Run workspace reference is required');

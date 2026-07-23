@@ -13,7 +13,13 @@ import {
   nowTimestamp,
   toThreadRef,
 } from '../chatkit/types';
-import type { AgentRuntimeConfig, AgentRuntimeEvent, RunnerProtocol, RunnerType } from './AgentRuntimeTypes';
+import {
+  withInvocationAiConnection,
+  type AgentRuntimeConfig,
+  type AgentRuntimeEvent,
+  type RunnerProtocol,
+  type RunnerType,
+} from './AgentRuntimeTypes';
 import type {
   RunContextRetriever,
   RunExecutionBackend,
@@ -280,7 +286,7 @@ export class ManagedRunWorker<TContext = StoreContext> {
       thread,
       threadRef,
       userMessage,
-      runtimeConfig: this.resolveRuntimeConfig(run, thread),
+      runtimeConfig: this.resolveRuntimeConfig(run, thread, context),
       context,
     };
   }
@@ -312,16 +318,16 @@ export class ManagedRunWorker<TContext = StoreContext> {
     return fallback;
   }
 
-  private resolveRuntimeConfig(run: RunRecordData, thread: ThreadMetadata): AgentRuntimeConfig {
+  private resolveRuntimeConfig(run: RunRecordData, thread: ThreadMetadata, context: TContext): AgentRuntimeConfig {
     const fromRun = this.asRuntimeConfig(run.metadata?.runtimeConfig);
     if (fromRun) {
-      return fromRun;
+      return withInvocationAiConnection(fromRun, context);
     }
 
     const runtime = (thread.metadata as Record<string, unknown> | undefined)?.runtime;
     const fromThread = this.asRuntimeConfig(runtime);
     if (fromThread) {
-      return fromThread;
+      return withInvocationAiConnection(fromThread, context);
     }
 
     if (!isWorkspaceRef(run.workspace)) {
