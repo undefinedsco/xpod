@@ -755,6 +755,7 @@ describe('ProviderConnectService', () => {
 
   it('uses the production Pod credential repository adapter against models credentialResource fields', async () => {
     const rows = new Map<string, Record<string, unknown>>();
+    let simulateConcurrentRefreshBeforeRewrap = false;
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: { getTrustedFetch: async () => fetch },
       dbFactory: async () => ({
@@ -775,6 +776,29 @@ describe('ProviderConnectService', () => {
           Object.assign(row, patch);
           return jsonClone(row);
         },
+        update: () => ({
+          set: (patch: any) => ({
+            where: (_condition: any) => ({
+              returning: () => ({
+                execute: async () => {
+                  const id = 'credentials.ttl#cloud-openai';
+                  const row = rows.get(id);
+                  if (!row) return [];
+                  if (simulateConcurrentRefreshBeforeRewrap) {
+                    simulateConcurrentRefreshBeforeRewrap = false;
+                    Object.assign(row, {
+                      encryptedSecret: JSON.stringify({ ciphertext: 'fresh-token-ciphertext' }),
+                      keyVersion: String(Number(row.keyVersion) + 1),
+                    });
+                    return [];
+                  }
+                  Object.assign(row, patch);
+                  return [jsonClone(row)];
+                },
+              }),
+            }),
+          }),
+        }),
       } as any),
     });
     const sharedVault = vault();
@@ -824,11 +848,54 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
     });
     expect(active).toMatchObject({ provider: 'openai', version: 1 });
+    await expect(repository.rewrapCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      credentialId: active!.id,
+      expectedVersion: 1,
+      encryptedSecret: {
+        ...active!.encryptedSecret,
+        keyId: 'root-v2',
+        wrappedDek: 'rewrapped-dek',
+      },
+    })).resolves.toBe(true);
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).resolves.toMatchObject({
+      version: 2,
+      encryptedSecret: {
+        keyId: 'root-v2',
+        wrappedDek: 'rewrapped-dek',
+      },
+    });
+    const beforeRace = await repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    });
+    simulateConcurrentRefreshBeforeRewrap = true;
+    await expect(repository.rewrapCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      credentialId: beforeRace!.id,
+      expectedVersion: beforeRace!.version,
+      encryptedSecret: {
+        ...beforeRace!.encryptedSecret,
+        keyId: 'root-v3',
+        wrappedDek: 'stale-rewrapped-dek',
+      },
+    })).resolves.toBe(false);
+    expect(rows.get(beforeRace!.id)).toMatchObject({
+      encryptedSecret: JSON.stringify({ ciphertext: 'fresh-token-ciphertext' }),
+      keyVersion: '3',
+    });
     await expect(repository.disconnect({
       webId: WEB_ID,
       provider: 'openai',
       deployment: 'cloud',
-    })).resolves.toMatchObject({ status: 'revoked', version: 2 });
+    })).resolves.toMatchObject({ status: 'revoked', version: 4 });
   });
 });
 

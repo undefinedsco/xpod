@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
-import { drizzle } from '@undefineds.co/drizzle-solid';
+import { and, drizzle, eq } from '@undefineds.co/drizzle-solid';
 import { aiRuntimeRepository, credentialResource } from '@undefineds.co/models';
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
@@ -104,6 +104,13 @@ export interface PodCredentialRepository {
     deployment: GatewayDeployment;
   }): Promise<ConnectCredentialRecord | undefined>;
   upsertConnectedCredential(record: ConnectCredentialRecord): Promise<ConnectCredentialRecord>;
+  rewrapCredential?(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    credentialId: string;
+    expectedVersion?: number;
+    encryptedSecret: EncryptedCredentialSecret;
+  }): Promise<boolean>;
   markReauthRequired(input: {
     webId: string;
     provider: string;
@@ -126,6 +133,13 @@ type ConnectedCredentialDb = {
   };
   findById<TRow>(resource: typeof credentialResource, id: string): Promise<TRow | null>;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
+  update(resource: typeof credentialResource): {
+    set(patch: unknown): {
+      where(condition: unknown): {
+        returning(): { execute(): Promise<Record<string, unknown>[]> };
+      };
+    };
+  };
 };
 
 export interface PodConnectedCredentialRepositoryOptions {
@@ -176,6 +190,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
     quota?: { status: 'available' | 'unsupported' | 'exhausted' | 'error' };
     encryptedSecret: EncryptedCredentialSecret;
+    version?: number;
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
@@ -198,6 +213,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         health: record.reauthRequired ? 'reauthRequired' : 'healthy',
         quota: { status: 'available' },
         encryptedSecret: record.encryptedSecret,
+        version: record.version,
         runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
         metadata: record.metadata,
       }));
@@ -221,6 +237,42 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     }
     await db.insert(credentialResource).values(row).execute();
     return recordFromCredentialRow(row);
+  }
+
+  public async rewrapCredential(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    credentialId: string;
+    expectedVersion?: number;
+    encryptedSecret: EncryptedCredentialSecret;
+  }): Promise<boolean> {
+    const db = await this.dbForOwner(input.webId);
+    const existing = await db.findById<Record<string, unknown>>(credentialResource, input.credentialId);
+    if (!existing) {
+      return false;
+    }
+    const current = recordFromCredentialRow(existing);
+    if (current.webId !== input.webId || current.deployment !== input.deployment) {
+      return false;
+    }
+    const currentVersion = versionFromRow(existing);
+    if (input.expectedVersion === undefined || currentVersion !== input.expectedVersion) {
+      return false;
+    }
+    const updated = await db.update(credentialResource)
+      .set({
+        encryptedSecret: JSON.stringify(input.encryptedSecret),
+        wrappedDataKey: input.encryptedSecret.wrappedDek,
+        encryptionAlgorithm: input.encryptedSecret.algorithm,
+        keyVersion: String(currentVersion + 1),
+      })
+      .where(and(
+        eq(credentialResource.id, input.credentialId),
+        eq(credentialResource.keyVersion, String(input.expectedVersion)),
+      ))
+      .returning()
+      .execute();
+    return updated.length === 1;
   }
 
   public async markReauthRequired(input: {

@@ -20,9 +20,9 @@ Xpod 提供一个由用户 WebID 隔离、以用户 Pod 为凭证事实源的 AI
 
 ## 产品与部署边界
 
-Xpod 是无界面的 Gateway 后端；LinX 是 Provider、Credential、模型、额度和客户端配置的管理界面。第一期不抽取独立微应用，也不新增第二个用户可见的 Xpod 桌面应用。
+Xpod 是无界面的 Gateway 后端；LinX 是 Provider、Credential、模型、额度和客户端配置的管理界面。AI Connection 是 LinX 内的管理 applet，不作为独立部署单元，也不感知 Xpod 的运维 deployment。
 
-Local 与 Cloud 是两个独立安全域，WebID、Pod、Gateway Key 和密钥包装设施均不通用。LinX 只管理当前登录身份：登录 Local WebID 时配置 Local Gateway，登录 Cloud WebID 时配置 Cloud Gateway。编码客户端只存在一个稳定的 `xpod` Provider；切换 LinX 身份时事务式替换其 endpoint、Gateway Key 和模型配置。
+Xpod 保留 `local` / `cloud` deployment 作为后端运维、安全域、路由和审计概念；Local 与 Cloud 的 WebID、Pod 和 Gateway Key 均不通用。LinX 只管理当前登录身份：登录 Local WebID 时配置 Local Gateway，登录 Cloud WebID 时配置 Cloud Gateway。编码客户端只存在一个稳定的 `xpod` Provider；切换 LinX 身份时事务式替换其 endpoint、Gateway Key 和模型配置。
 
 AI Gateway 位于 Xpod API Server，不进入 CSS/Solid 协议处理链。
 
@@ -63,7 +63,7 @@ Provider 拆为三个职责：
 
 ### `CredentialVault`
 
-使用 drizzle-solid 从当前 WebID Pod 读取 Credential 密文，通过 Local Keychain 或 Cloud KMS 解开数据密钥。不得将 Provider 明文密钥传给 LinX 或编码客户端。
+使用 drizzle-solid 从当前 WebID Pod 读取统一 Pod 数据格 SecretCell，并在服务端短暂解开 Provider Credential。Xpod 不为 Local/Cloud 分叉凭证解密路线；不得将 Provider 明文密钥传给 LinX 或编码客户端。
 
 ### `ClientConfigAdapter`
 
@@ -79,7 +79,7 @@ Provider 拆为三个职责：
 
 ### Provider Credential
 
-记录到 Model Provider 的 URI 关系、认证模式、密文、wrapped data key、算法、key version、脱敏账号标识、scope、过期时间、健康状态及 `metadata.protocols.<provider>` 扩展。
+记录到 Model Provider 的 URI 关系、认证模式、SecretCell 引用或密文元数据、脱敏账号标识、scope、过期时间、健康状态及 `metadata.protocols.<provider>` 扩展。
 
 ### Gateway Access Key
 
@@ -93,11 +93,17 @@ Connect state、PKCE verifier、SSE 连接、请求执行状态、会话亲和�
 
 ## 凭证加密
 
-每条 Provider Credential 生成独立 DEK。DEK 加密序列化后的 secret payload；Local 使用系统 Keychain 主密钥包装 DEK，Cloud 使用 KMS。Pod 保存 ciphertext、wrapped DEK、算法和 key version。
+每条 Provider Credential 使用统一 Pod 数据格 SecretCell 保存序列化后的 secret payload。SecretCell 记录解密所需的非明文元数据、key ID、算法版本和轮换状态；Local 与 Cloud 使用同一数据模型，不引入按部署分叉的密钥设施。
 
-Token 刷新采用带版本的条件更新，避免并发刷新覆盖新 Token。主密钥轮换通过重新包装 DEK 完成，无需重新加密全部 payload。解密明文只在上游请求或刷新期间短暂存在内存。
+Token 刷新采用带版本的条件更新，避免并发刷新覆盖新 Token。密钥轮换通过 SecretCell 的 key ID 与 previous key 窗口完成，旧 cell 被读取后按需迁移到 active key。解密明文只在上游请求或刷新期间短暂存在内存。
 
-Provider Credential 的密文在 Pod；实例主密钥不在 Pod。Gateway Key 的 secret 不可逆哈希后存 Pod。服务端可保存最小的非敏感 key ID 到 WebID 路由索引，但 Pod 记录是授权、撤销和 scope 的最终事实源。
+Provider Credential 的 SecretCell 在 Pod；SecretCell active/previous key 只作为部署运行时配置存在，不写入用户 Pod。Gateway Key 的 secret 不可逆哈希后存 Pod。服务端可保存最小的非敏感 key ID 到 WebID 路由索引，但 Pod 记录是授权、撤销和 scope 的最终事实源。
+
+生产 bootstrap 使用 `XPOD_SECRET_CELL_KEY_ID`、严格 base64 的 32 字节
+`XPOD_SECRET_CELL_KEY`，以及可选的
+`XPOD_SECRET_CELL_PREVIOUS_KEYS`（key ID 到 32 字节 base64 的 JSON 对象）。
+这些是 Xpod 运维密钥，不是用户 AI 参数，也不得与 Gateway locator secret
+复用。配置缺失、格式错误或 key ring 不含目标 key ID 时 fail closed。
 
 ## 身份认证和 Connect
 
@@ -113,7 +119,7 @@ Cloud LinX 使用 Solid OIDC access token/DPoP；Local LinX 使用绑定 Local W
 6. Xpod 交换 Token 或接收 API Key、确认账号身份（官方响应提供时）、加密并写入当前 Pod。
 7. LinX 轮询状态或接收本地 deep link 通知。
 
-Local 的 OAuth 仅用于官方支持的 public client + PKCE/device flow，不把 confidential client secret 打进安装包。Cloud 所需 OAuth client secret 放 KMS。OpenAI Codex/Claude Code 官方 client id 不复用，Cookie 不抓取。失败日志不包含 code、Token、Cookie、API Key 或 Provider 错误正文中的秘密。
+Local 的 OAuth 仅用于官方支持的 public client + PKCE/device flow，不把 confidential client secret 打进安装包。需要持久化的 OAuth client secret 走同一 SecretCell 机制，不引入 Cloud 专属分支。OpenAI Codex/Claude Code 官方 client id 不复用，Cookie 不抓取。失败日志不包含 code、Token、Cookie、API Key 或 Provider 错误正文中的秘密。
 
 第一期 Provider 认证矩阵：
 
@@ -131,7 +137,7 @@ Kimi device-code Connect 只允许使用 Xpod/Moonshot 签发给本产品的 cli
 
 ## Gateway API Key
 
-用户在 LinX 当前身份下创建具名 Gateway Key。默认 scope 为 `models:read` 和 `inference:write`。创建响应只显示一次明文，LinX立即写入客户端原生认证存储、环境变量安全设施或系统 Keychain。客户端只能使用 Gateway Key，不能读取 Provider Credential。
+用户在 LinX 当前身份下创建具名 Gateway Key。默认 scope 为 `models:read` 和 `inference:write`。创建响应只显示一次明文，LinX 立即写入客户端原生认证存储、环境变量安全设施或经用户确认的仅当前用户可读配置。客户端只能使用 Gateway Key，不能读取 Provider Credential。
 
 数据面请求使用 `Authorization: Bearer xpod_...`。Gateway解析部署域与 key ID，定位 WebID，然后读取 Pod 记录并校验 secret hash、scope、过期和撤销状态。Local Key不能用于Cloud，反之亦然。
 
@@ -194,7 +200,7 @@ LinX 只展示当前登录 WebID、对应 Gateway、Pod Providers、Credential�
 - Gateway Key恒定时间比较和失败限速。
 - callback重新确认当前身份，不只相信query参数。
 - LinX写配置前拒绝不安全符号链接目标。
-- Pod、KMS或Keychain不可用时fail closed，不使用服务器共享凭证兜底。
+- Pod 或 SecretCell 不可用时 fail closed，不使用服务器共享凭证兜底。
 
 ## 测试与验收
 

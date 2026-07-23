@@ -36,7 +36,7 @@ import type { PodMatrixStore } from '../matrix';
 import type { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import type { AuthMode } from '../../authorization/AuthMode';
 import type { RdfEngineLike } from '../../storage/rdf';
-import type { KeyWrapper } from '../ai-gateway/credentials/KeyWrapper';
+import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import type { ProviderConnectService } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiGatewayService';
@@ -118,8 +118,8 @@ export interface ApiContainerConfig {
   aiGatewayConnectSigningSecret?: string;
   /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
   aiGatewayKimiClientId?: string;
-  /** Platform DEK wrapper factory: Local Keychain or Cloud KMS boundary. */
-  aiGatewayCredentialKeyWrapperFactory?: () => KeyWrapper;
+  /** Generic Pod SecretCell credential vault factory, configured by Xpod operations. */
+  secretCellCredentialVaultFactory?: () => CredentialVault;
 
   /** 子域名功能配置 (cloud 模式) */
   subdomain?: {

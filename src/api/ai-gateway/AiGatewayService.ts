@@ -19,6 +19,7 @@ import type {
 
 export interface StoredGatewayCredential extends GatewayCredentialCandidate {
   encryptedSecret: EncryptedCredentialSecret;
+  version?: number;
   runtimeCredential?: ProviderRuntimeCredential;
 }
 
@@ -29,6 +30,13 @@ export interface GatewayCredentialStore {
   }): Promise<StoredGatewayCredential[]>;
   recordSuccess?(input: GatewayCredentialHealthRecord): Promise<void>;
   recordFailure?(input: GatewayCredentialHealthRecord): Promise<void>;
+  rewrapCredential?(input: {
+    webId: string;
+    deployment: string;
+    credentialId: string;
+    expectedVersion?: number;
+    encryptedSecret: EncryptedCredentialSecret;
+  }): Promise<boolean>;
 }
 
 export interface GatewayCredentialHealthRecord {
@@ -298,6 +306,16 @@ export class AiGatewayService {
       route.provider.id,
       credential.encryptedSecret,
     );
+    if (this.vault.needsRewrap?.(credential.encryptedSecret) && this.credentials.rewrapCredential) {
+      const rewrapped = await this.vault.rewrap(principal, credential.encryptedSecret);
+      await this.credentials.rewrapCredential({
+        webId: principal.webId,
+        deployment: this.deployment,
+        credentialId: credential.id,
+        expectedVersion: credential.version,
+        encryptedSecret: rewrapped,
+      });
+    }
     const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
     if (typeof apiKey !== 'string' || !apiKey) {
       throw new GatewayProtocolError('Credential secret does not contain a usable provider token', {

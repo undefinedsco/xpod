@@ -52,6 +52,7 @@ function credential(input: Partial<StoredGatewayCredential> & {
     cooldownUntil: input.cooldownUntil,
     metadata: input.metadata,
     encryptedSecret: input.encryptedSecret ?? encrypted(input.id, input.provider),
+    version: input.version,
     runtimeCredential: input.runtimeCredential,
   };
 }
@@ -59,6 +60,7 @@ function credential(input: Partial<StoredGatewayCredential> & {
 function serviceWith(credentials: StoredGatewayCredential[], now = new Date('2026-07-23T00:00:00.000Z')): {
   service: AiGatewayService;
   store: GatewayCredentialStore;
+  vault: CredentialVault;
 } {
   const registry = createDefaultProviderRegistry();
   const store: GatewayCredentialStore = {
@@ -85,6 +87,7 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
 
   return {
     store,
+    vault,
     service: new AiGatewayService({
       deployment: 'cloud',
       registry,
@@ -151,5 +154,43 @@ describe('AiGatewayService', () => {
     ]);
     expect(models.map((model) => model.id)).not.toContain('gpt-4.1');
     expect(models.map((model) => model.id)).not.toContain('gpt-5-dynamic-safe');
+  });
+
+  it('rewraps an old-key credential through the production inference read path', async() => {
+    const oldEncrypted = { ...encrypted('rotating'), keyId: 'root-v1' };
+    const activeEncrypted = { ...oldEncrypted, keyId: 'root-v2', wrappedDek: 'rewrapped' };
+    const fixture = serviceWith([
+      credential({
+        id: 'rotating',
+        provider: 'openai',
+        models: ['gpt-5'],
+        version: 4,
+        encryptedSecret: oldEncrypted,
+      }),
+    ]);
+    fixture.vault.needsRewrap = vi.fn(() => true);
+    fixture.vault.rewrap = vi.fn(async() => activeEncrypted);
+    fixture.store.rewrapCredential = vi.fn(async() => true);
+
+    await fixture.service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    });
+
+    expect(fixture.vault.rewrap).toHaveBeenCalledWith(
+      { webId: WEB_ID },
+      oldEncrypted,
+    );
+    expect(fixture.store.rewrapCredential).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      credentialId: 'rotating',
+      expectedVersion: 4,
+      encryptedSecret: activeEncrypted,
+    });
   });
 });

@@ -20,7 +20,6 @@ import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuth
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
-import { WebCryptoCredentialVault } from '../ai-gateway/credentials/WebCryptoCredentialVault';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import {
   BrowserAssistedApiKeyConnectAdapter,
@@ -141,8 +140,8 @@ export function registerCommonServices(
           adapters: [],
         });
       }
-      if (!config.aiGatewayCredentialKeyWrapperFactory) {
-        throw new Error('AI Gateway Connect requires an aiGatewayCredentialKeyWrapperFactory platform wrapper');
+      if (!config.secretCellCredentialVaultFactory) {
+        throw new Error('AI Gateway Connect requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
       }
       const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
       if (!signingSecret) {
@@ -157,9 +156,7 @@ export function registerCommonServices(
         clientSecret: config.gatewayInternalClientSecret,
       });
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
-      const vault = new WebCryptoCredentialVault({
-        keyWrapper: config.aiGatewayCredentialKeyWrapperFactory(),
-      });
+      const vault = config.secretCellCredentialVaultFactory();
       const attempts = new InMemoryConnectAttemptStore();
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
@@ -251,8 +248,8 @@ export function registerCommonServices(
 
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayCredentialKeyWrapperFactory) {
-        throw new Error('AI Gateway inference requires an aiGatewayCredentialKeyWrapperFactory platform wrapper');
+      if (!config.secretCellCredentialVaultFactory) {
+        throw new Error('AI Gateway inference requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
       }
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
@@ -269,9 +266,7 @@ export function registerCommonServices(
         router,
         credentials: gatewayCredentialStore,
         runtimes: gatewayRuntimeRegistry,
-        vault: new WebCryptoCredentialVault({
-          keyWrapper: config.aiGatewayCredentialKeyWrapperFactory(),
-        }),
+        vault: config.secretCellCredentialVaultFactory(),
       });
     }).singleton(),
 
@@ -279,8 +274,8 @@ export function registerCommonServices(
       if (!config.aiGatewayConnectEnabled) {
         return undefined;
       }
-      if (!config.aiGatewayCredentialKeyWrapperFactory) {
-        throw new Error('AI Gateway quota requires an aiGatewayCredentialKeyWrapperFactory platform wrapper');
+      if (!config.secretCellCredentialVaultFactory) {
+        throw new Error('AI Gateway quota requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
       }
       if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
         throw new Error('AI Gateway quota requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod access');
@@ -293,9 +288,7 @@ export function registerCommonServices(
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: new WebCryptoCredentialVault({
-          keyWrapper: config.aiGatewayCredentialKeyWrapperFactory(),
-        }),
+        vault: config.secretCellCredentialVaultFactory(),
         adapters: [
           new OpenAiQuotaAdapter(),
           new AnthropicQuotaAdapter(),

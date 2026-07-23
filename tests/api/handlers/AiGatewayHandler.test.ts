@@ -18,6 +18,39 @@ import type { ApiServer } from '../../../src/api/ApiServer';
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
 
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function eventually(assertion: () => void, options: { timeoutMs?: number; intervalMs?: number } = {}): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 1_000;
+  const intervalMs = options.intervalMs ?? 5;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown;
+
+  while (Date.now() <= deadline) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  throw lastError;
+}
+
 function encrypted(provider: string): EncryptedCredentialSecret {
   return {
     algorithm: 'AES-256-GCM',
@@ -322,7 +355,7 @@ describe('AiGatewayHandler', () => {
       settled = true;
     });
 
-    await vi.waitFor(() => expect(res.writeCount).toBe(1));
+    await eventually(() => expect(res.writeCount).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
     expect(res.writeCount).toBe(1);
@@ -337,10 +370,7 @@ describe('AiGatewayHandler', () => {
     const { server, routes } = createServer();
     let upstreamAborted = false;
     let iteratorReturned = false;
-    let releaseNext!: () => void;
-    const nextGate = new Promise<void>((resolve) => {
-      releaseNext = resolve;
-    });
+    const nextGate = deferred<void>();
     const service = {
       execute: vi.fn(),
       complete: vi.fn(),
@@ -360,12 +390,12 @@ describe('AiGatewayHandler', () => {
                 if (index++ === 0) {
                   return { done: false, value: { type: 'response.started', id: 'resp_1' } as GatewayEvent };
                 }
-                await nextGate;
+                await nextGate.promise;
                 return { done: true, value: undefined };
               },
               async return() {
                 iteratorReturned = true;
-                releaseNext();
+                nextGate.resolve();
                 return { done: true, value: undefined };
               },
             };
@@ -382,7 +412,7 @@ describe('AiGatewayHandler', () => {
     const res = response();
     const pending = routes['POST /v1/chat/completions'](req, res, {});
 
-    await vi.waitFor(() => expect(res.writeCount).toBe(1));
+    await eventually(() => expect(res.writeCount).toBe(1));
     res.emit('close');
     await pending;
 

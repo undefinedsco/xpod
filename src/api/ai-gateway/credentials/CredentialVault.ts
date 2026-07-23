@@ -25,6 +25,8 @@ export interface CredentialVault {
     principal: GatewayPrincipal,
     encrypted: EncryptedCredentialSecret,
   ): Promise<EncryptedCredentialSecret>;
+
+  needsRewrap?(encrypted: EncryptedCredentialSecret): boolean;
 }
 
 export class CredentialVaultError extends Error {

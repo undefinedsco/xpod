@@ -43,6 +43,7 @@ export type { PostgresRdfEngineOptions } from './storage/rdf/PostgresRdfEngine';
 export type { PostgresRdfTextIndexOptions } from './storage/rdf/PostgresRdfTextIndex';
 export type { PostgresRdfVectorIndexOptions } from './storage/rdf/PostgresRdfVectorIndex';
 export * from './document';
+export * from './security';
 import { SubgraphSparqlHttpHandler } from './http/SubgraphSparqlHttpHandler';
 import { QuotaAdminHttpHandler } from './http/quota/QuotaAdminHttpHandler';
 import { SparqlUpdateResourceStore } from './storage/SparqlUpdateResourceStore';

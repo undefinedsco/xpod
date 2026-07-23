@@ -6,7 +6,7 @@
 
 **Architecture:** Refactor the existing Xpod chat routes into a protocol-neutral gateway core while preserving the current API surface. Shared durable semantics live in `@undefineds.co/models`; Xpod owns authentication, encryption, routing, provider transports, Connect and quota; LinX owns current-identity management UI and transactional client configuration.
 
-**Tech Stack:** TypeScript 5.9, Bun, Vitest, drizzle-solid, `@undefineds.co/models`, Solid OIDC/DPoP, Web Crypto, Keychain/KMS adapters, React, Electron/Tauri desktop bridge as provided by LinX.
+**Tech Stack:** TypeScript 5.9, Bun, Vitest, drizzle-solid, `@undefineds.co/models`, Solid OIDC/DPoP, Web Crypto, generic Pod SecretCell, React, Electron/Tauri desktop bridge as provided by LinX.
 
 ---
 
@@ -178,14 +178,13 @@ Expected: PASS for all three request and event mappings.
 
 Commit types, errors, frontends and fixtures together.
 
-### Task 4: Implement envelope encryption and platform key wrappers
+### Task 4: Implement generic Pod SecretCell envelope encryption
 
 **Files:**
 - Create: `src/api/ai-gateway/credentials/CredentialVault.ts`
-- Create: `src/api/ai-gateway/credentials/WebCryptoCredentialVault.ts`
-- Create: `src/api/ai-gateway/credentials/KeyWrapper.ts`
-- Create: `src/api/ai-gateway/credentials/LocalKeychainWrapper.ts`
-- Create: `src/api/ai-gateway/credentials/CloudKmsWrapper.ts`
+- Create: `src/api/ai-gateway/credentials/SecretCellCredentialVault.ts`
+- Create: `src/security/secret-cell/SecretCellVault.ts`
+- Create: `src/security/secret-cell/DeploymentRootKeyProvider.ts`
 - Create: `tests/api/ai-gateway/CredentialVault.test.ts`
 
 - [ ] **Step 1: Write failing envelope round-trip and rotation tests**
@@ -211,7 +210,12 @@ export interface CredentialVault {
 }
 ```
 
-Use Web Crypto for DEK generation and AES-GCM. `LocalKeychainWrapper` delegates to the existing desktop/platform secure-store boundary rather than shelling out; `CloudKmsWrapper` accepts an injected KMS client and key ARN.
+Use Web Crypto for DEK generation and AES-GCM. A generic SecretCell binds each
+cell to owner WebID, resource IRI, predicate/field, schema version and purpose.
+Xpod operations inject an active deployment root key plus previous keys for
+rotation. `SecretCellCredentialVault` adapts the generic cell envelope to the
+existing Pod credential record fields; AI Connection never observes or selects
+deployment. Do not add Keychain or KMS-specific production branches.
 
 - [ ] **Step 4: Verify tests and secret-redaction assertions**
 

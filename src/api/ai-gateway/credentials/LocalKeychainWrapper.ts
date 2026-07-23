@@ -19,6 +19,10 @@ export interface LocalKeychainWrapperOptions {
   keyVersion?: string;
 }
 
+/**
+ * @deprecated Compatibility-only adapter. Production Xpod bootstrap uses the
+ * generic Pod SecretCell keyring configured through XPOD_SECRET_CELL_*.
+ */
 export class LocalKeychainWrapper implements KeyWrapper {
   private readonly secureStore: LocalSecureStore;
   private readonly keyId: string;

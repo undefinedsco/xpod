@@ -34,6 +34,10 @@ export interface CloudKmsWrapperOptions {
   keyArn: string;
 }
 
+/**
+ * @deprecated Compatibility-only adapter. Production Xpod bootstrap uses the
+ * generic Pod SecretCell keyring configured through XPOD_SECRET_CELL_*.
+ */
 export class CloudKmsWrapper implements KeyWrapper {
   private readonly kmsClient: CloudKmsClient;
   private readonly keyArn: string;
