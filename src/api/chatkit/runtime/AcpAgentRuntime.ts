@@ -14,7 +14,7 @@ import { GitWorktreeService } from './GitWorktreeService';
 import { AcpRunner } from './AcpRunner';
 import { CodexRuntimeProjector } from './CodexRuntimeProjector';
 import type { ResolvedAgentConfig } from '../../../agents/config/types';
-import type { McpServerConfig } from '../../../agents/types';
+import type { AIConnectionInvocationConfig, McpServerConfig } from '../../../agents/types';
 import { codexWireApi } from '../../service/provider-registry';
 import type {
   AcpRunnerType,
@@ -58,7 +58,7 @@ export class AcpAgentRuntime {
     const argv = this.resolveRunnerArgv(runnerType, config.runner.argv);
     const command = argv[0];
     const args = argv.slice(1);
-    const env = this.buildRunnerEnv(runnerType, threadId, workdir, config.agentConfig);
+    const env = this.buildRunnerEnv(runnerType, threadId, workdir, config.agentConfig, config.aiConnection);
     const runner = new AcpRunner();
     const queue = new AsyncPushQueue<AgentRuntimeEvent>();
 
@@ -329,15 +329,16 @@ export class AcpAgentRuntime {
     threadId: string,
     workdir: string,
     agentConfig?: ResolvedAgentConfig,
+    aiConnection?: AIConnectionInvocationConfig,
   ): Record<string, string | undefined> | undefined {
     if (type === 'codebuddy') {
       return undefined;
     }
 
     const connection = requireAiConnectionRuntimeConfig({
-      baseUrl: agentConfig?.baseUrl,
-      apiKey: agentConfig?.apiKey,
-      model: agentConfig?.model,
+      baseUrl: aiConnection?.baseUrl,
+      apiKey: aiConnection?.gatewayKey,
+      model: aiConnection?.model ?? agentConfig?.model,
     }, `${type} ACP runtime`);
     const home = this.getIsolatedHomeDir(type, threadId, workdir);
 

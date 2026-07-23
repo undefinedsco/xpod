@@ -147,4 +147,27 @@ describe('DefaultAgent', () => {
     expect(queryOptions.env.DEFAULT_API_BASE).toBeUndefined();
     expect(queryOptions.env.SOLID_TOKEN).toBe('solid-token');
   });
+
+  it('directs AI setup through AI Connection without plaintext Pod credential examples', async () => {
+    await runDefaultAgent(
+      'help me configure AI',
+      {
+        solidToken: 'solid-token',
+        podBaseUrl: 'https://pod.example/alice/',
+      },
+      {
+        connection: {
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: 'gateway-key',
+        },
+      },
+    );
+
+    const systemPrompt = (claudeSdk.query as ReturnType<typeof vi.fn>).mock.calls[0][0].options.systemPrompt;
+    expect(systemPrompt).toContain('AI Connection');
+    expect(systemPrompt).toMatch(/Connect|SecretCell/);
+    expect(systemPrompt).not.toContain('/settings/credentials.ttl');
+    expect(systemPrompt).not.toContain('xpod:apiKey');
+    expect(systemPrompt).not.toMatch(/apiKey\s+"sk/i);
+  });
 });

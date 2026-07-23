@@ -1,4 +1,5 @@
 import type { ResolvedAgentConfig } from '../../agents/config/types';
+import type { AIConnectionInvocationConfig } from '../../agents/types';
 import type { WorkspaceRef } from '../workspace/types';
 
 export type RunnerProtocol = 'pi' | 'acp';
@@ -46,11 +47,14 @@ export interface AgentRuntimeConfig {
     allowCustomArgv?: boolean;
   };
   /**
-   * Resolved agent configuration from /agents/{agentId}/AGENTS.md + .meta.
-   * When provided, credentials/model/MCP servers/system prompt come from here
-   * instead of DEFAULT_* environment variables.
+   * Resolved non-secret agent profile from /agents/{agentId}/AGENTS.md + .meta.
    */
   agentConfig?: ResolvedAgentConfig;
+  /**
+   * Invocation-scoped Xpod AI Connection. Model runners fail closed without it;
+   * raw Pod provider credentials must never be placed in agentConfig.
+   */
+  aiConnection?: AIConnectionInvocationConfig;
 }
 
 export type AgentRuntimeEvent =

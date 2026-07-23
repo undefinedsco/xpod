@@ -95,13 +95,17 @@ describe('resolveAgentConfig', () => {
       description: 'Pod metadata description',
       systemPrompt: 'You are from Pod metadata.',
       executorType: 'claude',
-      apiKey: 'sk-ant-test',
-      baseUrl: 'https://cred.example',
-      proxyUrl: 'http://proxy.example',
       model: 'claude-sonnet-4',
       maxTurns: 7,
       enabled: true,
     });
+    expect(result).not.toHaveProperty('apiKey');
+    expect(result).not.toHaveProperty('baseUrl');
+    expect(result).not.toHaveProperty('proxyUrl');
+    expect(db.findByIri).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'http://pod.example/settings/credentials.ttl#anthropic-key',
+    );
     expect(authenticatedFetch).toHaveBeenCalledTimes(1);
   });
 

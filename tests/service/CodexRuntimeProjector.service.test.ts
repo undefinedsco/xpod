@@ -23,7 +23,6 @@ describe('CodexRuntimeProjector', () => {
       displayName: 'Secretary',
       systemPrompt: 'Help.',
       executorType: 'codex',
-      apiKey: 'sk-test',
       model: 'gpt-test',
       enabled: true,
       mcpServers: {

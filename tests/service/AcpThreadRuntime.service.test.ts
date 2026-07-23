@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { afterEach, describe, it, expect } from 'vitest';
 import { AcpAgentRuntime } from '../../src/api/chatkit/runtime/AcpAgentRuntime';
 
@@ -41,6 +42,7 @@ describe('ACP Thread Runtime', () => {
             argv: [ 'node', agentPath ],
           },
           agentConfig: testAgentConfig(),
+          aiConnection: testAiConnection(),
         },
       })
     ) {
@@ -71,6 +73,7 @@ describe('ACP Thread Runtime', () => {
             argv: [ 'node', agentPath ],
           },
           agentConfig: testAgentConfig(),
+          aiConnection: testAiConnection(),
         },
       })
     ) {
@@ -87,7 +90,7 @@ describe('ACP Thread Runtime', () => {
     expect(out).toBe('ok');
   }, 20_000);
 
-  it('scrubs ambient provider credentials and projects only invocation-scoped AI Connection for Codex', () => {
+  it('keeps raw Pod provider credentials out of Codex env, auth.json, and args', () => {
     for (const key of ambientProviderKeys) {
       savedEnv[key] = process.env[key];
     }
@@ -99,18 +102,32 @@ describe('ACP Thread Runtime', () => {
     process.env.DEFAULT_API_BASE = 'https://ambient-default.example/v1';
 
     const rt = new AcpAgentRuntime();
-    const env = (rt as any).buildRunnerEnv('codex', 'thread-env', process.cwd(), {
+    const rawProviderKey = 'raw-pod-provider-key';
+    const agentConfig = {
       id: 'agent',
       displayName: 'Agent',
       systemPrompt: '',
       executorType: 'codex',
-      apiKey: 'gateway-key',
-      baseUrl: 'http://127.0.0.1:3000/v1',
+      apiKey: rawProviderKey,
+      baseUrl: 'https://raw-provider.example/v1',
       model: 'linx',
       mcpServers: {},
       skills: [],
       enabled: true,
-    });
+    };
+    const env = (rt as any).buildRunnerEnv(
+      'codex',
+      'thread-env',
+      process.cwd(),
+      agentConfig,
+      {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'gateway-key',
+        model: 'linx',
+      },
+    );
+    const args = (rt as any).resolveRunnerArgv('codex', [ 'node', 'runner.js' ]);
+    const authJson = fs.readFileSync(path.join(env.CODEX_HOME, 'auth.json'), 'utf8');
 
     expect(env.AI_CONNECTION_BASE_URL).toBe('http://127.0.0.1:3000/v1');
     expect(env.AI_CONNECTION_API_KEY).toBe('gateway-key');
@@ -120,16 +137,47 @@ describe('ACP Thread Runtime', () => {
     expect(env.DEFAULT_API_BASE).toBeUndefined();
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(JSON.stringify(env)).not.toContain(rawProviderKey);
+    expect(authJson).toContain('gateway-key');
+    expect(authJson).not.toContain(rawProviderKey);
+    expect(JSON.stringify(args)).not.toContain(rawProviderKey);
+
+    const claudeEnv = (rt as any).buildRunnerEnv(
+      'claude',
+      'thread-env',
+      process.cwd(),
+      agentConfig,
+      {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'gateway-key',
+        model: 'linx',
+      },
+    );
+    expect(claudeEnv.ANTHROPIC_API_KEY).toBe('gateway-key');
+    expect(claudeEnv.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3000');
+    expect(JSON.stringify(claudeEnv)).not.toContain(rawProviderKey);
   });
 
-  it('fails ACP model runners closed without explicit AI Connection config', () => {
+  it('fails ACP model runners closed when only a raw Pod provider config is present', () => {
     const rt = new AcpAgentRuntime();
     expect(() => (rt as any).buildRunnerEnv('codex', 'thread-missing', process.cwd(), {
       id: 'agent',
       displayName: 'Agent',
       systemPrompt: '',
       executorType: 'codex',
-      apiKey: '',
+      apiKey: 'raw-pod-provider-key',
+      baseUrl: 'https://raw-provider.example/v1',
+      mcpServers: {},
+      skills: [],
+      enabled: true,
+    })).toThrow(/AI Connection/);
+    expect(() => (rt as any).buildRunnerEnv('claude', 'thread-missing', process.cwd(), {
+      id: 'agent',
+      displayName: 'Agent',
+      systemPrompt: '',
+      executorType: 'claude',
+      apiKey: 'raw-pod-provider-key',
+      baseUrl: 'https://raw-provider.example/v1',
       mcpServers: {},
       skills: [],
       enabled: true,
@@ -142,12 +190,18 @@ describe('ACP Thread Runtime', () => {
       displayName: 'Agent Test',
       systemPrompt: '',
       executorType: 'codex' as const,
-      apiKey: 'gateway-key',
-      baseUrl: 'http://127.0.0.1:3000/v1',
       model: 'linx',
       mcpServers: {},
       skills: [],
       enabled: true,
+    };
+  }
+
+  function testAiConnection() {
+    return {
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      gatewayKey: 'gateway-key',
+      model: 'linx',
     };
   }
 });

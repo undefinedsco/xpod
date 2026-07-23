@@ -14,7 +14,6 @@ import type { PodTable } from '@undefineds.co/drizzle-solid';
 import { AgentMetaSchema } from './agent-meta-schema';
 import { extractMarkdownBody, parseAgentInstructions } from './parse-agent-instructions';
 import { Provider } from '../../ai/schema/provider';
-import { Credential } from '../../credential/schema/tables';
 import { Model } from '../../ai/schema/model';
 import type {
   AgentMcpServerDef,
@@ -60,7 +59,6 @@ function createPodDb(ctx: ResolveContext, agentId: string): any {
     schema: {
       agentConfig: agentMeta,
       provider: Provider,
-      credential: Credential,
       model: Model,
     },
   });
@@ -136,7 +134,6 @@ class AgentConfigResolver {
     }
 
     const profileResources = await this.resources.load(toStringArray(metaRecord.skills));
-    const credential = await this.resolveCredential(metaRecord.credential);
     const modelName = await this.resolveModelName(provider, metaRecord.model);
     const mcpServers = AgentMcpConfig.fromMeta(metaRecord.mcpServers).toRuntimeConfig();
     const systemPrompt = profileResources.instructions || metaRecord.instructions || '';
@@ -147,9 +144,6 @@ class AgentConfigResolver {
       description: metaRecord.description,
       systemPrompt,
       executorType: runtimeKind,
-      apiKey: credential.apiKey,
-      baseUrl: credential.baseUrl ?? provider.baseUrl ?? undefined,
-      proxyUrl: credential.proxyUrl,
       model: modelName,
       maxTurns: metaRecord.maxTurns,
       allowedTools: toStringArray(metaRecord.allowedTools),
@@ -159,28 +153,6 @@ class AgentConfigResolver {
       skillsContent: profileResources.skillsContent,
       skills: profileResources.skills,
       enabled: true,
-    };
-  }
-
-  private async resolveCredential(credentialResource: string | undefined): Promise<{
-    apiKey: string;
-    baseUrl?: string;
-    proxyUrl?: string;
-  }> {
-    if (!credentialResource) {
-      return { apiKey: '' };
-    }
-
-    const credential = await this.db.findByIri(Credential, credentialResource);
-    if (!credential) {
-      logger.warn(`Credential not found: ${credentialResource}`);
-      return { apiKey: '' };
-    }
-
-    return {
-      apiKey: (credential as any).apiKey ?? '',
-      baseUrl: (credential as any).baseUrl ?? undefined,
-      proxyUrl: (credential as any).proxyUrl ?? undefined,
     };
   }
 
