@@ -17,6 +17,24 @@ class RecordingRuntimeBackend implements RunExecutionBackend {
   }
 }
 
+class ToolContinuationRuntimeBackend implements RunExecutionBackend {
+  public readonly inputs: RunExecutionInput[] = [];
+
+  public async *start(input: RunExecutionInput): AsyncIterable<AgentRuntimeEvent> {
+    this.inputs.push(input);
+    if (!input.continuation) {
+      yield {
+        type: 'tool_call',
+        requestId: 'handler-tool-request',
+        name: 'pick_file',
+        arguments: JSON.stringify({ prompt: 'choose file' }),
+      };
+      return;
+    }
+    yield { type: 'text', text: 'continued over HTTP' };
+  }
+}
+
 const authMiddleware = new AuthMiddleware({
   authenticator: {
     canAuthenticate: () => true,
@@ -173,4 +191,100 @@ describe('ChatKitHandler Integration', () => {
       await runtimeServer.stop();
     }
   });
+
+  it('validates HTTP client-tool continuation before issuing its transient runtime key', async () => {
+    const port = await getFreePort();
+    const runtimeServer = new ApiServer({ port, authMiddleware });
+    const store = new InMemoryStore<StoreContext>();
+    const backend = new ToolContinuationRuntimeBackend();
+    let issued = 0;
+    const issuer = {
+      issue: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: `handler-continuation-${++issued}`,
+      })),
+    };
+    const service = new ChatKitService<StoreContext>({
+      store,
+      enableAgentRuntime: true,
+      runExecutionBackend: backend,
+      aiConnectionInvocationKeyIssuer: issuer,
+      requireAiConnectionInvocationKeyIssuer: true,
+    });
+    registerChatKitRoutes(runtimeServer, { chatKitService: service });
+    await runtimeServer.start();
+
+    try {
+      const createResponse = await fetch(`http://localhost:${port}/v1/chatkit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-token',
+        },
+        body: JSON.stringify({
+          type: 'threads.create',
+          params: {
+            workspace: `file://localhost${process.cwd()}`,
+            input: { content: [{ type: 'input_text', text: 'needs a tool' }] },
+          },
+          metadata: {
+            runtime: {
+              runner: { type: 'codex', protocol: 'acp' },
+              aiConnection: { baseUrl: 'http://127.0.0.1:3000/v1' },
+            },
+          },
+        }),
+      });
+      const createEvents = parseSse(await createResponse.text());
+      const threadId = createEvents.find((event) => event.type === 'thread.created')?.thread.id;
+      const toolItem = createEvents.find(
+        (event) => event.type === 'thread.item.added' && event.item?.type === 'client_tool_call',
+      )?.item;
+
+      const continueRequest = {
+        type: 'threads.add_client_tool_output',
+        params: {
+          thread_id: threadId,
+          item_id: toolItem.id,
+          output: 'README.md',
+        },
+      };
+      const continueResponse = await fetch(`http://localhost:${port}/v1/chatkit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-token',
+        },
+        body: JSON.stringify(continueRequest),
+      });
+      await continueResponse.text();
+      expect(continueResponse.status).toBe(200);
+      expect(backend.inputs[1].continuation).toEqual({
+        kind: 'client_tool_output',
+        itemId: toolItem.id,
+      });
+      expect(backend.inputs[1].config.aiConnection?.gatewayKey).toBe('handler-continuation-2');
+
+      const replayResponse = await fetch(`http://localhost:${port}/v1/chatkit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer test-token',
+        },
+        body: JSON.stringify(continueRequest),
+      });
+      await replayResponse.text();
+      expect(issuer.issue).toHaveBeenCalledTimes(2);
+      expect(backend.inputs).toHaveLength(2);
+    } finally {
+      await runtimeServer.stop();
+    }
+  });
 });
+
+function parseSse(body: string): any[] {
+  return body
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice(6)));
+}

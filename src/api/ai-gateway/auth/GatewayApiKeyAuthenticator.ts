@@ -7,6 +7,7 @@ import {
   parseGatewayApiKey,
   verifyGatewayApiKeySecret,
 } from './GatewayApiKey';
+import type { InvocationTokenClaims, InvocationTokenCodec } from './InvocationTokenCodec';
 
 export interface GatewayAccessKeyRecord {
   id: string;
@@ -38,7 +39,9 @@ export interface GatewayApiKeyAuthenticatorOptions {
   repository: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   requiredScopes?: string[];
+  invocationTokenCodec?: InvocationTokenCodec;
   now?: () => Date;
+  maxClockSkewMs?: number;
 }
 
 const INVALID_GATEWAY_API_KEY = 'Invalid gateway API key';
@@ -48,23 +51,38 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
   private readonly repository: GatewayAccessKeyRepository;
   private readonly deployment: GatewayDeployment;
   private readonly requiredScopes: string[];
+  private readonly invocationTokenCodec?: InvocationTokenCodec;
   private readonly now: () => Date;
+  private readonly maxClockSkewMs: number;
   private readonly dummyHash: Promise<string>;
 
   public constructor(options: GatewayApiKeyAuthenticatorOptions) {
     this.repository = options.repository;
     this.deployment = options.deployment;
     this.requiredScopes = options.requiredScopes ?? [...DEFAULT_GATEWAY_API_KEY_SCOPES];
+    this.invocationTokenCodec = options.invocationTokenCodec;
     this.now = options.now ?? (() => new Date());
+    this.maxClockSkewMs = options.maxClockSkewMs ?? 5_000;
+    if (!Number.isSafeInteger(this.maxClockSkewMs) || this.maxClockSkewMs < 0 || this.maxClockSkewMs > 30_000) {
+      throw new Error('Gateway invocation token clock skew must be between 0 and 30000 milliseconds');
+    }
     this.dummyHash = hashGatewayApiKeySecret('xpod-gateway-missing-key-dummy-secret');
   }
 
   public canAuthenticate(request: IncomingMessage): boolean {
-    return Boolean(this.readGatewayKey(request));
+    const bearer = this.readBearer(request);
+    return Boolean(
+      bearer
+      && (bearer.startsWith('xpod_inv_v1.') || parseGatewayApiKey(bearer)),
+    );
   }
 
   public async authenticate(request: IncomingMessage): Promise<AuthResult> {
-    const parsed = this.readGatewayKey(request);
+    const bearer = this.readBearer(request);
+    if (bearer?.startsWith('xpod_inv_v1.')) {
+      return this.authenticateInvocationToken(bearer);
+    }
+    const parsed = bearer ? parseGatewayApiKey(bearer) : undefined;
     if (!parsed) {
       return { success: false, error: INVALID_GATEWAY_API_KEY };
     }
@@ -111,12 +129,40 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     return { success: true, context };
   }
 
-  private readGatewayKey(request: IncomingMessage): ReturnType<typeof parseGatewayApiKey> {
+  private authenticateInvocationToken(token: string): AuthResult {
+    const claims = this.invocationTokenCodec?.decode(token);
+    if (!claims || !this.validInvocationClaims(claims)) {
+      return invalidGatewayApiKey();
+    }
+    const context: SolidAuthContext = {
+      type: 'solid',
+      webId: claims.webId,
+      accountId: claims.webId,
+      viaGatewayApiKey: true,
+      internalInvocation: true,
+      gatewayKeyId: claims.jti,
+      scopes: claims.scopes,
+      tokenType: 'Bearer',
+    };
+    return { success: true, context };
+  }
+
+  private validInvocationClaims(claims: InvocationTokenClaims): boolean {
+    const now = this.now().getTime();
+    return (
+      claims.deployment === this.deployment
+      && claims.issuedAt.getTime() <= now + this.maxClockSkewMs
+      && claims.expiresAt.getTime() > now
+      && hasRequiredScopes(claims.scopes, this.requiredScopes)
+    );
+  }
+
+  private readBearer(request: IncomingMessage): string | undefined {
     const authorization = request.headers.authorization;
     if (!authorization?.startsWith('Bearer ')) {
       return undefined;
     }
-    return parseGatewayApiKey(authorization.slice(7).trim());
+    return authorization.slice(7).trim();
   }
 }
 

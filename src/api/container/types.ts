@@ -44,6 +44,7 @@ import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRu
 import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 
 /**
  * 容器配置
@@ -216,6 +217,7 @@ export interface ApiContainerCradle {
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
   gatewayAccessKeyRepository: GatewayAccessKeyRepository;
+  invocationTokenCodec: InvocationTokenCodec;
   aiConnectionInvocationKeyIssuer: AiConnectionInvocationKeyIssuer;
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;

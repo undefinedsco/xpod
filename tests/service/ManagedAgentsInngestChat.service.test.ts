@@ -1629,18 +1629,27 @@ describe('Managed Agents Inngest Chat backend', () => {
         ],
       })),
     };
+    let issuedCount = 0;
+    const issuer = {
+      issue: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: `continuation-fixture-secret-${++issuedCount}`,
+        model: 'linx',
+      })),
+    };
     const service = new ChatKitService<StoreContext>({
       store,
       enableAgentRuntime: true,
       runExecutionBackend: backend,
       contextRetriever,
+      aiConnectionInvocationKeyIssuer: issuer,
+      requireAiConnectionInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'u1',
-      aiConnection: {
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'continuation-fixture-secret',
-        model: 'linx',
+      auth: {
+        type: 'solid' as const,
+        webId: 'https://pod.example/alice/profile/card#me',
       },
     };
 
@@ -1689,8 +1698,8 @@ describe('Managed Agents Inngest Chat backend', () => {
     const continuedEvents = parseSseDataLines(continuedChunks);
 
     expect(driver.inputs).toHaveLength(2);
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret');
-    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret');
+    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-1');
+    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-2');
     expect(JSON.stringify((await store.loadRun(runId, context)).metadata)).not.toContain('continuation-fixture-secret');
     expect(driver.inputs[1].runId).toBe(runId);
     expect(driver.inputs[1].continuation).toEqual({
@@ -1714,6 +1723,20 @@ describe('Managed Agents Inngest Chat backend', () => {
     expect(steps.map((step) => step.type)).toContain(XpodRunStepType.CONTINUE_REQUESTED);
     expect(steps.map((step) => step.type)).toContain(RunStepType.CLIENT_TOOL_OUTPUT);
     expect(steps.map((step) => step.type)).toContain(RunStepType.COMPLETED);
+
+    const replayed = await service.process(JSON.stringify({
+      type: 'threads.add_client_tool_output',
+      params: {
+        thread_id: thread.id,
+        item_id: toolItem.id,
+        output: 'replayed output',
+      },
+    }), context);
+    for await (const _chunk of replayed.type === 'streaming' ? replayed.stream() : []) {
+      // Drain the replay response.
+    }
+    expect(issuer.issue).toHaveBeenCalledTimes(2);
+    expect(driver.inputs).toHaveLength(2);
   });
 
   it('restores runtime input from persisted thread history on each run', async () => {

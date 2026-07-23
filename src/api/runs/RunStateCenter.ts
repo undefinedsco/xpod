@@ -73,6 +73,13 @@ export interface RunStateCenterOptions<TContext = StoreContext> {
   contextRetriever?: RunContextRetriever<TContext>;
 }
 
+export interface PreparedClientToolOutput {
+  threadRef: ThreadRef;
+  item: ClientToolCallItem;
+  output: string;
+  run: RunRecordData;
+}
+
 /**
  * Run is the xpod-side state center for Agent execution.
  *
@@ -251,17 +258,42 @@ export class RunStateCenter<TContext = StoreContext> {
     return retrieved;
   }
 
+  public async prepareClientToolOutput(input: {
+    threadRef: ThreadRef;
+    itemId: string;
+    output: string;
+    context: TContext;
+  }): Promise<PreparedClientToolOutput | undefined> {
+    const { threadRef, itemId, output, context } = input;
+    const item = await this.store.loadItem(threadRef, itemId, context);
+    if (item.type !== 'client_tool_call' || item.status !== 'pending') {
+      return undefined;
+    }
+    const run = await this.resolveWaitingRunForToolOutput(item, threadRef, context);
+    if (!run) {
+      return undefined;
+    }
+    return { threadRef, item, output, run };
+  }
+
   public async *completeClientToolOutput(input: {
     threadRef: ThreadRef;
     itemId: string;
     output: string;
     context: TContext;
   }): AsyncIterable<RunStateEvent> {
-    const { threadRef, itemId, output, context } = input;
-    const item = await this.store.loadItem(threadRef, itemId, context);
-    if (item.type !== 'client_tool_call') {
+    const prepared = await this.prepareClientToolOutput(input);
+    if (!prepared) {
       return;
     }
+    yield* this.completePreparedClientToolOutput(prepared, input.context);
+  }
+
+  public async *completePreparedClientToolOutput(
+    prepared: PreparedClientToolOutput,
+    context: TContext,
+  ): AsyncIterable<RunStateEvent> {
+    const { threadRef, item, output, run } = prepared;
 
     const updatedItem: ClientToolCallItem = {
       ...item,
@@ -270,11 +302,6 @@ export class RunStateCenter<TContext = StoreContext> {
     };
     await this.store.saveItem(threadRef, updatedItem, context);
     yield { type: 'item_done', item: updatedItem };
-
-    const run = await this.resolveWaitingRunForToolOutput(updatedItem, threadRef, context);
-    if (!run) {
-      return;
-    }
 
     const now = nowTimestamp();
     await this.appendRunStep(run, RunStepType.CLIENT_TOOL_OUTPUT, context, {

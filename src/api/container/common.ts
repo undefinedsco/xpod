@@ -21,6 +21,7 @@ import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAcce
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import {
   BrowserAssistedApiKeyConnectAdapter,
@@ -134,9 +135,22 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    aiConnectionInvocationKeyIssuer: asFunction(({ config, gatewayAccessKeyRepository }: ApiContainerCradle) => {
+    invocationTokenCodec: asFunction(({ config }: ApiContainerCradle) => {
+      if (!config.gatewayLocatorSecret) {
+        throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for invocation token encryption');
+      }
+      return new AesInvocationTokenCodec({
+        active: {
+          kid: config.gatewayLocatorKeyId ?? 'active',
+          secret: config.gatewayLocatorSecret,
+        },
+        previous: config.gatewayPreviousLocatorSecrets,
+      });
+    }).singleton(),
+
+    aiConnectionInvocationKeyIssuer: asFunction(({ config, invocationTokenCodec }: ApiContainerCradle) => {
       return new AiConnectionInvocationKeyIssuer({
-        repository: gatewayAccessKeyRepository,
+        codec: invocationTokenCodec,
         deployment: config.edition,
         baseUrl: resolveAiConnectionBaseUrl(config),
       });
@@ -316,7 +330,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, config }: ApiContainerCradle) => {
+    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, invocationTokenCodec, config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
       });
@@ -335,6 +349,7 @@ export function registerCommonServices(
 
       const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
         repository: gatewayAccessKeyRepository,
+        invocationTokenCodec,
         deployment: config.edition,
       });
 

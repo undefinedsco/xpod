@@ -338,14 +338,18 @@ export class ChatKitService<TContext = StoreContext> {
     context: TContext,
   ): AsyncIterable<ThreadStreamEvent> {
     const threadRef = this.threadRefFromParams(params);
+    const prepared = await this.runStateCenter.prepareClientToolOutput({
+      threadRef,
+      itemId: params.item_id,
+      output: params.output,
+      context,
+    });
+    if (!prepared) {
+      return;
+    }
     const executionContext = await this.withInvocationAiConnection(context);
     for await (
-      const event of this.runStateCenter.completeClientToolOutput({
-        threadRef,
-        itemId: params.item_id,
-        output: params.output,
-        context: executionContext,
-      })
+      const event of this.runStateCenter.completePreparedClientToolOutput(prepared, executionContext)
     ) {
       yield this.projectRunStateEvent(event);
     }

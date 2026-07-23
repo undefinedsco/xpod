@@ -22,6 +22,8 @@ export interface SolidAuthContext {
   viaApiKey?: boolean;
   /** Whether this was authenticated via an Xpod Gateway API key. */
   viaGatewayApiKey?: boolean;
+  /** Whether this principal came from a stateless internal runtime invocation token. */
+  internalInvocation?: boolean;
   /** Opaque Gateway API key id, present only for gateway-key principals. */
   gatewayKeyId?: string;
   /** Gateway/API scopes bound to the authenticated principal. */
