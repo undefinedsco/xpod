@@ -272,6 +272,41 @@ describe('VercelChatService AI Connection gateway adapter', () => {
     expect(iteratorReturn).toHaveBeenCalled();
   });
 
+  it('returns a late stream iterator without calling next when cancelled while execute is pending', async () => {
+    const { service, gateway } = createService();
+    let resolveExecute: ((value: Awaited<ReturnType<typeof gateway.execute>>) => void) | undefined;
+    const iteratorReturn = vi.fn(async() => ({ done: true, value: undefined }));
+    const iterator = {
+      next: vi.fn(async() => ({ done: true, value: undefined }) as IteratorResult<GatewayEvent>),
+      return: iteratorReturn,
+    };
+    gateway.execute.mockImplementationOnce(async(input: GatewayExecutionInput) => new Promise((resolve) => {
+      resolveExecute = () => resolve({
+        protocol: input.protocol,
+        frontend: new FakeFrontend(),
+        request: { model: 'linx' } as any,
+        route: {} as any,
+        events: {
+          [Symbol.asyncIterator]: () => iterator,
+        },
+      });
+    }));
+
+    const result = await service.stream({
+      model: 'linx',
+      messages: [{ role: 'user', content: 'ping' }],
+      stream: true,
+    }, solidAuth as any);
+    const response = result.toTextStreamResponse();
+    await waitUntil(() => expect(gateway.execute).toHaveBeenCalled());
+
+    await response.body!.cancel();
+    resolveExecute?.(undefined as never);
+
+    await waitUntil(() => expect(iteratorReturn).toHaveBeenCalled());
+    expect(iterator.next).not.toHaveBeenCalled();
+  });
+
   it('lists only AiGatewayService models', async () => {
     const { service, store, gateway } = createService();
 

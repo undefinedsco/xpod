@@ -14,6 +14,11 @@ export interface CodexRuntimeProjection {
   agentConfig?: ResolvedAgentConfig;
 }
 
+export interface CodexRuntimeFileSystemPort {
+  mkdirSync(path: string, options: { recursive: true }): unknown;
+  writeFileSync(path: fs.PathOrFileDescriptor, data: string, options: { encoding: BufferEncoding }): unknown;
+}
+
 /**
  * Projects Xpod's Pod-hosted Agent Profile into Codex's native local runtime
  * files. The Pod profile remains the source of truth; these files are an
@@ -21,6 +26,8 @@ export interface CodexRuntimeProjection {
  */
 export class CodexRuntimeProjector {
   private readonly logger = getLoggerFor(this);
+
+  public constructor(private readonly filesystem: CodexRuntimeFileSystemPort = fs) {}
 
   public project(options: CodexRuntimeProjection): void {
     const connection = requireAiConnectionRuntimeConfig(options, 'Codex runtime projection');
@@ -76,8 +83,8 @@ export class CodexRuntimeProjector {
     for (const skill of agentConfig?.skills ?? []) {
       try {
         const skillDir = path.join(skillsRoot, this.sanitizeFileSegment(skill.name));
-        fs.mkdirSync(skillDir, { recursive: true });
-        fs.writeFileSync(path.join(skillDir, 'SKILL.md'), skill.content, { encoding: 'utf8' });
+        this.filesystem.mkdirSync(skillDir, { recursive: true });
+        this.filesystem.writeFileSync(path.join(skillDir, 'SKILL.md'), skill.content, { encoding: 'utf8' });
       } catch (error) {
         this.logger.debug(`Failed to project optional Codex skill '${skill.name}': ${String(error)}`);
       }
@@ -141,7 +148,7 @@ export class CodexRuntimeProjector {
 
   private ensureRequiredDir(dir: string, label: string): void {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      this.filesystem.mkdirSync(dir, { recursive: true });
     } catch (error) {
       throw new Error(`Failed to create required ${label} directory at ${dir}: ${this.errorMessage(error)}`);
     }
@@ -149,7 +156,7 @@ export class CodexRuntimeProjector {
 
   private ensureOptionalDir(dir: string): boolean {
     try {
-      fs.mkdirSync(dir, { recursive: true });
+      this.filesystem.mkdirSync(dir, { recursive: true });
       return true;
     } catch (error) {
       this.logger.debug(`Failed to create optional Codex directory at ${dir}: ${String(error)}`);
@@ -159,7 +166,7 @@ export class CodexRuntimeProjector {
 
   private writeRequiredFile(filePath: string, content: string, label: string): void {
     try {
-      fs.writeFileSync(filePath, content, { encoding: 'utf8' });
+      this.filesystem.writeFileSync(filePath, content, { encoding: 'utf8' });
     } catch (error) {
       throw new Error(`Failed to write required Codex ${label} at ${filePath}: ${this.errorMessage(error)}`);
     }

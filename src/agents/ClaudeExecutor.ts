@@ -10,7 +10,8 @@
  * - 流式输出
  *
  * 注意：
- * - Claude Agent SDK 需要在环境变量中设置 ANTHROPIC_API_KEY
+ * - Claude Agent SDK 需要 Anthropic-compatible env，但值必须来自
+ *   invocation-scoped Xpod AI Connection，不允许直接投递 Pod provider secret。
  * - SDK 会自动处理复杂的交互逻辑
  */
 
@@ -27,12 +28,17 @@ import type {
   ExecuteResult,
   BaseExecutorOptions,
 } from './types';
+import {
+  projectAnthropicCompatibleEnv,
+  requireAiConnectionRuntimeConfig,
+  sanitizeRuntimeEnv,
+} from '../runtime/safe-env';
 
 /**
  * Claude 鉴权错误
  */
 export class ClaudeAuthenticationError extends Error {
-  public constructor(message: string = 'Claude 未配置认证，请在环境变量中设置 ANTHROPIC_API_KEY') {
+  public constructor(message: string = 'Claude 未配置 AI Connection 认证') {
     super(message);
     this.name = 'ClaudeAuthenticationError';
   }
@@ -66,14 +72,19 @@ export class ClaudeExecutor extends BaseAgentExecutor {
    * 获取环境变量配置
    */
   private getEnvConfig(): Record<string, string | undefined> {
-    const env: Record<string, string | undefined> = { ...process.env };
+    const connection = this.requireAiConnection();
+    return {
+      ...sanitizeRuntimeEnv(process.env),
+      ...projectAnthropicCompatibleEnv(connection),
+    };
+  }
 
-    // 如果提供了 API Key，设置到环境变量
-    if (this.credential.apiKey) {
-      env['ANTHROPIC_API_KEY'] = this.credential.apiKey;
-    }
-
-    return env;
+  private requireAiConnection() {
+    return requireAiConnectionRuntimeConfig({
+      baseUrl: this.aiConnection?.baseUrl,
+      apiKey: this.aiConnection?.gatewayKey,
+      model: this.aiConnection?.model,
+    }, 'Claude executor');
   }
 
   /**
@@ -82,10 +93,6 @@ export class ClaudeExecutor extends BaseAgentExecutor {
   public async checkAuthentication(): Promise<AuthInfo> {
     try {
       const env = this.getEnvConfig();
-
-      if (!env['ANTHROPIC_API_KEY']) {
-        throw new ClaudeAuthenticationError('API Key 未配置');
-      }
 
       // 发送一个简单查询来验证认证
       const claudeQuery = await loadClaudeQuery();
@@ -129,11 +136,12 @@ export class ClaudeExecutor extends BaseAgentExecutor {
       if (
         errorMsg.includes('authentication') ||
         errorMsg.includes('api_key') ||
+        errorMsg.includes('AI Connection') ||
         errorMsg.includes('invalid') ||
         errorMsg.includes('401') ||
         errorMsg.includes('unauthorized')
       ) {
-        throw new ClaudeAuthenticationError(`Claude API Key 无效: ${errorMsg}`);
+        throw new ClaudeAuthenticationError(`Claude AI Connection 无效: ${errorMsg}`);
       }
 
       throw error;

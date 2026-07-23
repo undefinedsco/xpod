@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { CodexRuntimeProjector } from '../../src/api/chatkit/runtime/CodexRuntimeProjector';
 import type { ResolvedAgentConfig } from '../../src/agents/config/types';
 
@@ -88,28 +88,27 @@ describe('CodexRuntimeProjector', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-codex-projector-write-'));
     tempDirs.push(root);
     const codexHome = path.join(root, '.codex');
-    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((target: fs.PathOrFileDescriptor) => {
-      if (String(target).endsWith('auth.json')) {
-        throw new Error('disk denied');
-      }
-    });
+    const filesystem = {
+      mkdirSync: () => undefined,
+      writeFileSync: (target: fs.PathOrFileDescriptor) => {
+        if (String(target).endsWith('auth.json')) {
+          throw new Error('disk denied');
+        }
+      },
+    };
 
-    try {
-      expect(() => new CodexRuntimeProjector().project({
-        codexHome,
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        apiKey: 'gw-secret-key',
-        wireApi: 'responses',
-      })).toThrow(/auth\.json.*disk denied/);
+    expect(() => new CodexRuntimeProjector(filesystem).project({
+      codexHome,
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      apiKey: 'gw-secret-key',
+      wireApi: 'responses',
+    })).toThrow(/auth\.json.*disk denied/);
 
-      expect(() => new CodexRuntimeProjector().project({
-        codexHome,
-        baseUrl: 'http://127.0.0.1:3000/v1',
-        apiKey: 'gw-secret-key',
-        wireApi: 'responses',
-      })).not.toThrow(/gw-secret-key/);
-    } finally {
-      writeSpy.mockRestore();
-    }
+    expect(() => new CodexRuntimeProjector(filesystem).project({
+      codexHome,
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      apiKey: 'gw-secret-key',
+      wireApi: 'responses',
+    })).not.toThrow(/gw-secret-key/);
   });
 });

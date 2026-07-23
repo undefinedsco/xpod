@@ -237,9 +237,9 @@ await fuse.unmount();
 
 ```bash
 # --- Default Agent ---
-DEFAULT_PROVIDER=openrouter                      # 默认 AI 提供商
-DEFAULT_MODEL=stepfun/step-3.5-flash:free   # 默认模型
-DEFAULT_API_KEY=                                 # 默认 API Key（必填）
+AI_CONNECTION_BASE_URL=http://127.0.0.1:3000/v1  # Xpod AI Connection endpoint
+AI_CONNECTION_API_KEY=gw_...                     # Xpod-issued Gateway key（不是 provider secret）
+DEFAULT_MODEL=linx                               # 可选：经 AI Connection 路由的模型
 ```
 
 ## Default Agent System Prompt
@@ -319,15 +319,15 @@ X-Xpod-Default-Agent-Reason: no_user_config | config_invalid | rate_limited
 | `src/api/chatkit/default-agent.ts` | Default Agent 核心实现 |
 | `src/api/chatkit/ai-provider.ts` | 修改：添加降级逻辑 |
 | `src/api/handlers/ChatHandler.ts` | 修改：添加响应头 |
-| `example.env` | 新增 DEFAULT_* 环境变量 |
+| `example.env` | 配置 AI Connection 本地开发兜底 |
 | `packages/solid-fuse/` | （阶段二）FUSE 实现 |
 
 ## 验证方式
 
 ### 阶段一验证
 
-1. **无用户配置**：只配置 `DEFAULT_API_KEY`，发送聊天请求
-   - 预期：使用 Default Agent，响应头 `X-Xpod-Default-Agent: true`
+1. **无用户配置**：为本次 invocation 显式传入 AI Connection baseUrl/gatewayKey，发送聊天请求
+   - 预期：Default Agent 只通过 AI Connection 访问模型，不读取服务器 `DEFAULT_*` 或 provider secret
 
 2. **密钥收纳**：发送 "我的 OpenAI key 是 sk-test123"
    - 预期：识别并存储到 Pod，确认消息

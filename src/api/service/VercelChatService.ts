@@ -193,50 +193,72 @@ function gatewayExecutionToTextStreamResponse(
   const encoder = new TextEncoder();
   const abortController = new AbortController();
   let iterator: AsyncIterator<GatewayEvent> | undefined;
-  let returned = false;
+  let cancelRequested = false;
+  let iteratorReturned = false;
 
   const returnIterator = async (): Promise<void> => {
-    if (returned) {
+    if (!iterator) {
       return;
     }
-    returned = true;
+    if (iteratorReturned) {
+      return;
+    }
+    iteratorReturned = true;
     await iterator?.return?.();
   };
 
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      try {
-        const execution = await gateway.execute({
-          ...input,
-          signal: abortController.signal,
-        });
-        const serializer = execution.frontend.createEventSerializer();
-        iterator = execution.events[Symbol.asyncIterator]();
-        while (true) {
-          const result = await iterator.next();
-          if (result.done) {
-            break;
-          }
-          const event = result.value;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(serializer.serializeEvent(event))}\n\n`));
-        }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
-      } catch (error) {
-        if (abortController.signal.aborted) {
-          try {
-            controller.close();
-          } catch {
-            // Stream may already be closed by cancel().
-          }
-        } else {
-          controller.error(error);
-        }
-      } finally {
+  const pump = async (controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> => {
+    try {
+      const execution = await gateway.execute({
+        ...input,
+        signal: abortController.signal,
+      });
+      const serializer = execution.frontend.createEventSerializer();
+      iterator = execution.events[Symbol.asyncIterator]();
+      if (cancelRequested) {
         await returnIterator();
+        return;
       }
+      while (true) {
+        if (cancelRequested) {
+          break;
+        }
+        const result = await iterator.next();
+        if (result.done) {
+          break;
+        }
+        if (cancelRequested) {
+          break;
+        }
+        const event = result.value;
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(serializer.serializeEvent(event))}\n\n`));
+      }
+      if (cancelRequested) {
+        return;
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        try {
+          controller.close();
+        } catch {
+          // Stream may already be closed by cancel().
+        }
+      } else {
+        controller.error(error);
+      }
+    } finally {
+      await returnIterator();
+    }
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      void pump(controller);
     },
     async cancel() {
+      cancelRequested = true;
       abortController.abort();
       await returnIterator();
     },
