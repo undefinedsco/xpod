@@ -472,8 +472,12 @@ describe('ProviderQuotaAdapters', () => {
       credentialIri: 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi-two',
     };
     let releaseFetch: (() => void) | undefined;
+    let markFetchStarted: (() => void) | undefined;
     const fetchGate = new Promise<void>((resolve) => {
       releaseFetch = resolve;
+    });
+    const fetchStarted = new Promise<void>((resolve) => {
+      markFetchStarted = resolve;
     });
     const vault: CredentialVault = {
       seal: vi.fn(),
@@ -483,6 +487,7 @@ describe('ProviderQuotaAdapters', () => {
     const adapter: ProviderQuotaAdapter = {
       provider: 'kimi',
       fetch: vi.fn(async (input): Promise<NormalizedQuotaSnapshot> => {
+        markFetchStarted?.();
         await fetchGate;
         return {
           credential: input.credential.credentialIri,
@@ -513,12 +518,10 @@ describe('ProviderQuotaAdapters', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      credentialIri: firstCredential.credentialIri,
-      refresh: true,
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+        credentialIri: firstCredential.credentialIri,
+        refresh: true,
+      });
+    await fetchStarted;
     expect(adapter.fetch).toHaveBeenCalledTimes(1);
     expect(vault.open).toHaveBeenCalledTimes(1);
     releaseFetch?.();

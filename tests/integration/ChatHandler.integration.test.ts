@@ -3,6 +3,7 @@ import { ApiServer } from '../../src/api/ApiServer';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { registerChatRoutes, type ChatCompletionResponse } from '../../src/api/handlers/ChatHandler';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from '../../src/api/ai-gateway/protocol';
+import { GatewayProtocolError } from '../../src/api/ai-gateway/errors';
 import { getFreePort } from '../../src/runtime/port-finder';
 
 const authMiddleware = new AuthMiddleware({
@@ -20,9 +21,9 @@ describe('ChatHandler Integration', () => {
   let port: number;
   let baseUrl: string;
 
-  const chatService = {
+  const aiGatewayService = {
     complete: vi.fn(),
-    stream: vi.fn(),
+    execute: vi.fn(),
     listModels: vi.fn(),
   };
 
@@ -41,27 +42,44 @@ describe('ChatHandler Integration', () => {
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
   };
 
-  const makeStreamResult = () => ({
-    toTextStreamResponse: () => new Response('STREAM OK', {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-    }),
-  });
-
   beforeAll(async () => {
     port = await getFreePort(10000);
     baseUrl = `http://localhost:${port}`;
     server = new ApiServer({ port, authMiddleware });
-    registerChatRoutes(server, { chatService: chatService as any });
+    registerChatRoutes(server, { aiGatewayService: aiGatewayService as any });
     await server.start();
   });
 
   beforeEach(() => {
-    chatService.complete.mockReset();
-    chatService.stream.mockReset();
-    chatService.listModels.mockReset();
-    chatService.complete.mockResolvedValue(defaultCompletion);
-    chatService.stream.mockResolvedValue(makeStreamResult());
-    chatService.listModels.mockResolvedValue([{ id: 'xpod-default', object: 'model' }]);
+    aiGatewayService.complete.mockReset();
+    aiGatewayService.execute.mockReset();
+    aiGatewayService.listModels.mockReset();
+    aiGatewayService.complete.mockImplementation(async({ body }: any) => {
+      if (!body.model) {
+        throw new GatewayProtocolError('model is required', {
+          code: 'invalid_request',
+          status: 400,
+          details: { legacyCode: 'missing_model' },
+        });
+      }
+      if (!Array.isArray(body.messages) || body.messages.length === 0) {
+        throw new GatewayProtocolError('messages array is required and must not be empty', {
+          code: 'invalid_request',
+          status: 400,
+          details: { legacyCode: 'missing_messages' },
+        });
+      }
+      return defaultCompletion;
+    });
+    aiGatewayService.execute.mockResolvedValue({
+      frontend: new ChatCompletionsFrontend(),
+      events: (async function*() {
+        yield { type: 'response.started', id: 'stream_gateway' };
+        yield { type: 'text.delta', text: 'STREAM OK' };
+        yield { type: 'response.completed', finishReason: 'stop' };
+      })(),
+    });
+    aiGatewayService.listModels.mockResolvedValue([{ id: 'xpod-default', object: 'model' }]);
   });
 
   afterAll(async () => {
@@ -76,7 +94,7 @@ describe('ChatHandler Integration', () => {
     });
     expect(response.status).toBe(400);
     const data = await response.json() as any;
-    expect(data.error.code).toBe('invalid_body');
+    expect(data.error.code).toBe('invalid_request');
   });
 
   it('should require model', async () => {
@@ -87,7 +105,7 @@ describe('ChatHandler Integration', () => {
     });
     expect(response.status).toBe(400);
     const data = await response.json() as any;
-    expect(data.error.code).toBe('missing_model');
+    expect(data.error.details.legacyCode).toBe('missing_model');
   });
 
   it('should require non-empty messages array', async () => {
@@ -98,13 +116,13 @@ describe('ChatHandler Integration', () => {
     });
     expect(response.status).toBe(400);
     const data = await response.json() as any;
-    expect(data.error.code).toBe('missing_messages');
+    expect(data.error.details.legacyCode).toBe('missing_messages');
   });
 
   it('should map model_not_configured to 400', async () => {
     const error = new Error('Model gpt-4 is not configured');
-    (error as any).code = 'model_not_configured';
-    chatService.complete.mockRejectedValueOnce(error);
+    (error as any).status = 400;
+    aiGatewayService.complete.mockRejectedValueOnce(error);
 
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -113,7 +131,7 @@ describe('ChatHandler Integration', () => {
     });
     expect(response.status).toBe(400);
     const data = await response.json() as any;
-    expect(data.error.code).toBe('model_not_configured');
+    expect(data.error.code).toBe('provider_error');
   }, 10000);
 
   it('should stream responses when stream=true', async () => {
@@ -128,11 +146,10 @@ describe('ChatHandler Integration', () => {
     });
     expect(response.status).toBe(200);
     const contentType = response.headers.get('content-type') ?? '';
-    // AI SDK v6 uses toTextStreamResponse which returns text/plain
-    expect(contentType).toContain('text/plain');
+    expect(contentType).toContain('text/event-stream');
     const text = await response.text();
     expect(text).toContain('STREAM OK');
-    expect(chatService.stream).toHaveBeenCalled();
+    expect(aiGatewayService.execute).toHaveBeenCalled();
   });
 
   it('should preserve OpenAI tool-call fields at the chat completions boundary', async () => {
@@ -182,8 +199,11 @@ describe('ChatHandler Integration', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(chatService.complete).toHaveBeenCalledOnce();
-    expect(chatService.complete.mock.calls[0]?.[0]).toEqual(body);
+    expect(aiGatewayService.complete).toHaveBeenCalledOnce();
+    expect(aiGatewayService.complete.mock.calls[0]?.[0]).toMatchObject({
+      protocol: 'chatCompletions',
+      body,
+    });
   });
 
   it('should list models', async () => {
@@ -198,40 +218,10 @@ describe('ChatHandler Integration', () => {
 });
 
 describe('ChatHandler without service', () => {
-  let server: ApiServer;
-  let port: number;
-  let baseUrl: string;
+  it('throws at registration instead of installing legacy public v1 route handlers', () => {
+    const server = new ApiServer({ port: 0, authMiddleware });
 
-  beforeAll(async () => {
-    port = await getFreePort(11000);
-    baseUrl = `http://localhost:${port}`;
-    server = new ApiServer({ port, authMiddleware });
-    registerChatRoutes(server, {});
-    await server.start();
-  });
-
-  afterAll(async () => {
-    await server.stop();
-  });
-
-  it('should return 503 when chat service is not configured', async () => {
-    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
-      body: JSON.stringify({ model: 'xpod-default', messages: [{ role: 'user', content: 'hi' }] }),
-    });
-    expect(response.status).toBe(503);
-    const data = await response.json() as any;
-    expect(data.error.code).toBe('service_not_configured');
-  });
-
-  it('should return 503 for models when chat service is not configured', async () => {
-    const response = await fetch(`${baseUrl}/v1/models`, {
-      headers: { 'Authorization': 'Bearer test-token' },
-    });
-    expect(response.status).toBe(503);
-    const data = await response.json() as any;
-    expect(data.error).toBe('Chat service not configured');
+    expect(() => registerChatRoutes(server, {})).toThrow(/AiGatewayService/);
   });
 });
 

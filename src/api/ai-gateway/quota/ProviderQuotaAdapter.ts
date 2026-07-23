@@ -120,6 +120,36 @@ export class ProviderQuotaService {
   public async status(input: ProviderQuotaStatusInput): Promise<NormalizedQuotaSnapshot> {
     const provider = normalizeProvider(input.provider);
     const now = input.now ?? this.now();
+    if (input.refresh && input.credentialIri) {
+      const refreshKey = quotaRefreshKey({
+        webId: input.webId,
+        deployment: input.deployment,
+        provider,
+        credentialIri: input.credentialIri,
+      });
+      const inFlight = this.inFlightRefreshes.get(refreshKey);
+      if (inFlight) {
+        return inFlight;
+      }
+      const refresh = this.refreshAndCache({
+        input,
+        provider,
+        now,
+      }).finally(() => {
+        this.inFlightRefreshes.delete(refreshKey);
+      });
+      this.inFlightRefreshes.set(refreshKey, refresh);
+      return refresh;
+    }
+
+    return this.statusAfterImplicitCredentialResolution(input, provider, now);
+  }
+
+  private async statusAfterImplicitCredentialResolution(
+    input: ProviderQuotaStatusInput,
+    provider: string,
+    now: Date,
+  ): Promise<NormalizedQuotaSnapshot> {
     const credential = await this.resolveCredential({
       webId: input.webId,
       deployment: input.deployment,
@@ -177,6 +207,32 @@ export class ProviderQuotaService {
     });
     this.inFlightRefreshes.set(refreshKey, refresh);
     return refresh;
+  }
+
+  private async refreshAndCache(input: {
+    input: ProviderQuotaStatusInput;
+    provider: string;
+    now: Date;
+  }): Promise<NormalizedQuotaSnapshot> {
+    const credential = await this.resolveCredential({
+      webId: input.input.webId,
+      deployment: input.input.deployment,
+      provider: input.provider,
+      credentialIri: input.input.credentialIri,
+    });
+    const adapter = this.adapters.get(input.provider);
+    if (!adapter) {
+      throw new Error(`quota_adapter_not_found:${input.provider}`);
+    }
+    return this.fetchAndCache({
+      webId: input.input.webId,
+      deployment: input.input.deployment,
+      provider: input.provider,
+      credential,
+      adapter,
+      now: input.now,
+      signal: input.input.signal,
+    });
   }
 
   private async fetchAndCache(input: {

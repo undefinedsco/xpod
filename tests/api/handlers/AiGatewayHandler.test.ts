@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AiGatewayService, type GatewayCredentialStore } from '../../../src/api/ai-gateway/AiGatewayService';
 import { registerAiGatewayRoutes } from '../../../src/api/handlers/AiGatewayHandler';
+import { ChatCompletionsFrontend } from '../../../src/api/ai-gateway/protocol';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
@@ -299,6 +300,97 @@ describe('AiGatewayHandler', () => {
     expect(messages.body.trim().endsWith('data: [DONE]')).toBe(true);
     expect(chat.body).toContain('"choices":[{"index":0,"delta":{"content":"hel"}}]');
     expect(chat.body.trim().endsWith('data: [DONE]')).toBe(true);
+  });
+
+  it('returns normalized HTTP JSON without SSE headers when streaming fails before the first event', async () => {
+    const { server, routes } = createServer();
+    const service = {
+      execute: vi.fn(async() => ({
+        frontend: new ChatCompletionsFrontend(),
+        events: {
+          async *[Symbol.asyncIterator]() {
+            throw Object.assign(new Error('No usable credential is available for the requested model'), { status: 403 });
+          },
+        },
+      })),
+      complete: vi.fn(),
+      listModels: vi.fn(),
+    };
+    registerAiGatewayRoutes(server, { service: service as any });
+
+    const res = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', {
+      model: 'gpt-5',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    }));
+
+    expect(res.statusCode).toBe(403);
+    expect(res.headers['content-type']).toContain('application/json');
+    expect(res.headers['content-type']).not.toContain('text/event-stream');
+    expect(JSON.parse(res.body).error.code).toBe('provider_error');
+  });
+
+  it('aggregates reasoning, signatures, tools, usage and finish reason in all non-streaming protocol shapes', async () => {
+    const { routes } = createFixture({
+      events: [
+        { type: 'response.started', id: 'resp_reasoning' },
+        { type: 'reasoning.delta', text: 'think' },
+        { type: 'reasoning.signature', provider: 'anthropic', signature: 'sig_1' },
+        { type: 'text.delta', text: 'answer' },
+        { type: 'tool.started', callId: 'call_1', name: 'lookup' },
+        { type: 'tool.arguments.delta', callId: 'call_1', delta: '{"q":"xpod"}' },
+        { type: 'tool.completed', callId: 'call_1' },
+        { type: 'usage', usage: { inputTokens: 7, outputTokens: 11, totalTokens: 18 } },
+        { type: 'response.completed', finishReason: 'tool_use' },
+      ],
+    });
+
+    const responses = await callRoute(routes, 'POST /v1/responses', request('/v1/responses', {
+      model: 'gpt-5',
+      input: 'hi',
+    }));
+    const messages = await callRoute(routes, 'POST /v1/messages', request('/v1/messages', {
+      model: 'gpt-5',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'hi' }],
+    }));
+    const chat = await callRoute(routes, 'POST /v1/chat/completions', request('/v1/chat/completions', {
+      model: 'gpt-5',
+      messages: [{ role: 'user', content: 'hi' }],
+    }));
+
+    expect(JSON.parse(responses.body)).toMatchObject({
+      output: expect.arrayContaining([
+        { type: 'reasoning', summary: [{ type: 'summary_text', text: 'think' }], encrypted_content: 'sig_1' },
+        { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"q":"xpod"}' },
+      ]),
+      usage: { input_tokens: 7, output_tokens: 11, total_tokens: 18 },
+    });
+    expect(JSON.parse(messages.body)).toMatchObject({
+      content: expect.arrayContaining([
+        { type: 'thinking', thinking: 'think', signature: 'sig_1' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { q: 'xpod' } },
+      ]),
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 7, output_tokens: 11 },
+    });
+    expect(JSON.parse(chat.body)).toMatchObject({
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: 'answer',
+          reasoning_content: 'think',
+          reasoning_signature: 'sig_1',
+          tool_calls: [{
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{"q":"xpod"}' },
+          }],
+        },
+        finish_reason: 'tool_use',
+      }],
+      usage: { prompt_tokens: 7, completion_tokens: 11, total_tokens: 18 },
+    });
   });
 
   it('aborts the upstream adapter when the client connection closes', async () => {

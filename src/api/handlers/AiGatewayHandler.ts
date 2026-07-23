@@ -104,17 +104,39 @@ export class AiGatewayHandler {
     frontend: GatewayProtocolFrontend,
     events: AsyncIterable<GatewayEvent>,
   ): Promise<void> {
+    const iterator = events[Symbol.asyncIterator]();
+    let first: IteratorResult<GatewayEvent>;
+    try {
+      first = await iterator.next();
+    } catch (error) {
+      await iterator.return?.();
+      throw error;
+    }
+    if (first.done) {
+      await iterator.return?.();
+      throw new GatewayProtocolError('Provider stream ended before emitting any gateway event', {
+        code: 'provider_error',
+        status: 502,
+      });
+    }
+
     response.statusCode = 200;
     response.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     response.setHeader('Cache-Control', 'no-cache, no-transform');
     response.setHeader('Connection', 'keep-alive');
     const serializer = frontend.createEventSerializer();
     try {
-      for await (const event of events) {
-        response.write(`data: ${JSON.stringify(serializer.serializeEvent(event))}\n\n`);
+      response.write(`data: ${JSON.stringify(serializer.serializeEvent(first.value))}\n\n`);
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) {
+          break;
+        }
+        response.write(`data: ${JSON.stringify(serializer.serializeEvent(next.value))}\n\n`);
       }
       response.write('data: [DONE]\n\n');
     } catch (error) {
+      await iterator.return?.();
       this.writeTerminalStreamError(response, error);
     } finally {
       response.end();

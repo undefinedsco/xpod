@@ -401,6 +401,11 @@ function aggregateEvents(
       status: 'completed',
       model,
       output: [
+        ...(state.reasoning ? [{
+          type: 'reasoning',
+          summary: [{ type: 'summary_text', text: state.reasoning }],
+          ...(state.reasoningSignatures[0] ? { encrypted_content: state.reasoningSignatures[0].signature } : {}),
+        }] : []),
         {
           type: 'message',
           role: 'assistant',
@@ -423,6 +428,11 @@ function aggregateEvents(
       role: 'assistant',
       model,
       content: [
+        ...(state.reasoning ? [{
+          type: 'thinking',
+          thinking: state.reasoning,
+          ...(state.reasoningSignatures[0] ? { signature: state.reasoningSignatures[0].signature } : {}),
+        }] : []),
         ...(state.text ? [{ type: 'text', text: state.text }] : []),
         ...state.tools.map((tool) => ({
           type: 'tool_use',
@@ -445,6 +455,8 @@ function aggregateEvents(
       message: {
         role: 'assistant',
         content: state.text || null,
+        ...(state.reasoning ? { reasoning_content: state.reasoning } : {}),
+        ...(state.reasoningSignatures[0] ? { reasoning_signature: state.reasoningSignatures[0].signature } : {}),
         ...(state.tools.length > 0 ? {
           tool_calls: state.tools.map((tool) => ({
             id: tool.id,
@@ -468,10 +480,14 @@ function collectEventState(events: GatewayEvent[]): {
   usage?: GatewayUsage;
   finishReason?: string;
   tools: Array<{ id: string; name: string; arguments: string }>;
+  reasoning: string;
+  reasoningSignatures: Array<{ provider: string; signature: string }>;
 } {
   const tools = new Map<string, { id: string; name: string; arguments: string }>();
   let id: string | undefined;
   let text = '';
+  let reasoning = '';
+  const reasoningSignatures: Array<{ provider: string; signature: string }> = [];
   let usage: GatewayUsage | undefined;
   let finishReason: string | undefined;
   for (const event of events) {
@@ -479,6 +495,10 @@ function collectEventState(events: GatewayEvent[]): {
       id = event.id;
     } else if (event.type === 'text.delta') {
       text += event.text;
+    } else if (event.type === 'reasoning.delta') {
+      reasoning += event.text;
+    } else if (event.type === 'reasoning.signature') {
+      reasoningSignatures.push({ provider: event.provider, signature: event.signature });
     } else if (event.type === 'tool.started') {
       tools.set(event.callId, { id: event.callId, name: event.name, arguments: '' });
     } else if (event.type === 'tool.arguments.delta') {
@@ -498,6 +518,8 @@ function collectEventState(events: GatewayEvent[]): {
     usage,
     finishReason,
     tools: Array.from(tools.values()),
+    reasoning,
+    reasoningSignatures,
   };
 }
 

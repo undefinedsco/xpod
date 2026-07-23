@@ -114,9 +114,7 @@ function registerSharedRoutes(
     apiBaseUrl: config.cloudApiEndpoint ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
-  const aiGatewayService = config.aiGatewayInferenceEnabled
-    ? container.resolve('aiGatewayService')
-    : undefined;
+  const aiGatewayService = container.resolve('aiGatewayService');
   registerChatRoutes(server, { chatService, aiGatewayService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });

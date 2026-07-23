@@ -74,6 +74,11 @@ describe('registerRoutes mode wiring', () => {
       config: { ...baseConfig, edition, ...overrides.config },
       nodeRepo: {},
       chatService: {},
+      aiGatewayService: {
+        complete: vi.fn(),
+        execute: vi.fn(),
+        listModels: vi.fn(),
+      },
       chatKitService: {},
       chatKitStore: {
         listRuns: vi.fn(),
@@ -146,6 +151,10 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['POST /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['GET /api/ai/gateway/keys']).toBeTypeOf('function');
     expect(routes['DELETE /api/ai/gateway/keys/:keyId']).toBeTypeOf('function');
+    expect(routes['POST /v1/responses']).toBeTypeOf('function');
+    expect(routes['POST /v1/messages']).toBeTypeOf('function');
+    expect(routes['POST /v1/chat/completions']).toBeTypeOf('function');
+    expect(routes['GET /v1/models']).toBeTypeOf('function');
     expect(routes['GET /_matrix/client/versions']).toBeTypeOf('function');
     expect(routes['GET /api/_matrix/client/versions']).toBeUndefined();
     expect(routes['GET /matrix/_matrix/client/versions']).toBeUndefined();

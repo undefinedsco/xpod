@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerChatRoutes } from '../../../src/api/handlers/ChatHandler';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 
@@ -46,13 +47,19 @@ function response(): any {
 
 describe('ChatHandler gateway-key scopes', () => {
   it('requires inference:write for inference endpoints', async () => {
-    const chatService = {
-      complete: vi.fn(),
-      stream: vi.fn(),
+    const aiGatewayService = {
+      complete: vi.fn(async() => {
+        throw new GatewayProtocolError('Missing required scope: inference:write', {
+          code: 'invalid_request',
+          status: 403,
+          details: { scope: 'inference:write' },
+        });
+      }),
+      execute: vi.fn(),
       listModels: vi.fn(),
     };
     const { server, routes } = createServer();
-    registerChatRoutes(server, { chatService: chatService as any });
+    registerChatRoutes(server, { aiGatewayService: aiGatewayService as any });
     const res = response();
 
     await routes['POST /v1/chat/completions'](request(['models:read'], {
@@ -62,29 +69,35 @@ describe('ChatHandler gateway-key scopes', () => {
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toMatchObject({
-      code: 'insufficient_scope',
+      code: 'invalid_request',
       message: 'Missing required scope: inference:write',
     });
-    expect(chatService.complete).not.toHaveBeenCalled();
+    expect(aiGatewayService.complete).toHaveBeenCalledOnce();
   });
 
   it('requires models:read for model listing', async () => {
-    const chatService = {
+    const aiGatewayService = {
       complete: vi.fn(),
-      stream: vi.fn(),
-      listModels: vi.fn(),
+      execute: vi.fn(),
+      listModels: vi.fn(async() => {
+        throw new GatewayProtocolError('Missing required scope: models:read', {
+          code: 'invalid_request',
+          status: 403,
+          details: { scope: 'models:read' },
+        });
+      }),
     };
     const { server, routes } = createServer();
-    registerChatRoutes(server, { chatService: chatService as any });
+    registerChatRoutes(server, { aiGatewayService: aiGatewayService as any });
     const res = response();
 
     await routes['GET /v1/models'](request(['inference:write']), res, {});
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toMatchObject({
-      code: 'insufficient_scope',
+      code: 'invalid_request',
       message: 'Missing required scope: models:read',
     });
-    expect(chatService.listModels).not.toHaveBeenCalled();
+    expect(aiGatewayService.listModels).toHaveBeenCalledOnce();
   });
 });
