@@ -35,6 +35,39 @@ Codex/Claude Code/Pi/CodeBuddy -> Gateway API Key -> Protocol Frontend
   -> Model Router -> Provider Adapter -> 上游模型
 ```
 
+## Applet SDK 与 Solid 登录边界
+
+Solid OIDC 的协议与安全实现直接使用 `@inrupt/solid-client-authn-browser`。LinX、独立
+Applet Host 和 AI Connection 不自行实现 OIDC、DPoP、token 刷新或 callback 解析。
+Inrupt `Session` 是浏览器登录状态的事实源，负责 `login()`、`logout()`、
+`handleIncomingRedirect()`、`restorePreviousSession` 和 authenticated fetch。
+
+Undefineds SDK 在 Inrupt 之上提供产品与运行时能力：
+
+- Applet Host 在一个窗口内持有唯一共享 Session。嵌入 LinX 的 applet 复用 LinX
+  Session，不显示第二个登录框；独立运行且没有 Session 时才显示统一登录界面。
+- 统一登录组件负责 Issuer 选择、OIDC 跳转状态、失败提示、过期重登和返回原页面。
+  组件允许使用宿主主题令牌，但认证流程与安全行为不可由 applet 改写。
+- Host 只向 applet 暴露 WebID、Pod 描述和受控的 authenticated fetch，不暴露、
+  复制或持久化 token。Applet 通过能力声明请求登录和 Pod 访问。
+- Solid 运行时负责从 WebID Profile 发现 Pod、初始化 drizzle-solid、注册
+  `@undefineds.co/models` schema，以及 collections 的发现、创建、水化、订阅、
+  缓存和统一错误处理。
+- SDK 提供 mock Session、authenticated fetch adapter、OIDC callback harness 和
+  Pod/collections 测试夹具，使 applet 可以脱离 LinX 做集成测试。
+
+包职责保持分离：
+
+- `@undefineds.co/applet-sdk`：生命周期、Manifest、能力声明、Host bridge 和 Session
+  消费接口。
+- `@undefineds.co/solid-sdk`：Inrupt Session 编排、Pod bootstrap、drizzle-solid 和
+  collections 水化。
+- 领域包（例如 AI Connection）：领域类型、交互和 Xpod 标准 API client，不拥有
+  Session，不复制共享 schema，也不自行定位或初始化 Pod ORM。
+
+AI Connection 页面只声明“需要登录”和所需 Pod 能力。登录、Session 恢复、
+Pod 定位、ORM 初始化及 collections 水化不得散落在其组件或领域客户端中。
+
 ## 组件
 
 ### `AiGatewayHttpHandler`
