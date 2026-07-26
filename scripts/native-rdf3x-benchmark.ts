@@ -70,6 +70,7 @@ const BENCHMARK_SCHEMA = 'xpod_benchmark';
 const BENCHMARK_SEARCH_PATH_OPTION = `-csearch_path=${BENCHMARK_SCHEMA},public`;
 const EXTERNAL_DATABASE_ENV = 'XPOD_RDF_BENCHMARK_PG_URL';
 const BASE_PATH = 'https://pod.example/';
+export const RDF3X_PARITY_BASE_PATH = 'https://example.test/';
 const RDF3X_PERMUTATION_SCAN_MARKERS: ReadonlySet<string> = new Set([
   'Rdf3xPermutationScan(SPO)',
   'Rdf3xPermutationScan(SOP)',
@@ -2456,7 +2457,7 @@ async function executeRdf3xParityProductQuery(
   try {
     await store.open();
     const sparql = new SolidRdfSparqlEngine(store);
-    const stream = await sparql.queryBindings(query, BASE_PATH, undefined, {
+    const stream = await sparql.queryBindings(query, RDF3X_PARITY_BASE_PATH, undefined, {
       timeoutMs: DEFAULT_OPERATION_TIMEOUT_MS,
     });
     return await materializeRdf3xParityBindingsBody(stream);
