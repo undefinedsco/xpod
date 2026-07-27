@@ -5,7 +5,6 @@ import {
   type GatewayAccessKeyRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
-import { isSolidAuth } from '../../auth/AuthContext';
 import { createGatewayKeyLocator, type GatewayKeyLocatorCodec } from './GatewayKeyLocatorCodec';
 import {
   type GatewayAccessKeyRecord,
@@ -121,22 +120,24 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     owner: string,
     context?: GatewayAccessKeyRepositoryContext,
   ): Promise<GatewayAccessKeyDb> {
-    const trustedFetch = await this.resolveTrustedFetch(owner, context?.auth);
+    const trustedFetch = await this.resolveTrustedFetch(owner);
     const db = await this.dbFactory({ owner, auth: context?.auth, fetch: trustedFetch });
     await db.init?.(gatewayAccessKeyResource);
     return db;
   }
 
-  private async resolveTrustedFetch(owner: string, auth: AuthContext | undefined): Promise<typeof fetch> {
-    const authFetch = createAuthFetch(auth);
-    if (authFetch) {
-      return authFetch;
+  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    if (!trustedFetch) {
+      throw new Error('AI Connection service identity is not configured');
     }
-    const internalFetch = await this.internalPodAccess?.getTrustedFetch(owner);
-    if (internalFetch) {
-      return internalFetch;
-    }
-    throw new Error('Internal Pod access is not configured for Gateway access keys');
+    return async (input, init) => {
+      const response = await trustedFetch(input, init);
+      if (response.status === 403) {
+        throw new Error('service_access_missing');
+      }
+      return response;
+    };
   }
 }
 
@@ -156,20 +157,6 @@ function createDefaultGatewayAccessKeyDb(input: {
       },
     },
   ) as unknown as GatewayAccessKeyDb);
-}
-
-function createAuthFetch(auth: AuthContext | undefined): typeof fetch | undefined {
-  if (auth && isSolidAuth(auth) && auth.accessToken) {
-    const scheme = auth.tokenType ?? 'Bearer';
-    return async (input, init) => {
-      const headers = new Headers(init?.headers);
-      if (!headers.has('Authorization')) {
-        headers.set('Authorization', `${scheme} ${auth.accessToken}`);
-      }
-      return fetch(input, { ...init, headers });
-    };
-  }
-  return undefined;
 }
 
 function toGatewayAccessKeyInsert(record: GatewayAccessKeyRecord): Record<string, unknown> {

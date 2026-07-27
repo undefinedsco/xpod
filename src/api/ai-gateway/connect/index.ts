@@ -6,7 +6,6 @@ import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../crede
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
-import { isSolidAuth } from '../../auth/AuthContext';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 
 export type ConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
@@ -107,19 +106,25 @@ export interface PodCredentialRepository {
     webId: string;
     provider: string;
     deployment: GatewayDeployment;
+    auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined>;
   getActiveCredential(input: {
     webId: string;
     provider: string;
     deployment: GatewayDeployment;
+    auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined>;
-  upsertConnectedCredential(record: ConnectCredentialRecord): Promise<ConnectCredentialRecord>;
+  upsertConnectedCredential(
+    record: ConnectCredentialRecord,
+    context?: { auth?: AuthContext },
+  ): Promise<ConnectCredentialRecord>;
   rewrapCredential?(input: {
     webId: string;
     deployment: GatewayDeployment;
     credentialId: string;
     expectedVersion?: number;
     encryptedSecret: EncryptedCredentialSecret;
+    auth?: AuthContext;
   }): Promise<boolean>;
   markReauthRequired(input: {
     webId: string;
@@ -127,6 +132,7 @@ export interface PodCredentialRepository {
     deployment: GatewayDeployment;
     reason: string;
     expectedVersion?: number;
+    auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined>;
   disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined>;
 }
@@ -174,8 +180,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     webId: string;
     provider: string;
     deployment: GatewayDeployment;
+    auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const id = aiRuntimeRepository.credentialId(input);
     const row = await db.findById<Record<string, unknown>>(credentialResource, id);
     const record = row ? recordFromCredentialRow(row) : undefined;
@@ -189,6 +196,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     webId: string;
     provider: string;
     deployment: GatewayDeployment;
+    auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
     const record = await this.getCredential(input);
     return record?.status === 'active' && !record.reauthRequired ? record : undefined;
@@ -197,6 +205,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   public async listCredentials(input: {
     webId: string;
     deployment: GatewayDeployment;
+    auth?: AuthContext;
   }): Promise<Array<{
     id: string;
     credentialIri: string;
@@ -213,7 +222,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const rows = await db.select().from(credentialResource).where(undefined).execute();
     return rows
       .map(recordFromCredentialRow)
@@ -238,8 +247,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       }));
   }
 
-  public async upsertConnectedCredential(record: ConnectCredentialRecord): Promise<ConnectCredentialRecord> {
-    const db = await this.dbForOwner(record.webId);
+  public async upsertConnectedCredential(
+    record: ConnectCredentialRecord,
+    context?: { auth?: AuthContext },
+  ): Promise<ConnectCredentialRecord> {
+    const db = await this.dbForOwner(record.webId, context?.auth);
     const existing = await db.findById<Record<string, unknown>>(credentialResource, record.id);
     const existingVersion = existing ? versionFromRow(existing) : 0;
     if (record.expectedVersion !== undefined && record.expectedVersion !== existingVersion) {
@@ -264,8 +276,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     credentialId: string;
     expectedVersion?: number;
     encryptedSecret: EncryptedCredentialSecret;
+    auth?: AuthContext;
   }): Promise<boolean> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const existing = await db.findById<Record<string, unknown>>(credentialResource, input.credentialId);
     if (!existing) {
       return false;
@@ -300,8 +313,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     deployment: GatewayDeployment;
     reason: string;
     expectedVersion?: number;
+    auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const id = aiRuntimeRepository.credentialId(input);
     const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
     if (!existing) {
@@ -320,7 +334,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   }
 
   public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const id = aiRuntimeRepository.credentialId(input);
     const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
     if (!existing) {
@@ -334,22 +348,24 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<ConnectedCredentialDb> {
-    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
+    const trustedFetch = await this.resolveTrustedFetch(owner);
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
     await db.init?.(credentialResource);
     return db;
   }
 
-  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
-    const authFetch = createAuthFetch(auth);
-    if (authFetch) {
-      return authFetch;
+  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    if (!trustedFetch) {
+      throw new Error('AI Connection service identity is not configured');
     }
-    const internalFetch = await this.internalPodAccess?.getTrustedFetch(owner);
-    if (internalFetch) {
-      return internalFetch;
-    }
-    throw new Error('Internal Pod access is not configured for AI provider Connect credentials');
+    return async (input, init) => {
+      const response = await trustedFetch(input, init);
+      if (response.status === 403) {
+        throw new Error('service_access_missing');
+      }
+      return response;
+    };
   }
 }
 
@@ -582,7 +598,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       status: 'active',
       accountLabel: input.accountLabel,
       expectedVersion: consumed.expectedCredentialVersion,
-    });
+    }, { auth: input.auth });
 
     return {
       mode: 'browserAssistedApiKey',
@@ -852,6 +868,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
         deployment: input.deployment,
         reason: 'missing_refresh_token',
         expectedVersion: current.version,
+        auth: input.auth,
       });
     }
     const response = await this.fetchImpl(this.tokenEndpoint, {
@@ -871,6 +888,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
         deployment: input.deployment,
         reason: safeProviderError(body),
         expectedVersion: current.version,
+        auth: input.auth,
       });
     }
     requireStringField(body, 'access_token');
@@ -883,6 +901,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       webId: input.webId,
       provider: 'kimi',
       deployment: input.deployment,
+      auth: input.auth,
     });
   }
 
@@ -891,7 +910,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
   }
 
   private async storeOAuthCredential(
-    input: { webId: string; deployment: GatewayDeployment },
+    input: { webId: string; deployment: GatewayDeployment; auth?: AuthContext },
     body: Record<string, unknown>,
     expectedVersion?: number,
   ): Promise<ConnectCredentialRecord> {
@@ -923,7 +942,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       metadata: {
         authoritativeSubject: decodeJwtSubject(stringFrom(body.id_token)),
       },
-    });
+    }, { auth: input.auth });
   }
 }
 
@@ -1144,20 +1163,6 @@ function createDefaultConnectedCredentialDb(input: {
       },
     },
   ) as unknown as ConnectedCredentialDb);
-}
-
-function createAuthFetch(auth: AuthContext | undefined): typeof fetch | undefined {
-  if (auth && isSolidAuth(auth) && auth.accessToken) {
-    const scheme = auth.tokenType ?? 'Bearer';
-    return async (input, init) => {
-      const headers = new Headers(init?.headers);
-      if (!headers.has('Authorization')) {
-        headers.set('Authorization', `${scheme} ${auth.accessToken}`);
-      }
-      return fetch(input, { ...init, headers });
-    };
-  }
-  return undefined;
 }
 
 function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string, unknown> {

@@ -708,6 +708,58 @@ describe('ProviderQuotaAdapters', () => {
       })],
     ]));
   });
+
+  it('requires internal service Pod access for persisted quota snapshots', async () => {
+    const repository = new PodQuotaSnapshotRepository({
+      internalPodAccess: { getTrustedFetch: vi.fn(async () => undefined) },
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/ai/quota.ttl');
+        return {
+          init: vi.fn(),
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          findByIri: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          updateByIri: vi.fn(async () => null),
+          insert: vi.fn() as any,
+        } as any;
+      },
+    });
+
+    await expect(repository.findLatest({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: CREDENTIAL_IRI,
+    })).rejects.toThrow('AI Connection service identity is not configured');
+  });
+
+  it('normalizes quota Pod 403 responses as service_access_missing', async () => {
+    const serviceFetch = vi.fn(async () => new Response('', { status: 403 }));
+    const repository = new PodQuotaSnapshotRepository({
+      internalPodAccess: { getTrustedFetch: vi.fn(async () => serviceFetch as typeof fetch) },
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/ai/quota.ttl');
+        return {
+          init: vi.fn(),
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          findByIri: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          updateByIri: vi.fn(async () => null),
+          insert: vi.fn() as any,
+        } as any;
+      },
+    });
+
+    await expect(repository.findLatest({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: CREDENTIAL_IRI,
+    })).rejects.toThrow('service_access_missing');
+  });
+
 });
 
 function createServer(): { server: ApiServer; routes: Record<string, Function> } {

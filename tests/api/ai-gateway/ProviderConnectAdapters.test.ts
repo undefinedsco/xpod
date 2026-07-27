@@ -940,6 +940,76 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
     })).resolves.toMatchObject({ status: 'revoked', version: 4 });
   });
+
+  it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
+    const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
+    const ownerMismatch = new Error('Gateway internal Pod token WebID does not match requested owner');
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => { throw ownerMismatch; }),
+      },
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/credentials.ttl');
+        return {
+          init: vi.fn(),
+          insert: vi.fn() as any,
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          update: vi.fn() as any,
+        } as any;
+      },
+    });
+
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        accessToken: 'browser-bearer-token',
+        tokenType: 'Bearer',
+      },
+    })).rejects.toBe(ownerMismatch);
+
+    expect(browserFetch).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer browser-bearer-token',
+        }),
+      }),
+    );
+    browserFetch.mockRestore();
+  });
+
+  it('normalizes credential Pod 403 responses as service_access_missing', async () => {
+    const serviceFetch = vi.fn(async () => new Response('', { status: 403 }));
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => serviceFetch as typeof fetch),
+      },
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/credentials.ttl');
+        return {
+          init: vi.fn(),
+          insert: vi.fn() as any,
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          update: vi.fn() as any,
+        } as any;
+      },
+    });
+
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).rejects.toThrow('service_access_missing');
+  });
+
 });
 
 function jsonClone<T>(value: T): T {
