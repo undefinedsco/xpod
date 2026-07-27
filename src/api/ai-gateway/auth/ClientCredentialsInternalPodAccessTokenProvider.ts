@@ -90,8 +90,7 @@ export class ClientCredentialsInternalPodAccessTokenProvider implements Internal
     if (!accessToken) {
       throw new Error('Gateway internal Pod token response missing access_token');
     }
-    const tokenType = typeof body.token_type === 'string' ? body.token_type : 'Bearer';
-    if (tokenType !== 'Bearer') {
+    if (body.token_type !== 'Bearer') {
       throw new Error('Gateway internal service token must be Bearer');
     }
     const tokenWebId = extractAuthoritativeWebIdFromTokenResponse(body);

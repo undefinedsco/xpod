@@ -176,6 +176,27 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('fails closed when the internal service token response omits token_type', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === 'https://issuer.example/.oidc/token') {
+        return new Response(JSON.stringify({
+          access_token: jwtWithPayload({ webid: SERVICE_WEB_ID }),
+          webid: SERVICE_WEB_ID,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error('Pod fetch must not run without an explicit Bearer token type');
+    }) as typeof fetch;
+    const provider = new ClientCredentialsInternalPodAccessTokenProvider({
+      tokenEndpoint: 'https://issuer.example/.oidc/token',
+      clientId: 'internal-client',
+      clientSecret: 'internal-secret',
+      fetchImpl,
+    });
+
+    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/Gateway internal service token must be Bearer/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('single-flights concurrent first token requests across trusted fetch and service principal calls', async () => {
     let resolveToken!: () => void;
     const tokenReady = new Promise<void>((resolve) => {
@@ -250,7 +271,11 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
     });
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === 'https://issuer.example/.oidc/token') {
-        return new Response(JSON.stringify({ access_token: 'internal-token', webid: SERVICE_WEB_ID }), {
+        return new Response(JSON.stringify({
+          access_token: 'internal-token',
+          token_type: 'Bearer',
+          webid: SERVICE_WEB_ID,
+        }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
