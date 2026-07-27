@@ -24,6 +24,7 @@ export interface ConnectBeginInput {
   provider: string;
   requestedMode: ConnectMode;
   expectedCredentialVersion?: number;
+  auth?: AuthContext;
 }
 
 export interface ConnectBeginResult {
@@ -56,6 +57,7 @@ export interface CompleteApiKeyInput {
   signature: string;
   apiKey: string;
   accountLabel?: string;
+  auth?: AuthContext;
 }
 
 export interface PollDeviceInput {
@@ -65,18 +67,21 @@ export interface PollDeviceInput {
   attemptId: string;
   state: string;
   signature: string;
+  auth?: AuthContext;
 }
 
 export interface RefreshInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  auth?: AuthContext;
 }
 
 export interface DisconnectInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  auth?: AuthContext;
 }
 
 export interface ConnectCredentialRecord {
@@ -999,6 +1004,7 @@ export class ProviderConnectService {
   public async listProviders(input: {
     webId: string;
     deployment: GatewayDeployment;
+    auth?: AuthContext;
   }): Promise<ProviderConnectionSummary[]> {
     return Promise.all(this.registry.listProviders().map(async (descriptor) => {
       const credential = this.credentialRepository?.getCredential
