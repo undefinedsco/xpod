@@ -112,12 +112,20 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction(({ config }: ApiContainerCradle) => {
+    gatewayInternalPodAccess: asFunction(({ config }: ApiContainerCradle) => {
+      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
+        throw new Error('XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET are required for Gateway internal Pod access');
+      }
+      return new ClientCredentialsInternalPodAccessTokenProvider({
+        tokenEndpoint: config.cssTokenEndpoint,
+        clientId: config.gatewayInternalClientId,
+        clientSecret: config.gatewayInternalClientSecret,
+      });
+    }).singleton(),
+
+    gatewayAccessKeyRepository: asFunction(({ config, gatewayInternalPodAccess }: ApiContainerCradle) => {
       if (!config.gatewayLocatorSecret) {
         throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for Gateway API key locator encryption');
-      }
-      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        throw new Error('XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET are required for Gateway API key Pod access');
       }
       return new PodGatewayAccessKeyRepository({
         locatorCodec: new AesGatewayKeyLocatorCodec({
@@ -127,11 +135,7 @@ export function registerCommonServices(
           },
           previous: config.gatewayPreviousLocatorSecrets,
         }),
-        internalPodAccess: new ClientCredentialsInternalPodAccessTokenProvider({
-          tokenEndpoint: config.cssTokenEndpoint,
-          clientId: config.gatewayInternalClientId,
-          clientSecret: config.gatewayInternalClientSecret,
-        }),
+        internalPodAccess: gatewayInternalPodAccess,
       });
     }).singleton(),
 
@@ -156,7 +160,8 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    providerConnectService: asFunction(({ config }: ApiContainerCradle) => {
+    providerConnectService: asFunction((cradle: ApiContainerCradle) => {
+      const { config } = cradle;
       if (!config.aiGatewayConnectEnabled) {
         return new ProviderConnectService({
           registry: createDefaultGatewayProviderRegistry({
@@ -178,14 +183,7 @@ export function registerCommonServices(
       if (!signingSecret) {
         throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
       }
-      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        throw new Error('AI Gateway Connect requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod access');
-      }
-      const internalPodAccess = new ClientCredentialsInternalPodAccessTokenProvider({
-        tokenEndpoint: config.cssTokenEndpoint,
-        clientId: config.gatewayInternalClientId,
-        clientSecret: config.gatewayInternalClientSecret,
-      });
+      const internalPodAccess = cradle.gatewayInternalPodAccess;
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
       const vault = config.secretCellCredentialVaultFactory();
       const attempts = new InMemoryConnectAttemptStore();
@@ -246,16 +244,9 @@ export function registerCommonServices(
       return createDefaultGatewayProviderRegistry();
     }).singleton(),
 
-    gatewayCredentialStore: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        throw new Error('AI Gateway inference requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod credential access');
-      }
+    gatewayCredentialStore: asFunction(({ gatewayInternalPodAccess }: ApiContainerCradle) => {
       return new PodConnectedCredentialRepository({
-        internalPodAccess: new ClientCredentialsInternalPodAccessTokenProvider({
-          tokenEndpoint: config.cssTokenEndpoint,
-          clientId: config.gatewayInternalClientId,
-          clientSecret: config.gatewayInternalClientSecret,
-        }),
+        internalPodAccess: gatewayInternalPodAccess,
       });
     }).singleton(),
 
@@ -301,21 +292,15 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    providerQuotaService: asFunction(({ config }: ApiContainerCradle) => {
+    providerQuotaService: asFunction((cradle: ApiContainerCradle) => {
+      const { config } = cradle;
       if (!config.aiGatewayConnectEnabled) {
         return undefined;
       }
       if (!config.secretCellCredentialVaultFactory) {
         throw new Error('AI Gateway quota requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
       }
-      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        throw new Error('AI Gateway quota requires XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET for Pod access');
-      }
-      const internalPodAccess = new ClientCredentialsInternalPodAccessTokenProvider({
-        tokenEndpoint: config.cssTokenEndpoint,
-        clientId: config.gatewayInternalClientId,
-        clientSecret: config.gatewayInternalClientSecret,
-      });
+      const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),

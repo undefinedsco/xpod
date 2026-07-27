@@ -17,14 +17,14 @@ function jwtWithPayload(payload: Record<string, unknown>): string {
 }
 
 describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
-  it('exchanges internal service client credentials for a WebID-scoped trusted fetch', async () => {
+  it('exchanges internal service client credentials for one stable Bearer service principal', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === 'https://issuer.example/.oidc/token') {
         return new Response(JSON.stringify({
           access_token: 'internal-access-token',
           token_type: 'Bearer',
           expires_in: 300,
-          webid: WEB_ID,
+          webid: SERVICE_WEB_ID,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response('ok');
@@ -37,47 +37,28 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
     });
 
     const trustedFetch = await provider.getTrustedFetch(WEB_ID);
+    await expect(provider.getServicePrincipal()).resolves.toEqual({ webId: SERVICE_WEB_ID });
     await trustedFetch('https://pod.example/alice/.data/ai/gateway/access-keys.ttl');
 
     const tokenBody = fetchImpl.mock.calls[0]?.[1]?.body as URLSearchParams;
     expect(tokenBody.get('grant_type')).toBe('client_credentials');
     expect(tokenBody.get('client_id')).toBe('internal-client');
     expect(tokenBody.get('client_secret')).toBe('internal-secret');
-    expect(tokenBody.get('webid')).toBe(WEB_ID);
+    expect(tokenBody.get('scope')).toBe('webid');
+    expect(tokenBody.has('webid')).toBe(false);
     expect(fetchImpl.mock.calls[1]?.[1]?.headers).toEqual(expect.any(Headers));
     expect((fetchImpl.mock.calls[1]?.[1]?.headers as Headers).get('Authorization')).toBe('Bearer internal-access-token');
-  });
-
-  it('rejects and does not cache a token response whose body WebID does not match the requested owner', async () => {
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input) === 'https://issuer.example/.oidc/token') {
-        return new Response(JSON.stringify({
-          access_token: jwtWithPayload({ webid: WEB_ID }),
-          token_type: 'Bearer',
-          webid: 'https://id.example/bob/profile/card#me',
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      throw new Error('Pod fetch must not run with a mismatched internal token');
-    }) as typeof fetch;
-    const provider = new ClientCredentialsInternalPodAccessTokenProvider({
-      tokenEndpoint: 'https://issuer.example/.oidc/token',
-      clientId: 'internal-client',
-      clientSecret: 'internal-secret',
-      fetchImpl,
-    });
-
-    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/does not match requested owner/);
-    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/does not match requested owner/);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it('accepts a token whose JWT payload WebID matches the requested owner when the body omits webid', async () => {
-    const accessToken = jwtWithPayload({ webid: WEB_ID });
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  it('caches the service token independently from requested owners', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === 'https://issuer.example/.oidc/token') {
         return new Response(JSON.stringify({
-          access_token: accessToken,
-          token_type: 'DPoP',
+          access_token: 'internal-access-token',
+          token_type: 'Bearer',
+          expires_in: 300,
+          webid: SERVICE_WEB_ID,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response('ok');
@@ -89,21 +70,26 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
       fetchImpl,
     });
 
-    const trustedFetch = await provider.getTrustedFetch(WEB_ID);
-    await trustedFetch('https://pod.example/alice/private.ttl');
+    const aliceFetch = await provider.getTrustedFetch(WEB_ID);
+    const bobFetch = await provider.getTrustedFetch('https://id.example/bob/profile/card#me');
+    await aliceFetch('https://pod.example/alice/private.ttl');
+    await bobFetch('https://pod.example/bob/private.ttl');
 
-    expect((fetchImpl.mock.calls[1]?.[1]?.headers as Headers).get('Authorization')).toBe(`DPoP ${accessToken}`);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect((fetchImpl.mock.calls[1]?.[1]?.headers as Headers).get('Authorization')).toBe('Bearer internal-access-token');
+    expect((fetchImpl.mock.calls[2]?.[1]?.headers as Headers).get('Authorization')).toBe('Bearer internal-access-token');
   });
 
-  it('rejects a token whose JWT payload subject does not match the requested owner', async () => {
+  it('uses the authoritative JWT WebID when the body omits webid', async () => {
+    const accessToken = jwtWithPayload({ webid: SERVICE_WEB_ID });
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === 'https://issuer.example/.oidc/token') {
         return new Response(JSON.stringify({
-          access_token: jwtWithPayload({ sub: 'https://id.example/bob/profile/card#me' }),
+          access_token: accessToken,
           token_type: 'Bearer',
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      throw new Error('Pod fetch must not run with a mismatched JWT subject');
+      return new Response('ok');
     }) as typeof fetch;
     const provider = new ClientCredentialsInternalPodAccessTokenProvider({
       tokenEndpoint: 'https://issuer.example/.oidc/token',
@@ -112,11 +98,63 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
       fetchImpl,
     });
 
-    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/does not match requested owner/);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await expect(provider.getServicePrincipal()).resolves.toEqual({ webId: SERVICE_WEB_ID });
   });
 
-  it('rejects a token response that cannot prove the requested owner identity', async () => {
+  it('fails closed when a refreshed service token changes authoritative WebID', async () => {
+    let now = 1_000;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === 'https://issuer.example/.oidc/token') {
+        const webid = fetchImpl.mock.calls.length === 1
+          ? SERVICE_WEB_ID
+          : 'https://id.example/other-service/profile/card#me';
+        return new Response(JSON.stringify({
+          access_token: `internal-token-${fetchImpl.mock.calls.length}`,
+          token_type: 'Bearer',
+          expires_in: 31,
+          webid,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('ok');
+    }) as typeof fetch;
+    const provider = new ClientCredentialsInternalPodAccessTokenProvider({
+      tokenEndpoint: 'https://issuer.example/.oidc/token',
+      clientId: 'internal-client',
+      clientSecret: 'internal-secret',
+      fetchImpl,
+      now: () => now,
+    });
+
+    await expect(provider.getServicePrincipal()).resolves.toEqual({ webId: SERVICE_WEB_ID });
+    now += 2_000;
+
+    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/Gateway internal service WebID changed/);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects and does not cache a token response without access_token', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === 'https://issuer.example/.oidc/token') {
+        return new Response(JSON.stringify({
+          token_type: 'Bearer',
+          webid: SERVICE_WEB_ID,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error('Pod fetch must not run without an access token');
+    }) as typeof fetch;
+    const provider = new ClientCredentialsInternalPodAccessTokenProvider({
+      tokenEndpoint: 'https://issuer.example/.oidc/token',
+      clientId: 'internal-client',
+      clientSecret: 'internal-secret',
+      fetchImpl,
+    });
+
+    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/missing access_token/);
+    await expect(provider.getServicePrincipal()).rejects.toThrow(/missing access_token/);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects and does not cache a token response without authoritative service WebID', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === 'https://issuer.example/.oidc/token') {
         return new Response(JSON.stringify({
@@ -134,19 +172,25 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
     });
 
     await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/missing authoritative WebID/);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await expect(provider.getServicePrincipal()).rejects.toThrow(/missing authoritative WebID/);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it('fails closed when CSS ignores the requested owner and returns the service WebID', async () => {
+  it('single-flights concurrent first token requests across trusted fetch and service principal calls', async () => {
+    let resolveToken!: () => void;
+    const tokenReady = new Promise<void>((resolve) => {
+      resolveToken = resolve;
+    });
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === 'https://issuer.example/.oidc/token') {
+        await tokenReady;
         return new Response(JSON.stringify({
-          access_token: jwtWithPayload({ webid: SERVICE_WEB_ID }),
+          access_token: 'internal-token',
           token_type: 'Bearer',
           webid: SERVICE_WEB_ID,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      throw new Error('Pod fetch must not run with service identity');
+      return new Response('ok');
     }) as typeof fetch;
     const provider = new ClientCredentialsInternalPodAccessTokenProvider({
       tokenEndpoint: 'https://issuer.example/.oidc/token',
@@ -155,7 +199,41 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
       fetchImpl,
     });
 
-    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/does not match requested owner/);
+    const results = Promise.all([
+      provider.getTrustedFetch(WEB_ID),
+      provider.getServicePrincipal(),
+      provider.getTrustedFetch('https://id.example/bob/profile/card#me'),
+    ]);
+    await Promise.resolve();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    resolveToken();
+
+    const [aliceFetch, servicePrincipal, bobFetch] = await results;
+    expect(servicePrincipal).toEqual({ webId: SERVICE_WEB_ID });
+    await aliceFetch('https://pod.example/alice/private.ttl');
+    await bobFetch('https://pod.example/bob/private.ttl');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails closed when the internal service token is DPoP because no proof can be generated', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === 'https://issuer.example/.oidc/token') {
+        return new Response(JSON.stringify({
+          access_token: jwtWithPayload({ webid: SERVICE_WEB_ID }),
+          token_type: 'DPoP',
+          webid: SERVICE_WEB_ID,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new Error('Pod fetch must not run with a bare DPoP token');
+    }) as typeof fetch;
+    const provider = new ClientCredentialsInternalPodAccessTokenProvider({
+      tokenEndpoint: 'https://issuer.example/.oidc/token',
+      clientId: 'internal-client',
+      clientSecret: 'internal-secret',
+      fetchImpl,
+    });
+
+    await expect(provider.getTrustedFetch(WEB_ID)).rejects.toThrow(/Gateway internal service token must be Bearer/);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -172,7 +250,7 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
     });
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === 'https://issuer.example/.oidc/token') {
-        return new Response(JSON.stringify({ access_token: 'internal-token', webid: WEB_ID }), {
+        return new Response(JSON.stringify({ access_token: 'internal-token', webid: SERVICE_WEB_ID }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -195,11 +273,12 @@ describe('ClientCredentialsInternalPodAccessTokenProvider', () => {
           init: vi.fn(),
           insert: vi.fn(),
           select: vi.fn(),
-          findById: vi.fn(async (_resource, id: string) => structuredClone(podRows.get(id))),
+          findById: vi.fn(async () => structuredClone([...podRows.values()][0])),
           findByIri: vi.fn(),
-          updateById: vi.fn(async (_resource, id: string, patch: any) => {
-            Object.assign(podRows.get(id), patch);
-            return structuredClone(podRows.get(id));
+          updateById: vi.fn(async (_resource, _id: string, patch: any) => {
+            const row = [...podRows.values()][0];
+            Object.assign(row, patch);
+            return structuredClone(row);
           }),
         } as any;
       },

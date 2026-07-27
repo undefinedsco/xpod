@@ -6,11 +6,12 @@ export interface ClientCredentialsInternalPodAccessTokenProviderOptions {
   clientId: string;
   clientSecret: string;
   fetchImpl?: typeof fetch;
+  now?: () => number;
 }
 
 type CachedToken = {
   accessToken: string;
-  tokenType: 'Bearer' | 'DPoP';
+  webId: string;
   expiresAt: number;
 };
 
@@ -19,7 +20,10 @@ export class ClientCredentialsInternalPodAccessTokenProvider implements Internal
   private readonly clientId: string;
   private readonly clientSecret: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly cache = new Map<string, CachedToken>();
+  private readonly now: () => number;
+  private cachedToken?: CachedToken;
+  private tokenRequest?: Promise<CachedToken>;
+  private serviceWebId?: string;
 
   public constructor(options: ClientCredentialsInternalPodAccessTokenProviderOptions) {
     if (!options.clientId.trim() || !options.clientSecret.trim()) {
@@ -29,26 +33,43 @@ export class ClientCredentialsInternalPodAccessTokenProvider implements Internal
     this.clientId = options.clientId;
     this.clientSecret = options.clientSecret;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.now = options.now ?? Date.now;
   }
 
-  public async getTrustedFetch(owner: string): Promise<typeof fetch | undefined> {
-    const token = await this.getAccessToken(owner);
+  public async getTrustedFetch(_owner: string): Promise<typeof fetch | undefined> {
+    const token = await this.getAccessToken();
     return async (input, init) => {
       const headers = new Headers(init?.headers);
       if (!headers.has('Authorization')) {
-        headers.set('Authorization', `${token.tokenType} ${token.accessToken}`);
+        headers.set('Authorization', `Bearer ${token.accessToken}`);
       }
       return this.fetchImpl(input, { ...init, headers });
     };
   }
 
-  private async getAccessToken(owner: string): Promise<CachedToken> {
-    const cached = this.cache.get(owner);
-    const now = Date.now();
-    if (cached && cached.expiresAt - 30_000 > now) {
-      return cached;
+  public async getServicePrincipal(): Promise<{ webId: string }> {
+    const token = await this.getAccessToken();
+    return { webId: token.webId };
+  }
+
+  private async getAccessToken(): Promise<CachedToken> {
+    const now = this.now();
+    if (this.cachedToken && this.cachedToken.expiresAt - 30_000 > now) {
+      return this.cachedToken;
+    }
+    if (this.tokenRequest) {
+      return this.tokenRequest;
     }
 
+    this.tokenRequest = this.exchangeToken(now);
+    try {
+      return await this.tokenRequest;
+    } finally {
+      this.tokenRequest = undefined;
+    }
+  }
+
+  private async exchangeToken(now: number): Promise<CachedToken> {
     const response = await this.fetchImpl(this.tokenEndpoint, {
       method: 'POST',
       headers: {
@@ -59,7 +80,6 @@ export class ClientCredentialsInternalPodAccessTokenProvider implements Internal
         client_id: this.clientId,
         client_secret: this.clientSecret,
         scope: 'webid',
-        webid: owner,
       }),
     });
     if (!response.ok) {
@@ -70,23 +90,27 @@ export class ClientCredentialsInternalPodAccessTokenProvider implements Internal
     if (!accessToken) {
       throw new Error('Gateway internal Pod token response missing access_token');
     }
+    const tokenType = typeof body.token_type === 'string' ? body.token_type : 'Bearer';
+    if (tokenType !== 'Bearer') {
+      throw new Error('Gateway internal service token must be Bearer');
+    }
     const tokenWebId = extractAuthoritativeWebIdFromTokenResponse(body);
     if (!tokenWebId) {
       throw new Error('Gateway internal Pod token response missing authoritative WebID');
     }
-    if (tokenWebId !== owner) {
-      throw new Error('Gateway internal Pod token WebID does not match requested owner');
+    if (this.serviceWebId && tokenWebId !== this.serviceWebId) {
+      throw new Error('Gateway internal service WebID changed');
     }
-    const tokenType: CachedToken['tokenType'] = body.token_type === 'DPoP' ? 'DPoP' : 'Bearer';
     const expiresIn = typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
       ? body.expires_in
       : 300;
     const token: CachedToken = {
       accessToken,
-      tokenType,
+      webId: tokenWebId,
       expiresAt: now + expiresIn * 1000,
     };
-    this.cache.set(owner, token);
+    this.serviceWebId = tokenWebId;
+    this.cachedToken = token;
     return token;
   }
 }
