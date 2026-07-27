@@ -453,13 +453,17 @@ describe('AiGatewayManagementHandler', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(connectService.begin).toHaveBeenCalledWith(expect.objectContaining({
+    expect(connectService.begin).toHaveBeenCalledWith({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
       expectedCredentialVersion: 7,
-    }));
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+      },
+    });
     expect(JSON.parse(res.body)).not.toHaveProperty('deployment');
   });
 
@@ -501,10 +505,14 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }), res, {});
 
-    expect(connectService.listProviders).toHaveBeenCalledWith(expect.objectContaining({
+    expect(connectService.listProviders).toHaveBeenCalledWith({
       webId: WEB_ID,
       deployment: 'cloud',
-    }));
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+      },
+    });
     expect(JSON.parse(res.body)).toEqual({
       data: [
         expect.objectContaining({
@@ -600,7 +608,7 @@ describe('AiGatewayManagementHandler', () => {
     });
 
     expect(complete.statusCode).toBe(200);
-    expect(connectService.completeApiKey).toHaveBeenCalledWith(expect.objectContaining({
+    expect(connectService.completeApiKey).toHaveBeenCalledWith({
       webId: WEB_ID,
       deployment: 'local',
       provider: 'openai',
@@ -609,7 +617,11 @@ describe('AiGatewayManagementHandler', () => {
       signature: 'sig_1',
       apiKey: 'sk-submit-only-here',
       accountLabel: 'Alice',
-    }));
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+      },
+    });
     expect(JSON.parse(complete.body)).not.toHaveProperty('deployment');
   });
 
@@ -658,10 +670,14 @@ describe('AiGatewayManagementHandler', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(connectService.refresh).toHaveBeenCalledWith(expect.objectContaining({
+    expect(connectService.refresh).toHaveBeenCalledWith({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-    }));
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+      },
+    });
   });
 });
