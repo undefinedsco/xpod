@@ -23,12 +23,16 @@ import type {
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
+import { createAiConnectionServiceAccess } from '../ai-gateway/service-access/AiConnectionServiceAccess';
 
 export interface AiGatewayManagementHandlerOptions {
   repository: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
+  servicePrincipal?: {
+    getServicePrincipal(): Promise<{ webId: string }>;
+  };
   now?: () => Date;
   keyId?: (owner: string) => string;
   jsonBodyLimitBytes?: number;
@@ -43,6 +47,21 @@ export function registerAiGatewayManagementRoutes(
     options.repository.createKeyId?.(owner, options.deployment) ?? createGatewayKeyId()
   ));
   const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 64 * 1024;
+
+  server.get('/api/applets/service-access/ai-connection', async (request, response) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    if (!options.servicePrincipal) {
+      sendJson(response, 503, { error: 'AI Connection service identity is unavailable' });
+      return;
+    }
+    const service = await options.servicePrincipal.getServicePrincipal();
+    sendJson(response, 200, createAiConnectionServiceAccess({
+      ownerWebId: request.auth.webId,
+      serviceWebId: service.webId,
+    }));
+  });
 
   server.post('/api/ai/gateway/keys', async (request, response) => {
     if (!authorizeGatewayKeyManagement(request, response)) {

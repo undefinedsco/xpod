@@ -61,6 +61,75 @@ function response(): any {
 }
 
 describe('AiGatewayManagementHandler', () => {
+  it('requires Solid authentication for the AI Connection service-access descriptor', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+      },
+    });
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connection'](request(undefined), res, {});
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Authentication required' });
+  });
+
+  it('returns 503 when the AI Connection service identity is unavailable', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+    });
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connection'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, {});
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'AI Connection service identity is unavailable' });
+  });
+
+  it('publishes AI Connection service-access resources derived only from the authenticated WebID', async () => {
+    const servicePrincipal = {
+      getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      servicePrincipal,
+    });
+    const req = request({
+      type: 'solid',
+      webId: 'https://pod.example/bob/profile/card#me',
+    });
+    req.url = '/api/applets/service-access/ai-connection?resource=https%3A%2F%2Fevil.example%2Fcredentials.ttl';
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connection'](req, res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(servicePrincipal.getServicePrincipal).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(res.body)).toMatchObject({
+      appletId: 'co.undefineds.ai-connection',
+      service: {
+        webId: 'https://id.example/xpod/profile/card#me',
+      },
+      resources: expect.arrayContaining([
+        expect.objectContaining({
+          url: 'https://pod.example/bob/settings/credentials.ttl',
+        }),
+      ]),
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('evil.example');
+  });
+
   it('creates a gateway key for the logged-in Solid WebID and returns plaintext once', async () => {
     const repository = new InMemoryGatewayAccessKeyRepository();
     const { server, routes } = createServer();
@@ -384,13 +453,13 @@ describe('AiGatewayManagementHandler', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(connectService.begin).toHaveBeenCalledWith({
+    expect(connectService.begin).toHaveBeenCalledWith(expect.objectContaining({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
       expectedCredentialVersion: 7,
-    });
+    }));
     expect(JSON.parse(res.body)).not.toHaveProperty('deployment');
   });
 
@@ -432,10 +501,10 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }), res, {});
 
-    expect(connectService.listProviders).toHaveBeenCalledWith({
+    expect(connectService.listProviders).toHaveBeenCalledWith(expect.objectContaining({
       webId: WEB_ID,
       deployment: 'cloud',
-    });
+    }));
     expect(JSON.parse(res.body)).toEqual({
       data: [
         expect.objectContaining({
@@ -531,7 +600,7 @@ describe('AiGatewayManagementHandler', () => {
     });
 
     expect(complete.statusCode).toBe(200);
-    expect(connectService.completeApiKey).toHaveBeenCalledWith({
+    expect(connectService.completeApiKey).toHaveBeenCalledWith(expect.objectContaining({
       webId: WEB_ID,
       deployment: 'local',
       provider: 'openai',
@@ -540,7 +609,7 @@ describe('AiGatewayManagementHandler', () => {
       signature: 'sig_1',
       apiKey: 'sk-submit-only-here',
       accountLabel: 'Alice',
-    });
+    }));
     expect(JSON.parse(complete.body)).not.toHaveProperty('deployment');
   });
 
@@ -589,10 +658,10 @@ describe('AiGatewayManagementHandler', () => {
     });
 
     expect(res.statusCode).toBe(200);
-    expect(connectService.refresh).toHaveBeenCalledWith({
+    expect(connectService.refresh).toHaveBeenCalledWith(expect.objectContaining({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-    });
+    }));
   });
 });
