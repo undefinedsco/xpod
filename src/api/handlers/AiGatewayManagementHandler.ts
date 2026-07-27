@@ -164,6 +164,7 @@ export function registerAiGatewayManagementRoutes(
     const providers = await connectService.listProviders({
       webId: request.auth!.webId,
       deployment: options.deployment,
+      auth: request.auth,
     });
     sendJson(response, 200, {
       data: publicConnectResult(providers),
@@ -195,6 +196,7 @@ export function registerAiGatewayManagementRoutes(
       expectedCredentialVersion: typeof body.expectedCredentialVersion === 'number'
         ? body.expectedCredentialVersion
         : undefined,
+      auth: request.auth,
     } satisfies ConnectBeginInput);
     sendJson(response, 200, publicConnectResult(result));
   });
@@ -215,6 +217,7 @@ export function registerAiGatewayManagementRoutes(
       attemptId: decodeURIComponent(params.attemptId),
       state: url.searchParams.get('state') ?? '',
       signature: url.searchParams.get('signature') ?? '',
+      auth: request.auth,
     });
     sendJson(response, 200, publicConnectResult(result));
   });
@@ -245,6 +248,7 @@ export function registerAiGatewayManagementRoutes(
       signature: stringBody(body.signature),
       apiKey,
       accountLabel: normalizeOptionalString(body.accountLabel),
+      auth: request.auth,
     } satisfies CompleteApiKeyInput);
     sendJson(response, 200, publicConnectResult(result));
   });
@@ -268,6 +272,7 @@ export function registerAiGatewayManagementRoutes(
       attemptId: stringBody(body.attemptId),
       state: stringBody(body.state),
       signature: stringBody(body.signature),
+      auth: request.auth,
     });
     sendJson(response, 200, publicConnectResult(result));
   });
@@ -288,6 +293,7 @@ export function registerAiGatewayManagementRoutes(
       webId: request.auth!.webId,
       deployment: options.deployment,
       provider: params.provider,
+      auth: request.auth,
     });
     sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
   });
@@ -304,6 +310,7 @@ export function registerAiGatewayManagementRoutes(
       webId: request.auth!.webId,
       deployment: options.deployment,
       provider: params.provider,
+      auth: request.auth,
     });
     sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
   });
