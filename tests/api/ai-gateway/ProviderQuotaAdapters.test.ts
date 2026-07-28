@@ -759,7 +759,6 @@ describe('ProviderQuotaAdapters', () => {
       credentialIri: CREDENTIAL_IRI,
     })).rejects.toThrow('service_access_missing');
   });
-
 });
 
 function createServer(): { server: ApiServer; routes: Record<string, Function> } {

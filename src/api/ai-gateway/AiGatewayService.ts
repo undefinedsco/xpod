@@ -27,6 +27,7 @@ export interface GatewayCredentialStore {
   listCredentials(input: {
     webId: string;
     deployment: string;
+    auth?: AuthContext;
   }): Promise<StoredGatewayCredential[]>;
   recordSuccess?(input: GatewayCredentialHealthRecord): Promise<void>;
   recordFailure?(input: GatewayCredentialHealthRecord): Promise<void>;
@@ -132,6 +133,7 @@ export class AiGatewayService {
     const route = await this.router.route({
       webId: principal.webId,
       deployment: this.deployment,
+      auth: input.auth,
       model: request.model,
       conversationId: conversationIdFor(request),
       explicitCredentialId: explicitCredentialIdFor(request),
@@ -168,6 +170,7 @@ export class AiGatewayService {
     const credentials = await this.credentials.listCredentials({
       webId: principal.webId,
       deployment: this.deployment,
+      auth,
     });
     const activeCredentialModels = new Map<string, Set<string> | undefined>();
     for (const credential of credentials) {

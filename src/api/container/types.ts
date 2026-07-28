@@ -105,6 +105,7 @@ export interface ApiContainerConfig {
 
   /** CSS Token 端点 */
   cssTokenEndpoint: string;
+  solidBaseUrl?: string;
 
   /** Gateway locator encryption secret. Internal platform secret; not a user/provider AI credential. */
   gatewayLocatorSecret?: string;
@@ -123,6 +124,8 @@ export interface ApiContainerConfig {
   aiGatewayKimiClientId?: string;
   /** Generic Pod SecretCell credential vault factory, configured by Xpod operations. */
   secretCellCredentialVaultFactory?: () => CredentialVault;
+  /** Explicit provider endpoint overrides for controlled deployments and local E2E fixtures. */
+  aiGatewayProviderBaseUrls?: Partial<Record<'openai', string>>;
 
   /** 子域名功能配置 (cloud 模式) */
   subdomain?: {

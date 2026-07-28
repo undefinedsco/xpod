@@ -1,4 +1,4 @@
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { alias, drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
 import {
   aiGatewayRepository,
   gatewayAccessKeyResource,
@@ -28,6 +28,8 @@ type GatewayAccessKeyDb = {
   updateById<TRow>(resource: typeof gatewayAccessKeyResource, id: string, patch: unknown): Promise<TRow | null>;
 };
 
+type GatewayAccessKeyResource = typeof gatewayAccessKeyResource;
+
 export interface PodGatewayAccessKeyRepositoryOptions {
   locatorCodec: GatewayKeyLocatorCodec;
   internalPodAccess?: InternalPodAccessTokenProvider;
@@ -35,6 +37,8 @@ export interface PodGatewayAccessKeyRepositoryOptions {
     owner: string;
     auth?: AuthContext;
     fetch: typeof fetch;
+    resource?: GatewayAccessKeyResource;
+    listResource?: GatewayAccessKeyResource;
   }) => Promise<GatewayAccessKeyDb>;
 }
 
@@ -46,10 +50,12 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
   private readonly dbFactory: NonNullable<PodGatewayAccessKeyRepositoryOptions['dbFactory']>;
   private readonly locatorCodec: GatewayKeyLocatorCodec;
   private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly usesDefaultDbFactory: boolean;
 
   public constructor(options: PodGatewayAccessKeyRepositoryOptions) {
     this.locatorCodec = options.locatorCodec;
     this.internalPodAccess = options.internalPodAccess;
+    this.usesDefaultDbFactory = options.dbFactory === undefined;
     this.dbFactory = options.dbFactory ?? createDefaultGatewayAccessKeyDb;
   }
 
@@ -61,9 +67,9 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     record: GatewayAccessKeyRecord,
     context?: GatewayAccessKeyRepositoryContext,
   ): Promise<GatewayAccessKeyRecord> {
-    const db = await this.dbForOwner(record.owner, context);
+    const { db, resource } = await this.dbForOwner(record.owner, context);
     const valid = aiGatewayRepository.validateAccessKey(toGatewayAccessKeyInsert(record));
-    await db.insert(gatewayAccessKeyResource).values(valid).execute();
+    await db.insert(resource).values(valid).execute();
     return recordFromRow(valid as GatewayAccessKeyRow);
   }
 
@@ -72,8 +78,8 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    const db = await this.dbForOwner(locator.owner);
-    const row = await aiGatewayRepository.findAccessKeyById(db as never, id);
+    const { db, resource } = await this.dbForOwner(locator.owner);
+    const row = await db.findById<GatewayAccessKeyRow>(resource, gatewayAccessKeyStorageId(id));
     return row ? recordFromRow(row) : undefined;
   }
 
@@ -81,11 +87,11 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     owner: string,
     context?: GatewayAccessKeyRepositoryContext,
   ): Promise<GatewayAccessKeyRecord[]> {
-    const db = await this.dbForOwner(owner, context);
+    const { db, listResource } = await this.dbForOwner(owner, context);
     const rows = await db
       .select()
-      .from(gatewayAccessKeyResource)
-      .where(eq(gatewayAccessKeyResource.owner, owner))
+      .from(listResource)
+      .where(eq(listResource.owner, owner))
       .execute();
     return rows.map(recordFromRow).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
@@ -99,11 +105,12 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return undefined;
     }
-    const db = await this.dbForOwner(locator.owner, context);
-    const row = await aiGatewayRepository.revokeAccessKey(db as never, {
-      id,
-      revokedAt,
-    });
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
+    const row = await db.updateById<GatewayAccessKeyRow>(
+      resource,
+      gatewayAccessKeyStorageId(id),
+      { revokedAt },
+    );
     return row ? recordFromRow(row) : undefined;
   }
 
@@ -112,18 +119,32 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     if (!locator) {
       return;
     }
-    const db = await this.dbForOwner(locator.owner);
-    await db.updateById(gatewayAccessKeyResource, id, { lastUsedAt });
+    const { db, resource } = await this.dbForOwner(locator.owner);
+    await db.updateById(resource, gatewayAccessKeyStorageId(id), { lastUsedAt });
   }
 
   private async dbForOwner(
     owner: string,
     context?: GatewayAccessKeyRepositoryContext,
-  ): Promise<GatewayAccessKeyDb> {
+  ): Promise<{
+    db: GatewayAccessKeyDb;
+    resource: GatewayAccessKeyResource;
+    listResource: GatewayAccessKeyResource;
+  }> {
     const trustedFetch = await this.resolveTrustedFetch(owner);
-    const db = await this.dbFactory({ owner, auth: context?.auth, fetch: trustedFetch });
-    await db.init?.(gatewayAccessKeyResource);
-    return db;
+    const resource = gatewayAccessKeyResource;
+    const listResource = this.usesDefaultDbFactory
+      ? createGatewayAccessKeyResource(owner)
+      : gatewayAccessKeyResource;
+    const db = await this.dbFactory({
+      owner,
+      auth: context?.auth,
+      fetch: trustedFetch,
+      resource,
+      listResource,
+    });
+    await db.init?.(resource, listResource);
+    return { db, resource, listResource };
   }
 
   private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
@@ -145,7 +166,11 @@ function createDefaultGatewayAccessKeyDb(input: {
   owner: string;
   auth?: AuthContext;
   fetch: typeof fetch;
+  resource?: GatewayAccessKeyResource;
+  listResource?: GatewayAccessKeyResource;
 }): Promise<GatewayAccessKeyDb> {
+  const resource = input.resource ?? gatewayAccessKeyResource;
+  const listResource = input.listResource ?? resource;
   return Promise.resolve(drizzle(
     {
       fetch: input.fetch,
@@ -153,15 +178,22 @@ function createDefaultGatewayAccessKeyDb(input: {
     } as any,
     {
       schema: {
-        gatewayAccessKey: gatewayAccessKeyResource,
+        gatewayAccessKey: resource,
+        gatewayAccessKeyList: listResource,
       },
     },
   ) as unknown as GatewayAccessKeyDb);
 }
 
+function createGatewayAccessKeyResource(owner: string): GatewayAccessKeyResource {
+  const resource = alias(gatewayAccessKeyResource, 'gatewayAccessKeyList');
+  resource.setSparqlEndpoint(`${resolvePodBaseUrl(owner).replace(/\/$/u, '')}/-/sparql`);
+  return resource;
+}
+
 function toGatewayAccessKeyInsert(record: GatewayAccessKeyRecord): Record<string, unknown> {
   return {
-    id: record.id,
+    id: gatewayAccessKeyStorageId(record.id),
     owner: record.owner,
     secretHash: record.secretHash,
     deployment: record.deployment,
@@ -176,7 +208,7 @@ function toGatewayAccessKeyInsert(record: GatewayAccessKeyRecord): Record<string
 
 function recordFromRow(row: GatewayAccessKeyRow): GatewayAccessKeyRecord {
   return {
-    id: String(row.id),
+    id: gatewayAccessKeyLocatorFromStorageId(String(row.id)),
     owner: String(row.owner),
     secretHash: String(row.secretHash),
     deployment: row.deployment === 'local' ? 'local' : 'cloud',
@@ -187,6 +219,15 @@ function recordFromRow(row: GatewayAccessKeyRow): GatewayAccessKeyRecord {
     revokedAt: toDate(row.revokedAt),
     name: typeof (row as any).name === 'string' ? (row as any).name : undefined,
   };
+}
+
+function gatewayAccessKeyStorageId(locator: string): string {
+  return gatewayAccessKeyResource.buildId({ id: locator });
+}
+
+function gatewayAccessKeyLocatorFromStorageId(id: string): string {
+  const fragment = id.lastIndexOf('#');
+  return fragment >= 0 ? id.slice(fragment + 1) : id;
 }
 
 function toDate(value: unknown): Date | undefined {

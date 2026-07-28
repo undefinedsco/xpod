@@ -120,6 +120,33 @@ describe('Provider runtime adapters', () => {
     expect(() => runtimes.get('unknown')).toThrow(GatewayProtocolError);
   });
 
+  it('uses the OpenAI provider descriptor allowlist when routing to a configured fixture endpoint', async () => {
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_fixture' } },
+      { type: 'response.output_text.delta', delta: 'fixture-ok' },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      ...registry.requireProvider('openai'),
+      defaultBaseUrl: 'http://127.0.0.1:40123/v1',
+      safeBaseUrls: ['http://127.0.0.1:40123/v1'],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('openai').execute({
+      request: baseRequest({ model: 'gpt-5' }),
+      apiKey: 'fixture-provider-token',
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'fixture-ok' });
+
+    expect(fixture.captured[0].url).toBe('http://127.0.0.1:40123/v1/responses');
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer fixture-provider-token');
+  });
+
   it('streams OpenAI Responses events without buffering and preserves tools, reasoning, usage and image input', async () => {
     const fixture = fetchFixture(new Response(jsonSse([
       { type: 'response.created', response: { id: 'resp_openai' } },

@@ -31,9 +31,18 @@ export interface AiConnectionServiceAccessResource {
 }
 
 interface PodResourceLocator {
-  getResourcePath(): string;
+  config?: {
+    base?: string;
+  };
   buildId(value: { id: string }): string;
 }
+
+const declaredResourceBases = new WeakMap<object, string>([
+  [credentialResource, declaredResourceBase(credentialResource)],
+  [aiProviderResource, declaredResourceBase(aiProviderResource)],
+  [gatewayAccessKeyResource, declaredResourceBase(gatewayAccessKeyResource)],
+  [quotaSnapshotResource, declaredResourceBase(quotaSnapshotResource)],
+]);
 
 export function createAiConnectionServiceAccess(input: {
   ownerWebId: string;
@@ -61,7 +70,18 @@ export function createAiConnectionServiceAccess(input: {
 
 function resourceUrl(ownerWebId: string, resource: PodResourceLocator): string {
   const podRoot = `${resolvePodBaseUrl(ownerWebId).replace(/\/$/u, '')}/`;
-  const resourcePath = resource.getResourcePath().replace(/^\/+|\/+$/gu, '');
+  const resourcePath = declaredResourceBases.get(resource as object);
+  if (!resourcePath) {
+    throw new Error('AI Connection resource is missing an immutable declared base');
+  }
   const documentPath = resource.buildId({ id: '__service_access__' }).split('#')[0];
   return new URL(`${resourcePath}/${documentPath}`.replace(/^\/+/u, ''), podRoot).href;
+}
+
+function declaredResourceBase(resource: PodResourceLocator): string {
+  const base = resource.config?.base?.replace(/^\/+|\/+$/gu, '');
+  if (!base) {
+    throw new Error('AI Connection resource is missing a declared base');
+  }
+  return base;
 }

@@ -1,10 +1,15 @@
 import { createHash, createHmac, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
-import { and, drizzle, eq } from '@undefineds.co/drizzle-solid';
-import { aiRuntimeRepository, credentialResource } from '@undefineds.co/models';
+import { alias, and, drizzle, eq } from '@undefineds.co/drizzle-solid';
+import {
+  aiProviderResource,
+  aiRuntimeRepository,
+  credentialResource,
+} from '@undefineds.co/models';
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
+import { DEFAULT_PROVIDER_DESCRIPTORS } from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 
@@ -160,20 +165,30 @@ type ConnectedCredentialDb = {
 
 export interface PodConnectedCredentialRepositoryOptions {
   internalPodAccess?: InternalPodAccessTokenProvider;
+  providerIds?: string[];
   dbFactory?: (input: {
     owner: string;
     auth?: AuthContext;
     fetch: typeof fetch;
+    credential?: typeof credentialResource;
+    aiProvider?: typeof aiProviderResource;
   }) => Promise<ConnectedCredentialDb>;
 }
 
 export class PodConnectedCredentialRepository implements PodCredentialRepository {
   private readonly dbFactory: NonNullable<PodConnectedCredentialRepositoryOptions['dbFactory']>;
   private readonly internalPodAccess?: InternalPodAccessTokenProvider;
+  private readonly providerIds: string[];
+  private readonly credentialTemplate: typeof credentialResource;
+  private readonly aiProviderTemplate: typeof aiProviderResource;
 
   public constructor(options: PodConnectedCredentialRepositoryOptions = {}) {
     this.internalPodAccess = options.internalPodAccess;
+    this.providerIds = options.providerIds
+      ?? DEFAULT_PROVIDER_DESCRIPTORS.map((provider) => provider.id);
     this.dbFactory = options.dbFactory ?? createDefaultConnectedCredentialDb;
+    this.credentialTemplate = alias(credentialResource, 'credentialTemplate');
+    this.aiProviderTemplate = alias(aiProviderResource, 'aiProviderTemplate');
   }
 
   public async getCredential(input: {
@@ -182,9 +197,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     deployment: GatewayDeployment;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const db = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
     const id = aiRuntimeRepository.credentialId(input);
-    const row = await db.findById<Record<string, unknown>>(credentialResource, id);
+    const row = await db.findById<Record<string, unknown>>(credential, id);
     const record = row ? recordFromCredentialRow(row) : undefined;
     if (!record) {
       return undefined;
@@ -222,8 +237,22 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
-    const db = await this.dbForOwner(input.webId, input.auth);
-    const rows = await db.select().from(credentialResource).where(undefined).execute();
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
+    const rows = (await Promise.all(
+      this.providerIds.map(async (provider) => {
+        try {
+          return await db.findById<Record<string, unknown>>(
+            credential,
+            aiRuntimeRepository.credentialId({ deployment: input.deployment, provider }),
+          );
+        } catch (error) {
+          if (isPodResourceNotFound(error)) {
+            return null;
+          }
+          throw error;
+        }
+      }),
+    )).filter((row): row is Record<string, unknown> => row !== null);
     return rows
       .map(recordFromCredentialRow)
       .filter((record) => record.webId === input.webId)
@@ -251,8 +280,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     record: ConnectCredentialRecord,
     context?: { auth?: AuthContext },
   ): Promise<ConnectCredentialRecord> {
-    const db = await this.dbForOwner(record.webId, context?.auth);
-    const existing = await db.findById<Record<string, unknown>>(credentialResource, record.id);
+    const { db, credential } = await this.dbForOwner(record.webId, context?.auth);
+    const existing = await db.findById<Record<string, unknown>>(credential, record.id);
     const existingVersion = existing ? versionFromRow(existing) : 0;
     if (record.expectedVersion !== undefined && record.expectedVersion !== existingVersion) {
       throw new Error('credential_version_conflict');
@@ -263,10 +292,10 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       version: nextVersion,
     });
     if (existing) {
-      const updated = await db.updateById<Record<string, unknown>>(credentialResource, record.id, row);
+      const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
       return recordFromCredentialRow(updated ?? row);
     }
-    await db.insert(credentialResource).values(row).execute();
+    await db.insert(credential).values(row).execute();
     return recordFromCredentialRow(row);
   }
 
@@ -278,8 +307,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     encryptedSecret: EncryptedCredentialSecret;
     auth?: AuthContext;
   }): Promise<boolean> {
-    const db = await this.dbForOwner(input.webId, input.auth);
-    const existing = await db.findById<Record<string, unknown>>(credentialResource, input.credentialId);
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
+    const existing = await db.findById<Record<string, unknown>>(credential, input.credentialId);
     if (!existing) {
       return false;
     }
@@ -291,7 +320,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (input.expectedVersion === undefined || currentVersion !== input.expectedVersion) {
       return false;
     }
-    const updated = await db.update(credentialResource)
+    const updated = await db.update(credential)
       .set({
         encryptedSecret: JSON.stringify(input.encryptedSecret),
         wrappedDataKey: input.encryptedSecret.wrappedDek,
@@ -299,8 +328,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         keyVersion: String(currentVersion + 1),
       })
       .where(and(
-        eq(credentialResource.id, input.credentialId),
-        eq(credentialResource.keyVersion, String(input.expectedVersion)),
+        eq(credential.id, input.credentialId),
+        eq(credential.keyVersion, String(input.expectedVersion)),
       ))
       .returning()
       .execute();
@@ -315,9 +344,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     expectedVersion?: number;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const db = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
     const id = aiRuntimeRepository.credentialId(input);
-    const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
+    const existing = await db.findById<Record<string, unknown>>(credential, id);
     if (!existing) {
       return undefined;
     }
@@ -325,7 +354,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (input.expectedVersion !== undefined && input.expectedVersion !== existingVersion) {
       throw new Error('credential_version_conflict');
     }
-    const updated = await db.updateById<Record<string, unknown>>(credentialResource, id, {
+    const updated = await db.updateById<Record<string, unknown>>(credential, id, {
       reauthRequired: true,
       status: 'active',
       keyVersion: String(existingVersion + 1),
@@ -334,24 +363,29 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   }
 
   public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
-    const db = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
     const id = aiRuntimeRepository.credentialId(input);
-    const existing = await db.findById<Record<string, unknown>>(credentialResource, id);
+    const existing = await db.findById<Record<string, unknown>>(credential, id);
     if (!existing) {
       return undefined;
     }
-    const updated = await db.updateById<Record<string, unknown>>(credentialResource, id, {
+    const updated = await db.updateById<Record<string, unknown>>(credential, id, {
       status: 'revoked',
       keyVersion: String(versionFromRow(existing) + 1),
     });
     return updated ? recordFromCredentialRow(updated) : undefined;
   }
 
-  private async dbForOwner(owner: string, auth?: AuthContext): Promise<ConnectedCredentialDb> {
+  private async dbForOwner(owner: string, auth?: AuthContext): Promise<{
+    db: ConnectedCredentialDb;
+    credential: typeof credentialResource;
+  }> {
     const trustedFetch = await this.resolveTrustedFetch(owner);
-    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
-    await db.init?.(credentialResource);
-    return db;
+    const credential = alias(this.credentialTemplate, 'credential');
+    const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
+    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
+    await db.init?.(credential, aiProvider);
+    return { db, credential };
   }
 
   private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
@@ -627,6 +661,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       webId: input.webId,
       provider: this.provider,
       deployment: input.deployment,
+      auth: input.auth,
     });
   }
 
@@ -1151,7 +1186,11 @@ function createDefaultConnectedCredentialDb(input: {
   owner: string;
   auth?: AuthContext;
   fetch: typeof fetch;
+  credential?: typeof credentialResource;
+  aiProvider?: typeof aiProviderResource;
 }): Promise<ConnectedCredentialDb> {
+  const credential = input.credential ?? credentialResource;
+  const aiProvider = input.aiProvider ?? aiProviderResource;
   return Promise.resolve(drizzle(
     {
       fetch: input.fetch,
@@ -1159,7 +1198,8 @@ function createDefaultConnectedCredentialDb(input: {
     } as any,
     {
       schema: {
-        credential: credentialResource,
+        credential,
+        aiProvider,
       },
     },
   ) as unknown as ConnectedCredentialDb);
@@ -1168,7 +1208,7 @@ function createDefaultConnectedCredentialDb(input: {
 function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string, unknown> {
   return {
     id: record.id,
-    provider: normalizeProvider(record.provider),
+    provider: aiProviderResource.buildId({ id: normalizeProvider(record.provider) }),
     service: 'ai',
     authMode: record.authMode,
     status: record.status,
@@ -1188,7 +1228,8 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
 function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentialRecord {
   const encrypted = parseEncryptedSecret(row.encryptedSecret);
   const id = stringFrom(row.id);
-  const provider = normalizeProvider(stringFrom(row.provider) || providerFromCredentialId(id));
+  const provider = providerFromRelation(stringFrom(row.provider))
+    || providerFromCredentialId(id);
   const deployment = deploymentFromCredentialId(id);
   const webId = encrypted.webId;
   return {
@@ -1207,6 +1248,23 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     reauthRequired: row.reauthRequired === true || row.reauthRequired === 'true',
     metadata: metadataFromRow(row),
   };
+}
+
+function providerFromRelation(value: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const withoutFragment = value.split('#', 1)[0] ?? value;
+  const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
+  const provider = fileName.replace(/\.ttl$/u, '');
+  return provider ? normalizeProvider(provider) : undefined;
+}
+
+function isPodResourceNotFound(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /\b404\b|not found/i.test(error.message);
 }
 
 function metadataFromRow(row: Record<string, unknown>): Record<string, unknown> | undefined {

@@ -47,6 +47,14 @@ function resolveCssTokenEndpoint(): string {
   return 'http://localhost:3000/.oidc/token';
 }
 
+function normalizeOptionalBaseUrl(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const url = new URL(value);
+  return url.toString().replace(/\/$/u, '');
+}
+
 /**
  * 创建 API 容器
  */
@@ -111,6 +119,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     );
   const tunnelProfileState = resolveTunnelProfileState(process.env);
   const secretCellCredentialVaultFactory = loadSecretCellCredentialVaultFactory(process.env);
+  const openAiGatewayBaseUrl = normalizeOptionalBaseUrl(process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL);
 
   return {
     edition,
@@ -125,6 +134,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
+    solidBaseUrl: process.env.CSS_BASE_URL,
     gatewayLocatorSecret: process.env.XPOD_GATEWAY_LOCATOR_SECRET,
     gatewayLocatorKeyId: process.env.XPOD_GATEWAY_LOCATOR_KEY_ID,
     gatewayPreviousLocatorSecrets: parseGatewayPreviousLocatorSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
@@ -134,6 +144,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     secretCellCredentialVaultFactory,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
     aiGatewayKimiClientId: process.env.XPOD_AI_GATEWAY_KIMI_CLIENT_ID,
+    aiGatewayProviderBaseUrls: openAiGatewayBaseUrl ? { openai: openAiGatewayBaseUrl } : undefined,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',
       mode: process.env.XPOD_INNGEST_MODE === 'spawn' || process.env.XPOD_INNGEST_MODE === 'managed'

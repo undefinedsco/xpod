@@ -57,6 +57,16 @@ describe('loadConfigFromEnv', () => {
     expect(config.serviceToken).toBe('svc-local-config-token');
   });
 
+  it('loads an explicit OpenAI gateway fixture base URL for local E2E runs', () => {
+    process.env.XPOD_EDITION = 'local';
+    process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
+    process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL = 'http://127.0.0.1:48111/v1/';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
+  });
+
   it('constructs disabled provider Connect without eagerly requiring internal service credentials', async () => {
     const service = createApiContainer(baseConfig({
       gatewayInternalClientId: undefined,

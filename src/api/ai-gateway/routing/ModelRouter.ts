@@ -8,6 +8,7 @@ import {
 import {
   type SessionAffinityStore,
 } from './SessionAffinityStore';
+import type { AuthContext } from '../../auth/AuthContext';
 
 export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error';
 export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
@@ -38,6 +39,7 @@ export interface GatewayCredentialCandidate {
 export interface ModelRouterCredentialLookupInput {
   webId: string;
   deployment: string;
+  auth?: AuthContext;
 }
 
 export interface ModelRouterOptions {
@@ -52,6 +54,7 @@ export interface ModelRouterOptions {
 export interface ModelRouteInput {
   webId: string;
   deployment: string;
+  auth?: AuthContext;
   model?: string;
   conversationId?: string;
   explicitCredentialId?: string;
@@ -103,6 +106,7 @@ export class ModelRouter {
     const candidates = await this.credentials({
       webId: input.webId,
       deployment: input.deployment,
+      auth: input.auth,
     });
     const target = this.resolveTarget(input, candidates);
     const provider = this.registry.requireProvider(target.providerId);

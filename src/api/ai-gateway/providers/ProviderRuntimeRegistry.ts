@@ -23,7 +23,10 @@ export class ProviderRuntimeRegistry {
   public constructor(options: ProviderRuntimeRegistryOptions = {}) {
     const registry = options.registry ?? createDefaultProviderRegistry();
     const transport = options.transport ?? new ProviderHttpTransport();
-    this.adapters.set('openai', new OpenAiRuntimeAdapter({ transport }));
+    this.adapters.set('openai', new OpenAiRuntimeAdapter({
+      transport,
+      provider: registry.requireProvider('openai'),
+    }));
     this.adapters.set('anthropic', new AnthropicRuntimeAdapter({ transport }));
     this.adapters.set('kimi', new KimiRuntimeAdapter({
       transport,

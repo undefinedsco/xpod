@@ -698,23 +698,30 @@ describe('ProviderConnectService', () => {
   });
 
   it('summarizes one effective connection per provider for the current identity', async () => {
+    const auth = {
+      type: 'solid' as const,
+      webId: WEB_ID,
+      accessToken: 'alice-management-token',
+      tokenType: 'Bearer' as const,
+    };
+    const getCredential = vi.fn(async ({ provider }: { provider: string }) => provider === 'openai' ? ({
+      id: 'credential_openai',
+      credentialIri: 'https://id.example/alice/settings/ai/credentials/openai.ttl#cloud-openai',
+      webId: WEB_ID,
+      provider,
+      deployment: 'cloud' as const,
+      authMode: 'apiKey' as const,
+      encryptedSecret: { ciphertext: 'not-public' },
+      status: 'active' as const,
+      accountLabel: 'Alice',
+      version: 3,
+      reauthRequired: true,
+    }) : undefined);
     const service = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),
       adapters: [],
       credentialRepository: {
-        getCredential: vi.fn(async ({ provider }: { provider: string }) => provider === 'openai' ? ({
-          id: 'credential_openai',
-          credentialIri: 'https://id.example/alice/settings/ai/credentials/openai.ttl#cloud-openai',
-          webId: WEB_ID,
-          provider,
-          deployment: 'cloud',
-          authMode: 'apiKey',
-          encryptedSecret: { ciphertext: 'not-public' },
-          status: 'active',
-          accountLabel: 'Alice',
-          version: 3,
-          reauthRequired: true,
-        }) : undefined),
+        getCredential,
         getActiveCredential: vi.fn(),
         upsertConnectedCredential: vi.fn(),
         markReauthRequired: vi.fn(),
@@ -725,6 +732,7 @@ describe('ProviderConnectService', () => {
     await expect(service.listProviders({
       webId: WEB_ID,
       deployment: 'cloud',
+      auth,
     })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         provider: 'openai',
@@ -738,6 +746,7 @@ describe('ProviderConnectService', () => {
         status: 'disconnected',
       }),
     ]));
+    expect(getCredential).toHaveBeenCalledWith(expect.objectContaining({ auth }));
   });
 
   it('refreshes by opening the sealed Pod credential and never accepting a plaintext refresh token in the API input', async () => {
@@ -876,7 +885,7 @@ describe('ProviderConnectService', () => {
     const stored = [...rows.values()][0];
     expect(stored).toMatchObject({
       id: 'credentials.ttl#cloud-openai',
-      provider: 'openai',
+      provider: 'openai.ttl',
       authMode: 'apiKey',
       status: 'active',
       encryptionAlgorithm: 'AES-256-GCM',
@@ -891,6 +900,12 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
     });
     expect(active).toMatchObject({ provider: 'openai', version: 1 });
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual([
+      expect.objectContaining({ provider: 'openai', enabled: true, health: 'healthy' }),
+    ]);
     await expect(repository.rewrapCredential({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -1009,7 +1024,6 @@ describe('ProviderConnectService', () => {
       deployment: 'cloud',
     })).rejects.toThrow('service_access_missing');
   });
-
 });
 
 function jsonClone<T>(value: T): T {

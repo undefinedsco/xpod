@@ -452,6 +452,27 @@ describe('AiGatewayHandler', () => {
     expect(JSON.parse(res.body).error.code).toBe('provider_error');
   });
 
+  it('returns 403 when revoked Pod service access prevents model discovery', async () => {
+    const { server, routes } = createServer();
+    const service = {
+      execute: vi.fn(),
+      complete: vi.fn(),
+      listModels: vi.fn(async() => {
+        throw new Error('service_access_missing');
+      }),
+    };
+    registerAiGatewayRoutes(server, { service: service as any });
+
+    const res = await callRoute(routes, 'GET /v1/models', request('/v1/models'));
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: {
+        code: 'service_access_missing',
+      },
+    });
+  });
+
   it('aggregates reasoning, signatures, tools, usage and finish reason in all non-streaming protocol shapes', async () => {
     const { routes } = createFixture({
       events: [

@@ -240,8 +240,17 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayProviderRegistry: asFunction(() => {
-      return createDefaultGatewayProviderRegistry();
+    gatewayProviderRegistry: asFunction(({ config }: ApiContainerCradle) => {
+      const registry = createDefaultGatewayProviderRegistry();
+      const openAiBaseUrl = config.aiGatewayProviderBaseUrls?.openai;
+      if (openAiBaseUrl) {
+        registry.register({
+          ...registry.requireProvider('openai'),
+          defaultBaseUrl: openAiBaseUrl,
+          safeBaseUrls: [openAiBaseUrl],
+        });
+      }
+      return registry;
     }).singleton(),
 
     gatewayCredentialStore: asFunction(({ gatewayInternalPodAccess }: ApiContainerCradle) => {
@@ -318,6 +327,8 @@ export function registerCommonServices(
     authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, invocationTokenCodec, config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
+        publicBaseUrl: config.solidBaseUrl,
+        internalBaseUrl: config.cssTokenEndpoint,
       });
 
       const clientCredAuthenticator = new ClientCredentialsAuthenticator({

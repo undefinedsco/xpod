@@ -16,6 +16,14 @@ describe('GatewayProxy response headers', () => {
     upstream = http.createServer((req, res) => {
       seenByUpstream.push(`${req.method} ${req.url}`);
 
+      if (req.method === 'OPTIONS') {
+        res.statusCode = 204;
+        res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*');
+        res.setHeader('Access-Control-Allow-Headers', 'Authorization, DPoP, Content-Type');
+        res.end();
+        return;
+      }
+
       if (req.method === 'HEAD') {
         res.statusCode = 404;
         res.setHeader('Transfer-Encoding', 'chunked');
@@ -27,8 +35,10 @@ describe('GatewayProxy response headers', () => {
       if (req.url === '/unauthorized') {
         res.statusCode = 401;
         res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Transfer-Encoding', 'chunked');
-        res.end(JSON.stringify({ error: 'unauthorized' }));
+        // Multiple writes make the fixture genuinely chunked without manually
+        // adding a framing header that Bun's Node compatibility layer duplicates.
+        res.write('{"error":');
+        res.end('"unauthorized"}');
         return;
       }
 
@@ -97,6 +107,31 @@ describe('GatewayProxy response headers', () => {
 
     expect(transferEncodingCount).toBeLessThanOrEqual(1);
     expect(body).toBe(JSON.stringify({ error: 'unauthorized' }));
+  });
+
+  it('reflects the browser origin on credentialed proxied responses', async () => {
+    const res = await fetch(`http://127.0.0.1:${proxyPort}/ok`, {
+      headers: { Origin: 'http://localhost:5173' },
+    });
+
+    expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('vary')).toContain('Origin');
+  });
+
+  it('finishes proxied 204 CORS preflight responses', async () => {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/api/test`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:5173',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,dpop,content-type',
+      },
+      signal: AbortSignal.timeout(2_000),
+    });
+
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe('');
   });
 });
 

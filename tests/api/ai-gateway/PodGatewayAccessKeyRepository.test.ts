@@ -315,7 +315,11 @@ describe('PodGatewayAccessKeyRepository', () => {
       revokedAt: new Date('2026-07-23T02:00:00.000Z'),
     });
     expect(backing.calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({ op: 'updateById', resource: gatewayAccessKeyResource, id: keyId }),
+      expect.objectContaining({
+        op: 'updateById',
+        resource: gatewayAccessKeyResource,
+        id: `ai/gateway/access-keys.ttl#${keyId}`,
+      }),
     ]));
   });
 

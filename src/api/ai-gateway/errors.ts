@@ -2,6 +2,7 @@ export type GatewayErrorCode =
   | 'invalid_request'
   | 'invalid_tool_arguments'
   | 'unsupported_protocol_event'
+  | 'service_access_missing'
   | 'credential_unavailable'
   | 'provider_error'
   | 'internal_error';
@@ -45,6 +46,16 @@ export function normalizeGatewayError(error: unknown): NormalizedGatewayError {
         message: error.message,
         status: error.status,
         ...(error.details ? { details: error.details } : {}),
+      },
+    };
+  }
+
+  if (error instanceof Error && error.message === 'service_access_missing') {
+    return {
+      error: {
+        code: 'service_access_missing',
+        message: 'Pod service access is missing or has been revoked',
+        status: 403,
       },
     };
   }
