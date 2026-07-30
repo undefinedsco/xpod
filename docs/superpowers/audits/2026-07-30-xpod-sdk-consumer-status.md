@@ -19,10 +19,14 @@ The normal UI install/build path still cannot complete because the four packages
 
 - RED: `bun run test:run tests/ui/packaged-sdk-consumer.test.ts` failed after adding a regression assertion because the test still hardcoded a sibling package checkout.
 - GREEN unit: `bun run test:run tests/ui/packaged-sdk-consumer.test.ts` passed with `2` tests and `1` explicit skip. The default test path is hermetic: it checks the UI manifest, verifies no source alias or local package specifier remains, and skips package-consumer integration unless an explicit package source env is provided.
+- Explicit tarball integration: `XPOD_APPLET_PACKAGE_TARBALL_DIR=/Users/ganlu/develop/.worktrees/linx-applet-packages/.test-data/package-tarballs bun run test:run tests/ui/packaged-sdk-consumer.test.ts` passed with `3` tests. The tarballs came from Linx commit `359ce84a` and were installed with normal npm peer resolution.
+- Dashboard tarball build: `cd ui && npm install --no-save /Users/ganlu/develop/.worktrees/linx-applet-packages/.test-data/package-tarballs/*.tgz && bun run build:dashboard` passed. The temporary lockfile change was discarded.
+- React instance check: `npm ls react react-dom @undefineds.co/solid-sdk @undefineds.co/shared-ui @undefineds.co/extension-sdk @undefineds.co/ai-connection --depth=2` showed the SDK packages deduped to Xpod UI's `react@19.2.3`; a filesystem scan found exactly one `node_modules/react`.
+- SDK peer check: the installed tarballs declare `peerDependencies.react` as `^19.2.0` for all four SDK packages.
 - Blocked build: `bun run build:ui` failed at `cd ui && bun install --frozen-lockfile` with registry `404` for the four `@undefineds.co/*` packages.
 
 ## Deferred Integration
 
 The isolated consumer integration in `tests/ui/packaged-sdk-consumer.test.ts` only runs when either `XPOD_APPLET_PACKAGE_TARBALL_DIR` or `XPOD_APPLET_PACKAGE_REGISTRY_URL` is configured. It uses normal npm peer resolution and imports `@undefineds.co/shared-ui/theme.css`, `AppLayout`, `AuthBoundary`, `TwoPaneLayout`, `defineAppletLayout`, `createAiConnectionExtension`, and `SolidRuntimeProvider`.
 
-Run that integration and `build:ui` after the packages are published or after a fresh explicit tarball set is produced with SDK React peers compatible with Xpod UI (`^19.2.0`).
+Run normal `build:ui` and update `ui/bun.lock` after the packages are published to the registry.
