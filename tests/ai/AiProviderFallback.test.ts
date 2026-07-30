@@ -122,7 +122,7 @@ describe('VercelAiProvider gateway fallback adapter', () => {
       { role: 'user', content: 'ping' },
     ], { context: solidContext });
 
-    await expect(iterator.next()).rejects.toThrow('AiGatewayService is required');
+    await expect(iterator[Symbol.asyncIterator]().next()).rejects.toThrow('AiGatewayService is required');
     expect((store.getAiConfig as any)).not.toHaveBeenCalled();
   });
 });
