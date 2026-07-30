@@ -12,6 +12,7 @@ const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default:
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
 const SettingsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.SettingsPage })));
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
+const PodPage = lazy(() => import('./pages/settings/PodPage'));
 
 function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
@@ -32,12 +33,7 @@ export const dashboardRoutes: RouteObject[] = [
       },
       {
         path: 'pod',
-        element: guardedRoute(
-          <PlaceholderSettingsSection
-            title="Pod"
-            description="Manage Pod storage, profile, and data access settings from the Pod applet."
-          />,
-        ),
+        element: guardedRoute(lazyRoute(<PodPage />)),
       },
       {
         path: 'network',

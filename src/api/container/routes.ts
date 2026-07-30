@@ -27,6 +27,7 @@ import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
 import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
+import { DrizzlePodAiConnectionStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
@@ -104,6 +105,10 @@ function registerSharedRoutes(
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
+  const podLookupRepository = container.resolve('podLookupRepo');
+  if (!podLookupRepository) {
+    throw new Error('Pod settings route requires podLookupRepo');
+  }
 
   registerEdgeNodeSignalRoutes(server, {
     repository: nodeRepo,
@@ -138,6 +143,11 @@ function registerSharedRoutes(
     quotaService: providerQuotaService,
     servicePrincipal: gatewayInternalPodAccess,
     aiConnectionInvocationKeyIssuer,
+  });
+  registerPodSettingsRoutes(server, {
+    podLookupRepository,
+    usageRepo: new UsageRepository(container.resolve('db')),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionStatusReader(gatewayInternalPodAccess),
   });
 
   // Quota & Usage API (Business 对接)
