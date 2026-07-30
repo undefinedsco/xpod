@@ -79,6 +79,10 @@ function resolveAiConnectionBaseUrl(config: ApiContainerCradle['config']): strin
   return new URL('/v1', origin.endsWith('/') ? origin : `${origin}/`).toString().replace(/\/$/u, '');
 }
 
+function resolveAiConnectionAudience(config: ApiContainerCradle['config']): string {
+  return new URL(resolveAiConnectionBaseUrl(config)).origin;
+}
+
 /**
  * 注册共享服务到容器
  */
@@ -157,6 +161,7 @@ export function registerCommonServices(
         codec: invocationTokenCodec,
         deployment: config.edition,
         baseUrl: resolveAiConnectionBaseUrl(config),
+        audience: resolveAiConnectionAudience(config),
       });
     }).singleton(),
 
@@ -347,6 +352,7 @@ export function registerCommonServices(
         repository: gatewayAccessKeyRepository,
         invocationTokenCodec,
         deployment: config.edition,
+        invocationTokenAudience: resolveAiConnectionAudience(config),
       });
 
       return new MultiAuthenticator({

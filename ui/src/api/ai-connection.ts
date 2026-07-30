@@ -8,17 +8,22 @@ interface CreateXpodAiConnectionClientInput {
   webId: string;
   podUrl: string;
   authenticatedFetch: typeof fetch;
+  now?: () => Date;
 }
 
 interface AiConnectionInvocation {
   baseUrl?: string;
   gatewayKey?: string;
+  expiresAt?: string;
 }
+
+const INVOCATION_REFRESH_MARGIN_MS = 30_000;
 
 export function createXpodAiConnectionClient({
   webId,
   podUrl,
   authenticatedFetch,
+  now,
 }: CreateXpodAiConnectionClientInput): AiConnectionClient {
   return createAiConnectionClient({
     webId,
@@ -26,6 +31,7 @@ export function createXpodAiConnectionClient({
     authenticatedFetch: createServiceAccessGatewayFetch({
       podUrl,
       authenticatedFetch,
+      now,
     }),
   });
 }
@@ -33,12 +39,15 @@ export function createXpodAiConnectionClient({
 export function createServiceAccessGatewayFetch({
   podUrl,
   authenticatedFetch,
+  now = () => new Date(),
 }: {
   podUrl: string;
   authenticatedFetch: typeof fetch;
+  now?: () => Date;
 }): typeof fetch {
   const apiBase = resolveAiConnectionApiBase(podUrl);
   let invocation: AiConnectionInvocation | undefined;
+  let pendingInvocation: Promise<AiConnectionInvocation> | undefined;
 
   const fetchServiceAccess = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const response = await authenticatedFetch(input, init);
@@ -47,9 +56,21 @@ export function createServiceAccessGatewayFetch({
   };
 
   const ensureInvocation = async (): Promise<AiConnectionInvocation> => {
-    if (invocation?.gatewayKey) {
+    if (isUsableInvocation(invocation, now())) {
       return invocation;
     }
+    if (pendingInvocation) {
+      return pendingInvocation;
+    }
+    pendingInvocation = refreshInvocation();
+    try {
+      return await pendingInvocation;
+    } finally {
+      pendingInvocation = undefined;
+    }
+  };
+
+  const refreshInvocation = async (): Promise<AiConnectionInvocation> => {
     const response = await fetchServiceAccess(`${apiBase}/api/applets/service-access/ai-connection`, {
       method: 'GET',
       credentials: 'include',
@@ -64,20 +85,30 @@ export function createServiceAccessGatewayFetch({
     return invocation;
   };
 
+  const fetchWithInvocation = async (input: RequestInfo | URL, init: RequestInit | undefined): Promise<Response> => {
+    const activeInvocation = await ensureInvocation();
+    const headers = new Headers(init?.headers);
+    headers.set('Authorization', `Bearer ${activeInvocation.gatewayKey}`);
+    return authenticatedFetch(input, {
+      ...init,
+      credentials: 'omit',
+      headers,
+    });
+  };
+
   return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     if (isServiceAccessRequest(input, apiBase)) {
       return fetchServiceAccess(input, init);
     }
 
-    const activeInvocation = await ensureInvocation();
-    const headers = new Headers(init?.headers);
-    headers.set('Authorization', `Bearer ${activeInvocation.gatewayKey}`);
-    const response = await authenticatedFetch(input, {
-      ...init,
-      credentials: 'omit',
-      headers,
-    });
-    return sanitizeManagementFailure(response);
+    const response = await fetchWithInvocation(input, init);
+    if (response.status !== 401) {
+      return sanitizeManagementFailure(response);
+    }
+    await response.arrayBuffer();
+    invocation = undefined;
+    const retry = await fetchWithInvocation(input, init);
+    return sanitizeManagementFailure(retry);
   }) as typeof fetch;
 }
 
@@ -100,6 +131,17 @@ async function invocationFromResponse(response: Response): Promise<AiConnectionI
   } catch {
     return undefined;
   }
+}
+
+function isUsableInvocation(invocation: AiConnectionInvocation | undefined, now: Date): invocation is AiConnectionInvocation & { gatewayKey: string } {
+  if (!invocation?.gatewayKey) {
+    return false;
+  }
+  if (!invocation.expiresAt) {
+    return true;
+  }
+  const expiresAt = Date.parse(invocation.expiresAt);
+  return Number.isFinite(expiresAt) && expiresAt - now.getTime() > INVOCATION_REFRESH_MARGIN_MS;
 }
 
 async function sanitizeManagementFailure(response: Response): Promise<Response> {

@@ -73,6 +73,8 @@ export interface AIConnectionInvocationConfig {
   baseUrl: string;
   /** Xpod-issued gateway key for this invocation */
   gatewayKey: string;
+  /** ISO timestamp after which the invocation token must be refreshed */
+  expiresAt?: string;
   /** Optional model routed through the gateway */
   model?: string;
 }

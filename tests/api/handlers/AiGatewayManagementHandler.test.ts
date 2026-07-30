@@ -125,6 +125,7 @@ function invocationHarness(input: {
     repository,
     invocationTokenCodec: codec,
     deployment,
+    invocationTokenAudience: 'https://pod.example',
     now: () => now,
     requiredScopes: input.scopes ?? ['models:read', 'inference:write'],
   });
@@ -132,6 +133,7 @@ function invocationHarness(input: {
     codec,
     deployment,
     baseUrl: 'https://pod.example/v1',
+    audience: 'https://pod.example',
     ttlMs: input.ttlMs,
     now: () => now,
   });
@@ -212,6 +214,7 @@ describe('AiGatewayManagementHandler', () => {
     const issue = vi.fn(async (context: unknown) => ({
       baseUrl: 'https://pod.example',
       gatewayKey: 'xpod_inv_v1.short-lived-owner-token',
+      expiresAt: '2026-07-30T00:10:00.000Z',
     }));
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -237,6 +240,7 @@ describe('AiGatewayManagementHandler', () => {
       invocation: {
         baseUrl: 'https://pod.example',
         gatewayKey: 'xpod_inv_v1.short-lived-owner-token',
+        expiresAt: '2026-07-30T00:10:00.000Z',
       },
     });
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain('browser-solid-token');
@@ -942,6 +946,7 @@ describe('AiGatewayManagementHandler', () => {
       repository,
       invocationTokenCodec: expiredHarness.codec,
       deployment: 'cloud',
+      invocationTokenAudience: 'https://pod.example',
       now: () => new Date('2026-07-30T00:02:00.000Z'),
     });
     const insufficientScopeCodec = new AesInvocationTokenCodec({
@@ -949,6 +954,8 @@ describe('AiGatewayManagementHandler', () => {
     });
     const insufficientScopeToken = insufficientScopeCodec.encode({
       deployment: 'cloud',
+      audience: 'https://pod.example',
+      issuer: 'https://pod.example',
       webId: WEB_ID,
       scopes: ['models:read'],
       issuedAt: now,
@@ -958,6 +965,7 @@ describe('AiGatewayManagementHandler', () => {
       repository,
       invocationTokenCodec: insufficientScopeCodec,
       deployment: 'cloud',
+      invocationTokenAudience: 'https://pod.example',
       now: () => now,
     });
     const { server, routes } = createServer();

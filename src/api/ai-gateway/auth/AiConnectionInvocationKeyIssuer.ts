@@ -3,7 +3,7 @@ import type { StoreContext } from '../../chatkit/store';
 import type { AIConnectionInvocationConfig } from '../../../agents/types';
 import type { GatewayDeployment } from './GatewayApiKey';
 import { DEFAULT_GATEWAY_API_KEY_SCOPES } from './GatewayApiKeyAuthenticator';
-import { requireCanonicalWebId, type InvocationTokenCodec } from './InvocationTokenCodec';
+import { requireCanonicalOrigin, requireCanonicalWebId, type InvocationTokenCodec } from './InvocationTokenCodec';
 
 // ACP can remain in an interactive authentication wait for five minutes.
 // Ten minutes covers that boundary plus the resumed turn while retaining a
@@ -15,6 +15,8 @@ export interface AiConnectionInvocationKeyIssuerOptions {
   codec: InvocationTokenCodec;
   deployment: GatewayDeployment;
   baseUrl: string;
+  audience?: string;
+  issuer?: string;
   ttlMs?: number;
   reuseSafetyMarginMs?: number;
   maxCacheEntries?: number;
@@ -30,6 +32,8 @@ export class AiConnectionInvocationKeyIssuer {
   private readonly codec: InvocationTokenCodec;
   private readonly deployment: GatewayDeployment;
   private readonly baseUrl: string;
+  private readonly audience: string;
+  private readonly issuer: string;
   private readonly ttlMs: number;
   private readonly reuseSafetyMarginMs: number;
   private readonly maxCacheEntries: number;
@@ -41,6 +45,8 @@ export class AiConnectionInvocationKeyIssuer {
     this.codec = options.codec;
     this.deployment = options.deployment;
     this.baseUrl = requireBaseUrl(options.baseUrl);
+    this.audience = requireCanonicalOrigin(options.audience ?? new URL(this.baseUrl).origin, 'audience');
+    this.issuer = requireCanonicalOrigin(options.issuer ?? this.audience, 'issuer');
     this.ttlMs = normalizeTtl(options.ttlMs);
     this.reuseSafetyMarginMs = normalizeSafetyMargin(options.reuseSafetyMarginMs, this.ttlMs);
     this.maxCacheEntries = normalizeMaxCacheEntries(options.maxCacheEntries);
@@ -53,7 +59,7 @@ export class AiConnectionInvocationKeyIssuer {
     const now = this.now();
     const cached = this.cache.get(webId);
     if (cached && cached.expiresAt.getTime() - now.getTime() >= this.reuseSafetyMarginMs) {
-      return { baseUrl: this.baseUrl, gatewayKey: cached.plaintext };
+      return this.toInvocationConfig(cached);
     }
     let pending = this.pending.get(webId);
     if (!pending) {
@@ -68,10 +74,7 @@ export class AiConnectionInvocationKeyIssuer {
     }
     const issued = await pending;
 
-    return {
-      baseUrl: this.baseUrl,
-      gatewayKey: issued.plaintext,
-    };
+    return this.toInvocationConfig(issued);
   }
 
   private createInvocation(webId: string, createdAt: Date): CachedInvocation {
@@ -79,6 +82,8 @@ export class AiConnectionInvocationKeyIssuer {
     const expiresAt = new Date(createdAt.getTime() + this.ttlMs);
     const plaintext = this.codec.encode({
       deployment: this.deployment,
+      audience: this.audience,
+      issuer: this.issuer,
       webId,
       scopes: [...DEFAULT_GATEWAY_API_KEY_SCOPES],
       issuedAt: createdAt,
@@ -87,6 +92,14 @@ export class AiConnectionInvocationKeyIssuer {
     const cached = { plaintext, expiresAt };
     this.cache.set(webId, cached);
     return cached;
+  }
+
+  private toInvocationConfig(invocation: CachedInvocation): AIConnectionInvocationConfig {
+    return {
+      baseUrl: this.baseUrl,
+      gatewayKey: invocation.plaintext,
+      expiresAt: invocation.expiresAt.toISOString(),
+    };
   }
 
   private pruneCache(now: Date): void {

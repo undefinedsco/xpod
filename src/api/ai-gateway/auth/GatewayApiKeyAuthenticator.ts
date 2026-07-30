@@ -8,6 +8,7 @@ import {
   verifyGatewayApiKeySecret,
 } from './GatewayApiKey';
 import type { InvocationTokenClaims, InvocationTokenCodec } from './InvocationTokenCodec';
+import { requireCanonicalOrigin } from './InvocationTokenCodec';
 
 export interface GatewayAccessKeyRecord {
   id: string;
@@ -40,6 +41,8 @@ export interface GatewayApiKeyAuthenticatorOptions {
   deployment: GatewayDeployment;
   requiredScopes?: string[];
   invocationTokenCodec?: InvocationTokenCodec;
+  invocationTokenAudience?: string;
+  invocationTokenIssuer?: string;
   now?: () => Date;
   maxClockSkewMs?: number;
 }
@@ -52,6 +55,8 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
   private readonly deployment: GatewayDeployment;
   private readonly requiredScopes: string[];
   private readonly invocationTokenCodec?: InvocationTokenCodec;
+  private readonly invocationTokenAudience?: string;
+  private readonly invocationTokenIssuer?: string;
   private readonly now: () => Date;
   private readonly maxClockSkewMs: number;
   private readonly dummyHash: Promise<string>;
@@ -61,6 +66,12 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     this.deployment = options.deployment;
     this.requiredScopes = options.requiredScopes ?? [...DEFAULT_GATEWAY_API_KEY_SCOPES];
     this.invocationTokenCodec = options.invocationTokenCodec;
+    this.invocationTokenAudience = options.invocationTokenAudience
+      ? requireCanonicalOrigin(options.invocationTokenAudience, 'audience')
+      : undefined;
+    this.invocationTokenIssuer = options.invocationTokenIssuer
+      ? requireCanonicalOrigin(options.invocationTokenIssuer, 'issuer')
+      : this.invocationTokenAudience;
     this.now = options.now ?? (() => new Date());
     this.maxClockSkewMs = options.maxClockSkewMs ?? 5_000;
     if (!Number.isSafeInteger(this.maxClockSkewMs) || this.maxClockSkewMs < 0 || this.maxClockSkewMs > 30_000) {
@@ -151,6 +162,8 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     const now = this.now().getTime();
     return (
       claims.deployment === this.deployment
+      && (!this.invocationTokenAudience || claims.audience === this.invocationTokenAudience)
+      && (!this.invocationTokenIssuer || claims.issuer === this.invocationTokenIssuer)
       && claims.issuedAt.getTime() <= now + this.maxClockSkewMs
       && claims.expiresAt.getTime() > now
       && hasRequiredScopes(claims.scopes, this.requiredScopes)

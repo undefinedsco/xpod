@@ -1,3 +1,4 @@
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { AiConnectionInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionInvocationKeyIssuer';
 import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
@@ -11,6 +12,7 @@ import { canManageGatewayKeys } from '../../../src/api/ai-gateway/auth/GatewayPr
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const SCOPES = ['models:read', 'inference:write'];
+const AUDIENCE = 'https://pod.example';
 
 function requestWith(token: string): any {
   return { headers: { authorization: `Bearer ${token}` } };
@@ -27,12 +29,14 @@ describe('AiConnectionInvocationKeyIssuer', () => {
       codec,
       deployment: 'local',
       baseUrl: 'http://127.0.0.1:3000/v1',
+      audience: 'http://127.0.0.1:3000',
       now: () => now,
     });
     const context = { auth: { type: 'solid' as const, webId: WEB_ID } };
 
     const concurrent = await Promise.all(Array.from({ length: 20 }, () => issuer.issue(context)));
     expect(new Set(concurrent.map((entry) => entry.gatewayKey)).size).toBe(1);
+    expect(new Set(concurrent.map((entry) => entry.expiresAt)).size).toBe(1);
     now = new Date('2026-07-24T00:04:20.000Z');
     expect((await issuer.issue(context)).gatewayKey).toBe(concurrent[0].gatewayKey);
     await expect(repository.listByOwner(WEB_ID)).resolves.toEqual([]);
@@ -47,6 +51,7 @@ describe('AiConnectionInvocationKeyIssuer', () => {
       codec,
       deployment: 'local',
       baseUrl: 'http://127.0.0.1:3000/v1',
+      audience: 'http://127.0.0.1:3000',
       ttlMs: 5 * 60_000,
       reuseSafetyMarginMs: 30_000,
       now: () => now,
@@ -57,12 +62,14 @@ describe('AiConnectionInvocationKeyIssuer', () => {
     now = new Date('2026-07-24T00:04:31.000Z');
     const rotated = await issuer.issue(context);
     expect(rotated.gatewayKey).not.toBe(first.gatewayKey);
+    expect(rotated.expiresAt).toBe('2026-07-24T00:09:31.000Z');
 
     const repository = new InMemoryGatewayAccessKeyRepository();
     const authenticator = new GatewayApiKeyAuthenticator({
       repository,
       invocationTokenCodec: codec,
       deployment: 'local',
+      invocationTokenAudience: 'http://127.0.0.1:3000',
       now: () => now,
     });
     const authenticated = await authenticator.authenticate(requestWith(rotated.gatewayKey));
@@ -89,6 +96,7 @@ describe('AiConnectionInvocationKeyIssuer', () => {
       codec,
       deployment: 'cloud',
       baseUrl: 'https://api.example/v1',
+      audience: 'https://api.example',
     });
 
     await expect(issuer.issue({ userId: 'anonymous' })).rejects.toThrow(/authenticated Solid WebID/);
@@ -113,10 +121,13 @@ describe('stateless invocation authentication', () => {
       repository,
       invocationTokenCodec: codec,
       deployment: 'local',
+      invocationTokenAudience: AUDIENCE,
       now: () => now,
     });
     const valid = codec.encode({
       deployment: 'local',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
       webId: WEB_ID,
       scopes: SCOPES,
       issuedAt: now,
@@ -124,6 +135,8 @@ describe('stateless invocation authentication', () => {
     });
     const missingScope = codec.encode({
       deployment: 'local',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
       webId: WEB_ID,
       scopes: ['models:read'],
       issuedAt: now,
@@ -131,6 +144,8 @@ describe('stateless invocation authentication', () => {
     });
     const wrongDeployment = codec.encode({
       deployment: 'cloud',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
       webId: WEB_ID,
       scopes: SCOPES,
       issuedAt: now,
@@ -138,6 +153,8 @@ describe('stateless invocation authentication', () => {
     });
     const futureIssued = codec.encode({
       deployment: 'local',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
       webId: WEB_ID,
       scopes: SCOPES,
       issuedAt: new Date(now.getTime() + 5_001),
@@ -151,6 +168,8 @@ describe('stateless invocation authentication', () => {
     expect(locatorCodec.decode(valid)).toBeUndefined();
     expect(() => codec.encode({
       deployment: 'local',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
       webId: WEB_ID,
       scopes: SCOPES,
       issuedAt: now,
@@ -179,6 +198,70 @@ describe('stateless invocation authentication', () => {
     expect(repositoryLookup).not.toHaveBeenCalled();
   });
 
+  it('rejects same-deployment invocation tokens for a different audience, tampered audience, and legacy tokens without audience', async () => {
+    const now = new Date('2026-07-24T00:00:00.000Z');
+    const codec = new AesInvocationTokenCodec({
+      active: { kid: 'active', secret: 'shared-secret' },
+    });
+    const authenticator = new GatewayApiKeyAuthenticator({
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      invocationTokenCodec: codec,
+      deployment: 'cloud',
+      invocationTokenAudience: 'https://api.example',
+      now: () => now,
+    });
+    const wrongAudience = codec.encode({
+      deployment: 'cloud',
+      audience: 'https://other.example',
+      issuer: 'https://other.example',
+      webId: WEB_ID,
+      scopes: SCOPES,
+      issuedAt: now,
+      expiresAt: new Date(now.getTime() + 60_000),
+    });
+    const valid = codec.encode({
+      deployment: 'cloud',
+      audience: 'https://api.example',
+      issuer: 'https://api.example',
+      webId: WEB_ID,
+      scopes: SCOPES,
+      issuedAt: now,
+      expiresAt: new Date(now.getTime() + 60_000),
+    });
+    const wrongIssuer = codec.encode({
+      deployment: 'cloud',
+      audience: 'https://api.example',
+      issuer: 'https://issuer.example',
+      webId: WEB_ID,
+      scopes: SCOPES,
+      issuedAt: now,
+      expiresAt: new Date(now.getTime() + 60_000),
+    });
+    const tampered = `${valid.slice(0, -1)}${valid.endsWith('A') ? 'B' : 'A'}`;
+    const legacyNoAudience = encodeLegacyInvocationTokenWithoutAudience({
+      kid: 'active',
+      secret: 'shared-secret',
+      claims: {
+        v: 1,
+        kid: 'active',
+        deployment: 'cloud',
+        webId: WEB_ID,
+        scopes: SCOPES,
+        iat: now.getTime(),
+        exp: now.getTime() + 60_000,
+        jti: 'legacy_legacy_legacy_legacy',
+      },
+    });
+
+    for (const token of [wrongAudience, wrongIssuer, tampered, legacyNoAudience]) {
+      await expect(authenticator.authenticate(requestWith(token))).resolves.toMatchObject({
+        success: false,
+        category: 'invalid_credentials',
+        statusCode: 401,
+      });
+    }
+  });
+
   it('accepts tokens encrypted by a previous key but issues only with the active key', async () => {
     const oldCodec = new AesInvocationTokenCodec({
       active: { kid: 'old', secret: 'old-secret' },
@@ -190,6 +273,8 @@ describe('stateless invocation authentication', () => {
     const now = new Date('2026-07-24T00:00:00.000Z');
     const oldToken = oldCodec.encode({
       deployment: 'cloud',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
       webId: WEB_ID,
       scopes: SCOPES,
       issuedAt: now,
@@ -197,6 +282,8 @@ describe('stateless invocation authentication', () => {
     });
     const newToken = rotatingCodec.encode({
       deployment: 'cloud',
+      audience: AUDIENCE,
+      issuer: AUDIENCE,
       webId: WEB_ID,
       scopes: SCOPES,
       issuedAt: now,
@@ -209,3 +296,30 @@ describe('stateless invocation authentication', () => {
     expect(oldCodec.decode(newToken)).toBeUndefined();
   });
 });
+
+function encodeLegacyInvocationTokenWithoutAudience(input: {
+  kid: string;
+  secret: string;
+  claims: Record<string, unknown>;
+}): string {
+  const key = createHash('sha256')
+    .update('xpod:gateway:internal-invocation:v1\0', 'utf8')
+    .update(input.secret, 'utf8')
+    .digest()
+    .subarray(0, 32);
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(Buffer.from(`xpod:gateway:internal-invocation:v1.${input.kid}`));
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(input.claims), 'utf8'),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return [
+    'xpod_inv_v1',
+    input.kid,
+    nonce.toString('base64url'),
+    ciphertext.toString('base64url'),
+    tag.toString('base64url'),
+  ].join('.');
+}

@@ -15,6 +15,8 @@ export interface InvocationTokenClaims {
   version: 1;
   kid: string;
   deployment: GatewayDeployment;
+  audience: string;
+  issuer: string;
   webId: string;
   scopes: string[];
   issuedAt: Date;
@@ -24,6 +26,8 @@ export interface InvocationTokenClaims {
 
 export interface InvocationTokenInput {
   deployment: GatewayDeployment;
+  audience: string;
+  issuer: string;
   webId: string;
   scopes: string[];
   issuedAt: Date;
@@ -59,6 +63,8 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
 
   public encode(input: InvocationTokenInput): string {
     const webId = requireCanonicalWebId(input.webId);
+    const audience = requireCanonicalOrigin(input.audience, 'audience');
+    const issuer = requireCanonicalOrigin(input.issuer, 'issuer');
     const scopes = requireScopes(input.scopes);
     const issuedAt = requireTimestamp(input.issuedAt, 'issuedAt');
     const expiresAt = requireTimestamp(input.expiresAt, 'expiresAt');
@@ -69,6 +75,8 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       v: 1,
       kid: this.active.kid,
       deployment: input.deployment,
+      aud: audience,
+      iss: issuer,
       webId,
       scopes,
       iat: issuedAt,
@@ -131,11 +139,13 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       const parsed = JSON.parse(plaintext.toString('utf8')) as Record<string, unknown>;
       const keys = Object.keys(parsed).sort();
       if (
-        keys.join(',') !== 'deployment,exp,iat,jti,kid,scopes,v,webId'
+        keys.join(',') !== 'aud,deployment,exp,iat,iss,jti,kid,scopes,v,webId'
         ||
         parsed.v !== 1
         || parsed.kid !== kid
         || (parsed.deployment !== 'local' && parsed.deployment !== 'cloud')
+        || typeof parsed.aud !== 'string'
+        || typeof parsed.iss !== 'string'
         || typeof parsed.webId !== 'string'
         || !Array.isArray(parsed.scopes)
         || typeof parsed.iat !== 'number'
@@ -145,6 +155,8 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       ) {
         return undefined;
       }
+      const audience = requireCanonicalOrigin(parsed.aud, 'audience');
+      const issuer = requireCanonicalOrigin(parsed.iss, 'issuer');
       const webId = requireCanonicalWebId(parsed.webId);
       const scopes = requireScopes(parsed.scopes);
       const issuedAt = requireEpoch(parsed.iat);
@@ -156,6 +168,8 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
         version: 1,
         kid,
         deployment: parsed.deployment,
+        audience,
+        issuer,
         webId,
         scopes,
         issuedAt: new Date(issuedAt),
@@ -166,6 +180,27 @@ export class AesInvocationTokenCodec implements InvocationTokenCodec {
       return undefined;
     }
   }
+}
+
+export function requireCanonicalOrigin(value: string, name = 'origin'): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Invocation token ${name} must be a canonical HTTP(S) origin`);
+  }
+  if (
+    (url.protocol !== 'https:' && url.protocol !== 'http:')
+    || url.username
+    || url.password
+    || url.pathname !== '/'
+    || url.search
+    || url.hash
+    || url.origin !== value
+  ) {
+    throw new Error(`Invocation token ${name} must be a canonical HTTP(S) origin`);
+  }
+  return url.origin;
 }
 
 function decodeCanonicalBase64Url(value: string): Buffer | undefined {
