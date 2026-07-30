@@ -231,7 +231,7 @@ describe('WebCryptoCredentialVault', () => {
 
     const decodedPlaintexts: Uint8Array[] = [];
     const originalDecode = TextDecoder.prototype.decode;
-    const decodeSpy = vi.spyOn(TextDecoder.prototype, 'decode').mockImplementation(function decode(input, options) {
+    const decodeSpy = vi.spyOn(TextDecoder.prototype, 'decode').mockImplementation(function decode(this: TextDecoder, input, options) {
       if (input instanceof Uint8Array) {
         decodedPlaintexts.push(input);
       }

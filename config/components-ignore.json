@@ -7,15 +7,18 @@
   "DisabledSparqlFeatureError",
   "InvalidRelaySessionRequestError",
   "InvalidTunnelTokenError",
+  "normalizeContext",
   "NodeRouteSourceNotFoundError",
   "P2PSessionExpiredError",
   "P2PSessionNotFoundError",
   "P2PSignalingRequestError",
+  "parseDeploymentRootKeyConfig",
   "SearchApiError",
   "SolidFsConflictError",
   "SolidFsNotFoundError",
   "SubdomainClientError",
   "UnsupportedSparqlQueryError",
+  "Uint8Array",
   "VectorApiError",
   "WaitingRunnerError"
 ]

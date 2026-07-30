@@ -234,8 +234,8 @@ describe('VercelChatService AI Connection gateway adapter', () => {
   it('defers stream execution until response start and aborts gateway iteration on cancel', async () => {
     const { service, gateway } = createService();
     let observedSignal: AbortSignal | undefined;
-    const iteratorReturn = vi.fn(async() => ({ done: true, value: undefined }));
-    const iterator = {
+    const iteratorReturn = vi.fn(async(): Promise<IteratorReturnResult<any>> => ({ done: true, value: undefined }));
+    const iterator: AsyncIterator<GatewayEvent> = {
       next: vi.fn(async() => new Promise<IteratorResult<GatewayEvent>>(() => undefined)),
       return: iteratorReturn,
     };
@@ -275,8 +275,8 @@ describe('VercelChatService AI Connection gateway adapter', () => {
   it('returns a late stream iterator without calling next when cancelled while execute is pending', async () => {
     const { service, gateway } = createService();
     let resolveExecute: ((value: Awaited<ReturnType<typeof gateway.execute>>) => void) | undefined;
-    const iteratorReturn = vi.fn(async() => ({ done: true, value: undefined }));
-    const iterator = {
+    const iteratorReturn = vi.fn(async(): Promise<IteratorReturnResult<any>> => ({ done: true, value: undefined }));
+    const iterator: AsyncIterator<GatewayEvent> = {
       next: vi.fn(async() => ({ done: true, value: undefined }) as IteratorResult<GatewayEvent>),
       return: iteratorReturn,
     };

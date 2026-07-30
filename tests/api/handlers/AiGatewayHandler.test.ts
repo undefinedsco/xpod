@@ -72,7 +72,7 @@ function request(path: string, body?: unknown, auth: AuthenticatedRequest['auth'
   webId: WEB_ID,
   scopes: ['models:read', 'inference:write'],
 }): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = body === undefined ? 'GET' : 'POST';
   req.url = path;
   req.headers = { host: 'localhost' };
@@ -85,7 +85,21 @@ function request(path: string, body?: unknown, auth: AuthenticatedRequest['auth'
   return req;
 }
 
-function response(options: { backpressureOnWrite?: number } = {}): any {
+type TestResponse = EventEmitter & {
+  statusCode: number;
+  headers: Record<string, string>;
+  chunks: string[];
+  ended: boolean;
+  writableEnded: boolean;
+  destroyed: boolean;
+  writeCount: number;
+  body?: string;
+  setHeader(name: string, value: string): void;
+  write(chunk: unknown): boolean;
+  end(payload?: unknown): void;
+};
+
+function response(options: { backpressureOnWrite?: number } = {}): TestResponse {
   const emitter = new EventEmitter();
   return Object.assign(emitter, {
     statusCode: 0,
@@ -95,6 +109,7 @@ function response(options: { backpressureOnWrite?: number } = {}): any {
     writableEnded: false,
     destroyed: false,
     writeCount: 0,
+    body: undefined as string | undefined,
     setHeader(name: string, value: string) {
       this.headers[name.toLowerCase()] = value;
     },
@@ -111,7 +126,7 @@ function response(options: { backpressureOnWrite?: number } = {}): any {
       this.writableEnded = true;
       this.body = this.chunks.join('');
     },
-  });
+  }) as TestResponse;
 }
 
 function createServer(): { server: ApiServer; routes: Record<string, Function> } {
@@ -232,7 +247,7 @@ function createFixture(options: {
     }),
   };
   if (options.failAfterFirstEvent) {
-    runtime.execute = vi.fn((input: any) => ({
+    runtime.execute = vi.fn((input: any): AsyncIterable<GatewayEvent> => ({
       async *[Symbol.asyncIterator]() {
         if (input.signal) {
           input.signal.addEventListener('abort', () => options.onAbort?.(), { once: true });
@@ -364,7 +379,7 @@ describe('AiGatewayHandler', () => {
     res.emit('drain');
     await pending;
     expect(res.ended).toBe(true);
-    expect(res.body.trim().endsWith('data: [DONE]')).toBe(true);
+    expect(res.body!.trim().endsWith('data: [DONE]')).toBe(true);
   });
 
   it('aborts upstream and returns its iterator when the response closes', async () => {

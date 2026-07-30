@@ -157,7 +157,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     const { dbFactory, calls, pods } = createPodBackedDbFactory();
     const internal = createInternalPodAccess();
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory,
+      dbFactory: dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
@@ -192,7 +192,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     const backing = createPodBackedDbFactory();
     const internal = createInternalPodAccess();
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory,
+      dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
@@ -206,7 +206,7 @@ describe('PodGatewayAccessKeyRepository', () => {
       name: 'Codex laptop',
     });
     const restarted = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory,
+      dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
@@ -237,7 +237,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     const keyId = createGatewayKeyLocator(ALICE, 'local', codec);
     const issued = await createGatewayApiKey({ deployment: 'local', keyId });
     const writer = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory,
+      dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
@@ -249,7 +249,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     });
 
     const restartedRepository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory,
+      dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
@@ -278,7 +278,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     const aliceKey = await createGatewayApiKey({ deployment: 'cloud', keyId: aliceKeyId });
     const bobKey = await createGatewayApiKey({ deployment: 'cloud', keyId: bobKeyId });
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory,
+      dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
@@ -296,7 +296,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
     const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory,
+      dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
@@ -327,7 +327,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     const backing = createPodBackedDbFactory();
     const anonymousFetch = vi.spyOn(globalThis, 'fetch');
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: backing.dbFactory,
+      dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
     });
 
@@ -408,7 +408,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     const keyId = createGatewayKeyLocator(ALICE, 'cloud', codec);
     const tokenFailure = new Error('token endpoint down');
     const repository = new PodGatewayAccessKeyRepository({
-      dbFactory: createPodBackedDbFactory().dbFactory,
+      dbFactory: createPodBackedDbFactory().dbFactory as any,
       locatorCodec: codec,
       internalPodAccess: {
         getTrustedFetch: vi.fn(async () => { throw tokenFailure; }),

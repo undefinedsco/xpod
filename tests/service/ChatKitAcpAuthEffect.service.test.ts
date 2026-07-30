@@ -59,7 +59,14 @@ describe('ChatKitService + ACP runtime', () => {
       },
     };
 
-    const result = await svc.process(JSON.stringify(req), { userId: 'u1' });
+    const result = await svc.process(JSON.stringify(req), {
+      userId: 'u1',
+      aiConnection: {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'gateway-key',
+        model: 'linx',
+      },
+    });
     if (result.type !== 'streaming') {
       throw new Error('expected streaming result');
     }

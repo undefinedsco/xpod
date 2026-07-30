@@ -19,7 +19,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
 }
 
 function request(scopes: string[], body?: unknown): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.headers = {};
   req.auth = {
     type: 'solid',

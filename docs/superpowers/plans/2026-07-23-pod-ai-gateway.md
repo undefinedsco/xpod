@@ -34,7 +34,7 @@ New Xpod files are grouped by responsibility under `src/api/ai-gateway/`; existi
 - Test: `/Users/ganlu/develop/models/tests/ai-runtime-schema.test.ts`
 - Test: `/Users/ganlu/develop/models/tests/pod-secondary-resources.integration.test.ts`
 
-- [ ] **Step 1: Add failing schema assertions**
+- [x] **Step 1: Add failing schema assertions**
 
 Assert that `credentialResource` exposes `authMode`, `encryptedSecret`, `wrappedDataKey`, `encryptionAlgorithm`, `keyVersion`, `scopes`, `expiresAt`, `accountLabel`, `lastRefreshAt`, and `reauthRequired`, while retaining `apiKey` only for backward-compatible reads.
 
@@ -45,13 +45,13 @@ expect(credentialResource.wrappedDataKey).toBeDefined();
 expect(credentialResource.provider.config.dataType).toBe('iri');
 ```
 
-- [ ] **Step 2: Run the focused tests and verify failure**
+- [x] **Step 2: Run the focused tests and verify failure**
 
 Run: `cd /Users/ganlu/develop/models && bun run test -- tests/ai-runtime-schema.test.ts tests/pod-secondary-resources.integration.test.ts`
 
 Expected: FAIL because the encrypted credential columns do not exist.
 
-- [ ] **Step 3: Add the resource fields without changing existing IDs**
+- [x] **Step 3: Add the resource fields without changing existing IDs**
 
 Keep `credentials.ttl#{key}` and `/settings/` unchanged. Add typed literal/URI fields and exported enums:
 
@@ -67,11 +67,11 @@ export const CredentialSecretAlgorithm = {
 
 Use `udfs:` predicates in `namespaces.ts`; do not put provider-specific JSON into top-level predicates.
 
-- [ ] **Step 4: Verify exact-ID and round-trip behavior**
+- [x] **Step 4: Verify exact-ID and round-trip behavior**
 
 Run the command from Step 2. Expected: PASS, including `findById('credentials.ttl#...')` and no unresolved resource templates.
 
-- [ ] **Step 5: Commit the models change**
+- [x] **Step 5: Commit the models change**
 
 Stage only the schema/export/tests touched by this task and use a Lore commit whose intent is preserving encrypted user-owned credentials.
 
@@ -85,7 +85,7 @@ Stage only the schema/export/tests touched by this task and use a Lore commit wh
 - Create: `/Users/ganlu/develop/models/tests/ai-gateway-schema.test.ts`
 - Modify: `/Users/ganlu/develop/models/tests/pod-secondary-resources.integration.test.ts`
 
-- [ ] **Step 1: Write failing resource and ID tests**
+- [x] **Step 1: Write failing resource and ID tests**
 
 ```ts
 expect(gatewayAccessKeyResource.buildId({ id: 'key_1' }))
@@ -96,27 +96,27 @@ expect(quotaSnapshotResource.buildId({ id: 'quota_1' }))
 
 Assert `owner` and `credential` are URI relations, not `ownerId`/`credentialId` literals.
 
-- [ ] **Step 2: Run and observe missing exports**
+- [x] **Step 2: Run and observe missing exports**
 
 Run: `cd /Users/ganlu/develop/models && bun run test -- tests/ai-gateway-schema.test.ts`
 
 Expected: FAIL on missing resources.
 
-- [ ] **Step 3: Implement both control-primary resources**
+- [x] **Step 3: Implement both control-primary resources**
 
 `gatewayAccessKeyResource` stores owner, secret hash, deployment, scopes and lifecycle timestamps. `quotaSnapshotResource` stores credential URI, status (`available|unsupported|error`), balance, serialized normalized windows, `observedAt`, and `expiresAt`. Add descriptors and top-level exports.
 
-- [ ] **Step 4: Add repository helpers**
+- [x] **Step 4: Add repository helpers**
 
 Create `aiGatewayRepository.findAccessKeyById`, `revokeAccessKey`, `upsertQuotaSnapshot`, and `findFreshQuotaSnapshot`. Helpers accept canonical resource IDs/IRIs and hide URI construction from Xpod.
 
-- [ ] **Step 5: Run schema and integration tests**
+- [x] **Step 5: Run schema and integration tests**
 
 Run: `cd /Users/ganlu/develop/models && bun run test -- tests/ai-gateway-schema.test.ts tests/pod-secondary-resources.integration.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the resources**
+- [x] **Step 6: Commit the resources**
 
 Use explicit `git add` paths and a Lore commit.
 
@@ -133,7 +133,7 @@ Use explicit `git add` paths and a Lore commit.
 - Create: `src/api/ai-gateway/protocol/index.ts`
 - Create: `tests/api/ai-gateway/ProtocolFrontends.test.ts`
 
-- [ ] **Step 1: Write fixtures and failing parser/event tests**
+- [x] **Step 1: Write fixtures and failing parser/event tests**
 
 Use captured request shapes for text, image, tool call argument deltas, reasoning effort and usage. Tests require the common contract:
 
@@ -160,21 +160,21 @@ export type GatewayEvent =
   | { type: 'response.completed'; finishReason: string };
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `bun run test -- tests/api/ai-gateway/ProtocolFrontends.test.ts`
 
 Expected: FAIL because the frontends do not exist.
 
-- [ ] **Step 3: Implement lossless parse/serialize frontends**
+- [x] **Step 3: Implement lossless parse/serialize frontends**
 
 Preserve unsupported native fields under `protocolExtensions.responses`, `.anthropic`, or `.chatCompletions`. Validate completed tool argument JSON without buffering text deltas.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Expected: PASS for all three request and event mappings.
 
-- [ ] **Step 5: Commit the protocol contract**
+- [x] **Step 5: Commit the protocol contract**
 
 Commit types, errors, frontends and fixtures together.
 
@@ -187,17 +187,17 @@ Commit types, errors, frontends and fixtures together.
 - Create: `src/security/secret-cell/DeploymentRootKeyProvider.ts`
 - Create: `tests/api/ai-gateway/CredentialVault.test.ts`
 
-- [ ] **Step 1: Write failing envelope round-trip and rotation tests**
+- [x] **Step 1: Write failing envelope round-trip and rotation tests**
 
 Assert unique random DEKs/nonces, AES-256-GCM authentication failure on tamper, AAD binding to WebID + credential IRI + provider, and rewrap without ciphertext change.
 
-- [ ] **Step 2: Run focused tests**
+- [x] **Step 2: Run focused tests**
 
 Run: `bun run test -- tests/api/ai-gateway/CredentialVault.test.ts`
 
 Expected: FAIL on missing vault.
 
-- [ ] **Step 3: Implement the interface**
+- [x] **Step 3: Implement the interface**
 
 ```ts
 export interface CredentialVault {
@@ -217,11 +217,11 @@ rotation. `SecretCellCredentialVault` adapts the generic cell envelope to the
 existing Pod credential record fields; AI Connection never observes or selects
 deployment. Do not add Keychain or KMS-specific production branches.
 
-- [ ] **Step 4: Verify tests and secret-redaction assertions**
+- [x] **Step 4: Verify tests and secret-redaction assertions**
 
 Expected: PASS; serialized errors and logger spies contain no plaintext.
 
-- [ ] **Step 5: Commit the vault**
+- [x] **Step 5: Commit the vault**
 
 ### Task 5: Add Gateway API Key authentication and management
 
@@ -236,23 +236,23 @@ Expected: PASS; serialized errors and logger spies contain no plaintext.
 - Create: `tests/api/ai-gateway/GatewayApiKeyAuthenticator.test.ts`
 - Create: `tests/api/handlers/AiGatewayManagementHandler.test.ts`
 
-- [ ] **Step 1: Write failing key-format, hash, scope and deployment tests**
+- [x] **Step 1: Write failing key-format, hash, scope and deployment tests**
 
 The public format must carry version, deployment and opaque key ID but no Provider secret. Test Local/Cloud mismatch, expiry, revocation and constant-time secret verification.
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [x] **Step 2: Run focused tests and verify failure**
 
 Run: `bun run test -- tests/api/ai-gateway/GatewayApiKeyAuthenticator.test.ts tests/api/handlers/AiGatewayManagementHandler.test.ts`
 
-- [ ] **Step 3: Implement key creation and authentication**
+- [x] **Step 3: Implement key creation and authentication**
 
 Use a memory-hard or repository-approved hash primitive already available in the runtime; do not add a dependency. Return plaintext once from `POST /api/ai/gateway/keys`, persist only the hash, and support list/revoke routes.
 
-- [ ] **Step 4: Register the authenticator after Solid/service auth but before legacy client-credential fallback**
+- [x] **Step 4: Register the authenticator after Solid/service auth but before legacy client-credential fallback**
 
 Return an `AuthContext` carrying WebID and scopes so existing `ApiServer` route dispatch remains reusable.
 
-- [ ] **Step 5: Verify tests and commit**
+- [x] **Step 5: Verify tests and commit**
 
 ## Phase C — routing and providers
 
@@ -267,23 +267,23 @@ Return an `AuthContext` carrying WebID and scopes so existing `ApiServer` route 
 - Modify: `src/api/service/provider-registry.ts`
 - Test: `tests/api/ai-gateway/ModelRouter.test.ts`
 
-- [ ] **Step 1: Write routing precedence and isolation tests**
+- [x] **Step 1: Write routing precedence and isolation tests**
 
 Cover alias, explicit `provider/model`, exact model, default provider/model, disabled credentials, quota/cooldown, explicit credential and WebID-scoped affinity.
 
-- [ ] **Step 2: Run and observe failure**
+- [x] **Step 2: Run and observe failure**
 
 Run: `bun run test -- tests/api/ai-gateway/ModelRouter.test.ts`
 
-- [ ] **Step 3: Implement capability descriptors**
+- [x] **Step 3: Implement capability descriptors**
 
 Seed OpenAI, Anthropic, Kimi, Bailian and DeepSeek with auth modes, protocols, safe endpoints and capability flags. Merge dynamic model discovery without allowing discovered metadata to change credential destinations.
 
-- [ ] **Step 4: Implement routing and affinity**
+- [x] **Step 4: Implement routing and affinity**
 
 Only fail over before any client event is emitted. Key affinity by deployment + WebID hash + conversation identity; never by raw prompt.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ### Task 7: Implement the five Provider Runtime Adapters
 
@@ -298,23 +298,23 @@ Only fail over before any client event is emitted. Key affinity by deployment + 
 - Modify: `src/api/service/provider-http-transport.ts`
 - Create: `tests/api/ai-gateway/ProviderRuntimeAdapters.test.ts`
 
-- [ ] **Step 1: Write MSW/fetch-fixture contract tests**
+- [x] **Step 1: Write MSW/fetch-fixture contract tests**
 
 For each provider assert request URL, auth header, streaming deltas, tools, reasoning, images, usage, 401/403/429 classification, cancellation and secret redaction. Bailian tests cover standard vs Coding Plan endpoints; DeepSeek tests preserve `reasoning_content` replay.
 
-- [ ] **Step 2: Run and verify all adapters are missing**
+- [x] **Step 2: Run and verify all adapters are missing**
 
 Run: `bun run test -- tests/api/ai-gateway/ProviderRuntimeAdapters.test.ts`
 
-- [ ] **Step 3: Implement shared streaming transport and native adapters**
+- [x] **Step 3: Implement shared streaming transport and native adapters**
 
 `ProviderRuntimeAdapter.execute()` returns `AsyncIterable<GatewayEvent>`. OpenAI Responses and Anthropic Messages preserve native fields; compatible adapters translate Chat Completions SSE incrementally.
 
-- [ ] **Step 4: Implement provider-specific policies**
+- [x] **Step 4: Implement provider-specific policies**
 
 Kimi and Bailian select registered regional endpoints. DeepSeek rejects developer-role/tool-choice shapes it does not support and maps reasoning effort according to the live registry. Do not hardcode deprecated model names as defaults.
 
-- [ ] **Step 5: Run adapter tests and commit**
+- [x] **Step 5: Run adapter tests and commit**
 
 ### Task 8: Implement Connect lifecycle for OpenAI, Anthropic, Kimi, Bailian and DeepSeek capability reporting
 
@@ -324,23 +324,23 @@ Kimi and Bailian select registered regional endpoints. DeepSeek rejects develope
 - Modify: `src/api/handlers/AiGatewayManagementHandler.ts`
 - Create: `tests/api/ai-gateway/ProviderConnectAdapters.test.ts`
 
-- [ ] **Step 1: Capture official/opencodex-compatible authorization fixtures and write failing tests**
+- [x] **Step 1: Capture official/opencodex-compatible authorization fixtures and write failing tests**
 
 Do not reuse OpenAI Codex, Claude Code, or official CLI client ids and do not scrape cookies. Kimi uses official Kimi Code device-code OAuth with an Xpod/Moonshot-issued client id and exact endpoints `https://auth.kimi.com/api/oauth/device_authorization` plus `/api/oauth/token`; missing client id must report `configured=false` rather than fake availability. OpenAI, Anthropic and Bailian use `browserAssistedApiKey`: LinX opens the official console/dashboard and the current authenticated WebID submits the API key through Xpod management API. This mode must not be labeled OAuth. Test state/signature binding, PKCE only where OAuth applies, five-minute expiry, one-time consumption, callback/WebID/deployment/provider mismatch, token refresh version races, reauth-required state and revocation. DeepSeek must report `connectUnsupported` while keeping authenticated API key management available.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts`
 
-- [ ] **Step 3: Implement ConnectAttempt and adapters**
+- [x] **Step 3: Implement ConnectAttempt and adapters**
 
 Use provider-specific official device-code endpoints and console URLs only. Do not scrape cookies, do not persist authorization codes, and do not accept API keys on public callbacks. Encrypt the completed secret through `CredentialVault.seal()` before writing the Pod via a narrow Pod credential repository port.
 
-- [ ] **Step 4: Add management routes**
+- [x] **Step 4: Add management routes**
 
 Register begin, callback/poll, status, refresh and disconnect routes. Callback routes are public only for the signed one-time attempt; all other routes require Solid/current-identity management auth.
 
-- [ ] **Step 5: Verify contract tests and commit**
+- [x] **Step 5: Verify contract tests and commit**
 
 ### Task 9: Implement quota snapshots
 
@@ -354,15 +354,15 @@ Register begin, callback/poll, status, refresh and disconnect routes. Callback r
 - Modify: `src/api/handlers/AiGatewayManagementHandler.ts`
 - Create: `tests/api/ai-gateway/ProviderQuotaAdapters.test.ts`
 
-- [ ] **Step 1: Write supported, stale and unsupported tests**
+- [x] **Step 1: Write supported, stale and unsupported tests**
 
 Fixtures must prove that missing official data produces `unsupported`, never an invented percentage, and 429 produces cooldown rather than remaining quota.
 
-- [ ] **Step 2: Implement normalized snapshots and Pod caching**
+- [x] **Step 2: Implement normalized snapshots and Pod caching**
 
 Normalize provider windows to `{ name, used?, limit?, remaining?, resetsAt? }`; store `observedAt`, `expiresAt`, source and status via `aiGatewayRepository`.
 
-- [ ] **Step 3: Run tests and commit**
+- [x] **Step 3: Run tests and commit**
 
 ## Phase D — HTTP integration and migration
 
@@ -377,23 +377,23 @@ Normalize provider windows to `{ name, used?, limit?, remaining?, resetsAt? }`; 
 - Create: `tests/api/handlers/AiGatewayHandler.test.ts`
 - Modify: `tests/integration/ChatHandler.integration.test.ts`
 
-- [ ] **Step 1: Write end-to-end handler tests with fake adapters**
+- [x] **Step 1: Write end-to-end handler tests with fake adapters**
 
 Cover all four routes, non-streaming aggregation, streaming SSE, tool deltas, usage, cancellation, pre-stream failover, post-stream terminal errors and `GET /v1/models` WebID filtering.
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `bun run test -- tests/api/handlers/AiGatewayHandler.test.ts tests/integration/ChatHandler.integration.test.ts`
 
-- [ ] **Step 3: Implement service orchestration**
+- [x] **Step 3: Implement service orchestration**
 
 Authenticate, parse, route, open Credential through the vault, execute adapter, serialize events and record health without exposing the secret to handler code.
 
-- [ ] **Step 4: Replace route internals, preserving URLs**
+- [x] **Step 4: Replace route internals, preserving URLs**
 
 `registerChatRoutes` delegates `/v1/responses`, `/v1/messages`, `/v1/chat/completions`, and `/v1/models` to `AiGatewayHandler`. Do not add parallel versioned routes.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ### Task 11: Remove the old provider branching from VercelChatService
 
@@ -405,21 +405,21 @@ Authenticate, parse, route, open Credential through the vault, execute adapter, 
 - Modify: `tests/service/VercelChatServiceConfig.test.ts`
 - Modify: `tests/ai/AiProviderFallback.test.ts`
 
-- [ ] **Step 1: Add regression tests locking public behavior**
+- [x] **Step 1: Add regression tests locking public behavior**
 
 Prove ChatKit/internal callers still reach the same gateway service and usage accounting, without platform-level Provider/API-key fallback.
 
-- [ ] **Step 2: Delete duplicate protocol/provider decisions**
+- [x] **Step 2: Delete duplicate protocol/provider decisions**
 
 Retain only ChatKit orchestration in `VercelChatService`; delete direct `/responses` and `/messages` upstream calls and fallback converters now owned by frontends/adapters.
 
-- [ ] **Step 3: Run focused and type tests**
+- [x] **Step 3: Run focused and type tests**
 
 Run: `bun run test -- tests/service/VercelChatServiceConfig.test.ts tests/ai/AiProviderFallback.test.ts && bun run build:ts`
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit the migration**
+- [x] **Step 4: Commit the migration**
 
 ## Phase E — LinX current-identity management
 

@@ -24,7 +24,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
 }
 
 function request(auth: AuthenticatedRequest['auth'], body?: unknown): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = 'POST';
   req.url = '/api/ai/gateway/keys';
   req.headers = {};
@@ -38,7 +38,7 @@ function request(auth: AuthenticatedRequest['auth'], body?: unknown): Authentica
 }
 
 function rawRequest(auth: AuthenticatedRequest['auth'], rawBody: string): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = 'POST';
   req.url = '/api/ai/gateway/keys';
   req.headers = {};

@@ -774,7 +774,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
 }
 
 function request(auth: AuthenticatedRequest['auth'], body?: unknown, url = '/api/ai/gateway/providers/kimi/quota/status'): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = body === undefined ? 'GET' : 'POST';
   req.url = url;
   req.headers = {};
