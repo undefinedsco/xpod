@@ -125,10 +125,9 @@ export class QuintstoreSparqlEngine implements SparqlEngine {
         }
       }
     } finally {
-      const close = (stream as unknown as { close?: () => void }).close;
-      if (typeof close === 'function') {
-        close();
-      }
+      // Keep the AsyncIterator receiver. Detaching close() loses `this` and
+      // makes asynciterator crash while reading its internal `_changeState`.
+      (stream as unknown as { close?: () => void }).close?.();
     }
 
     return graphs;

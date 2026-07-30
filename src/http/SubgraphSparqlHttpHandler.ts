@@ -267,7 +267,7 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         return;
       }
       // Re-throw unknown errors for CSS error handling
-      this.logger.error(`SPARQL sidecar unexpected error (${this.getRequestId(request)}): ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.error(`SPARQL sidecar unexpected error (${this.getRequestId(request)}): ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
       throw error;
     }
   }
@@ -949,10 +949,9 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
         bytes += SubgraphSparqlHttpHandler.measureQuad(quad);
       }
     } finally {
-      const close = (stream as unknown as { close?: () => void }).close;
-      if (typeof close === 'function') {
-        close();
-      }
+      // Keep the AsyncIterator receiver. Detaching close() loses `this` and
+      // makes asynciterator crash while reading its internal `_changeState`.
+      (stream as unknown as { close?: () => void }).close?.();
     }
     return bytes;
   }
