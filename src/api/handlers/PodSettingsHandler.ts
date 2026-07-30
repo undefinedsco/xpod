@@ -1,5 +1,5 @@
 import type { ServerResponse } from 'node:http';
-import { drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import {
   credentialResource,
   indexedFileResource,
@@ -56,7 +56,7 @@ export type PodAiConnectionStatus =
   };
 
 export interface PodAiConnectionStatusReader {
-  read(webId: string): Promise<PodAiConnectionStatus>;
+  read(input: { webId: string; podUrl?: string }): Promise<PodAiConnectionStatus>;
 }
 
 export interface PodSettingsHandlerOptions {
@@ -64,10 +64,11 @@ export interface PodSettingsHandlerOptions {
   usageRepo: Pick<UsageRepository, 'getPodUsage'>;
   aiConnectionStatusReader?: PodAiConnectionStatusReader;
   now?: () => Date;
+  logger?: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>;
 }
 
 export function registerPodSettingsRoutes(server: ApiServer, options: PodSettingsHandlerOptions): void {
-  const logger = getLoggerFor('PodSettingsHandler');
+  const logger = options.logger ?? getLoggerFor('PodSettingsHandler');
   const now = options.now ?? (() => new Date());
   const aiConnectionStatusReader = options.aiConnectionStatusReader ?? {
     read: async () => ({ status: 'unsupported', reason: 'not_configured' }) as const,
@@ -82,18 +83,20 @@ export function registerPodSettingsRoutes(server: ApiServer, options: PodSetting
     const webId = request.auth.webId;
     try {
       const pod = await options.podLookupRepository.findByWebId(webId);
+      const podUrl = pod?.storageUrl ?? pod?.baseUrl;
       const [storage, aiConnection] = await Promise.all([
         readStorageStatus(options.usageRepo, pod),
-        aiConnectionStatusReader.read(webId).catch((error: unknown) => {
-          logger.warn(`Failed to read Pod AI Connection status: ${safeLogError(error)}`);
-          return { status: 'error', reason: 'ai_connection_unavailable' } as const;
+        aiConnectionStatusReader.read({ webId, podUrl }).catch((error: unknown) => {
+          const reason = safeAiConnectionFailureReason(error);
+          logger.warn(`Failed to read Pod AI Connection status: ${reason}`);
+          return { status: 'error', reason } as const;
         }),
       ]);
 
       sendJson(response, 200, {
         identity: {
           webId,
-          podUrl: pod?.storageUrl ?? pod?.baseUrl,
+          podUrl,
         },
         storage,
         aiConnection,
@@ -143,24 +146,24 @@ async function readStorageStatus(
 export class DrizzlePodAiConnectionStatusReader implements PodAiConnectionStatusReader {
   public constructor(
     private readonly internalPodAccess?: InternalPodAccessTokenProvider,
+    private readonly dbFactory: (input: {
+      webId: string;
+      podUrl: string;
+      fetch: typeof fetch;
+    }) => Promise<AiConnectionStatusDb> = createAiConnectionStatusDb,
   ) {}
 
-  public async read(webId: string): Promise<PodAiConnectionStatus> {
+  public async read({ webId, podUrl }: { webId: string; podUrl?: string }): Promise<PodAiConnectionStatus> {
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(webId);
     if (!trustedFetch) {
       return { status: 'unsupported', reason: 'not_configured' };
     }
+    if (!podUrl) {
+      return { status: 'unsupported', reason: 'pod_not_found' };
+    }
 
     try {
-      const db = drizzle({
-        fetch: trustedFetch,
-        info: { webId, isLoggedIn: true },
-      } as any, {
-        schema: {
-          credential: credentialResource,
-          indexedFile: indexedFileResource,
-        },
-      }) as any;
+      const db = await this.dbFactory({ webId, podUrl, fetch: trustedFetch });
       await db.init?.(credentialResource, indexedFileResource);
 
       const credentialRows = await db.select().from(credentialResource).where(eq(credentialResource.status, 'active')).execute() as CredentialRow[];
@@ -172,7 +175,7 @@ export class DrizzlePodAiConnectionStatusReader implements PodAiConnectionStatus
 
       return {
         status: 'available',
-        containerUrl: `${resolvePodBaseUrl(webId).replace(/\/$/u, '')}/settings/credentials.ttl`,
+        containerUrl: new URL('settings/credentials.ttl', podUrl).toString(),
         configuredProviders: credentialRows.length,
         lastSyncAt,
         source: 'drizzle-solid',
@@ -181,6 +184,33 @@ export class DrizzlePodAiConnectionStatusReader implements PodAiConnectionStatus
       return { status: 'error', reason: 'ai_connection_unavailable' };
     }
   }
+}
+
+type AiConnectionStatusDb = {
+  init?: (...resources: unknown[]) => Promise<void>;
+  select(): {
+    from(resource: unknown): {
+      where(condition: unknown): { execute(): Promise<unknown[]> };
+      execute(): Promise<unknown[]>;
+    };
+  };
+};
+
+function createAiConnectionStatusDb(input: {
+  webId: string;
+  podUrl: string;
+  fetch: typeof fetch;
+}): Promise<AiConnectionStatusDb> {
+  return Promise.resolve(drizzle({
+    fetch: input.fetch,
+    info: { webId: input.webId, isLoggedIn: true },
+  } as any, {
+    podUrl: input.podUrl,
+    schema: {
+      credential: credentialResource,
+      indexedFile: indexedFileResource,
+    },
+  }) as unknown as AiConnectionStatusDb);
 }
 
 function latestIso(values: unknown[]): string | undefined {
@@ -208,4 +238,19 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
 
 function safeLogError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function safeAiConnectionFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  for (const reason of [
+    'service_access_missing',
+    'not_configured',
+    'pod_not_found',
+    'ai_connection_unavailable',
+  ]) {
+    if (message.includes(reason)) {
+      return reason;
+    }
+  }
+  return 'ai_connection_unavailable';
 }

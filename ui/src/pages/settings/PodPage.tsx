@@ -5,8 +5,6 @@ import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'l
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 
-const DEFAULT_ISSUER = 'https://solidcommunity.net/';
-
 export default function PodPage() {
   const runtime = useXpodSolidRuntime();
   const [status, setStatus] = useState<PodSettingsStatus>();
@@ -51,7 +49,8 @@ export default function PodPage() {
   };
 
   const loginAgain = () => {
-    void runtime.login(resolveIssuer(runtime.webId, identity.podUrl));
+    if (!runtime.issuer) return;
+    void runtime.login(runtime.issuer);
   };
 
   return (
@@ -67,6 +66,7 @@ export default function PodPage() {
             onOpenPod={openPod}
             onLogout={() => void runtime.logout()}
             onLoginAgain={loginAgain}
+            canLoginAgain={Boolean(runtime.issuer)}
           />
           <PodUsageCard storage={status?.storage} loading={loading && !status} />
         </aside>
@@ -108,6 +108,7 @@ export function IdentityCard({
   onOpenPod,
   onLogout,
   onLoginAgain,
+  canLoginAgain,
 }: {
   webId?: string;
   podUrl?: string;
@@ -115,6 +116,7 @@ export function IdentityCard({
   onOpenPod: () => void;
   onLogout: () => void;
   onLoginAgain: () => void;
+  canLoginAgain: boolean;
 }) {
   return (
     <Card>
@@ -137,7 +139,7 @@ export function IdentityCard({
             <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
             Logout
           </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={onLoginAgain}>
+          <Button type="button" size="sm" variant="ghost" onClick={onLoginAgain} disabled={!canLoginAgain}>
             <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />
             Login again
           </Button>
@@ -287,12 +289,4 @@ function formatDateTime(value?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Not observed';
   return date.toLocaleString();
-}
-
-function resolveIssuer(webId?: string, podUrl?: string): string {
-  try {
-    return new URL(webId ?? podUrl ?? DEFAULT_ISSUER).origin;
-  } catch {
-    return DEFAULT_ISSUER;
-  }
 }

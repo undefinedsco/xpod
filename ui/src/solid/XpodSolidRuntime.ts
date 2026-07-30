@@ -13,10 +13,10 @@ import { createContext, useContext } from 'react';
 import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision-scope';
 
 export type XpodSolidRuntimeState =
-  | { status: 'loading'; webId?: undefined; podUrl?: undefined; error?: undefined }
-  | { status: 'anonymous'; webId?: undefined; podUrl?: undefined; error?: undefined }
-  | { status: 'authenticated'; webId: string; podUrl?: string; error?: undefined }
-  | { status: 'error'; webId?: string; podUrl?: string; error: Error };
+  | { status: 'loading'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
+  | { status: 'anonymous'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
+  | { status: 'authenticated'; webId: string; podUrl?: string; issuer?: string; error?: undefined }
+  | { status: 'error'; webId?: string; podUrl?: string; issuer?: string; error: Error };
 
 export interface XpodSolidRuntimeValue {
   readonly session: SolidSessionRuntime;
@@ -25,6 +25,7 @@ export interface XpodSolidRuntimeValue {
   readonly state: XpodSolidRuntimeState;
   readonly webId?: string;
   readonly podUrl?: string;
+  readonly issuer?: string;
   readonly currentPod?: OpenPodRuntime<SolidDatabase>;
   login(issuer: string): Promise<void>;
   logout(): Promise<void>;
@@ -33,6 +34,8 @@ export interface XpodSolidRuntimeValue {
 export interface XpodSolidRuntimeCore {
   readonly session: SolidSessionRuntime;
   readonly pod: PodRuntime<SolidDatabase>;
+  getIssuer(): string | undefined;
+  setIssuer(issuer: string | undefined): void;
 }
 
 export interface CreateXpodSolidRuntimeOptions {
@@ -45,12 +48,13 @@ export const initializedRuntimes = new WeakSet<XpodSolidRuntimeCore>();
 export function snapshotToState(
   snapshot: SolidSessionSnapshot,
   currentPod?: OpenPodRuntime<SolidDatabase>,
+  issuer?: string,
 ): XpodSolidRuntimeState {
   if (snapshot.status === 'initializing') {
-    return { status: 'loading' };
+    return { status: 'loading', issuer };
   }
   if (snapshot.status === 'anonymous') {
-    return { status: 'anonymous' };
+    return { status: 'anonymous', issuer };
   }
   if (snapshot.status === 'error') {
     return {
@@ -58,12 +62,14 @@ export function snapshotToState(
       webId: snapshot.webId,
       error: snapshot.error,
       podUrl: currentPod?.podUrl,
+      issuer,
     };
   }
   return {
     status: 'authenticated',
     webId: snapshot.webId,
     podUrl: currentPod?.podUrl,
+    issuer,
   };
 }
 
@@ -86,6 +92,7 @@ export function createXpodSolidRuntimeValue(
   options: CreateXpodSolidRuntimeOptions = {},
 ): XpodSolidRuntimeCore {
   const sessionAdapter = options.sessionFactory?.() ?? new Session();
+  let lastIssuer = readIssuerFromSessionInfo(sessionAdapter.info);
   const session = createSolidSessionRuntime({ session: sessionAdapter });
   const authSession: SolidAuthSession = {
     get info() {
@@ -105,7 +112,14 @@ export function createXpodSolidRuntimeValue(
     },
   });
 
-  return { session, pod };
+  return {
+    session,
+    pod,
+    getIssuer: () => readIssuerFromSessionInfo(sessionAdapter.info) ?? lastIssuer,
+    setIssuer: (issuer) => {
+      lastIssuer = issuer;
+    },
+  };
 }
 
 let defaultRuntime: XpodSolidRuntimeCore | undefined;
@@ -128,4 +142,10 @@ export function useXpodSolidRuntimeContext(): XpodSolidRuntimeValue {
     throw new Error('useXpodSolidRuntime must be used within XpodSolidRuntimeProvider');
   }
   return value;
+}
+
+function readIssuerFromSessionInfo(info: SolidSessionAdapter['info']): string | undefined {
+  const issuer = (info as { issuer?: unknown; oidcIssuer?: unknown }).issuer
+    ?? (info as { issuer?: unknown; oidcIssuer?: unknown }).oidcIssuer;
+  return typeof issuer === 'string' && issuer.trim() ? issuer.trim() : undefined;
 }

@@ -2,7 +2,10 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
-import { registerPodSettingsRoutes } from '../../../src/api/handlers/PodSettingsHandler';
+import {
+  DrizzlePodAiConnectionStatusReader,
+  registerPodSettingsRoutes,
+} from '../../../src/api/handlers/PodSettingsHandler';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://pod.example/bob/profile/card#me';
@@ -65,18 +68,19 @@ describe('PodSettingsHandler', () => {
         tokensUsed: 0,
       })),
     };
+    const aiReader = {
+      read: vi.fn(async () => ({
+        status: 'available',
+        configuredProviders: 1,
+        lastSyncAt: '2026-07-31T00:00:00.000Z',
+        source: 'drizzle-solid',
+      })),
+    };
 
     registerPodSettingsRoutes(server, {
       podLookupRepository,
       usageRepo,
-      aiConnectionStatusReader: {
-        read: vi.fn(async (webId: string) => ({
-          status: 'available',
-          configuredProviders: 1,
-          lastSyncAt: '2026-07-31T00:00:00.000Z',
-          source: 'drizzle-solid',
-        })),
-      },
+      aiConnectionStatusReader: aiReader,
       now: () => new Date('2026-07-31T00:01:00.000Z'),
     });
 
@@ -90,6 +94,10 @@ describe('PodSettingsHandler', () => {
     expect(podLookupRepository.findByWebId).toHaveBeenCalledWith(WEB_ID);
     expect(podLookupRepository.findByWebId).not.toHaveBeenCalledWith(OTHER_WEB_ID);
     expect(usageRepo.getPodUsage).toHaveBeenCalledWith('pod-alice');
+    expect(aiReader.read).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      podUrl: 'https://pod.example/alice/',
+    });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({
       identity: { webId: WEB_ID, podUrl: 'https://pod.example/alice/' },
@@ -132,5 +140,116 @@ describe('PodSettingsHandler', () => {
     const body = JSON.parse(res.body);
     expect(body.storage).toEqual({ status: 'unsupported', reason: 'usage_not_available' });
     expect(JSON.stringify(body.storage)).not.toContain('storageBytes');
+  });
+
+  it('passes split IdP and SP storage URL to the AI reader', async () => {
+    const { server, routes } = createServer();
+    const aiReader = {
+      read: vi.fn(async () => ({
+        status: 'available',
+        configuredProviders: 0,
+        containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
+        source: 'drizzle-solid',
+      })),
+    };
+    registerPodSettingsRoutes(server, {
+      podLookupRepository: {
+        findByWebId: vi.fn(async () => ({
+          podId: 'pod-split',
+          accountId: 'acc-split',
+          baseUrl: 'https://storage.example/alice/',
+          storageUrl: 'https://storage.example/alice/',
+          webId: 'https://id.example/alice/profile/card#me',
+        })),
+      },
+      usageRepo: {
+        getPodUsage: vi.fn(async () => undefined),
+      },
+      aiConnectionStatusReader: aiReader,
+    });
+    const res = response();
+
+    await routes['GET /api/pod/settings/status'](request({
+      type: 'solid',
+      webId: 'https://id.example/alice/profile/card#me',
+    }), res, {});
+
+    expect(aiReader.read).toHaveBeenCalledWith({
+      webId: 'https://id.example/alice/profile/card#me',
+      podUrl: 'https://storage.example/alice/',
+    });
+    expect(JSON.parse(res.body)).toMatchObject({
+      identity: {
+        webId: 'https://id.example/alice/profile/card#me',
+        podUrl: 'https://storage.example/alice/',
+      },
+      aiConnection: {
+        containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
+      },
+    });
+  });
+
+  it('maps AI reader failures to sanitized categories without leaking URLs or secrets', async () => {
+    const { server, routes } = createServer();
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    registerPodSettingsRoutes(server, {
+      podLookupRepository: {
+        findByWebId: vi.fn(async () => ({
+          podId: 'pod-alice',
+          accountId: 'acc-alice',
+          baseUrl: 'https://storage.example/alice/',
+          storageUrl: 'https://storage.example/alice/',
+          webId: WEB_ID,
+        })),
+      },
+      usageRepo: {
+        getPodUsage: vi.fn(async () => undefined),
+      },
+      aiConnectionStatusReader: {
+        read: vi.fn(async () => {
+          throw new Error('403 service_access_missing https://storage.example/alice/settings/credentials.ttl token=secret');
+        }),
+      },
+      logger,
+    });
+    const res = response();
+
+    await routes['GET /api/pod/settings/status'](request({ type: 'solid', webId: WEB_ID }), res, {});
+
+    expect(JSON.parse(res.body).aiConnection).toEqual({ status: 'error', reason: 'service_access_missing' });
+    expect(logger.warn).toHaveBeenCalledWith('Failed to read Pod AI Connection status: service_access_missing');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('storage.example');
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('secret');
+  });
+
+  it('uses the resolved Pod URL as drizzle podUrl and AI container base in split deployments', async () => {
+    const dbFactory = vi.fn(async () => ({
+      init: vi.fn(async () => undefined),
+      select: () => ({
+        from: (resource: unknown) => ({
+          where: () => ({ execute: async () => [] }),
+          execute: async () => [],
+        }),
+      }),
+    }));
+    const internalPodAccess = {
+      getTrustedFetch: vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch),
+    };
+    const reader = new DrizzlePodAiConnectionStatusReader(internalPodAccess, dbFactory);
+
+    const status = await reader.read({
+      webId: 'https://id.example/alice/profile/card#me',
+      podUrl: 'https://storage.example/alice/',
+    });
+
+    expect(status).toMatchObject({
+      status: 'available',
+      containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
+    });
+    expect(internalPodAccess.getTrustedFetch).toHaveBeenCalledWith('https://id.example/alice/profile/card#me');
+    expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({
+      webId: 'https://id.example/alice/profile/card#me',
+      podUrl: 'https://storage.example/alice/',
+    }));
   });
 });

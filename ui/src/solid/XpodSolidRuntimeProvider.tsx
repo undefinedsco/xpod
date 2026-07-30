@@ -20,12 +20,14 @@ export function XpodSolidRuntimeProvider({
 }) {
   const runtime = value ?? getXpodSolidRuntimeValue();
   const [snapshot, setSnapshot] = useState(() => runtime.session.getSnapshot());
+  const [issuer, setIssuer] = useState(() => runtime.getIssuer());
   const [currentPod, setCurrentPod] = useState<OpenPodRuntime<SolidDatabase>>();
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
 
   useEffect(() => {
     return runtime.session.subscribe((nextSnapshot) => {
       setSnapshot(nextSnapshot);
+      setIssuer(runtime.getIssuer());
       if (nextSnapshot.status !== 'authenticated') {
         setCurrentPod(undefined);
         setPodError(undefined);
@@ -39,7 +41,10 @@ export function XpodSolidRuntimeProvider({
       return;
     }
     initializedRuntimes.add(runtime);
-    void runtime.session.initialize({ restorePreviousSession: true }).then(setSnapshot);
+    void runtime.session.initialize({ restorePreviousSession: true }).then((nextSnapshot) => {
+      setSnapshot(nextSnapshot);
+      setIssuer(runtime.getIssuer());
+    });
   }, [runtime]);
 
   useEffect(() => {
@@ -71,12 +76,13 @@ export function XpodSolidRuntimeProvider({
   }, [runtime, snapshot]);
 
   const xpodRuntime = useMemo<XpodSolidRuntimeValue>(() => {
+    const activeIssuer = issuer ?? runtime.getIssuer();
     const activePodError = snapshot.status === 'authenticated' && podError?.webId === snapshot.webId
       ? podError.error
       : undefined;
     const state = activePodError
-      ? { status: 'error', webId: snapshot.webId, podUrl: currentPod?.podUrl, error: activePodError } as const
-      : snapshotToState(snapshot, currentPod);
+      ? { status: 'error', webId: snapshot.webId, podUrl: currentPod?.podUrl, issuer: activeIssuer, error: activePodError } as const
+      : snapshotToState(snapshot, currentPod, activeIssuer);
 
     return {
       session: runtime.session,
@@ -85,12 +91,15 @@ export function XpodSolidRuntimeProvider({
       state: state.status === 'error' ? { ...state, error: safeAuthError(state.error) } : state,
       webId: state.webId,
       podUrl: state.podUrl,
+      issuer: state.issuer,
       currentPod,
       login: async (issuer: string) => {
         const oidcIssuer = issuer.trim();
         if (!oidcIssuer) {
           return;
         }
+        runtime.setIssuer(oidcIssuer);
+        setIssuer(oidcIssuer);
         await runtime.session.login({
           oidcIssuer,
           redirectUrl: window.location.href,
@@ -102,7 +111,7 @@ export function XpodSolidRuntimeProvider({
         await runtime.session.logout();
       },
     };
-  }, [currentPod, podError, runtime, snapshot]);
+  }, [currentPod, issuer, podError, runtime, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: runtime.session, pod: runtime.pod, currentPod }}>

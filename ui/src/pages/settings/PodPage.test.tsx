@@ -63,6 +63,7 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
     webId: WEB_ID,
     podUrl: POD_URL,
+    issuer: 'https://issuer.identity.example/',
     currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
     login: mock(async () => undefined),
     logout: mock(async () => undefined),
@@ -127,6 +128,39 @@ describe('PodPage', () => {
     expect(container.textContent).toContain('AI Connection unavailable');
     expect(container.textContent).not.toContain('0 B used');
 
+    await unmount(root);
+  });
+
+  test('login again uses the Solid runtime issuer instead of guessing from WebID or Pod URL', async () => {
+    const splitWebId = 'https://id.example/alice/profile/card#me';
+    const splitPodUrl = 'https://storage.example/alice/';
+    const fetchImpl = mock(async () => new Response(JSON.stringify({
+      identity: { webId: splitWebId, podUrl: splitPodUrl },
+      storage: { status: 'unsupported', reason: 'usage_not_available' },
+      aiConnection: { status: 'unsupported', reason: 'not_configured' },
+      generatedAt: '2026-07-31T03:05:00.000Z',
+    }), { headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    const runtime = {
+      ...runtimeWith(fetchImpl),
+      state: { status: 'authenticated', webId: splitWebId, podUrl: splitPodUrl },
+      webId: splitWebId,
+      podUrl: splitPodUrl,
+      issuer: 'https://issuer.identity.example/',
+      currentPod: { podUrl: splitPodUrl } as XpodSolidRuntimeValue['currentPod'],
+      login: mock(async () => undefined),
+    } satisfies XpodSolidRuntimeValue;
+
+    const { container, root } = await renderPodPage(runtime);
+    const loginButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Login again'));
+    if (!loginButton) throw new Error('missing login again button');
+
+    await act(async () => {
+      loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(runtime.login).toHaveBeenCalledWith('https://issuer.identity.example/');
+    expect(runtime.login).not.toHaveBeenCalledWith('https://id.example');
+    expect(runtime.login).not.toHaveBeenCalledWith('https://storage.example');
     await unmount(root);
   });
 });

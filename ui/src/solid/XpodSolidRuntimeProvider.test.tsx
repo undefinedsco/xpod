@@ -26,7 +26,7 @@ class FakeSession implements SolidSessionAdapter {
     this.info = { isLoggedIn: false };
     this.emit('logout');
   });
-  info: SolidSessionAdapter['info'] = { isLoggedIn: false };
+  info: SolidSessionAdapter['info'] & { issuer?: string } = { isLoggedIn: false };
   loginOptions: { oidcIssuer?: string }[] = [];
   private readonly listeners = new Map<string, Set<Listener>>();
 
@@ -41,8 +41,8 @@ class FakeSession implements SolidSessionAdapter {
     },
   } as SolidSessionAdapter['events'];
 
-  authenticate(webId = 'https://id.example/alice#me') {
-    this.info = { isLoggedIn: true, webId };
+  authenticate(webId = 'https://id.example/alice#me', issuer?: string) {
+    this.info = { isLoggedIn: true, webId, issuer };
     this.emit('login');
   }
 
@@ -93,6 +93,7 @@ function RuntimeProbe() {
   return (
     <div>
       <span data-testid="status">{snapshot.status}</span>
+      <span data-testid="issuer">{runtime.issuer ?? 'no-issuer'}</span>
       <button type="button" onClick={() => void runtime.login(' https://issuer.example/ ')}>
         login
       </button>
@@ -195,6 +196,32 @@ describe('Xpod Solid runtime', () => {
     expect(session.fetch).toHaveBeenCalledWith('/resource');
     expect(localStorageSet).not.toHaveBeenCalled();
     expect(container.textContent).toContain('anonymous');
+    await unmount(root);
+  });
+
+  test('preserves the real Solid issuer across redirect and login calls', async () => {
+    const session = new FakeSession();
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      session.authenticate('https://id.example/alice#me', 'https://issuer.identity.example/');
+      return session.info;
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+
+    const { container, root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={value}>
+        <RuntimeProbe />
+      </XpodSolidRuntimeProvider>,
+    );
+
+    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://issuer.identity.example/');
+
+    const loginButton = container.querySelector('button');
+    if (!loginButton) throw new Error('missing login button');
+    await act(async () => {
+      loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+
+    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://issuer.example/');
     await unmount(root);
   });
 
