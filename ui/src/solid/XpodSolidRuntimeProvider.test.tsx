@@ -213,6 +213,37 @@ describe('Xpod Solid runtime', () => {
     }));
   });
 
+  test('discovers and normalizes pim storage from Turtle profile regressions', async () => {
+    const fetchImpl = mock(async () => new Response(
+      [
+        '@prefix pim: <http://www.w3.org/ns/pim/space#> .',
+        '<https://id.example/alice#me> pim:storage <https://pod.example/alice> .',
+        '<https://id.example/alice#me> <http://www.w3.org/ns/pim/space#storage> <https://pod.example/alice/> .',
+      ].join('\n'),
+      { headers: { 'content-type': 'text/turtle' } },
+    ));
+
+    await expect(discoverPodUrlFromWebId({
+      webId: 'https://id.example/alice#me',
+      fetch: fetchImpl as typeof fetch,
+    })).resolves.toBe('https://pod.example/alice/');
+  });
+
+  test('discovers and normalizes storage URLs from JSON-LD profile namespaces', async () => {
+    const fetchImpl = mock(async () => new Response(JSON.stringify({
+      '@id': 'https://id.example/alice#me',
+      'http://www.w3.org/ns/pim/space#storage': [
+        { '@id': 'https://pod.example/alice' },
+        { '@id': 'https://pod.example/alice/' },
+      ],
+    }), { headers: { 'content-type': 'application/ld+json' } }));
+
+    await expect(discoverPodUrlFromWebId({
+      webId: 'https://id.example/alice#me',
+      fetch: fetchImpl as typeof fetch,
+    })).resolves.toBe('https://pod.example/alice/');
+  });
+
   test('maps session errors and expiry to a safe auth boundary login state', async () => {
     const session = new FakeSession();
     session.handleIncomingRedirect.mockImplementation(async () => {

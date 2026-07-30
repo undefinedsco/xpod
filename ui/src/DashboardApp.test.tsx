@@ -1,7 +1,37 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
+import { JSDOM } from 'jsdom';
 import { isValidElement } from 'react';
-import { Navigate, matchRoutes } from 'react-router-dom';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter, Navigate, matchRoutes, useLocation, useRoutes } from 'react-router-dom';
+import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import { dashboardRoutes } from './dashboard-routes';
+import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
+import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+type Listener = (...args: unknown[]) => void;
+
+class FakeSession implements SolidSessionAdapter {
+  readonly fetch = mock(async () => new Response('ok'));
+  readonly handleIncomingRedirect = mock(async () => this.info);
+  readonly login = mock(async () => undefined);
+  readonly logout = mock(async () => undefined);
+  readonly info: SolidSessionAdapter['info'] = { isLoggedIn: false };
+  private readonly listeners = new Map<string, Set<Listener>>();
+
+  readonly events = {
+    on: (event: string, listener: Listener) => {
+      const listeners = this.listeners.get(event) ?? new Set<Listener>();
+      listeners.add(listener);
+      this.listeners.set(event, listeners);
+    },
+    off: (event: string, listener: Listener) => {
+      this.listeners.get(event)?.delete(listener);
+    },
+  } as SolidSessionAdapter['events'];
+}
 
 function routeElementFor(path: string) {
   const matches = matchRoutes(dashboardRoutes, path);
@@ -12,6 +42,69 @@ function redirectTargetFor(path: string) {
   const element = routeElementFor(path);
   if (!isValidElement(element) || element.type !== Navigate) return null;
   return element.props.to;
+}
+
+function installDom(path: string) {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: `https://app.example/dashboard${path}`,
+  });
+  globalThis.window = dom.window as unknown as Window & typeof globalThis;
+  globalThis.document = dom.window.document;
+  globalThis.HTMLElement = dom.window.HTMLElement;
+  globalThis.Event = dom.window.Event;
+  return dom;
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="location">{location.pathname}</span>;
+}
+
+function TestRoutes() {
+  const routes = useRoutes([
+    ...dashboardRoutes,
+    { path: '*', element: <LocationProbe /> },
+  ]);
+  return (
+    <>
+      <LocationProbe />
+      {routes}
+    </>
+  );
+}
+
+async function renderDashboardRoute(path: string) {
+  installDom(path);
+  const container = document.getElementById('root');
+  if (!container) throw new Error('missing root');
+  let sessionConstructions = 0;
+  const session = new FakeSession();
+  const runtime = createXpodSolidRuntimeValue({
+    sessionFactory: () => {
+      sessionConstructions += 1;
+      return session;
+    },
+  });
+  const root = createRoot(container);
+
+  await act(async () => {
+    root.render(
+      <XpodSolidRuntimeProvider value={runtime}>
+        <MemoryRouter initialEntries={[path]}>
+          <TestRoutes />
+        </MemoryRouter>
+      </XpodSolidRuntimeProvider>,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  return { container, root, session, sessionConstructions };
+}
+
+async function unmount(root: Root) {
+  await act(async () => {
+    root.unmount();
+  });
 }
 
 describe('dashboard routes', () => {
@@ -31,5 +124,26 @@ describe('dashboard routes', () => {
     expect(redirectTargetFor('/logs')).toBe('/services/logs');
     expect(redirectTargetFor('/rdf')).toBe('/services/rdf');
     expect(redirectTargetFor('/settings')).toBe('/services/runtime');
+  });
+
+  test('normalizes anonymous dashboard redirects before settings auth guard', async () => {
+    const cases = [
+      ['/', '/models'],
+      ['/status', '/services'],
+      ['/logs', '/services/logs'],
+      ['/rdf', '/services/rdf'],
+      ['/settings', '/services/runtime'],
+      ['/dashboard.html', '/models'],
+    ];
+
+    for (const [from, to] of cases) {
+      const { container, root, session, sessionConstructions } = await renderDashboardRoute(from);
+
+      expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(to);
+      expect(container.textContent).toContain('Solid issuer');
+      expect(sessionConstructions).toBe(1);
+      expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+      await unmount(root);
+    }
   });
 });

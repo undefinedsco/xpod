@@ -167,6 +167,13 @@ export function normalizeStorageRoot(url: string | undefined): string | undefine
   }
 }
 
+const SOLID_STORAGE_KEYS = new Set([
+  'solid:storage',
+  'http://www.w3.org/ns/solid/terms#storage',
+  'pim:storage',
+  'http://www.w3.org/ns/pim/space#storage',
+]);
+
 export async function fetchProfileStorageUrls(fetchImpl: typeof fetch, webId: string): Promise<string[]> {
   const response = await fetchImpl(webId, {
     headers: {
@@ -186,17 +193,17 @@ export async function fetchProfileStorageUrls(fetchImpl: typeof fetch, webId: st
 
   if (contentType.includes('json')) {
     try {
-      return extractStorageUrlsFromJson(JSON.parse(body));
+      return uniqueNormalizedStorageUrls(extractStorageUrlsFromJson(JSON.parse(body)));
     } catch {
       return [];
     }
   }
 
-  return extractStorageUrlsFromTurtle(body);
+  return uniqueNormalizedStorageUrls(extractStorageUrlsFromTurtle(body));
 }
 
 function extractStorageUrlsFromTurtle(body: string): string[] {
-  return Array.from(body.matchAll(/(?:solid:storage|<http:\/\/www\.w3\.org\/ns\/solid\/terms#storage>)\s+<([^>]+)>/giu))
+  return Array.from(body.matchAll(/(?:solid:storage|pim:storage|<http:\/\/www\.w3\.org\/ns\/solid\/terms#storage>|<http:\/\/www\.w3\.org\/ns\/pim\/space#storage>)\s+<([^>]+)>/giu))
     .map((match) => match[1])
     .filter((value): value is string => typeof value === 'string' && value.length > 0);
 }
@@ -229,7 +236,7 @@ function extractStorageUrlsFromJson(value: unknown): string[] {
     }
 
     for (const [childKey, childValue] of Object.entries(node)) {
-      const childIsStorage = childKey === 'solid:storage' || childKey === 'http://www.w3.org/ns/solid/terms#storage';
+      const childIsStorage = SOLID_STORAGE_KEYS.has(childKey);
       if (underStorage && childKey === '@id') {
         visit(childValue, true);
         continue;
@@ -248,6 +255,17 @@ function normalizeStorageUrl(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function uniqueNormalizedStorageUrls(urls: string[]): string[] {
+  const normalizedUrls = new Set<string>();
+  for (const url of urls) {
+    const normalizedUrl = normalizeStorageUrl(url);
+    if (normalizedUrl) {
+      normalizedUrls.add(normalizedUrl);
+    }
+  }
+  return Array.from(normalizedUrls);
 }
 
 export function ensureTrailingSlash(url: string): string {
