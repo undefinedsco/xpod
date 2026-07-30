@@ -182,6 +182,26 @@
 }
 
 @layer components {
+  .xpod-settings-shell {
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  @media (max-width: 767px) {
+    .xpod-settings-shell {
+      grid-template-columns: minmax(0, 1fr) !important;
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .xpod-settings-shell > aside {
+      display: none;
+    }
+
+    .xpod-settings-shell > div > header {
+      height: auto;
+      min-height: 7rem;
+    }
+  }
+
   /* 全局语义化排版 */
   .type-h1 {
     @apply text-2xl font-semibold tracking-tight;
