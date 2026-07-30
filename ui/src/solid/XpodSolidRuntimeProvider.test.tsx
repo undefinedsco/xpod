@@ -7,6 +7,7 @@ import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import {
   createXpodSolidRuntimeValue,
   discoverPodUrlFromWebId,
+  XPOD_LAST_OIDC_ISSUER_STORAGE_KEY,
 } from './XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './XpodSolidRuntimeProvider';
 import { SettingsAuthBoundary } from './SettingsAuthBoundary';
@@ -225,6 +226,120 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
+  test('restores the last valid login issuer after a redirect reload when Inrupt session info omits issuer', async () => {
+    installDom();
+    window.sessionStorage.clear();
+    window.localStorage.clear();
+
+    const firstSession = new FakeSession();
+    firstSession.handleIncomingRedirect.mockImplementation(async () => {
+      firstSession.authenticate('https://id.example/alice#me');
+      return firstSession.info;
+    });
+    const firstRuntime = createXpodSolidRuntimeValue({ sessionFactory: () => firstSession });
+    const firstRootNode = document.getElementById('root');
+    if (!firstRootNode) throw new Error('missing root');
+    const firstRoot = createRoot(firstRootNode);
+    await act(async () => {
+      firstRoot.render(
+        <XpodSolidRuntimeProvider value={firstRuntime}>
+          <RuntimeProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const firstLoginButton = firstRootNode.querySelector('button');
+    if (!firstLoginButton) throw new Error('missing first login button');
+    await act(async () => {
+      firstLoginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    expect(firstSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    await unmount(firstRoot);
+
+    const secondSession = new FakeSession();
+    secondSession.handleIncomingRedirect.mockImplementation(async () => {
+      secondSession.authenticate('https://id.example/alice#me');
+      return secondSession.info;
+    });
+    const secondRuntime = createXpodSolidRuntimeValue({ sessionFactory: () => secondSession });
+    const secondRootNode = document.createElement('div');
+    document.body.append(secondRootNode);
+    const secondRoot = createRoot(secondRootNode);
+    await act(async () => {
+      secondRoot.render(
+        <XpodSolidRuntimeProvider value={secondRuntime}>
+          <RuntimeProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(secondRootNode.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://issuer.example/');
+    const secondLoginButton = secondRootNode.querySelector('button');
+    if (!secondLoginButton) throw new Error('missing second login button');
+    await act(async () => {
+      secondLoginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+    expect(secondSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(JSON.stringify(window.sessionStorage)).not.toContain('token');
+    expect(JSON.stringify(window.localStorage)).not.toContain('issuer.example');
+    await unmount(secondRoot);
+  });
+
+  test('ignores invalid stored issuers instead of enabling Login again', async () => {
+    installDom();
+    window.sessionStorage.setItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY, 'javascript:alert(1)');
+    const session = new FakeSession();
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      session.authenticate('https://id.example/alice#me');
+      return session.info;
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <XpodSolidRuntimeProvider value={value}>
+          <RuntimeProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('no-issuer');
+    await unmount(root);
+  });
+
+  test('rejects non-http login issuers without persisting or redirecting', async () => {
+    installDom();
+    window.sessionStorage.clear();
+    const session = new FakeSession();
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <XpodSolidRuntimeProvider value={value}>
+          <InvalidLoginProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const loginButton = container.querySelector('button');
+    if (!loginButton) throw new Error('missing login button');
+    await act(async () => {
+      loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+
+    expect(session.login).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY)).toBeNull();
+    await unmount(root);
+  });
+
   test('discovers Pod storage from the authenticated WebID profile only', async () => {
     const fetchImpl = mock(async () => new Response(
       '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
@@ -296,3 +411,12 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 });
+
+function InvalidLoginProbe() {
+  const runtime = useXpodSolidRuntime();
+  return (
+    <button type="button" onClick={() => void runtime.login('javascript:alert(1)')}>
+      login
+    </button>
+  );
+}

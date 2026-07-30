@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   getXpodSolidRuntimeValue,
   initializedRuntimes,
+  normalizeXpodOidcIssuer,
   safeAuthError,
   snapshotToState,
   XpodSolidRuntimeContext,
@@ -94,7 +95,7 @@ export function XpodSolidRuntimeProvider({
       issuer: state.issuer,
       currentPod,
       login: async (issuer: string) => {
-        const oidcIssuer = issuer.trim();
+        const oidcIssuer = normalizeXpodOidcIssuer(issuer);
         if (!oidcIssuer) {
           return;
         }

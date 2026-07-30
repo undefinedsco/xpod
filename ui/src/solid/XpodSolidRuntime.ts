@@ -12,6 +12,8 @@ import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.
 import { createContext, useContext } from 'react';
 import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision-scope';
 
+export const XPOD_LAST_OIDC_ISSUER_STORAGE_KEY = 'xpod.solid.lastOidcIssuer';
+
 export type XpodSolidRuntimeState =
   | { status: 'loading'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
   | { status: 'anonymous'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
@@ -92,7 +94,7 @@ export function createXpodSolidRuntimeValue(
   options: CreateXpodSolidRuntimeOptions = {},
 ): XpodSolidRuntimeCore {
   const sessionAdapter = options.sessionFactory?.() ?? new Session();
-  let lastIssuer = readIssuerFromSessionInfo(sessionAdapter.info);
+  let lastIssuer = readIssuerFromSessionInfo(sessionAdapter.info) ?? readStoredOidcIssuer();
   const session = createSolidSessionRuntime({ session: sessionAdapter });
   const authSession: SolidAuthSession = {
     get info() {
@@ -115,9 +117,13 @@ export function createXpodSolidRuntimeValue(
   return {
     session,
     pod,
-    getIssuer: () => readIssuerFromSessionInfo(sessionAdapter.info) ?? lastIssuer,
+    getIssuer: () => readIssuerFromSessionInfo(sessionAdapter.info) ?? lastIssuer ?? readStoredOidcIssuer(),
     setIssuer: (issuer) => {
-      lastIssuer = issuer;
+      const normalized = normalizeXpodOidcIssuer(issuer);
+      lastIssuer = normalized;
+      if (normalized) {
+        writeStoredOidcIssuer(normalized);
+      }
     },
   };
 }
@@ -147,5 +153,36 @@ export function useXpodSolidRuntimeContext(): XpodSolidRuntimeValue {
 function readIssuerFromSessionInfo(info: SolidSessionAdapter['info']): string | undefined {
   const issuer = (info as { issuer?: unknown; oidcIssuer?: unknown }).issuer
     ?? (info as { issuer?: unknown; oidcIssuer?: unknown }).oidcIssuer;
-  return typeof issuer === 'string' && issuer.trim() ? issuer.trim() : undefined;
+  return normalizeXpodOidcIssuer(issuer);
+}
+
+export function normalizeXpodOidcIssuer(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) {
+    return undefined;
+  }
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function readStoredOidcIssuer(): string | undefined {
+  try {
+    return normalizeXpodOidcIssuer(globalThis.window?.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY));
+  } catch {
+    return undefined;
+  }
+}
+
+function writeStoredOidcIssuer(issuer: string): void {
+  try {
+    globalThis.window?.sessionStorage.setItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY, issuer);
+  } catch {
+    // Browser storage can be unavailable in private or embedded contexts.
+  }
 }
