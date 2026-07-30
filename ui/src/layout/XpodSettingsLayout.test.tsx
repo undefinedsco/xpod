@@ -14,7 +14,7 @@ function renderLayout(path = '/models') {
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route element={<XpodSettingsLayout />}>
+        <Route element={<XpodSettingsLayout authBoundary={({ children }) => <>{children}</>} />}>
           <Route path="/models" element={<section>Models workspace</section>} />
           <Route path="/services" element={<section>Services workspace</section>} />
         </Route>

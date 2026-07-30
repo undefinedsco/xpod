@@ -4,6 +4,7 @@ import { clsx } from 'clsx';
 import { Search } from 'lucide-react';
 import { useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { SettingsAuthBoundary } from '../solid/SettingsAuthBoundary';
 import {
   clearSettingsSearchOnEscape,
   filterSettingsNavigationItems,
@@ -96,7 +97,11 @@ function SettingsHostHeader({
   );
 }
 
-export function XpodSettingsLayout() {
+export function XpodSettingsLayout({
+  authBoundary: AuthBoundaryComponent = SettingsAuthBoundary,
+}: {
+  authBoundary?: ({ children }: { children: React.ReactNode }) => React.ReactNode;
+}) {
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const filteredItems = useMemo(() => filterSettingsNavigationItems(query), [query]);
@@ -133,7 +138,9 @@ export function XpodSettingsLayout() {
       }
     >
       <main className="min-h-full bg-background" aria-label="Xpod settings workspace">
-        <Outlet />
+        <AuthBoundaryComponent>
+          <Outlet />
+        </AuthBoundaryComponent>
       </main>
     </AppLayout>
   );

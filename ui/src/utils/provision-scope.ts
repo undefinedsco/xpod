@@ -167,7 +167,7 @@ export function normalizeStorageRoot(url: string | undefined): string | undefine
   }
 }
 
-async function fetchProfileStorageUrls(fetchImpl: typeof fetch, webId: string): Promise<string[]> {
+export async function fetchProfileStorageUrls(fetchImpl: typeof fetch, webId: string): Promise<string[]> {
   const response = await fetchImpl(webId, {
     headers: {
       Accept: 'text/turtle, application/ld+json, application/json',
