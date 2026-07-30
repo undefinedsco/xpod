@@ -15,6 +15,15 @@ export function isGatewayApiKeyPrincipal(auth: AuthContext | undefined): auth is
   return auth?.type === 'solid' && auth.viaGatewayApiKey === true;
 }
 
+export function isInternalGatewayInvocationPrincipal(auth: AuthContext | undefined): auth is SolidAuthContext & {
+  viaGatewayApiKey: true;
+  internalInvocation: true;
+  gatewayKeyId: string;
+  scopes: string[];
+} {
+  return isGatewayApiKeyPrincipal(auth) && auth.internalInvocation === true;
+}
+
 export function canManageGatewayKeys(auth: AuthContext | undefined): boolean {
   if (!auth) {
     return false;

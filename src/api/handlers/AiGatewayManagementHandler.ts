@@ -4,9 +4,11 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import {
   canManageGatewayKeys,
+  isInternalGatewayInvocationPrincipal,
   isGatewayApiKeyPrincipal,
   ownerWebIdForGatewayKeyManagement,
 } from '../ai-gateway/auth/GatewayPrincipal';
+import type { SolidAuthContext } from '../auth/AuthContext';
 import {
   createGatewayApiKey,
   createGatewayKeyId,
@@ -387,15 +389,54 @@ function authorizeGatewayKeyManagement(
   request: AuthenticatedRequest,
   response: ServerResponse,
 ): boolean {
-  if (!request.auth) {
+  return authorizeManagementCaller(request, response, {
+    gatewayKeyPrincipalError: 'Gateway API keys cannot manage gateway keys',
+    nonSolidPrincipalError: 'Insufficient permissions',
+    allowServiceGatewayKeyManagement: true,
+  });
+}
+
+function authorizeManagementCaller(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+  options: {
+    gatewayKeyPrincipalError: string;
+    nonSolidPrincipalError: string;
+    allowServiceGatewayKeyManagement?: boolean;
+  },
+): boolean {
+  const auth = request.auth;
+  if (!auth) {
     sendJson(response, 401, { error: 'Authentication required' });
     return false;
   }
-  if (isGatewayApiKeyPrincipal(request.auth)) {
-    sendJson(response, 403, { error: 'Gateway API keys cannot manage gateway keys' });
+  if (auth.type === 'solid' && auth.webId) {
+    if (isGatewayApiKeyPrincipal(auth) && !isInternalGatewayInvocationPrincipal(auth)) {
+      sendJson(response, 403, { error: options.gatewayKeyPrincipalError });
+      return false;
+    }
+    return true;
+  }
+  if (options.allowServiceGatewayKeyManagement && canManageGatewayKeys(auth)) {
+    return true;
+  }
+  sendJson(response, 403, { error: options.nonSolidPrincipalError });
+  return false;
+}
+
+function authorizeCurrentSolidManagement(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+  options: {
+    gatewayKeyPrincipalError: string;
+    nonSolidPrincipalError: string;
+  },
+): request is AuthenticatedRequest & { auth: SolidAuthContext } {
+  if (!authorizeManagementCaller(request, response, options)) {
     return false;
   }
-  if (!canManageGatewayKeys(request.auth)) {
+  const auth = request.auth;
+  if (!auth || auth.type !== 'solid' || !auth.webId) {
     sendJson(response, 403, { error: 'Insufficient permissions' });
     return false;
   }
@@ -406,38 +447,20 @@ function authorizeProviderConnect(
   request: AuthenticatedRequest,
   response: ServerResponse,
 ): request is AuthenticatedRequest & { auth: Extract<NonNullable<AuthenticatedRequest['auth']>, { type: 'solid' }> } {
-  if (!request.auth) {
-    sendJson(response, 401, { error: 'Authentication required' });
-    return false;
-  }
-  if (isGatewayApiKeyPrincipal(request.auth)) {
-    sendJson(response, 403, { error: 'Gateway API keys cannot manage provider Connect state' });
-    return false;
-  }
-  if (request.auth.type !== 'solid' || !request.auth.webId) {
-    sendJson(response, 403, { error: 'Provider Connect requires the current Solid identity' });
-    return false;
-  }
-  return true;
+  return authorizeCurrentSolidManagement(request, response, {
+    gatewayKeyPrincipalError: 'Gateway API keys cannot manage provider Connect state',
+    nonSolidPrincipalError: 'Provider Connect requires the current Solid identity',
+  });
 }
 
 function authorizeProviderQuota(
   request: AuthenticatedRequest,
   response: ServerResponse,
 ): request is AuthenticatedRequest & { auth: Extract<NonNullable<AuthenticatedRequest['auth']>, { type: 'solid' }> } {
-  if (!request.auth) {
-    sendJson(response, 401, { error: 'Authentication required' });
-    return false;
-  }
-  if (isGatewayApiKeyPrincipal(request.auth)) {
-    sendJson(response, 403, { error: 'Gateway API keys cannot manage provider quota state' });
-    return false;
-  }
-  if (request.auth.type !== 'solid' || !request.auth.webId) {
-    sendJson(response, 403, { error: 'Provider quota requires the current Solid identity' });
-    return false;
-  }
-  return true;
+  return authorizeCurrentSolidManagement(request, response, {
+    gatewayKeyPrincipalError: 'Gateway API keys cannot manage provider quota state',
+    nonSolidPrincipalError: 'Provider quota requires the current Solid identity',
+  });
 }
 
 function requireConnectService(

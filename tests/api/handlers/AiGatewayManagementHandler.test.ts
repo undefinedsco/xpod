@@ -6,6 +6,9 @@ import { InMemoryGatewayAccessKeyRepository } from '../ai-gateway/InMemoryGatewa
 import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { AiConnectionInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
+import { createGatewayApiKey } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
@@ -23,6 +26,7 @@ import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddl
 import type { ApiServer } from '../../../src/api/ApiServer';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
+const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
 
 class StaticKeyWrapper implements KeyWrapper {
   public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
@@ -74,6 +78,20 @@ function rawRequest(auth: AuthenticatedRequest['auth'], rawBody: string): Authen
   return req;
 }
 
+async function requestWithBearer(
+  authenticator: GatewayApiKeyAuthenticator,
+  token: string,
+  body?: unknown,
+): Promise<AuthenticatedRequest> {
+  const req = request(undefined, body);
+  req.headers.authorization = `Bearer ${token}`;
+  const result = await authenticator.authenticate(req);
+  if (result.success) {
+    req.auth = result.context;
+  }
+  return req;
+}
+
 function response(): any {
   return {
     statusCode: 0,
@@ -89,6 +107,35 @@ function response(): any {
 
 function jsonClone<T>(value: T): T {
   return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function invocationHarness(input: {
+  deployment?: 'cloud' | 'local';
+  now?: Date;
+  scopes?: string[];
+  ttlMs?: number;
+} = {}) {
+  const now = input.now ?? new Date('2026-07-30T00:00:00.000Z');
+  const deployment = input.deployment ?? 'cloud';
+  const repository = new InMemoryGatewayAccessKeyRepository();
+  const codec = new AesInvocationTokenCodec({
+    active: { kid: 'active', secret: 'management-invocation-secret' },
+  });
+  const authenticator = new GatewayApiKeyAuthenticator({
+    repository,
+    invocationTokenCodec: codec,
+    deployment,
+    now: () => now,
+    requiredScopes: input.scopes ?? ['models:read', 'inference:write'],
+  });
+  const issuer = new AiConnectionInvocationKeyIssuer({
+    codec,
+    deployment,
+    baseUrl: 'https://pod.example/v1',
+    ttlMs: input.ttlMs,
+    now: () => now,
+  });
+  return { repository, authenticator, issuer, codec, now };
 }
 
 describe('AiGatewayManagementHandler', () => {
@@ -788,6 +835,189 @@ describe('AiGatewayManagementHandler', () => {
       status: 'revoked',
     });
     expect(JSON.stringify([...rows.values()])).not.toContain('sk-production-management-path');
+  });
+
+  it('allows owner-bound internal invocation tokens through management key, provider, quota and connect routes', async () => {
+    const { repository, authenticator, issuer } = invocationHarness();
+    const issued = await issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
+    const connectService = {
+      listProviders: vi.fn(async () => [
+        { provider: 'openai', status: 'disconnected', connect: { modes: ['browserAssistedApiKey'], configured: true } },
+      ]),
+      begin: vi.fn(async (input: any) => ({
+        mode: input.requestedMode,
+        status: 'pending',
+        provider: input.provider,
+        attemptId: 'attempt_1',
+      })),
+    } as any;
+    const quotaService = {
+      status: vi.fn(async () => ({
+        credential: 'credentials.ttl#cloud-openai',
+        status: 'unsupported',
+        windows: [],
+        observedAt: '2026-07-30T00:00:00.000Z',
+        expiresAt: '2026-07-30T00:05:00.000Z',
+        source: 'openai:no-credential-quota-api',
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository,
+      deployment: 'cloud',
+      connectService,
+      quotaService,
+      keyId: () => 'gak_internal_created',
+      now: () => new Date('2026-07-30T00:00:00.000Z'),
+    });
+
+    const createKey = response();
+    await routes['POST /api/ai/gateway/keys'](await requestWithBearer(authenticator, issued.gatewayKey, {
+      name: 'Internal setup',
+      owner: OTHER_WEB_ID,
+      scopes: ['models:read'],
+    }), createKey, {});
+    const providers = response();
+    await routes['GET /api/ai/connections/providers'](await requestWithBearer(authenticator, issued.gatewayKey), providers, {});
+    const quota = response();
+    await routes['GET /api/ai/gateway/providers/:provider/quota/status'](
+      await requestWithBearer(authenticator, issued.gatewayKey),
+      quota,
+      { provider: 'openai' },
+    );
+    const connect = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](
+      await requestWithBearer(authenticator, issued.gatewayKey, { mode: 'browserAssistedApiKey' }),
+      connect,
+      { provider: 'openai' },
+    );
+
+    expect(createKey.statusCode).toBe(201);
+    expect(JSON.parse(createKey.body).record).toMatchObject({
+      id: 'gak_internal_created',
+      owner: WEB_ID,
+      scopes: ['models:read'],
+    });
+    expect(providers.statusCode).toBe(200);
+    expect(quota.statusCode).toBe(200);
+    expect(connect.statusCode).toBe(200);
+    expect(connectService.listProviders).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      auth: expect.objectContaining({ internalInvocation: true }),
+    }));
+    expect(quotaService.status).toHaveBeenCalledWith(expect.objectContaining({ webId: WEB_ID }));
+    expect(connectService.begin).toHaveBeenCalledWith(expect.objectContaining({ webId: WEB_ID }));
+  });
+
+  it('keeps management routes closed to wrong-owner, expired, insufficient-scope and regular Gateway keys', async () => {
+    const now = new Date('2026-07-30T00:00:00.000Z');
+    const { repository, authenticator, issuer } = invocationHarness({ now });
+    const aliceIssued = await issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
+    const bobIssued = await issuer.issue({ auth: { type: 'solid', webId: OTHER_WEB_ID } });
+    await repository.create({
+      id: 'gak_alice',
+      owner: WEB_ID,
+      deployment: 'cloud',
+      secretHash: 'unused',
+      scopes: ['models:read'],
+      createdAt: now,
+    });
+    const { plaintext: regularGatewayKey, record: regularRecord } = await createGatewayApiKey({
+      deployment: 'cloud',
+      keyId: 'gak_regular',
+      secret: 'regular-secret',
+    });
+    await repository.create({
+      ...regularRecord,
+      owner: WEB_ID,
+      scopes: ['models:read', 'inference:write'],
+      createdAt: now,
+    });
+    const expiredHarness = invocationHarness({
+      now: new Date('2026-07-30T00:00:00.000Z'),
+      ttlMs: 60_000,
+    });
+    const expiredIssued = await expiredHarness.issuer.issue({ auth: { type: 'solid', webId: WEB_ID } });
+    const expiredAuthenticator = new GatewayApiKeyAuthenticator({
+      repository,
+      invocationTokenCodec: expiredHarness.codec,
+      deployment: 'cloud',
+      now: () => new Date('2026-07-30T00:02:00.000Z'),
+    });
+    const insufficientScopeCodec = new AesInvocationTokenCodec({
+      active: { kid: 'active', secret: 'management-invocation-secret' },
+    });
+    const insufficientScopeToken = insufficientScopeCodec.encode({
+      deployment: 'cloud',
+      webId: WEB_ID,
+      scopes: ['models:read'],
+      issuedAt: now,
+      expiresAt: new Date(now.getTime() + 60_000),
+    });
+    const insufficientScopeAuthenticator = new GatewayApiKeyAuthenticator({
+      repository,
+      invocationTokenCodec: insufficientScopeCodec,
+      deployment: 'cloud',
+      now: () => now,
+    });
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository,
+      deployment: 'cloud',
+      connectService: { listProviders: vi.fn(async () => []) } as any,
+      quotaService: { status: vi.fn(async () => ({})) } as any,
+    });
+
+    const bobDeleteAlice = response();
+    await routes['DELETE /api/ai/gateway/keys/:keyId'](
+      await requestWithBearer(authenticator, bobIssued.gatewayKey),
+      bobDeleteAlice,
+      { keyId: 'gak_alice' },
+    );
+    const regularProviderList = response();
+    await routes['GET /api/ai/connections/providers'](
+      await requestWithBearer(authenticator, regularGatewayKey),
+      regularProviderList,
+      {},
+    );
+    const regularQuota = response();
+    await routes['GET /api/ai/gateway/providers/:provider/quota/status'](
+      await requestWithBearer(authenticator, regularGatewayKey),
+      regularQuota,
+      { provider: 'openai' },
+    );
+    const regularConnect = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](
+      await requestWithBearer(authenticator, regularGatewayKey, { mode: 'browserAssistedApiKey' }),
+      regularConnect,
+      { provider: 'openai' },
+    );
+    const expiredKeyCreate = response();
+    await routes['POST /api/ai/gateway/keys'](
+      await requestWithBearer(expiredAuthenticator, expiredIssued.gatewayKey, {}),
+      expiredKeyCreate,
+      {},
+    );
+    const insufficientScopeKeyCreate = response();
+    await routes['POST /api/ai/gateway/keys'](
+      await requestWithBearer(insufficientScopeAuthenticator, insufficientScopeToken, {}),
+      insufficientScopeKeyCreate,
+      {},
+    );
+    const aliceDeleteAlice = response();
+    await routes['DELETE /api/ai/gateway/keys/:keyId'](
+      await requestWithBearer(authenticator, aliceIssued.gatewayKey),
+      aliceDeleteAlice,
+      { keyId: 'gak_alice' },
+    );
+
+    expect(bobDeleteAlice.statusCode).toBe(403);
+    expect(regularProviderList.statusCode).toBe(403);
+    expect(regularQuota.statusCode).toBe(403);
+    expect(regularConnect.statusCode).toBe(403);
+    expect(expiredKeyCreate.statusCode).toBe(401);
+    expect(insufficientScopeKeyCreate.statusCode).toBe(401);
+    expect(aliceDeleteAlice.statusCode).toBe(200);
   });
 
   it('rejects gateway API key principals from managing provider Connect state', async () => {
