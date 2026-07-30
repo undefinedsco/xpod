@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
-import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
 import { getFreePort } from '../../src/runtime/port-finder';
-import { VercelChatService } from '../../src/api/service/VercelChatService';
 import { registerChatRoutes } from '../../src/api/handlers/ChatHandler';
 import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 
@@ -66,68 +64,32 @@ vi.mock('@inrupt/solid-client-authn-node', () => {
 
 describe('Chat Mock Logic Flow', () => {
   let server: ApiServer;
-  let store: PodChatKitStore;
   let port: number;
-  let aiPort: number;
   let baseUrl: string;
-
-  let aiRequestHeaders: any = null;
-  let originalFetch: typeof fetch;
+  let gatewayComplete: ReturnType<typeof vi.fn>;
 
   beforeAll(async () => {
     port = await getFreePort(10000);
-    aiPort = await getFreePort(port + 1);
     baseUrl = `http://127.0.0.1:${port}`;
 
-    // 1. Mock AI Backend fetch
-    originalFetch = global.fetch;
-    global.fetch = async (url, init) => {
-      const target = typeof url === 'string'
-        ? url
-        : url instanceof URL
-          ? url.toString()
-          : url.url;
-      if (target.startsWith(`http://127.0.0.1:${aiPort}/v1`)) {
-        const headerSource = init?.headers ?? (url instanceof Request ? url.headers : undefined);
-        aiRequestHeaders = Object.fromEntries((new Headers(headerSource) as any).entries());
-        // Return OpenAI Chat Completions API format (not Responses API)
-        return new Response(JSON.stringify({
-          id: 'chatcmpl-mock',
-          object: 'chat.completion',
-          created: Math.floor(Date.now() / 1000),
-          model: 'gpt-4',
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: 'assistant',
-                content: 'Mock AI Success'
-              },
-              finish_reason: 'stop'
-            }
-          ],
-          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-        }), { headers: { 'Content-Type': 'application/json' } });
-      }
-      return originalFetch(url, init);
-    };
-
-    // 2. Setup Services with PodChatKitStore
-    store = new PodChatKitStore({
-      tokenEndpoint: 'http://localhost:3000/.oidc/token',
+    gatewayComplete = vi.fn().mockResolvedValue({
+      id: 'chatcmpl-mock',
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: 'gpt-4',
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: 'Mock AI Success'
+          },
+          finish_reason: 'stop'
+        }
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
     });
 
-    // Mock getAiConfig to return test config
-    store.getAiConfig = async () => ({
-      providerId: 'openai',
-      apiKey: 'sk-mock-key-from-pod',
-      baseUrl: `http://127.0.0.1:${aiPort}/v1`,
-      credentialId: 'test-cred',
-    });
-
-    const chatService = new VercelChatService(store);
-
-    // 3. Setup API Server
     const authMiddleware = new AuthMiddleware({
       authenticator: {
         canAuthenticate: () => true,
@@ -139,17 +101,22 @@ describe('Chat Mock Logic Flow', () => {
     });
 
     server = new ApiServer({ port, authMiddleware });
-    registerChatRoutes(server, { chatService });
+    registerChatRoutes(server, {
+      aiGatewayService: {
+        complete: gatewayComplete,
+        execute: vi.fn(),
+        listModels: vi.fn(),
+      } as any,
+    });
 
     await server.start();
   });
 
   afterAll(async () => {
     await server.stop();
-    global.fetch = originalFetch;
   });
 
-  it('should verify the complete logic chain: Request -> Pod Config -> AI Call', async () => {
+  it('should verify the complete logic chain: Request -> AiGatewayService', async () => {
     const response = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer any' },
@@ -165,7 +132,12 @@ describe('Chat Mock Logic Flow', () => {
     expect(response.status).toBe(200);
     expect(data.choices[0].message.content).toBe('Mock AI Success');
 
-    // VERIFY THE MAGIC: Did the AI SDK use the apiKey we mocked in the Turtle data?
-    expect(aiRequestHeaders.authorization).toBe('Bearer sk-mock-key-from-pod');
+    expect(gatewayComplete).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: 'hello' }]
+      },
+    }));
   }, 15000);
 });

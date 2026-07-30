@@ -5,7 +5,8 @@
  * - AGENTS.md: user-editable plain Markdown guidance
  * - .meta: RDF runtime config and references to shared skill documents
  *
- * The resolver combines both into a ResolvedAgentConfig ready for an Agent Runtime.
+ * The resolver combines both into non-secret agent profile data. Invocation
+ * credentials are supplied separately at the runtime boundary.
  */
 
 import type { McpServerConfig, ExecutorType } from '../types';
@@ -85,12 +86,6 @@ export interface ResolvedAgentConfig {
   // --- Resolved from .meta ---
   /** Executor type (from Agent .meta runtimeKind) */
   executorType: AgentRuntimeKind;
-  /** API key (from Credential) */
-  apiKey: string;
-  /** API base URL (from Credential or Provider) */
-  baseUrl?: string;
-  /** Proxy URL */
-  proxyUrl?: string;
   /** Model name (resolved from Model URI) */
   model?: string;
 

@@ -16,8 +16,6 @@ describe('ACP Agent Config Passthrough', () => {
       description: 'Test agent',
       systemPrompt: 'You are a helpful secretary.',
       executorType: 'claude',
-      apiKey: 'sk-test-key',
-      baseUrl: 'https://api.example.com',
       model: 'claude-sonnet-4',
       maxTurns: 10,
       allowedTools: ['Read', 'Write', 'Edit'],
@@ -53,6 +51,10 @@ describe('ACP Agent Config Passthrough', () => {
           argv: ['node', agentPath],
         },
         agentConfig,
+        aiConnection: {
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: 'gateway-key',
+        },
       },
     })) {
       if (ev.type === 'text') {
@@ -81,7 +83,6 @@ describe('ACP Agent Config Passthrough', () => {
       displayName: 'Minimal',
       systemPrompt: 'Hello.',
       executorType: 'claude',
-      apiKey: 'sk-test',
       mcpServers: {},
       enabled: true,
     } as ResolvedAgentConfig;
@@ -99,6 +100,10 @@ describe('ACP Agent Config Passthrough', () => {
           argv: ['node', agentPath],
         },
         agentConfig,
+        aiConnection: {
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: 'gateway-key',
+        },
       },
     })) {
       if (ev.type === 'text') {
@@ -127,6 +132,10 @@ describe('ACP Agent Config Passthrough', () => {
           type: 'codex',
           protocol: 'acp',
           argv: ['node', agentPath],
+        },
+        aiConnection: {
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: 'gateway-key',
         },
       },
     })) {

@@ -18,6 +18,13 @@ import { resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { readLocalProvisionState, resolveLocalSetupPath, resolveLocalSetupProviderId } from '../../provision/LocalProvisionState';
 import { resolveTunnelProfileState } from '../../tunnel/TunnelProfiles';
+import {
+  DeploymentRootKeyProvider,
+  parseDeploymentRootKeyConfig,
+  SecretCellVault,
+} from '../../security/secret-cell';
+import { SecretCellCredentialVault } from '../ai-gateway/credentials/SecretCellCredentialVault';
+import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 
 export type { ApiContainerCradle, ApiContainerConfig } from './types';
 
@@ -38,6 +45,14 @@ function resolveCssTokenEndpoint(): string {
   }
 
   return 'http://localhost:3000/.oidc/token';
+}
+
+function normalizeOptionalBaseUrl(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const url = new URL(value);
+  return url.toString().replace(/\/$/u, '');
 }
 
 /**
@@ -103,6 +118,8 @@ export function loadConfigFromEnv(): ApiContainerConfig {
         : undefined
     );
   const tunnelProfileState = resolveTunnelProfileState(process.env);
+  const secretCellCredentialVaultFactory = loadSecretCellCredentialVaultFactory(process.env);
+  const openAiGatewayBaseUrl = normalizeOptionalBaseUrl(process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL);
 
   return {
     edition,
@@ -117,6 +134,17 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     redisUrl: process.env.CSS_REDIS_CLIENT ?? process.env.REDIS_URL,
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
+    solidBaseUrl: process.env.CSS_BASE_URL,
+    gatewayLocatorSecret: process.env.XPOD_GATEWAY_LOCATOR_SECRET,
+    gatewayLocatorKeyId: process.env.XPOD_GATEWAY_LOCATOR_KEY_ID,
+    gatewayPreviousLocatorSecrets: parseGatewayPreviousLocatorSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
+    gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
+    gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
+    aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
+    secretCellCredentialVaultFactory,
+    aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
+    aiGatewayKimiClientId: process.env.XPOD_AI_GATEWAY_KIMI_CLIENT_ID,
+    aiGatewayProviderBaseUrls: openAiGatewayBaseUrl ? { openai: openAiGatewayBaseUrl } : undefined,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',
       mode: process.env.XPOD_INNGEST_MODE === 'spawn' || process.env.XPOD_INNGEST_MODE === 'managed'
@@ -170,6 +198,76 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     // Edge 节点管理 (cloud 模式)
     edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',
   };
+}
+
+function loadSecretCellCredentialVaultFactory(env: NodeJS.ProcessEnv): (() => CredentialVault) | undefined {
+  const activeKeyId = env.XPOD_SECRET_CELL_KEY_ID?.trim();
+  const activeKey = env.XPOD_SECRET_CELL_KEY;
+  const previousKeysJson = env.XPOD_SECRET_CELL_PREVIOUS_KEYS;
+  if (!activeKeyId && !activeKey && !previousKeysJson) {
+    return undefined;
+  }
+  if (!activeKeyId || !activeKey) {
+    throw new Error('XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY must be configured together');
+  }
+  assertSecretCellKeyId(activeKeyId, 'XPOD_SECRET_CELL_KEY_ID');
+
+  const keys = Object.create(null) as Record<string, Uint8Array>;
+  keys[activeKeyId] = parseDeploymentRootKeyConfig(activeKey);
+  if (previousKeysJson) {
+    let previous: unknown;
+    try {
+      previous = JSON.parse(previousKeysJson);
+    } catch {
+      throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must be a JSON object of keyId to base64 key');
+    }
+    if (!previous || typeof previous !== 'object' || Array.isArray(previous)) {
+      throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must be a JSON object of keyId to base64 key');
+    }
+    for (const [keyId, value] of Object.entries(previous as Record<string, unknown>)) {
+      if (typeof value !== 'string') {
+        throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must map non-empty keyIds to base64 keys');
+      }
+      assertSecretCellKeyId(keyId, 'XPOD_SECRET_CELL_PREVIOUS_KEYS keyId');
+      if (keyId === activeKeyId) {
+        throw new Error('XPOD_SECRET_CELL_PREVIOUS_KEYS must not redefine the active keyId');
+      }
+      keys[keyId] = parseDeploymentRootKeyConfig(value);
+    }
+  }
+
+  return () => new SecretCellCredentialVault({
+    vault: new SecretCellVault({
+      rootKeys: new DeploymentRootKeyProvider({ activeKeyId, keys }),
+    }),
+  });
+}
+
+function assertSecretCellKeyId(value: string, variable: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
+    throw new Error(`${variable} must be 1-128 safe key ID characters`);
+  }
+}
+
+function parseGatewayPreviousLocatorSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separator = entry.indexOf(':');
+      if (separator <= 0 || separator === entry.length - 1) {
+        throw new Error('XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS entries must be kid:secret');
+      }
+      return {
+        kid: entry.slice(0, separator),
+        secret: entry.slice(separator + 1),
+      };
+    });
+  return entries.length ? entries : undefined;
 }
 
 /**

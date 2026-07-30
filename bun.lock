@@ -20,7 +20,7 @@
         "@solid/community-server": "8.0.0-alpha.1",
         "@undefineds.co/drizzle-solid": "0.3.18",
         "@undefineds.co/extensions": "github:undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632",
-        "@undefineds.co/models": "0.2.46",
+        "@undefineds.co/models": "0.2.47",
         "abstract-level": "^1.0.4",
         "acme-client": "^5.1.3",
         "ai": "^6.0.6",
@@ -1515,7 +1515,7 @@
 
     "@undefineds.co/extensions": ["@undefineds.co/extensions@github:undefinedsco/extensions#4979425", {}, "undefinedsco-extensions-4979425"],
 
-    "@undefineds.co/models": ["@undefineds.co/models@0.2.46", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-bLXYoKjNTrM2RMBzusjOVurWjC7CABttDE7wLo7av0QkN8sUc6e0AXTwBkKvp/GT0G3udLVwT9CRQ3aCwpbI8g=="],
+    "@undefineds.co/models": ["@undefineds.co/models@0.2.47", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-rW5cob4Oaob8zgCzFBdy+acgHgf9Xv5nW+HAmnLdGC87y54fysWPuI+QMeZwtJ9vxFFsWGf9tIqHhl1uLxLm5w=="],
 
     "@vercel/oidc": ["@vercel/oidc@3.1.0", "", {}, "sha512-Fw28YZpRnA3cAHHDlkt7xQHiJ0fcL+NRcIqsocZQUSmbzeIKRpwttJjik5ZGanXP+vlA4SbTg+AbA3bP363l+w=="],
 

@@ -4,14 +4,18 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
 import type { WorkspaceRef } from '../../workspace/types';
-import { getPlatformApiBaseUrl } from '../../service/platform-ai-config';
 import { PACKAGE_ROOT } from '../../../runtime';
+import {
+  projectAnthropicCompatibleEnv,
+  projectOpenAiCompatibleEnv,
+  requireAiConnectionRuntimeConfig,
+} from '../../../runtime/safe-env';
 import { GitWorktreeService } from './GitWorktreeService';
 import { AcpRunner } from './AcpRunner';
 import { CodexRuntimeProjector } from './CodexRuntimeProjector';
 import type { ResolvedAgentConfig } from '../../../agents/config/types';
-import type { McpServerConfig } from '../../../agents/types';
-import { codexWireApi, getDefaultBaseUrl } from '../../service/provider-registry';
+import type { AIConnectionInvocationConfig, McpServerConfig } from '../../../agents/types';
+import { codexWireApi } from '../../service/provider-registry';
 import type {
   AcpRunnerType,
   AgentRuntimeConfig,
@@ -54,7 +58,7 @@ export class AcpAgentRuntime {
     const argv = this.resolveRunnerArgv(runnerType, config.runner.argv);
     const command = argv[0];
     const args = argv.slice(1);
-    const env = this.buildRunnerEnv(runnerType, threadId, workdir, config.agentConfig);
+    const env = this.buildRunnerEnv(runnerType, threadId, workdir, config.agentConfig, config.aiConnection);
     const runner = new AcpRunner();
     const queue = new AsyncPushQueue<AgentRuntimeEvent>();
 
@@ -325,26 +329,27 @@ export class AcpAgentRuntime {
     threadId: string,
     workdir: string,
     agentConfig?: ResolvedAgentConfig,
+    aiConnection?: AIConnectionInvocationConfig,
   ): Record<string, string | undefined> | undefined {
-    const defaultApiKey = agentConfig?.apiKey || process.env.DEFAULT_API_KEY?.trim();
-    const rawApiBase = agentConfig?.baseUrl || getPlatformApiBaseUrl();
-    const defaultModel = agentConfig?.model || process.env.DEFAULT_MODEL?.trim();
-
     if (type === 'codebuddy') {
       return undefined;
     }
 
+    const connection = requireAiConnectionRuntimeConfig({
+      baseUrl: aiConnection?.baseUrl,
+      apiKey: aiConnection?.gatewayKey,
+      model: aiConnection?.model ?? agentConfig?.model,
+    }, `${type} ACP runtime`);
     const home = this.getIsolatedHomeDir(type, threadId, workdir);
 
     if (type === 'codex') {
-      const defaultApiBase = rawApiBase || getDefaultBaseUrl();
       const codexHome = path.join(home, '.codex');
       this.codexProjector.project({
         codexHome,
-        baseUrl: defaultApiBase,
-        apiKey: defaultApiKey,
-        wireApi: codexWireApi(defaultApiBase),
-        model: defaultModel,
+        baseUrl: connection.baseUrl,
+        apiKey: connection.apiKey,
+        wireApi: codexWireApi(connection.baseUrl),
+        model: connection.model,
         agentConfig,
       });
       const env: Record<string, string | undefined> = {
@@ -354,49 +359,19 @@ export class AcpAgentRuntime {
         XDG_DATA_HOME: path.join(home, '.local', 'share'),
         XDG_CACHE_HOME: path.join(home, '.cache'),
         CODEX_HOME: codexHome,
+        ...projectOpenAiCompatibleEnv(connection),
       };
-      if (defaultApiKey) {
-        env.CODEX_API_KEY = defaultApiKey;
-        env.OPENAI_API_KEY = defaultApiKey;
-      }
-      env.OPENAI_BASE_URL = defaultApiBase;
-      env.OPENAI_API_BASE = defaultApiBase;
-      if (defaultModel) {
-        env.OPENAI_MODEL = defaultModel;
-        env.CODEX_MODEL = defaultModel;
-      }
       return env;
     }
 
-    const defaultApiBase = rawApiBase || getDefaultBaseUrl();
     const env: Record<string, string | undefined> = {
       HOME: home,
       XDG_CONFIG_HOME: path.join(home, '.config'),
       XDG_STATE_HOME: path.join(home, '.local', 'state'),
       XDG_DATA_HOME: path.join(home, '.local', 'share'),
       XDG_CACHE_HOME: path.join(home, '.cache'),
+      ...projectAnthropicCompatibleEnv(connection),
     };
-    const normalizedBase = defaultApiBase ? this.normalizeClaudeBaseUrl(defaultApiBase) : undefined;
-    const isOpenRouterLike =
-      (typeof normalizedBase === 'string' && normalizedBase.includes('openrouter.ai'));
-
-    if (defaultApiKey) {
-      if (isOpenRouterLike) {
-        env.ANTHROPIC_AUTH_TOKEN = defaultApiKey;
-        delete env.ANTHROPIC_API_KEY;
-      } else {
-        env.ANTHROPIC_API_KEY = defaultApiKey;
-        delete env.ANTHROPIC_AUTH_TOKEN;
-      }
-    }
-    if (normalizedBase) {
-      env.ANTHROPIC_BASE_URL = normalizedBase;
-    }
-    if (defaultModel) {
-      env.ANTHROPIC_DEFAULT_SONNET_MODEL = defaultModel;
-      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = defaultModel;
-      env.ANTHROPIC_DEFAULT_OPUS_MODEL = defaultModel;
-    }
     return env;
   }
 
@@ -405,16 +380,6 @@ export class AcpAgentRuntime {
     const root = path.join(os.tmpdir(), 'xpod-acp-home', type, hash);
     fs.mkdirSync(root, { recursive: true });
     return root;
-  }
-
-  private normalizeClaudeBaseUrl(baseUrl: string): string {
-    if (baseUrl.endsWith('/v1')) {
-      return baseUrl.slice(0, -3);
-    }
-    if (baseUrl.endsWith('/v1/')) {
-      return baseUrl.slice(0, -4);
-    }
-    return baseUrl;
   }
 
   private convertMcpServersForAcp(

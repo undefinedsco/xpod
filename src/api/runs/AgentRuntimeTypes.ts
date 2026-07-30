@@ -1,4 +1,5 @@
 import type { ResolvedAgentConfig } from '../../agents/config/types';
+import type { AIConnectionInvocationConfig } from '../../agents/types';
 import type { WorkspaceRef } from '../workspace/types';
 
 export type RunnerProtocol = 'pi' | 'acp';
@@ -46,11 +47,85 @@ export interface AgentRuntimeConfig {
     allowCustomArgv?: boolean;
   };
   /**
-   * Resolved agent configuration from /agents/{agentId}/AGENTS.md + .meta.
-   * When provided, credentials/model/MCP servers/system prompt come from here
-   * instead of DEFAULT_* environment variables.
+   * Resolved non-secret agent profile from /agents/{agentId}/AGENTS.md + .meta.
    */
   agentConfig?: ResolvedAgentConfig;
+  /**
+   * Invocation-scoped Xpod AI Connection. Model runners fail closed without it;
+   * raw Pod provider credentials must never be placed in agentConfig.
+   */
+  aiConnection?: AIConnectionInvocationConfig;
+}
+
+export type PersistedAgentRuntimeConfig = Omit<AgentRuntimeConfig, 'aiConnection'> & {
+  aiConnection?: Omit<AIConnectionInvocationConfig, 'gatewayKey'>;
+};
+
+/**
+ * Runtime config persisted with a Run is a non-secret binding description.
+ * The gateway key is restored from the current execution context on each
+ * initial or continuation invocation.
+ */
+export function toPersistedAgentRuntimeConfig(config: AgentRuntimeConfig): PersistedAgentRuntimeConfig {
+  return deepScrubGatewayKey(config) as PersistedAgentRuntimeConfig;
+}
+
+export function withInvocationAiConnection<TContext>(
+  config: AgentRuntimeConfig | PersistedAgentRuntimeConfig,
+  context: TContext | undefined,
+): AgentRuntimeConfig {
+  const persisted = toPersistedAgentRuntimeConfig(config as AgentRuntimeConfig);
+  const invocation = readInvocationAiConnection(context);
+  return {
+    ...persisted,
+    ...(invocation ? {
+      aiConnection: {
+        ...persisted.aiConnection,
+        ...invocation,
+      },
+    } : {}),
+  } as AgentRuntimeConfig;
+}
+
+export function deepScrubGatewayKey<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => deepScrubGatewayKey(item)) as T;
+  }
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return value;
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'gatewayKey') {
+      continue;
+    }
+    output[key] = deepScrubGatewayKey(item);
+  }
+  return output as T;
+}
+
+function readInvocationAiConnection<TContext>(context: TContext | undefined): AIConnectionInvocationConfig | undefined {
+  if (!context || typeof context !== 'object') {
+    return undefined;
+  }
+  const candidate = (context as Record<string, unknown>).aiConnection;
+  if (!candidate || typeof candidate !== 'object') {
+    return undefined;
+  }
+  const value = candidate as Record<string, unknown>;
+  if (
+    typeof value.baseUrl !== 'string'
+    || value.baseUrl.trim().length === 0
+    || typeof value.gatewayKey !== 'string'
+    || value.gatewayKey.trim().length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    baseUrl: value.baseUrl,
+    gatewayKey: value.gatewayKey,
+    ...(typeof value.model === 'string' && value.model.trim().length > 0 ? { model: value.model } : {}),
+  };
 }
 
 export type AgentRuntimeEvent =

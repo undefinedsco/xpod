@@ -267,14 +267,32 @@ export class ApiServer {
     const origin = request.headers.origin;
 
     if (this.corsOrigins.includes('*')) {
-      response.setHeader('Access-Control-Allow-Origin', '*');
+      response.setHeader('Access-Control-Allow-Origin', origin ?? '*');
+      if (origin) {
+        response.setHeader('Vary', 'Origin');
+      }
     } else if (origin && this.corsOrigins.includes(origin)) {
       response.setHeader('Access-Control-Allow-Origin', origin);
       response.setHeader('Vary', 'Origin');
     }
 
+    response.setHeader('Access-Control-Allow-Credentials', 'true');
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    response.setHeader('Access-Control-Allow-Headers', '*');
+    response.setHeader(
+      'Access-Control-Allow-Headers',
+      [
+        'Authorization',
+        'Content-Type',
+        'Accept',
+        'DPoP',
+        'Origin',
+        'X-Requested-With',
+        'If-Match',
+        'If-None-Match',
+        'Slug',
+        'Link',
+      ].join(', '),
+    );
     response.setHeader('Access-Control-Max-Age', '86400');
   }
 }

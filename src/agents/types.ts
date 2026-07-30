@@ -63,6 +63,21 @@ export interface AiCredential {
 }
 
 /**
+ * Invocation-scoped AI Connection configuration.
+ *
+ * Gateway key is an Xpod-issued runtime key for the current invocation. It is
+ * not the user's raw Pod provider secret.
+ */
+export interface AIConnectionInvocationConfig {
+  /** Xpod AI Connection endpoint, usually the local /v1 gateway URL */
+  baseUrl: string;
+  /** Xpod-issued gateway key for this invocation */
+  gatewayKey: string;
+  /** Optional model routed through the gateway */
+  model?: string;
+}
+
+/**
  * 供应商配置（Pod Provider + Agent runtime 的组合视图）
  */
 export interface ProviderConfig {
@@ -265,6 +280,8 @@ export interface BaseExecutorOptions {
   providerId: string;
   /** 凭证 */
   credential: AiCredential;
+  /** Invocation-scoped AI Connection runtime config */
+  aiConnection?: AIConnectionInvocationConfig;
   /** 供应商配置（可选，用于覆盖默认值） */
   providerConfig?: Partial<ProviderConfig>;
 }

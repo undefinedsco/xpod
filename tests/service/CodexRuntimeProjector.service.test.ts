@@ -23,7 +23,6 @@ describe('CodexRuntimeProjector', () => {
       displayName: 'Secretary',
       systemPrompt: 'Help.',
       executorType: 'codex',
-      apiKey: 'sk-test',
       model: 'gpt-test',
       enabled: true,
       mcpServers: {
@@ -65,5 +64,50 @@ describe('CodexRuntimeProjector', () => {
       .toEqual({ OPENAI_API_KEY: 'sk-test' });
     expect(fs.readFileSync(path.join(codexHome, 'skills', 'drizzle-solid', 'SKILL.md'), 'utf8'))
       .toBe('Use drizzle-solid.');
+  });
+
+  it('fails closed when AI Connection baseUrl or key is missing', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-codex-projector-missing-'));
+    tempDirs.push(root);
+
+    expect(() => new CodexRuntimeProjector().project({
+      codexHome: path.join(root, '.codex'),
+      apiKey: 'gw-key',
+      wireApi: 'responses',
+    })).toThrow(/AI Connection baseUrl/);
+
+    expect(() => new CodexRuntimeProjector().project({
+      codexHome: path.join(root, '.codex2'),
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      wireApi: 'responses',
+    })).toThrow(/AI Connection API key/);
+  });
+
+  it('surfaces required config and auth write errors without leaking the key', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-codex-projector-write-'));
+    tempDirs.push(root);
+    const codexHome = path.join(root, '.codex');
+    const filesystem = {
+      mkdirSync: () => undefined,
+      writeFileSync: (target: fs.PathOrFileDescriptor) => {
+        if (String(target).endsWith('auth.json')) {
+          throw new Error('disk denied');
+        }
+      },
+    };
+
+    expect(() => new CodexRuntimeProjector(filesystem).project({
+      codexHome,
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      apiKey: 'gw-secret-key',
+      wireApi: 'responses',
+    })).toThrow(/auth\.json.*disk denied/);
+
+    expect(() => new CodexRuntimeProjector(filesystem).project({
+      codexHome,
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      apiKey: 'gw-secret-key',
+      wireApi: 'responses',
+    })).not.toThrow(/gw-secret-key/);
   });
 });

@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import { getLoggerFor } from 'global-logger-factory';
 import type { Authenticator, AuthResult } from './Authenticator';
 import type { SolidAuthContext } from './AuthContext';
+import { extractAuthoritativeWebIdFromTokenResponse } from './TokenIdentity';
 
 /**
  * Interface for token cache
@@ -211,10 +212,7 @@ export class ClientCredentialsAuthenticator implements Authenticator {
       };
 
       // Extract webId from token response or decode from JWT
-      let webId = data.webid;
-      if (!webId && data.access_token) {
-        webId = this.extractWebIdFromJwt(data.access_token);
-      }
+      const webId = extractAuthoritativeWebIdFromTokenResponse(data);
 
       if (!webId) {
         return { success: false, error: 'Could not determine webId from token response' };
@@ -234,22 +232,6 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     } catch (error) {
       this.logger.error(`Token exchange error: ${error}`);
       return { success: false, error: 'Token exchange failed' };
-    }
-  }
-
-  /**
-   * Extract webId from JWT access token
-   */
-  private extractWebIdFromJwt(jwt: string): string | undefined {
-    try {
-      const parts = jwt.split('.');
-      if (parts.length !== 3) {
-        return undefined;
-      }
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
-      return payload.webid || payload.webId || payload.sub;
-    } catch {
-      return undefined;
     }
   }
 

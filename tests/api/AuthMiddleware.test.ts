@@ -49,4 +49,49 @@ describe('AuthMiddleware logging', () => {
 
     expect(stdout).not.toHaveBeenCalled();
   });
+
+  it('returns 401 for invalid credentials and 503 for authentication infrastructure failures', async () => {
+    const invalidResponse = createResponse();
+    const invalid = new AuthMiddleware({
+      authenticator: {
+        canAuthenticate: () => true,
+        authenticate: async () => ({
+          success: false,
+          error: 'Invalid gateway API key',
+          category: 'invalid_credentials',
+          statusCode: 401,
+        }),
+      },
+    });
+
+    await expect(invalid.process(createRequest(), invalidResponse)).resolves.toBe(false);
+    expect(invalidResponse.statusCode).toBe(401);
+    expect(JSON.parse(invalidResponse.end.mock.calls[0][0])).toEqual({
+      error: 'Unauthorized',
+      message: 'Invalid gateway API key',
+    });
+
+    const cause = new Error('pod token endpoint down');
+    const unavailableResponse = createResponse();
+    const unavailable = new AuthMiddleware({
+      authenticator: {
+        canAuthenticate: () => true,
+        authenticate: async () => ({
+          success: false,
+          error: 'Gateway API key authentication unavailable',
+          category: 'service_unavailable',
+          statusCode: 503,
+          cause,
+        }),
+      },
+    });
+
+    await expect(unavailable.process(createRequest(), unavailableResponse)).resolves.toBe(false);
+    expect(unavailableResponse.statusCode).toBe(503);
+    expect(JSON.parse(unavailableResponse.end.mock.calls[0][0])).toEqual({
+      error: 'Service Unavailable',
+      message: 'Authentication service unavailable',
+    });
+    expect(unavailableResponse.end.mock.calls[0][0]).not.toContain('pod token endpoint down');
+  });
 });

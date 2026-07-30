@@ -1,9 +1,29 @@
 import * as path from 'node:path';
-import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import { afterEach, describe, it, expect } from 'vitest';
 import { AcpAgentRuntime } from '../../src/api/chatkit/runtime/AcpAgentRuntime';
 
 describe('ACP Thread Runtime', () => {
   const workspaceRef = `file://localhost${process.cwd()}`;
+  const savedEnv: Record<string, string | undefined> = {};
+  const ambientProviderKeys = [
+    'OPENAI_API_KEY',
+    'OPENAI_BASE_URL',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_BASE_URL',
+    'DEFAULT_API_KEY',
+    'DEFAULT_API_BASE',
+  ];
+
+  afterEach(() => {
+    for (const key of ambientProviderKeys) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  });
 
   it('streams agent_message_chunk from ACP session/update notifications', async () => {
     const rt = new AcpAgentRuntime();
@@ -21,6 +41,8 @@ describe('ACP Thread Runtime', () => {
             protocol: 'acp',
             argv: [ 'node', agentPath ],
           },
+          agentConfig: testAgentConfig(),
+          aiConnection: testAiConnection(),
         },
       })
     ) {
@@ -50,6 +72,8 @@ describe('ACP Thread Runtime', () => {
             protocol: 'acp',
             argv: [ 'node', agentPath ],
           },
+          agentConfig: testAgentConfig(),
+          aiConnection: testAiConnection(),
         },
       })
     ) {
@@ -65,4 +89,119 @@ describe('ACP Thread Runtime', () => {
     expect(sawAuth).toBe(true);
     expect(out).toBe('ok');
   }, 20_000);
+
+  it('keeps raw Pod provider credentials out of Codex env, auth.json, and args', () => {
+    for (const key of ambientProviderKeys) {
+      savedEnv[key] = process.env[key];
+    }
+    process.env.OPENAI_API_KEY = 'ambient-openai';
+    process.env.OPENAI_BASE_URL = 'https://ambient-openai.example/v1';
+    process.env.ANTHROPIC_API_KEY = 'ambient-anthropic';
+    process.env.ANTHROPIC_BASE_URL = 'https://ambient-anthropic.example';
+    process.env.DEFAULT_API_KEY = 'ambient-default';
+    process.env.DEFAULT_API_BASE = 'https://ambient-default.example/v1';
+
+    const rt = new AcpAgentRuntime();
+    const rawProviderKey = 'raw-pod-provider-key';
+    const agentConfig = {
+      id: 'agent',
+      displayName: 'Agent',
+      systemPrompt: '',
+      executorType: 'codex',
+      apiKey: rawProviderKey,
+      baseUrl: 'https://raw-provider.example/v1',
+      model: 'linx',
+      mcpServers: {},
+      skills: [],
+      enabled: true,
+    };
+    const env = (rt as any).buildRunnerEnv(
+      'codex',
+      'thread-env',
+      process.cwd(),
+      agentConfig,
+      {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'gateway-key',
+        model: 'linx',
+      },
+    );
+    const args = (rt as any).resolveRunnerArgv('codex', [ 'node', 'runner.js' ]);
+    const authJson = fs.readFileSync(path.join(env.CODEX_HOME, 'auth.json'), 'utf8');
+
+    expect(env.AI_CONNECTION_BASE_URL).toBe('http://127.0.0.1:3000/v1');
+    expect(env.AI_CONNECTION_API_KEY).toBe('gateway-key');
+    expect(env.OPENAI_BASE_URL).toBe('http://127.0.0.1:3000/v1');
+    expect(env.OPENAI_API_KEY).toBe('gateway-key');
+    expect(env.DEFAULT_API_KEY).toBeUndefined();
+    expect(env.DEFAULT_API_BASE).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(JSON.stringify(env)).not.toContain(rawProviderKey);
+    expect(authJson).toContain('gateway-key');
+    expect(authJson).not.toContain(rawProviderKey);
+    expect(JSON.stringify(args)).not.toContain(rawProviderKey);
+
+    const claudeEnv = (rt as any).buildRunnerEnv(
+      'claude',
+      'thread-env',
+      process.cwd(),
+      agentConfig,
+      {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'gateway-key',
+        model: 'linx',
+      },
+    );
+    expect(claudeEnv.ANTHROPIC_API_KEY).toBe('gateway-key');
+    expect(claudeEnv.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3000');
+    expect(JSON.stringify(claudeEnv)).not.toContain(rawProviderKey);
+  });
+
+  it('fails ACP model runners closed when only a raw Pod provider config is present', () => {
+    const rt = new AcpAgentRuntime();
+    expect(() => (rt as any).buildRunnerEnv('codex', 'thread-missing', process.cwd(), {
+      id: 'agent',
+      displayName: 'Agent',
+      systemPrompt: '',
+      executorType: 'codex',
+      apiKey: 'raw-pod-provider-key',
+      baseUrl: 'https://raw-provider.example/v1',
+      mcpServers: {},
+      skills: [],
+      enabled: true,
+    })).toThrow(/AI Connection/);
+    expect(() => (rt as any).buildRunnerEnv('claude', 'thread-missing', process.cwd(), {
+      id: 'agent',
+      displayName: 'Agent',
+      systemPrompt: '',
+      executorType: 'claude',
+      apiKey: 'raw-pod-provider-key',
+      baseUrl: 'https://raw-provider.example/v1',
+      mcpServers: {},
+      skills: [],
+      enabled: true,
+    })).toThrow(/AI Connection/);
+  });
+
+  function testAgentConfig() {
+    return {
+      id: 'agent-test',
+      displayName: 'Agent Test',
+      systemPrompt: '',
+      executorType: 'codex' as const,
+      model: 'linx',
+      mcpServers: {},
+      skills: [],
+      enabled: true,
+    };
+  }
+
+  function testAiConnection() {
+    return {
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      gatewayKey: 'gateway-key',
+      model: 'linx',
+    };
+  }
 });

@@ -12,6 +12,7 @@ import type {
   Attachment,
   Page,
   StoreItemType,
+  ClientToolCallItem,
 } from './types';
 import { generateId, getThreadIdFromRef, getThreadParent, nowTimestamp } from './types';
 import {
@@ -24,6 +25,7 @@ import {
   type RunStepRecordData,
   type RunStore,
 } from '../runs/store';
+import { RunStatus } from '../runs/schema';
 import { buildTaskResourceId, type TaskListOptions, type TaskRecordData, type TaskStore } from '../tasks/store';
 import {
   TASK_AUTH_CREDENTIAL_SERVICE,
@@ -35,6 +37,13 @@ import {
  * Context type for store operations (generic)
  */
 export type StoreContext = Record<string, unknown>;
+
+export interface ClientToolContinuationClaim {
+  claimId: string;
+  threadRef: ThreadRef;
+  item: ClientToolCallItem;
+  run: RunRecordData;
+}
 
 /**
  * Abstract Store interface
@@ -56,6 +65,21 @@ export interface ChatKitStore<TContext = StoreContext> extends Partial<RunStore<
   saveItem(thread: ThreadRef, item: ThreadItem, context: TContext): Promise<void>;
   loadItem(thread: ThreadRef, itemId: string, context: TContext): Promise<ThreadItem>;
   deleteThreadItem(thread: ThreadRef, itemId: string, context: TContext): Promise<void>;
+  claimClientToolContinuation?(
+    input: {
+      threadRef: ThreadRef;
+      itemId: string;
+      claimId: string;
+      leaseExpiresAt: number;
+      now: number;
+    },
+    context: TContext,
+  ): Promise<ClientToolContinuationClaim | undefined>;
+  releaseClientToolContinuation?(
+    claim: ClientToolContinuationClaim,
+    now: number,
+    context: TContext,
+  ): Promise<boolean>;
 
   // Attachment operations (optional)
   saveAttachment?(attachment: Attachment, context: TContext): Promise<void>;
@@ -256,6 +280,78 @@ export class InMemoryStore<TContext = StoreContext> implements ChatKitStore<TCon
     if (threadItems) {
       threadItems.delete(itemId);
     }
+  }
+
+  async claimClientToolContinuation(
+    input: {
+      threadRef: ThreadRef;
+      itemId: string;
+      claimId: string;
+      leaseExpiresAt: number;
+      now: number;
+    },
+    context: TContext,
+  ): Promise<ClientToolContinuationClaim | undefined> {
+    const item = await this.loadItem(input.threadRef, input.itemId, context);
+    if (item.type !== 'client_tool_call' || item.status !== 'pending') {
+      return undefined;
+    }
+    const runId = item.metadata?.runId;
+    if (typeof runId !== 'string') {
+      return undefined;
+    }
+    const key = this.getRunKey(runId, context);
+    const run = this.runs.get(key);
+    const waitingTool = run?.metadata?.waitingTool;
+    if (
+      !run
+      || run.status !== RunStatus.WAITING_INPUT
+      || (run.leaseOwner && run.leaseExpiresAt && run.leaseExpiresAt > input.now)
+      || typeof waitingTool !== 'object'
+      || (waitingTool as { itemId?: unknown }).itemId !== item.id
+    ) {
+      return undefined;
+    }
+    const claimed = {
+      ...run,
+      leaseOwner: input.claimId,
+      leaseExpiresAt: input.leaseExpiresAt,
+      heartbeatAt: input.now,
+      updatedAt: input.now,
+    };
+    this.runs.set(key, claimed);
+    return {
+      claimId: input.claimId,
+      threadRef: input.threadRef,
+      item: { ...item },
+      run: { ...claimed },
+    };
+  }
+
+  async releaseClientToolContinuation(
+    claim: ClientToolContinuationClaim,
+    now: number,
+    context: TContext,
+  ): Promise<boolean> {
+    const key = this.getRunKey(claim.run.id, context);
+    const run = this.runs.get(key);
+    if (!run || run.leaseOwner !== claim.claimId) {
+      return false;
+    }
+    this.runs.set(key, {
+      ...claim.run,
+      status: RunStatus.WAITING_INPUT,
+      leaseOwner: undefined,
+      leaseExpiresAt: undefined,
+      heartbeatAt: now,
+      updatedAt: now,
+    });
+    await this.saveItem(claim.threadRef, {
+      ...claim.item,
+      status: 'pending',
+      output: undefined,
+    }, context);
+    return true;
   }
 
   // Attachment operations

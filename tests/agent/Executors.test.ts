@@ -8,7 +8,7 @@
  * 注意：OpenAI 和 Gemini 没有完整的 Agent SDK，已移除支持。
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
 
 // Mock CodeBuddy Agent SDK
 vi.mock('@tencent-ai/agent-sdk', () => ({
@@ -50,7 +50,7 @@ vi.mock('@tencent-ai/agent-sdk', () => ({
 
 // Mock Claude Agent SDK
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  query: vi.fn().mockImplementation(({ prompt }: { prompt: string }) => {
+  query: vi.fn(({ prompt }: { prompt: string }) => {
     const generator = (async function* () {
       // 流式事件
       yield {
@@ -126,6 +126,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   }),
 }));
 
+import * as claudeAgentSdk from '@anthropic-ai/claude-agent-sdk';
 import type { ExecutorConfig, BaseExecutorOptions, AiCredential } from '../../src/agents/types';
 
 // 动态导入以确保 mock 生效
@@ -182,6 +183,10 @@ describe('Executor With Options Constructor', () => {
   const options: BaseExecutorOptions = {
     providerId: 'custom-provider',
     credential,
+    aiConnection: {
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      gatewayKey: 'gateway-key',
+    },
   };
 
   it('CodeBuddyExecutor should accept options', () => {
@@ -270,14 +275,24 @@ describe('ClaudeExecutor', () => {
 
   const credential: AiCredential = {
     providerId: 'anthropic',
-    apiKey: 'test-claude-key',
+    apiKey: 'raw-provider-key',
+    baseUrl: 'https://raw-provider.example/v1',
+  };
+  const aiConnection = {
+    baseUrl: 'http://127.0.0.1:3000/v1',
+    gatewayKey: 'gateway-key',
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.DEFAULT_API_KEY;
+    delete process.env.DEFAULT_API_BASE;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_BASE_URL;
     executor = new ClaudeExecutor({
-      providerId: 'anthropic',
+      providerId: 'xpod',
       credential,
+      aiConnection,
     });
   });
 
@@ -287,6 +302,34 @@ describe('ClaudeExecutor', () => {
 
   it('should return api-key auth type', () => {
     expect(executor.getAuthType()).toBe('api-key');
+  });
+
+  it('should fail closed without invocation-scoped AI Connection', async () => {
+    const executorWithoutConnection = new ClaudeExecutor({
+      providerId: 'anthropic',
+      credential,
+    });
+    await expect(executorWithoutConnection.checkAuthentication()).rejects.toThrow(/AI Connection/);
+  });
+
+  it('should project only scoped AI Connection credentials into Claude SDK env', async () => {
+    process.env.DEFAULT_API_KEY = 'ambient-default-key';
+    process.env.DEFAULT_API_BASE = 'https://ambient-default.example/v1';
+    process.env.ANTHROPIC_API_KEY = 'ambient-anthropic-key';
+    process.env.ANTHROPIC_BASE_URL = 'https://ambient-anthropic.example';
+
+    const messages: any[] = [];
+    for await (const msg of executor.execute(testConfig, 'Hello')) {
+      messages.push(msg);
+    }
+
+    const queryOptions = (claudeAgentSdk.query as ReturnType<typeof vi.fn>).mock.calls[0][0].options;
+    expect(queryOptions.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3000');
+    expect(queryOptions.env.ANTHROPIC_API_KEY).toBe('gateway-key');
+    expect(queryOptions.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(queryOptions.env.DEFAULT_API_KEY).toBeUndefined();
+    expect(queryOptions.env.DEFAULT_API_BASE).toBeUndefined();
+    expect(JSON.stringify(queryOptions.env)).not.toContain('raw-provider-key');
   });
 
   it('should execute and yield messages', async () => {
@@ -359,10 +402,15 @@ describe('AgentExecutorFactory', () => {
 
   it('should create ClaudeExecutor', () => {
     const executor = factory.createExecutor('claude', {
-      providerId: 'anthropic',
+      providerId: 'xpod',
       credential: { providerId: 'anthropic', apiKey: 'key' },
+      aiConnection: {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'gateway-key',
+      },
     });
     expect(executor.executorType).toBe('claude');
+    expect(executor.providerId).toBe('xpod');
   });
 
   it('should throw for unsupported executor type (openai)', () => {
@@ -396,9 +444,12 @@ describe('AgentExecutorFactory', () => {
     const executor = factory.createDirect('claude', 'my-claude', {
       providerId: 'my-claude',
       apiKey: 'direct-key',
+    }, {
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      gatewayKey: 'gateway-key',
     });
     expect(executor.executorType).toBe('claude');
-    expect(executor.providerId).toBe('my-claude');
+    expect(executor.providerId).toBe('xpod');
   });
 });
 
@@ -420,8 +471,12 @@ describe('Usage Statistics', () => {
 
   it('ClaudeExecutor should return usage stats', async () => {
     const executor = new ClaudeExecutor({
-      providerId: 'anthropic',
+      providerId: 'xpod',
       credential: { providerId: 'anthropic', apiKey: 'key' },
+      aiConnection: {
+        baseUrl: 'http://127.0.0.1:3000/v1',
+        gatewayKey: 'gateway-key',
+      },
     });
     const result = await executor.executeAndWait(testConfig, 'Test');
 

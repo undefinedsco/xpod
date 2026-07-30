@@ -30,6 +30,7 @@ import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
+import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
@@ -97,6 +98,10 @@ function registerSharedRoutes(
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
+  const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
+  const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
+  const providerConnectService = container.resolve('providerConnectService');
+  const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
 
   registerEdgeNodeSignalRoutes(server, {
@@ -110,7 +115,8 @@ function registerSharedRoutes(
     apiBaseUrl: config.cloudApiEndpoint ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
-  registerChatRoutes(server, { chatService });
+  const aiGatewayService = container.resolve('aiGatewayService');
+  registerChatRoutes(server, { chatService, aiGatewayService });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
@@ -123,6 +129,13 @@ function registerSharedRoutes(
   });
   registerRdfStatsRoutes(server, {
     rdfStorageStatsService,
+  });
+  registerAiGatewayManagementRoutes(server, {
+    repository: gatewayAccessKeyRepository,
+    deployment: config.edition,
+    connectService: providerConnectService,
+    quotaService: providerQuotaService,
+    servicePrincipal: gatewayInternalPodAccess,
   });
 
   // Quota & Usage API (Business 对接)

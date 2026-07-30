@@ -1,7 +1,7 @@
 /**
  * DefaultAgent availability smoke tests.
  *
- * Real DefaultAgent E2E (needs DEFAULT_API_KEY and local Claude CLI)
+ * Real DefaultAgent E2E (needs AI_CONNECTION_API_KEY and local Claude CLI)
  * moved to tests/manual/DefaultAgent.manual.test.ts.
  */
 
@@ -13,7 +13,7 @@ import {
 } from "../../src/api/chatkit/default-agent";
 
 describe("DefaultAgent Availability", () => {
-  it("should correctly report availability based on platform API config", () => {
+  it("should correctly report availability based on invocation AI Connection config", () => {
     const originalKey = process.env.DEFAULT_API_KEY;
     const originalBase = process.env.DEFAULT_API_BASE;
     const originalProvider = process.env.DEFAULT_PROVIDER;
@@ -25,11 +25,15 @@ describe("DefaultAgent Availability", () => {
       expect(isDefaultAgentAvailable()).toBe(false);
 
       process.env.DEFAULT_API_KEY = "test-key";
-      expect(isDefaultAgentAvailable()).toBe(true);
+      process.env.DEFAULT_API_BASE = "https://raw-provider.example/v1";
+      expect(isDefaultAgentAvailable()).toBe(false);
 
-      delete process.env.DEFAULT_API_KEY;
-      process.env.DEFAULT_API_BASE = "https://ai-gateway.example.com/v1";
-      expect(isDefaultAgentAvailable()).toBe(true);
+      expect(isDefaultAgentAvailable({
+        connection: {
+          baseUrl: "http://127.0.0.1:3000/v1",
+          gatewayKey: "gateway-key",
+        },
+      })).toBe(true);
     } finally {
       if (originalKey) {
         process.env.DEFAULT_API_KEY = originalKey;
@@ -51,9 +55,16 @@ describe("DefaultAgent Availability", () => {
 
 
   it("should return correct default config", () => {
-    const config = getDefaultAgentConfig();
+    const config = getDefaultAgentConfig({
+      connection: {
+        baseUrl: "http://127.0.0.1:3000/v1",
+        gatewayKey: "gateway-key",
+      },
+      model: "linx",
+    });
 
-    expect(config.provider).toBe(process.env.DEFAULT_PROVIDER || "undefineds");
-    expect(config.model).toBe(process.env.DEFAULT_MODEL || "linx-lite");
+    expect(config.connection?.baseUrl).toBe("http://127.0.0.1:3000/v1");
+    expect(config.connection?.gatewayKey).toBe("gateway-key");
+    expect(config.model).toBe("linx");
   });
 });

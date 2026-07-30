@@ -16,7 +16,14 @@
 import { getLoggerFor } from 'global-logger-factory';
 import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
 import { selectAIConfigCredential } from '@undefineds.co/models';
-import type { IAgentExecutor, ExecutorType, AiCredential, ProviderConfig, BaseExecutorOptions } from './types';
+import type {
+  IAgentExecutor,
+  ExecutorType,
+  AiCredential,
+  ProviderConfig,
+  BaseExecutorOptions,
+  AIConnectionInvocationConfig,
+} from './types';
 import { Provider } from '../ai/schema/provider';
 import { Model } from '../ai/schema/model';
 import { Credential } from '../credential/schema/tables';
@@ -76,6 +83,7 @@ export class AgentExecutorFactory {
     runtimeKind: ExecutorType,
     authenticatedFetch: typeof fetch,
     webId?: string,
+    aiConnection?: AIConnectionInvocationConfig,
   ): Promise<IAgentExecutor | null> {
     try {
       const session = {
@@ -116,32 +124,43 @@ export class AgentExecutorFactory {
         return null;
       }
 
+      if (runtimeKind === 'claude' && !aiConnection) {
+        this.logger.debug(`AI Connection invocation config is required for runtime kind: ${runtimeKind}`);
+        return null;
+      }
+
       // 3. 构建凭证对象
       const aiCredential: AiCredential = {
-        providerId: selection.providerId,
-        apiKey: selection.apiKey,
-        baseUrl: selection.baseUrl,
-        proxyUrl: selection.proxyUrl,
-        projectId: (selection.credential as any).projectId ?? undefined,
-        organizationId: (selection.credential as any).organizationId ?? undefined,
+        providerId: runtimeKind === 'claude' ? 'xpod' : selection.providerId,
+        apiKey: runtimeKind === 'claude' ? '' : selection.apiKey,
+        baseUrl: runtimeKind === 'claude' ? aiConnection?.baseUrl : selection.baseUrl,
+        proxyUrl: runtimeKind === 'claude' ? undefined : selection.proxyUrl,
+        projectId: runtimeKind === 'claude' ? undefined : (selection.credential as any).projectId ?? undefined,
+        organizationId: runtimeKind === 'claude' ? undefined : (selection.credential as any).organizationId ?? undefined,
       };
 
       // 4. 构建供应商配置
       const defaultModel = await this.resolveModelId(db, provider.defaultModel ?? provider.hasModel);
       const providerConfig: ProviderConfig = {
-        id: provider.id,
-        displayName: provider.displayName ?? provider.id,
+        id: runtimeKind === 'claude' ? 'xpod' : provider.id,
+        displayName: runtimeKind === 'claude' ? 'Xpod AI Connection' : provider.displayName ?? provider.id,
         executorType: runtimeKind,
-        baseUrl: provider.baseUrl ?? undefined,
-        defaultModel,
+        baseUrl: runtimeKind === 'claude' ? aiConnection?.baseUrl : provider.baseUrl ?? undefined,
+        defaultModel: aiConnection?.model ?? defaultModel,
         enabled: provider.enabled === 'true',
       };
 
       // 5. 创建执行器
       return this.createExecutor(runtimeKind, {
-        providerId,
+        providerId: runtimeKind === 'claude' ? 'xpod' : providerId,
         credential: aiCredential,
         providerConfig,
+        ...(aiConnection ? {
+          aiConnection: {
+            ...aiConnection,
+            model: aiConnection.model ?? defaultModel,
+          },
+        } : {}),
       });
     } catch (error) {
       this.logger.error(`Failed to create executor for provider ${providerId}:`, error);
@@ -238,10 +257,14 @@ export class AgentExecutorFactory {
     executorType: ExecutorType,
     providerId: string,
     credential: AiCredential,
+    aiConnection?: AIConnectionInvocationConfig,
   ): IAgentExecutor {
     return this.createExecutor(executorType, {
-      providerId,
-      credential,
+      providerId: executorType === 'claude' && aiConnection ? 'xpod' : providerId,
+      credential: executorType === 'claude' && aiConnection
+        ? { providerId: 'xpod', apiKey: '', baseUrl: aiConnection.baseUrl }
+        : credential,
+      ...(aiConnection ? { aiConnection } : {}),
     });
   }
 }

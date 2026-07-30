@@ -40,12 +40,10 @@ describe('AiHandler Integration (Responses & Messages)', () => {
   let server: ApiServer;
   let baseUrl: string;
 
-  const chatService = {
+  const aiGatewayService = {
     complete: vi.fn(),
-    stream: vi.fn(),
+    execute: vi.fn(),
     listModels: vi.fn(),
-    responses: vi.fn(),
-    messages: vi.fn(),
   };
 
 
@@ -54,17 +52,15 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     baseUrl = 'http://localhost:' + port;
     server = new ApiServer({ port, authMiddleware });
     registerChatRoutes(server, {
-      chatService: chatService as any,
+      aiGatewayService: aiGatewayService as any,
     });
     await server.start();
   });
 
   beforeEach(() => {
-    chatService.complete.mockReset();
-    chatService.stream.mockReset();
-    chatService.listModels.mockReset();
-    chatService.responses.mockReset();
-    chatService.messages.mockReset();
+    aiGatewayService.complete.mockReset();
+    aiGatewayService.execute.mockReset();
+    aiGatewayService.listModels.mockReset();
   });
 
   afterAll(async () => {
@@ -72,7 +68,7 @@ describe('AiHandler Integration (Responses & Messages)', () => {
   });
 
   it('should handle POST /v1/responses', async () => {
-    chatService.responses.mockResolvedValue({ id: 'resp-1', object: 'response' });
+    aiGatewayService.complete.mockResolvedValue({ id: 'resp-1', object: 'response' });
 
     const response = await fetch(baseUrl + '/v1/responses', {
       method: 'POST',
@@ -83,11 +79,14 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data).toEqual({ id: 'resp-1', object: 'response' });
-    expect(chatService.responses).toHaveBeenCalledWith({ prompt: '我的 key 是 sk-test-12345678901234567890' }, expect.anything());
+    expect(aiGatewayService.complete).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'responses',
+      body: { prompt: '我的 key 是 sk-test-12345678901234567890' },
+    }));
   });
 
   it('should preserve optional vector_store_ids for downstream service handling', async () => {
-    chatService.responses.mockResolvedValue({ id: 'resp-2', object: 'response' });
+    aiGatewayService.complete.mockResolvedValue({ id: 'resp-2', object: 'response' });
 
     const response = await fetch(baseUrl + '/v1/responses', {
       method: 'POST',
@@ -100,15 +99,18 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(chatService.responses).toHaveBeenCalledWith({
-      model: 'linx-lite',
-      input: 'hello',
-      vector_store_ids: ['vs_123'],
-    }, expect.anything());
+    expect(aiGatewayService.complete).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'responses',
+      body: {
+        model: 'linx-lite',
+        input: 'hello',
+        vector_store_ids: ['vs_123'],
+      },
+    }));
   });
 
   it('should handle POST /v1/messages', async () => {
-    chatService.messages.mockResolvedValue({ id: 'msg-1', role: 'assistant' });
+    aiGatewayService.complete.mockResolvedValue({ id: 'msg-1', role: 'assistant' });
 
     const response = await fetch(baseUrl + '/v1/messages', {
       method: 'POST',
@@ -119,43 +121,16 @@ describe('AiHandler Integration (Responses & Messages)', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data).toEqual({ id: 'msg-1', role: 'assistant' });
-    expect(chatService.messages).toHaveBeenCalledWith({ role: 'user', content: '保存一下 key sk-test-abcdefghijk1234567890' }, expect.anything());
+    expect(aiGatewayService.complete).toHaveBeenCalledWith(expect.objectContaining({
+      protocol: 'anthropic',
+      body: { role: 'user', content: '保存一下 key sk-test-abcdefghijk1234567890' },
+    }));
   });
 });
 
-describe('AiHandler Integration (Not Implemented)', () => {
-  let server: ApiServer;
-  let baseUrl: string;
-
-  beforeAll(async () => {
-    const port = await getFreePort();
-    baseUrl = 'http://localhost:' + port;
-    server = new ApiServer({ port, authMiddleware });
-    registerChatRoutes(server, { chatService: {} as any }); // No responses/messages methods
-    await server.start();
-  });
-
-  afterAll(async () => {
-    await server.stop();
-  });
-
-  it('should return 501 if responses is not implemented', async () => {
-    const response = await fetch(baseUrl + '/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
-      body: JSON.stringify({}),
-    });
-
-    expect(response.status).toBe(501);
-  });
-
-  it('should return 501 if messages is not implemented', async () => {
-    const response = await fetch(baseUrl + '/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-token' },
-      body: JSON.stringify({}),
-    });
-
-    expect(response.status).toBe(501);
+describe('AiHandler Integration (registration contract)', () => {
+  it('requires AiGatewayService at registration time', () => {
+    const server = new ApiServer({ port: 0, authMiddleware });
+    expect(() => registerChatRoutes(server, {})).toThrow(/AiGatewayService/);
   });
 });

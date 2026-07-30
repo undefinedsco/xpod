@@ -11,6 +11,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { Sandbox, SandboxConfig, SandboxResult } from './types';
 import { BubblewrapSandbox } from './BubblewrapSandbox';
 import { MacOSSandbox } from './MacOSSandbox';
+import { sanitizeRuntimeEnv } from '../../runtime/safe-env';
 
 export * from './types';
 export { BubblewrapSandbox } from './BubblewrapSandbox';
@@ -29,7 +30,7 @@ class NoSandbox implements Sandbox {
     const childProcess = spawn(config.command, config.args, {
       cwd: config.workdir,
       env: {
-        ...process.env,
+        ...sanitizeRuntimeEnv(process.env),
         ...config.env,
         TERM: 'xterm-256color',
       },

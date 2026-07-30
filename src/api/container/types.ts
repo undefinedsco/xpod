@@ -7,6 +7,7 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
+import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -35,6 +36,16 @@ import type { PodMatrixStore } from '../matrix';
 import type { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import type { AuthMode } from '../../authorization/AuthMode';
 import type { RdfEngineLike } from '../../storage/rdf';
+import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
+import type { ProviderConnectService } from '../ai-gateway/connect';
+import type { ProviderQuotaService } from '../ai-gateway/quota';
+import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiGatewayService';
+import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
+import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
+import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
+import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 
 /**
  * 容器配置
@@ -94,6 +105,27 @@ export interface ApiContainerConfig {
 
   /** CSS Token 端点 */
   cssTokenEndpoint: string;
+  solidBaseUrl?: string;
+
+  /** Gateway locator encryption secret. Internal platform secret; not a user/provider AI credential. */
+  gatewayLocatorSecret?: string;
+  gatewayLocatorKeyId?: string;
+  gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
+
+  /** Internal service client used to read user-owned private Pod gateway-key hashes. */
+  gatewayInternalClientId?: string;
+  gatewayInternalClientSecret?: string;
+
+  /** AI Provider Connect is disabled by default for backwards-compatible startup. */
+  aiGatewayConnectEnabled?: boolean;
+  /** Platform signing secret for short-lived provider Connect attempts. */
+  aiGatewayConnectSigningSecret?: string;
+  /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
+  aiGatewayKimiClientId?: string;
+  /** Generic Pod SecretCell credential vault factory, configured by Xpod operations. */
+  secretCellCredentialVaultFactory?: () => CredentialVault;
+  /** Explicit provider endpoint overrides for controlled deployments and local E2E fixtures. */
+  aiGatewayProviderBaseUrls?: Partial<Record<'openai', string>>;
 
   /** 子域名功能配置 (cloud 模式) */
   subdomain?: {
@@ -188,6 +220,17 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
+  gatewayInternalPodAccess: ClientCredentialsInternalPodAccessTokenProvider;
+  gatewayAccessKeyRepository: GatewayAccessKeyRepository;
+  invocationTokenCodec: InvocationTokenCodec;
+  aiConnectionInvocationKeyIssuer: AiConnectionInvocationKeyIssuer;
+  providerConnectService: ProviderConnectService;
+  providerQuotaService?: ProviderQuotaService;
+  gatewayProviderRegistry: GatewayProviderRegistry;
+  gatewayCredentialStore: GatewayCredentialStore;
+  gatewayRuntimeRegistry: ProviderRuntimeRegistry;
+  gatewaySessionAffinityStore: SessionAffinityStore;
+  aiGatewayService: AiGatewayService;
 
   // 业务服务
   chatService: VercelChatService;

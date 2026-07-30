@@ -2,7 +2,32 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { loadConfigFromEnv } from '../../../src/api/container';
+import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig } from '../../../src/api/container';
+
+function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerConfig {
+  return {
+    edition: 'local',
+    port: 3001,
+    host: '127.0.0.1',
+    authMode: 'acp',
+    databaseUrl: ':memory:',
+    corsOrigins: ['*'],
+    cssTokenEndpoint: 'https://issuer.example/.oidc/token',
+    gatewayLocatorSecret: 'locator-secret',
+    gatewayInternalClientId: 'internal-client',
+    gatewayInternalClientSecret: 'internal-secret',
+    ...overrides,
+  };
+}
+
+function testCredentialVault(): any {
+  return {
+    seal: async () => ({ algorithm: 'test', keyId: 'test', wrappedDek: 'test', ciphertext: 'test', iv: 'test' }),
+    open: async () => ({ apiKey: 'sk-test' }),
+    needsRewrap: () => false,
+    rewrap: async (secret: unknown) => secret,
+  };
+}
 
 describe('loadConfigFromEnv', () => {
   const originalEnv = { ...process.env };
@@ -30,6 +55,52 @@ describe('loadConfigFromEnv', () => {
     const config = loadConfigFromEnv();
 
     expect(config.serviceToken).toBe('svc-local-config-token');
+  });
+
+  it('loads an explicit OpenAI gateway fixture base URL for local E2E runs', () => {
+    process.env.XPOD_EDITION = 'local';
+    process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
+    process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL = 'http://127.0.0.1:48111/v1/';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
+  });
+
+  it('constructs disabled provider Connect without eagerly requiring internal service credentials', async () => {
+    const service = createApiContainer(baseConfig({
+      gatewayInternalClientId: undefined,
+      gatewayInternalClientSecret: undefined,
+      aiGatewayConnectEnabled: false,
+    })).resolve('providerConnectService');
+
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({ status: 'unsupported' });
+  });
+
+  it('injects one singleton internal Pod access provider into all gateway services that need Pod access', () => {
+    const container = createApiContainer(baseConfig({
+      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
+      aiGatewayConnectEnabled: true,
+      aiGatewayConnectSigningSecret: 'connect-signing-secret',
+      secretCellCredentialVaultFactory: testCredentialVault,
+    }));
+
+    const internalPodAccess = container.resolve('gatewayInternalPodAccess');
+    const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository') as any;
+    const providerConnectService = container.resolve('providerConnectService') as any;
+    const gatewayCredentialStore = container.resolve('gatewayCredentialStore') as any;
+    const providerQuotaService = container.resolve('providerQuotaService') as any;
+
+    expect(gatewayAccessKeyRepository.internalPodAccess).toBe(internalPodAccess);
+    expect(providerConnectService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
+    expect(gatewayCredentialStore.internalPodAccess).toBe(internalPodAccess);
+    expect(providerQuotaService.repository.internalPodAccess).toBe(internalPodAccess);
+    expect(providerQuotaService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {

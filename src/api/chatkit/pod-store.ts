@@ -10,9 +10,13 @@
  *     #{threadId}                     # Thread (sioc:Thread, sioc:has_parent)
  *   {yyyy}/{MM}/{dd}/messages.ttl     # Messages (meeting:Message)
  */
-import { drizzle, eq, and } from '@undefineds.co/drizzle-solid';
+import { drizzle, eq, and, asc, isNull } from '@undefineds.co/drizzle-solid';
 import { getLoggerFor } from 'global-logger-factory';
-import type { ChatKitStore, StoreContext } from './store';
+import type {
+  ChatKitStore,
+  ClientToolContinuationClaim,
+  StoreContext,
+} from './store';
 import type {
   ThreadMetadata,
   ThreadRef,
@@ -37,6 +41,7 @@ import {
 import {
   Run,
   RunStep,
+  RunStatus,
   type RunRecord,
   type RunStepRecord,
 } from '../runs/schema';
@@ -78,7 +83,6 @@ import { defaultBaseUrlForProvider, defaultEmbeddingModelForProvider } from '../
 import { Credential } from '../../credential/schema/tables';
 import { ServiceType, CredentialStatus } from '../../credential/schema/types';
 import {
-  messageRepository,
   normalizeAIConfigModelId,
   normalizeAIConfigProviderId,
   normalizeAIConfigResourceId,
@@ -1343,9 +1347,11 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
 
     const resolvedThread = await this.resolveThreadRef(thread, context);
 
-    const records = await messageRepository.list(db, {
-      thread: resolvedThread.thread,
-    }) as Array<{
+    const records = await db.select()
+      .from(Message)
+      .where(eq(Message.thread, resolvedThread.thread))
+      .orderBy(asc(Message.createdAt as any))
+      .execute() as Array<{
       id?: string | null;
       chat?: string | null;
       thread?: string | null;
@@ -2162,6 +2168,105 @@ WHERE { ${deletePatterns.join(' ')} }
 
     const claimed = await this.loadRun(input.runId, context);
     return claimed.leaseOwner === input.leaseOwner ? claimed : undefined;
+  }
+
+  async claimClientToolContinuation(
+    input: {
+      threadRef: ThreadRef;
+      itemId: string;
+      claimId: string;
+      leaseExpiresAt: number;
+      now: number;
+    },
+    context: StoreContext,
+  ): Promise<ClientToolContinuationClaim | undefined> {
+    const item = await this.loadItem(input.threadRef, input.itemId, context);
+    if (item.type !== 'client_tool_call' || item.status !== 'pending') {
+      return undefined;
+    }
+    const runId = item.metadata?.runId;
+    if (typeof runId !== 'string') {
+      return undefined;
+    }
+    const run = await this.loadRun(runId, context);
+    const waitingTool = run.metadata?.waitingTool;
+    if (
+      run.status !== RunStatus.WAITING_INPUT
+      || (run.leaseOwner && run.leaseExpiresAt && run.leaseExpiresAt > input.now)
+      || typeof waitingTool !== 'object'
+      || (waitingTool as { itemId?: unknown }).itemId !== item.id
+    ) {
+      return undefined;
+    }
+    const db = await this.getDb(context);
+    if (!db) {
+      throw new Error('Cannot access Pod: invalid credentials');
+    }
+    const updatedAt = this.timestampToIso(input.now)!;
+    const expectedLease = run.leaseOwner
+      ? eq(Run.leaseOwner, run.leaseOwner)
+      : isNull(Run.leaseOwner);
+    const updated = await db.update(Run)
+      .set({
+        leaseOwner: input.claimId,
+        leaseExpiresAt: this.timestampToIso(input.leaseExpiresAt),
+        heartbeatAt: updatedAt,
+        updatedAt,
+      })
+      .where(and(
+        eq(Run.id, run.id),
+        eq(Run.status, RunStatus.WAITING_INPUT),
+        eq(Run.updatedAt, this.timestampToIso(run.updatedAt)!),
+        expectedLease,
+      ))
+      .returning()
+      .execute() as RunRecord[];
+    if (updated.length !== 1) {
+      return undefined;
+    }
+    return {
+      claimId: input.claimId,
+      threadRef: input.threadRef,
+      item,
+      run: this.runRecordToData(updated[0]),
+    };
+  }
+
+  async releaseClientToolContinuation(
+    claim: ClientToolContinuationClaim,
+    now: number,
+    context: StoreContext,
+  ): Promise<boolean> {
+    const db = await this.getDb(context);
+    if (!db) {
+      throw new Error('Cannot access Pod: invalid credentials');
+    }
+    const released = await db.update(Run)
+      .set({
+        status: RunStatus.WAITING_INPUT,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: this.timestampToIso(now),
+        completedAt: null,
+        error: claim.run.error ?? null,
+        metadata: this.jsonObjectOrNull(claim.run.metadata),
+        updatedAt: this.timestampToIso(now),
+      })
+      .where(and(
+        eq(Run.id, claim.run.id),
+        eq(Run.leaseOwner, claim.claimId),
+      ))
+      .returning()
+      .execute() as RunRecord[];
+    if (released.length !== 1) {
+      return false;
+    }
+    await this.saveItem(claim.threadRef, {
+      ...claim.item,
+      status: 'pending',
+      output: undefined,
+    }, context);
+    return true;
   }
 
   // =========================================================================

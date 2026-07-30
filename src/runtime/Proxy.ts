@@ -69,6 +69,7 @@ export class GatewayProxy {
     });
 
     this.proxy.on('proxyRes', (proxyRes, req, res) => {
+      this.normalizeProxiedCorsHeaders(req, proxyRes);
       this.sanitizeProxyResponseHeaders(req, proxyRes);
       const interceptedRequest = req as InterceptedRequest;
       const outgoing = res as http.ServerResponse;
@@ -370,6 +371,27 @@ export class GatewayProxy {
         delete headers['content-length'];
       }
     }
+  }
+
+  private normalizeProxiedCorsHeaders(
+    req: http.IncomingMessage,
+    proxyRes: http.IncomingMessage,
+  ): void {
+    const origin = req.headers.origin;
+    if (!origin) {
+      return;
+    }
+    proxyRes.headers['access-control-allow-origin'] = origin;
+    proxyRes.headers['access-control-allow-credentials'] = 'true';
+    const vary = proxyRes.headers.vary;
+    const varyValues = (Array.isArray(vary) ? vary : [vary])
+      .flatMap((value) => value?.split(',') ?? [])
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!varyValues.some((value) => value.toLowerCase() === 'origin')) {
+      varyValues.push('Origin');
+    }
+    proxyRes.headers.vary = varyValues.join(', ');
   }
 
   private handleCorsPreflightRequest(

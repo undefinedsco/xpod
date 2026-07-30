@@ -6,7 +6,7 @@
 
 **Architecture:** Refactor the existing Xpod chat routes into a protocol-neutral gateway core while preserving the current API surface. Shared durable semantics live in `@undefineds.co/models`; Xpod owns authentication, encryption, routing, provider transports, Connect and quota; LinX owns current-identity management UI and transactional client configuration.
 
-**Tech Stack:** TypeScript 5.9, Bun, Vitest, drizzle-solid, `@undefineds.co/models`, Solid OIDC/DPoP, Web Crypto, Keychain/KMS adapters, React, Electron/Tauri desktop bridge as provided by LinX.
+**Tech Stack:** TypeScript 5.9, Bun, Vitest, drizzle-solid, `@undefineds.co/models`, Solid OIDC/DPoP, Web Crypto, generic Pod SecretCell, React, Electron/Tauri desktop bridge as provided by LinX.
 
 ---
 
@@ -178,14 +178,13 @@ Expected: PASS for all three request and event mappings.
 
 Commit types, errors, frontends and fixtures together.
 
-### Task 4: Implement envelope encryption and platform key wrappers
+### Task 4: Implement generic Pod SecretCell envelope encryption
 
 **Files:**
 - Create: `src/api/ai-gateway/credentials/CredentialVault.ts`
-- Create: `src/api/ai-gateway/credentials/WebCryptoCredentialVault.ts`
-- Create: `src/api/ai-gateway/credentials/KeyWrapper.ts`
-- Create: `src/api/ai-gateway/credentials/LocalKeychainWrapper.ts`
-- Create: `src/api/ai-gateway/credentials/CloudKmsWrapper.ts`
+- Create: `src/api/ai-gateway/credentials/SecretCellCredentialVault.ts`
+- Create: `src/security/secret-cell/SecretCellVault.ts`
+- Create: `src/security/secret-cell/DeploymentRootKeyProvider.ts`
 - Create: `tests/api/ai-gateway/CredentialVault.test.ts`
 
 - [ ] **Step 1: Write failing envelope round-trip and rotation tests**
@@ -211,7 +210,12 @@ export interface CredentialVault {
 }
 ```
 
-Use Web Crypto for DEK generation and AES-GCM. `LocalKeychainWrapper` delegates to the existing desktop/platform secure-store boundary rather than shelling out; `CloudKmsWrapper` accepts an injected KMS client and key ARN.
+Use Web Crypto for DEK generation and AES-GCM. A generic SecretCell binds each
+cell to owner WebID, resource IRI, predicate/field, schema version and purpose.
+Xpod operations inject an active deployment root key plus previous keys for
+rotation. `SecretCellCredentialVault` adapts the generic cell envelope to the
+existing Pod credential record fields; AI Connection never observes or selects
+deployment. Do not add Keychain or KMS-specific production branches.
 
 - [ ] **Step 4: Verify tests and secret-redaction assertions**
 
@@ -312,21 +316,17 @@ Kimi and Bailian select registered regional endpoints. DeepSeek rejects develope
 
 - [ ] **Step 5: Run adapter tests and commit**
 
-### Task 8: Implement Connect lifecycle for OpenAI, Anthropic, Kimi and Bailian
+### Task 8: Implement Connect lifecycle for OpenAI, Anthropic, Kimi, Bailian and DeepSeek capability reporting
 
 **Files:**
-- Create: `src/api/ai-gateway/connect/ProviderConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/ConnectAttemptStore.ts`
-- Create: `src/api/ai-gateway/connect/OpenAiConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/AnthropicConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/KimiConnectAdapter.ts`
-- Create: `src/api/ai-gateway/connect/BailianConnectAdapter.ts`
+- Create: `src/api/ai-gateway/connect/index.ts`
+- Modify: `src/api/ai-gateway/providers/ProviderRegistry.ts`
 - Modify: `src/api/handlers/AiGatewayManagementHandler.ts`
 - Create: `tests/api/ai-gateway/ProviderConnectAdapters.test.ts`
 
 - [ ] **Step 1: Capture official/opencodex-compatible authorization fixtures and write failing tests**
 
-Test state/PKCE binding, five-minute expiry, one-time consumption, callback WebID/deployment mismatch, token refresh version races, reauth-required state and revocation. DeepSeek must report `connectUnsupported`.
+Do not reuse OpenAI Codex, Claude Code, or official CLI client ids and do not scrape cookies. Kimi uses official Kimi Code device-code OAuth with an Xpod/Moonshot-issued client id and exact endpoints `https://auth.kimi.com/api/oauth/device_authorization` plus `/api/oauth/token`; missing client id must report `configured=false` rather than fake availability. OpenAI, Anthropic and Bailian use `browserAssistedApiKey`: LinX opens the official console/dashboard and the current authenticated WebID submits the API key through Xpod management API. This mode must not be labeled OAuth. Test state/signature binding, PKCE only where OAuth applies, five-minute expiry, one-time consumption, callback/WebID/deployment/provider mismatch, token refresh version races, reauth-required state and revocation. DeepSeek must report `connectUnsupported` while keeping authenticated API key management available.
 
 - [ ] **Step 2: Run and verify failure**
 
@@ -334,7 +334,7 @@ Run: `bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts`
 
 - [ ] **Step 3: Implement ConnectAttempt and adapters**
 
-Use provider-specific official OAuth/device/console endpoints and grant types. Do not scrape cookies or persist authorization codes. Encrypt the completed secret before writing the Pod.
+Use provider-specific official device-code endpoints and console URLs only. Do not scrape cookies, do not persist authorization codes, and do not accept API keys on public callbacks. Encrypt the completed secret through `CredentialVault.seal()` before writing the Pod via a narrow Pod credential repository port.
 
 - [ ] **Step 4: Add management routes**
 

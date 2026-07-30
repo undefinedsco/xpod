@@ -4,10 +4,9 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { createInterface } from 'node:readline';
 import type { WorkspaceRef } from '../workspace/types';
-import { getDefaultBaseUrl } from '../service/provider-registry';
-import { getPlatformApiBaseUrl, getPlatformApiKey, getPlatformDefaultModel, getPlatformProviderId } from '../service/platform-ai-config';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
+import { requireAiConnectionRuntimeConfig, sanitizeRuntimeEnv } from '../../runtime/safe-env';
 import { CompositeSolidFsSyncer, LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection, type SolidFsSyncer } from '../../solidfs';
 import { RdfSearchIndexingSolidFsSyncer } from '../service/RdfSearchIndexingSolidFsSyncer';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
@@ -376,27 +375,25 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     baseUrl: string;
     model: PiModel;
   } {
-    const baseUrl = config.agentConfig?.baseUrl || getPlatformApiBaseUrl();
-    const provider = this.resolveProviderId(baseUrl);
-    const apiKey = config.agentConfig?.apiKey || getPlatformApiKey();
-    if (!apiKey) {
-      throw new Error('No API key configured for pi Agent Runtime. Store the agent credential in the Pod or set DEFAULT_API_KEY for local development.');
-    }
-    const resolvedBaseUrl = baseUrl || getDefaultBaseUrl(provider);
-    const modelId = config.agentConfig?.model || getPlatformDefaultModel();
-    const api = this.resolveApiForBaseUrl(resolvedBaseUrl);
+    const connection = requireAiConnectionRuntimeConfig({
+      baseUrl: config.aiConnection?.baseUrl,
+      apiKey: config.aiConnection?.gatewayKey,
+      model: config.aiConnection?.model ?? config.agentConfig?.model ?? 'linx',
+    }, 'pi Agent Runtime');
+    const provider = 'xpod';
+    const api = this.resolveApiForBaseUrl(connection.baseUrl);
 
     return {
       provider,
-      apiKey,
+      apiKey: connection.apiKey,
       api,
-      baseUrl: resolvedBaseUrl,
+      baseUrl: connection.baseUrl,
       model: {
-        id: modelId,
-        name: modelId,
+        id: connection.model ?? 'linx',
+        name: connection.model ?? 'linx',
         api,
         provider,
-        baseUrl: resolvedBaseUrl,
+        baseUrl: connection.baseUrl,
         reasoning: false,
         input: ['text'],
         cost: {
@@ -416,28 +413,6 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
           : undefined,
       },
     };
-  }
-
-  private resolveProviderId(baseUrl: string | undefined): string {
-    const configured = getPlatformProviderId();
-    if (configured && configured !== 'undefineds') {
-      return configured;
-    }
-    if (!baseUrl) {
-      return 'xpod';
-    }
-    try {
-      const host = new URL(baseUrl).hostname;
-      if (host.includes('openai.com')) return 'openai';
-      if (host.includes('anthropic.com')) return 'anthropic';
-      if (host.includes('openrouter.ai')) return 'openrouter';
-      if (host.includes('deepseek.com')) return 'deepseek';
-      if (host.includes('mistral.ai')) return 'mistral';
-      if (host === 'localhost' || host === '127.0.0.1') return 'ollama';
-    } catch {
-      // fall through to xpod
-    }
-    return 'xpod';
   }
 
   private resolveApiForBaseUrl(baseUrl: string): PiApi {
@@ -650,11 +625,12 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
 
   private warmRuntimeKey(workdir: string, config: AgentRuntimeConfig): string {
     const agent = config.agentConfig;
+    const connection = config.aiConnection;
     return JSON.stringify({
       workdir,
-      baseUrl: agent?.baseUrl ?? getPlatformApiBaseUrl(),
-      model: agent?.model ?? getPlatformDefaultModel(),
-      apiKeyHash: this.hashSecret(agent?.apiKey ?? getPlatformApiKey()),
+      baseUrl: connection?.baseUrl ?? '',
+      model: connection?.model ?? agent?.model ?? 'linx',
+      gatewayKeyHash: this.hashSecret(connection?.gatewayKey),
       systemPrompt: agent?.systemPrompt ?? '',
       skillsContent: agent?.skillsContent ?? '',
       permissionMode: agent?.permissionMode ?? '',
@@ -898,12 +874,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
   }
 
   private workerEnv(): Record<string, string> {
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === 'string') {
-        env[key] = value;
-      }
-    }
+    const env = sanitizeRuntimeEnv(process.env);
     env.XPOD_AGENT_LOOP_WORKER = '1';
     return env;
   }

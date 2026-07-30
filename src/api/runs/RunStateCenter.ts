@@ -1,4 +1,8 @@
-import type { ChatKitStore, StoreContext } from '../chatkit/store';
+import type {
+  ChatKitStore,
+  ClientToolContinuationClaim,
+  StoreContext,
+} from '../chatkit/store';
 import type {
   AssistantMessageItem,
   ClientEffect,
@@ -16,7 +20,14 @@ import {
   toThreadRef,
   nowTimestamp,
 } from '../chatkit/types';
-import type { AgentRuntimeConfig, RunnerProtocol, RunnerType } from './AgentRuntimeTypes';
+import {
+  deepScrubGatewayKey,
+  toPersistedAgentRuntimeConfig,
+  withInvocationAiConnection,
+  type AgentRuntimeConfig,
+  type RunnerProtocol,
+  type RunnerType,
+} from './AgentRuntimeTypes';
 import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import { InngestRunExecutionBackend } from './InngestRunExecutionBackend';
 import type {
@@ -66,6 +77,13 @@ export interface RunStateCenterOptions<TContext = StoreContext> {
   contextRetriever?: RunContextRetriever<TContext>;
 }
 
+export interface PreparedClientToolOutput {
+  claim: ClientToolContinuationClaim;
+  output: string;
+}
+
+const CLIENT_TOOL_CONTINUATION_LEASE_MS = 5 * 60_000;
+
 /**
  * Run is the xpod-side state center for Agent execution.
  *
@@ -112,7 +130,7 @@ export class RunStateCenter<TContext = StoreContext> {
       throw new Error('Invalid thread runtime: workspace reference is required');
     }
 
-    return {
+    return withInvocationAiConnection({
       ...runtime,
       workspace,
       runner: {
@@ -121,7 +139,7 @@ export class RunStateCenter<TContext = StoreContext> {
         protocol,
       },
       agentConfig: runtime.agentConfig,
-    } as AgentRuntimeConfig;
+    } as AgentRuntimeConfig, context);
   }
 
   public getDefaultAgentRuntimeConfig(context: TContext): AgentRuntimeConfig | null {
@@ -244,17 +262,71 @@ export class RunStateCenter<TContext = StoreContext> {
     return retrieved;
   }
 
+  public async prepareClientToolOutput(input: {
+    threadRef: ThreadRef;
+    itemId: string;
+    output: string;
+    context: TContext;
+  }): Promise<PreparedClientToolOutput | undefined> {
+    const { threadRef, itemId, output, context } = input;
+    if (!this.store.claimClientToolContinuation) {
+      throw new Error('Durable client tool continuation claim capability is required');
+    }
+    const now = nowTimestamp();
+    const claim = await this.store.claimClientToolContinuation({
+      threadRef,
+      itemId,
+      claimId: generateId('client-tool-continuation'),
+      leaseExpiresAt: now + CLIENT_TOOL_CONTINUATION_LEASE_MS,
+      now,
+    }, context);
+    if (!claim) {
+      return undefined;
+    }
+    return { claim, output };
+  }
+
+  public async releaseClientToolOutput(
+    prepared: PreparedClientToolOutput,
+    context: TContext,
+  ): Promise<boolean> {
+    if (!this.store.releaseClientToolContinuation) {
+      throw new Error('Durable client tool continuation release capability is required');
+    }
+    return this.store.releaseClientToolContinuation(
+      prepared.claim,
+      nowTimestamp(),
+      context,
+    );
+  }
+
   public async *completeClientToolOutput(input: {
     threadRef: ThreadRef;
     itemId: string;
     output: string;
     context: TContext;
   }): AsyncIterable<RunStateEvent> {
-    const { threadRef, itemId, output, context } = input;
-    const item = await this.store.loadItem(threadRef, itemId, context);
-    if (item.type !== 'client_tool_call') {
+    const prepared = await this.prepareClientToolOutput(input);
+    if (!prepared) {
       return;
     }
+    let completed = false;
+    try {
+      yield* this.completePreparedClientToolOutput(prepared, input.context);
+      completed = true;
+    } finally {
+      if (!completed) {
+        await this.releaseClientToolOutput(prepared, input.context);
+      }
+    }
+  }
+
+  public async *completePreparedClientToolOutput(
+    prepared: PreparedClientToolOutput,
+    context: TContext,
+  ): AsyncIterable<RunStateEvent> {
+    const { threadRef, item, run } = prepared.claim;
+    const { output } = prepared;
 
     const updatedItem: ClientToolCallItem = {
       ...item,
@@ -263,11 +335,6 @@ export class RunStateCenter<TContext = StoreContext> {
     };
     await this.store.saveItem(threadRef, updatedItem, context);
     yield { type: 'item_done', item: updatedItem };
-
-    const run = await this.resolveWaitingRunForToolOutput(updatedItem, threadRef, context);
-    if (!run) {
-      return;
-    }
 
     const now = nowTimestamp();
     await this.appendRunStep(run, RunStepType.CLIENT_TOOL_OUTPUT, context, {
@@ -286,8 +353,6 @@ export class RunStateCenter<TContext = StoreContext> {
       },
     });
     run.status = RunStatus.QUEUED;
-    run.leaseOwner = undefined;
-    run.leaseExpiresAt = undefined;
     run.completedAt = undefined;
     run.error = undefined;
     run.updatedAt = now;
@@ -318,7 +383,7 @@ export class RunStateCenter<TContext = StoreContext> {
     await this.markRunStarted(run, context);
     const continuationPrompt = this.buildContinuationPrompt(updatedItem);
     const conversation = await this.loadConversation(threadRef, String(run.metadata?.userMessageId ?? updatedItem.id), context);
-    const runtimeConfig = this.resolveRuntimeConfigForContinuation(run);
+    const runtimeConfig = this.resolveRuntimeConfigForContinuation(run, context);
     const retrievedContext = await this.retrieveRunContext({
       runId: run.id,
       threadId: this.extractThreadIdFromRef(threadRef),
@@ -363,11 +428,7 @@ export class RunStateCenter<TContext = StoreContext> {
       if (result.action === 'return') {
         return;
       }
-      const finalItem = this.finalizeAssistantMessage(assistantState.item, assistantState.fullText, 'incomplete');
-      await this.store.saveItem(threadRef, finalItem, context);
-      await this.finishRun(run, RunStatus.FAILED, context, result.message);
-      yield { type: 'item_done', item: finalItem };
-      return;
+      throw new Error(result.message);
     }
 
     const finalItem = this.finalizeAssistantMessage(assistantState.item, assistantState.fullText, 'completed');
@@ -414,7 +475,7 @@ export class RunStateCenter<TContext = StoreContext> {
       metadata: {
         threadId: thread.id,
         userMessageId: userMessage.id,
-        runtimeConfig,
+        runtimeConfig: toPersistedAgentRuntimeConfig(runtimeConfig),
       },
       createdAt: now,
       updatedAt: now,
@@ -451,6 +512,8 @@ export class RunStateCenter<TContext = StoreContext> {
     const now = nowTimestamp();
     run.status = status;
     run.completedAt = now;
+    run.leaseOwner = undefined;
+    run.leaseExpiresAt = undefined;
     run.updatedAt = now;
     run.error = error;
     await this.saveRun(run, context);
@@ -630,7 +693,7 @@ export class RunStateCenter<TContext = StoreContext> {
   }
 
   private async saveRun(run: RunRecordData, context: TContext): Promise<void> {
-    await this.runStore?.saveRun(run, context);
+    await this.runStore?.saveRun(deepScrubGatewayKey(run), context);
   }
 
   private async appendRunStep(
@@ -765,10 +828,10 @@ export class RunStateCenter<TContext = StoreContext> {
     return `Continue the previous run after client tool output.\n\nTool: ${item.name}\nOutput:\n${item.output ?? ''}`;
   }
 
-  private resolveRuntimeConfigForContinuation(run: RunRecordData): AgentRuntimeConfig {
+  private resolveRuntimeConfigForContinuation(run: RunRecordData, context: TContext): AgentRuntimeConfig {
     const runtimeConfig = run.metadata?.runtimeConfig;
     if (runtimeConfig && typeof runtimeConfig === 'object') {
-      return runtimeConfig as AgentRuntimeConfig;
+      return withInvocationAiConnection(runtimeConfig as AgentRuntimeConfig, context);
     }
     if (!isWorkspaceRef(run.workspace)) {
       throw new Error('Run workspace reference is required');

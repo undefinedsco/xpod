@@ -46,6 +46,7 @@ const suite = shouldRun ? describe : describe.skip;
 
 const solidBaseUrl = (process.env.CSS_BASE_URL ?? 'http://localhost:5739').replace(/\/$/, '');
 const CHATKIT_STREAM_TIMEOUT_MS = 30000;
+const CHATKIT_POD_OPERATION_TIMEOUT_MS = 15000;
 
 suite('ChatKit PodStore Integration', () => {
   let service: ChatKitService<StoreContext>;
@@ -198,7 +199,7 @@ suite('ChatKit PodStore Integration', () => {
         expect(data.id).toBe(threadId);
         expect(data.status.type).toBe('active');
       }
-    });
+    }, CHATKIT_POD_OPERATION_TIMEOUT_MS);
 
     it('should retrieve thread from Pod with a fresh store instance', async () => {
       expect(threadId).toBeDefined();
@@ -231,7 +232,7 @@ suite('ChatKit PodStore Integration', () => {
         expect(data.parent).toBeDefined();
         expect(data.metadata?.chat_id).toBeUndefined();
       }
-    });
+    }, CHATKIT_POD_OPERATION_TIMEOUT_MS);
 
     it('should list threads from Pod', async () => {
       const request = JSON.stringify({
@@ -248,7 +249,7 @@ suite('ChatKit PodStore Integration', () => {
         expect(data.data.length).toBeGreaterThan(0);
         expect(data.data.some((t: any) => t.id === threadId)).toBe(true);
       }
-    });
+    }, CHATKIT_POD_OPERATION_TIMEOUT_MS);
 
     it('should update thread title in Pod', async () => {
       const request = JSON.stringify({
@@ -275,7 +276,7 @@ suite('ChatKit PodStore Integration', () => {
         const getData = JSON.parse(getResult.json);
         expect(getData.title).toBe('Updated Test Thread');
       }
-    });
+    }, CHATKIT_POD_OPERATION_TIMEOUT_MS);
   });
 
   describe('Message Flow with AI Response', () => {

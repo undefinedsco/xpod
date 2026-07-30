@@ -53,6 +53,13 @@ describe('ChatKitService + ACP tool call', () => {
       aiProvider,
       enableAgentRuntime: true,
       runExecutionBackend: new AcpRunExecutionBackend(),
+      aiConnectionInvocationKeyIssuer: {
+        issue: async () => ({
+          baseUrl: 'http://127.0.0.1:3000/v1',
+          gatewayKey: 'acp-tool-fixture-invocation',
+        }),
+      },
+      requireAiConnectionInvocationKeyIssuer: true,
     });
 
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-tool-agent.js');
@@ -77,7 +84,14 @@ describe('ChatKitService + ACP tool call', () => {
       },
     };
 
-    const createResult = await svc.process(JSON.stringify(createReq), { userId: 'u1' });
+    const authContext = {
+      userId: 'u1',
+      auth: {
+        type: 'solid' as const,
+        webId: 'https://pod.example/alice/profile/card#me',
+      },
+    };
+    const createResult = await svc.process(JSON.stringify(createReq), authContext);
     expect(createResult.type).toBe('streaming');
     const createChunks: Uint8Array[] = [];
     for await (const chunk of createResult.type === 'streaming' ? createResult.stream() : []) {
@@ -109,7 +123,7 @@ describe('ChatKitService + ACP tool call', () => {
       },
     };
 
-    const outputResult = await svc.process(JSON.stringify(outputReq), { userId: 'u1' });
+    const outputResult = await svc.process(JSON.stringify(outputReq), authContext);
     expect(outputResult.type).toBe('streaming');
 
     const outputChunks: Uint8Array[] = [];

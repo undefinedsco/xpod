@@ -16,6 +16,7 @@ import type {
   ChatMessage,
   BaseExecutorOptions,
   AiCredential,
+  AIConnectionInvocationConfig,
 } from './types';
 
 /**
@@ -48,6 +49,7 @@ export abstract class BaseAgentExecutor implements IAgentExecutor {
   protected readonly logger = getLoggerFor(this);
   protected readonly credential: AiCredential;
   protected readonly baseUrl?: string;
+  protected readonly aiConnection?: AIConnectionInvocationConfig;
 
   /**
    * 构造函数
@@ -57,6 +59,7 @@ export abstract class BaseAgentExecutor implements IAgentExecutor {
     this.providerId = options?.providerId ?? 'default';
     this.credential = options?.credential ?? EMPTY_CREDENTIAL;
     this.baseUrl = options?.credential?.baseUrl ?? options?.providerConfig?.baseUrl;
+    this.aiConnection = options?.aiConnection;
   }
 
   /**

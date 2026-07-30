@@ -2,7 +2,8 @@
  * DefaultAgent manual/local integration test.
  *
  * Requirements:
- * - DEFAULT_API_KEY (real provider key, e.g. OpenRouter)
+ * - AI_CONNECTION_BASE_URL (Xpod /v1 gateway endpoint)
+ * - AI_CONNECTION_API_KEY (Xpod-issued gateway key, not raw provider secret)
  * - Claude Code CLI installed (or set CLAUDE_CODE_PATH)
  *
  * Notes:
@@ -19,7 +20,8 @@ const claudeCodePath = process.env.CLAUDE_CODE_PATH || '/Users/ganlu/.local/bin/
 
 const shouldSkip =
   process.env.XPOD_RUN_INTEGRATION_TESTS !== 'true' ||
-  !process.env.DEFAULT_API_KEY ||
+  !process.env.AI_CONNECTION_BASE_URL ||
+  !process.env.AI_CONNECTION_API_KEY ||
   !fs.existsSync(claudeCodePath);
 
 describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
@@ -42,7 +44,7 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
     console.log('Default Agent manual test config:');
     console.log(`  Claude Code: ${testConfig.claudeCodePath}`);
     console.log(`  Pod URL: ${testConfig.podBaseUrl}`);
-    console.log(`  DEFAULT_API_KEY: ${process.env.DEFAULT_API_KEY?.slice(0, 10)}...`);
+    console.log(`  AI Connection: ${process.env.AI_CONNECTION_BASE_URL}`);
   });
 
   afterAll(() => {
@@ -64,7 +66,14 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
       const response = await runDefaultAgent(
         'Please confirm you received the current Pod context.',
         context,
-        { timeout: testConfig.timeout, maxTurns: 2 },
+        {
+          timeout: testConfig.timeout,
+          maxTurns: 2,
+          connection: {
+            baseUrl: process.env.AI_CONNECTION_BASE_URL!,
+            gatewayKey: process.env.AI_CONNECTION_API_KEY!,
+          },
+        },
       );
 
       expect(response.success).toBe(true);
@@ -85,7 +94,14 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
       const response = await runDefaultAgent(
         'Hello, please briefly introduce yourself.',
         context,
-        { timeout: testConfig.timeout, maxTurns: 2 },
+        {
+          timeout: testConfig.timeout,
+          maxTurns: 2,
+          connection: {
+            baseUrl: process.env.AI_CONNECTION_BASE_URL!,
+            gatewayKey: process.env.AI_CONNECTION_API_KEY!,
+          },
+        },
       );
 
       expect(response.success).toBe(true);
