@@ -47,7 +47,6 @@ export default defineConfig(() => {
       preserveSymlinks: true,
       alias: {
         '@': path.resolve(__dirname, './src'),
-        '@linx': path.resolve(__dirname, './src/external/linx/src'),
       },
     },
     server: {

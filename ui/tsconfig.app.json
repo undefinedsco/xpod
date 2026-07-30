@@ -25,8 +25,7 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"],
-      "@linx/*": ["./src/external/linx/src/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"],
