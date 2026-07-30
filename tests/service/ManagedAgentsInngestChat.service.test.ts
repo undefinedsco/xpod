@@ -1905,12 +1905,35 @@ describe('Managed Agents Inngest Chat backend', () => {
     const originalKey = process.env.DEFAULT_API_KEY;
     const originalBase = process.env.DEFAULT_API_BASE;
     const originalOpenAiKey = process.env.OPENAI_API_KEY;
+    const ambientProviderEnv = {
+      OPENAI_API_KEY: 'ambient-openai-key',
+      OPENAI_BASE_URL: 'https://ambient-openai.example/v1',
+      OPENAI_API_BASE: 'https://ambient-openai-api-base.example/v1',
+      OPENAI_ORG_ID: 'ambient-openai-org-id',
+      OPENAI_ORGANIZATION: 'ambient-openai-organization',
+      OPENAI_PROJECT: 'ambient-openai-project',
+      OPENAI_MODEL: 'ambient-openai-model',
+      CODEX_API_KEY: 'ambient-codex-key',
+      CODEX_MODEL: 'ambient-codex-model',
+      ANTHROPIC_API_KEY: 'ambient-anthropic-key',
+      ANTHROPIC_AUTH_TOKEN: 'ambient-anthropic-token',
+      ANTHROPIC_BASE_URL: 'https://ambient-anthropic.example',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'ambient-sonnet',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'ambient-haiku',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'ambient-opus',
+      DEFAULT_API_KEY: 'ambient-default-key',
+      DEFAULT_API_BASE: 'https://ambient-default.example/v1',
+      DEFAULT_PROVIDER: 'ambient-provider',
+      DEFAULT_MODEL: 'ambient-default-model',
+    };
+    const savedAmbient = Object.fromEntries(
+      Object.keys(ambientProviderEnv).map((key) => [key, process.env[key]]),
+    ) as Record<string, string | undefined>;
     try {
-      process.env.DEFAULT_API_KEY = 'ambient-default-key';
-      process.env.DEFAULT_API_BASE = 'https://ambient-default.example/v1';
-      process.env.OPENAI_API_KEY = 'ambient-openai-key';
+      Object.assign(process.env, ambientProviderEnv);
 
       const driver = new PiAgentRuntimeDriver({ piSdk: piSdkMock as any });
+      const workerEnv = (driver as any).workerEnv();
       const events: AgentRuntimeEvent[] = [];
       for await (
         const event of driver.start({
@@ -1935,7 +1958,16 @@ describe('Managed Agents Inngest Chat backend', () => {
       ]);
       expect(setRuntimeApiKeyMock).not.toHaveBeenCalled();
       expect(registerProviderMock).not.toHaveBeenCalled();
+      for (const [key, ambientValue] of Object.entries(ambientProviderEnv)) {
+        expect(workerEnv[key]).toBeUndefined();
+        expect(JSON.stringify(workerEnv)).not.toContain(ambientValue);
+      }
+      expect(workerEnv.XPOD_AGENT_LOOP_WORKER).toBe('1');
     } finally {
+      for (const [key, value] of Object.entries(savedAmbient)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       if (originalKey === undefined) delete process.env.DEFAULT_API_KEY;
       else process.env.DEFAULT_API_KEY = originalKey;
       if (originalBase === undefined) delete process.env.DEFAULT_API_BASE;

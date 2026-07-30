@@ -1,12 +1,21 @@
 export const AMBIENT_AI_PROVIDER_ENV_KEYS = [
+  'AI_CONNECTION_API_KEY',
+  'AI_CONNECTION_BASE_URL',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
   'OPENAI_API_BASE',
   'OPENAI_ORG_ID',
   'OPENAI_ORGANIZATION',
+  'OPENAI_PROJECT',
+  'OPENAI_MODEL',
+  'CODEX_API_KEY',
+  'CODEX_MODEL',
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'DEFAULT_API_KEY',
   'DEFAULT_API_BASE',
   'DEFAULT_PROVIDER',
@@ -14,6 +23,9 @@ export const AMBIENT_AI_PROVIDER_ENV_KEYS = [
 ] as const;
 
 const AMBIENT_AI_PROVIDER_ENV_KEY_SET = new Set<string>(AMBIENT_AI_PROVIDER_ENV_KEYS);
+const AMBIENT_AI_PROVIDER_ENV_KEY_PATTERNS = [
+  /^ANTHROPIC_DEFAULT_[A-Z0-9_]*MODEL$/u,
+] as const;
 
 export interface AiConnectionRuntimeConfig {
   baseUrl: string;
@@ -26,11 +38,16 @@ export function sanitizeRuntimeEnv(
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
-    if (typeof value === 'string' && !AMBIENT_AI_PROVIDER_ENV_KEY_SET.has(key)) {
+    if (typeof value === 'string' && !isAmbientAiProviderEnvKey(key)) {
       env[key] = value;
     }
   }
   return env;
+}
+
+function isAmbientAiProviderEnvKey(key: string): boolean {
+  return AMBIENT_AI_PROVIDER_ENV_KEY_SET.has(key as typeof AMBIENT_AI_PROVIDER_ENV_KEYS[number]) ||
+    AMBIENT_AI_PROVIDER_ENV_KEY_PATTERNS.some((pattern) => pattern.test(key));
 }
 
 export function requireAiConnectionRuntimeConfig(

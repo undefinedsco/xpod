@@ -313,23 +313,72 @@ describe('ClaudeExecutor', () => {
   });
 
   it('should project only scoped AI Connection credentials into Claude SDK env', async () => {
-    process.env.DEFAULT_API_KEY = 'ambient-default-key';
-    process.env.DEFAULT_API_BASE = 'https://ambient-default.example/v1';
-    process.env.ANTHROPIC_API_KEY = 'ambient-anthropic-key';
-    process.env.ANTHROPIC_BASE_URL = 'https://ambient-anthropic.example';
+    const ambientProviderEnv = {
+      AI_CONNECTION_API_KEY: 'ambient-ai-connection-key',
+      AI_CONNECTION_BASE_URL: 'https://ambient-ai-connection.example/v1',
+      OPENAI_API_KEY: 'ambient-openai-key',
+      OPENAI_BASE_URL: 'https://ambient-openai.example/v1',
+      OPENAI_API_BASE: 'https://ambient-openai-api-base.example/v1',
+      OPENAI_ORG_ID: 'ambient-openai-org-id',
+      OPENAI_ORGANIZATION: 'ambient-openai-organization',
+      OPENAI_PROJECT: 'ambient-openai-project',
+      OPENAI_MODEL: 'ambient-openai-model',
+      CODEX_API_KEY: 'ambient-codex-key',
+      CODEX_MODEL: 'ambient-codex-model',
+      ANTHROPIC_API_KEY: 'ambient-anthropic-key',
+      ANTHROPIC_AUTH_TOKEN: 'ambient-anthropic-token',
+      ANTHROPIC_BASE_URL: 'https://ambient-anthropic.example',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'ambient-sonnet',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'ambient-haiku',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'ambient-opus',
+      DEFAULT_API_KEY: 'ambient-default-key',
+      DEFAULT_API_BASE: 'https://ambient-default.example/v1',
+      DEFAULT_PROVIDER: 'ambient-provider',
+      DEFAULT_MODEL: 'ambient-default-model',
+    };
+    const savedAmbient = Object.fromEntries(
+      Object.keys(ambientProviderEnv).map((key) => [key, process.env[key]]),
+    ) as Record<string, string | undefined>;
+    Object.assign(process.env, ambientProviderEnv);
 
-    const messages: any[] = [];
-    for await (const msg of executor.execute(testConfig, 'Hello')) {
-      messages.push(msg);
+    try {
+      const messages: any[] = [];
+      for await (const msg of executor.execute(testConfig, 'Hello')) {
+        messages.push(msg);
+      }
+
+      const queryOptions = (claudeAgentSdk.query as ReturnType<typeof vi.fn>).mock.calls[0][0].options;
+      expect(queryOptions.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3000');
+      expect(queryOptions.env.ANTHROPIC_API_KEY).toBe('gateway-key');
+      expect(queryOptions.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(queryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
+      expect(queryOptions.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+      expect(queryOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined();
+      expect(queryOptions.env.AI_CONNECTION_API_KEY).toBe('gateway-key');
+      expect(queryOptions.env.AI_CONNECTION_BASE_URL).toBe('http://127.0.0.1:3000/v1');
+      expect(queryOptions.env.OPENAI_API_KEY).toBeUndefined();
+      expect(queryOptions.env.OPENAI_BASE_URL).toBeUndefined();
+      expect(queryOptions.env.OPENAI_API_BASE).toBeUndefined();
+      expect(queryOptions.env.OPENAI_ORG_ID).toBeUndefined();
+      expect(queryOptions.env.OPENAI_ORGANIZATION).toBeUndefined();
+      expect(queryOptions.env.OPENAI_PROJECT).toBeUndefined();
+      expect(queryOptions.env.OPENAI_MODEL).toBeUndefined();
+      expect(queryOptions.env.CODEX_API_KEY).toBeUndefined();
+      expect(queryOptions.env.CODEX_MODEL).toBeUndefined();
+      expect(queryOptions.env.DEFAULT_API_KEY).toBeUndefined();
+      expect(queryOptions.env.DEFAULT_API_BASE).toBeUndefined();
+      expect(queryOptions.env.DEFAULT_PROVIDER).toBeUndefined();
+      expect(queryOptions.env.DEFAULT_MODEL).toBeUndefined();
+      for (const ambientValue of Object.values(ambientProviderEnv)) {
+        expect(JSON.stringify(queryOptions.env)).not.toContain(ambientValue);
+      }
+      expect(JSON.stringify(queryOptions.env)).not.toContain('raw-provider-key');
+    } finally {
+      for (const [key, value] of Object.entries(savedAmbient)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
-
-    const queryOptions = (claudeAgentSdk.query as ReturnType<typeof vi.fn>).mock.calls[0][0].options;
-    expect(queryOptions.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:3000');
-    expect(queryOptions.env.ANTHROPIC_API_KEY).toBe('gateway-key');
-    expect(queryOptions.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-    expect(queryOptions.env.DEFAULT_API_KEY).toBeUndefined();
-    expect(queryOptions.env.DEFAULT_API_BASE).toBeUndefined();
-    expect(JSON.stringify(queryOptions.env)).not.toContain('raw-provider-key');
   });
 
   it('should execute and yield messages', async () => {
