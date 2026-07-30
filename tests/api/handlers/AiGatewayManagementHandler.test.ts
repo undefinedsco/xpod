@@ -6,10 +6,37 @@ import { InMemoryGatewayAccessKeyRepository } from '../ai-gateway/InMemoryGatewa
 import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import {
+  BrowserAssistedApiKeyConnectAdapter,
+  InMemoryConnectAttemptStore,
+  PodConnectedCredentialRepository,
+  ProviderConnectService,
+} from '../../../src/api/ai-gateway/connect';
+import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
+import type {
+  KeyWrapContext,
+  KeyWrapper,
+  WrappedDataKey,
+} from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
+
+class StaticKeyWrapper implements KeyWrapper {
+  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
+    return {
+      algorithm: 'test-static-wrap',
+      keyId: `${context.webId}|${context.credentialIri}|${context.provider}`,
+      wrappedDek: Buffer.from(dek).toString('base64url'),
+    };
+  }
+
+  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
+    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
+  }
+}
 
 function createServer(): { server: ApiServer; routes: Record<string, Function> } {
   const routes: Record<string, Function> = {};
@@ -58,6 +85,10 @@ function response(): any {
       this.body = payload;
     }),
   };
+}
+
+function jsonClone<T>(value: T): T {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
 describe('AiGatewayManagementHandler', () => {
@@ -128,6 +159,40 @@ describe('AiGatewayManagementHandler', () => {
       ]),
     });
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain('evil.example');
+  });
+
+  it('includes a short-lived owner-bound invocation token in the AI Connection service-access response', async () => {
+    const issue = vi.fn(async (context: unknown) => ({
+      baseUrl: 'https://pod.example',
+      gatewayKey: 'xpod_inv_v1.short-lived-owner-token',
+    }));
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+      },
+      aiConnectionInvocationKeyIssuer: { issue },
+    });
+    const auth = {
+      type: 'solid' as const,
+      webId: WEB_ID,
+      accessToken: 'browser-solid-token',
+      tokenType: 'DPoP' as const,
+    };
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connection'](request(auth), res, {});
+
+    expect(issue).toHaveBeenCalledWith({ auth });
+    expect(JSON.parse(res.body)).toMatchObject({
+      invocation: {
+        baseUrl: 'https://pod.example',
+        gatewayKey: 'xpod_inv_v1.short-lived-owner-token',
+      },
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('browser-solid-token');
   });
 
   it('creates a gateway key for the logged-in Solid WebID and returns plaintext once', async () => {
@@ -623,6 +688,106 @@ describe('AiGatewayManagementHandler', () => {
       },
     });
     expect(JSON.parse(complete.body)).not.toHaveProperty('deployment');
+  });
+
+  it('persists browser-assisted API keys through the production management handler and Pod repository without plaintext serialization', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: vi.fn(async () => fetch) },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: () => ({
+          values: (value: any) => ({
+            execute: async () => {
+              rows.set(value.id, jsonClone(value));
+              return [jsonClone(value)];
+            },
+          }),
+        }),
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()].map(jsonClone) }) }) }),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        updateById: async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+          const row = rows.get(id);
+          if (!row) return null;
+          Object.assign(row, patch);
+          return jsonClone(row);
+        },
+      } as any),
+    });
+    const vault = new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
+    const connectService = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault,
+      adapters: [
+        new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'openai',
+          consoleUrl: 'https://platform.openai.com/api-keys',
+          attempts: new InMemoryConnectAttemptStore(),
+          credentialRepository: repository,
+          vault,
+          deployment: 'cloud',
+          signingSecret: 'connect-signing-secret',
+          randomBytes: () => Buffer.alloc(32, 17),
+          now: () => new Date('2026-07-30T00:00:00.000Z'),
+        }),
+      ],
+    });
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+    const begin = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](request(auth, {
+      mode: 'browserAssistedApiKey',
+    }), begin, { provider: 'openai' });
+    const attempt = JSON.parse(begin.body);
+
+    const complete = response();
+    await routes['POST /api/ai/gateway/providers/:provider/connect/complete-api-key'](request(auth, {
+      attemptId: attempt.attemptId,
+      state: attempt.state,
+      signature: attempt.signature,
+      apiKey: 'sk-production-management-path',
+      accountLabel: 'Alice OpenAI',
+    }), complete, { provider: 'openai' });
+
+    expect(complete.statusCode).toBe(200);
+    expect(JSON.parse(complete.body)).toMatchObject({
+      provider: 'openai',
+      status: 'completed',
+      credentialId: 'credentials.ttl#cloud-openai',
+    });
+    const serializedPodRows = JSON.stringify([...rows.values()]);
+    expect(serializedPodRows).toContain('https://id.example/alice/settings/credentials.ttl#cloud-openai');
+    expect(serializedPodRows).not.toContain('sk-production-management-path');
+
+    const reload = response();
+    await routes['GET /api/ai/connections/providers'](request(auth), reload, {});
+    const provider = JSON.parse(reload.body).data.find((item: any) => item.provider === 'openai');
+    expect(provider).toMatchObject({
+      provider: 'openai',
+      status: 'connected',
+      authMode: 'apiKey',
+      accountLabel: 'Alice OpenAI',
+      connect: expect.objectContaining({ configured: true }),
+    });
+    expect(JSON.stringify(provider)).not.toContain('encryptedSecret');
+    expect(JSON.stringify(provider)).not.toContain('sk-production-management-path');
+
+    const remove = response();
+    await routes['DELETE /api/ai/gateway/providers/:provider/connect'](request(auth), remove, {
+      provider: 'openai',
+    });
+    expect(JSON.parse(remove.body).record).toMatchObject({
+      id: 'credentials.ttl#cloud-openai',
+      provider: 'openai',
+      status: 'revoked',
+    });
+    expect(JSON.stringify([...rows.values()])).not.toContain('sk-production-management-path');
   });
 
   it('rejects gateway API key principals from managing provider Connect state', async () => {

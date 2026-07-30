@@ -24,6 +24,7 @@ import type {
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { createAiConnectionServiceAccess } from '../ai-gateway/service-access/AiConnectionServiceAccess';
+import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
 
 export interface AiGatewayManagementHandlerOptions {
   repository: GatewayAccessKeyRepository;
@@ -33,6 +34,7 @@ export interface AiGatewayManagementHandlerOptions {
   servicePrincipal?: {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
+  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
   now?: () => Date;
   keyId?: (owner: string) => string;
   jsonBodyLimitBytes?: number;
@@ -57,10 +59,17 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     const service = await options.servicePrincipal.getServicePrincipal();
-    sendJson(response, 200, createAiConnectionServiceAccess({
+    const descriptor = createAiConnectionServiceAccess({
       ownerWebId: request.auth.webId,
       serviceWebId: service.webId,
-    }));
+    });
+    const invocation = options.aiConnectionInvocationKeyIssuer
+      ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
+      : undefined;
+    sendJson(response, 200, {
+      ...descriptor,
+      ...(invocation ? { invocation } : {}),
+    });
   });
 
   server.post('/api/ai/gateway/keys', async (request, response) => {

@@ -11,6 +11,7 @@ import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
 const SettingsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.SettingsPage })));
+const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 
 function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
@@ -27,12 +28,7 @@ export const dashboardRoutes: RouteObject[] = [
       { index: true, element: <Navigate to="/models" replace /> },
       {
         path: 'models',
-        element: guardedRoute(
-          <PlaceholderSettingsSection
-            title="Models"
-            description="Configure model providers and defaults from the model settings applet."
-          />,
-        ),
+        element: guardedRoute(lazyRoute(<ModelsPage />)),
       },
       {
         path: 'pod',

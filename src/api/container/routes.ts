@@ -100,6 +100,7 @@ function registerSharedRoutes(
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
   const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
+  const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
@@ -136,6 +137,7 @@ function registerSharedRoutes(
     connectService: providerConnectService,
     quotaService: providerQuotaService,
     servicePrincipal: gatewayInternalPodAccess,
+    aiConnectionInvocationKeyIssuer,
   });
 
   // Quota & Usage API (Business 对接)
