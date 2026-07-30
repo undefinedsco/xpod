@@ -435,21 +435,23 @@ Expected: PASS.
 - Create: `/Users/ganlu/develop/linx/apps/web/src/modules/settings/components/AiQuotaCard.tsx`
 - Test: `/Users/ganlu/develop/linx/apps/web/src/modules/settings/components/AiGatewaySettings.test.tsx`
 
-- [ ] **Step 1: Write failing current-session UI tests**
+- [x] **Step 1: Write failing current-session UI tests**
 
 Mock one current WebID at a time. Assert that only its Gateway endpoint, Providers, Connect attempts, keys and quota are visible; no simultaneous Local/Cloud selector exists.
 
-- [ ] **Step 2: Implement the authenticated management client**
+- [x] **Step 2: Implement the authenticated management client**
 
 Derive the API base from the current session using `resolveCurrentPodBaseUrl`/existing LinX client URL helpers. Reuse authenticated fetch; never accept an arbitrary Pod URL from form input.
 
-- [ ] **Step 3: Implement Provider Connect/API Key and quota UI**
+- [x] **Step 3: Implement Provider Connect/API Key and quota UI**
 
 Open system browser for Connect, poll attempt status, mask account identity, expose refresh/disconnect, show `unsupported` explicitly and never render secret payloads after creation.
 
-- [ ] **Step 4: Run LinX web tests and commit in the LinX repo**
+- [x] **Step 4: Run LinX web tests and commit in the LinX repo**
 
 Use the repository's existing Bun test command discovered from `apps/web/package.json`; expected: focused tests PASS.
+
+Evidence recorded from the LinX lane: commits `d5eae8cd` and review artifacts linked from that lane cover current-identity management UI behavior.
 
 ### Task 13: Implement transactional client configurators
 
@@ -464,11 +466,11 @@ Use the repository's existing Bun test command discovered from `apps/web/package
 - Create: `/Users/ganlu/develop/linx/apps/desktop/src/lib/ai-client-config/ai-client-config.test.ts`
 - Modify: `/Users/ganlu/develop/linx/apps/web/src/modules/settings/components/AiGatewaySettings.tsx`
 
-- [ ] **Step 1: Write fixture-based merge/restore tests for all four clients**
+- [x] **Step 1: Write fixture-based merge/restore tests for all four clients**
 
 For each native config fixture assert detection, dry-run diff, timestamped backup, merge-only `xpod` fields, current-WebID replacement, permissions, syntax verification, rollback and restore without touching non-Xpod settings. Add symlink rejection tests.
 
-- [ ] **Step 2: Implement a shared transaction**
+- [x] **Step 2: Implement a shared transaction**
 
 ```ts
 export interface ClientConfigAdapter {
@@ -483,15 +485,17 @@ export interface ClientConfigAdapter {
 
 Write to a same-directory temporary file, fsync, atomically rename, verify, and rollback on failure. Use native secret storage/environment references when supported; otherwise require explicit UI consent and mode `0600`.
 
-- [ ] **Step 3: Implement native format adapters**
+- [x] **Step 3: Implement native format adapters**
 
 Preserve existing Codex TOML, Claude settings/env, Pi model configuration and CodeBuddy configuration. The adapter owns only the stable `xpod` provider and records the WebID hash needed for safe replacement.
 
-- [ ] **Step 4: Add UI dry-run, apply and restore actions**
+- [x] **Step 4: Add UI dry-run, apply and restore actions**
 
 The UI shows exact affected client/files, never Provider Credential values.
 
-- [ ] **Step 5: Run desktop/web focused tests and commit in LinX**
+- [x] **Step 5: Run desktop/web focused tests and commit in LinX**
+
+Evidence recorded from the LinX lane: commit `170cf6a6` and review artifacts linked from that lane cover transactional client configurators and restore safety.
 
 ## Phase F — verification and real Codex acceptance
 
@@ -503,15 +507,15 @@ The UI shows exact affected client/files, never Provider Credential values.
 - Create: `scripts/ai-gateway-codex-smoke.ts`
 - Modify: `package.json`
 
-- [ ] **Step 1: Add two-WebID isolation and plaintext scans**
+- [x] **Step 1: Add two-WebID isolation and plaintext scans**
 
 Prove Key A cannot read/use WebID B credentials, Local keys fail against Cloud, revoked keys fail, and Pod/log/test artifacts do not contain fixture plaintext secrets.
 
-- [ ] **Step 2: Add streaming integration fixtures**
+- [x] **Step 2: Add streaming integration fixtures**
 
 Run one native Responses adapter and one converted adapter through HTTP; verify ordered SSE, tools, reasoning usage, cancellation and no post-stream replay.
 
-- [ ] **Step 3: Run focused integration and static gates**
+- [x] **Step 3: Run focused integration and static gates**
 
 Run:
 
@@ -530,7 +534,9 @@ Run: `bun run test:integration`
 
 Expected: lite and full integration suites exit 0. If environment credentials are stale, repair the fixture credentials and rerun; do not waive the gate.
 
-- [ ] **Step 5: Commit test infrastructure**
+2026-07-31 Task14 status: partial. Code/static/focused/lite gates passed in Xpod; full Docker-backed integration remains blocked by external Docker daemon availability (`/var/run/docker.sock` missing).
+
+- [x] **Step 5: Commit test infrastructure**
 
 ### Task 15: Connect a real Codex client and prove the product path
 

@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../../src/api/ai-gateway/AiGatewayService';
 import { createGatewayApiKey } from '../../src/api/ai-gateway/auth/GatewayApiKey';
 import { GatewayApiKeyAuthenticator } from '../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { AesGatewayKeyLocatorCodec } from '../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
+import { PodGatewayAccessKeyRepository } from '../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
+import { PodConnectedCredentialRepository } from '../../src/api/ai-gateway/connect';
 import type { CredentialVault } from '../../src/api/ai-gateway/credentials/CredentialVault';
 import type { EncryptedCredentialSecret } from '../../src/api/ai-gateway/credentials/KeyWrapper';
 import { createDefaultProviderRegistry } from '../../src/api/ai-gateway/providers/ProviderRegistry';
@@ -16,6 +19,7 @@ import { InMemoryGatewayAccessKeyRepository } from '../api/ai-gateway/InMemoryGa
 const ALICE_WEB_ID = 'https://id.example/alice/profile/card#me';
 const BOB_WEB_ID = 'https://id.example/bob/profile/card#me';
 const PLAINTEXT_PROVIDER_SECRET = 'sk-task14-provider-secret-must-not-leak';
+type PodRow = Record<string, any>;
 
 function auth(webId: string): AuthContext {
   return {
@@ -133,7 +137,216 @@ function requestWithGatewayKey(plaintext: string): any {
   return req;
 }
 
+function createPodBackedDbFactory() {
+  const pods = new Map<string, Map<string, PodRow>>();
+  const calls: Array<{ owner: string; op: string; id?: string; patch?: unknown }> = [];
+
+  function pod(owner: string): Map<string, PodRow> {
+    let store = pods.get(owner);
+    if (!store) {
+      store = new Map();
+      pods.set(owner, store);
+    }
+    return store;
+  }
+
+  return {
+    pods,
+    calls,
+    dbFactory: vi.fn(async({ owner }: { owner: string }) => {
+      const store = pod(owner);
+      return {
+        async init() {
+          calls.push({ owner, op: 'init' });
+        },
+        insert() {
+          calls.push({ owner, op: 'insert' });
+          return {
+            values(value: PodRow) {
+              return {
+                async execute() {
+                  store.set(String(value.id), structuredClone(value));
+                  return [structuredClone(value)];
+                },
+              };
+            },
+          };
+        },
+        select() {
+          return {
+            from() {
+              return {
+                where() {
+                  return {
+                    async execute() {
+                      return [...store.values()].filter((row) => row.owner === owner).map((row) => structuredClone(row));
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+        async findById(_resource: unknown, id: string) {
+          calls.push({ owner, op: 'findById', id });
+          return structuredClone(store.get(id) ?? null);
+        },
+        async findByIri(_resource: unknown, id: string) {
+          calls.push({ owner, op: 'findByIri', id });
+          return structuredClone(store.get(id) ?? null);
+        },
+        async updateById(_resource: unknown, id: string, patch: PodRow) {
+          calls.push({ owner, op: 'updateById', id, patch });
+          const row = store.get(id);
+          if (!row) {
+            return null;
+          }
+          Object.assign(row, patch);
+          return structuredClone(row);
+        },
+        update() {
+          return {
+            set(patch: PodRow) {
+              return {
+                where() {
+                  return {
+                    returning() {
+                      return {
+                        async execute() {
+                          const first = [...store.values()][0];
+                          if (!first) {
+                            return [];
+                          }
+                          Object.assign(first, patch);
+                          return [structuredClone(first)];
+                        },
+                      };
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+    }),
+  };
+}
+
+function internalPodAccess() {
+  return { getTrustedFetch: vi.fn(async() => fetch) };
+}
+
+function podRows(backing: ReturnType<typeof createPodBackedDbFactory>): string {
+  return JSON.stringify([...backing.pods.values()].map((pod) => [...pod.values()]));
+}
+
 describe('AI Connection Pod isolation integration', () => {
+  it('serves each WebID through the production Pod credential repository adapter', async() => {
+    const backing = createPodBackedDbFactory();
+    const repository = new PodConnectedCredentialRepository({
+      dbFactory: backing.dbFactory as any,
+      internalPodAccess: internalPodAccess(),
+      providerIds: ['openai', 'deepseek'],
+    });
+    await repository.upsertConnectedCredential({
+      id: 'credentials.ttl#cloud-openai',
+      credentialIri: `https://pod.example/alice/settings/credentials.ttl#cloud-openai`,
+      webId: ALICE_WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: encryptedSecret(ALICE_WEB_ID, 'openai', 'alice-openai'),
+      status: 'active',
+    });
+    await repository.upsertConnectedCredential({
+      id: 'credentials.ttl#cloud-deepseek',
+      credentialIri: `https://pod.example/bob/settings/credentials.ttl#cloud-deepseek`,
+      webId: BOB_WEB_ID,
+      provider: 'deepseek',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: encryptedSecret(BOB_WEB_ID, 'deepseek', 'bob-deepseek'),
+      status: 'active',
+    });
+    const fixture = createService({
+      deployment: 'cloud',
+      credentials: [],
+    });
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry: createDefaultProviderRegistry(),
+      router: new ModelRouter({
+        registry: createDefaultProviderRegistry(),
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: repository.listCredentials.bind(repository),
+      }),
+      credentials: repository as unknown as GatewayCredentialStore,
+      vault: fixture.vault,
+      runtimes: (fixture.service as any).runtimes,
+    });
+
+    await expect(service.listModels(auth(ALICE_WEB_ID))).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ owned_by: 'openai' })]),
+    );
+    await expect(service.listModels(auth(BOB_WEB_ID))).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ owned_by: 'deepseek' })]),
+    );
+    await expect(service.complete({
+      auth: auth(ALICE_WEB_ID),
+      protocol: 'responses',
+      body: { model: 'deepseek-chat', input: 'hi' },
+    })).rejects.toMatchObject({ code: 'credential_unavailable' });
+    expect(podRows(backing)).not.toContain(PLAINTEXT_PROVIDER_SECRET);
+  });
+
+  it('authenticates A/B Gateway keys through the production Pod key repository without cross-touching metadata', async() => {
+    const backing = createPodBackedDbFactory();
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: backing.dbFactory as any,
+      internalPodAccess: internalPodAccess(),
+      locatorCodec: new AesGatewayKeyLocatorCodec('task14-locator-secret'),
+    });
+    const keyAId = repository.createKeyId(ALICE_WEB_ID, 'cloud');
+    const keyBId = repository.createKeyId(ALICE_WEB_ID, 'cloud');
+    const keyA = await createGatewayApiKey({ deployment: 'cloud', keyId: keyAId });
+    const keyB = await createGatewayApiKey({ deployment: 'cloud', keyId: keyBId });
+    await repository.create({
+      ...keyA.record,
+      owner: ALICE_WEB_ID,
+      scopes: ['models:read', 'inference:write'],
+      createdAt: new Date('2026-07-23T00:00:00.000Z'),
+      name: 'Codex A',
+    });
+    await repository.create({
+      ...keyB.record,
+      owner: ALICE_WEB_ID,
+      scopes: ['models:read', 'inference:write'],
+      createdAt: new Date('2026-07-23T00:00:00.000Z'),
+      name: 'Codex B',
+    });
+    const authenticator = new GatewayApiKeyAuthenticator({
+      repository,
+      deployment: 'cloud',
+      now: () => new Date('2026-07-23T00:10:00.000Z'),
+    });
+
+    await expect(authenticator.authenticate(requestWithGatewayKey(keyA.plaintext))).resolves.toMatchObject({
+      success: true,
+      context: { webId: ALICE_WEB_ID, gatewayKeyId: keyAId },
+    });
+    await expect(repository.findById(keyAId)).resolves.toMatchObject({ lastUsedAt: new Date('2026-07-23T00:10:00.000Z') });
+    await expect(repository.findById(keyBId)).resolves.not.toMatchObject({ lastUsedAt: expect.any(Date) });
+    await expect(authenticator.authenticate(requestWithGatewayKey(keyB.plaintext))).resolves.toMatchObject({
+      success: true,
+      context: { webId: ALICE_WEB_ID, gatewayKeyId: keyBId },
+    });
+    expect(podRows(backing)).not.toContain(keyA.plaintext);
+    expect(podRows(backing)).not.toContain(keyB.plaintext);
+    expect(podRows(backing)).not.toContain(keyA.secret);
+    expect(podRows(backing)).not.toContain(keyB.secret);
+  });
+
   it('routes only credentials stored under the current WebID Pod', async() => {
     const fixture = createService({
       deployment: 'cloud',

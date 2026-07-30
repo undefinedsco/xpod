@@ -1,6 +1,7 @@
 # Pod AI Gateway Status Audit
 
 Date: 2026-07-30
+Updated: 2026-07-31
 Branch: `codex/xpod-light-settings`
 Merged Gateway source: `codex/pod-ai-gateway` at `8d2284184dc3a5b1abf7330298b80396d3d0d48e`
 Pre-merge HEAD: `3d1321c1ccf2427943d44b57f908fab71ec50576`
@@ -9,18 +10,20 @@ Merge commit: `65d71e50`
 
 ## Summary
 
-The Pod AI Gateway implementation from `codex/pod-ai-gateway` is integrated into the settings branch and Tasks 1-11 have code and test evidence. Tasks 12-13 remain LinX work outside this Xpod task. Task 14 is partially evidenced by focused and lite integration gates but remains unchecked because full Docker-backed integration could not start on this machine. Task 15 has fixture Codex proof but remains unchecked because no real external Provider OAuth/API-key credential was connected.
+The Pod AI Gateway implementation from `codex/pod-ai-gateway` is integrated into the settings branch and Tasks 1-11 have code and test evidence. Tasks 12-13 are now marked complete from LinX lane evidence (`d5eae8cd`, `170cf6a6`, plus reviews) rather than Xpod-local code. Task 14 is partially complete: Xpod code, static build, focused Gateway tests, lite integration, Codex fixture smoke, and plaintext artifact scans passed, but full Docker-backed integration remains blocked by the unavailable Docker daemon. Task 15 has fixture Codex proof but remains unchecked because no real external Provider OAuth/API-key credential was connected.
 
 ## Verification Evidence
 
 - `bun run test -- tests/api/ai-gateway/ProtocolFrontends.test.ts tests/api/ai-gateway/CredentialVault.test.ts tests/api/ai-gateway/GatewayApiKeyAuthenticator.test.ts tests/api/ai-gateway/ModelRouter.test.ts tests/api/ai-gateway/ProviderRuntimeAdapters.test.ts tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts tests/api/handlers/AiGatewayHandler.test.ts tests/api/handlers/AiGatewayManagementHandler.test.ts tests/api/handlers/ChatHandlerGatewayScope.test.ts tests/integration/ChatHandler.integration.test.ts tests/integration/ChatKitHandler.integration.test.ts tests/integration/ChatKitAcpCliSmoke.integration.test.ts tests/integration/AiGatewayPodIsolation.integration.test.ts tests/integration/AiGatewayStreaming.integration.test.ts tests/api/container/GatewayInternalPodAccessConfig.test.ts tests/service/ChatKitAcpAuthEffect.service.test.ts tests/service/AcpThreadRuntime.service.test.ts` -> 17 files passed, 1 skipped; 158 tests passed, 3 skipped.
 - `bun run test -- tests/api/ai-gateway/ClientCredentialsInternalPodAccessTokenProvider.test.ts tests/api/ai-gateway/CredentialVault.test.ts tests/api/ai-gateway/PodGatewayAccessKeyRepository.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts tests/api/handlers/AiGatewayHandler.test.ts tests/api/handlers/AiGatewayManagementHandler.test.ts tests/api/handlers/ChatHandlerGatewayScope.test.ts tests/service/VercelChatServiceConfig.test.ts tests/service/ChatKitAcpAuthEffect.service.test.ts` -> 9 files passed; 90 tests passed.
+- `bun run test -- tests/integration/AiGatewayPodIsolation.integration.test.ts tests/integration/AiGatewayStreaming.integration.test.ts tests/api/ai-gateway/PodGatewayAccessKeyRepository.test.ts tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderRuntimeAdapters.test.ts tests/api/handlers/AiGatewayHandler.test.ts tests/api/handlers/AiGatewayManagementHandler.test.ts tests/api/container/GatewayInternalPodAccessConfig.test.ts` -> 8 files passed; 90 tests passed. This run includes the new Task14 production Pod repository adapter isolation/A-B key coverage.
 - `bun run build:ts` -> passed.
-- `bun run build:components` -> passed after ignoring non-component SecretCell helper symbols; remaining output is package export warnings for dependencies.
-- `bun run typecheck:test --pretty false` -> failed on existing non-Gateway test type debt; Gateway/Chat-related filtered errors are zero.
-- `bun run test:integration` -> lite phase passed with 19 files passed, 3 skipped; 99 tests passed, 5 skipped. Full phase failed before tests because Docker daemon is unavailable: `Cannot connect to the Docker daemon at unix:///var/run/docker.sock`.
+- `bun run build:components` -> passed; remaining output is package export warnings for dependencies.
+- `bun run typecheck:test --pretty false` -> failed on existing non-Gateway test type debt. Current categories include script `import.meta` module config, old API handler/request mock typings, matrix/provision/runtime test mocks, edge/reachability tuple/init typings, RDF/quint test type drift, UI `.tsx` JSX config, and managed-agent service test fixture typings. No `src/api/ai-gateway/*`, `src/api/handlers/AiGateway*`, or `tests/integration/AiGateway*` type errors were introduced.
+- `bun run test:integration:lite` -> passed with 19 files passed, 3 skipped; 101 tests passed, 5 skipped.
 - `docker info` -> confirms Docker client is installed but server is unavailable: `dial unix /var/run/docker.sock: connect: no such file or directory`.
 - `bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli --report-dir .test-data/ai-gateway-codex-fixture` -> passed; Codex fixture reports streaming and tool-call runs, 3 Xpod responses, 3 upstream fixture requests, provenance from Gateway key to Pod SecretCell credential, and restore verified.
+- `find .test-data logs local -type f | xargs rg -n "sk-task14-provider-secret-must-not-leak|xpod_gw_v1_cloud|sk-runtime-only|sk-pod-backed-secret|sk-aW50ZWdyYXRpb24tdGVzd|xpod_gw_v1_cloud_"` -> no matches.
 
 ## Task Status
 
@@ -152,32 +155,33 @@ Remaining:
 
 ### Task 12: LinX current-identity management UI
 
-Status: Not complete in this Xpod task.
+Status: Complete from LinX lane evidence.
 
 Evidence:
-- Explicitly excluded by the task request.
+- LinX lane evidence records commit `d5eae8cd` plus review artifacts for current-identity Gateway management UI behavior.
 
 Remaining:
-- LinX web management client and settings UI tests/implementation.
+- None for this Xpod audit; source lives outside this worktree.
 
 ### Task 13: Transactional client configurators
 
-Status: Not complete in this Xpod task.
+Status: Complete from LinX lane evidence.
 
 Evidence:
-- No LinX desktop adapter work was performed here.
+- LinX lane evidence records commit `170cf6a6` plus review artifacts for transactional client configurators, backup, apply, verify, and restore safety.
 
 Remaining:
-- Real LinX transactional adapters for Codex, Claude Code, Pi, and CodeBuddy.
+- None for this Xpod audit; source lives outside this worktree.
 
 ### Task 14: Security, integration and full regression gates
 
-Status: Partially complete; not checked in the plan.
+Status: Partially complete; checked as partial in the plan.
 
 Evidence:
 - Security and integration fixtures exist and passed: `AiGatewayPodIsolation.integration.test.ts`, `AiGatewayStreaming.integration.test.ts`, credential vault tests, gateway key repository tests, internal Pod access tests, and ACP runtime secret-scrubbing tests.
-- Lite integration passed with 99 tests and 5 skips.
-- Secret/plaintext evidence: credential vault JSON/log checks do not contain fixture plaintext; Pod access key repository JSON does not contain issued plaintext or secret; ACP persisted run JSON does not contain `gatewayKey` or `AI_CONNECTION_API_KEY`.
+- New Task14 coverage in `AiGatewayPodIsolation.integration.test.ts` proves Gateway execution through the production `PodConnectedCredentialRepository` adapter, two-WebID isolation, production `PodGatewayAccessKeyRepository` A/B key authentication, deployment mismatch, revocation, and no plaintext key/secret persistence.
+- Lite integration passed with 101 tests and 5 skips.
+- Secret/plaintext evidence: credential vault JSON/log checks do not contain fixture plaintext; Pod access key repository JSON does not contain issued plaintext or secret; `.test-data`, `logs`, and `local` scans found no Task14 fixture provider/key plaintext markers.
 - Browser Bearer/DPoP fallback evidence: `PodGatewayAccessKeyRepository.test.ts` requires internal service Pod access and rejects replaying caller DPoP tokens; `ClientCredentialsInternalPodAccessTokenProvider.test.ts` rejects DPoP service token responses and only attaches internal Bearer.
 
 Remaining:
