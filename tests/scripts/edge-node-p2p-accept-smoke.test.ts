@@ -147,10 +147,10 @@ function execFileCatching(
     execFile(file, args, options, (error, stdout, stderr) => {
       resolve({
         code: typeof (error as NodeJS.ErrnoException | null)?.code === 'number'
-          ? (error as NodeJS.ErrnoException).code as number
+          ? Number((error as NodeJS.ErrnoException).code)
           : error ? 1 : 0,
-        stdout,
-        stderr,
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
       });
     });
   });

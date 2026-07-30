@@ -5,6 +5,14 @@ import type { Quint } from '../../../src/storage/quint';
 
 const { namedNode, literal, defaultGraph, quad } = DataFactory;
 
+interface SqliteStoreProbe {
+  sqlite: {
+    prepare<TRow>(sql: string): {
+      all(): TRow[];
+    };
+  };
+}
+
 describe('SqliteQuintStore', () => {
   let store: SqliteQuintStore;
 
@@ -242,7 +250,7 @@ describe('SqliteQuintStore', () => {
         ),
       ]);
 
-      const rows = (store as any).sqlite.prepare<{
+      const rows = (store as unknown as SqliteStoreProbe).sqlite.prepare<{
         predicate: string;
         objectKind: string;
         objectKey: string | null;
@@ -386,7 +394,7 @@ describe('SqliteQuintStore', () => {
       expect(results).toHaveLength(1);
       expect(results[0].vector).toEqual([0.9]);
 
-      const rows = (store as any).sqlite.prepare<{ objectKey: string | null; objectDigest: string | null }>(`
+      const rows = (store as unknown as SqliteStoreProbe).sqlite.prepare<{ objectKey: string | null; objectDigest: string | null }>(`
         SELECT object_key AS objectKey, object_digest AS objectDigest
         FROM quints
         WHERE subject = 'http://example.org/doc/digest'

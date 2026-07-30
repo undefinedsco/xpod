@@ -55,7 +55,7 @@ describe('P2P data plane HTTP framing', () => {
   });
 
   it('handles P2P HTTP frames on the node side by forwarding to the local target while preserving canonical headers', async () => {
-    const localFetch = vi.fn(async () => new Response('local css response', {
+    const localFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('local css response', {
       status: 200,
       statusText: 'OK',
       headers: {
@@ -76,9 +76,13 @@ describe('P2P data plane HTTP framing', () => {
     });
 
     expect(localFetch).toHaveBeenCalledTimes(1);
-    const [targetUrl, init] = localFetch.mock.calls[0];
+    const firstCall = localFetch.mock.calls[0];
+    if (!firstCall) {
+      throw new Error('Expected local fetch call');
+    }
+    const [targetUrl, init] = firstCall;
     expect(targetUrl).toBe('http://127.0.0.1:5737/alice/a.txt?version=2');
-    const headers = new Headers(init.headers);
+    const headers = new Headers(init?.headers);
     expect(headers.get('authorization')).toBe('DPoP token');
     expect(headers.get('x-xpod-canonical-url')).toBe('https://node-1.pods.example/alice/a.txt?version=2');
     expect(headers.get('x-xpod-canonical-origin')).toBe('https://node-1.pods.example');

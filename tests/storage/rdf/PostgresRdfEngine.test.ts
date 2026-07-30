@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
+import type { Literal, NamedNode, Term } from '@rdfjs/types';
 import { PGlite } from '@electric-sql/pglite';
 import {
   PostgresRdfEngine,
@@ -33,6 +34,13 @@ const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const XSD_STRING = 'http://www.w3.org/2001/XMLSchema#string';
 const CONTENT = 'http://rdfs.org/sioc/ns#content';
 const CREATED = 'http://purl.org/dc/terms/created';
+
+function expectLiteral(term: Term): Literal {
+  if (term.termType !== 'Literal') {
+    throw new Error(`Expected literal term, got ${term.termType}`);
+  }
+  return term;
+}
 const PRIORITY = 'https://undefineds.co/ns#priority';
 const LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const STATUS = 'https://undefineds.co/ns#status';
@@ -246,8 +254,7 @@ describe('PostgresRdfEngine', () => {
       expect(datatypeScan.quads).toHaveLength(1);
       expect(datatypeScan.metrics.queryPlan?.join('\n')).toContain('Rdf3xMembershipScan');
       expect(datatypeScan.metrics.queryPlan?.join('\n')).not.toContain('PostgresRdf3xScanFallback');
-      expect(datatypeScan.quads[0].object.termType).toBe('Literal');
-      expect(datatypeScan.quads[0].object.datatype.value).toBe(XSD_INTEGER);
+      expect(expectLiteral(datatypeScan.quads[0].object).datatype.value).toBe(XSD_INTEGER);
 
       const languageScan = await engine.scan({
         pattern: {
@@ -258,8 +265,7 @@ describe('PostgresRdfEngine', () => {
         },
       });
       expect(languageScan.quads).toHaveLength(1);
-      expect(languageScan.quads[0].object.termType).toBe('Literal');
-      expect(languageScan.quads[0].object.language).toBe('fr');
+      expect(expectLiteral(languageScan.quads[0].object).language).toBe('fr');
 
       await engine.close();
 
@@ -2543,7 +2549,7 @@ describe('PostgresRdfEngine', () => {
     const aclGraph = namedNode(`${graph.value}.acl`);
     const acrGraph = namedNode('https://pod.example/alice/.data/chat/default/.acr');
     const queryFor = (
-      targetGraph: typeof graph,
+      targetGraph: NamedNode,
       principal: string,
       basePath: string,
       materialized?: string,
@@ -2665,7 +2671,7 @@ describe('PostgresRdfEngine', () => {
     const siblingMessage = namedNode(`${siblingGraph.value}#msg_1`);
     const acrGraph = namedNode('https://pod.example/alice/.data/chat/default/.acr');
     const accessControl = namedNode(`${acrGraph.value}#messageDayAccess`);
-    const queryFor = (targetGraph: typeof graph, materialized?: string): RdfQuery => ({
+    const queryFor = (targetGraph: NamedNode, materialized?: string): RdfQuery => ({
       patterns: [
         {
           graph: targetGraph,
@@ -3393,7 +3399,7 @@ describe('PostgresRdfEngine', () => {
       expect(result.bindings[0].priorityTotal.value).toBe('12');
       expect(result.bindings[0].priorityAvg.value).toBe('6');
       expect(result.bindings[0].priorityMax.value).toBe('10');
-      expect(result.bindings[0].priorityTotal.datatype.value).toBe(XSD_DECIMAL);
+      expect(expectLiteral(result.bindings[0].priorityTotal).datatype.value).toBe(XSD_DECIMAL);
       expect(result.metrics.plan).toContain('PostgresRdf3xJoinAggregate');
       expect(result.metrics.plan).toContain('Aggregate(sum(?priority),avg(?priority),max(?priority))');
       expect(result.metrics.plan).not.toContain('PostgresFactsQuery');
@@ -4957,7 +4963,7 @@ describe('PostgresRdfEngine', () => {
       expect(numericAggregateResult.bindings[0].scoreTotal.value).toBe('14');
       expect(numericAggregateResult.bindings[0].scoreAvg.value).toBe('7');
       expect(numericAggregateResult.bindings[0].scoreMax.value).toBe('10');
-      expect(numericAggregateResult.bindings[0].scoreTotal.datatype.value).toBe(XSD_DECIMAL);
+      expect(expectLiteral(numericAggregateResult.bindings[0].scoreTotal).datatype.value).toBe(XSD_DECIMAL);
       expect(numericAggregateResult.metrics.plan).toContain('XpodRdfExtensionOperator(aggregate.bgp_numeric)');
       expect(numericAggregateResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexBgpNumericAggregate(2)');
       expect(numericAggregateResult.metrics.plan).toContain('PostgresRdfNativeCustomIndexAggregateHaving(?scoreTotal$gt)');
@@ -9732,11 +9738,11 @@ class StringIntegerPgPool {
     await this.db.waitReady;
     const result = await this.db.query(sql, params);
     return {
-      rows: result.rows.map(stringIntegerRow),
+      rows: result.rows.map((row) => stringIntegerRow(row as Record<string, unknown>)),
     };
   }
 
-  public async connect(): Promise<StringIntegerPgClient> {
+  public async connect(): Promise<StringIntegerPgClientLike> {
     await this.db.waitReady;
     return new StringIntegerPgClient(this.db);
   }
@@ -9746,13 +9752,18 @@ class StringIntegerPgPool {
   }
 }
 
+interface StringIntegerPgClientLike {
+  query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+  release(): void;
+}
+
 class StringIntegerPgClient {
   public constructor(private readonly db: PGlite) {}
 
   public async query(sql: string, params: unknown[] = []): Promise<{ rows: Array<Record<string, unknown>> }> {
     const result = await this.db.query(sql, params);
     return {
-      rows: result.rows.map(stringIntegerRow),
+      rows: result.rows.map((row) => stringIntegerRow(row as Record<string, unknown>)),
     };
   }
 
@@ -9794,7 +9805,7 @@ class InstrumentedPgClient {
   private inTransaction = false;
 
   public constructor(
-    private readonly delegate: StringIntegerPgClient,
+    private readonly delegate: StringIntegerPgClientLike,
     private readonly pool: InstrumentedPgPool,
   ) {}
 

@@ -24,7 +24,7 @@ const p2pRoute: AccessRoute = {
 
 describe('TCP P2P data plane transport', () => {
   it('round-trips canonical Solid HTTP frames over a real TCP stream', async () => {
-    const localFetch = vi.fn(async () => new Response('tcp local response', {
+    const localFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('tcp local response', {
       status: 207,
       statusText: 'Multi-Status',
       headers: {
@@ -63,12 +63,16 @@ describe('TCP P2P data plane transport', () => {
       expect(response.headers.get('etag')).toBe('"tcp"');
       await expect(response.text()).resolves.toBe('tcp local response');
       expect(localFetch).toHaveBeenCalledTimes(1);
-      const [targetUrl, init] = localFetch.mock.calls[0];
+      const firstCall = localFetch.mock.calls[0];
+      if (!firstCall) {
+        throw new Error('Expected local fetch call');
+      }
+      const [targetUrl, init] = firstCall;
       expect(targetUrl).toBe('http://127.0.0.1:5737/alice/tcp.txt?via=raw');
-      const headers = new Headers(init.headers);
+      const headers = new Headers(init?.headers);
       expect(headers.get('authorization')).toBe('DPoP token');
       expect(headers.get('x-xpod-canonical-url')).toBe('https://node-1.pods.example/alice/tcp.txt?via=raw');
-      expect(init.body).toEqual(Buffer.from('hello tcp p2p'));
+      expect(init?.body).toEqual(Buffer.from('hello tcp p2p'));
       transport.close();
     } finally {
       await server.close();
@@ -76,7 +80,7 @@ describe('TCP P2P data plane transport', () => {
   });
 
   it('attaches a pre-connected socket to the node-side P2P HTTP handler', async () => {
-    const localFetch = vi.fn(async () => new Response('attached socket response', {
+    const localFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('attached socket response', {
       status: 200,
       headers: { 'content-type': 'text/plain' },
     }));
@@ -110,7 +114,11 @@ describe('TCP P2P data plane transport', () => {
           headers: expect.any(Headers),
         }),
       );
-      const headers = new Headers(localFetch.mock.calls[0][1].headers);
+      const firstCall = localFetch.mock.calls[0];
+      if (!firstCall) {
+        throw new Error('Expected local fetch call');
+      }
+      const headers = new Headers(firstCall[1]?.headers);
       expect(headers.get('authorization')).toBe('DPoP attached');
       expect(headers.get('x-xpod-canonical-url')).toBe('https://node-1.pods.example/alice/attached.txt');
       transport.close();
@@ -175,7 +183,7 @@ describe('TCP P2P data plane transport', () => {
         }),
       ]));
       expect(localFetch).toHaveBeenCalledTimes(2);
-      expect(localFetch.mock.calls.map(([url, init]) => [url, init.method])).toEqual([
+      expect(localFetch.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
         ['http://127.0.0.1:5737/alice/mobile-smoke.txt', 'PUT'],
         ['http://127.0.0.1:5737/alice/mobile-smoke.txt', 'GET'],
       ]);

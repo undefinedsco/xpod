@@ -69,6 +69,7 @@ export type HttpResource = `http://${string}` | `https://${string}`;
 
 export interface ThreadRef {
   thread_id: string;
+  chat_id?: string;
 }
 
 export interface ThreadParentRef {

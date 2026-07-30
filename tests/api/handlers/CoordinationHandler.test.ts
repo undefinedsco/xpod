@@ -26,7 +26,7 @@ function createRequest(url: string, body?: unknown, auth: AuthenticatedRequest['
   webId: 'https://alice.example/profile/card#me',
   accountId: 'alice',
 } as any): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.url = url;
   req.headers = { host: 'localhost' };
   req.auth = auth;

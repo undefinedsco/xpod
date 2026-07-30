@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataFactory } from 'n3';
+import type { Literal, Term } from '@rdfjs/types';
 import type { SparqlEngine } from '../../src/storage/sparql/SubgraphQueryEngine';
 import {
   RdfQuadIndex,
@@ -9,6 +10,10 @@ import {
 import { arrayFromStream } from '../helpers/arrayFromStream';
 
 const { namedNode, literal, quad } = DataFactory;
+
+function literalOrUndefined(term: Term | undefined): Literal | undefined {
+  return term?.termType === 'Literal' ? term : undefined;
+}
 
 const BASE = 'https://pod.example/alice/';
 const GRAPH = `${BASE}w3c/basic.ttl`;
@@ -398,15 +403,11 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
       personKey: binding.get('personKey')?.value,
       typedName: {
         value: binding.get('typedName')?.value,
-        datatype: binding.get('typedName')?.termType === 'Literal'
-          ? binding.get('typedName')?.datatype.value
-          : undefined,
+        datatype: literalOrUndefined(binding.get('typedName'))?.datatype.value,
       },
       localizedName: {
         value: binding.get('localizedName')?.value,
-        language: binding.get('localizedName')?.termType === 'Literal'
-          ? binding.get('localizedName')?.language
-          : undefined,
+        language: literalOrUndefined(binding.get('localizedName'))?.language,
       },
     }))).toEqual([
       {
@@ -1438,9 +1439,7 @@ describe('SolidRdfSparqlEngine W3C target subset', () => {
     expect(results.map((binding) => ({
       status: binding.get('status')?.value,
       label: binding.get('label')?.value,
-      labelLanguage: binding.get('label')?.termType === 'Literal'
-        ? binding.get('label')?.language
-        : undefined,
+      labelLanguage: literalOrUndefined(binding.get('label'))?.language,
     }))).toEqual([
       {
         status: 'minor',

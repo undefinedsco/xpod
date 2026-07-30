@@ -293,6 +293,7 @@ describe('runtime bootstrap helpers', () => {
         }
         return path.posix.join(...segments);
       },
+      readTextFile: vi.fn(),
       writeTextFile,
     });
 
@@ -321,6 +322,7 @@ describe('runtime bootstrap helpers', () => {
         }
         return path.posix.join(...segments);
       },
+      readTextFile: vi.fn(),
       writeTextFile,
     });
 

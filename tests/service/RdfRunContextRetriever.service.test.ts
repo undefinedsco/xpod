@@ -54,7 +54,10 @@ describe('RdfRunContextRetriever', () => {
       rdfEngine: { query: queryMock } as unknown as RdfEngineLike,
       limit: 5,
       sourcePrefix: 'file://localhost/workspace/',
-      cacheScope: (current) => ({ principal: current.context.userId, basePath: current.config.workspace }),
+      cacheScope: (current) => ({
+        principal: typeof current.context.userId === 'string' ? current.context.userId : undefined,
+        basePath: current.config.workspace,
+      }),
     });
 
     const result = await retriever.retrieve(input);

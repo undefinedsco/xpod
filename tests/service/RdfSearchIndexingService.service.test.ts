@@ -18,7 +18,10 @@ const source = {
 
 describe('RdfSearchIndexingService', () => {
   it('indexes RDF vector source chunks with the user Pod embedding credential', async () => {
-    const indexVectorSource = vi.fn(async () => {});
+    const indexVectorSource = vi.fn(async (
+      _source: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[0],
+      _chunks: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[1],
+    ) => {});
     const embedBatch = vi.fn(async () => [
       [1, 0, 0],
       [0, 1, 0],
@@ -100,7 +103,10 @@ describe('RdfSearchIndexingService', () => {
   });
 
   it('derives chunks and source hash from text when explicit chunks are not provided', async () => {
-    const indexVectorSource = vi.fn(async () => {});
+    const indexVectorSource = vi.fn(async (
+      _source: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[0],
+      _chunks: Parameters<NonNullable<RdfEngineLike['indexVectorSource']>>[1],
+    ) => {});
     const embedBatch = vi.fn(async (texts: string[]) => texts.map((_text, index) => [index + 1, 0]));
     const service = new RdfSearchIndexingService({
       rdfEngine: { indexVectorSource } as unknown as RdfEngineLike,
@@ -120,7 +126,11 @@ describe('RdfSearchIndexingService', () => {
       text: '# Intro\nRuntime approvals.\n\n# Ops\nOperator steering.',
     });
 
-    const [indexedSource, vectorChunks] = indexVectorSource.mock.calls[0];
+    const indexCall = indexVectorSource.mock.calls[0];
+    if (!indexCall) {
+      throw new Error('Expected RDF vector indexing call');
+    }
+    const [indexedSource, vectorChunks] = indexCall;
     expect(indexedSource).toMatchObject({
       ...source,
       sourceHash: expect.stringMatching(/^[a-f0-9]{64}$/),

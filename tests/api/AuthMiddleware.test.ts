@@ -4,7 +4,7 @@ import { AuthMiddleware, type AuthenticatedRequest } from '../../src/api/middlew
 import type { Authenticator } from '../../src/api/auth/Authenticator';
 
 function createRequest(): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = 'GET';
   req.url = '/v1/secure';
   req.headers = { authorization: 'Bearer redacted-input' };

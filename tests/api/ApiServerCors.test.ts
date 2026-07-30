@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApiServer } from '../../src/api/ApiServer';
+import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 
 describe('ApiServer CORS', () => {
   let server: ApiServer | undefined;
@@ -10,7 +11,15 @@ describe('ApiServer CORS', () => {
   });
 
   it('explicitly allows authorization and DPoP headers during preflight', async () => {
-    server = new ApiServer({ port: 0 });
+    server = new ApiServer({
+      port: 0,
+      authMiddleware: new AuthMiddleware({
+        authenticator: {
+          canAuthenticate: () => false,
+          authenticate: async () => ({ success: false, error: 'unused' }),
+        },
+      }),
+    });
     server.get('/api/test', async (_request, response) => {
       response.statusCode = 200;
       response.end('ok');

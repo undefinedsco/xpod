@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { Literal, Term } from '@rdfjs/types';
 import { describe, expect, it, afterEach, beforeEach } from 'vitest';
 import { DataFactory } from 'n3';
 import { SqliteQuintStore } from '../../../src/storage/quint';
@@ -34,6 +35,13 @@ import {
 } from '../../../src/storage/rdf';
 
 const { namedNode, literal, quad } = DataFactory;
+
+function expectLiteral(term: Term): Literal {
+  if (term.termType !== 'Literal') {
+    throw new Error(`Expected literal term, got ${term.termType}`);
+  }
+  return term;
+}
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
 const DCT_MODIFIED = 'http://purl.org/dc/terms/modified';
@@ -1971,7 +1979,7 @@ describe('SolidRdfEngine', () => {
       thread: binding.thread.value,
       count: binding.count.value,
       scoreTotal: binding.scoreTotal.value,
-      scoreTotalDatatype: binding.scoreTotal.datatype.value,
+      scoreTotalDatatype: expectLiteral(binding.scoreTotal).datatype.value,
       scoreAvg: binding.scoreAvg.value,
     }))).toEqual([
       {

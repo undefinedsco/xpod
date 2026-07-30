@@ -534,7 +534,7 @@ Run: `bun run test:integration`
 
 Expected: lite and full integration suites exit 0. If environment credentials are stale, repair the fixture credentials and rerun; do not waive the gate.
 
-2026-07-31 Task14 status: partial. Code/static/focused/lite gates passed in Xpod; full Docker-backed integration remains blocked by external Docker daemon availability (`/var/run/docker.sock` missing).
+2026-07-31 Task14 Step3 status: complete. Fresh `bun run typecheck:test --pretty false`, `bun run build:ts`, `bun run build:components`, focused Gateway tests, related type-debt regression groups, and `bun run test:integration:lite` all passed in Xpod. Task14 remains partial only because full Docker-backed integration is blocked by external Docker daemon availability (`/var/run/docker.sock` missing).
 
 - [x] **Step 5: Commit test infrastructure**
 

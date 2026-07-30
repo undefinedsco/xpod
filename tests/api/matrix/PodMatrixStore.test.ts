@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { drizzle } from '@undefineds.co/drizzle-solid';
 import { PodMatrixStore } from '../../../src/api/matrix';
+import type { ReconcileGroupThreadMessageInput } from '../../../src/api/reconciler/ServerGroupReconcilerService';
 
 const { db } = vi.hoisted(() => ({
   db: createDb(),
@@ -346,7 +347,7 @@ describe('PodMatrixStore query pushdown', () => {
 
   it('enqueues group Reconciler wake after Matrix user messages', async () => {
     const serverGroupReconcilerService = {
-      reconcileThreadMessage: vi.fn(async () => ({ wakeJobs: [], inserted: 0 })),
+      reconcileThreadMessage: vi.fn(async (_input: ReconcileGroupThreadMessageInput) => ({ wakeJobs: [], inserted: 0 })),
     };
     const store = new PodMatrixStore({
       serverName: 'example.com',
@@ -376,7 +377,11 @@ describe('PodMatrixStore query pushdown', () => {
       reconcilerOwner: 'server',
       mentions: ['https://alice.example/.data/agents/secretary.ttl#this'],
     }));
-    expect(serverGroupReconcilerService.reconcileThreadMessage.mock.calls[0][0].triggerMessage)
+    const reconcileCall = serverGroupReconcilerService.reconcileThreadMessage.mock.calls[0];
+    if (!reconcileCall) {
+      throw new Error('Expected reconcileThreadMessage call');
+    }
+    expect(reconcileCall[0].triggerMessage)
       .toContain(`/.data/chat/${surfaceId('!room:example.com')}/`);
   });
 });

@@ -950,7 +950,7 @@ describe('PostgresRdfVectorIndex', () => {
             object: docType,
           },
         ],
-        project: [
+        select: [
           'source',
           'snippet',
           'heading',

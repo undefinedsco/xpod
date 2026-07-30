@@ -22,6 +22,12 @@ const DF = new DataFactory();
 
 vi.setConfig({ testTimeout: 30_000 });
 
+interface PgExecutorProbe {
+  executor: {
+    query<TRow>(sql: string): Promise<TRow[]>;
+  };
+}
+
 // Helper to create a named node
 function namedNode(value: string): any {
   return DF.namedNode(value);
@@ -73,7 +79,7 @@ describe('PgQuintStore (PGLite backend)', () => {
         ]);
 
         await expect(concurrentStore.get({})).resolves.toEqual([]);
-        const rows = await (concurrentStore as any).executor.query<{ exists: boolean }>(`
+        const rows = await (concurrentStore as unknown as PgExecutorProbe).executor.query<{ exists: boolean }>(`
           SELECT EXISTS (
             SELECT FROM information_schema.tables
             WHERE table_name = 'quints'
@@ -470,7 +476,7 @@ describe('PgQuintStore schema migration', () => {
     try {
       await store.open();
 
-      const indexes = await (store as any).executor.query<{ indexname: string }>(`
+      const indexes = await (store as unknown as PgExecutorProbe).executor.query<{ indexname: string }>(`
         SELECT indexname
         FROM pg_indexes
         WHERE tablename = 'quints'
@@ -545,7 +551,7 @@ describe('PgQuintStore schema migration', () => {
     try {
       await store.open();
 
-      const indexes = await (store as any).executor.query<{ indexname: string }>(`
+      const indexes = await (store as unknown as PgExecutorProbe).executor.query<{ indexname: string }>(`
         SELECT indexname
         FROM pg_indexes
         WHERE tablename = 'quints'
@@ -559,7 +565,7 @@ describe('PgQuintStore schema migration', () => {
       expect(indexNames).toContain('idx_quints_predicate_object_key');
       expect(indexNames).toContain('idx_quints_predicate_object_digest');
 
-      const columns = await (store as any).executor.query<{ column_name: string }>(`
+      const columns = await (store as unknown as PgExecutorProbe).executor.query<{ column_name: string }>(`
         SELECT column_name
         FROM information_schema.columns
         WHERE table_name = 'quints'
@@ -663,7 +669,7 @@ describe('PgQuintStore object data types', () => {
         },
       ] as any[]);
 
-      const rows = await (typedStore as any).executor.query<{
+      const rows = await (typedStore as unknown as PgExecutorProbe).executor.query<{
         predicate: string;
         objectKind: string;
         objectKey: string | null;
@@ -790,7 +796,10 @@ describe('PgQuintStore object data types', () => {
           }
         `);
         const bindings = await arrayFromStream(stream);
-        return bindings.map(binding => binding.get('subject')?.value).sort();
+        return bindings
+          .map(binding => binding.get('subject')?.value)
+          .filter((value): value is string => value !== undefined)
+          .sort();
       };
 
       await expect(subjectsFor('CONTAINS(STR(?body), "needle")')).resolves.toEqual([
@@ -884,7 +893,10 @@ describe('PgQuintStore object data types', () => {
           }
         `);
         const bindings = await arrayFromStream(stream);
-        return bindings.map(binding => binding.get('subject')?.value).sort();
+        return bindings
+          .map(binding => binding.get('subject')?.value)
+          .filter((value): value is string => value !== undefined)
+          .sort();
       };
 
       await expect(subjectsFor('http://example.org/body', JSON.stringify(body))).resolves.toEqual([
@@ -938,7 +950,7 @@ describe('PgQuintStore object data types', () => {
       expect(results).toHaveLength(1);
       expect(results[0].vector).toEqual([0.9]);
 
-      const rows = await (typedStore as any).executor.query<{
+      const rows = await (typedStore as unknown as PgExecutorProbe).executor.query<{
         objectKey: string | null;
         objectDigest: string | null;
       }>(`

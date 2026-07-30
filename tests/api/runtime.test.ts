@@ -110,17 +110,14 @@ describe('startApiService background services', () => {
       }),
     };
     mocked.createApiContainerMock.mockReturnValue(container);
-    const fetchMock = vi.fn(async() => ({
-      ok: true,
-      json: async() => ({
+    const fetchMock = vi.fn(async(_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
         nodeId: 'local-device-id',
         nodeToken: 'node-token-issued-by-cloud',
         serviceToken: 'svc-issued-by-cloud',
         provisionCode: 'fresh-provision-code',
         publicUrl: 'https://node-0000.undefineds.co/',
         spDomain: 'node-0000.undefineds.co',
-      }),
-    }));
+      }), { status: 200 }));
     globalThis.fetch = fetchMock as any;
 
     const handle = await startApiService({
@@ -133,8 +130,13 @@ describe('startApiService background services', () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe('https://api.undefineds.co/provision/nodes');
-    const provisionRequest = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const provisionCall = fetchMock.mock.calls[0];
+    if (!provisionCall) {
+      throw new Error('Expected provision request');
+    }
+    const [provisionUrl, provisionInit] = provisionCall;
+    expect(provisionUrl).toBe('https://api.undefineds.co/provision/nodes');
+    const provisionRequest = JSON.parse(String(provisionInit?.body));
     expect(provisionRequest).toMatchObject({
       nodeId: 'local-device-id',
       domainMode: 'managed',

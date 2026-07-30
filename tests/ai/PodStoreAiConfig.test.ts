@@ -232,7 +232,7 @@ describe('PodChatKitStore AI Config Operations', () => {
         headers: { 'Content-Type': 'application/sparql-results+json' },
       }));
       (mockContext as any)._cachedFetch = sparqlFetch;
-      (mockContext as any)._cachedWebId = mockContext.auth?.webId;
+      (mockContext as any)._cachedWebId = mockContext.userId;
       mockDb.select = vi.fn(() => {
         throw new Error('document-mode collection query should not be used');
       });

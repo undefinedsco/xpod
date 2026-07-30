@@ -2,12 +2,20 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { Literal, Term } from '@rdfjs/types';
 import { describe, expect, it, afterEach, beforeEach } from 'vitest';
 import { DataFactory } from 'n3';
 import { Rdf3xIndex, RdfQuadIndex } from '../../../src/storage/rdf';
 import { createSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 
 const { namedNode, literal, quad } = DataFactory;
+
+function expectLiteral(term: Term): Literal {
+  if (term.termType !== 'Literal') {
+    throw new Error(`Expected literal term, got ${term.termType}`);
+  }
+  return term;
+}
 
 describe('RdfQuadIndex', () => {
   let index: RdfQuadIndex;
@@ -1420,7 +1428,7 @@ describe('RdfQuadIndex', () => {
 
     expect(result.bindings.map((binding) => ({
       sum: binding.sum.value,
-      sumDatatype: binding.sum.datatype.value,
+      sumDatatype: expectLiteral(binding.sum).datatype.value,
       avg: binding.avg.value,
       min: binding.min.value,
       max: binding.max.value,
@@ -1526,7 +1534,7 @@ describe('RdfQuadIndex', () => {
       thread: binding.thread.value,
       count: binding.messageCount.value,
       sum: binding.sum.value,
-      sumDatatype: binding.sum.datatype.value,
+      sumDatatype: expectLiteral(binding.sum).datatype.value,
       avg: binding.avg.value,
       min: binding.min.value,
       max: binding.max.value,

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { RdfSearchIndexingSolidFsSyncer } from '../../../src/api/service/RdfSearchIndexingSolidFsSyncer';
 import type {
+  IndexRdfVectorSourceInput,
   RdfSearchIndexingService,
   RdfVectorDeleteResult,
   RdfVectorIndexingResult,
@@ -25,7 +26,7 @@ describe('RdfSearchIndexingSolidFsSyncer', () => {
     const filePath = path.join(root, 'docs', 'runbook.md');
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, '# Runbook\n\nManaged runtime notes.\n', 'utf8');
-    const indexVectorSource = vi.fn(async (): Promise<RdfVectorIndexingResult> => ({
+    const indexVectorSource = vi.fn(async (_input: IndexRdfVectorSourceInput): Promise<RdfVectorIndexingResult> => ({
       status: 'indexed',
       source: 'https://pod.example/alice/projects/demo/docs/runbook.md',
       chunkCount: 1,
@@ -70,7 +71,7 @@ describe('RdfSearchIndexingSolidFsSyncer', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rdf-search-resource-'));
     const filePath = path.join(root, 'messages.ttl');
     await writeFile(filePath, '<#msg> <https://schema.org/text> "hello" .\n', 'utf8');
-    const indexVectorSource = vi.fn(async (): Promise<RdfVectorIndexingResult> => ({
+    const indexVectorSource = vi.fn(async (_input: IndexRdfVectorSourceInput): Promise<RdfVectorIndexingResult> => ({
       status: 'indexed',
       source: 'https://pod.example/alice/.data/chat/default/2026/06/09/messages.ttl',
       chunkCount: 1,
@@ -89,7 +90,11 @@ describe('RdfSearchIndexingSolidFsSyncer', () => {
         context,
       );
 
-      expect(indexVectorSource.mock.calls[0][0].source.source).toBe(
+      const indexCall = indexVectorSource.mock.calls[0];
+      if (!indexCall) {
+        throw new Error('Expected indexVectorSource call');
+      }
+      expect(indexCall[0].source.source).toBe(
         'https://pod.example/alice/.data/chat/default/2026/06/09/messages.ttl',
       );
     } finally {

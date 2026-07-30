@@ -961,17 +961,14 @@ describe('ProvisionStatusHandler', () => {
       spDomain: 'abc123.undefineds.site',
       exp: Math.floor(nowMs / 1000) + 3600,
     });
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
         nodeId: 'abc123',
         nodeToken: 'nt-new',
         serviceToken: 'st-new',
         provisionCode: freshCode,
         publicUrl: 'https://node.example/',
         spDomain: 'abc123.undefineds.site',
-      }),
-    }));
+      }), { status: 200 }));
     const persistState = vi.fn();
 
     registerProvisionStatusRoute(mockServer, {
@@ -986,7 +983,7 @@ describe('ProvisionStatusHandler', () => {
       tunnelToken: 'tunnel-token',
       provisionCode: expiredCode,
       persistState,
-      fetchImpl: fetchMock as any,
+      fetchImpl: fetchMock,
       now: () => nowMs,
     });
 
@@ -995,8 +992,13 @@ describe('ProvisionStatusHandler', () => {
 
     expect(response.statusCode).toBe(200);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe('https://api.undefineds.co/provision/nodes');
-    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const provisionCall = fetchMock.mock.calls[0];
+    if (!provisionCall) {
+      throw new Error('Expected provision refresh request');
+    }
+    const [provisionUrl, provisionInit] = provisionCall;
+    expect(provisionUrl).toBe('https://api.undefineds.co/provision/nodes');
+    const requestBody = JSON.parse(String(provisionInit?.body));
     expect(requestBody).toMatchObject({
       publicUrl: 'https://node.example/',
       nodeId: 'abc123',

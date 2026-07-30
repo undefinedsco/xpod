@@ -307,6 +307,9 @@ describe('signaled raw TCP P2P sessions', () => {
           resolve();
         });
       });
+      if (!server) {
+        throw new Error('delayed peer server was not created');
+      }
       await listenOn(server, remotePort);
     });
 

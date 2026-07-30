@@ -23,6 +23,28 @@ import { LocalSolidFS, type MaterializedWorkspace, type SolidFS, type SolidFsPre
 
 const workspaceRef = `file://localhost${process.cwd()}`;
 
+type TestRuntimeTool = {
+  name: string;
+  execute?: (
+    id: string,
+    params: { path: string; content?: string },
+  ) => Promise<{ content: Array<{ type: string; text: string }> }>;
+};
+
+interface TestAgentSessionOptions {
+  cwd?: string;
+  tools: TestRuntimeTool[];
+}
+
+interface TestAgentSessionResult {
+  session: {
+    agent: { replaceMessages: typeof replaceMessagesMock };
+    subscribe: typeof subscribeMock;
+    prompt: (prompt?: string) => Promise<void>;
+    dispose: typeof disposeMock;
+  };
+}
+
 function piAiConnectionAgentConfig(overrides: Record<string, unknown> = {}) {
   return {
     id: 'agent-pi-ai-connection',
@@ -63,10 +85,10 @@ const {
 } = (() => {
   const replaceMessagesMock = vi.fn();
   const promptMock = vi.fn(async () => undefined);
-  const subscribeMock = vi.fn(() => () => undefined);
+  const subscribeMock = vi.fn((_handler?: (event: unknown) => void) => () => undefined);
   const disposeMock = vi.fn();
 
-  const createAgentSessionMock = vi.fn(async () => ({
+  const createAgentSessionMock = vi.fn(async (_options?: TestAgentSessionOptions): Promise<TestAgentSessionResult> => ({
       session: {
         agent: { replaceMessages: replaceMessagesMock },
         subscribe: subscribeMock,
@@ -74,7 +96,12 @@ const {
         dispose: disposeMock,
       },
     }));
-  const createCodingToolsMock = vi.fn(() => [{ name: 'read' }, { name: 'bash' }, { name: 'edit' }, { name: 'write' }]);
+  const createCodingToolsMock = vi.fn((_cwd?: string): TestRuntimeTool[] => [
+    { name: 'read' },
+    { name: 'bash' },
+    { name: 'edit' },
+    { name: 'write' },
+  ]);
   const createReadOnlyToolsMock = vi.fn(() => [{ name: 'read' }, { name: 'grep' }, { name: 'find' }, { name: 'ls' }]);
   const reloadMock = vi.fn(async () => undefined);
   const sessionManagerInMemoryMock = vi.fn(() => ({ kind: 'memory-session' }));
@@ -437,7 +464,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         query: input.prompt,
         items: [
           {
-            kind: 'text_chunk',
+            kind: 'text_chunk' as const,
             source: `${workspaceRef}/notes.md`,
             text: 'remember the launch checklist',
             score: 0.91,
@@ -1513,7 +1540,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         query: input.prompt,
         items: [
           {
-            kind: 'text_chunk',
+            kind: 'text_chunk' as const,
             source: `${workspaceRef}/tool-context.md`,
             text: `context for ${input.prompt}`,
           },
@@ -1628,7 +1655,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         query: input.prompt,
         items: [
           {
-            kind: 'text_chunk',
+            kind: 'text_chunk' as const,
             source: `${workspaceRef}/tool-context.md`,
             text: `context for ${input.prompt}`,
           },
@@ -1875,8 +1902,8 @@ describe('Managed Agents Inngest Chat backend', () => {
               displayName: 'Agent Without Key',
               systemPrompt: '',
               executorType: 'claude',
-              apiKey: '',
               mcpServers: {},
+              skills: [],
               enabled: true,
             },
           },
@@ -2304,22 +2331,36 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
       process.env.DEFAULT_MODEL = 'gpt-test';
 
-      createCodingToolsMock.mockImplementationOnce((cwd: string) => [{
+      createCodingToolsMock.mockImplementationOnce((cwd?: string) => {
+        if (!cwd) {
+          throw new Error('Expected runtime cwd');
+        }
+        return [{
         name: 'write',
-        execute: async (_id: string, params: { path: string; content: string }) => {
+        execute: async (_id: string, params: { path: string; content?: string }) => {
+          if (typeof params.content !== 'string') {
+            throw new Error('Expected write content');
+          }
           const target = path.join(cwd, params.path);
           fs.mkdirSync(path.dirname(target), { recursive: true });
           fs.writeFileSync(target, params.content, 'utf8');
           return { content: [{ type: 'text', text: 'written' }] };
         },
-      }]);
-      createAgentSessionMock.mockImplementationOnce(async (options: any) => {
+      }];
+      });
+      createAgentSessionMock.mockImplementationOnce(async (options?: TestAgentSessionOptions) => {
+        if (!options) {
+          throw new Error('Expected agent session options');
+        }
         return {
           session: {
             agent: { replaceMessages: replaceMessagesMock },
             subscribe: subscribeMock,
             prompt: async () => {
-              const writeTool = options.tools.find((tool: any) => tool.name === 'write');
+              const writeTool = options.tools.find((tool) => tool.name === 'write');
+              if (!writeTool?.execute) {
+                throw new Error('Expected write tool');
+              }
               await writeTool.execute('tool_write_1', {
                 path: 'after.txt',
                 content: 'created by runtime\n',
@@ -2394,14 +2435,21 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
       process.env.DEFAULT_MODEL = 'gpt-test';
 
-      createAgentSessionMock.mockImplementationOnce(async (options: any) => {
-        const readTool = options.tools.find((tool: any) => tool.name === 'read');
+      createAgentSessionMock.mockImplementationOnce(async (options?: TestAgentSessionOptions) => {
+        if (!options) {
+          throw new Error('Expected agent session options');
+        }
+        const readTool = options.tools.find((tool) => tool.name === 'read');
+        if (!readTool?.execute) {
+          throw new Error('Expected read tool');
+        }
+        const executeReadTool = readTool.execute;
         return {
           session: {
             agent: { replaceMessages: replaceMessagesMock },
             subscribe: subscribeMock,
             prompt: async () => {
-              await readTool.execute('tool_read_1', { path: 'objects/report.txt' });
+              await executeReadTool('tool_read_1', { path: 'objects/report.txt' });
             },
             dispose: disposeMock,
           },
@@ -2522,7 +2570,10 @@ describe('Managed Agents Inngest Chat backend', () => {
       process.env.DEFAULT_API_BASE = 'https://api.openai.com/v1';
       process.env.DEFAULT_MODEL = 'gpt-test';
 
-      subscribeMock.mockImplementationOnce((handler: Function) => {
+      subscribeMock.mockImplementationOnce((handler?: (event: unknown) => void) => {
+        if (!handler) {
+          throw new Error('Expected session event handler');
+        }
         handler({
           type: 'tool_execution_start',
           toolCallId: 'tool-read-1',
@@ -2652,25 +2703,34 @@ describe('Managed Agents Inngest Chat backend', () => {
       fs.writeFileSync(path.join(mappedWorkspacePath, 'README.md'), 'pod workspace readme\n', 'utf8');
 
       let activeWorkdir = '';
-      let activeSessionHandler: ((event: any) => void) | undefined;
+      let activeSessionHandler: ((event: unknown) => void) | undefined;
 
-      subscribeMock.mockImplementationOnce((handler: Function) => {
-        activeSessionHandler = handler as (event: any) => void;
+      subscribeMock.mockImplementationOnce((handler?: (event: unknown) => void) => {
+        if (!handler) {
+          throw new Error('Expected session event handler');
+        }
+        activeSessionHandler = handler;
         return () => undefined;
       });
 
-      createAgentSessionMock.mockImplementationOnce(async (options: any) => {
+      createAgentSessionMock.mockImplementationOnce(async (options?: TestAgentSessionOptions) => {
+        if (!options) {
+          throw new Error('Expected agent session options');
+        }
+        if (!options.cwd) {
+          throw new Error('Expected agent session cwd');
+        }
         activeWorkdir = options.cwd;
         expect(activeWorkdir).toBe(mappedWorkspacePath);
         return {
           session: {
             agent: { replaceMessages: replaceMessagesMock },
             subscribe: subscribeMock,
-            prompt: async (prompt: string) => {
+            prompt: async (prompt?: string) => {
               const readmePath = path.join(activeWorkdir, 'README.md');
               const outputPath = path.join(activeWorkdir, 'managed-agent-output.txt');
               const readme = fs.readFileSync(readmePath, 'utf8').trim();
-              fs.writeFileSync(outputPath, `processed:${readme}:${prompt}`, 'utf8');
+              fs.writeFileSync(outputPath, `processed:${readme}:${prompt ?? ''}`, 'utf8');
               activeSessionHandler?.({
                 type: 'message_update',
                 assistantMessageEvent: {

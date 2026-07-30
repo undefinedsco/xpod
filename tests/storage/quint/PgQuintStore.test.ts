@@ -11,6 +11,12 @@ import { arrayFromStream } from '../../helpers/arrayFromStream';
 
 const { namedNode, literal, quad } = DataFactory;
 
+interface PgExecutorProbe {
+  executor: {
+    query<TRow>(sql: string): Promise<TRow[]>;
+  };
+}
+
 // Skip tests if no PostgreSQL connection string is provided
 const PG_CONNECTION = process.env.PG_TEST_CONNECTION || process.env.DATABASE_URL;
 const describePg = PG_CONNECTION ? describe : describe.skip;
@@ -291,7 +297,7 @@ describePg('PgQuintStore', () => {
         object: namedNode('http://example.org/resource/needle-link'),
       })).resolves.toHaveLength(1);
 
-      const rows = await (typedStore as any).executor.query<{
+      const rows = await (typedStore as unknown as PgExecutorProbe).executor.query<{
         predicate: string;
         objectKind: string;
         objectKey: string | null;
@@ -365,7 +371,10 @@ describePg('PgQuintStore', () => {
           }
         `);
         const bindings = await arrayFromStream(stream);
-        return bindings.map(binding => binding.get('subject')?.value).sort();
+        return bindings
+          .map(binding => binding.get('subject')?.value)
+          .filter((value): value is string => value !== undefined)
+          .sort();
       };
 
       await expect(subjectsForBodyFilter('CONTAINS(STR(?body), "needle")')).resolves.toEqual([
@@ -444,7 +453,10 @@ describePg('PgQuintStore', () => {
           }
         `);
         const bindings = await arrayFromStream(stream);
-        return bindings.map(binding => binding.get('subject')?.value).sort();
+        return bindings
+          .map(binding => binding.get('subject')?.value)
+          .filter((value): value is string => value !== undefined)
+          .sort();
       };
 
       await expect(subjectsFor('http://example.org/body', JSON.stringify(body))).resolves.toEqual([

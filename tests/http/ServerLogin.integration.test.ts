@@ -1,5 +1,4 @@
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
-import type { Response } from 'undici';
 import { config as loadEnv } from 'dotenv';
 
 loadEnv({ path: process.env.SOLID_ENV_FILE ?? '.env.server' });
@@ -33,7 +32,14 @@ async function getOidcEndSessionEndpoint(base: string): Promise<string> {
   return joinUrl(base, '.oidc/session/end');
 }
 
-function parseSetCookies(response: any): Record<string, string> {
+interface CookieResponse {
+  headers?: {
+    getSetCookie?: () => string[];
+    get?: (name: string) => string | null;
+  };
+}
+
+function parseSetCookies(response: CookieResponse): Record<string, string> {
   const cookies: Record<string, string> = {};
   const cookieStrings = typeof response.headers?.getSetCookie === 'function'
     ? response.headers.getSetCookie()
@@ -60,7 +66,7 @@ function parseSetCookies(response: any): Record<string, string> {
 
 function applySetCookies(
   baseCookies: Record<string, string>,
-  response: Response,
+  response: CookieResponse,
 ): Record<string, string> {
   const nextCookies = { ...baseCookies };
   for (const [name, value] of Object.entries(parseSetCookies(response))) {

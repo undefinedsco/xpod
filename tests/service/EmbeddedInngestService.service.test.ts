@@ -91,7 +91,7 @@ describe('EmbeddedInngestService', () => {
     const child = new EventEmitter() as EventEmitter & {
       stdout: EventEmitter;
       stderr: EventEmitter;
-      kill: ReturnType<typeof vi.fn>;
+      kill: ReturnType<typeof vi.fn<[signal?: string], boolean>>;
     };
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();

@@ -4,6 +4,7 @@ import { registerMatrixRoutes } from '../../../src/api/handlers/MatrixHandler';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { MatrixStore } from '../../../src/api/matrix';
+import type { ReconcilerOwner } from '../../../src/api/reconciler';
 
 type CapturedRoute = {
   method: string;
@@ -40,7 +41,7 @@ function createStore(overrides: Partial<MatrixStore> = {}): MatrixStore {
     createRoom: vi.fn(async () => ({
       roomId: '!room:example.com',
       creator: '@alice:example.com',
-      reconcilerOwner: 'server',
+      reconcilerOwner: 'server' as ReconcilerOwner,
       createdAt: 100,
     })),
     joinRoom: vi.fn(async () => ({ roomId: '!room:example.com' })),
@@ -96,7 +97,7 @@ function createRequest(
     accountId: 'alice',
   },
 ): AuthenticatedRequest {
-  const req = new PassThrough() as unknown as AuthenticatedRequest;
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.url = url;
   req.headers = headers;
   req.auth = auth as any;

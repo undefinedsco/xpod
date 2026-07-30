@@ -21,6 +21,9 @@ describe('ServiceAccessTokenCodec', () => {
     });
 
     expect(result.valid).toBe(true);
+    if (!result.valid) {
+      throw new Error(`expected valid service access token, got ${result.reason}`);
+    }
     expect(result.payload).toMatchObject({
       typ: 'xpod-service-access',
       sub: 'node-1',

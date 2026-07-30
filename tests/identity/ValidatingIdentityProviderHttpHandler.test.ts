@@ -62,7 +62,8 @@ const createHandler = ({
     has: vi.fn(async (_type: string, id: string) => existingAccounts?.has(id) ?? accountExists),
   };
   const interactionHandler = {
-    handleSafe: vi.fn(async () => new BasicRepresentation('', new RepresentationMetadata({ path: 'http://example.test/.account/' }))),
+    handleSafe: vi.fn(async (_input: { operation: Operation }) =>
+      new BasicRepresentation('', new RepresentationMetadata({ path: 'http://example.test/.account/' }))),
   };
 
   const handler = new ValidatingIdentityProviderHttpHandler({
@@ -130,7 +131,11 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
       response: {} as any,
     });
 
-    const forwardedBody = interactionHandler.handleSafe.mock.calls[0]?.[0].operation.body;
+    const forwardCall = interactionHandler.handleSafe.mock.calls[0];
+    if (!forwardCall) {
+      throw new Error('Expected interaction handler to receive request');
+    }
+    const forwardedBody = forwardCall[0].operation.body;
     expect(forwardedBody).not.toBe(operation.body);
     expect(forwardedBody.isEmpty).toBe(true);
     expect(forwardedBody.metadata.get(SOLID_HTTP.terms.accountCookie)?.value).toBe('cookie-1');
@@ -185,8 +190,14 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
     expect(cookieStore.delete).toHaveBeenCalledWith('stale-cookie');
     expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'account-1' }));
 
-    const input = interactionHandler.handleSafe.mock.calls[0]?.[0];
-    const forwardedCookies = input.operation.body.metadata.getAll(SOLID_HTTP.terms.accountCookie).map((term) => term.value);
+    const forwardCall = interactionHandler.handleSafe.mock.calls[0];
+    if (!forwardCall) {
+      throw new Error('Expected interaction handler to receive request');
+    }
+    const input = forwardCall[0];
+    const forwardedCookies = input.operation.body.metadata
+      .getAll(SOLID_HTTP.terms.accountCookie)
+      .map((term: { value: string }) => term.value);
     expect(forwardedCookies).toEqual([ 'fresh-token' ]);
     expect(response.metadata?.get(SOLID_HTTP.terms.accountCookie)?.value).toBe('stale-cookie');
     expect(response.metadata?.get(SOLID_HTTP.terms.accountCookieExpiration)?.value).toBe(new Date(0).toISOString());

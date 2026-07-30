@@ -10,16 +10,20 @@ Merge commit: `65d71e50`
 
 ## Summary
 
-The Pod AI Gateway implementation from `codex/pod-ai-gateway` is integrated into the settings branch and Tasks 1-11 have code and test evidence. Tasks 12-13 are now marked complete from LinX lane evidence (`d5eae8cd`, `170cf6a6`, plus reviews) rather than Xpod-local code. Task 14 is partially complete: Xpod code, static build, focused Gateway tests, lite integration, Codex fixture smoke, and plaintext artifact scans passed, but full Docker-backed integration remains blocked by the unavailable Docker daemon. Task 15 has fixture Codex proof but remains unchecked because no real external Provider OAuth/API-key credential was connected.
+The Pod AI Gateway implementation from `codex/pod-ai-gateway` is integrated into the settings branch and Tasks 1-11 have code and test evidence. Tasks 12-13 are now marked complete from LinX lane evidence (`d5eae8cd`, `170cf6a6`, plus reviews) rather than Xpod-local code. Task 14 Step 3 is complete: Xpod code, test typecheck, static build, focused Gateway tests, lite integration, Codex fixture smoke, and plaintext artifact scans passed. Task 14 remains partial only because full Docker-backed integration is blocked by the unavailable Docker daemon. Task 15 has fixture Codex proof but remains unchecked because no real external Provider OAuth/API-key credential was connected.
 
 ## Verification Evidence
 
 - `bun run test -- tests/api/ai-gateway/ProtocolFrontends.test.ts tests/api/ai-gateway/CredentialVault.test.ts tests/api/ai-gateway/GatewayApiKeyAuthenticator.test.ts tests/api/ai-gateway/ModelRouter.test.ts tests/api/ai-gateway/ProviderRuntimeAdapters.test.ts tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts tests/api/handlers/AiGatewayHandler.test.ts tests/api/handlers/AiGatewayManagementHandler.test.ts tests/api/handlers/ChatHandlerGatewayScope.test.ts tests/integration/ChatHandler.integration.test.ts tests/integration/ChatKitHandler.integration.test.ts tests/integration/ChatKitAcpCliSmoke.integration.test.ts tests/integration/AiGatewayPodIsolation.integration.test.ts tests/integration/AiGatewayStreaming.integration.test.ts tests/api/container/GatewayInternalPodAccessConfig.test.ts tests/service/ChatKitAcpAuthEffect.service.test.ts tests/service/AcpThreadRuntime.service.test.ts` -> 17 files passed, 1 skipped; 158 tests passed, 3 skipped.
 - `bun run test -- tests/api/ai-gateway/ClientCredentialsInternalPodAccessTokenProvider.test.ts tests/api/ai-gateway/CredentialVault.test.ts tests/api/ai-gateway/PodGatewayAccessKeyRepository.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts tests/api/handlers/AiGatewayHandler.test.ts tests/api/handlers/AiGatewayManagementHandler.test.ts tests/api/handlers/ChatHandlerGatewayScope.test.ts tests/service/VercelChatServiceConfig.test.ts tests/service/ChatKitAcpAuthEffect.service.test.ts` -> 9 files passed; 90 tests passed.
 - `bun run test -- tests/integration/AiGatewayPodIsolation.integration.test.ts tests/integration/AiGatewayStreaming.integration.test.ts tests/api/ai-gateway/PodGatewayAccessKeyRepository.test.ts tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderRuntimeAdapters.test.ts tests/api/handlers/AiGatewayHandler.test.ts tests/api/handlers/AiGatewayManagementHandler.test.ts tests/api/container/GatewayInternalPodAccessConfig.test.ts` -> 8 files passed; 90 tests passed. This run includes the new Task14 production Pod repository adapter isolation/A-B key coverage.
+- `bun run typecheck:test --pretty false` -> passed.
 - `bun run build:ts` -> passed.
 - `bun run build:components` -> passed; remaining output is package export warnings for dependencies.
-- `bun run typecheck:test --pretty false` -> failed on existing non-Gateway test type debt. Current categories include script `import.meta` module config, old API handler/request mock typings, matrix/provision/runtime test mocks, edge/reachability tuple/init typings, RDF/quint test type drift, UI `.tsx` JSX config, and managed-agent service test fixture typings. No `src/api/ai-gateway/*`, `src/api/handlers/AiGateway*`, or `tests/integration/AiGateway*` type errors were introduced.
+- API/identity/provision/runtime/service focused type-debt group: `bun run test -- tests/api/AuthMiddleware.test.ts tests/api/ApiServerCors.test.ts tests/api/handlers/CoordinationHandler.test.ts tests/api/handlers/MatrixHandler.test.ts tests/api/handlers/ProvisionHandler.test.ts tests/api/runtime.test.ts tests/api/matrix/PodMatrixStore.test.ts tests/api/service/RdfSearchIndexingSolidFsSyncer.service.test.ts tests/service/RdfSearchIndexingService.service.test.ts tests/identity/ValidatingIdentityProviderHttpHandler.test.ts tests/provision/ProvisionPodCreator.test.ts tests/provision/ServiceAccessTokenCodec.test.ts tests/quota/DrizzleQuotaService.test.ts tests/runtime/bootstrap.test.ts tests/service/RdfRunContextRetriever.service.test.ts tests/ai/PodStoreAiConfig.test.ts` -> 16 files passed; 159 tests passed.
+- Edge/P2P focused type-debt group: `bun run test -- tests/edge/EdgeNodeAgent.test.ts tests/edge/reachability/CanonicalFetch.test.ts tests/edge/reachability/P2PDataPlane.test.ts tests/edge/reachability/P2PSignalingClient.test.ts tests/edge/reachability/TcpP2PDataPlaneTransport.test.ts tests/edge/reachability/TcpP2PSignalingSession.test.ts tests/scripts/edge-node-p2p-accept-smoke.test.ts` -> 7 files passed; 36 tests passed.
+- Managed agent focused type-debt group: `bun run test -- tests/service/ManagedAgentsInngestChat.service.test.ts tests/service/EmbeddedInngestService.service.test.ts` -> 2 files passed; 41 tests passed.
+- Storage/RDF focused type-debt group: `bun run test -- tests/storage/NodeSqliteRuntime.test.ts tests/storage/quint/pglite-quint-store.test.ts tests/storage/quint/PgQuintStore.test.ts tests/storage/quint/SqliteQuintStore.test.ts tests/storage/rdf/PostgresRdfEngine.test.ts tests/storage/rdf/PostgresRdfTextIndex.test.ts tests/storage/rdf/PostgresRdfVectorIndex.test.ts tests/storage/rdf/Rdf3xIndex.test.ts tests/storage/rdf/RdfQuadIndex.test.ts tests/storage/rdf/RdfQueryExecutor.test.ts tests/storage/rdf/SolidRdfEngine.test.ts tests/storage/w3c-sparql-full.test.ts` -> 11 files passed, 1 skipped; 457 tests passed, 16 skipped.
 - `bun run test:integration:lite` -> passed with 19 files passed, 3 skipped; 101 tests passed, 5 skipped.
 - `docker info` -> confirms Docker client is installed but server is unavailable: `dial unix /var/run/docker.sock: connect: no such file or directory`.
 - `bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli --report-dir .test-data/ai-gateway-codex-fixture` -> passed; Codex fixture reports streaming and tool-call runs, 3 Xpod responses, 3 upstream fixture requests, provenance from Gateway key to Pod SecretCell credential, and restore verified.
@@ -175,18 +179,18 @@ Remaining:
 
 ### Task 14: Security, integration and full regression gates
 
-Status: Partially complete; checked as partial in the plan.
+Status: Step 3 complete; Task 14 remains partial pending Docker-backed full integration.
 
 Evidence:
 - Security and integration fixtures exist and passed: `AiGatewayPodIsolation.integration.test.ts`, `AiGatewayStreaming.integration.test.ts`, credential vault tests, gateway key repository tests, internal Pod access tests, and ACP runtime secret-scrubbing tests.
 - New Task14 coverage in `AiGatewayPodIsolation.integration.test.ts` proves Gateway execution through the production `PodConnectedCredentialRepository` adapter, two-WebID isolation, production `PodGatewayAccessKeyRepository` A/B key authentication, deployment mismatch, revocation, and no plaintext key/secret persistence.
+- Static gates now pass fresh: `bun run typecheck:test --pretty false`, `bun run build:ts`, and `bun run build:components`.
 - Lite integration passed with 101 tests and 5 skips.
 - Secret/plaintext evidence: credential vault JSON/log checks do not contain fixture plaintext; Pod access key repository JSON does not contain issued plaintext or secret; `.test-data`, `logs`, and `local` scans found no Task14 fixture provider/key plaintext markers.
 - Browser Bearer/DPoP fallback evidence: `PodGatewayAccessKeyRepository.test.ts` requires internal service Pod access and rejects replaying caller DPoP tokens; `ClientCredentialsInternalPodAccessTokenProvider.test.ts` rejects DPoP service token responses and only attaches internal Bearer.
 
 Remaining:
 - Full Docker-backed integration did not run because Docker daemon is unavailable on this machine.
-- `bun run typecheck:test` still fails on non-Gateway test type debt outside this task.
 
 ### Task 15: Real Codex client product path
 

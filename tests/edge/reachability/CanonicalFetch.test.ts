@@ -16,7 +16,7 @@ const route: AccessRoute = {
 
 describe('createCanonicalFetch', () => {
   it('sends requests to the selected target route while preserving canonical semantics in headers', async () => {
-    const fetchImpl = vi.fn(async () => new Response('ok', { status: 200 }));
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('ok', { status: 200 }));
     const canonicalFetch = createCanonicalFetch({ route, fetchImpl });
 
     const response = await canonicalFetch('https://node-1.pods.example/alice/file.txt?download=1', {
@@ -29,9 +29,13 @@ describe('createCanonicalFetch', () => {
 
     expect(response.status).toBe(200);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [targetUrl, init] = fetchImpl.mock.calls[0];
+    const firstCall = fetchImpl.mock.calls[0];
+    if (!firstCall) {
+      throw new Error('Expected canonical fetch call');
+    }
+    const [targetUrl, init] = firstCall;
     expect(targetUrl).toBe('http://127.0.0.1:5737/alice/file.txt?download=1');
-    const headers = new Headers(init.headers);
+    const headers = new Headers(init?.headers);
     expect(headers.get('authorization')).toBe('DPoP token');
     expect(headers.get('x-xpod-canonical-url')).toBe('https://node-1.pods.example/alice/file.txt?download=1');
     expect(headers.get('x-xpod-canonical-origin')).toBe('https://node-1.pods.example');

@@ -89,7 +89,15 @@ describe('P2P signaling client', () => {
     await expect(client.createP2PSession({
       clientId: 'device-1',
       capabilities: ['tcp-punch'],
-      candidates: [{ protocol: 'tcp', host: '127.0.0.1', port: 41000 }],
+      candidates: [{
+        id: 'offer-1',
+        role: 'client',
+        sourceId: 'device-1',
+        createdAt: '2026-06-20T00:00:00.000Z',
+        protocol: 'tcp',
+        host: '127.0.0.1',
+        port: 41000,
+      }],
     })).resolves.toMatchObject({ sessionId: 'p2p_1' });
     await expect(client.getP2PSession('p2p_1')).resolves.toMatchObject({
       candidates: [expect.objectContaining({ role: 'node', sourceId: 'node-1' })],

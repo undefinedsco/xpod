@@ -20,12 +20,14 @@ describe('ProvisionPodCreator', () => {
 
     mockIdentifierGenerator = {
       generate: vi.fn((name: string) => ({ path: `${baseUrl}${name}/` })),
+      extractPod: vi.fn((identifier: { path: string }) => identifier),
     };
     mockWebIdStore = {
       create: vi.fn().mockResolvedValue('webid-link-1'),
       isLinked: vi.fn().mockResolvedValue(false),
       findLinks: vi.fn().mockResolvedValue([]),
       delete: vi.fn().mockResolvedValue(undefined),
+      get: vi.fn().mockResolvedValue(undefined),
     };
     mockPodStore = {
       create: vi.fn().mockResolvedValue('pod-id-1'),
@@ -108,6 +110,7 @@ describe('ProvisionPodCreator', () => {
         provisionBaseUrl: baseUrl,
         identifierGenerator: {
           generate: vi.fn((name: string) => ({ path: `${localBaseUrl}${name}/` })),
+          extractPod: vi.fn((identifier: { path: string }) => identifier),
         },
         relativeWebIdPath: 'profile/card#me',
         webIdStore: mockWebIdStore,
@@ -159,6 +162,7 @@ describe('ProvisionPodCreator', () => {
         nodeId,
         identifierGenerator: {
           generate: vi.fn((name: string) => ({ path: `${localAccessUrl}${name}/` })),
+          extractPod: vi.fn((identifier: { path: string }) => identifier),
         },
         relativeWebIdPath: 'profile/card#me',
         webIdStore: mockWebIdStore,
@@ -215,6 +219,7 @@ describe('ProvisionPodCreator', () => {
           },
         ]),
         delete: vi.fn().mockResolvedValue(undefined),
+        get: vi.fn().mockResolvedValue(undefined),
       };
       const localCreator = new ProvisionPodCreator({
         baseUrl: localBaseUrl,
@@ -222,6 +227,7 @@ describe('ProvisionPodCreator', () => {
         nodeId,
         identifierGenerator: {
           generate: vi.fn((name: string) => ({ path: `${localBaseUrl}${name}/` })),
+          extractPod: vi.fn((identifier: { path: string }) => identifier),
         },
         relativeWebIdPath: 'profile/card#me',
         webIdStore: localWebIdStore,

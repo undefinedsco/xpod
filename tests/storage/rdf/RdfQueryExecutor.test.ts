@@ -1,5 +1,6 @@
 import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
 import { DataFactory, termToId } from 'n3';
+import type { Literal, Term } from '@rdfjs/types';
 import {
   applyRdfAccessScope,
   RdfQuadIndex,
@@ -9,6 +10,13 @@ import {
 import { isTerm } from '../../../src/storage/quint/types';
 
 const { namedNode, literal, quad } = DataFactory;
+
+function expectLiteral(term: Term): Literal {
+  if (term.termType !== 'Literal') {
+    throw new Error(`Expected literal term, got ${term.termType}`);
+  }
+  return term;
+}
 
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const DCT_CREATED = 'http://purl.org/dc/terms/created';
@@ -2637,7 +2645,7 @@ describe('RdfQueryExecutor', () => {
 
     expect(result.bindings).toHaveLength(1);
     expect(result.bindings[0].sum.value).toBe('12');
-    expect(result.bindings[0].sum.datatype.value).toBe('http://www.w3.org/2001/XMLSchema#decimal');
+    expect(expectLiteral(result.bindings[0].sum).datatype.value).toBe('http://www.w3.org/2001/XMLSchema#decimal');
     expect(result.bindings[0].avg.value).toBe('6');
     expect(result.bindings[0].min.value).toBe('2');
     expect(result.bindings[0].max.value).toBe('10');
@@ -2718,7 +2726,7 @@ describe('RdfQueryExecutor', () => {
       thread: binding.thread.value,
       count: binding.count.value,
       total: binding.total.value,
-      totalDatatype: binding.total.datatype.value,
+      totalDatatype: expectLiteral(binding.total).datatype.value,
       avg: binding.avg.value,
     }))).toEqual([
       {

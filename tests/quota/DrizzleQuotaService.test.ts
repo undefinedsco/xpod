@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { EntitlementProvider } from '../../src/quota/EntitlementProvider';
+import type { AccountEntitlement, EntitlementProvider } from '../../src/quota/EntitlementProvider';
 import { DrizzleQuotaService } from '../../src/quota/DrizzleQuotaService';
 
 const usageRepoInstances: Array<{
@@ -60,10 +60,10 @@ function last<T>(list: T[]): T {
 }
 
 function createEntitlementProvider(): EntitlementProvider & {
-  getAccountEntitlement: ReturnType<typeof vi.fn>;
+  getAccountEntitlement: ReturnType<typeof vi.fn<[accountId: string], Promise<AccountEntitlement | undefined>>>;
 } {
   return {
-    getAccountEntitlement: vi.fn(),
+    getAccountEntitlement: vi.fn(async (_accountId: string): Promise<AccountEntitlement | undefined> => undefined),
   };
 }
 

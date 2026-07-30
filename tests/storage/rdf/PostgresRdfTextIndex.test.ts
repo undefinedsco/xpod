@@ -1086,7 +1086,7 @@ describe('PostgresRdfTextIndex', () => {
             object: docType,
           },
         ],
-        project: ['source', 'snippet'],
+        select: ['source', 'snippet'],
       });
 
       expect(result.bindings).toHaveLength(1);
@@ -1148,7 +1148,7 @@ describe('PostgresRdfTextIndex', () => {
             object: docType,
           },
         ],
-        project: ['source', 'snippet', 'scoreComponents'],
+        select: ['source', 'snippet', 'scoreComponents'],
       });
 
       expect(result.bindings).toHaveLength(1);

@@ -825,7 +825,7 @@ describe('EdgeNodeAgent P2P raw TCP route advertisement', () => {
       })),
     };
     let resolveConnect!: (socket: Socket) => void;
-    const connectStarted = new Promise<void>((resolve) => {
+    const connectStarted = new Promise<Socket>((resolve) => {
       resolveConnect = () => undefined as never;
       const originalResolveConnect = (socket: Socket): void => {
         resolveConnect = () => undefined as never;
