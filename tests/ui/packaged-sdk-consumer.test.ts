@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -7,7 +7,10 @@ import { describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(__dirname, '../..');
-const linxRoot = path.resolve(root, '../linx-applet-packages');
+const commandTimeoutMs = 60_000;
+const tarballDir = process.env.XPOD_APPLET_PACKAGE_TARBALL_DIR;
+const registryUrl = process.env.XPOD_APPLET_PACKAGE_REGISTRY_URL;
+const consumerIntegrationIt = tarballDir || registryUrl ? it : it.skip;
 
 const packageSpecs = {
   '@undefineds.co/solid-sdk': '^0.1.0',
@@ -24,16 +27,24 @@ async function readRepoFile(relativePath: string): Promise<string> {
   return readFile(path.join(root, relativePath), 'utf8');
 }
 
-async function run(command: string, args: string[], cwd: string): Promise<string> {
-  const { stdout, stderr } = await execFileAsync(command, args, {
-    cwd,
-    env: {
-      ...process.env,
-      CI: '1',
-    },
-    maxBuffer: 1024 * 1024 * 20,
-  });
-  return `${stdout}${stderr}`;
+async function run(command: string, args: string[], cwd: string, context: string): Promise<string> {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, {
+      cwd,
+      env: {
+        ...process.env,
+        CI: '1',
+      },
+      maxBuffer: 1024 * 1024 * 20,
+      timeout: commandTimeoutMs,
+      killSignal: 'SIGTERM',
+    });
+    return `${stdout}${stderr}`;
+  } catch (error) {
+    throw new Error(`${context} failed while running ${command} ${args.join(' ')} in ${cwd}`, {
+      cause: error,
+    });
+  }
 }
 
 function assertRegistrySemver(specifier: unknown, packageName: string): asserts specifier is string {
@@ -41,7 +52,36 @@ function assertRegistrySemver(specifier: unknown, packageName: string): asserts 
   expect(specifier, `${packageName} must not use a local source specifier`).not.toMatch(/^(file|link|workspace):|\/Users\//);
 }
 
+async function resolvePackageInputs(): Promise<Record<string, string>> {
+  if (tarballDir) {
+    return dependenciesFromTarballs(tarballDir);
+  }
+  return { ...packageSpecs };
+}
+
+async function dependenciesFromTarballs(directory: string): Promise<Record<string, string>> {
+  const entries = await readdir(directory);
+  const tarballs = entries
+    .filter((entry) => entry.endsWith('.tgz'))
+    .map((entry) => path.resolve(directory, entry));
+  const dependencies = Object.fromEntries(
+    tarballs.map((tarball) => [packageNameFromTarball(tarball), `file:${tarball}`]),
+  );
+
+  expect(Object.keys(dependencies).sort()).toEqual(Object.keys(packageSpecs).sort());
+  return dependencies;
+}
+
 describe('packaged applet SDK consumption', () => {
+  it('does not depend on a mutable sibling Linx checkout for default tests', async () => {
+    const testSource = await readRepoFile('tests/ui/packaged-sdk-consumer.test.ts');
+    const siblingPath = ['..', 'linx-applet-packages'].join('/');
+    const legacyPeerFlag = ['--legacy', 'peer-deps'].join('-');
+
+    expect(testSource).not.toContain(siblingPath);
+    expect(testSource).not.toContain(legacyPeerFlag);
+  });
+
   it('declares applet SDK packages as registry semver dependencies only', async () => {
     const manifest = await readJson('ui/package.json');
 
@@ -61,40 +101,36 @@ describe('packaged applet SDK consumption', () => {
     }
   });
 
-  it('resolves public ESM exports from packed tarballs in an isolated consumer', async () => {
+  consumerIntegrationIt('resolves public ESM exports when XPOD_APPLET_PACKAGE_TARBALL_DIR or XPOD_APPLET_PACKAGE_REGISTRY_URL is configured', async () => {
     const manifest = await readJson('ui/package.json');
     for (const [packageName] of Object.entries(packageSpecs)) {
       assertRegistrySemver(manifest.dependencies?.[packageName], packageName);
     }
 
-    const packResult = await run('node', ['scripts/pack-applet-sdk.mjs'], linxRoot);
-    const { tarballs } = JSON.parse(packResult.slice(packResult.indexOf('{'))) as { tarballs: string[] };
-    expect(tarballs).toHaveLength(Object.keys(packageSpecs).length);
-
     const consumerRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-sdk-consumer-'));
     try {
+      const dependencies = await resolvePackageInputs();
       await writeFile(path.join(consumerRoot, 'package.json'), JSON.stringify({
         name: 'xpod-sdk-consumer-probe',
         private: true,
         type: 'module',
-        dependencies: Object.fromEntries(
-          tarballs.map((tarball) => {
-            const packageName = packageNameFromTarball(tarball);
-            return [packageName, `file:${tarball}`];
-          }),
-        ),
+        dependencies,
         devDependencies: {
           '@types/react': '^19.2.5',
           '@types/react-dom': '^19.2.3',
           typescript: '~5.9.3',
           vite: '^7.2.4',
-          react: '19.2.6',
-          'react-dom': '19.2.6',
+          react: '^19.2.0',
+          'react-dom': '^19.2.0',
         },
       }, null, 2));
+      if (registryUrl) {
+        await writeFile(path.join(consumerRoot, '.npmrc'), `@undefineds.co:registry=${registryUrl}\n`);
+      }
 
       await mkdir(path.join(consumerRoot, 'src'), { recursive: true });
       await writeFile(path.join(consumerRoot, 'src', 'probe.tsx'), [
+        "import '@undefineds.co/shared-ui/theme.css';",
         "import { createElement } from 'react';",
         "import { createRoot } from 'react-dom/client';",
         "import { AppLayout, AuthBoundary, TwoPaneLayout } from '@undefineds.co/extension-sdk/react';",
@@ -125,9 +161,9 @@ describe('packaged applet SDK consumption', () => {
         include: ['src'],
       }, null, 2));
 
-      await run('npm', ['install', '--no-save', '--legacy-peer-deps'], consumerRoot);
-      await run('npx', ['tsc', '-p', 'tsconfig.json'], consumerRoot);
-      await run('npx', ['vite', 'build'], consumerRoot);
+      await run('npm', ['install', '--no-save'], consumerRoot, 'installing applet SDK consumer dependencies');
+      await run('npx', ['tsc', '-p', 'tsconfig.json'], consumerRoot, 'typechecking applet SDK consumer probe');
+      await run('npx', ['vite', 'build'], consumerRoot, 'building applet SDK consumer probe');
     } finally {
       await rm(consumerRoot, { recursive: true, force: true });
     }

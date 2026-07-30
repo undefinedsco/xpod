@@ -2,28 +2,27 @@
 
 ## Scope
 
-Validated Xpod UI as a registry-style consumer of the Linx applet SDK packages from `/Users/ganlu/develop/.worktrees/linx-applet-packages` at commit `170cf6a6`.
+Tracked Xpod UI as a registry-style consumer of the applet SDK packages:
 
-Packages validated:
-
-- `@undefineds.co/solid-sdk@0.1.0`
-- `@undefineds.co/shared-ui@0.1.0`
-- `@undefineds.co/extension-sdk@0.1.0`
-- `@undefineds.co/ai-connection@0.1.0`
+- `@undefineds.co/solid-sdk@^0.1.0`
+- `@undefineds.co/shared-ui@^0.1.0`
+- `@undefineds.co/extension-sdk@^0.1.0`
+- `@undefineds.co/ai-connection@^0.1.0`
 
 ## Status
 
-`ui/package.json` declares the four packages with semver ranges (`^0.1.0`) and no `file:`, `link:`, `workspace:`, or absolute source specifiers. The old `@linx` source alias was removed from both Vite and TypeScript config so UI code resolves package public ESM exports instead of Linx source.
+Task3 remains `blocked-by-registry`. `ui/package.json` now declares the four packages with semver ranges and no `file:`, `link:`, `workspace:`, or absolute source specifiers. The old `@linx` source alias was removed from both Vite and TypeScript config.
 
-The packages are not published to the npm registry yet. Because of that, `ui/bun.lock` was intentionally not updated: writing local tarball or local registry addresses into the committed lock would make the repository non-portable. After the four packages are published, run the normal UI install flow and commit the registry lockfile update.
+The normal UI install/build path still cannot complete because the four packages are not published to the npm registry. `ui/bun.lock` is intentionally unchanged until registry resolution is available; committing local tarball or loopback registry resolutions would make the repository non-portable.
 
 ## Verification
 
-- RED: `bun run test:run tests/ui/packaged-sdk-consumer.test.ts` failed because `@undefineds.co/solid-sdk` was missing from `ui/package.json`.
-- GREEN: `bun run test:run tests/ui/packaged-sdk-consumer.test.ts` passed. The test runs Linx `scripts/pack-applet-sdk.mjs`, installs the resulting tarballs into an isolated temp consumer, and verifies public ESM imports for `AppLayout`, `AuthBoundary`, `TwoPaneLayout`, `defineAppletLayout`, `createAiConnectionExtension`, and `SolidRuntimeProvider` through TypeScript and Vite.
-- Build: `cd ui && npm install --no-save --legacy-peer-deps /Users/ganlu/develop/.worktrees/linx-applet-packages/.test-data/package-tarballs/*.tgz && bun run build:dashboard` passed. The temporary install was not saved to `ui/package.json`, and lockfile changes were discarded.
-- Integration regression: `bun run test:integration` passed the lite phase (`19` test files, `101` tests passed, `5` skipped), then stopped in the full phase because Docker was not available (`Cannot connect to the Docker daemon at unix:///var/run/docker.sock`).
+- RED: `bun run test:run tests/ui/packaged-sdk-consumer.test.ts` failed after adding a regression assertion because the test still hardcoded a sibling package checkout.
+- GREEN unit: `bun run test:run tests/ui/packaged-sdk-consumer.test.ts` passed with `2` tests and `1` explicit skip. The default test path is hermetic: it checks the UI manifest, verifies no source alias or local package specifier remains, and skips package-consumer integration unless an explicit package source env is provided.
+- Blocked build: `bun run build:ui` failed at `cd ui && bun install --frozen-lockfile` with registry `404` for the four `@undefineds.co/*` packages.
 
-## Remaining Gate
+## Deferred Integration
 
-Publish the four `0.1.0` packages to the registry, then update `ui/bun.lock` from registry resolution rather than local tarballs or a loopback registry. Re-run the full Docker-backed integration suite once Docker is available.
+The isolated consumer integration in `tests/ui/packaged-sdk-consumer.test.ts` only runs when either `XPOD_APPLET_PACKAGE_TARBALL_DIR` or `XPOD_APPLET_PACKAGE_REGISTRY_URL` is configured. It uses normal npm peer resolution and imports `@undefineds.co/shared-ui/theme.css`, `AppLayout`, `AuthBoundary`, `TwoPaneLayout`, `defineAppletLayout`, `createAiConnectionExtension`, and `SolidRuntimeProvider`.
+
+Run that integration and `build:ui` after the packages are published or after a fresh explicit tarball set is produced with SDK React peers compatible with Xpod UI (`^19.2.0`).
