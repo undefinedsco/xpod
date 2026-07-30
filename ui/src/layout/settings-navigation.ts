@@ -76,6 +76,8 @@ export function submitSettingsSearch(
   navigate: (path: string) => void,
 ): void {
   event.preventDefault();
+  if (!query.trim()) return;
+
   const target = firstSettingsSearchMatch(query);
   if (target) navigate(target.path);
 }

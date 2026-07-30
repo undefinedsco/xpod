@@ -111,6 +111,20 @@ describe('XpodSettingsLayout', () => {
     expect(navigatedPaths).toEqual([]);
   });
 
+  test('prevents submit reload without navigating when search query is empty', () => {
+    const navigatedPaths: string[] = [];
+    let submitPrevented = false;
+
+    submitSettingsSearch(
+      '   ',
+      { preventDefault: () => { submitPrevented = true; } },
+      (path) => navigatedPaths.push(path),
+    );
+
+    expect(submitPrevented).toBe(true);
+    expect(navigatedPaths).toEqual([]);
+  });
+
   test('clears search results with Escape', () => {
     let query = 'provider';
     let prevented = false;
