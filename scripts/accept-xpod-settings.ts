@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
-import { mkdir, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 export type AcceptanceStatus = 'pass' | 'skip' | 'not_complete' | 'fail';
 
@@ -10,31 +12,86 @@ export interface AcceptanceRequirement {
   source: string;
 }
 
+export interface GateCommand {
+  kind: 'command';
+  command: string[];
+  timeoutMs: number;
+  env?: Record<string, string>;
+}
+
+export interface ArtifactGate {
+  kind: 'artifact';
+  path: string;
+  maxAgeMs: number;
+}
+
+export type AcceptanceGate = GateCommand | ArtifactGate;
+
+export interface CommandResult {
+  command: string[];
+  exitCode: number | null;
+  signal?: NodeJS.Signals | null;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface EvidenceArtifact {
+  schema: 'xpod.acceptance.evidence.v1';
+  generatedAt: string;
+  requirementId: string;
+  command: string[];
+  provenance: {
+    provider?: string;
+    baseUrl?: string;
+    webId?: string;
+    artifactHash: string;
+    [key: string]: unknown;
+  };
+  redaction: {
+    checked: true;
+    secretMaterialFound: false;
+  };
+}
+
 export interface AcceptanceItem {
   requirementId: string;
   title: string;
   status: AcceptanceStatus;
+  mandatory: boolean;
   reason?: string;
   commands: string[];
   evidence: string[];
+  gate?: AcceptanceGate;
+  commandResult?: CommandResult;
+  artifact?: EvidenceArtifact;
 }
 
-export interface AcceptancePlan {
+export interface AcceptanceSummary {
+  pass: number;
+  skip: number;
+  notComplete: number;
+  fail: number;
+  healthy: boolean;
+  complete: boolean;
+  allowIncomplete: boolean;
+  exitCode: number;
+}
+
+export interface AcceptanceReport {
   generatedAt: string;
-  summary: {
-    pass: number;
-    skip: number;
-    notComplete: number;
-    fail: number;
-  };
+  summary: AcceptanceSummary;
   items: AcceptanceItem[];
 }
 
 export interface AcceptancePlanOptions {
   env?: Record<string, string | undefined>;
-  dockerAvailable?: boolean;
-  codexAvailable?: boolean;
   now?: string;
+  allowIncomplete?: boolean;
+}
+
+export interface RunAcceptanceOptions extends AcceptancePlanOptions {
+  executeCommand?: (command: GateCommand) => Promise<CommandResult>;
 }
 
 export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
@@ -80,128 +137,80 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   },
 ];
 
-const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code|code)/i;
+const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code)$/i;
 const SECRET_VALUE_PATTERN = /\b(?:sk-[A-Za-z0-9._-]+|xpod_gw_v1_[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+|oauth-code-[A-Za-z0-9._-]+)\b/g;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-export function buildAcceptancePlan(options: AcceptancePlanOptions = {}): AcceptancePlan {
-  const env = options.env ?? process.env;
-  const dockerAvailable = options.dockerAvailable ?? env.XPOD_ACCEPTANCE_DOCKER_AVAILABLE === 'true';
-  const codexAvailable = options.codexAvailable ?? env.XPOD_ACCEPTANCE_CODEX_AVAILABLE === 'true';
-  const wantsCodex = env.XPOD_ACCEPTANCE_RUN_CODEX === 'true';
-  const hasCodexCredential = Boolean(env.XPOD_ACCEPTANCE_GATEWAY_KEY && env.XPOD_ACCEPTANCE_PROVIDER_API_KEY);
-  const hasVisualBase = Boolean(env.XPOD_SETTINGS_E2E_BASE_URL || env.XPOD_ACCEPTANCE_BASE_URL);
-  const hasRealPodGate = env.XPOD_ACCEPTANCE_REAL_XPOD === 'true' && hasCodexCredential;
-  const hasExternalOauth = env.XPOD_ACCEPTANCE_EXTERNAL_OAUTH === 'true';
-
-  const items: AcceptanceItem[] = [
-    {
-      requirementId: 'solid-pod-isolation',
-      title: requirementTitle('solid-pod-isolation'),
-      status: hasRealPodGate ? 'skip' : 'not_complete',
-      reason: hasRealPodGate
-        ? 'Environment gate is present; run the real browser/API flow manually and attach redacted evidence.'
-        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus a stored provider credential and Gateway key; product mocks are not accepted.',
-      commands: [
-        'XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_ACCEPTANCE_PROVIDER_API_KEY=... XPOD_ACCEPTANCE_GATEWAY_KEY=... bun scripts/accept-xpod-settings.ts',
-      ],
-      evidence: [
-        'tests/integration/AiGatewayPodIsolation.integration.test.ts covers repository-level two-WebID isolation and plaintext scans.',
-        ...(env.XPOD_ACCEPTANCE_PROVIDER_API_KEY ? [`Provider credential gate supplied: ${env.XPOD_ACCEPTANCE_PROVIDER_API_KEY}`] : []),
-      ],
-    },
-    {
-      requirementId: 'browser-visual',
-      title: requirementTitle('browser-visual'),
-      status: hasVisualBase ? 'skip' : 'not_complete',
-      reason: hasVisualBase
-        ? 'Run Playwright against XPOD_SETTINGS_E2E_BASE_URL to collect screenshots in .test-data/acceptance.'
-        : 'Requires a running real Xpod settings host; UI fetch interception with canned JSON is not allowed.',
-      commands: [
-        'XPOD_SETTINGS_E2E_BASE_URL=http://127.0.0.1:3000 bunx playwright test tests/e2e/xpod-settings.spec.ts',
-      ],
-      evidence: [
-        'tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots when gated on a real host.',
-        'tests/ui/settings-launch.test.ts serves bundled dashboard routes from static/dashboard.',
-      ],
-    },
-    {
-      requirementId: 'connect-quota',
-      title: requirementTitle('connect-quota'),
-      status: 'pass',
-      commands: [
-        'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
-      ],
-      evidence: [
-        'ProviderConnectAdapters covers OpenAI/Anthropic/Kimi/Bailian connect contracts and DeepSeek connectUnsupported.',
-        'ProviderQuotaAdapters covers available, stale/error and unsupported quota snapshots without invented percentages.',
-      ],
-    },
-    {
-      requirementId: 'gateway-protocols',
-      title: requirementTitle('gateway-protocols'),
-      status: 'pass',
-      commands: [
-        'bun run test -- tests/api/ai-gateway/ProtocolFrontends.test.ts tests/integration/AiGatewayStreaming.integration.test.ts',
-      ],
-      evidence: [
-        'ProtocolFrontends covers request parsing and serializer contracts for Responses, Messages and Chat Completions.',
-        'AiGatewayStreaming.integration covers SSE ordering, tool calls, usage, cancellation and error mapping.',
-      ],
-    },
-    {
-      requirementId: 'client-config',
-      title: requirementTitle('client-config'),
-      status: 'pass',
-      commands: [
-        'bun run test -- tests/api/handlers/AiClientConfigurationHandler.test.ts',
-      ],
-      evidence: [
-        'AiClientConfigurationHandler tests Codex, Claude Code, Pi and CodeBuddy plan/apply/verify/restore fixtures.',
-      ],
-    },
-    {
-      requirementId: 'docker-full-regression',
-      title: requirementTitle('docker-full-regression'),
-      status: dockerAvailable ? 'skip' : 'not_complete',
-      reason: dockerAvailable
-        ? 'Docker appears available by caller assertion; run bun run test:integration before marking complete.'
-        : 'Docker daemon availability was not asserted; full integration is not complete.',
-      commands: ['bun run test:integration'],
-      evidence: ['Task14 notes record Docker-backed full regression as blocked when /var/run/docker.sock is unavailable.'],
-    },
-    {
-      requirementId: 'real-codex',
-      title: requirementTitle('real-codex'),
-      status: wantsCodex && codexAvailable && hasCodexCredential ? 'skip' : 'not_complete',
-      reason: wantsCodex && codexAvailable && hasCodexCredential
-        ? 'Real Codex gate is enabled; run scripts/ai-gateway-codex-smoke.ts and attach redacted metadata.'
-        : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_CODEX_AVAILABLE=true, XPOD_ACCEPTANCE_GATEWAY_KEY and XPOD_ACCEPTANCE_PROVIDER_API_KEY.',
-      commands: [
-        'XPOD_ACCEPTANCE_RUN_CODEX=true XPOD_ACCEPTANCE_CODEX_AVAILABLE=true bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli',
-      ],
-      evidence: [
-        'scripts/ai-gateway-codex-smoke.ts writes sanitized Codex metadata under .test-data/ai-gateway-codex/.',
-        ...(env.XPOD_ACCEPTANCE_GATEWAY_KEY ? [`Gateway key gate supplied: ${env.XPOD_ACCEPTANCE_GATEWAY_KEY}`] : []),
-        ...(env.XPOD_ACCEPTANCE_OAUTH_CODE ? [`OAuth code evidence supplied: ${env.XPOD_ACCEPTANCE_OAUTH_CODE}`] : []),
-      ],
-    },
-    {
-      requirementId: 'external-oauth',
-      title: requirementTitle('external-oauth'),
-      status: hasExternalOauth ? 'skip' : 'not_complete',
-      reason: hasExternalOauth
-        ? 'External OAuth registration evidence must be attached manually; this harness will not fake it.'
-        : 'No external provider OAuth/client registration evidence supplied; mark not complete rather than mocking.',
-      commands: ['XPOD_ACCEPTANCE_EXTERNAL_OAUTH=true bun scripts/accept-xpod-settings.ts'],
-      evidence: ['Provider contract tests verify unsupported/not_configured states without substituting OAuth mocks.'],
-    },
-  ];
-
-  return summarize({
+export function buildAcceptancePlan(options: AcceptancePlanOptions = {}): AcceptanceReport {
+  return buildAcceptanceReport({
     generatedAt: options.now ?? new Date().toISOString(),
-    summary: { pass: 0, skip: 0, notComplete: 0, fail: 0 },
-    items,
+    items: planItems(options.env ?? process.env),
+    allowIncomplete: options.allowIncomplete === true,
   });
+}
+
+export async function runAcceptance(options: RunAcceptanceOptions = {}): Promise<AcceptanceReport> {
+  const generatedAt = options.now ?? new Date().toISOString();
+  const env = options.env ?? process.env;
+  const executeCommand = options.executeCommand ?? executeGateCommand;
+  const items = planItems(env);
+
+  for (const item of items) {
+    if (!item.gate) continue;
+    if (item.gate.kind === 'command') {
+      const result = redactAcceptanceSecrets(await executeCommand(item.gate), redactionValues(env));
+      item.commandResult = result;
+      item.status = result.exitCode === 0 ? 'pass' : 'fail';
+      item.reason = result.exitCode === 0 ? undefined : `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
+    } else {
+      try {
+        item.artifact = await validateEvidenceArtifact(item.gate, item.requirementId, generatedAt);
+        item.status = 'pass';
+        item.reason = undefined;
+      } catch (error) {
+        item.status = 'fail';
+        item.reason = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
+
+  return buildAcceptanceReport({
+    generatedAt,
+    items,
+    allowIncomplete: options.allowIncomplete === true,
+  });
+}
+
+export function buildAcceptanceReport(input: {
+  generatedAt: string;
+  items: AcceptanceItem[];
+  allowIncomplete: boolean;
+}): AcceptanceReport {
+  const summary = input.items.reduce<AcceptanceSummary>((current, item) => {
+    if (item.status === 'pass') current.pass += 1;
+    if (item.status === 'skip') current.skip += 1;
+    if (item.status === 'not_complete') current.notComplete += 1;
+    if (item.status === 'fail') current.fail += 1;
+    return current;
+  }, {
+    pass: 0,
+    skip: 0,
+    notComplete: 0,
+    fail: 0,
+    healthy: true,
+    complete: true,
+    allowIncomplete: input.allowIncomplete,
+    exitCode: 0,
+  });
+  const mandatoryIncomplete = input.items.some((item) => item.mandatory && (item.status === 'not_complete' || item.status === 'skip'));
+  summary.complete = !mandatoryIncomplete && summary.fail === 0;
+  summary.healthy = summary.fail === 0 && (summary.complete || input.allowIncomplete);
+  summary.exitCode = summary.healthy ? 0 : 1;
+  return {
+    generatedAt: input.generatedAt,
+    summary,
+    items: input.items,
+  };
 }
 
 export function redactAcceptanceSecrets<T>(input: T, extraValues: string[] = []): T {
@@ -217,9 +226,7 @@ export function redactAcceptanceSecrets<T>(input: T, extraValues: string[] = [])
     if (typeof value === 'string') {
       return SECRET_KEY_PATTERN.test(key) ? '[redacted]' : redactString(value);
     }
-    if (Array.isArray(value)) {
-      return value.map((item) => visit(item));
-    }
+    if (Array.isArray(value)) return value.map((item) => visit(item));
     if (value && typeof value === 'object') {
       return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
         entryKey,
@@ -232,79 +239,290 @@ export function redactAcceptanceSecrets<T>(input: T, extraValues: string[] = [])
   return visit(input) as T;
 }
 
-export async function writeAcceptanceEvidence(plan: AcceptancePlan, options: {
+export async function writeAcceptanceEvidence(report: AcceptanceReport, options: {
   outputDir?: string;
   extraRedactionValues?: string[];
 } = {}): Promise<{ jsonPath: string; markdownPath: string }> {
   const outputDir = options.outputDir ?? path.resolve('.test-data/acceptance');
   await mkdir(outputDir, { recursive: true });
-  const redactedPlan = redactAcceptanceSecrets(plan, options.extraRedactionValues);
+  const redactedReport = redactAcceptanceSecrets(report, options.extraRedactionValues);
   const jsonPath = path.join(outputDir, 'xpod-light-settings-acceptance.json');
   const markdownPath = path.join(outputDir, 'xpod-light-settings-acceptance.md');
-  await writeFile(jsonPath, `${JSON.stringify(redactedPlan, null, 2)}\n`, 'utf8');
-  await writeFile(markdownPath, renderMarkdown(redactedPlan), 'utf8');
+  await writeFile(jsonPath, `${JSON.stringify(redactedReport, null, 2)}\n`, 'utf8');
+  await writeFile(markdownPath, renderMarkdown(redactedReport), 'utf8');
   return { jsonPath, markdownPath };
+}
+
+function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
+  const baseUrl = env.XPOD_SETTINGS_E2E_BASE_URL ?? env.XPOD_ACCEPTANCE_XPOD_BASE_URL ?? env.XPOD_ACCEPTANCE_BASE_URL;
+  const runVisual = env.XPOD_ACCEPTANCE_RUN_VISUAL === 'true';
+  const runRealPod = env.XPOD_ACCEPTANCE_REAL_XPOD === 'true';
+  const runDocker = env.XPOD_ACCEPTANCE_RUN_DOCKER === 'true';
+  const runCodex = env.XPOD_ACCEPTANCE_RUN_CODEX === 'true';
+  const runOauth = env.XPOD_ACCEPTANCE_EXTERNAL_OAUTH === 'true';
+
+  return [
+    {
+      requirementId: 'solid-pod-isolation',
+      title: requirementTitle('solid-pod-isolation'),
+      mandatory: true,
+      status: runRealPod && hasRealHostEnv(env) ? 'skip' : 'not_complete',
+      reason: runRealPod
+        ? missingRealHostReason(env)
+        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
+      commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
+      evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod ciphertext inspection when the real-host gate is complete.'],
+      gate: runRealPod && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+    },
+    {
+      requirementId: 'browser-visual',
+      title: requirementTitle('browser-visual'),
+      mandatory: true,
+      status: runVisual && baseUrl ? 'skip' : 'not_complete',
+      reason: runVisual
+        ? (baseUrl ? 'Playwright visual gate is enabled and must execute.' : 'XPOD_SETTINGS_E2E_BASE_URL is required.')
+        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true and XPOD_SETTINGS_E2E_BASE_URL; UI fetch interception with canned JSON is not allowed.',
+      commands: ['XPOD_SETTINGS_E2E_BASE_URL=http://127.0.0.1:3000 bunx playwright test tests/e2e/xpod-settings.spec.ts'],
+      evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots and asserts SDK geometry contracts.'],
+      gate: runVisual && baseUrl ? playwrightGate(env) : undefined,
+    },
+    fixtureItem('connect-quota', [
+      'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
+    ], [
+      'ProviderConnectAdapters covers OpenAI/Anthropic/Kimi/Bailian connect contracts and DeepSeek connectUnsupported.',
+      'ProviderQuotaAdapters covers available, stale/error and unsupported quota snapshots without invented percentages.',
+    ]),
+    fixtureItem('gateway-protocols', [
+      'bun run test -- tests/api/ai-gateway/ProtocolFrontends.test.ts tests/integration/AiGatewayStreaming.integration.test.ts',
+    ], [
+      'ProtocolFrontends covers request parsing and serializer contracts for Responses, Messages and Chat Completions.',
+      'AiGatewayStreaming.integration covers SSE ordering, tool calls, usage, cancellation and error mapping.',
+    ]),
+    fixtureItem('client-config', [
+      'bun run test -- tests/api/handlers/AiClientConfigurationHandler.test.ts',
+    ], [
+      'AiClientConfigurationHandler tests Codex, Claude Code, Pi and CodeBuddy plan/apply/verify/restore fixtures.',
+    ]),
+    {
+      requirementId: 'docker-full-regression',
+      title: requirementTitle('docker-full-regression'),
+      mandatory: true,
+      status: runDocker ? 'skip' : 'not_complete',
+      reason: runDocker ? 'Docker gate is enabled and must execute docker info plus bun run test:integration.' : 'Requires XPOD_ACCEPTANCE_RUN_DOCKER=true.',
+      commands: ['docker info', 'bun run test:integration'],
+      evidence: ['Full Docker-backed regression is complete only when both commands exit 0.'],
+      gate: runDocker ? shellGate(['bash', '-lc', 'docker info && bun run test:integration'], 30 * 60 * 1000, env) : undefined,
+    },
+    {
+      requirementId: 'real-codex',
+      title: requirementTitle('real-codex'),
+      mandatory: true,
+      status: runCodex && hasRealCodexEnv(env) ? 'skip' : 'not_complete',
+      reason: runCodex
+        ? missingRealCodexReason(env)
+        : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_XPOD_BASE_URL, XPOD_ACCEPTANCE_GATEWAY_KEY and a stored provider credential.',
+      commands: ['printf "%s" "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "$XPOD_ACCEPTANCE_MODEL" --api-key-stdin'],
+      evidence: ['scripts/ai-gateway-codex-smoke.ts real Codex mode writes redacted provenance JSON; fixture flags are not accepted.'],
+      gate: runCodex && hasRealCodexEnv(env) ? shellGate([
+        'bash',
+        '-lc',
+        'printf "%s" "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "${XPOD_ACCEPTANCE_MODEL:-gpt-5}" --api-key-stdin --report-dir .test-data/acceptance/codex-real',
+      ], 10 * 60 * 1000, env) : undefined,
+    },
+    {
+      requirementId: 'external-oauth',
+      title: requirementTitle('external-oauth'),
+      mandatory: true,
+      status: runOauth && env.XPOD_ACCEPTANCE_OAUTH_EVIDENCE ? 'skip' : 'not_complete',
+      reason: runOauth
+        ? (env.XPOD_ACCEPTANCE_OAUTH_EVIDENCE ? 'OAuth evidence artifact gate is enabled and must validate.' : 'XPOD_ACCEPTANCE_OAUTH_EVIDENCE is required.')
+        : 'No external provider OAuth/client registration evidence supplied; mark not complete rather than mocking.',
+      commands: ['XPOD_ACCEPTANCE_EXTERNAL_OAUTH=true XPOD_ACCEPTANCE_OAUTH_EVIDENCE=.test-data/acceptance/oauth.json bun scripts/accept-xpod-settings.ts'],
+      evidence: ['OAuth evidence must use schema xpod.acceptance.evidence.v1 with fresh timestamp, provenance hash and redaction checks.'],
+      gate: runOauth && env.XPOD_ACCEPTANCE_OAUTH_EVIDENCE ? {
+        kind: 'artifact',
+        path: env.XPOD_ACCEPTANCE_OAUTH_EVIDENCE,
+        maxAgeMs: ONE_DAY_MS,
+      } : undefined,
+    },
+  ];
+}
+
+function fixtureItem(requirementId: string, commands: string[], evidence: string[]): AcceptanceItem {
+  return {
+    requirementId,
+    title: requirementTitle(requirementId),
+    mandatory: true,
+    status: 'pass',
+    commands,
+    evidence,
+  };
+}
+
+function playwrightGate(env: Record<string, string | undefined>): GateCommand {
+  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts'], 3 * 60 * 1000, env);
+}
+
+function shellGate(command: string[], timeoutMs: number, env: Record<string, string | undefined>): GateCommand {
+  return {
+    kind: 'command',
+    command,
+    timeoutMs,
+    env: publicEnv(env),
+  };
+}
+
+function publicEnv(env: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined)) as Record<string, string>;
+}
+
+function hasRealHostEnv(env: Record<string, string | undefined>): boolean {
+  return Boolean(
+    env.XPOD_SETTINGS_E2E_BASE_URL &&
+    env.XPOD_SETTINGS_E2E_ALICE_STATE &&
+    env.XPOD_SETTINGS_E2E_BOB_STATE &&
+    env.XPOD_SETTINGS_E2E_ALICE_POD_URL &&
+    env.XPOD_SETTINGS_E2E_TEST_API_KEY
+  );
+}
+
+function missingRealHostReason(env: Record<string, string | undefined>): string {
+  if (hasRealHostEnv(env)) return 'Real host gate is enabled and must execute.';
+  return 'Requires XPOD_SETTINGS_E2E_BASE_URL, XPOD_SETTINGS_E2E_ALICE_STATE, XPOD_SETTINGS_E2E_BOB_STATE, XPOD_SETTINGS_E2E_ALICE_POD_URL and XPOD_SETTINGS_E2E_TEST_API_KEY.';
+}
+
+function hasRealCodexEnv(env: Record<string, string | undefined>): boolean {
+  return Boolean(env.XPOD_ACCEPTANCE_XPOD_BASE_URL && env.XPOD_ACCEPTANCE_GATEWAY_KEY);
+}
+
+function missingRealCodexReason(env: Record<string, string | undefined>): string {
+  if (hasRealCodexEnv(env)) return 'Real Codex gate is enabled and must execute.';
+  return 'Requires XPOD_ACCEPTANCE_XPOD_BASE_URL and XPOD_ACCEPTANCE_GATEWAY_KEY; Gateway key must be supplied by env/stdin, not as a command argument.';
+}
+
+async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: string, nowIso: string): Promise<EvidenceArtifact> {
+  const raw = await readFile(gate.path, 'utf8');
+  const artifact = JSON.parse(raw) as EvidenceArtifact;
+  if (artifact.schema !== 'xpod.acceptance.evidence.v1') throw new Error('invalid evidence schema');
+  if (artifact.requirementId !== requirementId) throw new Error('evidence requirement mismatch');
+  if (!Array.isArray(artifact.command) || artifact.command.length === 0) throw new Error('evidence command missing');
+  if (!artifact.provenance || !/^sha256:[a-f0-9]{64}$/i.test(String(artifact.provenance.artifactHash))) {
+    throw new Error('evidence provenance hash missing');
+  }
+  if (artifact.redaction?.checked !== true || artifact.redaction.secretMaterialFound !== false) {
+    throw new Error('evidence redaction check missing');
+  }
+  const generated = Date.parse(artifact.generatedAt);
+  const now = Date.parse(nowIso);
+  if (!Number.isFinite(generated) || !Number.isFinite(now) || Math.abs(now - generated) > gate.maxAgeMs) {
+    throw new Error('evidence artifact is stale');
+  }
+  const actualHash = `sha256:${createHash('sha256').update(raw.replace(/"artifactHash"\s*:\s*"sha256:[a-f0-9]{64}"/i, '"artifactHash":"sha256:0000000000000000000000000000000000000000000000000000000000000000"')).digest('hex')}`;
+  return {
+    ...artifact,
+    provenance: {
+      ...artifact.provenance,
+      observedHash: actualHash,
+    },
+  };
+}
+
+async function executeGateCommand(gate: GateCommand): Promise<CommandResult> {
+  const started = Date.now();
+  return await new Promise((resolve, reject) => {
+    const [command, ...args] = gate.command;
+    const child = spawn(command, args, {
+      env: { ...process.env, ...(gate.env ?? {}) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => child.kill('SIGTERM'), gate.timeoutMs);
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.on('error', reject);
+    child.on('close', (exitCode, signal) => {
+      clearTimeout(timer);
+      resolve({
+        command: gate.command,
+        exitCode,
+        signal,
+        durationMs: Date.now() - started,
+        stdout: stdout.slice(-4_000),
+        stderr: stderr.slice(-4_000),
+      });
+    });
+  });
 }
 
 function requirementTitle(id: string): string {
   return ACCEPTANCE_REQUIREMENTS.find((requirement) => requirement.id === id)?.title ?? id;
 }
 
-function summarize(plan: AcceptancePlan): AcceptancePlan {
-  for (const item of plan.items) {
-    if (item.status === 'pass') plan.summary.pass += 1;
-    if (item.status === 'skip') plan.summary.skip += 1;
-    if (item.status === 'not_complete') plan.summary.notComplete += 1;
-    if (item.status === 'fail') plan.summary.fail += 1;
-  }
-  return plan;
+function redactionValues(env: Record<string, string | undefined>): string[] {
+  return [
+    env.XPOD_ACCEPTANCE_PROVIDER_API_KEY,
+    env.XPOD_ACCEPTANCE_GATEWAY_KEY,
+    env.XPOD_ACCEPTANCE_OAUTH_CODE,
+    env.OPENAI_API_KEY,
+    env.ANTHROPIC_API_KEY,
+  ].filter((value): value is string => Boolean(value));
 }
 
-function renderMarkdown(plan: AcceptancePlan): string {
+function renderMarkdown(report: AcceptanceReport): string {
   const lines = [
     '# Xpod Lightweight Settings Acceptance Evidence',
     '',
-    `Generated: ${plan.generatedAt}`,
+    `Generated: ${report.generatedAt}`,
     '',
-    `Summary: pass=${plan.summary.pass}, skip=${plan.summary.skip}, not_complete=${plan.summary.notComplete}, fail=${plan.summary.fail}`,
+    `Summary: pass=${report.summary.pass}, skip=${report.summary.skip}, not_complete=${report.summary.notComplete}, fail=${report.summary.fail}, healthy=${report.summary.healthy}, complete=${report.summary.complete}, allow_incomplete=${report.summary.allowIncomplete}`,
     '',
   ];
 
-  for (const item of plan.items) {
+  for (const item of report.items) {
     lines.push(`## ${item.title}`, '');
     lines.push(`- Requirement: ${item.requirementId}`);
     lines.push(`- Status: ${item.status}`);
+    lines.push(`- Mandatory: ${item.mandatory}`);
     if (item.reason) lines.push(`- Reason: ${item.reason}`);
     lines.push(`- Commands: ${item.commands.join(' ; ')}`);
     lines.push(`- Evidence: ${item.evidence.join(' ; ')}`);
+    if (item.gate?.kind === 'command' && item.gate.env) lines.push(`- Gate env: ${JSON.stringify(item.gate.env)}`);
+    if (item.commandResult) lines.push(`- Command result: exit=${item.commandResult.exitCode}, durationMs=${item.commandResult.durationMs}`);
+    if (item.artifact) lines.push(`- Artifact: ${item.artifact.schema}, generatedAt=${item.artifact.generatedAt}`);
     lines.push('');
   }
 
   return `${lines.join('\n')}\n`;
 }
 
-async function main(): Promise<void> {
-  const outputDir = readFlag('--output-dir') ?? path.resolve('.test-data/acceptance');
-  const plan = buildAcceptancePlan();
-  const extraValues = [
-    process.env.XPOD_ACCEPTANCE_PROVIDER_API_KEY,
-    process.env.XPOD_ACCEPTANCE_GATEWAY_KEY,
-    process.env.XPOD_ACCEPTANCE_OAUTH_CODE,
-    process.env.OPENAI_API_KEY,
-    process.env.ANTHROPIC_API_KEY,
-  ].filter((value): value is string => Boolean(value));
-  const output = await writeAcceptanceEvidence(plan, { outputDir, extraRedactionValues: extraValues });
-  const redactedPlan = redactAcceptanceSecrets(plan, extraValues);
-  console.log(JSON.stringify({
-    ok: redactedPlan.summary.fail === 0,
-    summary: redactedPlan.summary,
-    output,
-  }, null, 2));
-}
-
 function readFlag(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+function hasFlag(name: string): boolean {
+  return process.argv.includes(name);
+}
+
+async function main(): Promise<void> {
+  const outputDir = readFlag('--output-dir') ?? path.resolve('.test-data/acceptance');
+  const allowIncomplete = hasFlag('--allow-incomplete');
+  const report = await runAcceptance({ allowIncomplete });
+  const output = await writeAcceptanceEvidence(report, {
+    outputDir,
+    extraRedactionValues: redactionValues(process.env),
+  });
+  const redactedReport = redactAcceptanceSecrets(report, redactionValues(process.env));
+  console.log(JSON.stringify({
+    ok: redactedReport.summary.healthy,
+    healthy: redactedReport.summary.healthy,
+    complete: redactedReport.summary.complete,
+    allowIncomplete,
+    summary: redactedReport.summary,
+    output,
+  }, null, 2));
+  process.exitCode = redactedReport.summary.exitCode;
 }
 
 if (import.meta.main) {

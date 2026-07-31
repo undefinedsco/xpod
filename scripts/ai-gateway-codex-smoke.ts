@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import os from 'node:os';
@@ -41,6 +41,7 @@ interface ParsedArgs {
   expectedWebId?: string;
   timeoutMs?: number;
   fixtureCodexCli?: boolean;
+  realCodexCli?: boolean;
   reportDir?: string;
   keepTemp?: boolean;
 }
@@ -58,6 +59,10 @@ async function main(): Promise<void> {
   }
   if (args.fixtureCodexCli) {
     await runFixtureCodexCliSmoke(args);
+    return;
+  }
+  if (args.realCodexCli) {
+    await runRealCodexCliSmoke(args);
     return;
   }
   const options = await resolveOptions(args);
@@ -231,6 +236,8 @@ function parseArgs(argv: string[]): ParsedArgs & { help?: boolean } {
       parsed.timeoutMs = Number(requireValue(argv, ++index, arg));
     } else if (arg === '--fixture-codex-cli') {
       parsed.fixtureCodexCli = true;
+    } else if (arg === '--real-codex-cli') {
+      parsed.realCodexCli = true;
     } else if (arg === '--report-dir') {
       parsed.reportDir = requireValue(argv, ++index, arg);
     } else if (arg === '--keep-temp') {
@@ -304,9 +311,101 @@ function printUsage(): void {
   console.log(`Usage:
   bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-env AI_CONNECTION_API_KEY
   printf '%s' "$AI_CONNECTION_API_KEY" | bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
+  printf '%s' "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
   bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli
 
 The script never accepts the API key as a CLI value. It prints only non-sensitive provenance evidence.`);
+}
+
+async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
+  const options = await resolveOptions(args);
+  const timeoutMs = args.timeoutMs ?? 180_000;
+  const reportRoot = path.resolve(args.reportDir ?? '.test-data/ai-gateway-codex-real');
+  fs.mkdirSync(reportRoot, { recursive: true });
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-real-codex-'));
+  const codexHome = path.join(tempRoot, 'codex-home');
+  const workspace = path.join(tempRoot, 'workspace');
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(workspace, 'xpod-real-tool-fixture.txt'), 'XPOD REAL TOOL OK');
+  const backup = snapshotCodexHome(codexHome);
+  const projector = new CodexRuntimeProjector();
+  const codexBaseUrl = new URL('/v1', withTrailingSlash(options.baseUrl)).toString().replace(/\/$/u, '');
+  const startedAt = new Date().toISOString();
+  let restoreVerified = false;
+  const runs: CodexRunEvidence[] = [];
+
+  try {
+    projector.project({
+      codexHome,
+      baseUrl: codexBaseUrl,
+      apiKey: options.apiKey,
+      wireApi: 'responses',
+      model: options.model,
+    });
+    verifyProjectedCodexHome(codexHome, { baseUrl: codexBaseUrl, apiKey: options.apiKey });
+    runs.push(await runCodexExec({
+      codexHome,
+      workspace,
+      prompt: 'Answer with one short sentence: XPOD REAL STREAM OK',
+      timeoutMs,
+    }));
+    runs.push(await runCodexExec({
+      codexHome,
+      workspace,
+      prompt: 'Read xpod-real-tool-fixture.txt using tools and answer with its exact content.',
+      timeoutMs,
+    }));
+  } finally {
+    restoreCodexHome(codexHome, backup);
+    restoreVerified = !fs.existsSync(path.join(codexHome, 'config.toml')) && !fs.existsSync(path.join(codexHome, 'auth.json'));
+    if (!args.keepTemp) {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }
+
+  const report = {
+    schema: 'xpod.acceptance.evidence.v1',
+    generatedAt: startedAt,
+    requirementId: 'real-codex',
+    command: ['codex', 'exec', '--json', '--cd', '<workspace>', '<redacted-prompt>'],
+    provenance: {
+      baseUrl: options.baseUrl,
+      model: options.model,
+      webId: options.expectedWebId,
+      credentialSource: 'existing-stored-xpod-provider-credential',
+      gatewayKeySource: args.apiKeyStdin ? 'stdin' : `env:${args.apiKeyEnv ?? 'AI_CONNECTION_API_KEY'}`,
+      artifactHash: 'sha256:pending',
+    },
+    redaction: {
+      checked: true,
+      secretMaterialFound: false,
+    },
+    codexVersion: await codexVersion(),
+    restoreVerified,
+    runs: runs.map(({ stdoutJsonl, stderrPreview, ...run }) => ({
+      ...run,
+      stderrPreview: sanitize(stderrPreview),
+      eventTypes: stdoutJsonl.map((event) => String(event.type ?? 'unknown')),
+    })),
+  };
+  assertRealCodexReport(report, options.apiKey);
+  const reportWithHash = withArtifactHash(report);
+  const reportPath = path.join(reportRoot, `real-codex-${Date.now()}.json`);
+  fs.writeFileSync(reportPath, `${JSON.stringify(reportWithHash, null, 2)}\n`);
+  console.log(JSON.stringify({
+    ok: true,
+    reportPath,
+    generatedAt: reportWithHash.generatedAt,
+    provenance: reportWithHash.provenance,
+    restoreVerified,
+    runs: reportWithHash.runs.map((run: any) => ({
+      exitCode: run.exitCode,
+      sawTurnCompleted: run.sawTurnCompleted,
+      sawCommandExecution: run.sawCommandExecution,
+      finalMessage: run.finalMessage,
+    })),
+  }, null, 2));
 }
 
 async function runFixtureCodexCliSmoke(args: ParsedArgs): Promise<void> {
@@ -1061,6 +1160,50 @@ function assertFixtureReport(report: FixtureReport): void {
   if (report.upstream.requestCount < 3 || report.upstream.bearerHeaders.some((header) => header !== 'Bearer <redacted>')) {
     throw new Error('Upstream fixture did not receive provider-token authenticated requests');
   }
+}
+
+function assertRealCodexReport(report: any, apiKey: string): void {
+  if (!report.restoreVerified) {
+    throw new Error('Real Codex HOME restore was not verified');
+  }
+  if (!Array.isArray(report.runs) || report.runs.length !== 2) {
+    throw new Error('Real Codex acceptance requires two runs');
+  }
+  if (report.runs.some((run: any) => run.exitCode !== 0 || !run.sawTurnCompleted)) {
+    throw new Error(`Real Codex run failed: ${JSON.stringify(report.runs.map((run: any) => ({
+      exitCode: run.exitCode,
+      signal: run.signal,
+      sawTurnCompleted: run.sawTurnCompleted,
+      finalMessage: run.finalMessage,
+    })))}`);
+  }
+  if (!report.runs[0]?.finalMessage) {
+    throw new Error('Real Codex stream run did not produce a final message');
+  }
+  if (!report.runs[1]?.sawCommandExecution) {
+    throw new Error('Real Codex tool run did not execute a tool call');
+  }
+  const serialized = JSON.stringify(report);
+  if (serialized.includes(apiKey) || /xpod_gw_v1_[A-Za-z0-9._-]+/.test(serialized) || /sk-[A-Za-z0-9._-]+/.test(serialized)) {
+    throw new Error('Real Codex report contains secret material');
+  }
+}
+
+function withArtifactHash<T extends { provenance: { artifactHash: string } }>(report: T): T {
+  const canonical = JSON.stringify({
+    ...report,
+    provenance: {
+      ...report.provenance,
+      artifactHash: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    },
+  });
+  return {
+    ...report,
+    provenance: {
+      ...report.provenance,
+      artifactHash: `sha256:${createHash('sha256').update(canonical).digest('hex')}`,
+    },
+  };
 }
 
 function sanitize(value: string): string {
