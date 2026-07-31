@@ -1,7 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import {
-  PlaceholderSettingsSection,
   ServicesHome,
   XpodSettingsLayout,
 } from './layout/XpodSettingsLayout';
@@ -13,6 +12,7 @@ const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: 
 const SettingsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.SettingsPage })));
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 const PodPage = lazy(() => import('./pages/settings/PodPage'));
+const NetworkPage = lazy(() => import('./pages/settings/NetworkPage'));
 
 function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
@@ -37,12 +37,7 @@ export const dashboardRoutes: RouteObject[] = [
       },
       {
         path: 'network',
-        element: guardedRoute(
-          <PlaceholderSettingsSection
-            title="Network"
-            description="Review network endpoints, DNS, and connectivity settings from the Network applet."
-          />,
-        ),
+        element: guardedRoute(lazyRoute(<NetworkPage />)),
       },
       { path: 'services', element: guardedRoute(<ServicesHome />) },
       { path: 'services/logs', element: guardedRoute(lazyRoute(<LogsPage />)) },

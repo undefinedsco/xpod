@@ -28,6 +28,12 @@ import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHand
 import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { DrizzlePodAiConnectionStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
+import {
+  createAddressReaders,
+  createDdnsStatusReader,
+  createTunnelStatusReader,
+  registerNetworkSettingsRoutes,
+} from '../handlers/NetworkSettingsHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
@@ -148,6 +154,19 @@ function registerSharedRoutes(
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
     aiConnectionStatusReader: new DrizzlePodAiConnectionStatusReader(gatewayInternalPodAccess),
+  });
+  registerNetworkSettingsRoutes(server, {
+    endpoint: () => resolveNetworkEndpoint(config),
+    ...createAddressReaders({
+      endpoint: () => resolveNetworkEndpoint(config),
+      port: config.port,
+      publicUrls: [
+        config.publicUrl,
+        config.activeTunnelProfile?.publicUrl,
+      ],
+    }),
+    dnsStatusReader: createDdnsStatusReader(container.resolve('ddnsManager', { allowUnregistered: true })),
+    tunnelStatusReader: createTunnelStatusReader(container.resolve('localTunnelProvider', { allowUnregistered: true })),
   });
 
   // Quota & Usage API (Business 对接)
@@ -330,4 +349,16 @@ function readPositiveInteger(value: string | undefined): number | undefined {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveNetworkEndpoint(config: ApiContainerConfig): string {
+  const configured = config.publicUrl
+    ?? config.activeTunnelProfile?.publicUrl
+    ?? config.solidBaseUrl
+    ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}/`;
+  try {
+    return new URL(configured).toString().replace(/\/+$/u, '') + '/';
+  } catch {
+    return `http://127.0.0.1:${config.port}/`;
+  }
 }
