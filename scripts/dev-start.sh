@@ -43,6 +43,30 @@ log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+http_status() {
+  printf '%s' "$1" | awk -F: '/^HTTP_STATUS:/ { status=$2 } END { print status }'
+}
+
+http_body() {
+  printf '%s' "$1" | sed '/^HTTP_STATUS:/d'
+}
+
+http_success() {
+  case "$1" in
+    2??) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+json_string_value() {
+  local key=$1
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n 1
+}
+
+curl_json() {
+  curl -sS -w '\nHTTP_STATUS:%{http_code}\n' "$@"
+}
+
 # 等待服务就绪
 wait_for_service() {
   local url=$1
@@ -73,42 +97,76 @@ init_credentials() {
   local password="test123456"
   local pod_name="test"
 
-  # 1. 登录
+  # 1. 登录并取得 CSS Account token
   log_info "登录 $email..."
   local login_response
-  login_response=$(curl -s -c - -b - -X POST "$CSS_BASE/.account/login/password/" \
+  if ! login_response=$(curl_json -X POST "$CSS_BASE/.account/login/password/" \
     -H "Content-Type: application/json" \
-    -d "{\"email\":\"$email\",\"password\":\"$password\"}" 2>/dev/null) || true
+    -H "Accept: application/json" \
+    -d "{\"email\":\"$email\",\"password\":\"$password\"}" 2>&1); then
+    log_error "Client Credentials 初始化失败: 登录请求失败"
+    return 1
+  fi
 
-  # 获取 cookie (简化处理，实际可能需要更复杂的 cookie 管理)
-  local cookie_file=$(mktemp)
-  curl -s -c "$cookie_file" -X POST "$CSS_BASE/.account/login/password/" \
-    -H "Content-Type: application/json" \
-    -d "{\"email\":\"$email\",\"password\":\"$password\"}" > /dev/null 2>&1 || true
+  local login_status=$(http_status "$login_response")
+  local login_body=$(http_body "$login_response")
+  local account_token=$(printf '%s' "$login_body" | json_string_value authorization)
 
-  # 2. 创建 Client Credentials
+  if ! http_success "$login_status" || [ -z "$account_token" ]; then
+    log_error "Client Credentials 初始化失败: 登录失败 (HTTP ${login_status:-unknown})"
+    printf '%s\n' "$login_body"
+    return 1
+  fi
+
+  # 2. 读取 account controls，使用服务端公布的 clientCredentials endpoint
+  log_info "读取 Account controls..."
+  local controls_response
+  if ! controls_response=$(curl_json "$CSS_BASE/.account/" \
+    -H "Accept: application/json" \
+    -H "Authorization: CSS-Account-Token $account_token" 2>&1); then
+    log_error "Client Credentials 初始化失败: Account controls 请求失败"
+    return 1
+  fi
+
+  local controls_status=$(http_status "$controls_response")
+  local controls_body=$(http_body "$controls_response")
+  local credentials_url=$(printf '%s' "$controls_body" | json_string_value clientCredentials)
+
+  if ! http_success "$controls_status" || [ -z "$credentials_url" ]; then
+    log_error "Client Credentials 初始化失败: 无法获取 clientCredentials endpoint (HTTP ${controls_status:-unknown})"
+    printf '%s\n' "$controls_body"
+    return 1
+  fi
+
+  # 3. 创建 Client Credentials
   log_info "创建 Client Credentials..."
   local cred_response
-  cred_response=$(curl -s -b "$cookie_file" -X POST "$CSS_BASE/.account/client-credentials/" \
+  if ! cred_response=$(curl_json -X POST "$credentials_url" \
     -H "Content-Type: application/json" \
-    -d "{\"name\":\"dev-test\",\"webId\":\"$CSS_BASE/$pod_name/profile/card#me\"}" 2>/dev/null) || true
-
-  rm -f "$cookie_file"
+    -H "Accept: application/json" \
+    -H "Authorization: CSS-Account-Token $account_token" \
+    -d "{\"name\":\"dev-test\",\"webId\":\"$CSS_BASE/$pod_name/profile/card#me\"}" 2>&1); then
+    log_error "Client Credentials 初始化失败: 创建请求失败"
+    return 1
+  fi
 
   # 解析响应
-  local client_id=$(echo "$cred_response" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
-  local client_secret=$(echo "$cred_response" | grep -o '"secret":"[^"]*"' | cut -d'"' -f4)
+  local cred_status=$(http_status "$cred_response")
+  local cred_body=$(http_body "$cred_response")
+  local client_id=$(printf '%s' "$cred_body" | json_string_value id)
+  local client_secret=$(printf '%s' "$cred_body" | json_string_value secret)
 
-  if [ -n "$client_id" ] && [ -n "$client_secret" ]; then
-    log_success "Client Credentials 已创建"
+  if http_success "$cred_status" && [ -n "$client_id" ] && [ -n "$client_secret" ]; then
+    log_success "Client Credentials 已创建: $client_id"
     echo "XPOD_CLIENT_ID=$client_id"
-    echo "XPOD_CLIENT_SECRET=$client_secret"
 
     # 保存到环境变量文件
     echo "XPOD_CLIENT_ID=$client_id" >> "$ENV_FILE"
     echo "XPOD_CLIENT_SECRET=$client_secret" >> "$ENV_FILE"
   else
-    log_warn "Client Credentials 创建失败，使用 /dev/setup 替代"
+    log_error "Client Credentials 初始化失败: 创建失败或响应缺少 id/secret (HTTP ${cred_status:-unknown})"
+    printf '%s\n' "$cred_body"
+    return 1
   fi
 }
 
@@ -167,7 +225,10 @@ start_cloud() {
 
   # 初始化
   sleep 2  # 等待 seed 完成
-  init_credentials
+  init_credentials || {
+    kill $CLOUD_PID 2>/dev/null
+    exit 1
+  }
   create_test_node
 
   echo ""
@@ -176,7 +237,7 @@ start_cloud() {
   echo "=========================================="
   echo "环境变量已保存到: $ENV_FILE"
   echo "=========================================="
-  cat "$ENV_FILE"
+  sed 's/^\(XPOD_CLIENT_SECRET=\).*/\1[redacted]/' "$ENV_FILE"
   echo "=========================================="
   echo ""
   echo "启动 Local 节点:"

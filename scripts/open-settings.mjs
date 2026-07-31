@@ -46,10 +46,44 @@ export function resolvePlatformOpenCommand(platform, url) {
   throw new Error(`Unsupported platform for opening a browser: ${platform}`);
 }
 
-function waitForChild(child) {
+function waitForChild(child, timeoutMs) {
   return new Promise((resolve) => {
-    child.once('error', (error) => resolve({ type: 'error', error }));
-    child.once('close', (code, signal) => resolve({ type: 'close', code, signal }));
+    let settled = false;
+    let timer;
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      child.removeListener?.('error', onError);
+      child.removeListener?.('close', onClose);
+    };
+
+    const settle = (result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    const onError = (error) => settle({ type: 'error', error });
+    const onClose = (code, signal) => settle({ type: 'close', code, signal });
+
+    child.once('error', onError);
+    child.once('close', onClose);
+
+    timer = setTimeout(() => {
+      try {
+        child.kill?.();
+      } catch {
+        // Best effort: platform open commands may have already exited.
+      }
+      child.unref?.();
+      settle({ type: 'timeout' });
+    }, timeoutMs);
+    timer.unref?.();
   });
 }
 
@@ -106,18 +140,30 @@ export async function openSettingsDashboard(options = {}) {
   }
 
   const { command, args } = resolved;
+  const openCommandTimeoutMs = Number(env.XPOD_SETTINGS_OPEN_COMMAND_TIMEOUT_MS ?? 7000);
   try {
     const child = spawnFn(command, args, {
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
     });
-    const result = await waitForChild(child);
+    const result = await waitForChild(child, openCommandTimeoutMs);
     if (result.type === 'error') {
       return {
         ok: false,
         code: 'open_command_failed',
         message: result.error instanceof Error ? result.error.message : String(result.error),
+        command,
+        args,
+        url,
+      };
+    }
+    if (result.type === 'timeout') {
+      return {
+        ok: false,
+        code: 'open_command_failed',
+        reason: 'timeout',
+        message: `Open command timed out after ${openCommandTimeoutMs}ms`,
         command,
         args,
         url,

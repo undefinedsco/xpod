@@ -93,6 +93,79 @@ describe('settings launch scripts', () => {
     );
   });
 
+  it('times out a hanging GUI open command and kills the child once', async () => {
+    const { openSettingsDashboard } = await import(openSettingsScript);
+    const kill = vi.fn();
+    const unref = vi.fn();
+    const child = {
+      once() {
+        return this;
+      },
+      kill,
+      unref,
+    };
+    const started = Date.now();
+
+    const result = await openSettingsDashboard({
+      env: {
+        XPOD_SETTINGS_URL: 'http://localhost:3000',
+        XPOD_SETTINGS_OPEN_COMMAND_TIMEOUT_MS: '20',
+      },
+      platform: 'linux',
+      fetchFn: async () => ({ ok: true, status: 200 }),
+      spawnFn: vi.fn(() => child),
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'open_command_failed',
+      reason: 'timeout',
+      command: 'xdg-open',
+      url: 'http://localhost:3000/dashboard/models',
+    });
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(unref).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report timeout after the GUI command closes successfully', async () => {
+    vi.useFakeTimers();
+    const { openSettingsDashboard } = await import(openSettingsScript);
+    const kill = vi.fn();
+    const unref = vi.fn();
+    const child = {
+      once(event: string, callback: (value?: unknown) => void) {
+        if (event === 'close') {
+          setTimeout(() => callback(0), 10);
+        }
+        return this;
+      },
+      kill,
+      unref,
+    };
+
+    const promise = openSettingsDashboard({
+      env: {
+        XPOD_SETTINGS_URL: 'http://localhost:3000',
+        XPOD_SETTINGS_OPEN_COMMAND_TIMEOUT_MS: '1000',
+      },
+      platform: 'darwin',
+      fetchFn: async () => ({ ok: true, status: 200 }),
+      spawnFn: vi.fn(() => child),
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    const result = await promise;
+    vi.useRealTimers();
+
+    expect(result).toMatchObject({
+      ok: true,
+      command: 'open',
+      url: 'http://localhost:3000/dashboard/models',
+    });
+    expect(kill).not.toHaveBeenCalled();
+    expect(unref).toHaveBeenCalledTimes(1);
+  });
+
   it('returns structured errors when the platform GUI command fails', async () => {
     const { openSettingsDashboard } = await import(openSettingsScript);
     const spawnFn = vi.fn(() => ({

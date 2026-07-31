@@ -19,15 +19,29 @@ describe('dashboard runtime console routes', () => {
 
   it('uses deep-linkable dashboard routes for status, logs and settings', async () => {
     const dashboardApp = await readRepoFile('ui/src/DashboardApp.tsx');
+    const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
+    const settingsNavigation = await readRepoFile('ui/src/layout/settings-navigation.ts');
     const adminLayout = await readRepoFile('ui/src/pages/admin/AdminLayout.tsx');
     const sidebar = await readRepoFile('ui/src/components/ui/Sidebar.tsx');
 
     expect(dashboardApp).toContain('BrowserRouter');
     expect(dashboardApp).toContain('basename="/dashboard"');
-    expect(dashboardApp).toContain('path="status"');
-    expect(dashboardApp).toContain('path="logs"');
-    expect(dashboardApp).toContain('path="settings"');
-    expect(dashboardApp).toContain('to="/status"');
+    expect(dashboardRoutes).toContain("path: 'models'");
+    expect(dashboardRoutes).toContain("path: 'pod'");
+    expect(dashboardRoutes).toContain("path: 'network'");
+    expect(dashboardRoutes).toContain("path: 'services'");
+    expect(dashboardRoutes).toContain("path: 'runtime'");
+    expect(dashboardRoutes).toContain("path: 'logs'");
+    expect(dashboardRoutes).toContain("path: 'configuration'");
+    expect(dashboardRoutes).toContain("path: 'status'");
+    expect(dashboardRoutes).toContain('legacyDashboardRedirects.status');
+    expect(settingsNavigation).toContain("status: '/services/runtime'");
+    expect(settingsNavigation).toContain("logs: '/services/logs'");
+    expect(settingsNavigation).toContain("settings: '/services/configuration'");
+    expect(settingsNavigation).toContain("path: '/models'");
+    expect(settingsNavigation).toContain("path: '/pod'");
+    expect(settingsNavigation).toContain("path: '/network'");
+    expect(settingsNavigation).toContain("path: '/services'");
     expect(adminLayout).toContain('Outlet');
     expect(adminLayout).not.toContain('useState<AdminPage>');
     expect(sidebar).toContain('NavLink');
@@ -72,13 +86,14 @@ describe('upgraded dashboard pages', () => {
     expect(statusPage).toContain('loadError');
     expect(statusPage).toContain('复制状态 JSON');
     expect(statusPage).toContain('lastCheckedAt');
-    expect(statusPage).toContain('resolveAccessBaseUrl');
+    expect(statusPage).toContain('resolveAdminAccessBaseUrl');
     expect(statusPage).toContain('resolveActiveTunnelUrl');
     expect(statusPage).toContain('XPOD_TUNNEL_ACTIVE_PROFILE_ID');
     expect(statusPage).toContain('XPOD_TUNNEL_PROFILES');
     expect(statusPage).toContain('CLOUDFLARE_TUNNEL_URL');
     expect(statusPage).toContain('SAKURA_TUNNEL_URL');
-    expect(statusPage).toContain('getPublicIpCheck(resolveAccessBaseUrl(configData?.env ?? {}, ddnsData))');
+    const adminApi = await readRepoFile('ui/src/api/admin.ts');
+    expect(adminApi).toContain('getPublicIpCheck(resolveAdminAccessBaseUrl(configData?.env ?? {}, ddnsData)');
     expect(statusPage).toContain('serviceRouteState');
     expect(statusPage.indexOf('<ActionNeededCard')).toBeLessThan(statusPage.indexOf('<RouteTable'));
     expect(statusPage.indexOf('Cloud 协调')).toBeLessThan(statusPage.indexOf('配置摘要'));
