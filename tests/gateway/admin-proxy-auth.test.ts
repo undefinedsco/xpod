@@ -28,7 +28,7 @@ describe('GatewayProxy admin ingress authorization', () => {
 
     apiPort = await getFreePort(46300, '127.0.0.1');
     proxyPort = await getFreePort(apiPort + 1, '127.0.0.1');
-    const authMiddleware = { process: async () => true } as AuthMiddleware;
+    const authMiddleware = { process: async () => true } as unknown as AuthMiddleware;
     api = new ApiServer({
       port: apiPort,
       host: '127.0.0.1',
@@ -123,7 +123,7 @@ describe('GatewayProxy admin ingress authorization', () => {
     const insecureApi = new ApiServer({
       port: insecureApiPort,
       host: '127.0.0.1',
-      authMiddleware: { process: async () => true } as AuthMiddleware,
+      authMiddleware: { process: async () => true } as unknown as AuthMiddleware,
     });
     registerAdminRoutes(insecureApi);
     await insecureApi.start();
