@@ -1,12 +1,55 @@
 import { describe, expect, it } from 'vitest';
+import { PassThrough } from 'node:stream';
+import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import {
   createAllowedAdminConfigPatch,
+  createAdminServicesCapabilities,
   isAdminSecretEnvKey,
   sanitizeEnvForRead,
   sanitizeLogMessage,
 } from '../../../src/api/handlers/AdminHandler';
 
+function request(host: string, token?: string): AuthenticatedRequest {
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
+  req.method = 'GET';
+  req.url = '/api/admin/status';
+  req.headers = {
+    host,
+    ...(token ? { 'x-xpod-admin-token': token } : {}),
+  };
+  req.end();
+  return req;
+}
+
 describe('admin runtime config safety', () => {
+  it('describes service lifecycle capabilities from the real admin mutation gate', async () => {
+    const previousToken = process.env.XPOD_ADMIN_TOKEN;
+    process.env.XPOD_ADMIN_TOKEN = 'admin-token';
+    try {
+      expect(createAdminServicesCapabilities(request('xpod.example')).services).toEqual({
+        lifecycle: {
+          restart: { supported: false, reason: 'requires_loopback_or_admin_token' },
+        },
+        configuration: {
+          write: { supported: false, reason: 'requires_loopback_or_admin_token' },
+        },
+      });
+
+      expect(createAdminServicesCapabilities(request('localhost:3000')).services).toEqual({
+        lifecycle: { restart: { supported: true } },
+        configuration: { write: { supported: true } },
+      });
+
+      expect(createAdminServicesCapabilities(request('xpod.example', 'admin-token')).services.lifecycle.restart.supported).toBe(true);
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env.XPOD_ADMIN_TOKEN;
+      } else {
+        process.env.XPOD_ADMIN_TOKEN = previousToken;
+      }
+    }
+  });
+
   it('redacts secret-like runtime config values at the API boundary', () => {
     const result = sanitizeEnvForRead({
       CSS_BASE_URL: 'https://node-0000.undefineds.co/alice/',

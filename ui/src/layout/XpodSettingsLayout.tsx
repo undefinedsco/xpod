@@ -1,5 +1,5 @@
 import { AppLayout } from '@undefineds.co/extension-sdk/react';
-import { Button, Input } from '@undefineds.co/shared-ui';
+import { Input } from '@undefineds.co/shared-ui';
 import { clsx } from 'clsx';
 import { Search } from 'lucide-react';
 import { useMemo, useState, type FormEvent, type KeyboardEvent } from 'react';
@@ -148,30 +148,6 @@ export function PlaceholderSettingsSection({ title, description }: { title: stri
       </div>
       <div className="rounded-md border border-border bg-card p-4 text-sm text-muted-foreground">
         This workspace is ready for the real settings applet.
-      </div>
-    </section>
-  );
-}
-
-export function ServicesHome() {
-  return (
-    <section className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Services</h1>
-        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-          Runtime service health, diagnostics, RDF indexing, logs, and configuration.
-        </p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <Button asChild variant="outline" size="sm">
-          <NavLink to="/services/logs">Logs</NavLink>
-        </Button>
-        <Button asChild variant="outline" size="sm">
-          <NavLink to="/services/rdf">RDF</NavLink>
-        </Button>
-        <Button asChild variant="outline" size="sm">
-          <NavLink to="/services/runtime">Runtime</NavLink>
-        </Button>
       </div>
     </section>
   );

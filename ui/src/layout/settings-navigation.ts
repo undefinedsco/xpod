@@ -96,8 +96,8 @@ export function clearSettingsSearchOnEscape(
 }
 
 export const legacyDashboardRedirects = {
-  status: '/services',
+  status: '/services/runtime',
   logs: '/services/logs',
   rdf: '/services/rdf',
-  settings: '/services/runtime',
+  settings: '/services/configuration',
 } as const;

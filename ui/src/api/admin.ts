@@ -32,6 +32,23 @@ export interface AdminStatus {
     path: string;
     exists: boolean;
   }>;
+  capabilities?: AdminCapabilities;
+}
+
+export interface AdminCapability {
+  supported: boolean;
+  reason?: string;
+}
+
+export interface AdminCapabilities {
+  services?: {
+    lifecycle?: {
+      restart?: AdminCapability;
+    };
+    configuration?: {
+      write?: AdminCapability;
+    };
+  };
 }
 
 export interface AdminConfig {
@@ -53,6 +70,10 @@ export interface PublicIpCheckResult {
 }
 
 const API_BASE = '/api/admin';
+
+export interface AdminFetchOptions {
+  signal?: AbortSignal;
+}
 
 export type RdfStatsSnapshot =
   | {
@@ -373,9 +394,9 @@ export interface RdfSlowQueryCacheExplain {
 /**
  * 获取 xpod 状态
  */
-export async function getAdminStatus(): Promise<AdminStatus | null> {
+export async function getAdminStatus(options: AdminFetchOptions = {}): Promise<AdminStatus | null> {
   try {
-    const res = await fetch(`${API_BASE}/status`);
+    const res = await fetch(`${API_BASE}/status`, { signal: options.signal });
     if (res.ok) {
       return await res.json();
     }
@@ -388,9 +409,9 @@ export async function getAdminStatus(): Promise<AdminStatus | null> {
 /**
  * 获取配置
  */
-export async function getAdminConfig(): Promise<AdminConfig | null> {
+export async function getAdminConfig(options: AdminFetchOptions = {}): Promise<AdminConfig | null> {
   try {
-    const res = await fetch(`${API_BASE}/config`);
+    const res = await fetch(`${API_BASE}/config`, { signal: options.signal });
     if (res.ok) {
       return await res.json();
     }
@@ -400,10 +421,10 @@ export async function getAdminConfig(): Promise<AdminConfig | null> {
   return null;
 }
 
-export async function getPublicIpCheck(baseUrl?: string): Promise<PublicIpCheckResult | null> {
+export async function getPublicIpCheck(baseUrl?: string, options: AdminFetchOptions = {}): Promise<PublicIpCheckResult | null> {
   try {
     const qs = baseUrl ? '?baseUrl=' + encodeURIComponent(baseUrl) : '';
-    const res = await fetch(API_BASE + '/public-ip' + qs);
+    const res = await fetch(API_BASE + '/public-ip' + qs, { signal: options.signal });
     if (res.ok) {
       return await res.json();
     }
@@ -448,9 +469,9 @@ export async function triggerRestart(): Promise<boolean> {
 /**
  * 获取 Gateway 状态（子进程状态）
  */
-export async function getGatewayStatus(): Promise<ServiceState[] | null> {
+export async function getGatewayStatus(options: AdminFetchOptions = {}): Promise<ServiceState[] | null> {
   try {
-    const res = await fetch('/service/status');
+    const res = await fetch('/service/status', { signal: options.signal });
     if (res.ok) {
       return await res.json();
     }
@@ -603,9 +624,22 @@ export interface DdnsStatus {
   detail: string;
 }
 
-export async function getDdnsStatus(): Promise<DdnsStatus | null> {
+function fqdnToHttpsUrl(fqdn: string | null | undefined): string {
+  if (!fqdn) return '';
+  return fqdn.startsWith('http://') || fqdn.startsWith('https://') ? fqdn : `https://${fqdn}/`;
+}
+
+export function resolveAdminAccessBaseUrl(
+  env: Record<string, string>,
+  ddnsData: DdnsStatus | null,
+  fallback = '',
+): string {
+  return ddnsData?.baseUrl || fqdnToHttpsUrl(ddnsData?.fqdn) || env.CSS_BASE_URL || fallback;
+}
+
+export async function getDdnsStatus(options: AdminFetchOptions = {}): Promise<DdnsStatus | null> {
   try {
-    const res = await fetch(`${API_BASE}/ddns`);
+    const res = await fetch(`${API_BASE}/ddns`, { signal: options.signal });
     if (res.ok) {
       return await res.json();
     }
@@ -613,6 +647,34 @@ export async function getDdnsStatus(): Promise<DdnsStatus | null> {
     console.error('Failed to get ddns status:', e);
   }
   return null;
+}
+
+export interface ServicesStatusSnapshot {
+  servicesData: ServiceState[] | null;
+  adminData: AdminStatus | null;
+  configData: AdminConfig | null;
+  ddnsData: DdnsStatus | null;
+  publicCheck: PublicIpCheckResult | null;
+  checkedAt: Date;
+}
+
+export async function fetchServicesStatusSnapshot(options: AdminFetchOptions = {}): Promise<ServicesStatusSnapshot> {
+  const [servicesData, adminData, configData, ddnsData] = await Promise.all([
+    getGatewayStatus(options),
+    getAdminStatus(options),
+    getAdminConfig(options),
+    getDdnsStatus(options),
+  ]);
+  const publicCheck = await getPublicIpCheck(resolveAdminAccessBaseUrl(configData?.env ?? {}, ddnsData), options);
+
+  return {
+    servicesData,
+    adminData,
+    configData,
+    ddnsData,
+    publicCheck,
+    checkedAt: new Date(),
+  };
 }
 
 export async function refreshDdnsStatus(): Promise<boolean> {

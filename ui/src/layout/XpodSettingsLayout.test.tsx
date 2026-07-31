@@ -35,10 +35,10 @@ describe('settings navigation metadata', () => {
 
   test('maps legacy admin routes to the new services area', () => {
     expect(legacyDashboardRedirects).toEqual({
-      status: '/services',
+      status: '/services/runtime',
       logs: '/services/logs',
       rdf: '/services/rdf',
-      settings: '/services/runtime',
+      settings: '/services/configuration',
     });
   });
 });

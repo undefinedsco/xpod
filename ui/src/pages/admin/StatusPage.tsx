@@ -5,49 +5,22 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { StatusBadge, type HealthState } from '@/components/admin/StatusBadge';
 import {
-  getAdminConfig,
-  getAdminStatus,
-  getDdnsStatus,
-  getGatewayStatus,
-  getPublicIpCheck,
+  fetchServicesStatusSnapshot,
+  resolveAdminAccessBaseUrl,
   type AdminConfig,
   type AdminStatus,
   type DdnsStatus,
   type PublicIpCheckResult,
+  type ServicesStatusSnapshot,
   type ServiceState,
 } from '@/api/admin';
+import { useServicesStatus } from '../settings/services-status-context';
 
 interface RouteRow {
   name: string;
   target: string;
   state: HealthState;
   detail: string;
-}
-
-interface StatusSnapshot {
-  servicesData: ServiceState[] | null;
-  adminData: AdminStatus | null;
-  configData: AdminConfig | null;
-  ddnsData: DdnsStatus | null;
-  publicCheck: PublicIpCheckResult | null;
-  checkedAt: Date;
-}
-
-function fqdnToHttpsUrl(fqdn: string | null | undefined): string {
-  if (!fqdn) return '';
-  return fqdn.startsWith('http://') || fqdn.startsWith('https://') ? fqdn : `https://${fqdn}/`;
-}
-
-function resolveAccessBaseUrl(
-  env: Record<string, string>,
-  ddnsData: DdnsStatus | null,
-  fallback = '',
-): string {
-  const isManaged = env.XPOD_DEPLOY_MODE !== 'standalone' && Boolean(env.XPOD_CLOUD_API_ENDPOINT);
-  if (isManaged) {
-    return ddnsData?.baseUrl || fqdnToHttpsUrl(ddnsData?.fqdn) || env.CSS_BASE_URL || fallback;
-  }
-  return env.CSS_BASE_URL || ddnsData?.baseUrl || fqdnToHttpsUrl(ddnsData?.fqdn) || fallback;
 }
 
 function resolveActiveTunnelUrl(env: Record<string, string>, provider: string, activeProfileId: string): string {
@@ -76,24 +49,6 @@ function resolveActiveTunnelProfileUrl(rawProfiles: string | undefined, activePr
   } catch {
     return '';
   }
-}
-
-async function loadStatusSnapshot(): Promise<StatusSnapshot> {
-  const [servicesData, adminData, configData, ddnsData] = await Promise.all([
-    getGatewayStatus(),
-    getAdminStatus(),
-    getAdminConfig(),
-    getDdnsStatus(),
-  ]);
-  const publicCheck = await getPublicIpCheck(resolveAccessBaseUrl(configData?.env ?? {}, ddnsData));
-  return {
-    servicesData,
-    adminData,
-    configData,
-    ddnsData,
-    publicCheck,
-    checkedAt: new Date(),
-  };
 }
 
 function healthLabel(state: HealthState): string {
@@ -228,57 +183,69 @@ function ActionNeededCard(props: { state: HealthState; routes: RouteRow[] }) {
 }
 
 export function StatusPage() {
-  const [services, setServices] = useState<ServiceState[] | null>(null);
-  const [adminStatus, setAdminStatus] = useState<AdminStatus | null>(null);
-  const [config, setConfig] = useState<AdminConfig | null>(null);
-  const [ddnsStatus, setDdnsStatus] = useState<DdnsStatus | null>(null);
-  const [publicIpCheck, setPublicIpCheck] = useState<PublicIpCheckResult | null>(null);
-  const [loading, setLoading] = useState(true);
+  const servicesStatus = useServicesStatus();
+  const [localServices, setLocalServices] = useState<ServiceState[] | null>(null);
+  const [localAdminStatus, setLocalAdminStatus] = useState<AdminStatus | null>(null);
+  const [localConfig, setLocalConfig] = useState<AdminConfig | null>(null);
+  const [localDdnsStatus, setLocalDdnsStatus] = useState<DdnsStatus | null>(null);
+  const [localPublicIpCheck, setLocalPublicIpCheck] = useState<PublicIpCheckResult | null>(null);
+  const [localLoading, setLocalLoading] = useState(true);
   const [copyMessage, setCopyMessage] = useState('');
-  const [loadError, setLoadError] = useState('');
-  const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
+  const [localLoadError, setLocalLoadError] = useState('');
+  const [localLastCheckedAt, setLocalLastCheckedAt] = useState<Date | null>(null);
 
-  const applySnapshot = useCallback((snapshot: StatusSnapshot) => {
-    setServices(snapshot.servicesData);
-    setAdminStatus(snapshot.adminData);
-    setConfig(snapshot.configData);
-    setDdnsStatus(snapshot.ddnsData);
-    setPublicIpCheck(snapshot.publicCheck);
-    setLastCheckedAt(snapshot.checkedAt);
-    setLoadError('');
-    setLoading(false);
+  const applySnapshot = useCallback((snapshot: ServicesStatusSnapshot) => {
+    setLocalServices(snapshot.servicesData);
+    setLocalAdminStatus(snapshot.adminData);
+    setLocalConfig(snapshot.configData);
+    setLocalDdnsStatus(snapshot.ddnsData);
+    setLocalPublicIpCheck(snapshot.publicCheck);
+    setLocalLastCheckedAt(snapshot.checkedAt);
+    setLocalLoadError('');
+    setLocalLoading(false);
   }, []);
 
   const refresh = useCallback(async () => {
     try {
-      applySnapshot(await loadStatusSnapshot());
+      applySnapshot(await fetchServicesStatusSnapshot());
     } catch {
-      setLoadError('状态加载失败，请查看日志或稍后刷新。');
-      setLoading(false);
+      setLocalLoadError('状态加载失败，请查看日志或稍后刷新。');
+      setLocalLoading(false);
     }
   }, [applySnapshot]);
 
   const refreshWithLoading = useCallback(async () => {
-    setLoading(true);
+    setLocalLoading(true);
     await refresh();
   }, [refresh]);
 
   useEffect(() => {
+    if (servicesStatus) return;
     let cancelled = false;
-    loadStatusSnapshot().then((snapshot) => {
+    fetchServicesStatusSnapshot().then((snapshot) => {
       if (!cancelled) {
         applySnapshot(snapshot);
       }
     }).catch(() => {
       if (!cancelled) {
-        setLoadError('状态加载失败，请查看日志或稍后刷新。');
-        setLoading(false);
+        setLocalLoadError('状态加载失败，请查看日志或稍后刷新。');
+        setLocalLoading(false);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [applySnapshot]);
+  }, [applySnapshot, servicesStatus]);
+
+  const contextSnapshot = servicesStatus?.snapshot;
+  const services = contextSnapshot?.servicesData ?? localServices;
+  const adminStatus = contextSnapshot?.adminData ?? localAdminStatus;
+  const config = contextSnapshot?.configData ?? localConfig;
+  const ddnsStatus = contextSnapshot?.ddnsData ?? localDdnsStatus;
+  const publicIpCheck = contextSnapshot?.publicCheck ?? localPublicIpCheck;
+  const lastCheckedAt = contextSnapshot?.checkedAt ?? localLastCheckedAt;
+  const loading = servicesStatus ? servicesStatus.loading && !contextSnapshot : localLoading;
+  const loadError = servicesStatus?.error ?? localLoadError;
 
   const cssService = services?.find((s) => s.name === 'css');
   const apiService = services?.find((s) => s.name === 'api');
@@ -289,7 +256,7 @@ export function StatusPage() {
   const env = config?.env ?? {};
   const tunnelProvider = env.XPOD_TUNNEL_PROVIDER || ddnsStatus?.tunnelProvider || 'none';
   const activeTunnelProfileId = env.XPOD_TUNNEL_ACTIVE_PROFILE_ID || tunnelProvider;
-  const baseUrl = resolveAccessBaseUrl(env, ddnsStatus, window.location.origin);
+  const baseUrl = resolveAdminAccessBaseUrl(env, ddnsStatus, window.location.origin);
   const tunnelUrl = resolveActiveTunnelUrl(env, tunnelProvider, activeTunnelProfileId);
 
   const routes = useMemo<RouteRow[]>(() => {
@@ -336,7 +303,7 @@ export function StatusPage() {
         detail: 'P2P 只作为免配置备选路径，不作为浏览器默认入口。',
       },
     ];
-  }, [activeTunnelProfileId, allServicesRunning, baseUrl, ddnsStatus, env.CSS_PORT, publicIpCheck, services, tunnelProvider, tunnelUrl]);
+  }, [allServicesRunning, baseUrl, ddnsStatus, env.CSS_PORT, publicIpCheck, services, tunnelProvider, tunnelUrl]);
 
   const overallState: HealthState = !services
     ? 'unknown'
@@ -378,7 +345,7 @@ export function StatusPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="ghost" onClick={() => void refreshWithLoading()} disabled={loading} className="gap-2">
+          <Button variant="ghost" onClick={() => servicesStatus ? servicesStatus.refresh() : void refreshWithLoading()} disabled={loading || servicesStatus?.refreshing} className="gap-2">
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </Button>
@@ -479,7 +446,7 @@ export function StatusPage() {
       </Card>
 
       <div className="text-sm text-muted-foreground">
-        需要修改运行时配置时进入 <Link className="text-primary underline-offset-4 hover:underline" to="/settings">设置</Link>。
+        需要修改运行时配置时进入 <Link className="text-primary underline-offset-4 hover:underline" to="/services/configuration">配置</Link>。
       </div>
     </div>
   );

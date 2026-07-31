@@ -26,6 +26,7 @@ import {
   type DdnsStatus,
 } from '@/api/admin';
 import { clsx } from 'clsx';
+import { useServicesStatus } from '../settings/services-status-context';
 
 type DeployMode = 'local' | 'standalone';
 type TunnelProvider = 'none' | 'ngrok' | 'cloudflare' | 'sakura_frp' | 'frp';
@@ -295,6 +296,7 @@ function FormField(props: {
 }
 
 export function SettingsPage() {
+  const servicesStatus = useServicesStatus();
   const [env, setEnv] = useState<Record<string, string>>({});
   const [originalEnv, setOriginalEnv] = useState<Record<string, string>>({});
   const [secretReplacements, setSecretReplacements] = useState<Record<string, string>>({});
@@ -501,6 +503,10 @@ export function SettingsPage() {
   };
 
   const handleRestart = async (): Promise<void> => {
+    if (servicesStatus && !servicesStatus.restartCapability.supported) {
+      setMessage('当前入口不支持重启操作。请在本机或携带管理 Token 操作。');
+      return;
+    }
     setMessage('正在重启服务...');
     const success = await triggerRestart();
     if (success) {
@@ -512,6 +518,10 @@ export function SettingsPage() {
   };
 
   const handleSaveAndRestart = async (): Promise<void> => {
+    if (servicesStatus && !servicesStatus.configurationWriteCapability.supported) {
+      setMessage('当前入口不支持保存运行时配置。请在本机或携带管理 Token 操作。');
+      return;
+    }
     const ok = await saveConfig();
     if (ok) await handleRestart();
   };
@@ -768,14 +778,23 @@ export function SettingsPage() {
 
       <PendingChangesPanel changes={pendingChanges} onReset={resetChanges} />
 
-      <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={() => void saveConfig()} disabled={saving || Boolean(validationError)}>
-          {saving ? '保存中...' : '保存配置'}
-        </Button>
-        <Button variant="secondary" onClick={() => void handleSaveAndRestart()} disabled={saving || Boolean(validationError)}>
-          保存并重启
-        </Button>
-      </div>
+      {servicesStatus && !servicesStatus.configurationWriteCapability.supported ? (
+        <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          Configuration changes are not supported from this host capability
+          {servicesStatus.configurationWriteCapability.reason ? `: ${servicesStatus.configurationWriteCapability.reason}` : ''}.
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button onClick={() => void saveConfig()} disabled={saving || Boolean(validationError)}>
+            {saving ? '保存中...' : '保存配置'}
+          </Button>
+          {servicesStatus && !servicesStatus.restartCapability.supported ? null : (
+            <Button variant="secondary" onClick={() => void handleSaveAndRestart()} disabled={saving || Boolean(validationError)}>
+              保存并重启
+            </Button>
+          )}
+        </div>
+      )}
 
       {(message || validationError) ? (
         <div

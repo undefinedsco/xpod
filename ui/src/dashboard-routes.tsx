@@ -1,7 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import {
-  ServicesHome,
   XpodSettingsLayout,
 } from './layout/XpodSettingsLayout';
 import { legacyDashboardRedirects } from './layout/settings-navigation';
@@ -10,9 +9,11 @@ import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
 const SettingsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.SettingsPage })));
+const StatusPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.StatusPage })));
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 const PodPage = lazy(() => import('./pages/settings/PodPage'));
 const NetworkPage = lazy(() => import('./pages/settings/NetworkPage'));
+const ServicesPage = lazy(() => import('./pages/settings/ServicesPage'));
 
 function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
@@ -39,10 +40,17 @@ export const dashboardRoutes: RouteObject[] = [
         path: 'network',
         element: guardedRoute(lazyRoute(<NetworkPage />)),
       },
-      { path: 'services', element: guardedRoute(<ServicesHome />) },
-      { path: 'services/logs', element: guardedRoute(lazyRoute(<LogsPage />)) },
-      { path: 'services/rdf', element: guardedRoute(lazyRoute(<RdfPage />)) },
-      { path: 'services/runtime', element: guardedRoute(lazyRoute(<SettingsPage />)) },
+      {
+        path: 'services',
+        element: guardedRoute(lazyRoute(<ServicesPage />)),
+        children: [
+          { index: true, element: lazyRoute(<StatusPage />) },
+          { path: 'runtime', element: lazyRoute(<StatusPage />) },
+          { path: 'logs', element: lazyRoute(<LogsPage />) },
+          { path: 'rdf', element: lazyRoute(<RdfPage />) },
+          { path: 'configuration', element: lazyRoute(<SettingsPage />) },
+        ],
+      },
       { path: 'status', element: <Navigate to={legacyDashboardRedirects.status} replace /> },
       { path: 'logs', element: <Navigate to={legacyDashboardRedirects.logs} replace /> },
       { path: 'rdf', element: <Navigate to={legacyDashboardRedirects.rdf} replace /> },

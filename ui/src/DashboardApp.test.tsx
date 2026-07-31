@@ -120,19 +120,19 @@ describe('dashboard routes', () => {
   });
 
   test('redirects legacy admin routes into Services subroutes', () => {
-    expect(redirectTargetFor('/status')).toBe('/services');
+    expect(redirectTargetFor('/status')).toBe('/services/runtime');
     expect(redirectTargetFor('/logs')).toBe('/services/logs');
     expect(redirectTargetFor('/rdf')).toBe('/services/rdf');
-    expect(redirectTargetFor('/settings')).toBe('/services/runtime');
+    expect(redirectTargetFor('/settings')).toBe('/services/configuration');
   });
 
   test('normalizes anonymous dashboard redirects before settings auth guard', async () => {
     const cases = [
       ['/', '/models'],
-      ['/status', '/services'],
+      ['/status', '/services/runtime'],
       ['/logs', '/services/logs'],
       ['/rdf', '/services/rdf'],
-      ['/settings', '/services/runtime'],
+      ['/settings', '/services/configuration'],
       ['/dashboard.html', '/models'],
     ];
 

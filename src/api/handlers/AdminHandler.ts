@@ -174,6 +174,33 @@ function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerRespon
   return false;
 }
 
+export function createAdminServicesCapabilities(req: AuthenticatedRequest): {
+  services: {
+    lifecycle: { restart: { supported: boolean; reason?: string } };
+    configuration: { write: { supported: boolean; reason?: string } };
+  };
+} {
+  const adminMutationSupported = isLocalAdminHost(req);
+  const adminMutationReason = adminMutationSupported ? undefined : 'requires_loopback_or_admin_token';
+
+  return {
+    services: {
+      lifecycle: {
+        restart: {
+          supported: adminMutationSupported,
+          ...(adminMutationReason ? { reason: adminMutationReason } : {}),
+        },
+      },
+      configuration: {
+        write: {
+          supported: adminMutationSupported,
+          ...(adminMutationReason ? { reason: adminMutationReason } : {}),
+        },
+      },
+    },
+  };
+}
+
 /**
  * Read .env.local file and parse it
  */
@@ -313,7 +340,7 @@ export function registerAdminRoutes(server: ApiServer): void {
 
   // GET /api/admin/status - Get xpod status
   const statusHandler: RouteHandler = async (
-    _req: AuthenticatedRequest,
+    req: AuthenticatedRequest,
     res: ServerResponse,
   ) => {
     try {
@@ -332,6 +359,7 @@ export function registerAdminRoutes(server: ApiServer): void {
           CSS_PORT: env.CSS_PORT || process.env.CSS_PORT,
         },
         configs,
+        capabilities: createAdminServicesCapabilities(req),
       });
     } catch (error) {
       logger.error('[Admin] Status error:', error);
