@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -111,14 +111,37 @@ describe('Xpod settings product acceptance harness', () => {
 
   it('uses the selected runAcceptance env for the default command executor', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-selected-env-'));
+    const shimDir = path.join(tempRoot, 'bin');
+    await mkdir(shimDir, { recursive: true });
+    const bunxShim = path.join(shimDir, 'bunx');
+    await writeFile(bunxShim, [
+      '#!/bin/sh',
+      'if [ "$XPOD_SETTINGS_E2E_BASE_URL" != "http://127.0.0.1:9" ]; then',
+      '  echo "missing selected base url" >&2',
+      '  exit 41',
+      'fi',
+      'if [ "$XPOD_SETTINGS_E2E_TEST_API_KEY" != "sk-selected-env-test-key" ]; then',
+      '  echo "missing selected api key" >&2',
+      '  exit 42',
+      'fi',
+      'case " $* " in',
+      '  *" --reporter=json "*) ;;',
+      '  *) echo "missing json reporter" >&2; exit 43 ;;',
+      'esac',
+      'printf \'{"stats":{"expected":1,"skipped":0,"unexpected":0,"flaky":0}}\\n\'',
+      'exit 0',
+      '',
+    ].join('\n'), 'utf8');
+    await chmod(bunxShim, 0o755);
+
     const report = await runAcceptance({
       env: {
-        PATH: process.env.PATH,
+        PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
         HOME: process.env.HOME,
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
         XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:9',
-        XPOD_SETTINGS_E2E_ALICE_STATE: path.join(tempRoot, 'missing-alice-state.json'),
-        XPOD_SETTINGS_E2E_BOB_STATE: path.join(tempRoot, 'missing-bob-state.json'),
+        XPOD_SETTINGS_E2E_ALICE_STATE: path.join(tempRoot, 'alice-state.json'),
+        XPOD_SETTINGS_E2E_BOB_STATE: path.join(tempRoot, 'bob-state.json'),
         XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:9/alice/',
         XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-selected-env-test-key',
       },
@@ -126,10 +149,13 @@ describe('Xpod settings product acceptance harness', () => {
     });
 
     const item = report.items.find((candidate) => candidate.requirementId === 'browser-visual');
-    expect(item?.status).toBe('fail');
-    expect(item?.commandResult?.exitCode).not.toBe(0);
-    expect(item?.reason).not.toMatch(/all tests skipped/i);
-  }, 20_000);
+    expect(item?.status).toBe('pass');
+    expect(item?.commandResult).toMatchObject({
+      exitCode: 0,
+      stdout: expect.stringContaining('"expected":1'),
+    });
+    expect(item?.reason).toBeUndefined();
+  });
 
   it('rejects all-skipped Playwright JSON command output even when the runner exits zero', async () => {
     const report = await runAcceptance({
