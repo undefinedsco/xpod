@@ -80,6 +80,10 @@ describe('Xpod settings product acceptance harness', () => {
     const report = await runAcceptance({
       env: {
         XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
       },
       now: '2026-08-01T00:00:00.000Z',
@@ -101,6 +105,62 @@ describe('Xpod settings product acceptance harness', () => {
         timeoutMs: expect.any(Number),
       }),
       commandResult: expect.objectContaining({ exitCode: 7, stderr: '[redacted]' }),
+    });
+    expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
+  });
+
+  it('uses the selected runAcceptance env for the default command executor', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-selected-env-'));
+    const report = await runAcceptance({
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:9',
+        XPOD_SETTINGS_E2E_ALICE_STATE: path.join(tempRoot, 'missing-alice-state.json'),
+        XPOD_SETTINGS_E2E_BOB_STATE: path.join(tempRoot, 'missing-bob-state.json'),
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:9/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-selected-env-test-key',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+    });
+
+    const item = report.items.find((candidate) => candidate.requirementId === 'browser-visual');
+    expect(item?.status).toBe('fail');
+    expect(item?.commandResult?.exitCode).not.toBe(0);
+    expect(item?.reason).not.toMatch(/all tests skipped/i);
+  }, 20_000);
+
+  it('rejects all-skipped Playwright JSON command output even when the runner exits zero', async () => {
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => ({
+        command: command.command,
+        exitCode: 0,
+        durationMs: 12,
+        stdout: JSON.stringify({
+          stats: {
+            expected: 0,
+            skipped: 4,
+            unexpected: 0,
+            flaky: 0,
+          },
+        }),
+        stderr: '',
+      }),
+    });
+
+    expect(report.items.find((candidate) => candidate.requirementId === 'browser-visual')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/skipped|executed/i),
     });
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
   });
@@ -429,6 +489,10 @@ describe('Xpod settings product acceptance harness', () => {
       NO_PROXY: 'internal.example',
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
       XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+      XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+      XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+      XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+      XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
     };
     const redactionValues = acceptanceRedactionValues(env);
     const gate = buildAcceptancePlan({ env, now: '2026-08-01T00:00:00.000Z' })

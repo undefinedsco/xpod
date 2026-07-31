@@ -20,7 +20,13 @@ export interface GateCommand {
   env?: Record<string, { present: boolean }>;
   runtimeEnvKeys?: string[];
   stdinEnvKey?: string;
+  resultContract?: CommandResultContract;
 }
+
+export type CommandResultContract = {
+  kind: 'playwright-json';
+  minExecuted: number;
+};
 
 export interface ArtifactGate {
   kind: 'artifact';
@@ -219,20 +225,17 @@ export function buildAcceptancePlan(options: AcceptancePlanOptions = {}): Accept
 export async function runAcceptance(options: RunAcceptanceOptions = {}): Promise<AcceptanceReport> {
   const generatedAt = options.now ?? new Date().toISOString();
   const env = options.env ?? process.env;
-  const executeCommand = options.executeCommand ?? executeGateCommand;
+  const executeCommand = options.executeCommand ?? ((command: GateCommand) => executeGateCommand(command, env));
   const items = planItems(env);
 
   for (const item of items) {
     if (!item.gate) continue;
     if (item.gate.kind === 'command') {
       const result = redactAcceptanceSecrets(await executeCommand(item.gate), acceptanceRedactionValues(env));
+      const failureReason = commandFailureReason(item.gate, result);
       item.commandResult = result;
-      item.status = result.exitCode === 0 ? 'pass' : 'fail';
-      item.reason = result.exitCode === 0
-        ? undefined
-        : result.timedOut
-          ? `Command timed out after ${item.gate.timeoutMs}ms.`
-          : `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
+      item.status = failureReason ? 'fail' : 'pass';
+      item.reason = failureReason;
     } else {
       try {
         item.artifact = await validateEvidenceArtifact(item.gate, item.requirementId, generatedAt);
@@ -350,13 +353,13 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       requirementId: 'browser-visual',
       title: requirementTitle('browser-visual'),
       mandatory: true,
-      status: runVisual && baseUrl ? 'skip' : 'not_complete',
+      status: runVisual && hasRealHostEnv(env) ? 'skip' : 'not_complete',
       reason: runVisual
-        ? (baseUrl ? 'Playwright visual gate is enabled and must execute.' : 'XPOD_SETTINGS_E2E_BASE_URL is required.')
-        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true and XPOD_SETTINGS_E2E_BASE_URL; UI fetch interception with canned JSON is not allowed.',
-      commands: ['XPOD_SETTINGS_E2E_BASE_URL=http://127.0.0.1:3000 bunx playwright test tests/e2e/xpod-settings.spec.ts'],
+        ? missingRealHostReason(env)
+        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true plus real Xpod host, A/B auth states, A Pod URL and test API key; UI fetch interception with canned JSON is not allowed.',
+      commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_ALICE_POD_URL=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
       evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots and asserts SDK geometry contracts.'],
-      gate: runVisual && baseUrl ? playwrightGate(env) : undefined,
+      gate: runVisual && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
     },
     fixtureItem('connect-quota', [
       'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
@@ -443,7 +446,7 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
 }
 
 function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts'], 3 * 60 * 1000, env, {
+  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 3 * 60 * 1000, env, {
     runtimeEnvKeys: [
       'XPOD_SETTINGS_E2E_BASE_URL',
       'XPOD_SETTINGS_E2E_ALICE_STATE',
@@ -451,6 +454,10 @@ function playwrightGate(env: Record<string, string | undefined>): GateCommand {
       'XPOD_SETTINGS_E2E_ALICE_POD_URL',
       'XPOD_SETTINGS_E2E_TEST_API_KEY',
     ],
+    resultContract: {
+      kind: 'playwright-json',
+      minExecuted: 1,
+    },
   });
 }
 
@@ -458,6 +465,7 @@ function shellGate(command: string[], timeoutMs: number, env: Record<string, str
   killAfterMs?: number;
   runtimeEnvKeys?: string[];
   stdinEnvKey?: string;
+  resultContract?: CommandResultContract;
 } = {}): GateCommand {
   return {
     kind: 'command',
@@ -467,6 +475,7 @@ function shellGate(command: string[], timeoutMs: number, env: Record<string, str
     env: publicEnv(env),
     runtimeEnvKeys: options.runtimeEnvKeys,
     stdinEnvKey: options.stdinEnvKey,
+    resultContract: options.resultContract,
   };
 }
 
@@ -665,6 +674,41 @@ export function buildGateRuntimeEnv(
       .map((key) => [key, sourceEnv[key]] as const)
       .filter((entry): entry is readonly [string, string] => typeof entry[1] === 'string'),
   );
+}
+
+function commandFailureReason(gate: GateCommand, result: CommandResult): string | undefined {
+  if (result.timedOut) return `Command timed out after ${gate.timeoutMs}ms.`;
+  if (result.exitCode !== 0) return `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
+  if (gate.resultContract?.kind === 'playwright-json') {
+    return validatePlaywrightJsonResult(result.stdout, gate.resultContract.minExecuted);
+  }
+  return undefined;
+}
+
+function validatePlaywrightJsonResult(stdout: string, minExecuted: number): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return 'Playwright JSON reporter output was missing or invalid.';
+  }
+  const stats = (parsed as { stats?: Record<string, unknown> }).stats;
+  if (!stats || typeof stats !== 'object') {
+    return 'Playwright JSON reporter stats are missing.';
+  }
+  const expected = numberStat(stats.expected);
+  const unexpected = numberStat(stats.unexpected);
+  const flaky = numberStat(stats.flaky);
+  const skipped = numberStat(stats.skipped);
+  const executed = expected + unexpected + flaky;
+  if (executed < minExecuted) {
+    return `Playwright JSON reporter executed ${executed} tests and skipped ${skipped}; refusing to pass an all-skipped runner.`;
+  }
+  return undefined;
+}
+
+function numberStat(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function stableStringify(value: unknown): string {
