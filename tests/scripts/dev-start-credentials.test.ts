@@ -17,12 +17,16 @@ async function createHarness(body: string): Promise<string> {
   return harness;
 }
 
-async function runHarness(body: string): Promise<{ stdout: string; stderr: string; code: number }> {
+async function runHarness(
+  body: string,
+  options: { env?: NodeJS.ProcessEnv; timeout?: number } = {},
+): Promise<{ stdout: string; stderr: string; code: number }> {
   const harness = await createHarness(body);
   try {
     const result = await execFileAsync('bash', [harness], {
       cwd: root,
-      timeout: 8_000,
+      env: { ...process.env, ...options.env },
+      timeout: options.timeout ?? 8_000,
     });
     return { ...result, code: 0 };
   } catch (error) {
@@ -98,9 +102,156 @@ cat "$CURL_LOG"
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('Client Credentials 已创建: client-id-1');
     expect(result.stdout.split('---ENV---')[0]).not.toContain('secret-1');
-    expect(result.stdout).toContain('XPOD_CLIENT_ID=client-id-1');
-    expect(result.stdout).toContain('XPOD_CLIENT_SECRET=secret-1');
+    expect(result.stdout).toContain("XPOD_CLIENT_ID='client-id-1'");
+    expect(result.stdout).toContain("XPOD_CLIENT_SECRET='secret-1'");
     expect(result.stdout).toContain('.account/account/abc/client-credentials/');
     expect(result.stdout).toContain('Authorization: CSS-Account-Token acct-token');
+  });
+
+  it('shell-quotes generated env values so command substitutions never execute when sourced', async () => {
+    const result = await runHarness(String.raw`
+ENV_FILE="$(mktemp)"
+PWNED_FILE="$(mktemp)"
+rm -f "$PWNED_FILE"
+CSS_BASE="http://localhost:6300"
+curl() {
+  local args="$*"
+  if [[ "$args" == *".account/login/password/"* ]]; then
+    printf '{"authorization":"acct-token"}\nHTTP_STATUS:200\n'
+    return 0
+  fi
+  if [[ "$args" == *".account/"* && "$args" != *"client-credentials"* ]]; then
+    printf '{"controls":{"account":{"clientCredentials":"http://localhost:6300/.account/account/abc/client-credentials/"}}}\nHTTP_STATUS:200\n'
+    return 0
+  fi
+  if [[ "$args" == *"client-credentials"* ]]; then
+    local bt
+    bt="$(printf '\140')"
+    printf '{"id":"client-id-1","secret":"sec $(touch '"$PWNED_FILE"') %secho nope%s $HOME with space"}\nHTTP_STATUS:201\n' "$bt" "$bt"
+    return 0
+  fi
+  printf '{"error":"unexpected endpoint"}\nHTTP_STATUS:404\n'
+}
+init_credentials
+source "$ENV_FILE"
+printf 'secret=%s\n' "$XPOD_CLIENT_SECRET"
+if [ -e "$PWNED_FILE" ]; then
+  echo "pwned"
+  exit 9
+fi
+`);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('secret=sec $(touch ');
+    expect(result.stdout).toContain(') `echo nope` $HOME with space');
+    expect(result.stdout).not.toContain('pwned');
+  });
+
+  it('rejects multiline generated env values instead of writing them', async () => {
+    const result = await runHarness(String.raw`
+ENV_FILE="$(mktemp)"
+if write_env_value XPOD_CLIENT_SECRET $'bad\nvalue' secret; then
+  echo "unexpected-success"
+  exit 7
+fi
+printf '%s\n' '---ENV---'
+cat "$ENV_FILE"
+`);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('unexpected-success');
+    expect(result.stdout).toContain('非法环境变量值');
+    expect(result.stdout.split('---ENV---')[1]).not.toContain('XPOD_CLIENT_SECRET');
+  });
+
+  it('rejects cross-origin clientCredentials controls before sending the account token', async () => {
+    const result = await runHarness(String.raw`
+ENV_FILE="$(mktemp)"
+CSS_BASE="http://localhost:6300"
+CURL_LOG="$(mktemp)"
+curl() {
+  local args="$*"
+  printf '%s\n' "$args" >> "$CURL_LOG"
+  if [[ "$args" == *".account/login/password/"* ]]; then
+    printf '{"authorization":"acct-token"}\nHTTP_STATUS:200\n'
+    return 0
+  fi
+  if [[ "$args" == *".account/"* && "$args" != *"client-credentials"* ]]; then
+    printf '{"controls":{"account":{"clientCredentials":"http://evil.test/.account/account/abc/client-credentials/"}}}\nHTTP_STATUS:200\n'
+    return 0
+  fi
+  printf '{"id":"evil","secret":"stolen"}\nHTTP_STATUS:201\n'
+}
+if init_credentials; then
+  echo "unexpected-success"
+  exit 7
+fi
+printf '%s\n' '---CALLS---'
+cat "$CURL_LOG"
+`);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('unexpected-success');
+    expect(result.stdout).toContain('clientCredentials endpoint 不可信');
+    expect(result.stdout).not.toContain('evil.test/.account/account/abc/client-credentials/');
+    expect(result.stdout).not.toContain('stolen');
+  });
+
+  it('keeps credential requests from following cross-origin redirects', async () => {
+    const result = await runHarness(String.raw`
+ENV_FILE="$(mktemp)"
+CSS_BASE="http://localhost:6300"
+CURL_LOG="$(mktemp)"
+curl() {
+  local args="$*"
+  printf '%s\n' "$args" >> "$CURL_LOG"
+  if [[ "$args" == *".account/login/password/"* ]]; then
+    printf '{"authorization":"acct-token"}\nHTTP_STATUS:200\n'
+    return 0
+  fi
+  if [[ "$args" == *".account/"* && "$args" != *"client-credentials"* ]]; then
+    printf '{"controls":{"account":{"clientCredentials":"http://localhost:6300/.account/account/abc/client-credentials/"}}}\nHTTP_STATUS:200\n'
+    return 0
+  fi
+  if [[ "$args" == *"client-credentials"* ]]; then
+    printf '{"location":"http://evil.test/capture"}\nHTTP_STATUS:302\n'
+    return 0
+  fi
+  printf '{"error":"unexpected"}\nHTTP_STATUS:404\n'
+}
+if init_credentials; then
+  echo "unexpected-success"
+  exit 7
+fi
+printf '%s\n' '---CALLS---'
+cat "$CURL_LOG"
+`);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('unexpected-success');
+    expect(result.stdout).toContain('创建失败');
+    expect(result.stdout).toContain('--max-redirs 0');
+    expect(result.stdout).not.toContain('evil.test/capture');
+  });
+
+  it('cleans up the cloud process when credential initialization fails', async () => {
+    const cleanupLog = path.join(await mkdtemp(path.join(tmpdir(), 'xpod-cloud-cleanup-')), 'cleanup.log');
+    const result = await runHarness(String.raw`
+ENV_FILE="$(mktemp)"
+CSS_BASE="http://localhost:6300"
+API_BASE="http://localhost:6301"
+bun() {
+  trap 'printf TERM > "$CLEANUP_LOG"; exit 0' TERM
+  while :; do sleep 1; done
+}
+wait_for_service() { return 0; }
+init_credentials() { return 1; }
+create_test_node() { echo "unexpected-node"; return 0; }
+start_cloud
+`, { env: { CLEANUP_LOG: cleanupLog }, timeout: 8_000 });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).not.toContain('unexpected-node');
+    expect(await readFile(cleanupLog, 'utf8')).toBe('TERM');
   });
 });

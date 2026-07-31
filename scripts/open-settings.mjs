@@ -4,6 +4,14 @@ import { pathToFileURL } from 'node:url';
 
 const DEFAULT_BASE_URL = 'http://localhost:3000';
 
+class SettingsUrlHostError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'SettingsUrlHostError';
+    this.code = 'host_not_allowed';
+  }
+}
+
 function dashboardInputFromEnv(env) {
   return env.XPOD_SETTINGS_URL
     ?? env.XPOD_DASHBOARD_URL
@@ -12,7 +20,72 @@ function dashboardInputFromEnv(env) {
     ?? (env.XPOD_PORT || env.PORT ? `http://localhost:${env.XPOD_PORT ?? env.PORT}` : DEFAULT_BASE_URL);
 }
 
-export function canonicalizeSettingsUrl(input = DEFAULT_BASE_URL) {
+function normalizeHostname(hostname) {
+  return hostname.replace(/^\[|\]$/g, '').toLowerCase();
+}
+
+function effectivePort(url) {
+  if (url.port) {
+    return url.port;
+  }
+  return url.protocol === 'https:' ? '443' : '80';
+}
+
+function isLoopbackHost(hostname) {
+  const host = normalizeHostname(hostname);
+  if (host === 'localhost' || host === '::1') {
+    return true;
+  }
+
+  const parts = host.split('.');
+  return parts.length === 4
+    && parts[0] === '127'
+    && parts.every((part) => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255);
+}
+
+function parseAllowedHosts(value = '') {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      let parsed;
+      try {
+        parsed = new URL(`http://${entry}`);
+      } catch {
+        throw new SettingsUrlHostError(`Invalid XPOD_SETTINGS_ALLOWED_HOSTS entry: ${entry}`);
+      }
+      if (!parsed.port) {
+        throw new SettingsUrlHostError(`XPOD_SETTINGS_ALLOWED_HOSTS entries must include an explicit port: ${entry}`);
+      }
+      if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+        throw new SettingsUrlHostError(`Invalid XPOD_SETTINGS_ALLOWED_HOSTS entry: ${entry}`);
+      }
+      return {
+        host: normalizeHostname(parsed.hostname),
+        port: parsed.port,
+      };
+    });
+}
+
+function assertAllowedSettingsHost(url, allowedHosts) {
+  if (isLoopbackHost(url.hostname)) {
+    return;
+  }
+
+  const host = normalizeHostname(url.hostname);
+  const port = effectivePort(url);
+  const allowed = parseAllowedHosts(allowedHosts);
+  if (allowed.some((entry) => entry.host === host && entry.port === port)) {
+    return;
+  }
+
+  throw new SettingsUrlHostError(
+    `Settings host ${host}:${port} is not allowed. Default settings launch only permits localhost, 127.0.0.0/8, and ::1; set XPOD_SETTINGS_ALLOWED_HOSTS=host:port to opt in to a non-loopback host. Hostname allowlists are operator opt-in and should account for DNS rebinding risk.`,
+  );
+}
+
+export function canonicalizeSettingsUrl(input = DEFAULT_BASE_URL, options = {}) {
   let url;
   try {
     url = new URL(input);
@@ -26,6 +99,7 @@ export function canonicalizeSettingsUrl(input = DEFAULT_BASE_URL) {
   if (url.username || url.password) {
     throw new Error('Settings URL must not include credentials');
   }
+  assertAllowedSettingsHost(url, options.allowedHosts ?? '');
 
   url.pathname = '/dashboard/models';
   url.search = '';
@@ -95,11 +169,13 @@ export async function openSettingsDashboard(options = {}) {
   let url;
 
   try {
-    url = canonicalizeSettingsUrl(options.url ?? dashboardInputFromEnv(env));
+    url = canonicalizeSettingsUrl(options.url ?? dashboardInputFromEnv(env), {
+      allowedHosts: env.XPOD_SETTINGS_ALLOWED_HOSTS,
+    });
   } catch (error) {
     return {
       ok: false,
-      code: 'invalid_url',
+      code: error instanceof SettingsUrlHostError ? error.code : 'invalid_url',
       message: error instanceof Error ? error.message : String(error),
     };
   }

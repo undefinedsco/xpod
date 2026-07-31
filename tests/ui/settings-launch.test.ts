@@ -53,9 +53,70 @@ describe('settings launch scripts', () => {
     const { canonicalizeSettingsUrl } = await import(openSettingsScript);
 
     expect(canonicalizeSettingsUrl('http://127.0.0.1:6300')).toBe('http://127.0.0.1:6300/dashboard/models');
-    expect(canonicalizeSettingsUrl('https://xpod.local/dashboard/network?debug=1#pane')).toBe('https://xpod.local/dashboard/models');
+    expect(canonicalizeSettingsUrl('https://xpod.local/dashboard/network?debug=1#pane', {
+      allowedHosts: 'xpod.local:443',
+    })).toBe('https://xpod.local/dashboard/models');
     expect(() => canonicalizeSettingsUrl('javascript:alert(1)')).toThrow(/http or https/);
     expect(() => canonicalizeSettingsUrl('http://user:pass@localhost:3000/dashboard/models')).toThrow(/credentials/);
+    expect(() => canonicalizeSettingsUrl('http://10.0.0.5:3000')).toThrow(/not allowed/);
+    expect(() => canonicalizeSettingsUrl('http://169.254.169.254/latest/meta-data')).toThrow(/not allowed/);
+    expect(canonicalizeSettingsUrl('http://10.0.0.5:3000', {
+      allowedHosts: '10.0.0.5:3000',
+    })).toBe('http://10.0.0.5:3000/dashboard/models');
+  });
+
+  it('does not probe non-loopback settings hosts unless explicitly allowlisted', async () => {
+    const { openSettingsDashboard } = await import(openSettingsScript);
+    const fetchFn = vi.fn(async () => ({ ok: true, status: 200 }));
+    const spawnFn = vi.fn();
+
+    const metadataResult = await openSettingsDashboard({
+      env: { XPOD_SETTINGS_URL: 'http://169.254.169.254/latest/meta-data' },
+      platform: 'linux',
+      fetchFn,
+      spawnFn,
+    });
+    const privateResult = await openSettingsDashboard({
+      env: { XPOD_SETTINGS_URL: 'http://10.0.0.5:3000/dashboard/models' },
+      platform: 'linux',
+      fetchFn,
+      spawnFn,
+    });
+
+    expect(metadataResult).toMatchObject({ ok: false, code: 'host_not_allowed' });
+    expect(privateResult).toMatchObject({ ok: false, code: 'host_not_allowed' });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('allows an explicitly configured non-loopback settings host with exact host and port', async () => {
+    const { openSettingsDashboard } = await import(openSettingsScript);
+    const spawnFn = vi.fn((_command: string, _args: string[], _options: unknown) => ({
+      once(event: string, callback: (value?: unknown) => void) {
+        if (event === 'close') {
+          callback(0);
+        }
+        return this;
+      },
+    }));
+    const fetchFn = vi.fn(async () => ({ ok: true, status: 200 }));
+
+    const result = await openSettingsDashboard({
+      env: {
+        XPOD_SETTINGS_URL: 'http://10.0.0.5:3000/dashboard/models',
+        XPOD_SETTINGS_ALLOWED_HOSTS: '10.0.0.5:3000',
+      },
+      platform: 'linux',
+      fetchFn,
+      spawnFn,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      url: 'http://10.0.0.5:3000/dashboard/models',
+    });
+    expect(fetchFn).toHaveBeenCalledWith('http://10.0.0.5:3000/dashboard/models', expect.objectContaining({ method: 'HEAD' }));
+    expect(spawnFn).toHaveBeenCalled();
   });
 
   it('opens an existing dashboard through an injectable platform adapter', async () => {

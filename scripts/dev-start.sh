@@ -37,11 +37,24 @@ API_PORT="${API_PORT:-6301}"
 CSS_BASE="http://localhost:$CSS_PORT"
 API_BASE="http://localhost:$API_PORT"
 ENV_FILE="$PROJECT_DIR/.env.dev.generated"
+CLOUD_PID=""
 
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+cleanup_cloud() {
+  local pid="${CLOUD_PID:-}"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+}
+
+trap cleanup_cloud EXIT
+trap 'cleanup_cloud; exit 130' INT
+trap 'cleanup_cloud; exit 143' TERM
 
 http_status() {
   printf '%s' "$1" | awk -F: '/^HTTP_STATUS:/ { status=$2 } END { print status }'
@@ -64,7 +77,113 @@ json_string_value() {
 }
 
 curl_json() {
-  curl -sS -w '\nHTTP_STATUS:%{http_code}\n' "$@"
+  curl -sS --proto '=http,https' --max-redirs 0 -w '\nHTTP_STATUS:%{http_code}\n' "$@"
+}
+
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+validate_single_line() {
+  local name=$1
+  local value=$2
+  local max_length=${3:-4096}
+
+  if [ -z "$value" ] || [ "${#value}" -gt "$max_length" ]; then
+    log_error "非法环境变量值: $name 长度无效"
+    return 1
+  fi
+  case "$value" in
+    *$'\n'*|*$'\r'*)
+      log_error "非法环境变量值: $name 必须是单行"
+      return 1
+      ;;
+  esac
+}
+
+validate_env_value() {
+  local name=$1
+  local value=$2
+  local kind=${3:-secret}
+
+  case "$kind" in
+    id)
+      validate_single_line "$name" "$value" 512 || return 1
+      if [[ ! "$value" =~ ^[A-Za-z0-9._:@%+=,/~:-]+$ ]]; then
+        log_error "非法环境变量值: $name 字符集无效"
+        return 1
+      fi
+      ;;
+    url)
+      validate_single_line "$name" "$value" 2048 || return 1
+      if ! node -e '
+const value = process.argv[1];
+try {
+  const url = new URL(value);
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password) {
+    process.exit(1);
+  }
+} catch {
+  process.exit(1);
+}
+' "$value"; then
+        log_error "非法环境变量值: $name 必须是无 credentials 的 http(s) URL"
+        return 1
+      fi
+      ;;
+    secret)
+      validate_single_line "$name" "$value" 4096 || return 1
+      ;;
+    token)
+      validate_single_line "$name" "$value" 4096 || return 1
+      if [[ ! "$value" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+        log_error "非法环境变量值: $name 字符集无效"
+        return 1
+      fi
+      ;;
+    *)
+      log_error "未知环境变量类型: $kind"
+      return 1
+      ;;
+  esac
+}
+
+write_env_value() {
+  local name=$1
+  local value=$2
+  local kind=${3:-secret}
+
+  validate_env_value "$name" "$value" "$kind" || return 1
+  printf '%s=%s\n' "$name" "$(shell_quote "$value")" >> "$ENV_FILE"
+}
+
+validate_credentials_url() {
+  local credentials_url=$1
+
+  validate_env_value clientCredentials "$credentials_url" url || return 1
+  if ! node -e '
+const [baseValue, targetValue] = process.argv.slice(1);
+try {
+  const base = new URL(baseValue);
+  const target = new URL(targetValue);
+  if (target.origin !== base.origin) {
+    process.exit(2);
+  }
+  if (!/^\/\.account\/account\/[^/]+\/client-credentials\/?$/.test(target.pathname)) {
+    process.exit(3);
+  }
+  if (target.search || target.hash) {
+    process.exit(4);
+  }
+} catch {
+  process.exit(1);
+}
+' "$CSS_BASE" "$credentials_url"; then
+    log_error "clientCredentials endpoint 不可信: 必须与 CSS_BASE 同源且位于 account client-credentials control 路径"
+    return 1
+  fi
 }
 
 # 等待服务就绪
@@ -112,7 +231,7 @@ init_credentials() {
   local login_body=$(http_body "$login_response")
   local account_token=$(printf '%s' "$login_body" | json_string_value authorization)
 
-  if ! http_success "$login_status" || [ -z "$account_token" ]; then
+  if ! http_success "$login_status" || ! validate_env_value authorization "$account_token" token; then
     log_error "Client Credentials 初始化失败: 登录失败 (HTTP ${login_status:-unknown})"
     printf '%s\n' "$login_body"
     return 1
@@ -137,6 +256,7 @@ init_credentials() {
     printf '%s\n' "$controls_body"
     return 1
   fi
+  validate_credentials_url "$credentials_url" || return 1
 
   # 3. 创建 Client Credentials
   log_info "创建 Client Credentials..."
@@ -157,15 +277,12 @@ init_credentials() {
   local client_secret=$(printf '%s' "$cred_body" | json_string_value secret)
 
   if http_success "$cred_status" && [ -n "$client_id" ] && [ -n "$client_secret" ]; then
+    write_env_value XPOD_CLIENT_ID "$client_id" id || return 1
+    write_env_value XPOD_CLIENT_SECRET "$client_secret" secret || return 1
     log_success "Client Credentials 已创建: $client_id"
     echo "XPOD_CLIENT_ID=$client_id"
-
-    # 保存到环境变量文件
-    echo "XPOD_CLIENT_ID=$client_id" >> "$ENV_FILE"
-    echo "XPOD_CLIENT_SECRET=$client_secret" >> "$ENV_FILE"
   else
     log_error "Client Credentials 初始化失败: 创建失败或响应缺少 id/secret (HTTP ${cred_status:-unknown})"
-    printf '%s\n' "$cred_body"
     return 1
   fi
 }
@@ -175,24 +292,29 @@ create_test_node() {
   log_info "创建测试 Node..."
 
   local response
-  response=$(curl -s -X POST "$API_BASE/dev/setup" \
+  if ! response=$(curl_json -X POST "$API_BASE/dev/setup" \
     -H "Content-Type: application/json" \
-    -d '{"testId":"dev-session","displayName":"Dev Test Node"}' 2>/dev/null)
-
-  local node_id=$(echo "$response" | grep -o '"nodeId":"[^"]*"' | cut -d'"' -f4)
-  local node_token=$(echo "$response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
-  local signaling_url=$(echo "$response" | grep -o '"signalingUrl":"[^"]*"' | cut -d'"' -f4)
-
-  if [ -n "$node_id" ] && [ -n "$node_token" ]; then
-    log_success "Node 已创建: $node_id"
-
-    # 保存到环境变量文件
-    echo "XPOD_NODE_ID=$node_id" >> "$ENV_FILE"
-    echo "XPOD_NODE_TOKEN=$node_token" >> "$ENV_FILE"
-    echo "XPOD_SIGNALING_URL=$signaling_url" >> "$ENV_FILE"
-  else
+    -d '{"testId":"dev-session","displayName":"Dev Test Node"}' 2>/dev/null); then
     log_error "Node 创建失败"
-    echo "$response"
+    return 1
+  fi
+
+  local node_status=$(http_status "$response")
+  local node_body=$(http_body "$response")
+  local node_id=$(printf '%s' "$node_body" | json_string_value nodeId)
+  local node_token=$(printf '%s' "$node_body" | json_string_value token)
+  local signaling_url=$(printf '%s' "$node_body" | json_string_value signalingUrl)
+
+  if http_success "$node_status" && [ -n "$node_id" ] && [ -n "$node_token" ]; then
+    write_env_value XPOD_NODE_ID "$node_id" id || return 1
+    write_env_value XPOD_NODE_TOKEN "$node_token" token || return 1
+    if [ -n "$signaling_url" ]; then
+      write_env_value XPOD_SIGNALING_URL "$signaling_url" url || return 1
+    fi
+    log_success "Node 已创建: $node_id"
+  else
+    log_error "Node 创建失败 (HTTP ${node_status:-unknown})"
+    printf '%s\n' "$node_body"
     return 1
   fi
 }
@@ -204,32 +326,31 @@ start_cloud() {
   # 清理旧的环境变量文件
   rm -f "$ENV_FILE"
   echo "# 自动生成的开发环境变量 - $(date)" > "$ENV_FILE"
-  echo "NODE_ENV=development" >> "$ENV_FILE"
+  write_env_value NODE_ENV development id
 
   # 启动服务
   NODE_ENV=development CSS_SEED_CONFIG="$PROJECT_DIR/config/seed.dev.json" \
     bun run dev:cloud &
   CLOUD_PID=$!
-  echo "CLOUD_PID=$CLOUD_PID" >> "$ENV_FILE"
+  write_env_value CLOUD_PID "$CLOUD_PID" id
 
   # 等待服务就绪
   wait_for_service "$API_BASE/health" "API Server" 60 || {
-    kill $CLOUD_PID 2>/dev/null
     exit 1
   }
 
   wait_for_service "$CSS_BASE/.well-known/openid-configuration" "CSS" 60 || {
-    kill $CLOUD_PID 2>/dev/null
     exit 1
   }
 
   # 初始化
   sleep 2  # 等待 seed 完成
   init_credentials || {
-    kill $CLOUD_PID 2>/dev/null
     exit 1
   }
-  create_test_node
+  create_test_node || {
+    exit 1
+  }
 
   echo ""
   log_success "Cloud 服务已启动!"
