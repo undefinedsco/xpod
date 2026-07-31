@@ -53,6 +53,8 @@ describe('XpodSettingsLayout', () => {
     expect(html).toContain('Network');
     expect(html).toContain('Services');
     expect(html).toContain('aria-label="Search settings"');
+    expect(html).toContain('min-h-[8.375rem]');
+    expect(html).toContain('md:h-full md:min-h-0');
     expect(html).toContain('Models workspace');
     expect((html.match(/<main/g) ?? []).length).toBe(0);
   });

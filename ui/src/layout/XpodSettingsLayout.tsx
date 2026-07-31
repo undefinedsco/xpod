@@ -70,7 +70,7 @@ function SettingsHostHeader({
   onSearchKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
 }) {
   return (
-    <div className="flex h-full min-w-0 flex-col justify-center gap-2 px-4 md:flex-row md:items-center md:justify-between">
+    <div className="flex min-h-[8.375rem] min-w-0 flex-col justify-center gap-2 px-4 md:h-full md:min-h-0 md:flex-row md:items-center md:justify-between">
       <div className="min-w-0">
         <div className="text-sm font-semibold leading-5 text-foreground">Xpod Settings</div>
         <div className="text-xs text-muted-foreground">Runtime workspace</div>

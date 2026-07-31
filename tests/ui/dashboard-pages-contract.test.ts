@@ -65,6 +65,12 @@ describe('upgraded dashboard pages', () => {
     expect(button).toContain('active:translate-y-px');
   });
 
+  it('keeps the compact settings navigation inside the narrow header viewport', async () => {
+    const indexCss = await readRepoFile('ui/src/index.css');
+
+    expect(indexCss).toContain('min-height: 11.75rem;');
+  });
+
   it('has a status page centered on reachability, routes and diagnostics evidence', async () => {
     const statusPagePath = path.join(root, 'ui/src/pages/admin/StatusPage.tsx');
     expect(existsSync(statusPagePath)).toBe(true);
