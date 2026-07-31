@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import {
+  createCertificateCapability,
   createDnsStatusReader,
   createPublicAddressReader,
   createTunnelStatusReader,
@@ -137,10 +138,13 @@ describe('NetworkSettingsHandler', () => {
   it('redacts credential classes without erasing normal hosts or status text', () => {
     const cases = [
       'Authorization: Bearer eyJhbGciOiJsecret.payload',
+      'DPoP: eyJhbGciOiJFUzI1NiIsInR5cCI6ImRwb3Arand0In0.payload.signature',
+      'dpop: eyJhbGciOiJFUzI1NiIsInR5cCI6ImRwb3Arand0In0.payload.signature',
       'authorization=DPoP dpop-token-secret',
       'Cookie: css-account=secret-cookie; session=abc',
       'Set-Cookie: css-account=secret-cookie; HttpOnly',
-      'callback failed with code=oauth-code-secret',
+      'https://pod.example/callback?code=oauth-code-secret&state=abc',
+      'oauth callback failed with code=oauth-code-secret',
       'clientSecret=solid-client-secret',
       'gateway key xpod_gw_v1_cloud.secret.payload',
       'invocation key xpod_inv_v1.kid.secret',
@@ -158,6 +162,8 @@ describe('NetworkSettingsHandler', () => {
     }
     expect(redactSecretText('https://xpod.example responded with status=ok')).toBe('https://xpod.example responded with status=ok');
     expect(redactSecretText('DNS synced for local-managed-node.undefineds.site')).toBe('DNS synced for local-managed-node.undefineds.site');
+    expect(redactSecretText('HTTP status code=200')).toBe('HTTP status code=200');
+    expect(redactSecretText('diagnostic code=ENOTFOUND')).toBe('diagnostic code=ENOTFOUND');
   });
 
   it('reflects DNS/tunnel provider capability and public endpoints through narrow adapters', async () => {
@@ -203,5 +209,34 @@ describe('NetworkSettingsHandler', () => {
       },
     });
     expect(res.body).not.toContain('deployment');
+  });
+
+  it('adapts a certificate runtime surface into TLS status and renewal actions', async () => {
+    const certificateManager = {
+      readCertificateStatus: vi.fn(async () => ({
+        status: 'valid',
+        expiresAt: '2026-10-31T00:00:00.000Z',
+      })),
+      renewCertificate: vi.fn(async () => undefined),
+    };
+    const capability = createCertificateCapability(certificateManager);
+    const { server, routes } = createServer();
+    registerNetworkSettingsRoutes(server, {
+      endpoint: 'https://xpod.example/',
+      tlsStatusReader: capability?.tlsStatusReader,
+      certificateRenewer: capability?.certificateRenewer,
+    });
+
+    const statusRes = response();
+    await routes['GET /api/network/settings/status'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), statusRes, {});
+    expect(JSON.parse(statusRes.body)).toMatchObject({
+      tls: { supported: true, status: 'valid', expiresAt: '2026-10-31T00:00:00.000Z' },
+      actions: { renewCertificate: true },
+    });
+
+    const renewRes = response();
+    await routes['POST /api/network/settings/certificate/renew'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), renewRes, {});
+    expect(renewRes.statusCode).toBe(200);
+    expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
   });
 });

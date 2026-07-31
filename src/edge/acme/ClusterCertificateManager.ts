@@ -22,6 +22,13 @@ interface CertificateStatus {
   updatedAt?: Date;
 }
 
+export interface RuntimeCertificateStatus {
+  status: 'valid' | 'renewal_due' | 'missing';
+  expiresAt?: string;
+  domains?: string[];
+  updatedAt?: string;
+}
+
 interface CertificateResponse {
   status: string;
   certificate: {
@@ -94,6 +101,39 @@ export class ClusterCertificateManager {
         updatedAt: this.status.updatedAt?.toISOString(),
       },
     };
+  }
+
+  public async readCertificateStatus(): Promise<RuntimeCertificateStatus> {
+    await this.refreshCertificateStatus();
+    if (!this.status.expiresAt) {
+      return { status: 'missing' };
+    }
+    return {
+      status: await this.isCertificateValid() ? 'valid' : 'renewal_due',
+      expiresAt: this.status.expiresAt.toISOString(),
+      domains: this.status.domains ?? [],
+      updatedAt: this.status.updatedAt?.toISOString(),
+    };
+  }
+
+  public async renewCertificate(): Promise<void> {
+    if (this.issuing) {
+      return;
+    }
+    if (!this.assignedDomain) {
+      await this.ensureCertificate();
+      return;
+    }
+    this.issuing = true;
+    try {
+      await this.requestCertificate();
+      await this.refreshCertificateStatus();
+      if (this.onCertificateInstalled) {
+        await this.onCertificateInstalled();
+      }
+    } finally {
+      this.issuing = false;
+    }
   }
 
   private async ensureCertificate(): Promise<void> {

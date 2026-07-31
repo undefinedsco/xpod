@@ -30,6 +30,7 @@ import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { DrizzlePodAiConnectionStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
 import {
   createAddressReaders,
+  createCertificateCapability,
   createDnsStatusReader,
   createPublicAddressReader,
   createTunnelStatusReader,
@@ -118,6 +119,11 @@ function registerSharedRoutes(
   const localTunnelProvider = container.resolve('localTunnelProvider', { allowUnregistered: true });
   const cloudTunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true });
   const tunnelProvider = localTunnelProvider ?? cloudTunnelProvider;
+  const certificateCapability = createCertificateCapability(
+    container.resolve('certificateManager', { allowUnregistered: true }),
+    container.resolve('acmeCertificateManager', { allowUnregistered: true }),
+    container.resolve('clusterCertificateManager', { allowUnregistered: true }),
+  );
   const podLookupRepository = container.resolve('podLookupRepo');
   if (!podLookupRepository) {
     throw new Error('Pod settings route requires podLookupRepo');
@@ -182,6 +188,8 @@ function registerSharedRoutes(
     }),
     dnsStatusReader: createDnsStatusReader({ ddnsManager, dnsProvider, dnsCoordinator }),
     tunnelStatusReader: createTunnelStatusReader(tunnelProvider),
+    tlsStatusReader: certificateCapability?.tlsStatusReader,
+    certificateRenewer: certificateCapability?.certificateRenewer,
   });
 
   // Quota & Usage API (Business 对接)

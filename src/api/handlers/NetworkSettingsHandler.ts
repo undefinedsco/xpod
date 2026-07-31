@@ -48,6 +48,11 @@ export interface CertificateRenewer {
   renew(): Promise<void>;
 }
 
+export interface CertificateCapability {
+  tlsStatusReader?: NetworkCapabilityReader<NetworkSettingsStatus['tls']>;
+  certificateRenewer?: CertificateRenewer;
+}
+
 export interface NetworkPublicAddressReaderOptions {
   configuredUrls?: Array<string | undefined>;
   ddnsManager?: unknown;
@@ -202,6 +207,20 @@ export function createPublicAddressReader(options: NetworkPublicAddressReaderOpt
     readTunnelEndpoint(options.tunnelProvider),
     readTunnelStatusEndpoint(options.tunnelProvider),
   ].map(normalizeEndpoint).filter(Boolean) as string[]);
+}
+
+export function createCertificateCapability(...candidates: unknown[]): CertificateCapability | undefined {
+  for (const candidate of candidates) {
+    const tlsStatusReader = createCertificateStatusReader(candidate);
+    const certificateRenewer = createCertificateRenewer(candidate);
+    if (tlsStatusReader || certificateRenewer) {
+      return {
+        ...(tlsStatusReader ? { tlsStatusReader } : {}),
+        ...(certificateRenewer ? { certificateRenewer } : {}),
+      };
+    }
+  }
+  return undefined;
 }
 
 async function readNetworkStatus(
@@ -431,6 +450,74 @@ function readTunnelStatusEndpoint(tunnelProvider: unknown): string | undefined {
   return typeof status.endpoint === 'string' ? status.endpoint : undefined;
 }
 
+function createCertificateStatusReader(candidate: unknown): NetworkCapabilityReader<NetworkSettingsStatus['tls']> | undefined {
+  const statusMethod = [
+    'readCertificateStatus',
+    'getCertificateStatus',
+    'readTlsStatus',
+    'getTlsStatus',
+  ].find((method) => hasFunction(candidate, method));
+  if (!statusMethod) {
+    return undefined;
+  }
+  return {
+    read: async () => normalizeCertificateStatus(
+      await (candidate as Record<string, () => unknown>)[statusMethod](),
+    ),
+  };
+}
+
+function createCertificateRenewer(candidate: unknown): CertificateRenewer | undefined {
+  const renewMethod = [
+    'renewCertificate',
+    'renew',
+    'ensureCertificate',
+  ].find((method) => hasFunction(candidate, method));
+  if (!renewMethod) {
+    return undefined;
+  }
+  return {
+    renew: async () => {
+      await (candidate as Record<string, () => unknown>)[renewMethod]();
+    },
+  };
+}
+
+function normalizeCertificateStatus(value: unknown): NetworkSettingsStatus['tls'] {
+  if (typeof value === 'string') {
+    return { supported: true, status: value };
+  }
+  if (!value || typeof value !== 'object') {
+    return { supported: true, status: 'configured' };
+  }
+  const record = value as Record<string, unknown>;
+  const nestedCertificate = record.certificate && typeof record.certificate === 'object'
+    ? record.certificate as Record<string, unknown>
+    : undefined;
+  const status = typeof record.status === 'string' ? record.status : 'configured';
+  const expiresAt = normalizeIsoDate(record.expiresAt ?? nestedCertificate?.expiresAt);
+  return {
+    supported: record.supported === false ? false : true,
+    status,
+    ...(expiresAt ? { expiresAt } : {}),
+  };
+}
+
+function normalizeIsoDate(value: unknown): string | undefined {
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return value.toISOString();
+  }
+  if (typeof value === 'string') {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : value;
+  }
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+  }
+  return undefined;
+}
+
 function hasFunction<T extends string>(value: unknown, key: T): value is Record<T, (...args: never[]) => unknown> {
   return Boolean(value && typeof value === 'object' && typeof (value as Record<T, unknown>)[key] === 'function');
 }
@@ -439,9 +526,13 @@ export function redactSecretText(value: unknown): string {
   const raw = value instanceof Error ? value.message : String(value);
   const containsSensitiveValue = [
     /\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|dpop|basic)?\s*[^,\s;]+/iu,
+    /\bdpop\s*[:=]\s*[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/iu,
     /\b(?:bearer|dpop)\s+[A-Za-z0-9._~+/=-]{8,}/iu,
     /\b(?:cookie|set-cookie)\s*[:=]\s*[^,\n]+/iu,
-    /\b(?:token|secret|password|passwd|api[_-]?key|authorization|credential|clientSecret|client_secret|code)\s*[=:]\s*[^,\s;]+/iu,
+    /\b(?:token|secret|password|passwd|api[_-]?key|authorization|credential|clientSecret|client_secret)\s*[=:]\s*[^,\s;]+/iu,
+    /[?&]code=[^&#\s]+/iu,
+    /\b(?:oauth|oidc|auth(?:orization)?|callback)\b[^,\n]*\bcode\s*[=:]\s*[^,\s;&]+/iu,
+    /\bcode\s*[=:]\s*[^,\s;&]+[^,\n]*\b(?:oauth|oidc|auth(?:orization)?|callback)\b/iu,
     /\bxpod_(?:gw|inv)_[A-Za-z0-9._-]+/iu,
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
     /"d"\s*:\s*"[^"]{8,}"/u,

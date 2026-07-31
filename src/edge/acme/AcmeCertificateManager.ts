@@ -87,6 +87,12 @@ export interface AcmeCertificateManagerOptions {
   propagationDelayMs?: number;
 }
 
+export interface RuntimeCertificateStatus {
+  status: 'valid' | 'renewal_due' | 'missing' | 'invalid';
+  expiresAt?: string;
+  domains?: string[];
+}
+
 const DEFAULT_DIRECTORY_URL = acme.directory.letsencrypt.production;
 const DEFAULT_FALLBACK_URLS = [
   acme.directory.letsencrypt.staging, // Staging as fallback for testing
@@ -139,7 +145,8 @@ export class AcmeCertificateManager {
   }
 
   public async ensureCertificate(): Promise<boolean> {
-    if (await this.isCertificateValid()) {
+    const status = await this.readCertificateStatus();
+    if (status.status === 'valid') {
       this.logger.debug('现有证书仍在有效期内，跳过 ACME 申请。');
       return false;
     }
@@ -147,21 +154,51 @@ export class AcmeCertificateManager {
     return true;
   }
 
-  private async isCertificateValid(): Promise<boolean> {
+  public async readCertificateStatus(): Promise<RuntimeCertificateStatus> {
     try {
       const certPem = await fs.readFile(this.certificatePath, 'utf8');
       const cert = new X509Certificate(certPem);
       const expiresAt = cert.validTo ? new Date(cert.validTo).getTime() : NaN;
       if (!Number.isFinite(expiresAt)) {
-        return false;
+        return { status: 'invalid' };
       }
       const remainingMs = expiresAt - Date.now();
       const thresholdMs = this.renewBeforeDays * 24 * 60 * 60 * 1000;
-      const containsAllDomains = this.domains.every((domain) => cert.subjectAltName?.includes(domain));
-      return remainingMs > thresholdMs && containsAllDomains;
+      const domains = this.extractDomainsFromCertificate(cert);
+      const containsAllDomains = this.domains.every((domain) => domains.includes(domain.toLowerCase()));
+      return {
+        status: remainingMs > thresholdMs && containsAllDomains ? 'valid' : 'renewal_due',
+        expiresAt: new Date(expiresAt).toISOString(),
+        domains,
+      };
     } catch {
-      return false;
+      return { status: 'missing' };
     }
+  }
+
+  public async renewCertificate(): Promise<void> {
+    await this.issueCertificate();
+  }
+
+  private extractDomainsFromCertificate(cert: X509Certificate): string[] {
+    const result = new Set<string>();
+    const subject = cert.subject;
+    if (subject) {
+      const match = /CN=([^,]+)/u.exec(subject);
+      if (match?.[1]) {
+        result.add(match[1].trim().toLowerCase());
+      }
+    }
+    const altNames = cert.subjectAltName?.split(',');
+    if (altNames) {
+      for (const entry of altNames) {
+        const trimmed = entry.trim();
+        if (trimmed.toLowerCase().startsWith('dns:')) {
+          result.add(trimmed.slice(4).trim().toLowerCase());
+        }
+      }
+    }
+    return Array.from(result);
   }
 
   private async issueCertificate(): Promise<void> {

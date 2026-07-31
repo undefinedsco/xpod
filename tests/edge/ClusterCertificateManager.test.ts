@@ -70,4 +70,48 @@ describe('ClusterCertificateManager', () => {
     manager.stop();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
+
+  it('exposes runtime TLS status and renewal through a narrow public surface', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cluster-cert-status-'));
+    const certPath = path.join(tmpDir, 'tls.crt');
+    const keyPath = path.join(tmpDir, 'tls.key');
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({
+        status: 'issued',
+        certificate: {
+          pem: SAMPLE_CERT,
+          fullChain: SAMPLE_CERT,
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          domains: [ 'node-1.cluster.example' ],
+        },
+      }),
+    });
+    global.fetch = fetchMock;
+
+    const manager = new ClusterCertificateManager({
+      signalEndpoint: 'https://cluster.example/api/signal',
+      nodeId: 'node-1',
+      nodeToken: 'secret',
+      certificateKeyPath: keyPath,
+      certificatePath: certPath,
+      renewBeforeDays: 10,
+    });
+
+    manager.handleHeartbeatMetadata({ subdomain: 'node-1.cluster.example' });
+    await manager.start();
+    await expect(manager.readCertificateStatus()).resolves.toMatchObject({
+      status: 'valid',
+      expiresAt: '2026-11-11T07:26:01.000Z',
+      domains: [ 'node-1.cluster.example' ],
+    });
+
+    await manager.renewCertificate();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    manager.stop();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
 });

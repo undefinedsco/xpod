@@ -1,4 +1,8 @@
+import os from 'node:os';
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AcmeCertificateManager } from '../../src/edge/acme/AcmeCertificateManager';
 
 vi.mock('inngest/node', () => ({
   serve: vi.fn(() => vi.fn((_req: unknown, res: { end?: () => void }) => res.end?.())),
@@ -8,6 +12,24 @@ import { registerRoutes } from '../../src/api/container/routes';
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
 import { serve } from 'inngest/node';
+
+const SAMPLE_CERT = `-----BEGIN CERTIFICATE-----
+MIICvjCCAaYCCQCzYZphWIDKfjANBgkqhkiG9w0BAQsFADAhMR8wHQYDVQQDDBZu
+b2RlLTEuY2x1c3Rlci5leGFtcGxlMB4XDTI1MTExMTA3MjYwMVoXDTI2MTExMTA3
+MjYwMVowITEfMB0GA1UEAwwWbm9kZS0xLmNsdXN0ZXIuZXhhbXBsZTCCASIwDQYJ
+KoZIhvcNAQEBBQADggEPADCCAQoCggEBAMUfvY61jRGXmOUCw/CKMdpfmLkH0tQs
+3jmtMDcMHI73hudmJtRLavM+dcdRtlkb24s8QeYa3ZOpKp00/noTaOow2ItKFPiK
+nQvEPGfjVShv65X5Tv6X1zcLNxCymRN2YTxfRrm8Niy1q6xsi2woeJjqwUw9ai56
+eLUvoyvEtXakv11zY/v6SE6g9+X70J3cNf2+KnpHGrJ/g0hYSorzHHSDC8co+1+9
+rQ+5FCDRcswZcLDST9Q1AzJrrTglM6LYUAtXZanTc664E8xRcdLMlmE3NseXBQFh
+xc8x+qQ1JBk2si+ZYugjnqyU/ITUI02V7smcP6aM4ySYUtKZWoHStv0CAwEAATAN
+BgkqhkiG9w0BAQsFAAOCAQEAMhHoYiNdKhNW8LY1/A0tPRY71bCryfu1QKXJDm+y
+xRcUhHGTzTHvi/rE4T0/NaOGYlhQ1VYZ7BX4Q9p13AD3lDxF+n6X40EiaWzSs1+s
+yJiI9w0CfzOLMwdt4db+7CBWXq95Bep8kEPLXrSqljG+qgdpWRY462EcRfszgUbR
+FthYIl292Sn1BL6yh8snJyEE9KYFVmO6PQjB6vEODuhAZj2Twku1u7T6FyE8eJqN
+jn64lJdLOW3uzhbxOETW8kNX6AyotU+E5l/3eeNT0v6w7A1Z0RkOm0Smg8nW8xKf
+rfWd+Y8jP9+2OHWWDZb4Y/28T35JgI9qQ18eS3HoX1l0wQ==
+-----END CERTIFICATE-----`;
 
 describe('registerRoutes mode wiring', () => {
   let routes: Record<string, Function>;
@@ -67,6 +89,7 @@ describe('registerRoutes mode wiring', () => {
       inngestRuntimeConfig?: unknown;
       rdfStorageStatsService?: unknown;
       config?: Partial<ApiContainerConfig>;
+      services?: Record<string, unknown>;
     } = {},
   ): any {
     const services: Record<string, unknown> = {
@@ -137,6 +160,7 @@ describe('registerRoutes mode wiring', () => {
         getEndpoint: vi.fn(() => 'https://local-tunnel.example/'),
       } : undefined,
       subdomainClient: edition === 'local' ? {} : undefined,
+      ...overrides.services,
     };
 
     return {
@@ -327,6 +351,97 @@ describe('registerRoutes mode wiring', () => {
       },
     });
     expect(res.body).not.toContain('deployment');
+  });
+
+  it('wires a cloud certificate runtime surface into Network settings TLS status and renewal', async () => {
+    const certificateManager = {
+      readCertificateStatus: vi.fn(async () => ({
+        status: 'valid',
+        expiresAt: '2026-10-31T00:00:00.000Z',
+      })),
+      renewCertificate: vi.fn(async () => undefined),
+    };
+    registerRoutes(createContainer('cloud', {
+      config: {
+        publicUrl: 'https://cloud.example/',
+      },
+      services: { certificateManager },
+    }));
+
+    const statusRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](authedRequest(), statusRes, {});
+    expect(JSON.parse(statusRes.body)).toMatchObject({
+      tls: { supported: true, status: 'valid', expiresAt: '2026-10-31T00:00:00.000Z' },
+      actions: { renewCertificate: true },
+    });
+
+    const renewRes = jsonResponse();
+    await routes['POST /api/network/settings/certificate/renew'](authedRequest(), renewRes, {});
+    expect(renewRes.statusCode).toBe(200);
+    expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
+  });
+
+  it('wires a local ACME certificate runtime surface into Network settings TLS status and renewal', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'routes-acme-cert-'));
+    try {
+      const certPath = path.join(tmpDir, 'tls.crt');
+      await fs.writeFile(certPath, SAMPLE_CERT, 'utf8');
+      const acmeCertificateManager = new AcmeCertificateManager({
+        dnsChallengeHandler: {
+          setChallenge: vi.fn(),
+          removeChallenge: vi.fn(),
+        },
+        email: 'ops@example.com',
+        domains: [ 'node-1.cluster.example' ],
+        accountKeyPath: path.join(tmpDir, 'account.key'),
+        certificateKeyPath: path.join(tmpDir, 'tls.key'),
+        certificatePath: certPath,
+        renewBeforeDays: 10,
+      });
+      const renewSpy = vi.spyOn(acmeCertificateManager, 'renewCertificate').mockResolvedValue(undefined);
+      registerRoutes(createContainer('local', {
+        config: {
+          publicUrl: 'https://local-public.example/',
+        },
+        services: { acmeCertificateManager },
+      }));
+
+      const statusRes = jsonResponse();
+      await routes['GET /api/network/settings/status'](authedRequest(), statusRes, {});
+      expect(JSON.parse(statusRes.body)).toMatchObject({
+        tls: { supported: true, status: 'valid', expiresAt: '2026-11-11T07:26:01.000Z' },
+        actions: { renewCertificate: true },
+      });
+
+      const renewRes = jsonResponse();
+      await routes['POST /api/network/settings/certificate/renew'](authedRequest(), renewRes, {});
+      expect(renewRes.statusCode).toBe(200);
+      expect(renewSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps TLS unsupported when no certificate runtime surface is registered', async () => {
+    registerRoutes(createContainer('local', {
+      config: {
+        publicUrl: 'https://local-public.example/',
+      },
+      services: {
+        certificateManager: undefined,
+        acmeCertificateManager: undefined,
+        clusterCertificateManager: undefined,
+      },
+    }));
+    const res = jsonResponse();
+
+    await routes['GET /api/network/settings/status'](authedRequest(), res, {});
+
+    expect(JSON.parse(res.body)).toMatchObject({
+      tls: { supported: false, status: 'unsupported' },
+      actions: { renewCertificate: false },
+    });
+    expect(routes['POST /api/network/settings/certificate/renew']).toBeUndefined();
   });
 
   it('wires RDF stats routes to the container stats service', async () => {
