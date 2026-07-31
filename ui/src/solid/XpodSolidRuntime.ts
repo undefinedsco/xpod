@@ -30,7 +30,7 @@ export interface XpodSolidRuntimeValue {
   readonly podUrl?: string;
   readonly issuer?: string;
   readonly currentPod?: OpenPodRuntime<SolidDatabase>;
-  readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority'>;
+  readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
   login(issuer: string): Promise<void>;
   logout(): Promise<void>;
 }

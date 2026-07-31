@@ -172,6 +172,7 @@ function registerSharedRoutes(
     connectService: providerConnectService,
     quotaService: providerQuotaService,
     servicePrincipal: gatewayInternalPodAccess,
+    aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
   });
   registerAiClientConfigurationRoutes(server, {

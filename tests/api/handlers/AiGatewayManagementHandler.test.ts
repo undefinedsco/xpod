@@ -246,6 +246,61 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain('browser-solid-token');
   });
 
+  it('includes a safe AI client configuration capability descriptor in service-access when local host support is explicit', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'local',
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+      },
+      aiClientConfiguration: {
+        available: true,
+        authority: 'local-filesystem',
+        manualInstructions: 'Configure clients manually if local filesystem access is unavailable.',
+      },
+    });
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connection'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, {});
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.aiClientConfiguration).toEqual({
+      available: true,
+      authority: 'local-filesystem',
+      manualInstructions: expect.any(String),
+    });
+    expect(JSON.stringify(body)).not.toContain('/Users/');
+    expect(JSON.stringify(body)).not.toContain('xpod_gw');
+  });
+
+  it('reports AI client configuration unavailable in cloud service-access without exposing host paths', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+      },
+    });
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connection'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).aiClientConfiguration).toEqual({
+      available: false,
+      manualInstructions: expect.any(String),
+    });
+  });
+
   it('creates a gateway key for the logged-in Solid WebID and returns plaintext once', async () => {
     const repository = new InMemoryGatewayAccessKeyRepository();
     const { server, routes } = createServer();

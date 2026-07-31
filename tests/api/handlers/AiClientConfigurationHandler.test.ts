@@ -65,13 +65,14 @@ describe('AiClientConfigurationHandler', () => {
       { client },
     );
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, res.body).toBe(200);
     const plan = JSON.parse(res.body);
     expect(plan.client).toBe(client);
     expect(plan.planId).toMatch(/^aicfg_/);
     expect(plan.backupLocation).toContain('.xpod/client-config-backups');
     expect(plan.confirmation?.required ?? false).toBe(client === 'pi');
     expect(plan.changes.length).toBeGreaterThan(0);
+    expect(plan.changes.map((change: { target: string }) => change.target)).toEqual(nativeTargets(client));
     expect(JSON.stringify(plan)).toContain('[redacted]');
     expect(JSON.stringify(plan)).not.toContain(GATEWAY_KEY);
     expect(JSON.stringify(plan)).not.toContain(PROVIDER_KEY);
@@ -102,6 +103,7 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.stringify(JSON.parse(apply.body))).not.toContain(GATEWAY_KEY);
     expect(JSON.stringify(JSON.parse(apply.body))).not.toContain(PROVIDER_KEY);
     await expectClientConfigured(tmpDir, client);
+    await expectNativeProjection(tmpDir, client);
     await expectUnrelatedPreserved(tmpDir, client);
 
     const verify = response();
@@ -133,6 +135,40 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.parse(secondRestore.body)).toMatchObject({ status: 'notConfigured' });
   });
 
+  it.each(CLIENTS)('restores old managed %s projection without user edits by stripping shared adapter managed state first', async (client) => {
+    await seedOldManagedProjection(tmpDir, client);
+    const plan = await postPlan(client);
+    const apply = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({
+        planId: plan.planId,
+        gatewayKey: GATEWAY_KEY,
+        ...(plan.confirmation ? {
+          confirmation: {
+            token: plan.confirmation.token,
+            targetHash: plan.confirmation.targetHash,
+          },
+        } : {}),
+      }, scopedAuth('client-config:write')),
+      apply,
+      { client },
+    );
+    expect(apply.statusCode).toBe(200);
+
+    const restore = response();
+    await route('POST /api/ai/client-configuration/:client/restore')(
+      jsonRequest({}, scopedAuth('client-config:write')),
+      restore,
+      { client },
+    );
+
+    expect(restore.statusCode).toBe(200);
+    const content = JSON.stringify(await snapshot(tmpDir));
+    expect(content).not.toContain('old-xpod');
+    expect(content).not.toContain('old-web-id');
+    expect(content).not.toContain(GATEWAY_KEY);
+  });
+
   it('restores automatically when gateway verification fails after apply', async () => {
     service = new AiClientConfigurationService({
       homeDir: tmpDir,
@@ -156,7 +192,12 @@ describe('AiClientConfigurationHandler', () => {
 
     expect(res.statusCode).toBe(502);
     const body = JSON.parse(res.body);
-    expect(body).toMatchObject({ error: 'verification_failed_restored' });
+    expect(body).toMatchObject({
+      code: 'verification_failed_restored',
+      message: 'Gateway verification failed.',
+      details: { restored: true },
+    });
+    expect(body).not.toHaveProperty('error');
     expect(JSON.stringify(body)).not.toContain(GATEWAY_KEY);
     expect(await readCodexConfig(tmpDir)).not.toContain('xpod-ai-connection');
     await expectUnrelatedPreserved(tmpDir, 'codex');
@@ -174,7 +215,7 @@ describe('AiClientConfigurationHandler', () => {
     );
 
     expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body)).toEqual({ error: 'unsafe_config_target' });
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'unsafe_config_target' });
     await expect(fs.readdir(path.join(tmpDir, '.xpod')).catch(() => [])).resolves.toEqual([]);
   });
 
@@ -212,7 +253,7 @@ describe('AiClientConfigurationHandler', () => {
     );
 
     expect(res.statusCode).toBe(409);
-    expect(JSON.parse(res.body)).toEqual({ error: 'configuration_conflict' });
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'configuration_conflict' });
     const current = await fs.readFile(path.join(tmpDir, '.claude', 'settings.json'), 'utf8');
     expect(current).toContain('userEdited');
     expect(current).not.toContain(GATEWAY_KEY);
@@ -229,7 +270,7 @@ describe('AiClientConfigurationHandler', () => {
       { client: 'pi' },
     );
     expect(missing.statusCode).toBe(409);
-    expect(JSON.parse(missing.body)).toEqual({ error: 'confirmation_required' });
+    expect(JSON.parse(missing.body)).toMatchObject({ code: 'confirmation_required' });
 
     const stale = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
@@ -242,7 +283,7 @@ describe('AiClientConfigurationHandler', () => {
       { client: 'pi' },
     );
     expect(stale.statusCode).toBe(409);
-    expect(JSON.parse(stale.body)).toEqual({ error: 'confirmation_stale' });
+    expect(JSON.parse(stale.body)).toMatchObject({ code: 'confirmation_stale' });
   });
 
   it('verifies managed config after restart only when a recoverable key reference exists', async () => {
@@ -327,7 +368,35 @@ describe('AiClientConfigurationHandler', () => {
     );
 
     expect(res.statusCode).toBe(503);
-    expect(JSON.parse(res.body)).toEqual({ error: 'client_configuration_unavailable' });
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'client_configuration_unavailable',
+      details: {
+        aiClientConfiguration: {
+          available: false,
+          manualInstructions: expect.any(String),
+        },
+      },
+    });
+  });
+
+  it('exposes a safe authenticated local filesystem capability descriptor without paths or secrets', async () => {
+    const res = response();
+
+    await route('GET /api/ai/client-configuration/capability')(
+      jsonRequest(undefined, { type: 'solid', webId: WEB_ID }),
+      res,
+      {},
+    );
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toEqual({
+      available: true,
+      authority: 'local-filesystem',
+      manualInstructions: expect.any(String),
+    });
+    expect(JSON.stringify(body)).not.toContain(tmpDir);
+    expect(JSON.stringify(body)).not.toContain('xpod_');
   });
 
   async function postPlan(client: AiClientId) {
@@ -417,12 +486,19 @@ async function writeFixtures(home: string): Promise<void> {
     theme: 'dark',
   }, null, 2));
   await fs.mkdir(path.join(home, '.config', 'pi'), { recursive: true });
-  await fs.writeFile(path.join(home, '.config', 'pi', 'settings.json'), JSON.stringify({
-    provider: { id: 'anthropic', baseUrl: 'https://api.anthropic.com' },
+  await fs.mkdir(path.join(home, '.pi', 'agent'), { recursive: true });
+  await fs.writeFile(path.join(home, '.pi', 'agent', 'settings.json'), JSON.stringify({
+    defaultProvider: 'anthropic',
+    defaultModel: 'claude-3',
     telemetry: false,
   }, null, 2));
+  await fs.writeFile(path.join(home, '.pi', 'agent', 'models.json'), JSON.stringify({
+    providers: {
+      anthropic: { baseUrl: 'https://api.anthropic.com' },
+    },
+  }, null, 2));
   await fs.mkdir(path.join(home, '.codebuddy'), { recursive: true });
-  await fs.writeFile(path.join(home, '.codebuddy', 'config.json'), JSON.stringify({
+  await fs.writeFile(path.join(home, '.codebuddy', 'settings.json'), JSON.stringify({
     providers: { tencent: { enabled: true } },
     ui: { locale: 'zh-CN' },
   }, null, 2));
@@ -431,15 +507,19 @@ async function writeFixtures(home: string): Promise<void> {
 async function snapshot(home: string): Promise<Record<string, string>> {
   const entries = await Promise.all([
     readCodexConfig(home),
+    fs.readFile(path.join(home, '.codex', 'auth.json'), 'utf8').catch(() => ''),
     fs.readFile(path.join(home, '.claude', 'settings.json'), 'utf8'),
-    fs.readFile(path.join(home, '.config', 'pi', 'settings.json'), 'utf8'),
-    fs.readFile(path.join(home, '.codebuddy', 'config.json'), 'utf8'),
+    fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8'),
+    fs.readFile(path.join(home, '.pi', 'agent', 'models.json'), 'utf8'),
+    fs.readFile(path.join(home, '.codebuddy', 'settings.json'), 'utf8'),
   ]);
   return {
     codex: entries[0],
-    claude: entries[1],
-    pi: entries[2],
-    codebuddy: entries[3],
+    codexAuth: entries[1],
+    claude: entries[2],
+    piSettings: entries[3],
+    piModels: entries[4],
+    codebuddy: entries[5],
   };
 }
 
@@ -449,25 +529,57 @@ async function readCodexConfig(home: string): Promise<string> {
 
 async function expectClientConfigured(home: string, client: AiClientId): Promise<void> {
   const content = await clientContent(home, client);
-  expect(content).toContain('xpod-ai-connection');
   expect(content).toContain(ENDPOINT);
-  expect(content).toContain(GATEWAY_KEY);
   expect(content).not.toContain(PROVIDER_KEY);
   const stat = await fs.stat(client === 'codex'
     ? path.join(home, '.codex', 'config.toml')
     : client === 'claude-code'
       ? path.join(home, '.claude', 'settings.json')
       : client === 'pi'
-        ? path.join(home, '.config', 'pi', 'settings.json')
-        : path.join(home, '.codebuddy', 'config.json'));
+        ? path.join(home, '.pi', 'agent', 'models.json')
+        : path.join(home, '.codebuddy', 'settings.json'));
   expect((stat.mode & 0o077)).toBe(0);
+}
+
+async function expectNativeProjection(home: string, client: AiClientId): Promise<void> {
+  if (client === 'codex') {
+    const config = await readCodexConfig(home);
+    const auth = JSON.parse(await fs.readFile(path.join(home, '.codex', 'auth.json'), 'utf8'));
+    expect(config).toContain('requires_openai_auth = true');
+    expect(config).toContain('model_provider = "xpod"');
+    expect(auth.OPENAI_API_KEY).toBe(GATEWAY_KEY);
+    return;
+  }
+  if (client === 'claude-code') {
+    const settings = JSON.parse(await fs.readFile(path.join(home, '.claude', 'settings.json'), 'utf8'));
+    expect(settings.env.ANTHROPIC_BASE_URL).toBe(ENDPOINT);
+    expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_KEY);
+    return;
+  }
+  if (client === 'pi') {
+    const settings = JSON.parse(await fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8'));
+    const models = JSON.parse(await fs.readFile(path.join(home, '.pi', 'agent', 'models.json'), 'utf8'));
+    expect(settings.defaultProvider).toBe('xpod');
+    expect(settings.defaultModel).toBe('openai/gpt-5');
+    expect(models.providers.xpod).toMatchObject({
+      baseUrl: `${ENDPOINT}/v1`,
+      apiKey: GATEWAY_KEY,
+      api: 'openai-responses',
+    });
+    return;
+  }
+  const settings = JSON.parse(await fs.readFile(path.join(home, '.codebuddy', 'settings.json'), 'utf8'));
+  expect(settings.env.CODEBUDDY_BASE_URL).toBe(`${ENDPOINT}/v1`);
+  expect(settings.env.CODEBUDDY_API_KEY).toBe(GATEWAY_KEY);
 }
 
 async function expectUnrelatedPreserved(home: string, client: AiClientId): Promise<void> {
   const content = await clientContent(home, client);
   if (client === 'codex') expect(content).toContain('model = "gpt-5"');
   if (client === 'claude-code') expect(content).toContain('Bash(echo safe)');
-  if (client === 'pi') expect(content).toContain('"telemetry": false');
+  if (client === 'pi') {
+    expect(await fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8')).toContain('"telemetry": false');
+  }
   if (client === 'codebuddy') expect(content).toContain('"locale": "zh-CN"');
 }
 
@@ -479,8 +591,8 @@ async function mutateUnrelatedAfterApply(home: string, client: AiClientId): Prom
   const file = client === 'claude-code'
     ? path.join(home, '.claude', 'settings.json')
     : client === 'pi'
-      ? path.join(home, '.config', 'pi', 'settings.json')
-      : path.join(home, '.codebuddy', 'config.json');
+      ? path.join(home, '.pi', 'agent', 'settings.json')
+      : path.join(home, '.codebuddy', 'settings.json');
   const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
   parsed.userNote = 'kept';
   await fs.writeFile(file, JSON.stringify(parsed, null, 2));
@@ -490,13 +602,69 @@ async function expectClientRestoredWithoutLosingUserChange(home: string, client:
   const content = await clientContent(home, client);
   expect(content).not.toContain('xpod-ai-connection');
   expect(content).not.toContain(GATEWAY_KEY);
-  expect(content).toContain(client === 'codex' ? 'user_note = "kept"' : '"userNote": "kept"');
+  const userEditedContent = client === 'pi'
+    ? await fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8')
+    : content;
+  expect(userEditedContent).toContain(client === 'codex' ? 'user_note = "kept"' : '"userNote": "kept"');
   await expectUnrelatedPreserved(home, client);
 }
 
 async function clientContent(home: string, client: AiClientId): Promise<string> {
   if (client === 'codex') return readCodexConfig(home);
   if (client === 'claude-code') return fs.readFile(path.join(home, '.claude', 'settings.json'), 'utf8');
-  if (client === 'pi') return fs.readFile(path.join(home, '.config', 'pi', 'settings.json'), 'utf8');
-  return fs.readFile(path.join(home, '.codebuddy', 'config.json'), 'utf8');
+  if (client === 'pi') return fs.readFile(path.join(home, '.pi', 'agent', 'models.json'), 'utf8');
+  return fs.readFile(path.join(home, '.codebuddy', 'settings.json'), 'utf8');
+}
+
+function nativeTargets(client: AiClientId): string[] {
+  if (client === 'codex') return ['~/.codex/config.toml', '~/.codex/auth.json'];
+  if (client === 'claude-code') return ['~/.claude/settings.json'];
+  if (client === 'pi') return ['~/.pi/agent/settings.json', '~/.pi/agent/models.json'];
+  return ['~/.codebuddy/settings.json'];
+}
+
+async function seedOldManagedProjection(home: string, client: AiClientId): Promise<void> {
+  if (client === 'codex') {
+    await fs.writeFile(path.join(home, '.codex', 'config.toml'), [
+      'model_provider = "xpod"',
+      'model = "legacy-model"',
+      '# >>> xpod-ai-connection managed',
+      '[model_providers.xpod]',
+      'base_url = "https://old-xpod.example/v1"',
+      '# <<< xpod-ai-connection managed',
+      '',
+    ].join('\n'));
+    await fs.writeFile(path.join(home, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'old-xpod-secret' }, null, 2));
+    return;
+  }
+  if (client === 'claude-code') {
+    await fs.writeFile(path.join(home, '.claude', 'settings.json'), JSON.stringify({
+      xpod: { webId: 'old-web-id' },
+      env: {
+        ANTHROPIC_BASE_URL: 'https://old-xpod.example/api/ai',
+        ANTHROPIC_AUTH_TOKEN: 'old-xpod-secret',
+      },
+    }, null, 2));
+    return;
+  }
+  if (client === 'pi') {
+    await fs.writeFile(path.join(home, '.pi', 'agent', 'settings.json'), JSON.stringify({
+      xpod: { webId: 'old-web-id' },
+      defaultProvider: 'xpod',
+      defaultModel: 'legacy-model',
+    }, null, 2));
+    await fs.writeFile(path.join(home, '.pi', 'agent', 'models.json'), JSON.stringify({
+      providers: {
+        xpod: { baseUrl: 'https://old-xpod.example/v1', apiKey: 'old-xpod-secret' },
+      },
+    }, null, 2));
+    return;
+  }
+  await fs.writeFile(path.join(home, '.codebuddy', 'settings.json'), JSON.stringify({
+    xpod: { webId: 'old-web-id' },
+    env: {
+      CODEBUDDY_BASE_URL: 'https://old-xpod.example/v1',
+      CODEBUDDY_API_KEY: 'old-xpod-secret',
+    },
+  }, null, 2));
 }

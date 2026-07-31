@@ -183,6 +183,7 @@
     "@mariozechner/pi-coding-agent": "^0.55.1",
     "@solid/community-server": "8.0.0-alpha.1",
     "@undefineds.co/drizzle-solid": "0.3.18",
+    "@undefineds.co/ai-connection": "^0.1.0",
     "@undefineds.co/extensions": "github:undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632",
     "@undefineds.co/models": "0.2.47",
     "abstract-level": "^1.0.4",

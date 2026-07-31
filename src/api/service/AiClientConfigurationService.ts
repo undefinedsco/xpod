@@ -1,8 +1,24 @@
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import {
+  CodexConfigAdapter,
+  ClaudeCodeConfigAdapter,
+  CodeBuddyConfigAdapter,
+  PiConfigAdapter,
+  type AiClientConfigAdapter,
+  AiClientConfigPlan,
+  AiConnectionClientProfile,
+  ConfigWrite,
+} from '@undefineds.co/ai-connection/client-config';
 
 export type AiClientId = 'codex' | 'claude-code' | 'pi' | 'codebuddy';
+
+export interface AiClientConfigurationCapabilityDescriptor {
+  available: boolean;
+  authority?: 'local-filesystem';
+  manualInstructions: string;
+}
 
 export interface AiClientConfigurationStatus {
   status: 'notConfigured' | 'configured' | 'drifted' | 'unavailable' | 'unverifiable' | 'failedAndRestored';
@@ -71,24 +87,13 @@ export interface VerifyInput {
   planId?: string;
 }
 
-type ClientFormat = 'tomlBlock' | 'jsonField';
-
-interface ClientAdapter {
-  client: AiClientId;
-  label: string;
-  relativePath: string;
-  format: ClientFormat;
-  replacementConfirmationRequired: boolean;
-}
-
 interface StoredPlan {
   planId: string;
   client: AiClientId;
-  endpoint: string;
-  model?: string;
-  webId?: string;
-  backupDir: string;
+  profile: AiConnectionClientProfile;
+  nativePlan: AiClientConfigPlan;
   targets: PlannedTarget[];
+  backupDir: string;
   gatewayKey?: string;
   confirmation?: {
     token: string;
@@ -97,75 +102,35 @@ interface StoredPlan {
 }
 
 interface PlannedTarget {
-  adapter: ClientAdapter;
   filePath: string;
   displayPath: string;
   beforeHash: string;
   beforeExists: boolean;
   beforeContent: string;
   plannedContentWithoutSecret: string;
-  action: 'update' | 'createOrUpdate';
+  action: 'update' | 'createOrUpdate' | 'delete';
 }
 
-interface SnapshotFile {
-  version: 1;
-  client: AiClientId;
-  webId?: string;
-  createdAt: string;
-  targets: Array<{
-    filePath: string;
-    format: ClientFormat;
-    beforeExists: boolean;
-    beforeContent: string;
-    afterHash: string;
-    managedContent: string;
-  }>;
-}
-
-const MANAGED_BY = 'xpod-ai-connection';
-const TOML_START = '# >>> xpod-ai-connection';
-const TOML_END = '# <<< xpod-ai-connection';
 const PLAN_SECRET_PLACEHOLDER = '[redacted]';
+const MANUAL_INSTRUCTIONS = 'Manual client setup is available when this host cannot safely write local coding-client files.';
 
-const CLIENT_ADAPTERS: Record<AiClientId, ClientAdapter> = {
-  codex: {
-    client: 'codex',
-    label: 'Codex',
-    relativePath: '.codex/config.toml',
-    format: 'tomlBlock',
-    replacementConfirmationRequired: false,
-  },
-  'claude-code': {
-    client: 'claude-code',
-    label: 'Claude Code',
-    relativePath: '.claude/settings.json',
-    format: 'jsonField',
-    replacementConfirmationRequired: false,
-  },
-  pi: {
-    client: 'pi',
-    label: 'Pi',
-    relativePath: '.config/pi/settings.json',
-    format: 'jsonField',
-    replacementConfirmationRequired: true,
-  },
-  codebuddy: {
-    client: 'codebuddy',
-    label: 'CodeBuddy',
-    relativePath: '.codebuddy/config.json',
-    format: 'jsonField',
-    replacementConfirmationRequired: false,
-  },
+const CLIENT_LABELS: Record<AiClientId, string> = {
+  codex: 'Codex',
+  'claude-code': 'Claude Code',
+  pi: 'Pi',
+  codebuddy: 'CodeBuddy',
 };
 
 export class AiClientConfigurationError extends Error {
   public readonly statusCode: number;
   public readonly code: string;
+  public readonly details?: unknown;
 
-  public constructor(code: string, message: string, statusCode: number) {
+  public constructor(code: string, message: string, statusCode: number, details?: unknown) {
     super(message);
     this.code = code;
     this.statusCode = statusCode;
+    this.details = details;
   }
 }
 
@@ -178,7 +143,7 @@ export class AiClientConfigurationService {
   private readonly locks = new Map<string, Promise<void>>();
 
   public constructor(options: AiClientConfigurationServiceOptions = {}) {
-    this.homeDir = path.resolve(options.homeDir ?? process.env.HOME ?? osHomeFallback());
+    this.homeDir = path.resolve(options.homeDir ?? process.env.HOME ?? process.cwd());
     this.backupRoot = path.resolve(options.backupRoot ?? path.join(this.homeDir, '.xpod/client-config-backups'));
     this.now = options.now ?? (() => new Date());
     this.verifyGateway = options.verifyGateway ?? createDefaultGatewayVerifier(
@@ -187,56 +152,52 @@ export class AiClientConfigurationService {
     );
   }
 
+  public capability(): AiClientConfigurationCapabilityDescriptor {
+    return {
+      available: true,
+      authority: 'local-filesystem',
+      manualInstructions: MANUAL_INSTRUCTIONS,
+    };
+  }
+
   public async inspect(client: AiClientId): Promise<AiClientConfigurationStatus> {
-    const adapter = adapterFor(client);
-    const filePath = this.resolveTarget(adapter);
-    const state = await this.readTarget(adapter, filePath);
-    if (!state.exists) {
-      return { status: 'notConfigured', installed: false, configExists: false };
-    }
-    const configured = containsManagedConfiguration(adapter, state.content);
+    const adapter = this.adapterFor(client);
+    const detection = await mapAdapterError(() => adapter.detect());
+    const inspection = await mapAdapterError(() => adapter.inspect());
+    const configured = inspection.ownership === 'owned';
     return {
       status: configured ? 'configured' : 'notConfigured',
-      installed: true,
-      configExists: true,
-      message: configured ? `${adapter.label} is configured for Xpod.` : `${adapter.label} is installed but not configured for Xpod.`,
+      installed: detection.installed,
+      configExists: detection.configExists,
+      message: configured
+        ? `${CLIENT_LABELS[client]} is configured for Xpod.`
+        : `${CLIENT_LABELS[client]} is not configured for Xpod.`,
     };
   }
 
   public async plan(input: PlanInput): Promise<AiClientConfigurationPlan> {
-    const adapter = adapterFor(input.client);
-    const endpoint = normalizeEndpoint(input.endpoint);
-    const filePath = this.resolveTarget(adapter);
-    const state = await this.readTarget(adapter, filePath);
-    const backupDir = path.join(this.backupRoot, input.client, timestampForPath(this.now()));
-    const plannedContentWithoutSecret = renderManagedConfiguration(adapter, {
-      endpoint,
+    const client = requireSupportedClient(input.client);
+    const profile = {
+      endpoint: normalizeEndpoint(input.endpoint),
       gatewayKey: PLAN_SECRET_PLACEHOLDER,
+      webId: input.webId ?? 'https://xpod.local/.well-known/ai-client-configuration#owner',
       model: input.model,
-      webId: input.webId,
-    }, state.content);
-    const target: PlannedTarget = {
-      adapter,
-      filePath,
-      displayPath: displayPath(this.homeDir, filePath),
-      beforeHash: hash(state.content),
-      beforeExists: state.exists,
-      beforeContent: state.content,
-      plannedContentWithoutSecret,
-      action: state.exists ? 'update' : 'createOrUpdate',
     };
+    const adapter = this.adapterFor(client);
+    const nativePlan = await mapAdapterError(() => adapter.plan(profile));
+    const targets = await this.publicTargets(nativePlan.writes);
+    const beforeHash = hash(targets.map((target) => `${target.filePath}:${target.beforeHash}`).join('\n'));
     const plan: StoredPlan = {
       planId: `aicfg_${randomUUID().replace(/-/gu, '')}`,
-      client: input.client,
-      endpoint,
-      model: input.model,
-      webId: input.webId,
-      backupDir,
-      targets: [target],
-      ...(adapter.replacementConfirmationRequired ? {
+      client,
+      profile,
+      nativePlan,
+      targets,
+      backupDir: path.join(this.backupRoot, client, timestampForPath(this.now())),
+      ...(isReplacementSensitive(client) ? {
         confirmation: {
-          token: `confirm-${input.client}-${target.beforeHash.slice(0, 12)}`,
-          targetHash: target.beforeHash,
+          token: `confirm-${client}-${beforeHash.slice(0, 12)}`,
+          targetHash: beforeHash,
         },
       } : {}),
     };
@@ -258,58 +219,36 @@ export class AiClientConfigurationService {
         throw new AiClientConfigurationError('confirmation_stale', 'Replacement confirmation is stale.', 409);
       }
     }
-    return this.withTargetLocks(plan.targets.map((target) => target.filePath), async () => {
+
+    return this.withTargetLocks(plan.nativePlan.writes.map((write) => write.path), async () => {
       for (const target of plan.targets) {
-        const current = await this.readTarget(target.adapter, target.filePath);
-        if (hash(current.content) !== target.beforeHash) {
+        const current = await readOptional(target.filePath);
+        if (hash(current ?? '') !== target.beforeHash) {
           throw new AiClientConfigurationError('configuration_conflict', 'Configuration changed after planning.', 409);
         }
       }
-      await fs.mkdir(plan.backupDir, { recursive: true, mode: 0o700 });
-      const snapshots: SnapshotFile['targets'] = [];
-      for (const target of plan.targets) {
-        const current = await this.readTarget(target.adapter, target.filePath);
-        const managedContent = renderManagedConfiguration(target.adapter, {
-          endpoint: plan.endpoint,
-          gatewayKey: input.gatewayKey,
-          model: plan.model,
-          webId: input.webId ?? plan.webId,
-        }, current.content);
-        const backupPath = path.join(plan.backupDir, `${path.basename(target.filePath)}.bak`);
-        await fs.writeFile(backupPath, current.content, { mode: 0o600 });
-        await atomicWriteFile(target.filePath, managedContent, 0o600);
-        snapshots.push({
-          filePath: target.filePath,
-          format: target.adapter.format,
-          beforeExists: current.exists,
-          beforeContent: current.content,
-          afterHash: hash(managedContent),
-          managedContent,
-        });
-      }
-      await writeSnapshot(plan.backupDir, {
-        version: 1,
-        client: plan.client,
-        webId: input.webId ?? plan.webId,
-        createdAt: this.now().toISOString(),
-        targets: snapshots,
-      });
-      plan.gatewayKey = input.gatewayKey;
-      const snapshot: SnapshotFile = {
-        version: 1,
-        client: plan.client,
-        webId: input.webId ?? plan.webId,
-        createdAt: this.now().toISOString(),
-        targets: snapshots,
+
+      const profile = {
+        ...plan.profile,
+        gatewayKey: input.gatewayKey,
+        webId: input.webId ?? plan.profile.webId,
       };
+      const adapter = this.adapterFor(plan.client);
+      const nativePlan = await mapAdapterError(() => adapter.plan(profile));
+      await mapAdapterError(() => adapter.apply(nativePlan));
+      plan.gatewayKey = input.gatewayKey;
+      plan.profile = profile;
+      plan.nativePlan = nativePlan;
+
       try {
         await this.verify({ client: plan.client, planId: plan.planId });
-      } catch (error) {
-        await this.restoreSnapshot(plan.client, snapshot);
+      } catch {
+        await mapAdapterError(() => adapter.restore(profile.webId));
         throw new AiClientConfigurationError(
           'verification_failed_restored',
-          redactSecretText(error instanceof Error ? error.message : 'Gateway verification failed.'),
+          'Gateway verification failed.',
           502,
+          { restored: true },
         );
       }
       return { applied: true };
@@ -329,50 +268,61 @@ export class AiClientConfigurationService {
         message: 'Gateway key is not recoverable after restart; re-apply the client configuration to verify it.',
       };
     }
+    const adapter = this.adapterFor(input.client);
+    const projection = await mapAdapterError(() => adapter.verify(plan.profile));
+    if (!projection.ok) {
+      throw new AiClientConfigurationError('client_projection_drifted', projection.reason ?? 'Client configuration drifted.', 409);
+    }
     const controller = new AbortController();
     await this.verifyGateway({
-      endpoint: plan.endpoint,
+      endpoint: plan.profile.endpoint,
       gatewayKey: plan.gatewayKey,
-      model: plan.model,
+      model: plan.profile.model,
       signal: controller.signal,
     });
-    return { ...status, status: 'configured', message: `${adapterFor(input.client).label} verified against Xpod Gateway.` };
+    return { ...status, status: 'configured', message: `${CLIENT_LABELS[input.client]} verified against Xpod Gateway.` };
   }
 
-  public async restore(client: AiClientId): Promise<AiClientConfigurationStatus> {
-    const adapter = adapterFor(client);
-    const snapshot = await this.readLatestSnapshot(client);
-    if (!snapshot) {
-      const targetPath = this.resolveTarget(adapter);
-      const state = await this.readTarget(adapter, targetPath);
-      if (state.exists && containsManagedConfiguration(adapter, state.content)) {
-        await atomicWriteFile(targetPath, removeManagedConfiguration(adapter, state.content), 0o600);
-      }
-      return this.inspect(client);
-    }
-    return this.withTargetLocks(snapshot.targets.map((target) => target.filePath), () => this.restoreSnapshot(client, snapshot));
-  }
-
-  private async restoreSnapshot(client: AiClientId, snapshot: SnapshotFile): Promise<AiClientConfigurationStatus> {
-    const adapter = adapterFor(client);
-    for (const target of snapshot.targets) {
-      const targetAdapter = { ...adapter, format: target.format };
-      const state = await this.readTarget(targetAdapter, target.filePath);
-      if (!state.exists) {
-        continue;
-      }
-      if (hash(state.content) === target.afterHash) {
-        if (target.beforeExists) {
-          await atomicWriteFile(target.filePath, target.beforeContent, 0o600);
-        } else {
-          await fs.rm(target.filePath, { force: true });
-        }
-        continue;
-      }
-      const restored = removeManagedConfiguration(targetAdapter, state.content);
-      await atomicWriteFile(target.filePath, restored, 0o600);
+  public async restore(client: AiClientId, webId?: string): Promise<AiClientConfigurationStatus> {
+    const adapter = this.adapterFor(client);
+    const owner = webId ?? this.latestPlanFor(client)?.profile.webId;
+    if (owner) {
+      await this.withTargetLocks(await this.detectLockTargets(adapter), () => mapAdapterError(() => adapter.restore(owner)));
     }
     return this.inspect(client);
+  }
+
+  private adapterFor(client: AiClientId): AiClientConfigAdapter {
+    requireSupportedClient(client);
+    if (client === 'codex') return new CodexConfigAdapter({ homeDir: this.homeDir });
+    if (client === 'claude-code') return new ClaudeCodeConfigAdapter({ homeDir: this.homeDir });
+    if (client === 'pi') return new PiConfigAdapter({ homeDir: this.homeDir });
+    return new CodeBuddyConfigAdapter({ homeDir: this.homeDir });
+  }
+
+  private async publicTargets(writes: ConfigWrite[]): Promise<PlannedTarget[]> {
+    const targets: PlannedTarget[] = [];
+    for (const write of writes.filter((candidate) => !isStateWrite(candidate))) {
+      if (!isPathInside(this.homeDir, path.resolve(write.path))) {
+        throw new AiClientConfigurationError('unsafe_config_target', 'Configuration target is outside the owner home directory.', 400);
+      }
+      const before = await readOptional(write.path);
+      targets.push({
+        filePath: write.path,
+        displayPath: displayPath(this.homeDir, write.path),
+        beforeHash: hash(before ?? ''),
+        beforeExists: before !== undefined,
+        beforeContent: before ?? '',
+        plannedContentWithoutSecret: write.content ?? '',
+        action: write.content === null ? 'delete' : before === undefined ? 'createOrUpdate' : 'update',
+      });
+    }
+    return targets;
+  }
+
+  private async detectLockTargets(adapter: AiClientConfigAdapter): Promise<string[]> {
+    const detection = await mapAdapterError(() => adapter.detect());
+    return detection.configPaths;
   }
 
   private requirePlan(client: AiClientId, planId: string): StoredPlan {
@@ -383,58 +333,12 @@ export class AiClientConfigurationService {
     return plan;
   }
 
-  private resolveTarget(adapter: ClientAdapter): string {
-    const target = path.resolve(this.homeDir, adapter.relativePath);
-    if (!isPathInside(this.homeDir, target)) {
-      throw new AiClientConfigurationError('unsafe_config_target', 'Configuration target is outside the owner home directory.', 400);
-    }
-    return target;
-  }
-
-  private async readTarget(adapter: ClientAdapter, filePath: string): Promise<{ exists: boolean; content: string }> {
-    await assertSafeTarget(this.homeDir, filePath);
-    try {
-      const content = await fs.readFile(filePath, 'utf8');
-      if (adapter.format === 'jsonField') {
-        parseJsonObject(content);
-      }
-      return { exists: true, content };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { exists: false, content: defaultContent(adapter) };
-      }
-      if (error instanceof SyntaxError) {
-        throw new AiClientConfigurationError('invalid_config', 'Configuration file must contain a JSON object.', 400);
-      }
-      throw error;
-    }
-  }
-
-  private async readLatestSnapshot(client: AiClientId): Promise<SnapshotFile | undefined> {
-    const dir = path.join(this.backupRoot, client);
-    let entries: string[];
-    try {
-      entries = await fs.readdir(dir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return undefined;
-      }
-      throw error;
-    }
-    const sorted = entries.sort().reverse();
-    for (const entry of sorted) {
-      const snapshotPath = path.join(dir, entry, 'snapshot.json');
-      try {
-        return JSON.parse(await fs.readFile(snapshotPath, 'utf8')) as SnapshotFile;
-      } catch {
-        continue;
-      }
-    }
-    return undefined;
+  private latestPlanFor(client: AiClientId): StoredPlan | undefined {
+    return [...this.plans.values()].reverse().find((plan) => plan.client === client);
   }
 
   private async withTargetLocks<T>(targets: string[], action: () => Promise<T>): Promise<T> {
-    const sorted = [...new Set(targets)].sort();
+    const sorted = [...new Set(targets.map((target) => path.resolve(target)))].sort();
     const previous = Promise.all(sorted.map((target) => this.locks.get(target))).then(() => undefined);
     let release!: () => void;
     const current = previous.then(() => new Promise<void>((resolve) => { release = resolve; }));
@@ -455,14 +359,6 @@ export class AiClientConfigurationService {
   }
 }
 
-function adapterFor(client: AiClientId): ClientAdapter {
-  const adapter = CLIENT_ADAPTERS[client];
-  if (!adapter) {
-    throw new AiClientConfigurationError('unsupported_client', 'Unsupported AI client.', 404);
-  }
-  return adapter;
-}
-
 function publicPlan(plan: StoredPlan, homeDir: string): AiClientConfigurationPlan {
   return {
     planId: plan.planId,
@@ -470,13 +366,13 @@ function publicPlan(plan: StoredPlan, homeDir: string): AiClientConfigurationPla
     changes: plan.targets.map((target) => ({
       target: target.displayPath,
       action: target.action,
-      backup: true,
-      current: redactManagedSecrets(target.beforeContent),
-      replacement: redactManagedSecrets(target.plannedContentWithoutSecret),
+      backup: target.beforeExists,
+      current: redactSecretText(target.beforeContent),
+      replacement: redactSecretText(target.plannedContentWithoutSecret),
     })),
     conflicts: [],
     backupLocation: displayPath(homeDir, plan.backupDir),
-    replacementConfirmationRequired: adapterFor(plan.client).replacementConfirmationRequired,
+    replacementConfirmationRequired: isReplacementSensitive(plan.client),
     ...(plan.confirmation ? {
       confirmation: {
         required: true,
@@ -488,137 +384,44 @@ function publicPlan(plan: StoredPlan, homeDir: string): AiClientConfigurationPla
   };
 }
 
-function renderManagedConfiguration(
-  adapter: ClientAdapter,
-  input: { endpoint: string; gatewayKey: string; model?: string; webId?: string },
-  existing: string,
-): string {
-  if (adapter.format === 'tomlBlock') {
-    const block = [
-      TOML_START,
-      '[model_providers.xpod]',
-      'name = "Xpod"',
-      `base_url = "${escapeTomlString(input.endpoint.replace(/\/+$/u, ''))}/v1"`,
-      `api_key = "${escapeTomlString(input.gatewayKey)}"`,
-      'wire_api = "responses"',
-      '',
-      '[profiles.xpod]',
-      'model_provider = "xpod"',
-      `model = "${escapeTomlString(input.model ?? 'xpod/default')}"`,
-      `metadata = "${MANAGED_BY}"`,
-      TOML_END,
-      '',
-    ].join('\n');
-    const cleaned = removeManagedTomlBlock(existing).replace(/\s*$/u, '\n');
-    return `${cleaned}${block}`;
-  }
-  const parsed = parseJsonObject(existing);
-  parsed.xpod = {
-    _managedBy: MANAGED_BY,
-    endpoint: input.endpoint.replace(/\/+$/u, ''),
-    baseUrl: `${input.endpoint.replace(/\/+$/u, '')}/v1`,
-    gatewayKey: input.gatewayKey,
-    model: input.model ?? 'xpod/default',
-    webId: input.webId,
-  };
-  return `${JSON.stringify(parsed, null, 2)}\n`;
-}
-
-function removeManagedConfiguration(adapter: Pick<ClientAdapter, 'format'>, content: string): string {
-  if (adapter.format === 'tomlBlock') {
-    return removeManagedTomlBlock(content);
-  }
-  const parsed = parseJsonObject(content);
-  if (isObject(parsed.xpod) && parsed.xpod._managedBy === MANAGED_BY) {
-    delete parsed.xpod;
-  }
-  stripStaleXpodEnv(parsed);
-  return `${JSON.stringify(parsed, null, 2)}\n`;
-}
-
-function stripStaleXpodEnv(parsed: Record<string, unknown>): void {
-  if (!isObject(parsed.env)) return;
-  for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'CODEBUDDY_BASE_URL', 'CODEBUDDY_API_KEY']) {
-    const value = parsed.env[key];
-    if (typeof value === 'string' && (value.includes('xpod') || value.includes('/api/ai'))) {
-      delete parsed.env[key];
-    }
-  }
-}
-
-function containsManagedConfiguration(adapter: ClientAdapter, content: string): boolean {
-  if (adapter.format === 'tomlBlock') {
-    return content.includes(TOML_START) && content.includes(TOML_END);
-  }
-  const parsed = parseJsonObject(content);
-  return isObject(parsed.xpod) && parsed.xpod._managedBy === MANAGED_BY;
-}
-
-function removeManagedTomlBlock(content: string): string {
-  const pattern = new RegExp(`\\n?${escapeRegExp(TOML_START)}[\\s\\S]*?${escapeRegExp(TOML_END)}\\n?`, 'u');
-  return content.replace(pattern, '\n').replace(/\n{3,}/gu, '\n\n');
-}
-
-function parseJsonObject(content: string): Record<string, unknown> {
-  const parsed = content.trim() ? JSON.parse(content) as unknown : {};
-  if (!isObject(parsed)) {
-    throw new SyntaxError('Expected JSON object');
-  }
-  return parsed;
-}
-
-function defaultContent(adapter: ClientAdapter): string {
-  return adapter.format === 'jsonField' ? '{}\n' : '';
-}
-
-async function assertSafeTarget(homeDir: string, filePath: string): Promise<void> {
-  if (!isPathInside(homeDir, filePath)) {
-    throw new AiClientConfigurationError('unsafe_config_target', 'Configuration target is outside the owner home directory.', 400);
-  }
-  await assertNoSymlinkInPath(homeDir, filePath);
+async function mapAdapterError<T>(action: () => Promise<T>): Promise<T> {
   try {
-    const stat = await fs.stat(filePath);
-    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-      throw new AiClientConfigurationError('unsafe_config_target', 'Configuration target is owned by another user.', 400);
-    }
+    return await action();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return;
+    if (error instanceof AiClientConfigurationError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('symbolic link') || message.includes('outside the owner home') || message.includes('not a regular file')) {
+      throw new AiClientConfigurationError('unsafe_config_target', 'Configuration target is unsafe.', 400);
+    }
+    if (message.includes('invalid JSON') || message.includes('root must be a JSON object')) {
+      throw new AiClientConfigurationError('invalid_config', 'Configuration file must contain a JSON object.', 400);
     }
     throw error;
   }
 }
 
-async function assertNoSymlinkInPath(homeDir: string, filePath: string): Promise<void> {
-  const relative = path.relative(homeDir, filePath);
-  const segments = relative.split(path.sep).filter(Boolean);
-  let current = homeDir;
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    try {
-      const stat = await fs.lstat(current);
-      if (stat.isSymbolicLink()) {
-        throw new AiClientConfigurationError('unsafe_config_target', 'Configuration target must not be a symlink.', 400);
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return;
-      }
-      throw error;
-    }
+function requireSupportedClient(client: AiClientId): AiClientId {
+  if (client === 'codex' || client === 'claude-code' || client === 'pi' || client === 'codebuddy') {
+    return client;
   }
+  throw new AiClientConfigurationError('unsupported_client', 'Unsupported AI client.', 404);
 }
 
-async function atomicWriteFile(filePath: string, content: string, mode: number): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
-  await fs.writeFile(tmp, content, { mode });
-  await fs.rename(tmp, filePath);
-  await fs.chmod(filePath, mode);
+function isReplacementSensitive(client: AiClientId): boolean {
+  return client === 'pi';
 }
 
-async function writeSnapshot(backupDir: string, snapshot: SnapshotFile): Promise<void> {
-  await atomicWriteFile(path.join(backupDir, 'snapshot.json'), JSON.stringify(snapshot, null, 2), 0o600);
+function isStateWrite(write: ConfigWrite): boolean {
+  return path.basename(write.path).startsWith('.xpod-ai-connection-');
+}
+
+async function readOptional(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
 }
 
 function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number): NonNullable<AiClientConfigurationServiceOptions['verifyGateway']> {
@@ -699,27 +502,15 @@ function hash(content: string): string {
 
 export function redactSecretText(input: string): string {
   return input
+    .replace(/\/(?:Users|var|tmp|private|home)\/[^\s"',)]+/gu, '[path]')
     .replace(/xpod_[A-Za-z0-9._-]+/gu, '[redacted]')
     .replace(/sk-[A-Za-z0-9._-]+/gu, '[redacted]')
     .replace(/Bearer\s+[A-Za-z0-9._-]+/giu, 'Bearer [redacted]');
 }
 
-function redactManagedSecrets(input: string): string {
-  return redactSecretText(input).replace(PLAN_SECRET_PLACEHOLDER, '[redacted]');
-}
-
-function escapeTomlString(input: string): string {
-  return input.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"');
-}
-
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function osHomeFallback(): string {
-  return process.cwd();
+export function unavailableAiClientConfigurationCapability(): AiClientConfigurationCapabilityDescriptor {
+  return {
+    available: false,
+    manualInstructions: MANUAL_INSTRUCTIONS,
+  };
 }

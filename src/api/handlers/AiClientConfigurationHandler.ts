@@ -8,6 +8,7 @@ import {
   type AiClientConfigurationService,
   type AiClientId,
   redactSecretText,
+  unavailableAiClientConfigurationCapability,
 } from '../service/AiClientConfigurationService';
 
 export interface AiClientConfigurationHandlerOptions {
@@ -20,6 +21,13 @@ export function registerAiClientConfigurationRoutes(
   options: AiClientConfigurationHandlerOptions,
 ): void {
   const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 16 * 1024;
+
+  server.get('/api/ai/client-configuration/capability', async (request, response) => {
+    if (!authorizeCapability(request, response)) {
+      return;
+    }
+    sendJson(response, 200, options.service?.capability() ?? unavailableAiClientConfigurationCapability());
+  });
 
   server.get('/api/ai/client-configuration/:client', async (request, response, params) => {
     if (!requireService(options, response)) return;
@@ -84,13 +92,33 @@ export function registerAiClientConfigurationRoutes(
     if (!authorizeClientConfig(request, response, 'client-config:write')) {
       return;
     }
-    await sendServiceResult(response, () => options.service!.restore(requireClient(params.client)));
+    await sendServiceResult(response, () => options.service!.restore(
+      requireClient(params.client),
+      request.auth?.type === 'solid' ? request.auth.webId : undefined,
+    ));
   });
 }
 
 function requireService(options: AiClientConfigurationHandlerOptions, response: ServerResponse): boolean {
   if (options.service) return true;
-  sendJson(response, 503, { error: 'client_configuration_unavailable' });
+  sendJson(response, 503, safeErrorPayload(new AiClientConfigurationError(
+    'client_configuration_unavailable',
+    'Local AI client configuration is unavailable on this host.',
+    503,
+    { aiClientConfiguration: unavailableAiClientConfigurationCapability() },
+  )));
+  return false;
+}
+
+function authorizeCapability(request: AuthenticatedRequest, response: ServerResponse): boolean {
+  if (request.auth?.type === 'solid' || request.auth?.type === 'service') {
+    return true;
+  }
+  sendJson(response, 401, safeErrorPayload(new AiClientConfigurationError(
+    'authentication_required',
+    'Authentication required.',
+    401,
+  )));
   return false;
 }
 
@@ -101,13 +129,13 @@ function authorizeClientConfig(
 ): boolean {
   const auth = request.auth;
   if (!auth) {
-    sendJson(response, 401, { error: 'Authentication required' });
+    sendJson(response, 401, safeErrorPayload(new AiClientConfigurationError('authentication_required', 'Authentication required.', 401)));
     return false;
   }
   if (hasClientConfigScope(auth, scope)) {
     return true;
   }
-  sendJson(response, 403, { error: 'Insufficient permissions' });
+  sendJson(response, 403, safeErrorPayload(new AiClientConfigurationError('insufficient_permissions', 'Insufficient permissions.', 403)));
   return false;
 }
 
@@ -154,10 +182,14 @@ async function sendServiceResult(response: ServerResponse, action: () => Promise
     sendJson(response, 200, await action());
   } catch (error) {
     if (error instanceof AiClientConfigurationError) {
-      sendJson(response, error.statusCode, { error: error.code });
+      sendJson(response, error.statusCode, safeErrorPayload(error));
       return;
     }
-    sendJson(response, 500, { error: 'client_configuration_failed', message: redactSecretText(error instanceof Error ? error.message : 'Unknown error') });
+    sendJson(response, 500, safeErrorPayload(new AiClientConfigurationError(
+      'client_configuration_failed',
+      redactSecretText(error instanceof Error ? error.message : 'Unknown error'),
+      500,
+    )));
   }
 }
 
@@ -185,6 +217,32 @@ function optionalConfirmation(value: unknown): { token: string; targetHash: stri
   const token = optionalString(record.token);
   const targetHash = optionalString(record.targetHash);
   return token && targetHash ? { token, targetHash } : undefined;
+}
+
+function safeErrorPayload(error: AiClientConfigurationError): { code: string; message: string; details?: unknown } {
+  return {
+    code: error.code,
+    message: redactSecretText(error.message),
+    ...(error.details ? { details: redactDetails(error.details) } : {}),
+  };
+}
+
+function redactDetails(value: unknown): unknown {
+  if (!value || typeof value !== 'object') {
+    return typeof value === 'string' ? redactSecretText(value) : value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(redactDetails);
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (/path|secret|token|key/iu.test(key)) {
+      output[key] = '[redacted]';
+    } else {
+      output[key] = redactDetails(entry);
+    }
+  }
+  return output;
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {

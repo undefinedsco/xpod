@@ -27,6 +27,10 @@ import type {
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { createAiConnectionServiceAccess } from '../ai-gateway/service-access/AiConnectionServiceAccess';
 import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import {
+  type AiClientConfigurationCapabilityDescriptor,
+  unavailableAiClientConfigurationCapability,
+} from '../service/AiClientConfigurationService';
 
 export interface AiGatewayManagementHandlerOptions {
   repository: GatewayAccessKeyRepository;
@@ -36,6 +40,7 @@ export interface AiGatewayManagementHandlerOptions {
   servicePrincipal?: {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
+  aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
   now?: () => Date;
   keyId?: (owner: string) => string;
@@ -70,6 +75,7 @@ export function registerAiGatewayManagementRoutes(
       : undefined;
     sendJson(response, 200, {
       ...descriptor,
+      aiClientConfiguration: options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
       ...(invocation ? { invocation } : {}),
     });
   });

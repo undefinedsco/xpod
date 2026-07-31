@@ -8,6 +8,7 @@ import {
   createXpodSolidRuntimeValue,
   discoverPodUrlFromWebId,
   XPOD_LAST_OIDC_ISSUER_STORAGE_KEY,
+  type XpodSolidRuntimeCore,
 } from './XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './XpodSolidRuntimeProvider';
 import { SettingsAuthBoundary } from './SettingsAuthBoundary';
@@ -110,6 +111,19 @@ function RuntimeProbe() {
       <button type="button" onClick={() => void runtime.fetch('/resource')}>
         fetch
       </button>
+    </div>
+  );
+}
+
+function CapabilityProbe() {
+  const runtime = useXpodSolidRuntime();
+  return (
+    <div>
+      <span data-testid="capability">
+        {runtime.aiClientConfiguration?.available === true
+          ? runtime.aiClientConfiguration.authority
+          : runtime.aiClientConfiguration?.manualInstructions ?? 'no-capability'}
+      </span>
     </div>
   );
 }
@@ -446,6 +460,61 @@ describe('Xpod Solid runtime', () => {
     expect(container.textContent).toContain('Solid issuer');
     await unmount(root);
   });
+
+  test('discovers AI client configuration capability from the authenticated API path and exposes the host bridge descriptor', async () => {
+    const fetchImpl = mock(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/ai/client-configuration/capability') {
+        return new Response(JSON.stringify({
+          available: true,
+          authority: 'local-filesystem',
+          manualInstructions: 'Manual setup remains available.',
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(
+        '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
+        { headers: { 'content-type': 'text/turtle' } },
+      );
+    }) as typeof fetch;
+    const runtime = runtimeCoreWithCapabilityFetch(fetchImpl, 'https://id.example/alice#me');
+
+    const { container, root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={runtime}>
+        <CapabilityProbe />
+      </XpodSolidRuntimeProvider>,
+    );
+
+    expect(container.querySelector('[data-testid="capability"]')?.textContent).toBe('local-filesystem');
+    expect(fetchImpl).toHaveBeenCalledWith('/api/ai/client-configuration/capability', expect.objectContaining({
+      credentials: 'include',
+      headers: expect.objectContaining({ accept: 'application/json' }),
+    }));
+    await unmount(root);
+  });
+
+  test('falls back to manual AI client configuration capability when discovery is unavailable', async () => {
+    const fetchImpl = mock(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/ai/client-configuration/capability') {
+        return new Response(JSON.stringify({ code: 'client_configuration_unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(
+        '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
+        { headers: { 'content-type': 'text/turtle' } },
+      );
+    }) as typeof fetch;
+    const runtime = runtimeCoreWithCapabilityFetch(fetchImpl, 'https://id.example/alice#me');
+
+    const { container, root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={runtime}>
+        <CapabilityProbe />
+      </XpodSolidRuntimeProvider>,
+    );
+
+    expect(container.querySelector('[data-testid="capability"]')?.textContent).toContain('manual');
+    await unmount(root);
+  });
 });
 
 function InvalidLoginProbe({ issuer = 'javascript:alert(1)' }: { issuer?: string }) {
@@ -455,4 +524,23 @@ function InvalidLoginProbe({ issuer = 'javascript:alert(1)' }: { issuer?: string
       login
     </button>
   );
+}
+
+function runtimeCoreWithCapabilityFetch(fetchImpl: typeof fetch, webId: string): XpodSolidRuntimeCore {
+  return {
+    session: {
+      fetch: fetchImpl,
+      getSnapshot: () => ({ status: 'authenticated', webId }),
+      subscribe: () => () => undefined,
+      initialize: mock(async () => ({ status: 'authenticated', webId })),
+      login: mock(async () => undefined),
+      logout: mock(async () => undefined),
+    } as unknown as XpodSolidRuntimeCore['session'],
+    pod: {
+      open: mock(async () => ({ podUrl: 'https://pod.example/alice/' })),
+      clear: mock(() => undefined),
+    } as unknown as XpodSolidRuntimeCore['pod'],
+    getIssuer: () => 'https://issuer.example/',
+    setIssuer: mock(() => undefined),
+  };
 }
