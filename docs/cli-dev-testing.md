@@ -35,6 +35,32 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/test/
 # 期望: 200
 ```
 
+### 打开 Settings Dashboard
+
+Dashboard 是 Xpod Web runtime 的静态页面，不需要第二个服务壳。先启动本地
+Xpod host，再打开 settings 入口：
+
+```bash
+bun run settings:open
+```
+
+默认打开 `http://localhost:3000/dashboard/models`。如 host 不在默认端口，可用
+`XPOD_SETTINGS_URL`、`XPOD_DASHBOARD_URL`、`CSS_BASE_URL` 或 `XPOD_BASE_URL`
+指定已有 Xpod 地址；脚本会规范化为 `/dashboard/models`，只接受 `http`/`https`
+URL，并在 host 不可达或系统 GUI open 命令失败时输出结构化 JSON 错误。
+
+开发 Dashboard UI 时可单独启动 Vite：
+
+```bash
+bun run settings:dev
+```
+
+这只服务前端调试页面，不负责启动 Xpod。桌面版或托盘壳的边界也是如此：壳层可以
+调用 `settings:open` 或自己的 `openExternal`，并按需提供 client-config / 文件系统
+能力；Web host 本身仍可独立访问 `/dashboard/models`、`/dashboard/pod`、
+`/dashboard/network` 和 `/dashboard/services`。当前任务不实现 Electron 壳，也不伪造
+托盘能力。
+
 ### 常见启动问题
 
 | 错误 | 原因 | 解决 |
