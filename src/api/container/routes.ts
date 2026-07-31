@@ -30,7 +30,8 @@ import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { DrizzlePodAiConnectionStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
 import {
   createAddressReaders,
-  createDdnsStatusReader,
+  createDnsStatusReader,
+  createPublicAddressReader,
   createTunnelStatusReader,
   registerNetworkSettingsRoutes,
 } from '../handlers/NetworkSettingsHandler';
@@ -111,6 +112,12 @@ function registerSharedRoutes(
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
+  const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true });
+  const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true });
+  const dnsCoordinator = container.resolve('dnsCoordinator', { allowUnregistered: true });
+  const localTunnelProvider = container.resolve('localTunnelProvider', { allowUnregistered: true });
+  const cloudTunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true });
+  const tunnelProvider = localTunnelProvider ?? cloudTunnelProvider;
   const podLookupRepository = container.resolve('podLookupRepo');
   if (!podLookupRepository) {
     throw new Error('Pod settings route requires podLookupRepo');
@@ -165,8 +172,16 @@ function registerSharedRoutes(
         config.activeTunnelProfile?.publicUrl,
       ],
     }),
-    dnsStatusReader: createDdnsStatusReader(container.resolve('ddnsManager', { allowUnregistered: true })),
-    tunnelStatusReader: createTunnelStatusReader(container.resolve('localTunnelProvider', { allowUnregistered: true })),
+    publicAddresses: createPublicAddressReader({
+      configuredUrls: [
+        config.publicUrl,
+        config.activeTunnelProfile?.publicUrl,
+      ],
+      ddnsManager,
+      tunnelProvider,
+    }),
+    dnsStatusReader: createDnsStatusReader({ ddnsManager, dnsProvider, dnsCoordinator }),
+    tunnelStatusReader: createTunnelStatusReader(tunnelProvider),
   });
 
   // Quota & Usage API (Business 对接)

@@ -20,6 +20,7 @@ export default function NetworkPage() {
   const [diagnosing, setDiagnosing] = useState(false);
   const [renewing, setRenewing] = useState(false);
   const requestIdRef = useRef(0);
+  const actionIdRef = useRef(0);
   const activeIdentityKeyRef = useRef<string | undefined>(undefined);
   const mountedRef = useRef(true);
 
@@ -31,12 +32,19 @@ export default function NetworkPage() {
     return () => {
       mountedRef.current = false;
       requestIdRef.current += 1;
+      actionIdRef.current += 1;
     };
   }, []);
 
   const isCurrentRequest = useCallback((requestId: number, requestIdentityKey: string) => (
     mountedRef.current
     && requestIdRef.current === requestId
+    && activeIdentityKeyRef.current === requestIdentityKey
+  ), []);
+
+  const isCurrentAction = useCallback((actionId: number, requestIdentityKey: string) => (
+    mountedRef.current
+    && actionIdRef.current === actionId
     && activeIdentityKeyRef.current === requestIdentityKey
   ), []);
 
@@ -73,6 +81,7 @@ export default function NetworkPage() {
   useEffect(() => {
     activeIdentityKeyRef.current = identityKey;
     requestIdRef.current += 1;
+    actionIdRef.current += 1;
     setStatus(undefined);
     setDiagnostics([]);
     setError(undefined);
@@ -90,8 +99,8 @@ export default function NetworkPage() {
     if (!podUrl || !requestIdentityKey) {
       return;
     }
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
+    const actionId = actionIdRef.current + 1;
+    actionIdRef.current = actionId;
     setDiagnosing(true);
     setError(undefined);
     try {
@@ -99,19 +108,19 @@ export default function NetworkPage() {
         podUrl,
         authenticatedFetch: runtime.fetch,
       });
-      if (isCurrentRequest(requestId, requestIdentityKey)) {
+      if (isCurrentAction(actionId, requestIdentityKey)) {
         setDiagnostics(result.checks);
       }
     } catch {
-      if (isCurrentRequest(requestId, requestIdentityKey)) {
+      if (isCurrentAction(actionId, requestIdentityKey)) {
         setError('Network diagnostics failed. Please try again.');
       }
     } finally {
-      if (isCurrentRequest(requestId, requestIdentityKey)) {
+      if (isCurrentAction(actionId, requestIdentityKey)) {
         setDiagnosing(false);
       }
     }
-  }, [identityKey, isCurrentRequest, runtime.fetch, runtime.podUrl]);
+  }, [identityKey, isCurrentAction, runtime.fetch, runtime.podUrl]);
 
   const renewCertificate = useCallback(async () => {
     const podUrl = runtime.podUrl;
@@ -119,8 +128,8 @@ export default function NetworkPage() {
     if (!podUrl || !requestIdentityKey) {
       return;
     }
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
+    const actionId = actionIdRef.current + 1;
+    actionIdRef.current = actionId;
     setRenewing(true);
     setError(undefined);
     try {
@@ -128,19 +137,19 @@ export default function NetworkPage() {
         podUrl,
         authenticatedFetch: runtime.fetch,
       });
-      if (isCurrentRequest(requestId, requestIdentityKey)) {
+      if (isCurrentAction(actionId, requestIdentityKey)) {
         await loadStatus();
       }
     } catch {
-      if (isCurrentRequest(requestId, requestIdentityKey)) {
+      if (isCurrentAction(actionId, requestIdentityKey)) {
         setError('Certificate renewal failed. Please try again.');
       }
     } finally {
-      if (isCurrentRequest(requestId, requestIdentityKey)) {
+      if (isCurrentAction(actionId, requestIdentityKey)) {
         setRenewing(false);
       }
     }
-  }, [identityKey, isCurrentRequest, loadStatus, runtime.fetch, runtime.podUrl]);
+  }, [identityKey, isCurrentAction, loadStatus, runtime.fetch, runtime.podUrl]);
 
   const sections = useMemo(() => [
     { key: 'local', title: 'Local', values: status?.addresses.local ?? [] },

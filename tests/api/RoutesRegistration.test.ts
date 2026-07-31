@@ -112,12 +112,30 @@ describe('registerRoutes mode wiring', () => {
         }),
       },
       gatewayAccessKeyRepository: {},
+      gatewayInternalPodAccess: {},
+      aiConnectionInvocationKeyIssuer: {},
       providerConnectService: {},
       db: {},
       podLookupRepo: {},
       ddnsRepo: edition === 'cloud' ? {} : undefined,
-      dnsProvider: edition === 'cloud' ? {} : undefined,
-      ddnsManager: edition === 'local' ? {} : undefined,
+      dnsProvider: edition === 'cloud' ? { upsertRecord: vi.fn(), deleteRecord: vi.fn() } : undefined,
+      dnsCoordinator: edition === 'cloud' ? { synchronize: vi.fn() } : undefined,
+      tunnelProvider: edition === 'cloud' ? {
+        getStatus: vi.fn(() => ({ running: true, connected: true, endpoint: 'https://cloud-tunnel.example/' })),
+        getEndpoint: vi.fn(() => 'https://cloud-tunnel.example/'),
+      } : undefined,
+      ddnsManager: edition === 'local' ? {
+        getStatus: vi.fn(() => ({
+          allocated: true,
+          fqdn: 'local-node.undefineds.site',
+          mode: 'tunnel',
+          tunnelProvider: 'ngrok',
+        })),
+      } : undefined,
+      localTunnelProvider: edition === 'local' ? {
+        getStatus: vi.fn(() => ({ running: true, connected: true, endpoint: 'https://local-tunnel.example/' })),
+        getEndpoint: vi.fn(() => 'https://local-tunnel.example/'),
+      } : undefined,
       subdomainClient: edition === 'local' ? {} : undefined,
     };
 
@@ -131,6 +149,28 @@ describe('registerRoutes mode wiring', () => {
         }
         throw new Error(`Unexpected resolve: ${name}`);
       },
+    };
+  }
+
+  function authedRequest(): any {
+    return {
+      auth: { type: 'solid', webId: 'https://pod.example/alice#me' },
+      headers: {},
+      method: 'GET',
+      url: '/api/network/settings/status',
+    };
+  }
+
+  function jsonResponse(): any {
+    return {
+      statusCode: 0,
+      headers: {} as Record<string, string>,
+      setHeader(name: string, value: string) {
+        this.headers[name.toLowerCase()] = value;
+      },
+      end: vi.fn(function(this: any, payload?: string) {
+        this.body = payload;
+      }),
     };
   }
 
@@ -244,6 +284,49 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['ALL /api/inngest']).toBeUndefined();
     expect(routes['ALL /api/inngest/*path']).toBeUndefined();
     expect(routes['GET /v1/runs']).toBeTypeOf('function');
+  });
+
+  it('wires cloud DNS and tunnel providers into Network settings without deployment branching', async () => {
+    registerRoutes(createContainer('cloud', {
+      config: {
+        publicUrl: 'https://cloud.example/',
+      },
+    }));
+    const res = jsonResponse();
+
+    await routes['GET /api/network/settings/status'](authedRequest(), res, {});
+
+    expect(JSON.parse(res.body)).toMatchObject({
+      endpoint: 'https://cloud.example/',
+      dns: { supported: true, status: 'configured' },
+      tunnel: { supported: true, status: 'active' },
+      addresses: { public: ['https://cloud.example/', 'https://cloud-tunnel.example/'] },
+    });
+    expect(res.body).not.toContain('deployment');
+  });
+
+  it('wires local DDNS and local tunnel endpoints into Network settings', async () => {
+    registerRoutes(createContainer('local', {
+      config: {
+        publicUrl: 'https://local-public.example/',
+      },
+    }));
+    const res = jsonResponse();
+
+    await routes['GET /api/network/settings/status'](authedRequest(), res, {});
+
+    expect(JSON.parse(res.body)).toMatchObject({
+      dns: { supported: true, status: 'tunnel' },
+      tunnel: { supported: true, status: 'active' },
+      addresses: {
+        public: [
+          'https://local-public.example/',
+          'https://local-node.undefineds.site/',
+          'https://local-tunnel.example/',
+        ],
+      },
+    });
+    expect(res.body).not.toContain('deployment');
   });
 
   it('wires RDF stats routes to the container stats service', async () => {

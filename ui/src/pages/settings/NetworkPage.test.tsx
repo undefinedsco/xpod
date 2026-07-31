@@ -149,6 +149,36 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
+  test('renews a certificate, refreshes status, and restores the action button', async () => {
+    let statusCalls = 0;
+    const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/network/settings/certificate/renew')) {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({ success: true }), { headers: { 'content-type': 'application/json' } });
+      }
+      statusCalls += 1;
+      return new Response(JSON.stringify(createStatus({
+        endpoint: statusCalls === 1 ? 'https://before.example/' : 'https://after.example/',
+        actions: { diagnose: true, renewCertificate: true },
+      })), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
+
+    expect(container.textContent).toContain('https://before.example/');
+    const renewButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Renew certificate')) as HTMLButtonElement | undefined;
+    if (!renewButton) throw new Error('missing renew certificate action');
+
+    await act(async () => {
+      renewButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    expect(container.textContent).toContain('https://after.example/');
+    expect(renewButton.disabled).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledWith('https://pod.example/api/network/settings/certificate/renew', expect.objectContaining({ method: 'POST' }));
+    await unmount(root);
+  });
+
   test('ignores stale status responses after identity changes and StrictMode remounts', async () => {
     installDom();
     const container = document.getElementById('root');

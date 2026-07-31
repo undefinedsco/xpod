@@ -48,6 +48,12 @@ export interface CertificateRenewer {
   renew(): Promise<void>;
 }
 
+export interface NetworkPublicAddressReaderOptions {
+  configuredUrls?: Array<string | undefined>;
+  ddnsManager?: unknown;
+  tunnelProvider?: unknown;
+}
+
 export interface NetworkSettingsHandlerOptions {
   endpoint: string | (() => string | undefined);
   localAddresses?: () => string[];
@@ -151,6 +157,23 @@ export function createDdnsStatusReader(ddnsManager: unknown): NetworkCapabilityR
   };
 }
 
+export function createDnsStatusReader(input: {
+  ddnsManager?: unknown;
+  dnsProvider?: unknown;
+  dnsCoordinator?: unknown;
+}): NetworkCapabilityReader | undefined {
+  const ddnsReader = createDdnsStatusReader(input.ddnsManager);
+  if (ddnsReader) {
+    return ddnsReader;
+  }
+  if (input.dnsProvider || input.dnsCoordinator) {
+    return {
+      read: async () => ({ supported: true, status: 'configured' }),
+    };
+  }
+  return undefined;
+}
+
 export function createTunnelStatusReader(tunnelProvider: unknown): NetworkCapabilityReader | undefined {
   if (!hasFunction(tunnelProvider, 'getStatus')) {
     return undefined;
@@ -170,6 +193,15 @@ export function createTunnelStatusReader(tunnelProvider: unknown): NetworkCapabi
       return { supported: true, status: 'inactive' };
     },
   };
+}
+
+export function createPublicAddressReader(options: NetworkPublicAddressReaderOptions): () => string[] {
+  return () => uniqueUrls([
+    ...(options.configuredUrls ?? []),
+    readDdnsPublicUrl(options.ddnsManager),
+    readTunnelEndpoint(options.tunnelProvider),
+    readTunnelStatusEndpoint(options.tunnelProvider),
+  ].map(normalizeEndpoint).filter(Boolean) as string[]);
 }
 
 async function readNetworkStatus(
@@ -369,6 +401,36 @@ function readLanIpAddresses(): string[] {
   return result;
 }
 
+function readDdnsPublicUrl(ddnsManager: unknown): string | undefined {
+  if (!hasFunction(ddnsManager, 'getStatus')) {
+    return undefined;
+  }
+  const status = ddnsManager.getStatus() as { allocated?: boolean; fqdn?: string; baseUrl?: string };
+  if (status.baseUrl) {
+    return status.baseUrl;
+  }
+  if (status.allocated && status.fqdn) {
+    return `https://${status.fqdn}/`;
+  }
+  return undefined;
+}
+
+function readTunnelEndpoint(tunnelProvider: unknown): string | undefined {
+  if (!hasFunction(tunnelProvider, 'getEndpoint')) {
+    return undefined;
+  }
+  const endpoint = tunnelProvider.getEndpoint();
+  return typeof endpoint === 'string' ? endpoint : undefined;
+}
+
+function readTunnelStatusEndpoint(tunnelProvider: unknown): string | undefined {
+  if (!hasFunction(tunnelProvider, 'getStatus')) {
+    return undefined;
+  }
+  const status = tunnelProvider.getStatus() as { endpoint?: string };
+  return typeof status.endpoint === 'string' ? status.endpoint : undefined;
+}
+
 function hasFunction<T extends string>(value: unknown, key: T): value is Record<T, (...args: never[]) => unknown> {
   return Boolean(value && typeof value === 'object' && typeof (value as Record<T, unknown>)[key] === 'function');
 }
@@ -376,9 +438,16 @@ function hasFunction<T extends string>(value: unknown, key: T): value is Record<
 export function redactSecretText(value: unknown): string {
   const raw = value instanceof Error ? value.message : String(value);
   const containsSensitiveValue = [
-    /\b(?:token|secret|password|passwd|api[_-]?key|authorization|credential)\s*[=:]\s*[^,\s;]+/iu,
+    /\b(?:authorization|proxy-authorization)\s*[:=]\s*(?:bearer|dpop|basic)?\s*[^,\s;]+/iu,
+    /\b(?:bearer|dpop)\s+[A-Za-z0-9._~+/=-]{8,}/iu,
+    /\b(?:cookie|set-cookie)\s*[:=]\s*[^,\n]+/iu,
+    /\b(?:token|secret|password|passwd|api[_-]?key|authorization|credential|clientSecret|client_secret|code)\s*[=:]\s*[^,\s;]+/iu,
+    /\bxpod_(?:gw|inv)_[A-Za-z0-9._-]+/iu,
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
+    /"d"\s*:\s*"[^"]{8,}"/u,
     /\b(?:postgres|postgresql|mysql|redis|mongodb|sqlite):\/\/[^,\s]+/iu,
-    /\/(?:Users|home|var|tmp|private|etc)\/[^\s,;]+/iu,
+    /\bfile:\/\/\/[^\s,;]+/iu,
+    /(?:^|\s)\/(?:Users|home|var|tmp|private|etc)\/[^\s,;]+/iu,
   ].some((pattern) => pattern.test(raw));
   return containsSensitiveValue ? '[redacted]' : raw;
 }
