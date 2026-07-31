@@ -12,6 +12,7 @@ import { canManageGatewayKeys } from '../../../src/api/ai-gateway/auth/GatewayPr
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const SCOPES = ['models:read', 'inference:write'];
+const AI_CONNECTION_INVOCATION_SCOPES = [...SCOPES, 'client-config:read', 'client-config:write'];
 const AUDIENCE = 'https://pod.example';
 
 function requestWith(token: string): any {
@@ -81,7 +82,7 @@ describe('AiConnectionInvocationKeyIssuer', () => {
         accountId: WEB_ID,
         viaGatewayApiKey: true,
         internalInvocation: true,
-        scopes: SCOPES,
+        scopes: AI_CONNECTION_INVOCATION_SCOPES,
       },
     });
     expect(canManageGatewayKeys(authenticated.context)).toBe(false);

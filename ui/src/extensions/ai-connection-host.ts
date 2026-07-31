@@ -7,7 +7,7 @@ import {
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { createServiceAccessGatewayFetch } from '../api/ai-connection';
+import { createServiceAccessGatewayFetch, createXpodAiClientConfigurationBridge } from '../api/ai-connection';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 
 const aiConnectionExtension = createAiConnectionExtension();
@@ -66,7 +66,12 @@ export function createXpodAiConnectionHost(runtime: XpodSolidRuntimeValue): WebE
       },
     },
     capabilities: {
-      aiClientConfiguration: unsupportedAiClientConfiguration,
+      aiClientConfiguration: runtime.currentPod
+        ? createXpodAiClientConfigurationBridge({
+          podUrl: runtime.currentPod.podUrl,
+          authenticatedFetch: runtime.fetch,
+        })
+        : unsupportedAiClientConfiguration,
     },
   };
 }

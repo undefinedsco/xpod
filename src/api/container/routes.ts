@@ -41,6 +41,8 @@ import { registerQuotaRoutes } from '../handlers/QuotaHandler';
 import { registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
+import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
+import { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
@@ -115,6 +117,8 @@ function registerSharedRoutes(
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
   const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
+  const aiClientConfigurationService = container.resolve('aiClientConfigurationService', { allowUnregistered: true })
+    ?? new AiClientConfigurationService();
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
@@ -170,6 +174,9 @@ function registerSharedRoutes(
     quotaService: providerQuotaService,
     servicePrincipal: gatewayInternalPodAccess,
     aiConnectionInvocationKeyIssuer,
+  });
+  registerAiClientConfigurationRoutes(server, {
+    service: aiClientConfigurationService,
   });
   registerPodSettingsRoutes(server, {
     podLookupRepository,

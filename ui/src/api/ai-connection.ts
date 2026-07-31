@@ -3,6 +3,12 @@ import {
   resolveAiConnectionApiBase,
   type AiConnectionClient,
 } from '@undefineds.co/ai-connection';
+import type {
+  AiClientConfigurationCapability,
+  AiClientConfigurationPlan,
+  AiClientConfigurationStatus,
+  AiClientId,
+} from '@undefineds.co/extension-sdk/web';
 
 interface CreateXpodAiConnectionClientInput {
   webId: string;
@@ -112,6 +118,84 @@ export function createServiceAccessGatewayFetch({
   }) as typeof fetch;
 }
 
+export function createXpodAiClientConfigurationBridge({
+  podUrl,
+  authenticatedFetch,
+  now,
+}: {
+  podUrl: string;
+  authenticatedFetch: typeof fetch;
+  now?: () => Date;
+}): AiClientConfigurationCapability {
+  const apiBase = resolveAiConnectionApiBase(podUrl);
+  const gatewayFetch = createServiceAccessGatewayFetch({ podUrl, authenticatedFetch, now });
+
+  return {
+    inspect: async (client) => {
+      const response = await gatewayFetch(clientConfigUrl(apiBase, client), {
+        method: 'GET',
+        credentials: 'omit',
+        headers: { accept: 'application/json' },
+      });
+      if (response.status === 403 || response.status === 404 || response.status === 503) {
+        await response.arrayBuffer();
+        return unavailableClientConfigStatus();
+      }
+      return readClientConfigJson<AiClientConfigurationStatus>(response);
+    },
+    plan: async (input) => readClientConfigJson<AiClientConfigurationPlan>(await gatewayFetch(`${clientConfigUrl(apiBase, input.client)}/plan`, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        endpoint: input.endpoint,
+      }),
+    })),
+    apply: async (input) => readClientConfigJson<{ applied: true }>(await gatewayFetch(`${clientConfigUrl(apiBase, input.client)}/apply`, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        planId: input.planId,
+        gatewayKey: input.gatewayKey,
+      }),
+    })),
+    verify: async (input) => readClientConfigJson<AiClientConfigurationStatus>(await gatewayFetch(`${clientConfigUrl(apiBase, input.client)}/verify`, {
+      method: 'POST',
+      credentials: 'omit',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        planId: input.planId,
+      }),
+    })),
+    restore: async (client) => {
+      const response = await gatewayFetch(`${clientConfigUrl(apiBase, client)}/restore`, {
+        method: 'POST',
+        credentials: 'omit',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      });
+      if (response.status === 403 || response.status === 404 || response.status === 503) {
+        await response.arrayBuffer();
+        return unavailableClientConfigStatus();
+      }
+      return readClientConfigJson<AiClientConfigurationStatus>(response);
+    },
+  };
+}
+
 function isServiceAccessRequest(input: RequestInfo | URL, apiBase: string): boolean {
   try {
     const url = new URL(String(input), apiBase);
@@ -157,6 +241,29 @@ async function sanitizeManagementFailure(response: Response): Promise<Response> 
     statusText: response.statusText,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function clientConfigUrl(apiBase: string, client: AiClientId): string {
+  return `${apiBase}/api/ai/client-configuration/${encodeURIComponent(client)}`;
+}
+
+async function readClientConfigJson<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    await response.arrayBuffer();
+    throw new Error('AI client configuration request failed. Please try again.');
+  }
+  if (!response.headers.get('content-type')?.includes('application/json')) {
+    await response.arrayBuffer();
+    throw new Error('AI client configuration request failed. Please try again.');
+  }
+  return await response.json() as T;
+}
+
+function unavailableClientConfigStatus(): AiClientConfigurationStatus {
+  return {
+    status: 'unavailable',
+    message: 'Host does not support local client configuration. Use the manual setup instructions for your client.',
+  };
 }
 
 async function normalizeStructuredGatewayError(response: Response): Promise<Response> {

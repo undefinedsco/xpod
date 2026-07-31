@@ -1,5 +1,8 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, it, vi } from 'vitest';
 import { createXpodAiConnectionClient } from './ai-connection';
+
+const test = it;
+const mock = vi.fn;
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';

@@ -85,7 +85,7 @@ export class AiConnectionInvocationKeyIssuer {
       audience: this.audience,
       issuer: this.issuer,
       webId,
-      scopes: [...DEFAULT_GATEWAY_API_KEY_SCOPES],
+      scopes: [...DEFAULT_GATEWAY_API_KEY_SCOPES, 'client-config:read', 'client-config:write'],
       issuedAt: createdAt,
       expiresAt,
     });
