@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, hasGatewayScope } from '../auth/AuthContext';
@@ -89,8 +90,8 @@ export interface GatewayAcceptanceProvenance {
   webId: string;
   gatewayKeyId: string;
   gatewayKeyFingerprint: string;
-  credentialIri: string;
-  secretCellRef: string;
+  credentialIriHash: string;
+  secretCellRefHash: string;
   providerId: string;
   providerRouteSource: 'pod-credential';
   xpodBaseUrl: string;
@@ -248,23 +249,47 @@ export class AiGatewayService {
     auth: AuthContext;
     model: string;
     xpodBaseUrl: string;
-    gatewayKeyFingerprint: string;
   }): Promise<GatewayAcceptanceProvenance> {
-    this.requireScope(input.auth, 'models:read');
+    this.requireScope(input.auth, 'acceptance:read');
     const principal = this.requirePrincipal(input.auth);
-    const route = await this.router.route({
-      webId: principal.webId,
-      deployment: this.deployment,
-      auth: input.auth,
-      model: input.model,
-    });
+    if (input.auth.type !== 'solid' || input.auth.viaGatewayApiKey !== true || !input.auth.gatewayKeyFingerprint) {
+      throw new GatewayProtocolError('Acceptance provenance requires a Gateway API key principal', {
+        code: 'invalid_request',
+        status: 403,
+      });
+    }
+    let route: ModelRouteResult;
+    try {
+      route = await this.router.route({
+        webId: principal.webId,
+        deployment: this.deployment,
+        auth: input.auth,
+        model: input.model,
+      });
+    } catch (error) {
+      if (error instanceof GatewayProtocolError && error.code === 'credential_unavailable') {
+        throw new GatewayProtocolError('Acceptance provenance credential route was not resolved', {
+          code: 'credential_unavailable',
+          status: 404,
+          details: error.details,
+        });
+      }
+      throw error;
+    }
+    if (route.model !== requestedRouteModel(input.model)) {
+      throw new GatewayProtocolError('Acceptance provenance credential route was not resolved', {
+        code: 'credential_unavailable',
+        status: 404,
+        details: { model: input.model },
+      });
+    }
     const credential = route.credential as StoredGatewayCredential;
     return {
       webId: principal.webId,
       gatewayKeyId: input.auth.type === 'solid' ? input.auth.gatewayKeyId ?? 'unknown' : 'unknown',
-      gatewayKeyFingerprint: input.gatewayKeyFingerprint,
-      credentialIri: credential.credentialIri,
-      secretCellRef: credential.encryptedSecret.credentialIri,
+      gatewayKeyFingerprint: input.auth.gatewayKeyFingerprint,
+      credentialIriHash: hashProvenanceValue(credential.credentialIri),
+      secretCellRefHash: hashProvenanceValue(credential.encryptedSecret.credentialIri),
       providerId: route.provider.id,
       providerRouteSource: 'pod-credential',
       xpodBaseUrl: input.xpodBaseUrl,
@@ -412,6 +437,15 @@ export class AiGatewayService {
       });
     }
   }
+}
+
+function hashProvenanceValue(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+function requestedRouteModel(model: string): string {
+  const slash = model.indexOf('/');
+  return slash > 0 && slash < model.length - 1 ? model.slice(slash + 1) : model;
 }
 
 function isCredentialModelVisible(credential: StoredGatewayCredential, now: Date): boolean {

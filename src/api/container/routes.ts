@@ -152,7 +152,11 @@ function registerSharedRoutes(
   });
   registerNodeRoutes(server, { repository: nodeRepo });
   const aiGatewayService = container.resolve('aiGatewayService');
-  registerChatRoutes(server, { chatService, aiGatewayService });
+  registerChatRoutes(server, {
+    chatService,
+    aiGatewayService,
+    acceptanceEndpointsEnabled: process.env.XPOD_ACCEPTANCE_ENDPOINTS_ENABLED === 'true',
+  });
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });

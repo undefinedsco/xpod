@@ -319,7 +319,9 @@ function printUsage(): void {
   printf '%s' "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
   bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli
 
-The script never accepts the API key as a CLI value. It prints only non-sensitive provenance evidence.`);
+The real Codex mode requires the Xpod runtime to have XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true
+and the Gateway key to include acceptance:read plus normal protocol scopes. The script never
+accepts the API key as a CLI value. It prints only non-sensitive provenance evidence.`);
 }
 
 async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
@@ -440,8 +442,6 @@ async function fetchRealCodexProvenance(input: {
   const response = await fetch(url, {
     headers: {
       ...authHeaders(input.gatewayKey),
-      'x-xpod-acceptance-scope': 'real-codex',
-      'x-xpod-gateway-key-fingerprint': `sha256:${canonicalAcceptanceArtifactHash(input.gatewayKey)}`,
     },
     signal: input.signal,
   });
@@ -449,7 +449,12 @@ async function fetchRealCodexProvenance(input: {
   if (!response.ok) {
     throw new Error(`Acceptance provenance lookup failed: HTTP ${response.status} ${JSON.stringify(json)}`);
   }
-  return json as Omit<RealCodexProvenance, 'commandHash' | 'resultHash'>;
+  const provenance = json as Omit<RealCodexProvenance, 'commandHash' | 'resultHash'>;
+  const expectedFingerprint = `sha256:${canonicalAcceptanceArtifactHash(input.gatewayKey)}`;
+  if (provenance.gatewayKeyFingerprint !== expectedFingerprint) {
+    throw new Error('Acceptance provenance Gateway key fingerprint mismatch');
+  }
+  return provenance;
 }
 
 async function runFixtureCodexCliSmoke(args: ParsedArgs): Promise<void> {

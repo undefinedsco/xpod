@@ -305,6 +305,24 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).not.toContain('if (await firstNavigable.count())');
   });
 
+  it('keeps acceptance provenance endpoint behind an explicit runtime environment gate', async () => {
+    const routes = await readFile(path.resolve('src/api/container/routes.ts'), 'utf8');
+    const chatHandler = await readFile(path.resolve('src/api/handlers/ChatHandler.ts'), 'utf8');
+    const gatewayHandler = await readFile(path.resolve('src/api/handlers/AiGatewayHandler.ts'), 'utf8');
+
+    expect(routes).toContain('XPOD_ACCEPTANCE_ENDPOINTS_ENABLED');
+    expect(chatHandler).toContain('acceptanceEndpointsEnabled');
+    expect(gatewayHandler).toContain('acceptanceEndpointsEnabled === true');
+  });
+
+  it('documents that real Codex acceptance requires a dedicated acceptance scoped Gateway key', async () => {
+    const docs = await readFile(path.resolve('docs/acceptance/xpod-light-settings.md'), 'utf8');
+
+    expect(docs).toContain('XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true');
+    expect(docs).toContain('acceptance:read');
+    expect(docs).toContain('do not reuse a default user key');
+  });
+
   it('records only allowlisted gate environment presence without environment values in JSON or markdown evidence', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
     const secret = 'sk-task12-provider-secret';
@@ -315,6 +333,7 @@ describe('Xpod settings product acceptance harness', () => {
     const plan = buildAcceptancePlan({
       env: {
         XPOD_ACCEPTANCE_RUN_CODEX: 'true',
+        XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
         XPOD_ACCEPTANCE_XPOD_BASE_URL: 'http://127.0.0.1:3000',
         XPOD_ACCEPTANCE_PROVIDER_API_KEY: secret,
         XPOD_ACCEPTANCE_GATEWAY_KEY: gatewayKey,
@@ -359,8 +378,8 @@ describe('Xpod settings product acceptance harness', () => {
         webId: 'https://id.example/alice/profile/card#me',
         gatewayKeyId: 'gak_alice',
         gatewayKeyFingerprint: 'sha256:wrong',
-        credentialIri: 'https://pod.example/alice/settings/credentials.ttl#openai',
-        secretCellRef: 'https://pod.example/alice/settings/credentials.ttl#openai',
+        credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
         providerRouteSource: 'user-json',
         xpodBaseUrl: 'http://127.0.0.1:3000',
@@ -381,8 +400,8 @@ describe('Xpod settings product acceptance harness', () => {
         webId: 'https://id.example/alice/profile/card#me',
         gatewayKeyId: 'gak_alice',
         gatewayKeyFingerprint: `sha256:${canonicalAcceptanceArtifactHash(gatewayKey)}`,
-        credentialIri: 'https://pod.example/alice/settings/credentials.ttl#openai',
-        secretCellRef: 'https://pod.example/alice/settings/credentials.ttl#openai',
+        credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
         providerRouteSource: 'pod-credential',
         xpodBaseUrl: 'http://127.0.0.1:3000',

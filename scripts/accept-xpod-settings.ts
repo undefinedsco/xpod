@@ -58,8 +58,8 @@ export interface RealCodexProvenance {
   webId: string;
   gatewayKeyId: string;
   gatewayKeyFingerprint: string;
-  credentialIri: string;
-  secretCellRef: string;
+  credentialIriHash: string;
+  secretCellRefHash: string;
   providerId: string;
   providerRouteSource: 'pod-credential';
   xpodBaseUrl: string;
@@ -161,6 +161,7 @@ const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_RUN_DOCKER',
   'XPOD_ACCEPTANCE_RUN_CODEX',
   'XPOD_ACCEPTANCE_EXTERNAL_OAUTH',
+  'XPOD_ACCEPTANCE_ENDPOINTS_ENABLED',
   'XPOD_SETTINGS_E2E_BASE_URL',
   'XPOD_SETTINGS_E2E_ALICE_STATE',
   'XPOD_SETTINGS_E2E_BOB_STATE',
@@ -351,7 +352,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       status: runCodex && hasRealCodexEnv(env) ? 'skip' : 'not_complete',
       reason: runCodex
         ? missingRealCodexReason(env)
-        : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_XPOD_BASE_URL, XPOD_ACCEPTANCE_GATEWAY_KEY and a stored provider credential.',
+        : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, XPOD_ACCEPTANCE_GATEWAY_KEY with acceptance:read, and a stored provider credential.',
       commands: ['printf "%s" "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "$XPOD_ACCEPTANCE_MODEL" --api-key-stdin'],
       evidence: ['scripts/ai-gateway-codex-smoke.ts real Codex mode writes redacted provenance JSON; fixture flags are not accepted.'],
       gate: runCodex && hasRealCodexEnv(env) ? shellGate([
@@ -427,12 +428,16 @@ function missingRealHostReason(env: Record<string, string | undefined>): string 
 }
 
 function hasRealCodexEnv(env: Record<string, string | undefined>): boolean {
-  return Boolean(env.XPOD_ACCEPTANCE_XPOD_BASE_URL && env.XPOD_ACCEPTANCE_GATEWAY_KEY);
+  return Boolean(
+    env.XPOD_ACCEPTANCE_ENDPOINTS_ENABLED === 'true' &&
+    env.XPOD_ACCEPTANCE_XPOD_BASE_URL &&
+    env.XPOD_ACCEPTANCE_GATEWAY_KEY
+  );
 }
 
 function missingRealCodexReason(env: Record<string, string | undefined>): string {
   if (hasRealCodexEnv(env)) return 'Real Codex gate is enabled and must execute.';
-  return 'Requires XPOD_ACCEPTANCE_XPOD_BASE_URL and XPOD_ACCEPTANCE_GATEWAY_KEY; Gateway key must be supplied by env/stdin, not as a command argument.';
+  return 'Requires XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, and XPOD_ACCEPTANCE_GATEWAY_KEY with acceptance:read; Gateway key must be supplied by env/stdin, not as a command argument.';
 }
 
 async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: string, nowIso: string): Promise<EvidenceArtifact> {
@@ -485,8 +490,8 @@ export function validateRealCodexProvenance(input: {
   if (!isHttpUrl(provenance.webId)) errors.push('webId must be a valid http URL');
   if (!nonEmptyString(provenance.gatewayKeyId)) errors.push('gatewayKeyId missing');
   if (provenance.gatewayKeyFingerprint !== expectedFingerprint) errors.push('gateway key fingerprint mismatch');
-  if (!isHttpUrl(provenance.credentialIri)) errors.push('credentialIri must be a valid Pod URI');
-  if (!isHttpUrl(provenance.secretCellRef)) errors.push('secretCellRef must be a valid Pod URI');
+  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialIriHash))) errors.push('credentialIriHash missing');
+  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.secretCellRefHash))) errors.push('secretCellRefHash missing');
   if (!nonEmptyString(provenance.providerId)) errors.push('providerId missing');
   if (provenance.providerRouteSource !== 'pod-credential') errors.push('provider route source must be pod-credential');
   if (normalizeUrl(provenance.xpodBaseUrl) !== normalizeUrl(input.baseUrl)) errors.push('xpodBaseUrl mismatch');
@@ -501,8 +506,8 @@ export function validateRealCodexProvenance(input: {
     webId: provenance.webId!,
     gatewayKeyId: provenance.gatewayKeyId!,
     gatewayKeyFingerprint: provenance.gatewayKeyFingerprint!,
-    credentialIri: provenance.credentialIri!,
-    secretCellRef: provenance.secretCellRef!,
+    credentialIriHash: provenance.credentialIriHash!,
+    secretCellRefHash: provenance.secretCellRefHash!,
     providerId: provenance.providerId!,
     providerRouteSource: 'pod-credential',
     xpodBaseUrl: provenance.xpodBaseUrl!,

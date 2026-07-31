@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -106,6 +107,36 @@ describe('GatewayApiKeyAuthenticator', () => {
     await expect(repository.findById('gak_active')).resolves.toMatchObject({
       lastUsedAt: new Date('2026-07-23T00:01:00.000Z'),
     });
+  });
+
+  it('derives the Gateway key fingerprint from the original bearer key without storing raw key material', async () => {
+    const repository = new InMemoryGatewayAccessKeyRepository();
+    const issued = await createGatewayApiKey({
+      deployment: 'cloud',
+      keyId: 'gak_acceptance',
+    });
+    await repository.create({
+      ...issued.record,
+      owner: WEB_ID,
+      scopes: ['models:read', 'inference:write', 'acceptance:read'],
+      createdAt: new Date('2026-07-23T00:00:00.000Z'),
+    });
+    const authenticator = new GatewayApiKeyAuthenticator({
+      repository,
+      deployment: 'cloud',
+      now: () => new Date('2026-07-23T00:01:00.000Z'),
+    });
+
+    const result = await authenticator.authenticate(requestWith(issued.plaintext));
+
+    expect(result).toMatchObject({
+      success: true,
+      context: {
+        gatewayKeyFingerprint: `sha256:${createHash('sha256').update(issued.plaintext).digest('hex')}`,
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(issued.plaintext);
+    expect(JSON.stringify(result)).not.toContain(issued.secret);
   });
 
   it('fails uniformly for bad secrets, deployment mismatch, expiry, revocation and missing scope', async () => {

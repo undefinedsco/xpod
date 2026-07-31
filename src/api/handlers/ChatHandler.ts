@@ -47,6 +47,7 @@ export interface ChatCompletionResponse {
 export interface ChatHandlerOptions {
   aiGatewayService?: AiGatewayService;
   aiGatewayJsonBodyLimitBytes?: number;
+  acceptanceEndpointsEnabled?: boolean;
   /**
    * Legacy service type retained only so Task11 can migrate existing internal
    * callers without forcing unrelated imports to change in this task.
@@ -75,5 +76,6 @@ export function registerChatRoutes(server: ApiServer, options: ChatHandlerOption
   registerAiGatewayRoutes(server, {
     service: options.aiGatewayService,
     jsonBodyLimitBytes: options.aiGatewayJsonBodyLimitBytes,
+    acceptanceEndpointsEnabled: options.acceptanceEndpointsEnabled,
   });
 }

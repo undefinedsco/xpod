@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import { createHash } from 'node:crypto';
 import type { Authenticator, AuthResult } from '../../auth/Authenticator';
 import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
 import {
@@ -134,6 +135,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       accountId: record.owner,
       viaGatewayApiKey: true,
       gatewayKeyId: record.id,
+      gatewayKeyFingerprint: fingerprintGatewayBearer(bearer!),
       scopes: record.scopes,
       tokenType: 'Bearer',
     };
@@ -152,6 +154,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       viaGatewayApiKey: true,
       internalInvocation: true,
       gatewayKeyId: claims.jti,
+      gatewayKeyFingerprint: fingerprintGatewayBearer(token),
       scopes: claims.scopes,
       tokenType: 'Bearer',
     };
@@ -177,6 +180,10 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     }
     return authorization.slice(7).trim();
   }
+}
+
+function fingerprintGatewayBearer(bearer: string): string {
+  return `sha256:${createHash('sha256').update(bearer).digest('hex')}`;
 }
 
 function invalidGatewayApiKey(): AuthResult {

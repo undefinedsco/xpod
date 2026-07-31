@@ -26,6 +26,8 @@ export interface SolidAuthContext {
   internalInvocation?: boolean;
   /** Opaque Gateway API key id, present only for gateway-key principals. */
   gatewayKeyId?: string;
+  /** SHA-256 fingerprint of the authenticated Gateway bearer key, never the raw key. */
+  gatewayKeyFingerprint?: string;
   /** Gateway/API scopes bound to the authenticated principal. */
   scopes?: string[];
 }

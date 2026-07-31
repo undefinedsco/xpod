@@ -10,6 +10,7 @@ import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend } from '../
 export interface AiGatewayHandlerOptions {
   service: AiGatewayService;
   jsonBodyLimitBytes?: number;
+  acceptanceEndpointsEnabled?: boolean;
 }
 
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -23,7 +24,9 @@ export function registerAiGatewayRoutes(
   server.post('/v1/messages', (request, response) => handler.handleInference(request, response, 'anthropic'));
   server.post('/v1/chat/completions', (request, response) => handler.handleInference(request, response, 'chatCompletions'));
   server.get('/v1/models', (request, response) => handler.handleModels(request, response));
-  server.get('/v1/xpod/acceptance/provenance', (request, response) => handler.handleAcceptanceProvenance(request, response));
+  if (options.acceptanceEndpointsEnabled === true) {
+    server.get('/v1/xpod/acceptance/provenance', (request, response) => handler.handleAcceptanceProvenance(request, response));
+  }
 }
 
 export class AiGatewayHandler {
@@ -114,23 +117,10 @@ export class AiGatewayHandler {
           status: 403,
         });
       }
-      if (request.headers['x-xpod-acceptance-scope'] !== 'real-codex') {
-        throw new GatewayProtocolError('Acceptance provenance requires real-codex scope header', {
-          code: 'invalid_request',
-          status: 403,
-        });
-      }
       const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
       const model = url.searchParams.get('model')?.trim();
-      const gatewayKeyFingerprint = headerString(request.headers['x-xpod-gateway-key-fingerprint']);
       if (!model) {
         throw new GatewayProtocolError('model is required', {
-          code: 'invalid_request',
-          status: 400,
-        });
-      }
-      if (!/^sha256:[a-f0-9]{64}$/iu.test(gatewayKeyFingerprint)) {
-        throw new GatewayProtocolError('gateway key fingerprint is required', {
           code: 'invalid_request',
           status: 400,
         });
@@ -138,7 +128,6 @@ export class AiGatewayHandler {
       sendJson(response, 200, await this.service.acceptanceProvenance({
         auth: request.auth,
         model,
-        gatewayKeyFingerprint,
         xpodBaseUrl: `${headerString(request.headers['x-forwarded-proto']) || url.protocol.replace(':', '')}://${url.host}`,
       }));
     } catch (error) {

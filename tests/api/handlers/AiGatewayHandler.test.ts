@@ -71,11 +71,11 @@ function request(path: string, body?: unknown, auth: AuthenticatedRequest['auth'
   type: 'solid',
   webId: WEB_ID,
   scopes: ['models:read', 'inference:write'],
-}): AuthenticatedRequest {
+}, headers: Record<string, string> = {}): AuthenticatedRequest {
   const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = body === undefined ? 'GET' : 'POST';
   req.url = path;
-  req.headers = { host: 'localhost' };
+  req.headers = { host: 'localhost', ...headers };
   req.auth = auth;
   if (body !== undefined) {
     req.end(typeof body === 'string' ? body : JSON.stringify(body));
@@ -158,6 +158,7 @@ function createFixture(options: {
   failAfterFirstEvent?: boolean;
   includeDeepSeek?: boolean;
   onAbort?: () => void;
+  acceptanceEndpointsEnabled?: boolean;
 } = {}) {
   const registry = createDefaultProviderRegistry();
   const events = options.events ?? [
@@ -273,7 +274,10 @@ function createFixture(options: {
     runtimes,
   });
   const { server, routes } = createServer();
-  registerAiGatewayRoutes(server, { service });
+  registerAiGatewayRoutes(server, {
+    service,
+    acceptanceEndpointsEnabled: options.acceptanceEndpointsEnabled,
+  });
   return { routes, service, store, vault, runtime, runtimes };
 }
 
@@ -612,6 +616,100 @@ describe('AiGatewayHandler', () => {
       scopes: ['inference:write'],
     } as any));
     expect(forbidden.statusCode).toBe(403);
+  });
+
+  it('does not register acceptance provenance endpoint unless explicitly enabled', () => {
+    const { routes } = createFixture();
+
+    expect(routes['GET /v1/xpod/acceptance/provenance']).toBeUndefined();
+  });
+
+  it('rejects acceptance provenance for non-Gateway callers and Gateway keys missing acceptance:read', async () => {
+    const { routes } = createFixture({ acceptanceEndpointsEnabled: true });
+    const path = '/v1/xpod/acceptance/provenance?model=gpt-5';
+
+    const nonGateway = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(path, undefined, {
+      type: 'solid',
+      webId: WEB_ID,
+      scopes: ['models:read', 'acceptance:read'],
+    }));
+    expect(nonGateway.statusCode).toBe(403);
+
+    const missingScope = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(path, undefined, {
+      type: 'solid',
+      webId: WEB_ID,
+      viaGatewayApiKey: true,
+      gatewayKeyId: 'gak_protocol_only',
+      gatewayKeyFingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      scopes: ['models:read', 'inference:write'],
+    } as any));
+    expect(missingScope.statusCode).toBe(403);
+  });
+
+  it('validates acceptance provenance model input and fails unresolved credentials honestly', async () => {
+    const { routes } = createFixture({ acceptanceEndpointsEnabled: true });
+    const auth = {
+      type: 'solid',
+      webId: WEB_ID,
+      viaGatewayApiKey: true,
+      gatewayKeyId: 'gak_acceptance',
+      gatewayKeyFingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      scopes: ['acceptance:read'],
+    } as any;
+
+    const missingModel = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(
+      '/v1/xpod/acceptance/provenance',
+      undefined,
+      auth,
+    ));
+    expect(missingModel.statusCode).toBe(400);
+
+    const unresolved = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(
+      '/v1/xpod/acceptance/provenance?model=missing-model',
+      undefined,
+      auth,
+    ));
+    expect(unresolved.statusCode).toBe(404);
+  });
+
+  it('returns server-derived acceptance provenance without raw Gateway or provider secrets', async () => {
+    const { routes } = createFixture({ acceptanceEndpointsEnabled: true });
+    const serverFingerprint = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const callerFingerprint = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+    const res = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(
+      '/v1/xpod/acceptance/provenance?model=gpt-5',
+      undefined,
+      {
+        type: 'solid',
+        webId: WEB_ID,
+        viaGatewayApiKey: true,
+        gatewayKeyId: 'gak_acceptance',
+        gatewayKeyFingerprint: serverFingerprint,
+        scopes: ['acceptance:read'],
+      } as any,
+      {
+        'x-xpod-gateway-key-fingerprint': callerFingerprint,
+      },
+    ));
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toMatchObject({
+      webId: WEB_ID,
+      gatewayKeyId: 'gak_acceptance',
+      gatewayKeyFingerprint: serverFingerprint,
+      credentialIriHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      secretCellRefHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      providerId: 'openai',
+      providerRouteSource: 'pod-credential',
+      xpodBaseUrl: 'http://localhost',
+    });
+    expect(JSON.stringify(body)).not.toContain(callerFingerprint);
+    expect(JSON.stringify(body)).not.toContain('xpod_gw_v1_');
+    expect(JSON.stringify(body)).not.toContain('sk-primary');
+    expect(body.credentialIri).toBeUndefined();
+    expect(body.secretCellRef).toBeUndefined();
   });
 
   it('maps bounded body errors to 400 and 413', async () => {
