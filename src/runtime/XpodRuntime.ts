@@ -93,6 +93,7 @@ export async function startXpodRuntime(options: XpodRuntimeOptions = {}): Promis
       supervisor,
       shutdownHandler: stop,
       gatewayRunner,
+      clientRemoteAddressResolver: options.gatewayClientRemoteAddressResolver,
     });
     environment.restore();
 

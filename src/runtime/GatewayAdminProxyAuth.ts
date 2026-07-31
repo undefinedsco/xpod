@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
 import { isIP } from 'node:net';
 
@@ -13,6 +13,10 @@ export const GATEWAY_ADMIN_PROXY_HEADERS = [
 ] as const;
 
 const MAX_CLOCK_SKEW_MS = 60_000;
+
+export function createGatewayAdminProxyAuthSecret(): string {
+  return randomBytes(32).toString('base64url');
+}
 
 export interface GatewayAdminProxyMarkerInput {
   secret: string;

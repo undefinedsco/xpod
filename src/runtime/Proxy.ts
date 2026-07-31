@@ -6,6 +6,7 @@ import { nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 import type { RuntimeHost, RuntimeListenEndpoint } from './host/types';
 import {
   createGatewayAdminProxyHeaders,
+  GATEWAY_ADMIN_PROXY_LOOPBACK_HEADER,
   isLoopbackRemoteAddress,
   stripGatewayAdminProxyHeaders,
 } from './GatewayAdminProxyAuth';
@@ -240,6 +241,7 @@ export class GatewayProxy {
 
   private applyInternalAdminProxyHeaders(req: http.IncomingMessage, originalClientLoopback: boolean): void {
     if (!this.internalAdminAuthSecret) {
+      req.headers[GATEWAY_ADMIN_PROXY_LOOPBACK_HEADER] = originalClientLoopback ? '1' : '0';
       return;
     }
     Object.assign(req.headers, createGatewayAdminProxyHeaders({

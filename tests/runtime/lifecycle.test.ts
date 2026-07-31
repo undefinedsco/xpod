@@ -128,6 +128,7 @@ describe('runtime lifecycle helpers', () => {
         api: '/tmp/xpod-api.sock',
       },
       baseUrl: 'http://localhost/',
+      gatewayAdminProxyAuthSecret: 'runtime-admin-proxy-secret',
     } as RuntimeBootstrapState;
 
     const result = await startGatewayRuntime({
@@ -147,6 +148,7 @@ describe('runtime lifecycle helpers', () => {
       baseUrl: 'http://localhost/',
       runtimeHost: host,
       supervisor,
+      internalAdminAuthSecret: 'runtime-admin-proxy-secret',
       targets: {
         css: { socketPath: '/tmp/xpod-css.sock' },
         api: { socketPath: '/tmp/xpod-api.sock' },

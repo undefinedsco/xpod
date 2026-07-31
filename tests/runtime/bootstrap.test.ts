@@ -126,6 +126,41 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigAuthPass).toBe('');
   });
 
+  it('should generate isolated gateway admin proxy secrets and inject them into runtime env', async() => {
+    const firstState = await resolveRuntimeBootstrap('test-admin-proxy-secret-a', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/admin-proxy-secret-a',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5750,
+      cssPort: 5751,
+      apiPort: 5752,
+    }, nodeRuntimeHost);
+    const secondState = await resolveRuntimeBootstrap('test-admin-proxy-secret-b', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/admin-proxy-secret-b',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5760,
+      cssPort: 5761,
+      apiPort: 5762,
+    }, nodeRuntimeHost);
+
+    expect(firstState.gatewayAdminProxyAuthSecret).toEqual(expect.any(String));
+    expect(secondState.gatewayAdminProxyAuthSecret).toEqual(expect.any(String));
+    expect(firstState.gatewayAdminProxyAuthSecret).not.toBe(secondState.gatewayAdminProxyAuthSecret);
+
+    const runtimeEnv = buildRuntimeEnv(firstState, {
+      mode: 'local',
+      env: {
+        XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: 'caller-supplied-secret',
+      },
+    });
+
+    expect(runtimeEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET).toBe(firstState.gatewayAdminProxyAuthSecret);
+    expect(runtimeEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET).not.toBe('caller-supplied-secret');
+  });
+
   it('should resolve auth mode from runtime env and prefer explicit options', async() => {
     const envState = await resolveRuntimeBootstrap('test-auth-env', {
       mode: 'local',

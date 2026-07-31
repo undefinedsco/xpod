@@ -3,6 +3,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../../src/runtime/XpodRuntime';
+import { createGatewayAdminProxyHeaders } from '../../src/runtime/GatewayAdminProxyAuth';
 import { resolveTestRuntimeTransport } from '../helpers/runtimeTransport';
 import { setupAccount, type AccountSetup } from '../integration/helpers/solidAccount';
 import { createTestDir } from '../utils/sqlite';
@@ -209,6 +210,133 @@ describe('XpodRuntime', () => {
     expect(getResponse.status).toBe(200);
     await expect(getResponse.text()).resolves.toContain('hello from runtime');
   });
+});
+
+describe('XpodRuntime admin proxy authorization lifecycle', () => {
+  let runtime: XpodRuntimeHandle;
+  let previousAdminToken: string | undefined;
+
+  beforeAll(async () => {
+    previousAdminToken = process.env.XPOD_ADMIN_TOKEN;
+    delete process.env.XPOD_ADMIN_TOKEN;
+
+    const runtimeRoot = createTestDir('xpod-runtime-admin-proxy-auth');
+    const envFile = path.join(runtimeRoot, '.env.local');
+    fs.writeFileSync(envFile, 'CSS_BASE_URL=http://localhost:3000/\n', 'utf8');
+
+    runtime = await startXpodRuntime({
+      mode: 'local',
+      open: true,
+      transport: resolveTestRuntimeTransport('port'),
+      runtimeRoot,
+      envFile,
+      logLevel: 'warn',
+      env: {
+        ...isolatedLocalEnv,
+        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'admin-proxy-test-client',
+        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'admin-proxy-test-secret',
+        XPOD_GATEWAY_LOCATOR_SECRET: 'admin-proxy-test-locator-secret',
+        XPOD_GATEWAY_LOCATOR_KEY_ID: 'admin-proxy-test-locator-key',
+        XPOD_SECRET_CELL_KEY_ID: 'admin-proxy-test-cell',
+        XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 7).toString('base64'),
+      },
+      cssRunner: {
+        name: 'admin-proxy-auth-css-stub',
+        start: async(options) => {
+          const server = http.createServer((_request, response) => {
+            response.statusCode = 404;
+            response.end('not found');
+          });
+          await new Promise<void>((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(Number(options.shorthand.port), '127.0.0.1', () => resolve());
+          });
+          return {
+            stop: async(): Promise<void> => {
+              await close(server);
+            },
+          } as any;
+        },
+      },
+      gatewayClientRemoteAddressResolver: (req) => String(req.headers['x-test-remote-address'] ?? req.socket.remoteAddress ?? ''),
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await runtime?.stop();
+    if (previousAdminToken === undefined) {
+      delete process.env.XPOD_ADMIN_TOKEN;
+    } else {
+      process.env.XPOD_ADMIN_TOKEN = previousAdminToken;
+    }
+  });
+
+  it('does not grant admin capabilities or mutations to an external original client through the real gateway runner', async () => {
+    const status = await readAdminStatus('203.0.113.25');
+    expect(status.capabilities.services.lifecycle.restart.supported).toBe(false);
+    expect(status.capabilities.services.configuration.write.supported).toBe(false);
+
+    const mutation = await writeAdminConfig('203.0.113.25');
+    expect(mutation.status).toBe(403);
+  });
+
+  it('allows a loopback original client through the real gateway runner', async () => {
+    const status = await readAdminStatus('127.0.0.1');
+    expect(status.capabilities.services.lifecycle.restart.supported).toBe(true);
+    expect(status.capabilities.services.configuration.write.supported).toBe(true);
+
+    const mutation = await writeAdminConfig('127.0.0.1');
+    expect(mutation.status).toBe(200);
+  });
+
+  it('rejects forged gateway markers supplied by an external client', async () => {
+    const forgedMarker = createGatewayAdminProxyHeaders({
+      secret: 'forged-client-secret',
+      method: 'PUT',
+      url: '/api/admin/config',
+      originalClientLoopback: true,
+    }) as Record<string, string>;
+
+    const mutation = await writeAdminConfig('203.0.113.25', {
+      ...forgedMarker,
+      'x-forwarded-for': '127.0.0.1',
+      'x-forwarded-host': 'localhost',
+    });
+    expect(mutation.status).toBe(403);
+  });
+
+  it('allows an external original client with XPOD_ADMIN_TOKEN through the real gateway runner', async () => {
+    process.env.XPOD_ADMIN_TOKEN = 'runtime-admin-token';
+    const status = await readAdminStatus('203.0.113.25', { 'x-xpod-admin-token': 'runtime-admin-token' });
+    expect(status.capabilities.services.lifecycle.restart.supported).toBe(true);
+    expect(status.capabilities.services.configuration.write.supported).toBe(true);
+
+    const mutation = await writeAdminConfig('203.0.113.25', { 'x-xpod-admin-token': 'runtime-admin-token' });
+    expect(mutation.status).toBe(200);
+  });
+
+  async function readAdminStatus(remoteAddress: string, headers: Record<string, string> = {}): Promise<any> {
+    const response = await runtime.fetch('/api/admin/status', {
+      headers: {
+        ...headers,
+        'x-test-remote-address': remoteAddress,
+      },
+    });
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+
+  async function writeAdminConfig(remoteAddress: string, headers: Record<string, string> = {}): Promise<Response> {
+    return runtime.fetch('/api/admin/config', {
+      method: 'PUT',
+      headers: {
+        ...headers,
+        'content-type': 'application/json',
+        'x-test-remote-address': remoteAddress,
+      },
+      body: JSON.stringify({ env: { CSS_LOGGING_LEVEL: 'debug' } }),
+    });
+  }
 });
 
 describe('XpodRuntime standalone profile authorization', () => {

@@ -1,9 +1,8 @@
 import type { CommandModule } from 'yargs';
-import { randomBytes } from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { Supervisor } from '../../supervisor';
-import { GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
+import { createGatewayAdminProxyAuthSecret, GatewayProxy, getFreePort, PACKAGE_ROOT } from '../../runtime';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -162,7 +161,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
         ]
       : [path.resolve(__dirname, '..', '..', 'api', 'main.js')];
 
-    const gatewayAdminProxyAuthSecret = randomBytes(32).toString('base64url');
+    const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
 
     supervisor.register({
       name: 'api',

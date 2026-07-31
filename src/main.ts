@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import './runtime/configure-drizzle-solid';
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
+import { createGatewayAdminProxyAuthSecret, GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -319,7 +319,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
       ]
     : [path.join(__dirname, 'api', 'main.js')];
 
-  const gatewayAdminProxyAuthSecret = randomBytes(32).toString('base64url');
+  const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
 
   supervisor.register({
     name: 'api',

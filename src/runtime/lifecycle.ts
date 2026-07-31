@@ -1,4 +1,5 @@
 import type { App } from '@solid/community-server';
+import type http from 'node:http';
 import type { AuthContext } from '../api/auth/AuthContext';
 import type { ApiServiceHandle } from '../api/runtime';
 import { Supervisor } from '../supervisor/Supervisor';
@@ -43,6 +44,7 @@ interface StartGatewayRuntimeOptions {
   supervisor: Supervisor;
   shutdownHandler: () => Promise<void>;
   gatewayRunner: GatewayRuntimeRunner;
+  clientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
 }
 
 interface StopRuntimeServicesOptions {
@@ -157,6 +159,7 @@ export async function startGatewayRuntime({
   supervisor,
   shutdownHandler,
   gatewayRunner,
+  clientRemoteAddressResolver,
 }: StartGatewayRuntimeOptions): Promise<GatewayRuntimeHandle> {
   supervisor.setStatus('gateway', 'starting', { startTime: Date.now() });
 
@@ -168,6 +171,8 @@ export async function startGatewayRuntime({
     baseUrl: state.baseUrl,
     runtimeHost: host,
     supervisor,
+    internalAdminAuthSecret: state.gatewayAdminProxyAuthSecret,
+    clientRemoteAddressResolver,
     targets: {
       css: state.transport === 'socket' ? { socketPath: state.sockets.css! } : { url: `http://127.0.0.1:${state.ports.css}` },
       api: state.transport === 'socket' ? { socketPath: state.sockets.api! } : { url: `http://127.0.0.1:${state.ports.api}` },

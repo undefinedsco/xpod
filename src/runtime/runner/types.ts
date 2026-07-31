@@ -1,4 +1,5 @@
 import type { App } from '@solid/community-server';
+import type http from 'node:http';
 import type { AuthContext } from '../../api/auth/AuthContext';
 import type { ApiServiceHandle } from '../../api/runtime';
 import type { Supervisor } from '../../supervisor/Supervisor';
@@ -35,6 +36,8 @@ export interface GatewayRuntimeRunnerStartOptions {
   baseUrl: string;
   runtimeHost: RuntimeHost;
   supervisor: Supervisor;
+  internalAdminAuthSecret: string;
+  clientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
   targets: {
     css: RuntimeConnectionTarget;
     api: RuntimeConnectionTarget;

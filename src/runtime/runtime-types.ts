@@ -1,4 +1,5 @@
 import type { AuthContext } from '../api/auth/AuthContext';
+import type http from 'node:http';
 import type { Supervisor } from '../supervisor/Supervisor';
 import type { AuthMode } from '../authorization/AuthMode';
 import type { RuntimeDriver } from './driver/types';
@@ -51,6 +52,7 @@ export interface XpodRuntimeOptions {
   cssRunner?: CssRuntimeRunner;
   apiRunner?: ApiRuntimeRunner;
   gatewayRunner?: GatewayRuntimeRunner;
+  gatewayClientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
 }
 
 export interface XpodRuntimeHandle {

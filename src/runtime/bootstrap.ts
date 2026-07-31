@@ -13,6 +13,7 @@ import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, resolveAuthModeInput } from '../authorization/AuthMode';
 import { extractComponentParameterContext, normalizeComponentParameterKeys } from './component-parameter-keys';
 import { rewriteConfigAssetPaths } from './config-asset-paths';
+import { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -33,6 +34,7 @@ export interface RuntimeBootstrapState {
   usageDbUrl: string;
   cssAuthMode: AuthMode;
   apiOpen: boolean;
+  gatewayAdminProxyAuthSecret: string;
   logLevel: string;
   baseUrl: string;
   envFilePath?: string;
@@ -171,6 +173,7 @@ export async function resolveRuntimeBootstrap(
   };
   const cssAuthMode = options.open ? 'allow-all' : resolveAuthModeInput(options.authMode, authModeEnv);
   const apiOpen = options.apiOpen ?? options.open ?? false;
+  const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
   const logLevel = options.logLevel ?? platform.getEnv('CSS_LOGGING_LEVEL') ?? 'warn';
 
   platform.ensureDir(runtimeRoot);
@@ -216,6 +219,7 @@ export async function resolveRuntimeBootstrap(
     usageDbUrl,
     cssAuthMode,
     apiOpen,
+    gatewayAdminProxyAuthSecret,
     logLevel,
     baseUrl,
     envFilePath,
@@ -254,6 +258,7 @@ export function buildRuntimeEnv(
     API_HOST: state.bindHost,
     API_SOCKET_PATH: state.sockets.api,
     XPOD_MAIN_PORT: state.ports.gateway !== undefined ? String(state.ports.gateway) : undefined,
+    XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: state.gatewayAdminProxyAuthSecret,
     // Auto-provision may write these during API startup. Include them even when
     // undefined so RuntimeEnvironmentSession can restore/clear them afterwards.
     XPOD_NODE_ID: mergedEnv.XPOD_NODE_ID,

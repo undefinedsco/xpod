@@ -117,6 +117,40 @@ describe('GatewayProxy admin ingress authorization', () => {
     expect((await directConfigPatch(replayedStatusMarker)).status).toBe(403);
   });
 
+  it('does not fall back to direct local authorization for proxied requests when gateway secret is missing', async () => {
+    const insecureApiPort = await getFreePort(proxyPort + 1, '127.0.0.1');
+    const insecureProxyPort = await getFreePort(insecureApiPort + 1, '127.0.0.1');
+    const insecureApi = new ApiServer({
+      port: insecureApiPort,
+      host: '127.0.0.1',
+      authMiddleware: { process: async () => true } as AuthMiddleware,
+    });
+    registerAdminRoutes(insecureApi);
+    await insecureApi.start();
+    const insecureProxy = new GatewayProxy(insecureProxyPort, new Supervisor(), '127.0.0.1', {
+      clientRemoteAddressResolver: () => '127.0.0.1',
+    });
+    insecureProxy.setTargets({ api: `http://127.0.0.1:${insecureApiPort}` });
+    await insecureProxy.start();
+
+    try {
+      const statusResponse = await fetch(`http://127.0.0.1:${insecureProxyPort}/api/admin/status`);
+      expect(statusResponse.status).toBe(200);
+      const status = await statusResponse.json() as any;
+      expect(status.capabilities.services.lifecycle.restart.supported).toBe(false);
+
+      const mutation = await fetch(`http://127.0.0.1:${insecureProxyPort}/api/admin/config`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ env: { CSS_LOGGING_LEVEL: 'debug' } }),
+      });
+      expect(mutation.status).toBe(403);
+    } finally {
+      await insecureProxy.stop();
+      await insecureApi.stop();
+    }
+  });
+
   async function gatewayStatus(remoteAddress: string, headers: Record<string, string> = {}): Promise<any> {
     const response = await fetch(`http://127.0.0.1:${proxyPort}/api/admin/status`, {
       headers: {
