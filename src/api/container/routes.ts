@@ -46,6 +46,10 @@ import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
 import { LocalPodProvisioningService } from '../../provision/LocalPodProvisioningService';
 import { verifyServiceAccessToken } from '../../provision/ServiceAccessTokenCodec';
+import {
+  findEdgeNodeCertificateCapabilityBridge,
+  resolveEdgeNodeCertificateCapabilityBridgeId,
+} from '../../edge/EdgeNodeCertificateCapabilityBridge';
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime';
 
@@ -120,11 +124,12 @@ function registerSharedRoutes(
   const localTunnelProvider = container.resolve('localTunnelProvider', { allowUnregistered: true });
   const cloudTunnelProvider = container.resolve('tunnelProvider', { allowUnregistered: true });
   const tunnelProvider = localTunnelProvider ?? cloudTunnelProvider;
+  const edgeCertificateBridge = createDynamicEdgeCertificateBridge(config);
   const certificateCapability = createCertificateCapability(
     container.resolve('certificateManager', { allowUnregistered: true }),
     container.resolve('acmeCertificateManager', { allowUnregistered: true }),
     container.resolve('clusterCertificateManager', { allowUnregistered: true }),
-    container.resolve('edgeNodeCertificateCapabilityBridge', { allowUnregistered: true }),
+    edgeCertificateBridge,
   );
   const podLookupRepository = container.resolve('podLookupRepo');
   const accountRoleRepository = container.resolve('accountRoleRepo', { allowUnregistered: true });
@@ -195,7 +200,6 @@ function registerSharedRoutes(
     certificateRenewer: certificateCapability?.certificateRenewer,
     authorizer: createDeploymentNetworkSettingsAuthorizer({
       deployment: config.edition,
-      podLookupRepository,
       accountRoleRepository,
     }),
   });
@@ -210,6 +214,28 @@ function registerSharedRoutes(
   } catch (error) {
     console.log(`[Shared] Quota & Usage routes not registered: ${error}`);
   }
+}
+
+function createDynamicEdgeCertificateBridge(config: ApiContainerConfig): unknown {
+  const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({
+    nodeId: config.nodeId,
+    baseUrl: config.solidBaseUrl ?? config.publicUrl,
+  });
+  if (!bridgeId) {
+    return undefined;
+  }
+  return {
+    readCertificateStatus: async () => {
+      return await findEdgeNodeCertificateCapabilityBridge(bridgeId)?.readCertificateStatus()
+        ?? { supported: false, status: 'unsupported' };
+    },
+    renewCertificate: async () => {
+      return await findEdgeNodeCertificateCapabilityBridge(bridgeId)?.renewCertificate();
+    },
+    isAvailable: async () => {
+      return Boolean(await findEdgeNodeCertificateCapabilityBridge(bridgeId)?.isAvailable());
+    },
+  };
 }
 
 /**

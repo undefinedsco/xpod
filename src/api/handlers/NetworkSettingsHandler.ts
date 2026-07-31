@@ -61,9 +61,6 @@ export interface NetworkSettingsAuthorizer {
 
 export interface NetworkSettingsIdentityAuthorizerOptions {
   deployment: 'cloud' | 'local';
-  podLookupRepository?: {
-    findByWebId(webId: string): Promise<unknown>;
-  };
   accountRoleRepository?: {
     findByWebId(webId: string): Promise<{ roles?: string[] } | undefined>;
   };
@@ -466,15 +463,8 @@ async function isDeploymentOwnerOrAdmin(
     return false;
   }
 
-  const roleContext = await options.accountRoleRepository?.findByWebId(auth.webId);
-  if (roleContext?.roles?.includes('admin')) {
-    return true;
-  }
-
-  if (options.deployment === 'local') {
-    return Boolean(await options.podLookupRepository?.findByWebId(auth.webId));
-  }
-  return false;
+  const roles = (await options.accountRoleRepository?.findByWebId(auth.webId))?.roles ?? [];
+  return roles.includes('admin') || (options.deployment === 'local' && roles.includes('owner'));
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {

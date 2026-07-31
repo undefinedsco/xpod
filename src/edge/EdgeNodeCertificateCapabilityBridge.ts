@@ -109,6 +109,10 @@ export function getEdgeNodeCertificateCapabilityBridge(id: string): EdgeNodeCert
   return bridge;
 }
 
+export function findEdgeNodeCertificateCapabilityBridge(id: string): EdgeNodeCertificateCapabilityBridge | undefined {
+  return bridges.get(id);
+}
+
 export function hasEdgeNodeCertificateCapabilityBridge(id: string): boolean {
   return bridges.has(id);
 }

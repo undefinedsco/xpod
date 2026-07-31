@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AcmeCertificateManager } from '../../src/edge/acme/AcmeCertificateManager';
 import {
   getEdgeNodeCertificateCapabilityBridge,
+  hasEdgeNodeCertificateCapabilityBridge,
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../src/edge/EdgeNodeCertificateCapabilityBridge';
 
@@ -379,10 +380,12 @@ describe('registerRoutes mode wiring', () => {
     expect(res.body).not.toContain('deployment');
   });
 
-  it('allows the local Solid owner from Pod ownership data and rejects non-owners', async () => {
-    const ownerWebId = 'https://id.example/alice/profile/card#me';
+  it('rejects arbitrary local Pod owners and allows explicit local deployment owner/admin roles', async () => {
+    const podOwnerWebId = 'https://id.example/alice/profile/card#me';
+    const deploymentOwnerWebId = 'https://id.example/local-owner/profile/card#me';
+    const deploymentAdminWebId = 'https://id.example/local-admin/profile/card#me';
     const podLookupRepo = {
-      findByWebId: vi.fn(async (webId: string) => webId === ownerWebId
+      findByWebId: vi.fn(async (webId: string) => webId === podOwnerWebId
         ? {
             podId: 'pod-alice',
             accountId: 'account-alice',
@@ -391,29 +394,58 @@ describe('registerRoutes mode wiring', () => {
           }
         : undefined),
     };
+    const accountRoleRepo = {
+      findByWebId: vi.fn(async (webId: string) => {
+        if (webId === deploymentOwnerWebId) {
+          return { accountId: 'account-owner', webId, roles: ['owner'] };
+        }
+        if (webId === deploymentAdminWebId) {
+          return { accountId: 'account-admin', webId, roles: ['admin'] };
+        }
+        return { accountId: 'account-user', webId, roles: [] };
+      }),
+    };
+    const certificateManager = {
+      readCertificateStatus: vi.fn(async () => ({ status: 'valid' })),
+      renewCertificate: vi.fn(async () => undefined),
+    };
     registerRoutes(createContainer('local', {
       config: {
         publicUrl: 'https://local-public.example/',
       },
-      services: { podLookupRepo },
+      services: { podLookupRepo, accountRoleRepo, certificateManager },
     }));
 
+    const podOwnerStatusRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](solidRequest(podOwnerWebId), podOwnerStatusRes, {});
+    expect(podOwnerStatusRes.statusCode).toBe(403);
+
+    const podOwnerRenewRes = jsonResponse();
+    await routes['POST /api/network/settings/certificate/renew'](solidRequest(podOwnerWebId), podOwnerRenewRes, {});
+    expect(podOwnerRenewRes.statusCode).toBe(403);
+    expect(podLookupRepo.findByWebId).not.toHaveBeenCalled();
+
     const ownerRes = jsonResponse();
-    await routes['GET /api/network/settings/status'](solidRequest(ownerWebId), ownerRes, {});
+    await routes['GET /api/network/settings/status'](solidRequest(deploymentOwnerWebId), ownerRes, {});
     expect(ownerRes.statusCode).toBe(200);
     expect(JSON.parse(ownerRes.body)).toMatchObject({ endpoint: 'https://local-public.example/' });
-    expect(podLookupRepo.findByWebId).toHaveBeenCalledWith(ownerWebId);
 
-    const nonOwnerRes = jsonResponse();
-    await routes['GET /api/network/settings/status'](solidRequest('https://id.example/bob/profile/card#me'), nonOwnerRes, {});
-    expect(nonOwnerRes.statusCode).toBe(403);
+    const adminRenewRes = jsonResponse();
+    await routes['POST /api/network/settings/certificate/renew'](solidRequest(deploymentAdminWebId), adminRenewRes, {});
+    expect(adminRenewRes.statusCode).toBe(200);
+    expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
+    expect(accountRoleRepo.findByWebId).toHaveBeenCalledWith(deploymentOwnerWebId);
+    expect(accountRoleRepo.findByWebId).toHaveBeenCalledWith(deploymentAdminWebId);
   });
 
   it('allows cloud Solid admins from account role data and rejects ordinary cloud users', async () => {
     const adminWebId = 'https://id.example/admin/profile/card#me';
+    const ownerWebId = 'https://id.example/owner/profile/card#me';
     const accountRoleRepo = {
       findByWebId: vi.fn(async (webId: string) => webId === adminWebId
         ? { accountId: 'account-admin', webId, roles: ['admin'] }
+        : webId === ownerWebId
+          ? { accountId: 'account-owner', webId, roles: ['owner'] }
         : { accountId: 'account-user', webId, roles: [] }),
     };
     registerRoutes(createContainer('cloud', {
@@ -431,6 +463,10 @@ describe('registerRoutes mode wiring', () => {
     const userRes = jsonResponse();
     await routes['GET /api/network/settings/status'](solidRequest('https://id.example/user/profile/card#me'), userRes, {});
     expect(userRes.statusCode).toBe(403);
+
+    const ownerRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](solidRequest(ownerWebId), ownerRes, {});
+    expect(ownerRes.statusCode).toBe(403);
   });
 
   it('rejects account manage service tokens without explicit network scopes', async () => {
@@ -531,6 +567,46 @@ describe('registerRoutes mode wiring', () => {
       bridge.clearSource();
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('resolves the production certificate bridge dynamically across same-id source replacement and cleanup', async () => {
+    const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({ nodeId: 'node-rotate' })!;
+    const sourceA = {
+      readCertificateStatus: vi.fn(async () => ({ status: 'renewal_due', expiresAt: '2026-09-01T00:00:00.000Z' })),
+      renewCertificate: vi.fn(async () => undefined),
+    };
+    const sourceB = {
+      readCertificateStatus: vi.fn(async () => ({ status: 'valid', expiresAt: '2026-12-01T00:00:00.000Z' })),
+      renewCertificate: vi.fn(async () => undefined),
+    };
+
+    const releaseA = getEdgeNodeCertificateCapabilityBridge(bridgeId).setSource(() => sourceA);
+    registerRoutes(createContainer('local', {
+      config: {
+        nodeId: 'node-rotate',
+        publicUrl: 'https://local-public.example/',
+      },
+    }));
+    releaseA();
+    const releaseB = getEdgeNodeCertificateCapabilityBridge(bridgeId).setSource(() => sourceB);
+
+    const statusRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](authedRequest(), statusRes, {});
+    expect(JSON.parse(statusRes.body)).toMatchObject({
+      tls: { supported: true, status: 'valid', expiresAt: '2026-12-01T00:00:00.000Z' },
+      actions: { renewCertificate: true },
+    });
+    expect(sourceA.readCertificateStatus).not.toHaveBeenCalled();
+    expect(sourceB.readCertificateStatus).toHaveBeenCalledTimes(1);
+
+    const renewRes = jsonResponse();
+    await routes['POST /api/network/settings/certificate/renew'](authedRequest('write'), renewRes, {});
+    expect(renewRes.statusCode).toBe(200);
+    expect(sourceA.renewCertificate).not.toHaveBeenCalled();
+    expect(sourceB.renewCertificate).toHaveBeenCalledTimes(1);
+
+    releaseB();
+    expect(hasEdgeNodeCertificateCapabilityBridge(bridgeId)).toBe(false);
   });
 
   it('keeps TLS unsupported when no certificate runtime surface is registered', async () => {
