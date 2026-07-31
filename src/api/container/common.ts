@@ -9,6 +9,7 @@ import type { ApiContainerCradle } from './types';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleRepository';
 import { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
 import { LocalSetupServiceTokenRepository } from '../../setup/LocalSetupServiceTokenRepository';
 import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
@@ -114,6 +115,10 @@ export function registerCommonServices(
       });
     }).singleton(),
 
+    accountRoleRepo: asFunction(({ db }: ApiContainerCradle) => {
+      return new AccountRoleRepository(db);
+    }).singleton(),
+
     // 认证
     serviceTokenRepo: asFunction(({ db, config }: ApiContainerCradle) => {
       if (config.edition === 'cloud') {
@@ -124,7 +129,7 @@ export function registerCommonServices(
         token: config.serviceToken,
         serviceType: 'local',
         serviceId: config.nodeId ?? 'local-1',
-        scopes: ['quota:write', 'usage:read', 'account:manage'],
+        scopes: ['quota:write', 'usage:read', 'account:manage', 'network:read', 'network:write'],
       });
     }).singleton(),
 

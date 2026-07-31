@@ -290,23 +290,33 @@ describe('NetworkSettingsHandler', () => {
     expect(readOnlyRenewRes.statusCode).toBe(403);
     expect(renew).not.toHaveBeenCalled();
 
-    const ownerRes = response();
+    const manageOnlyReadRes = response();
     await routes['GET /api/network/settings/status'](request({
       type: 'service',
       serviceType: 'local',
       serviceId: 'local-owner',
       scopes: ['account:manage'],
-    }), ownerRes);
-    expect(ownerRes.statusCode).toBe(200);
+    }), manageOnlyReadRes);
+    expect(manageOnlyReadRes.statusCode).toBe(403);
 
-    const adminRenewRes = response();
+    const manageOnlyRenewRes = response();
     await routes['POST /api/network/settings/certificate/renew'](request({
       type: 'service',
       serviceType: 'cloud',
       serviceId: 'cloud-admin',
       scopes: ['account:manage'],
-    }), adminRenewRes);
-    expect(adminRenewRes.statusCode).toBe(200);
+    }), manageOnlyRenewRes);
+    expect(manageOnlyRenewRes.statusCode).toBe(403);
+    expect(renew).not.toHaveBeenCalled();
+
+    const writeRes = response();
+    await routes['POST /api/network/settings/certificate/renew'](request({
+      type: 'service',
+      serviceType: 'cloud',
+      serviceId: 'cloud-admin',
+      scopes: ['network:write'],
+    }), writeRes);
+    expect(writeRes.statusCode).toBe(200);
     expect(renew).toHaveBeenCalledTimes(1);
   });
 

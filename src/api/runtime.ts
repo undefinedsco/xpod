@@ -221,7 +221,7 @@ async function registerPrimaryServiceToken(
     await serviceTokenRepo.registerToken(serviceToken, {
       serviceType,
       serviceId,
-      scopes: ['quota:write', 'usage:read', 'account:manage'],
+      scopes: ['quota:write', 'usage:read', 'account:manage', 'network:read', 'network:write'],
     });
 
     logger.info(`Registered service token for ${serviceType}:${serviceId}`);

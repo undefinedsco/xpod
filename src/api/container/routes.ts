@@ -31,6 +31,7 @@ import { DrizzlePodAiConnectionStatusReader, registerPodSettingsRoutes } from '.
 import {
   createAddressReaders,
   createCertificateCapability,
+  createDeploymentNetworkSettingsAuthorizer,
   createDnsStatusReader,
   createPublicAddressReader,
   createTunnelStatusReader,
@@ -126,6 +127,7 @@ function registerSharedRoutes(
     container.resolve('edgeNodeCertificateCapabilityBridge', { allowUnregistered: true }),
   );
   const podLookupRepository = container.resolve('podLookupRepo');
+  const accountRoleRepository = container.resolve('accountRoleRepo', { allowUnregistered: true });
   if (!podLookupRepository) {
     throw new Error('Pod settings route requires podLookupRepo');
   }
@@ -191,6 +193,11 @@ function registerSharedRoutes(
     tunnelStatusReader: createTunnelStatusReader(tunnelProvider),
     tlsStatusReader: certificateCapability?.tlsStatusReader,
     certificateRenewer: certificateCapability?.certificateRenewer,
+    authorizer: createDeploymentNetworkSettingsAuthorizer({
+      deployment: config.edition,
+      podLookupRepository,
+      accountRoleRepository,
+    }),
   });
 
   // Quota & Usage API (Business 对接)

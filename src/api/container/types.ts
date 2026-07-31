@@ -22,6 +22,7 @@ import type { EdgeNodeCertificateCapabilityBridge } from '../../edge/EdgeNodeCer
 import type { IdentityDatabase } from '../../identity/drizzle/db';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
+import type { AccountRoleRepository } from '../../identity/drizzle/AccountRoleRepository';
 import type { ChatKitService, AiProvider } from '../chatkit';
 import type { StoreContext } from '../chatkit/store';
 import type { PodChatKitStore } from '../chatkit/pod-store';
@@ -262,6 +263,7 @@ export interface ApiContainerCradle {
   // Cloud 模式: 身份服务
   ddnsRepo?: DdnsRepository;
   podLookupRepo?: PodLookupRepository;
+  accountRoleRepo?: AccountRoleRepository;
 
   // 子域名相关 (可选，按 edition 注册)
   // Cloud 模式 或 Local 自管模式

@@ -7,6 +7,8 @@ import {
   type EdgeNodeCertificateCapabilityBridge,
 } from './EdgeNodeCertificateCapabilityBridge';
 
+const certificateBridgeSourceReleases = new WeakMap<EdgeNodeAgentInitializer, () => void>();
+
 /**
  * 所有配置项设为可选，以便在 disabled 状态下即使缺少 CLI 变量也能成功实例化。
  */
@@ -78,7 +80,10 @@ export class EdgeNodeAgentInitializer extends Initializer {
 
     try {
       await this.agent.start(this.buildAgentOptions(this.options));
-      this.certificateBridge?.setSource(() => this.agent.getCertificateRuntime());
+      const release = this.certificateBridge?.setSource(() => this.agent.getCertificateRuntime());
+      if (release) {
+        certificateBridgeSourceReleases.set(this, release);
+      }
       this.logger.info(`EdgeNodeAgent started (Node: ${this.options.nodeId})`);
     } catch (error: unknown) {
       this.logger.error(`Failed to start EdgeNodeAgent: ${(error as Error).message}`);
@@ -87,7 +92,8 @@ export class EdgeNodeAgentInitializer extends Initializer {
   }
 
   public stop(): void {
-    this.certificateBridge?.clearSource();
+    certificateBridgeSourceReleases.get(this)?.();
+    certificateBridgeSourceReleases.delete(this);
     this.agent.stop();
   }
 

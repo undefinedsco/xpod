@@ -11,16 +11,47 @@ export interface EdgeNodeCertificateBridgeStatus {
 }
 
 type CertificateRuntimeSupplier = () => EdgeNodeCertificateRuntime | undefined;
+type BridgeDisposer = () => void;
 
 export class EdgeNodeCertificateCapabilityBridge {
+  private readonly id: string;
   private supplier?: CertificateRuntimeSupplier;
+  private sourceLease?: symbol;
+  private consumerCount = 0;
 
-  public setSource(supplier: CertificateRuntimeSupplier): void {
+  public constructor(id: string) {
+    this.id = id;
+  }
+
+  public retain(): BridgeDisposer {
+    this.consumerCount += 1;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.consumerCount = Math.max(0, this.consumerCount - 1);
+      this.deleteIfIdle();
+    };
+  }
+
+  public setSource(supplier: CertificateRuntimeSupplier): BridgeDisposer {
+    const lease = Symbol(this.id);
     this.supplier = supplier;
+    this.sourceLease = lease;
+    return () => {
+      if (this.sourceLease !== lease) {
+        return;
+      }
+      this.clearSource();
+    };
   }
 
   public clearSource(): void {
     this.supplier = undefined;
+    this.sourceLease = undefined;
+    this.deleteIfIdle();
   }
 
   public async isAvailable(): Promise<boolean> {
@@ -59,6 +90,12 @@ export class EdgeNodeCertificateCapabilityBridge {
     }
     return await runtime.renewCertificate();
   }
+
+  private deleteIfIdle(): void {
+    if (!this.supplier && this.consumerCount === 0) {
+      bridges.delete(this.id);
+    }
+  }
 }
 
 const bridges = new Map<string, EdgeNodeCertificateCapabilityBridge>();
@@ -66,10 +103,14 @@ const bridges = new Map<string, EdgeNodeCertificateCapabilityBridge>();
 export function getEdgeNodeCertificateCapabilityBridge(id: string): EdgeNodeCertificateCapabilityBridge {
   let bridge = bridges.get(id);
   if (!bridge) {
-    bridge = new EdgeNodeCertificateCapabilityBridge();
+    bridge = new EdgeNodeCertificateCapabilityBridge(id);
     bridges.set(id, bridge);
   }
   return bridge;
+}
+
+export function hasEdgeNodeCertificateCapabilityBridge(id: string): boolean {
+  return bridges.has(id);
 }
 
 export function resolveEdgeNodeCertificateCapabilityBridgeId(input: {

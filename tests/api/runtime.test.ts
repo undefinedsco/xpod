@@ -299,4 +299,48 @@ describe('startApiService background services', () => {
     expect(runExecutionBackend.close).toHaveBeenCalledTimes(1);
     expect(rdfEngine.close).toHaveBeenCalledTimes(1);
   });
+
+  it('registers the cloud primary deployment token with explicit network control scopes', async () => {
+    const apiServer = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockResolvedValue(undefined),
+    };
+    const serviceTokenRepo = {
+      registerToken: vi.fn().mockResolvedValue('service-token-id'),
+    };
+    const services: Record<string, unknown> = {
+      apiServer,
+      serviceTokenRepo,
+    };
+    const container = {
+      register: vi.fn(),
+      resolve: vi.fn((name: string, options?: { allowUnregistered?: boolean }) => {
+        if (name in services) {
+          return services[name];
+        }
+        if (options?.allowUnregistered) {
+          return undefined;
+        }
+        throw new Error(`Unexpected resolve: ${name}`);
+      }),
+    };
+    mocked.createApiContainerMock.mockReturnValue(container);
+
+    const handle = await startApiService({
+      config: {
+        ...config,
+        edition: 'cloud',
+        serviceToken: 'cloud-primary-token',
+      },
+      initializeLogger: false,
+    });
+
+    expect(serviceTokenRepo.registerToken).toHaveBeenCalledWith('cloud-primary-token', expect.objectContaining({
+      serviceType: 'cloud',
+      scopes: expect.arrayContaining(['network:read', 'network:write']),
+    }));
+
+    await handle.stop();
+    expect(apiServer.stop).toHaveBeenCalledTimes(1);
+  });
 });

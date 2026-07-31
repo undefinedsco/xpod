@@ -59,6 +59,16 @@ export interface NetworkSettingsAuthorizer {
   canWrite(auth: AuthContext): boolean | Promise<boolean>;
 }
 
+export interface NetworkSettingsIdentityAuthorizerOptions {
+  deployment: 'cloud' | 'local';
+  podLookupRepository?: {
+    findByWebId(webId: string): Promise<unknown>;
+  };
+  accountRoleRepository?: {
+    findByWebId(webId: string): Promise<{ roles?: string[] } | undefined>;
+  };
+}
+
 export interface CertificateCapability {
   tlsStatusReader?: NetworkCapabilityReader<NetworkSettingsStatus['tls']>;
   certificateRenewer?: CertificateRenewer;
@@ -144,10 +154,15 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
   }
 }
 
-export function createDeploymentNetworkSettingsAuthorizer(): NetworkSettingsAuthorizer {
+export function createDeploymentNetworkSettingsAuthorizer(
+  options?: NetworkSettingsIdentityAuthorizerOptions,
+): NetworkSettingsAuthorizer {
   return {
-    canRead: (auth) => hasDeploymentNetworkScope(auth, 'network:read') || hasDeploymentNetworkScope(auth, 'network:write'),
-    canWrite: (auth) => hasDeploymentNetworkScope(auth, 'network:write'),
+    canRead: async (auth) => hasDeploymentNetworkScope(auth, 'network:read')
+      || hasDeploymentNetworkScope(auth, 'network:write')
+      || await isDeploymentOwnerOrAdmin(auth, options),
+    canWrite: async (auth) => hasDeploymentNetworkScope(auth, 'network:write')
+      || await isDeploymentOwnerOrAdmin(auth, options),
   };
 }
 
@@ -430,9 +445,6 @@ function hasDeploymentNetworkScope(auth: AuthContext, scope: 'network:read' | 'n
   if (scopes.includes(scope)) {
     return true;
   }
-  if (auth.type === 'service' && scopes.includes('account:manage')) {
-    return true;
-  }
   return false;
 }
 
@@ -444,6 +456,25 @@ function readAuthScopes(auth: AuthContext): string[] {
     return auth.scopes ?? [];
   }
   return [];
+}
+
+async function isDeploymentOwnerOrAdmin(
+  auth: AuthContext,
+  options: NetworkSettingsIdentityAuthorizerOptions | undefined,
+): Promise<boolean> {
+  if (auth.type !== 'solid' || !options) {
+    return false;
+  }
+
+  const roleContext = await options.accountRoleRepository?.findByWebId(auth.webId);
+  if (roleContext?.roles?.includes('admin')) {
+    return true;
+  }
+
+  if (options.deployment === 'local') {
+    return Boolean(await options.podLookupRepository?.findByWebId(auth.webId));
+  }
+  return false;
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {

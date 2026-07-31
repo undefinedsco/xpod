@@ -9,18 +9,23 @@ const certificateRuntimeMock = vi.hoisted(() => ({
   })),
   renewCertificate: vi.fn(async () => undefined),
 }));
+const certificateRuntimeQueue = vi.hoisted(() => [] as Array<typeof certificateRuntimeMock>);
 
 vi.mock('../../src/edge/EdgeNodeAgent', () => ({
-  EdgeNodeAgent: vi.fn(() => ({
-    start: startMock,
-    stop: stopMock,
-    getCertificateRuntime: vi.fn(() => certificateRuntimeMock),
-  })),
+  EdgeNodeAgent: vi.fn(() => {
+    const runtime = certificateRuntimeQueue.shift() ?? certificateRuntimeMock;
+    return {
+      start: startMock,
+      stop: stopMock,
+      getCertificateRuntime: vi.fn(() => runtime),
+    };
+  }),
 }));
 
 import { EdgeNodeAgentInitializer } from '../../src/edge/EdgeNodeAgentInitializer';
 import {
   getEdgeNodeCertificateCapabilityBridge,
+  hasEdgeNodeCertificateCapabilityBridge,
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../src/edge/EdgeNodeCertificateCapabilityBridge';
 
@@ -28,6 +33,7 @@ describe('EdgeNodeAgentInitializer', () => {
   beforeEach(() => {
     startMock.mockClear();
     stopMock.mockClear();
+    certificateRuntimeQueue.length = 0;
     certificateRuntimeMock.readCertificateStatus.mockClear();
     certificateRuntimeMock.renewCertificate.mockClear();
     getEdgeNodeCertificateCapabilityBridge('node:node-1').clearSource();
@@ -92,5 +98,67 @@ describe('EdgeNodeAgentInitializer', () => {
       supported: false,
       status: 'unsupported',
     });
+  });
+
+  it('does not let an old initializer stop clear a newer source for the same bridge id', async () => {
+    const oldRuntime = {
+      readCertificateStatus: vi.fn(async () => ({ status: 'renewal_due', expiresAt: '2026-09-01T00:00:00.000Z' })),
+      renewCertificate: vi.fn(async () => undefined),
+    };
+    const newRuntime = {
+      readCertificateStatus: vi.fn(async () => ({ status: 'valid', expiresAt: '2026-12-01T00:00:00.000Z' })),
+      renewCertificate: vi.fn(async () => undefined),
+    };
+    certificateRuntimeQueue.push(oldRuntime, newRuntime);
+    const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({ nodeId: 'node-1' });
+    const oldInitializer = new EdgeNodeAgentInitializer({
+      enabled: true,
+      signalEndpoint: 'https://cluster.example/api/signal',
+      nodeId: 'node-1',
+      nodeToken: 'old-token',
+      certificateBridgeId: bridgeId,
+    });
+    const newInitializer = new EdgeNodeAgentInitializer({
+      enabled: true,
+      signalEndpoint: 'https://cluster.example/api/signal',
+      nodeId: 'node-1',
+      nodeToken: 'new-token',
+      certificateBridgeId: bridgeId,
+    });
+    const bridge = getEdgeNodeCertificateCapabilityBridge('node:node-1');
+
+    await oldInitializer.handle();
+    await newInitializer.handle();
+    await expect(bridge.readCertificateStatus()).resolves.toMatchObject({
+      status: 'valid',
+      expiresAt: '2026-12-01T00:00:00.000Z',
+    });
+
+    oldInitializer.stop();
+    await expect(bridge.readCertificateStatus()).resolves.toMatchObject({
+      status: 'valid',
+      expiresAt: '2026-12-01T00:00:00.000Z',
+    });
+
+    newInitializer.stop();
+    await expect(bridge.readCertificateStatus()).resolves.toEqual({
+      supported: false,
+      status: 'unsupported',
+    });
+  });
+
+  it('removes an idle bridge from the global map after its source and consumer leases are released', async () => {
+    const id = 'node:cleanup';
+    expect(hasEdgeNodeCertificateCapabilityBridge(id)).toBe(false);
+    const bridge = getEdgeNodeCertificateCapabilityBridge(id);
+    const releaseConsumer = bridge.retain();
+    const releaseSource = bridge.setSource(() => certificateRuntimeMock);
+
+    expect(hasEdgeNodeCertificateCapabilityBridge(id)).toBe(true);
+    releaseSource();
+    expect(hasEdgeNodeCertificateCapabilityBridge(id)).toBe(true);
+
+    releaseConsumer();
+    expect(hasEdgeNodeCertificateCapabilityBridge(id)).toBe(false);
   });
 });

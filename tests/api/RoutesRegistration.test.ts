@@ -145,7 +145,12 @@ describe('registerRoutes mode wiring', () => {
       aiConnectionInvocationKeyIssuer: {},
       providerConnectService: {},
       db: {},
-      podLookupRepo: {},
+      podLookupRepo: {
+        findByWebId: vi.fn(async () => undefined),
+      },
+      accountRoleRepo: {
+        findByWebId: vi.fn(async () => undefined),
+      },
       ddnsRepo: edition === 'cloud' ? {} : undefined,
       dnsProvider: edition === 'cloud' ? { upsertRecord: vi.fn(), deleteRecord: vi.fn() } : undefined,
       dnsCoordinator: edition === 'cloud' ? { synchronize: vi.fn() } : undefined,
@@ -191,6 +196,15 @@ describe('registerRoutes mode wiring', () => {
         serviceId: 'cloud-admin',
         scopes: [mode === 'write' ? 'network:write' : 'network:read'],
       },
+      headers: {},
+      method: 'GET',
+      url: '/api/network/settings/status',
+    };
+  }
+
+  function solidRequest(webId: string): any {
+    return {
+      auth: { type: 'solid', webId },
       headers: {},
       method: 'GET',
       url: '/api/network/settings/status',
@@ -363,6 +377,87 @@ describe('registerRoutes mode wiring', () => {
       },
     });
     expect(res.body).not.toContain('deployment');
+  });
+
+  it('allows the local Solid owner from Pod ownership data and rejects non-owners', async () => {
+    const ownerWebId = 'https://id.example/alice/profile/card#me';
+    const podLookupRepo = {
+      findByWebId: vi.fn(async (webId: string) => webId === ownerWebId
+        ? {
+            podId: 'pod-alice',
+            accountId: 'account-alice',
+            baseUrl: 'https://local.example/alice/',
+            webId,
+          }
+        : undefined),
+    };
+    registerRoutes(createContainer('local', {
+      config: {
+        publicUrl: 'https://local-public.example/',
+      },
+      services: { podLookupRepo },
+    }));
+
+    const ownerRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](solidRequest(ownerWebId), ownerRes, {});
+    expect(ownerRes.statusCode).toBe(200);
+    expect(JSON.parse(ownerRes.body)).toMatchObject({ endpoint: 'https://local-public.example/' });
+    expect(podLookupRepo.findByWebId).toHaveBeenCalledWith(ownerWebId);
+
+    const nonOwnerRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](solidRequest('https://id.example/bob/profile/card#me'), nonOwnerRes, {});
+    expect(nonOwnerRes.statusCode).toBe(403);
+  });
+
+  it('allows cloud Solid admins from account role data and rejects ordinary cloud users', async () => {
+    const adminWebId = 'https://id.example/admin/profile/card#me';
+    const accountRoleRepo = {
+      findByWebId: vi.fn(async (webId: string) => webId === adminWebId
+        ? { accountId: 'account-admin', webId, roles: ['admin'] }
+        : { accountId: 'account-user', webId, roles: [] }),
+    };
+    registerRoutes(createContainer('cloud', {
+      config: {
+        publicUrl: 'https://cloud.example/',
+      },
+      services: { accountRoleRepo },
+    }));
+
+    const adminRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](solidRequest(adminWebId), adminRes, {});
+    expect(adminRes.statusCode).toBe(200);
+    expect(accountRoleRepo.findByWebId).toHaveBeenCalledWith(adminWebId);
+
+    const userRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](solidRequest('https://id.example/user/profile/card#me'), userRes, {});
+    expect(userRes.statusCode).toBe(403);
+  });
+
+  it('rejects account manage service tokens without explicit network scopes', async () => {
+    registerRoutes(createContainer('cloud', {
+      config: {
+        publicUrl: 'https://cloud.example/',
+      },
+    }));
+    const auth = {
+      auth: {
+        type: 'service',
+        serviceType: 'business',
+        serviceId: 'business-default',
+        scopes: ['account:manage'],
+      },
+      headers: {},
+      method: 'GET',
+      url: '/api/network/settings/status',
+    };
+
+    const statusRes = jsonResponse();
+    await routes['GET /api/network/settings/status'](auth, statusRes, {});
+    expect(statusRes.statusCode).toBe(403);
+
+    const renewRes = jsonResponse();
+    await routes['POST /api/network/settings/certificate/renew'](auth, renewRes, {});
+    expect(renewRes.statusCode).toBe(403);
   });
 
   it('wires a cloud certificate runtime surface into Network settings TLS status and renewal', async () => {

@@ -55,6 +55,8 @@ suite('Cloud PG quota regression', () => {
     expect(scopes).toContain('quota:write');
     expect(scopes).toContain('usage:read');
     expect(scopes).toContain('account:manage');
+    expect(scopes).not.toContain('network:read');
+    expect(scopes).not.toContain('network:write');
   });
 
   it('accepts business token for cloud quota write and persists the quota', async () => {
