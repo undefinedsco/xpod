@@ -114,4 +114,66 @@ describe('ClusterCertificateManager', () => {
     manager.stop();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
+
+  it('reports unavailable before a cluster domain is assigned and rejects manual renewal', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cluster-cert-unavailable-'));
+    const manager = new ClusterCertificateManager({
+      signalEndpoint: 'https://cluster.example/api/signal',
+      nodeId: 'node-1',
+      nodeToken: 'secret',
+      certificateKeyPath: path.join(tmpDir, 'tls.key'),
+      certificatePath: path.join(tmpDir, 'tls.crt'),
+      renewBeforeDays: 10,
+    });
+
+    expect(manager.isAvailable()).toBe(false);
+    await expect(manager.renewCertificate()).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'certificate_renewal_unavailable',
+    });
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects concurrent manual renewals with a typed conflict', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cluster-cert-conflict-'));
+    let releaseFetch!: () => void;
+    const fetchMock = vi.fn(async () => {
+      await new Promise<void>((resolve) => { releaseFetch = resolve; });
+      return new Response(JSON.stringify({
+        status: 'issued',
+        certificate: {
+          pem: SAMPLE_CERT,
+          fullChain: SAMPLE_CERT,
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          domains: [ 'node-1.cluster.example' ],
+        },
+      }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    global.fetch = fetchMock;
+
+    const manager = new ClusterCertificateManager({
+      signalEndpoint: 'https://cluster.example/api/signal',
+      nodeId: 'node-1',
+      nodeToken: 'secret',
+      certificateKeyPath: path.join(tmpDir, 'tls.key'),
+      certificatePath: path.join(tmpDir, 'tls.crt'),
+      renewBeforeDays: 10,
+    });
+    manager.handleHeartbeatMetadata({ subdomain: 'node-1.cluster.example' });
+    expect(manager.isAvailable()).toBe(true);
+
+    const first = manager.renewCertificate();
+    await vi.waitUntil(() => fetchMock.mock.calls.length === 1);
+    await expect(manager.renewCertificate()).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'certificate_renewal_conflict',
+    });
+    releaseFetch();
+    await first;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
 });

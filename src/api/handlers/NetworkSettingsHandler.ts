@@ -2,6 +2,7 @@ import type { ServerResponse } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
+import type { AuthContext } from '../auth/AuthContext';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 
 export interface NetworkSettingsStatus {
@@ -45,8 +46,17 @@ export interface NetworkCapabilityReader<T extends CapabilityStatus = Capability
 }
 
 export interface CertificateRenewer {
-  renew(): Promise<void>;
+  renew(): Promise<CertificateRenewalResult | void>;
   isAvailable?(): boolean | Promise<boolean>;
+}
+
+export interface CertificateRenewalResult {
+  status: 'renewed' | 'unchanged';
+}
+
+export interface NetworkSettingsAuthorizer {
+  canRead(auth: AuthContext): boolean | Promise<boolean>;
+  canWrite(auth: AuthContext): boolean | Promise<boolean>;
 }
 
 export interface CertificateCapability {
@@ -70,15 +80,16 @@ export interface NetworkSettingsHandlerOptions {
   tunnelStatusReader?: NetworkCapabilityReader;
   certificateRenewer?: CertificateRenewer;
   diagnostics?: NetworkDiagnosticCheck[];
+  authorizer?: NetworkSettingsAuthorizer;
   logger?: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>;
 }
 
 export function registerNetworkSettingsRoutes(server: ApiServer, options: NetworkSettingsHandlerOptions): void {
   const logger = options.logger ?? getLoggerFor('NetworkSettingsHandler');
+  const authorizer = options.authorizer ?? createDeploymentNetworkSettingsAuthorizer();
 
   server.get('/api/network/settings/status', async (request, response) => {
-    if (!isSolidRequest(request)) {
-      sendJson(response, 401, { error: 'Authentication required' });
+    if (!await requireNetworkPermission(request, response, authorizer, 'read')) {
       return;
     }
 
@@ -91,8 +102,7 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
   });
 
   server.post('/api/network/settings/diagnose', async (request, response) => {
-    if (!isSolidRequest(request)) {
-      sendJson(response, 401, { error: 'Authentication required' });
+    if (!await requireNetworkPermission(request, response, authorizer, 'read')) {
       return;
     }
 
@@ -108,20 +118,37 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
 
   if (options.certificateRenewer) {
     server.post('/api/network/settings/certificate/renew', async (request, response) => {
-      if (!isSolidRequest(request)) {
-        sendJson(response, 401, { error: 'Authentication required' });
+      if (!await requireNetworkPermission(request, response, authorizer, 'write')) {
         return;
       }
 
       try {
-        await options.certificateRenewer!.renew();
-        sendJson(response, 200, { success: true });
+        if (!await isCertificateRenewalAvailable(options.certificateRenewer, logger)) {
+          sendJson(response, 503, {
+            error: 'Certificate renewal is unavailable',
+            code: 'certificate_renewal_unavailable',
+          });
+          return;
+        }
+        const result = await options.certificateRenewer!.renew();
+        sendJson(response, 200, { success: true, status: result?.status ?? 'renewed' });
       } catch (error) {
         logger.warn(`Failed to renew network certificate: ${redactSecretText(error)}`);
-        sendJson(response, 500, { error: 'Failed to renew network certificate' });
+        const renewalError = normalizeRenewalError(error);
+        sendJson(response, renewalError.statusCode, {
+          error: renewalError.message,
+          code: renewalError.code,
+        });
       }
     });
   }
+}
+
+export function createDeploymentNetworkSettingsAuthorizer(): NetworkSettingsAuthorizer {
+  return {
+    canRead: (auth) => hasDeploymentNetworkScope(auth, 'network:read') || hasDeploymentNetworkScope(auth, 'network:write'),
+    canWrite: (auth) => hasDeploymentNetworkScope(auth, 'network:write'),
+  };
 }
 
 export function createAddressReaders(input: {
@@ -378,8 +405,45 @@ function capabilityToDiagnostic(capability: CapabilityStatus): Omit<NetworkDiagn
   return { status: 'warning', detail: capability.status };
 }
 
-function isSolidRequest(request: AuthenticatedRequest): boolean {
-  return request.auth?.type === 'solid';
+async function requireNetworkPermission(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+  authorizer: NetworkSettingsAuthorizer,
+  mode: 'read' | 'write',
+): Promise<boolean> {
+  if (!request.auth) {
+    sendJson(response, 401, { error: 'Authentication required' });
+    return false;
+  }
+  const allowed = mode === 'read'
+    ? await authorizer.canRead(request.auth)
+    : await authorizer.canWrite(request.auth);
+  if (!allowed) {
+    sendJson(response, 403, { error: `Missing required permission: network:${mode}` });
+    return false;
+  }
+  return true;
+}
+
+function hasDeploymentNetworkScope(auth: AuthContext, scope: 'network:read' | 'network:write'): boolean {
+  const scopes = readAuthScopes(auth);
+  if (scopes.includes(scope)) {
+    return true;
+  }
+  if (auth.type === 'service' && scopes.includes('account:manage')) {
+    return true;
+  }
+  return false;
+}
+
+function readAuthScopes(auth: AuthContext): string[] {
+  if (auth.type === 'service') {
+    return auth.scopes;
+  }
+  if (auth.type === 'solid' && auth.viaGatewayApiKey === true) {
+    return auth.scopes ?? [];
+  }
+  return [];
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
@@ -497,11 +561,32 @@ function createCertificateRenewer(candidate: unknown): CertificateRenewer | unde
   }
   return {
     renew: async () => {
-      await (candidate as Record<string, () => unknown>)[renewMethod]();
+      return await (candidate as Record<string, () => unknown>)[renewMethod]() as CertificateRenewalResult | void;
     },
     ...(hasFunction(candidate, 'isAvailable') ? {
       isAvailable: async () => Boolean(await (candidate as Record<string, () => unknown>).isAvailable()),
     } : {}),
+  };
+}
+
+function normalizeRenewalError(error: unknown): { statusCode: number; code: string; message: string } {
+  if (error && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    const statusCode = typeof record.statusCode === 'number' ? record.statusCode : undefined;
+    const code = typeof record.code === 'string' ? record.code : undefined;
+    const message = error instanceof Error ? error.message : undefined;
+    if (statusCode && code) {
+      return {
+        statusCode,
+        code,
+        message: message ?? 'Certificate renewal failed',
+      };
+    }
+  }
+  return {
+    statusCode: 500,
+    code: 'certificate_renewal_failed',
+    message: 'Failed to renew network certificate',
   };
 }
 
@@ -552,6 +637,7 @@ export function redactSecretText(value: unknown): string {
     /\b(?:bearer|dpop)\s+[A-Za-z0-9._~+/=-]{8,}/iu,
     /\b(?:cookie|set-cookie)\s*[:=]\s*[^,\n]+/iu,
     /\b(?:token|secret|password|passwd|api[_-]?key|authorization|credential|clientSecret|client_secret)\s*[=:]\s*[^,\s;]+/iu,
+    /(?:[?#&]|\b)(?:access_token|refresh_token|id_token|token_type)\s*=\s*[^&#\s;,]+/iu,
     /[?&]code=[^&#\s]+/iu,
     /\b(?:oauth|oidc|auth(?:orization)?|callback)\b[^,\n]*\bcode\s*[=:]\s*[^,\s;&]+/iu,
     /\bcode\s*[=:]\s*[^,\s;&]+[^,\n]*\b(?:oauth|oidc|auth(?:orization)?|callback)\b/iu,
@@ -561,6 +647,8 @@ export function redactSecretText(value: unknown): string {
     /\b(?:postgres|postgresql|mysql|redis|mongodb|sqlite):\/\/[^,\s]+/iu,
     /\bfile:\/\/\/[^\s,;]+/iu,
     /(?:^|\s)\/(?:Users|home|var|tmp|private|etc)\/[^\s,;]+/iu,
+    /\b[A-Za-z]:[\\/][^\s,;]+/u,
+    /\\\\[^\\\s,;]+\\[^\\\s,;]+\\[^\s,;]+/u,
   ].some((pattern) => pattern.test(raw));
   return containsSensitiveValue ? '[redacted]' : raw;
 }

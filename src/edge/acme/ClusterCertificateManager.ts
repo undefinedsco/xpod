@@ -29,6 +29,10 @@ export interface RuntimeCertificateStatus {
   updatedAt?: string;
 }
 
+export interface RuntimeCertificateRenewalResult {
+  status: 'renewed';
+}
+
 interface CertificateResponse {
   status: string;
   certificate: {
@@ -116,13 +120,24 @@ export class ClusterCertificateManager {
     };
   }
 
-  public async renewCertificate(): Promise<void> {
+  public isAvailable(): boolean {
+    return Boolean(this.assignedDomain);
+  }
+
+  public async renewCertificate(): Promise<RuntimeCertificateRenewalResult> {
     if (this.issuing) {
-      return;
+      throw createCertificateRenewalError(
+        409,
+        'certificate_renewal_conflict',
+        'Certificate renewal is already running',
+      );
     }
     if (!this.assignedDomain) {
-      await this.ensureCertificate();
-      return;
+      throw createCertificateRenewalError(
+        503,
+        'certificate_renewal_unavailable',
+        'Certificate renewal is unavailable before the cluster assigns a domain',
+      );
     }
     this.issuing = true;
     try {
@@ -131,6 +146,7 @@ export class ClusterCertificateManager {
       if (this.onCertificateInstalled) {
         await this.onCertificateInstalled();
       }
+      return { status: 'renewed' };
     } finally {
       this.issuing = false;
     }
@@ -269,4 +285,11 @@ export class ClusterCertificateManager {
     }
     await fs.mkdir(target, { recursive: true });
   }
+}
+
+function createCertificateRenewalError(statusCode: number, code: string, message: string): Error & {
+  statusCode: number;
+  code: string;
+} {
+  return Object.assign(new Error(message), { statusCode, code });
 }

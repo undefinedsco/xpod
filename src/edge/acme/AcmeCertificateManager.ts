@@ -93,6 +93,10 @@ export interface RuntimeCertificateStatus {
   domains?: string[];
 }
 
+export interface RuntimeCertificateRenewalResult {
+  status: 'renewed';
+}
+
 const DEFAULT_DIRECTORY_URL = acme.directory.letsencrypt.production;
 const DEFAULT_FALLBACK_URLS = [
   acme.directory.letsencrypt.staging, // Staging as fallback for testing
@@ -112,6 +116,7 @@ export class AcmeCertificateManager {
   private readonly fullChainPath?: string;
   private readonly renewBeforeDays: number;
   private readonly propagationDelayMs: number;
+  private issuing = false;
 
   public constructor(options: AcmeCertificateManagerOptions) {
     // 确定 DNS 验证处理器
@@ -145,12 +150,16 @@ export class AcmeCertificateManager {
   }
 
   public async ensureCertificate(): Promise<boolean> {
+    if (!this.isAvailable()) {
+      this.logger.debug('ACME 证书运行时未配置有效域名，跳过申请。');
+      return false;
+    }
     const status = await this.readCertificateStatus();
     if (status.status === 'valid') {
       this.logger.debug('现有证书仍在有效期内，跳过 ACME 申请。');
       return false;
     }
-    await this.issueCertificate();
+    await this.issueCertificateWithLock();
     return true;
   }
 
@@ -176,8 +185,24 @@ export class AcmeCertificateManager {
     }
   }
 
-  public async renewCertificate(): Promise<void> {
-    await this.issueCertificate();
+  public isAvailable(): boolean {
+    return this.domains.some((domain) => domain.trim().length > 0)
+      && this.email.trim().length > 0
+      && this.accountKeyPath.trim().length > 0
+      && this.certificateKeyPath.trim().length > 0
+      && this.certificatePath.trim().length > 0;
+  }
+
+  public async renewCertificate(): Promise<RuntimeCertificateRenewalResult> {
+    if (!this.isAvailable()) {
+      throw createCertificateRenewalError(
+        503,
+        'certificate_renewal_unavailable',
+        'Certificate renewal is unavailable before ACME domains are configured',
+      );
+    }
+    await this.issueCertificateWithLock();
+    return { status: 'renewed' };
   }
 
   private extractDomainsFromCertificate(cert: X509Certificate): string[] {
@@ -199,6 +224,22 @@ export class AcmeCertificateManager {
       }
     }
     return Array.from(result);
+  }
+
+  private async issueCertificateWithLock(): Promise<void> {
+    if (this.issuing) {
+      throw createCertificateRenewalError(
+        409,
+        'certificate_renewal_conflict',
+        'Certificate renewal is already running',
+      );
+    }
+    this.issuing = true;
+    try {
+      await this.issueCertificate();
+    } finally {
+      this.issuing = false;
+    }
   }
 
   private async issueCertificate(): Promise<void> {
@@ -325,4 +366,11 @@ export class AcmeCertificateManager {
   private isConflictError(error: unknown): boolean {
     return Boolean(error && typeof error === 'object' && 'status' in error && (error as any).status === 409);
   }
+}
+
+function createCertificateRenewalError(statusCode: number, code: string, message: string): Error & {
+  statusCode: number;
+  code: string;
+} {
+  return Object.assign(new Error(message), { statusCode, code });
 }

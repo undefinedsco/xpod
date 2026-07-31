@@ -20,7 +20,8 @@ export default function NetworkPage() {
   const [diagnosing, setDiagnosing] = useState(false);
   const [renewing, setRenewing] = useState(false);
   const requestIdRef = useRef(0);
-  const actionIdRef = useRef(0);
+  const diagnoseActionIdRef = useRef(0);
+  const renewActionIdRef = useRef(0);
   const activeIdentityKeyRef = useRef<string | undefined>(undefined);
   const mountedRef = useRef(true);
 
@@ -32,7 +33,8 @@ export default function NetworkPage() {
     return () => {
       mountedRef.current = false;
       requestIdRef.current += 1;
-      actionIdRef.current += 1;
+      diagnoseActionIdRef.current += 1;
+      renewActionIdRef.current += 1;
     };
   }, []);
 
@@ -42,9 +44,15 @@ export default function NetworkPage() {
     && activeIdentityKeyRef.current === requestIdentityKey
   ), []);
 
-  const isCurrentAction = useCallback((actionId: number, requestIdentityKey: string) => (
+  const isCurrentDiagnoseAction = useCallback((actionId: number, requestIdentityKey: string) => (
     mountedRef.current
-    && actionIdRef.current === actionId
+    && diagnoseActionIdRef.current === actionId
+    && activeIdentityKeyRef.current === requestIdentityKey
+  ), []);
+
+  const isCurrentRenewAction = useCallback((actionId: number, requestIdentityKey: string) => (
+    mountedRef.current
+    && renewActionIdRef.current === actionId
     && activeIdentityKeyRef.current === requestIdentityKey
   ), []);
 
@@ -81,7 +89,8 @@ export default function NetworkPage() {
   useEffect(() => {
     activeIdentityKeyRef.current = identityKey;
     requestIdRef.current += 1;
-    actionIdRef.current += 1;
+    diagnoseActionIdRef.current += 1;
+    renewActionIdRef.current += 1;
     setStatus(undefined);
     setDiagnostics([]);
     setError(undefined);
@@ -99,8 +108,8 @@ export default function NetworkPage() {
     if (!podUrl || !requestIdentityKey) {
       return;
     }
-    const actionId = actionIdRef.current + 1;
-    actionIdRef.current = actionId;
+    const actionId = diagnoseActionIdRef.current + 1;
+    diagnoseActionIdRef.current = actionId;
     setDiagnosing(true);
     setError(undefined);
     try {
@@ -108,19 +117,19 @@ export default function NetworkPage() {
         podUrl,
         authenticatedFetch: runtime.fetch,
       });
-      if (isCurrentAction(actionId, requestIdentityKey)) {
+      if (isCurrentDiagnoseAction(actionId, requestIdentityKey)) {
         setDiagnostics(result.checks);
       }
     } catch {
-      if (isCurrentAction(actionId, requestIdentityKey)) {
+      if (isCurrentDiagnoseAction(actionId, requestIdentityKey)) {
         setError('Network diagnostics failed. Please try again.');
       }
     } finally {
-      if (isCurrentAction(actionId, requestIdentityKey)) {
+      if (isCurrentDiagnoseAction(actionId, requestIdentityKey)) {
         setDiagnosing(false);
       }
     }
-  }, [identityKey, isCurrentAction, runtime.fetch, runtime.podUrl]);
+  }, [identityKey, isCurrentDiagnoseAction, runtime.fetch, runtime.podUrl]);
 
   const renewCertificate = useCallback(async () => {
     const podUrl = runtime.podUrl;
@@ -128,8 +137,8 @@ export default function NetworkPage() {
     if (!podUrl || !requestIdentityKey) {
       return;
     }
-    const actionId = actionIdRef.current + 1;
-    actionIdRef.current = actionId;
+    const actionId = renewActionIdRef.current + 1;
+    renewActionIdRef.current = actionId;
     setRenewing(true);
     setError(undefined);
     try {
@@ -137,19 +146,19 @@ export default function NetworkPage() {
         podUrl,
         authenticatedFetch: runtime.fetch,
       });
-      if (isCurrentAction(actionId, requestIdentityKey)) {
+      if (isCurrentRenewAction(actionId, requestIdentityKey)) {
         await loadStatus();
       }
     } catch {
-      if (isCurrentAction(actionId, requestIdentityKey)) {
+      if (isCurrentRenewAction(actionId, requestIdentityKey)) {
         setError('Certificate renewal failed. Please try again.');
       }
     } finally {
-      if (isCurrentAction(actionId, requestIdentityKey)) {
+      if (isCurrentRenewAction(actionId, requestIdentityKey)) {
         setRenewing(false);
       }
     }
-  }, [identityKey, isCurrentAction, loadStatus, runtime.fetch, runtime.podUrl]);
+  }, [identityKey, isCurrentRenewAction, loadStatus, runtime.fetch, runtime.podUrl]);
 
   const sections = useMemo(() => [
     { key: 'local', title: 'Local', values: status?.addresses.local ?? [] },

@@ -183,9 +183,14 @@ describe('registerRoutes mode wiring', () => {
     };
   }
 
-  function authedRequest(): any {
+  function authedRequest(mode: 'read' | 'write' = 'read'): any {
     return {
-      auth: { type: 'solid', webId: 'https://pod.example/alice#me' },
+      auth: {
+        type: 'service',
+        serviceType: 'cloud',
+        serviceId: 'cloud-admin',
+        scopes: [mode === 'write' ? 'network:write' : 'network:read'],
+      },
       headers: {},
       method: 'GET',
       url: '/api/network/settings/status',
@@ -383,7 +388,7 @@ describe('registerRoutes mode wiring', () => {
     });
 
     const renewRes = jsonResponse();
-    await routes['POST /api/network/settings/certificate/renew'](authedRequest(), renewRes, {});
+    await routes['POST /api/network/settings/certificate/renew'](authedRequest('write'), renewRes, {});
     expect(renewRes.statusCode).toBe(200);
     expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
   });
@@ -407,7 +412,7 @@ describe('registerRoutes mode wiring', () => {
         certificatePath: certPath,
         renewBeforeDays: 10,
       });
-      const renewSpy = vi.spyOn(acmeCertificateManager, 'renewCertificate').mockResolvedValue(undefined);
+      const renewSpy = vi.spyOn(acmeCertificateManager, 'renewCertificate').mockResolvedValue({ status: 'renewed' });
       bridge.setSource(() => acmeCertificateManager);
       registerRoutes(createContainer('local', {
         config: {
@@ -424,7 +429,7 @@ describe('registerRoutes mode wiring', () => {
       });
 
       const renewRes = jsonResponse();
-      await routes['POST /api/network/settings/certificate/renew'](authedRequest(), renewRes, {});
+      await routes['POST /api/network/settings/certificate/renew'](authedRequest('write'), renewRes, {});
       expect(renewRes.statusCode).toBe(200);
       expect(renewSpy).toHaveBeenCalledTimes(1);
     } finally {

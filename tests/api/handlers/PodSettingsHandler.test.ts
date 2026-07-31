@@ -70,10 +70,10 @@ describe('PodSettingsHandler', () => {
     };
     const aiReader = {
       read: vi.fn(async () => ({
-        status: 'available',
+        status: 'available' as const,
         configuredProviders: 1,
         lastSyncAt: '2026-07-31T00:00:00.000Z',
-        source: 'drizzle-solid',
+        source: 'drizzle-solid' as const,
       })),
     };
 
@@ -130,7 +130,7 @@ describe('PodSettingsHandler', () => {
         getPodUsage: vi.fn(async () => undefined),
       },
       aiConnectionStatusReader: {
-        read: vi.fn(async () => ({ status: 'unsupported', reason: 'not_configured' })),
+        read: vi.fn(async () => ({ status: 'unsupported' as const, reason: 'not_configured' })),
       },
     });
     const res = response();
@@ -146,10 +146,10 @@ describe('PodSettingsHandler', () => {
     const { server, routes } = createServer();
     const aiReader = {
       read: vi.fn(async () => ({
-        status: 'available',
+        status: 'available' as const,
         configuredProviders: 0,
         containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
-        source: 'drizzle-solid',
+        source: 'drizzle-solid' as const,
       })),
     };
     registerPodSettingsRoutes(server, {

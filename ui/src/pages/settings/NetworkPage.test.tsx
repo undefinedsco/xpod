@@ -179,6 +179,58 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
+  test('keeps diagnose and renew actions independent when their requests overlap', async () => {
+    const diagnoseResponse = deferredResponse({
+      checks: [
+        { id: 'dns', label: 'DNS', status: 'ok', detail: 'synced' },
+      ],
+    });
+    let statusCalls = 0;
+    const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/network/settings/diagnose')) {
+        expect(init?.method).toBe('POST');
+        return diagnoseResponse.promise;
+      }
+      if (String(input).endsWith('/api/network/settings/certificate/renew')) {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({ success: true, status: 'renewed' }), { headers: { 'content-type': 'application/json' } });
+      }
+      statusCalls += 1;
+      return new Response(JSON.stringify(createStatus({
+        endpoint: statusCalls === 1 ? 'https://before.example/' : 'https://after.example/',
+        actions: { diagnose: true, renewCertificate: true },
+      })), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
+
+    const diagnoseButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Diagnose')) as HTMLButtonElement | undefined;
+    const renewButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Renew certificate')) as HTMLButtonElement | undefined;
+    if (!diagnoseButton || !renewButton) throw new Error('missing network actions');
+
+    await act(async () => {
+      diagnoseButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(diagnoseButton.disabled).toBe(true);
+
+    await act(async () => {
+      renewButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(renewButton.disabled).toBe(false);
+
+    await act(async () => {
+      diagnoseResponse.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    expect(container.textContent).toContain('https://after.example/');
+    expect(container.textContent).toContain('synced');
+    expect(diagnoseButton.disabled).toBe(false);
+    expect(renewButton.disabled).toBe(false);
+    await unmount(root);
+  });
+
   test('ignores stale status responses after identity changes and StrictMode remounts', async () => {
     installDom();
     const container = document.getElementById('root');

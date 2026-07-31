@@ -1,6 +1,7 @@
 export interface EdgeNodeCertificateRuntime {
   readCertificateStatus(): Promise<unknown>;
-  renewCertificate(): Promise<void>;
+  renewCertificate(): Promise<unknown>;
+  isAvailable?(): boolean | Promise<boolean>;
 }
 
 export interface EdgeNodeCertificateBridgeStatus {
@@ -22,8 +23,15 @@ export class EdgeNodeCertificateCapabilityBridge {
     this.supplier = undefined;
   }
 
-  public isAvailable(): boolean {
-    return Boolean(this.supplier?.());
+  public async isAvailable(): Promise<boolean> {
+    const runtime = this.supplier?.();
+    if (!runtime) {
+      return false;
+    }
+    if (typeof runtime.isAvailable === 'function') {
+      return Boolean(await runtime.isAvailable());
+    }
+    return true;
   }
 
   public async readCertificateStatus(): Promise<EdgeNodeCertificateBridgeStatus | unknown> {
@@ -41,12 +49,15 @@ export class EdgeNodeCertificateCapabilityBridge {
     };
   }
 
-  public async renewCertificate(): Promise<void> {
+  public async renewCertificate(): Promise<unknown> {
     const runtime = this.supplier?.();
     if (!runtime) {
-      throw new Error('Certificate runtime is not available.');
+      throw Object.assign(new Error('Certificate runtime is not available.'), {
+        statusCode: 503,
+        code: 'certificate_renewal_unavailable',
+      });
     }
-    await runtime.renewCertificate();
+    return await runtime.renewCertificate();
   }
 }
 

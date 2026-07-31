@@ -11,13 +11,23 @@ import {
   registerNetworkSettingsRoutes,
 } from '../../../src/api/handlers/NetworkSettingsHandler';
 
-function createServer(): { server: ApiServer; routes: Record<string, Function> } {
-  const routes: Record<string, Function> = {};
+interface TestResponse {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: string;
+  setHeader(name: string, value: string): void;
+  end(payload?: string): void;
+}
+
+type RouteHandler = (request: AuthenticatedRequest, response: TestResponse, params?: unknown) => Promise<void> | void;
+
+function createServer(): { server: ApiServer; routes: Record<string, RouteHandler> } {
+  const routes: Record<string, RouteHandler> = {};
   return {
     routes,
     server: {
-      get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
-      post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+      get: vi.fn((path: string, handler: RouteHandler) => { routes[`GET ${path}`] = handler; }),
+      post: vi.fn((path: string, handler: RouteHandler) => { routes[`POST ${path}`] = handler; }),
     } as unknown as ApiServer,
   };
 }
@@ -32,10 +42,19 @@ function request(auth: AuthenticatedRequest['auth']): AuthenticatedRequest {
   return req;
 }
 
-function response(): any {
+function deploymentReadAuth(): AuthenticatedRequest['auth'] {
+  return { type: 'service', serviceType: 'local', serviceId: 'local-owner', scopes: ['network:read'] };
+}
+
+function deploymentWriteAuth(): AuthenticatedRequest['auth'] {
+  return { type: 'service', serviceType: 'cloud', serviceId: 'cloud-admin', scopes: ['network:write'] };
+}
+
+function response(): TestResponse {
   return {
     statusCode: 0,
     headers: {} as Record<string, string>,
+    body: '',
     setHeader(name: string, value: string) {
       this.headers[name.toLowerCase()] = value;
     },
@@ -46,7 +65,7 @@ function response(): any {
 }
 
 describe('NetworkSettingsHandler', () => {
-  it('requires Solid authentication and returns capability-shaped status without deployment', async () => {
+  it('requires deployment authentication and returns capability-shaped status without deployment', async () => {
     const { server, routes } = createServer();
     registerNetworkSettingsRoutes(server, {
       endpoint: 'https://xpod.example/',
@@ -64,7 +83,7 @@ describe('NetworkSettingsHandler', () => {
     expect(unauthenticated.statusCode).toBe(401);
 
     const res = response();
-    await routes['GET /api/network/settings/status'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), res, {});
+    await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), res, {});
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({
@@ -89,7 +108,7 @@ describe('NetworkSettingsHandler', () => {
     });
     const res = response();
 
-    await routes['GET /api/network/settings/status'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), res, {});
+    await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), res, {});
 
     expect(JSON.parse(res.body)).toEqual({
       endpoint: 'http://127.0.0.1:3000/',
@@ -116,13 +135,13 @@ describe('NetworkSettingsHandler', () => {
         {
           id: 'endpoint',
           label: 'Endpoint',
-          run: vi.fn(async () => ({ status: 'ok', detail: 'https://xpod.example/ responded' })),
+          run: vi.fn(async () => ({ status: 'ok' as const, detail: 'https://xpod.example/ responded' })),
         },
       ],
     });
     const res = response();
 
-    await routes['POST /api/network/settings/diagnose'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), res, {});
+    await routes['POST /api/network/settings/diagnose'](request(deploymentReadAuth()), res, {});
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -146,12 +165,19 @@ describe('NetworkSettingsHandler', () => {
       'https://pod.example/callback?code=oauth-code-secret&state=abc',
       'oauth callback failed with code=oauth-code-secret',
       'clientSecret=solid-client-secret',
+      'https://pod.example/callback#access_token=oauth-access-token&token_type=Bearer',
+      'refresh_token=oauth-refresh-token',
+      'id_token=header.payload.signature',
+      'token_type=Bearer',
       'gateway key xpod_gw_v1_cloud.secret.payload',
       'invocation key xpod_inv_v1.kid.secret',
       '-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----',
       '{"kty":"EC","d":"private-jwk-secret","x":"public"}',
       'file:///Users/alice/.xpod/key.pem',
       '/Users/alice/.xpod/key.pem',
+      'C:\\Users\\alice\\.xpod\\key.pem',
+      'D:/xpod/secrets/tls.key',
+      '\\\\server\\share\\xpod\\tls.key',
       'postgres://user:pass@localhost/xpod',
       'redis://:secret@127.0.0.1:6379/0',
       'mongodb://user:pass@localhost/xpod',
@@ -164,6 +190,8 @@ describe('NetworkSettingsHandler', () => {
     expect(redactSecretText('DNS synced for local-managed-node.undefineds.site')).toBe('DNS synced for local-managed-node.undefineds.site');
     expect(redactSecretText('HTTP status code=200')).toBe('HTTP status code=200');
     expect(redactSecretText('diagnostic code=ENOTFOUND')).toBe('diagnostic code=ENOTFOUND');
+    expect(redactSecretText('content_type=text/turtle')).toBe('content_type=text/turtle');
+    expect(redactSecretText('status_token_type_count=1')).toBe('status_token_type_count=1');
   });
 
   it('reflects DNS/tunnel provider capability and public endpoints through narrow adapters', async () => {
@@ -194,7 +222,7 @@ describe('NetworkSettingsHandler', () => {
     });
     const res = response();
 
-    await routes['GET /api/network/settings/status'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), res, {});
+    await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), res, {});
 
     expect(JSON.parse(res.body)).toMatchObject({
       dns: { supported: true, status: 'configured' },
@@ -228,15 +256,101 @@ describe('NetworkSettingsHandler', () => {
     });
 
     const statusRes = response();
-    await routes['GET /api/network/settings/status'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), statusRes, {});
+    await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), statusRes, {});
     expect(JSON.parse(statusRes.body)).toMatchObject({
       tls: { supported: true, status: 'valid', expiresAt: '2026-10-31T00:00:00.000Z' },
       actions: { renewCertificate: true },
     });
 
     const renewRes = response();
-    await routes['POST /api/network/settings/certificate/renew'](request({ type: 'solid', webId: 'https://pod.example/alice#me' }), renewRes, {});
+    await routes['POST /api/network/settings/certificate/renew'](request(deploymentWriteAuth()), renewRes, {});
     expect(renewRes.statusCode).toBe(200);
     expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires explicit deployment read/write authorization for network settings actions', async () => {
+    const { server, routes } = createServer();
+    const renew = vi.fn(async () => undefined);
+    registerNetworkSettingsRoutes(server, {
+      endpoint: 'https://xpod.example/',
+      certificateRenewer: { renew },
+    });
+
+    const solidRes = response();
+    await routes['GET /api/network/settings/status'](request({ type: 'solid', webId: 'https://pod.example/eve#me' }), solidRes);
+    expect(solidRes.statusCode).toBe(403);
+
+    const readOnlyAuth = { type: 'service' as const, serviceType: 'local' as const, serviceId: 'local-owner', scopes: ['network:read'] };
+    const readRes = response();
+    await routes['POST /api/network/settings/diagnose'](request(readOnlyAuth), readRes);
+    expect(readRes.statusCode).toBe(200);
+
+    const readOnlyRenewRes = response();
+    await routes['POST /api/network/settings/certificate/renew'](request(readOnlyAuth), readOnlyRenewRes);
+    expect(readOnlyRenewRes.statusCode).toBe(403);
+    expect(renew).not.toHaveBeenCalled();
+
+    const ownerRes = response();
+    await routes['GET /api/network/settings/status'](request({
+      type: 'service',
+      serviceType: 'local',
+      serviceId: 'local-owner',
+      scopes: ['account:manage'],
+    }), ownerRes);
+    expect(ownerRes.statusCode).toBe(200);
+
+    const adminRenewRes = response();
+    await routes['POST /api/network/settings/certificate/renew'](request({
+      type: 'service',
+      serviceType: 'cloud',
+      serviceId: 'cloud-admin',
+      scopes: ['account:manage'],
+    }), adminRenewRes);
+    expect(adminRenewRes.statusCode).toBe(200);
+    expect(renew).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns unavailable and conflict renewal errors as structured non-success responses', async () => {
+    const { server, routes } = createServer();
+    registerNetworkSettingsRoutes(server, {
+      endpoint: 'https://xpod.example/',
+      certificateRenewer: {
+        isAvailable: vi.fn(async () => false),
+        renew: vi.fn(async () => undefined),
+      },
+    });
+    const auth = { type: 'service' as const, serviceType: 'cloud' as const, serviceId: 'cloud-admin', scopes: ['network:write'] };
+
+    const statusRes = response();
+    await routes['GET /api/network/settings/status'](request(auth), statusRes);
+    expect(JSON.parse(statusRes.body).actions.renewCertificate).toBe(false);
+
+    const unavailableRes = response();
+    await routes['POST /api/network/settings/certificate/renew'](request(auth), unavailableRes);
+    expect(unavailableRes.statusCode).toBe(503);
+    expect(JSON.parse(unavailableRes.body)).toEqual({
+      error: 'Certificate renewal is unavailable',
+      code: 'certificate_renewal_unavailable',
+    });
+
+    const conflict = Object.assign(new Error('Certificate renewal is already running'), {
+      statusCode: 409,
+      code: 'certificate_renewal_conflict',
+    });
+    const conflictServer = createServer();
+    registerNetworkSettingsRoutes(conflictServer.server, {
+      endpoint: 'https://xpod.example/',
+      certificateRenewer: {
+        isAvailable: vi.fn(async () => true),
+        renew: vi.fn(async () => { throw conflict; }),
+      },
+    });
+    const conflictRes = response();
+    await conflictServer.routes['POST /api/network/settings/certificate/renew'](request(auth), conflictRes);
+    expect(conflictRes.statusCode).toBe(409);
+    expect(JSON.parse(conflictRes.body)).toEqual({
+      error: 'Certificate renewal is already running',
+      code: 'certificate_renewal_conflict',
+    });
   });
 });

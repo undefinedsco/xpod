@@ -50,4 +50,27 @@ describe('AcmeCertificateManager', () => {
     expect(dnsChallengeHandler.setChallenge).not.toHaveBeenCalled();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
+
+  it('marks local ACME renewal unavailable when no real domains are configured', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'acme-cert-unavailable-'));
+    const manager = new AcmeCertificateManager({
+      dnsChallengeHandler: {
+        setChallenge: vi.fn(),
+        removeChallenge: vi.fn(),
+      },
+      email: 'ops@example.com',
+      domains: [],
+      accountKeyPath: path.join(tmpDir, 'account.key'),
+      certificateKeyPath: path.join(tmpDir, 'tls.key'),
+      certificatePath: path.join(tmpDir, 'tls.crt'),
+      renewBeforeDays: 10,
+    });
+
+    expect(manager.isAvailable()).toBe(false);
+    await expect(manager.renewCertificate()).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'certificate_renewal_unavailable',
+    });
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
 });
