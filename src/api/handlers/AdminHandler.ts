@@ -7,12 +7,15 @@ import type { ServerResponse } from 'node:http';
 import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { isIP } from 'node:net';
 import fs from 'fs';
 import path from 'path';
 import { createReadStream, statSync } from 'fs';
 import { createInterface } from 'readline';
 import { PACKAGE_ROOT } from '../../runtime';
+import {
+  isLoopbackRemoteAddress,
+  verifyGatewayAdminProxyHeaders,
+} from '../../runtime/GatewayAdminProxyAuth';
 
 const CONFIG_DIR = path.resolve(PACKAGE_ROOT, 'config');
 
@@ -159,19 +162,11 @@ function safeTokenEquals(actual: string, expected: string): boolean {
   return timingSafeEqual(actualHash, expectedHash);
 }
 
-function isLoopbackRemoteAddress(remoteAddress: string | undefined): boolean {
-  if (!remoteAddress) return false;
-  const normalized = remoteAddress.startsWith('::ffff:')
-    ? remoteAddress.slice('::ffff:'.length)
-    : remoteAddress;
-
-  if (isIP(normalized) === 4) {
-    return normalized.startsWith('127.');
-  }
-  return normalized === '::1';
+export interface AdminAuthorizerOptions {
+  internalAdminAuthSecret?: string;
 }
 
-export function isAdminMutationAllowed(req: AuthenticatedRequest): boolean {
+export function isAdminMutationAllowed(req: AuthenticatedRequest, options: AdminAuthorizerOptions = {}): boolean {
   const configuredToken = process.env.XPOD_ADMIN_TOKEN;
   const providedToken = req.headers['x-xpod-admin-token'] ??
     req.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -183,11 +178,22 @@ export function isAdminMutationAllowed(req: AuthenticatedRequest): boolean {
     return true;
   }
 
-  return isLoopbackRemoteAddress(req.socket.remoteAddress);
+  const peerLoopback = isLoopbackRemoteAddress(req.socket.remoteAddress);
+  const proxyMarker = verifyGatewayAdminProxyHeaders({
+    headers: req.headers,
+    secret: options.internalAdminAuthSecret,
+    method: req.method,
+    url: req.url,
+  });
+  if (proxyMarker.present) {
+    return peerLoopback && proxyMarker.valid && proxyMarker.originalClientLoopback;
+  }
+
+  return peerLoopback;
 }
 
-function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerResponse): boolean {
-  if (isAdminMutationAllowed(req)) {
+function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerResponse, options: AdminAuthorizerOptions): boolean {
+  if (isAdminMutationAllowed(req, options)) {
     return true;
   }
   sendJson(res, 403, {
@@ -197,13 +203,13 @@ function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerRespon
   return false;
 }
 
-export function createAdminServicesCapabilities(req: AuthenticatedRequest): {
+export function createAdminServicesCapabilities(req: AuthenticatedRequest, options: AdminAuthorizerOptions = {}): {
   services: {
     lifecycle: { restart: { supported: boolean; reason?: string } };
     configuration: { write: { supported: boolean; reason?: string } };
   };
 } {
-  const adminMutationSupported = isAdminMutationAllowed(req);
+  const adminMutationSupported = isAdminMutationAllowed(req, options);
   const adminMutationReason = adminMutationSupported ? undefined : 'requires_loopback_or_admin_token';
 
   return {
@@ -358,7 +364,9 @@ function parseJsonBody(req: AuthenticatedRequest): Promise<{ env?: EnvConfig }> 
   });
 }
 
-export function registerAdminRoutes(server: ApiServer): void {
+export interface AdminRoutesOptions extends AdminAuthorizerOptions {}
+
+export function registerAdminRoutes(server: ApiServer, options: AdminRoutesOptions = {}): void {
   const logger = console;
 
   // GET /api/admin/status - Get xpod status
@@ -382,7 +390,7 @@ export function registerAdminRoutes(server: ApiServer): void {
           CSS_PORT: env.CSS_PORT || process.env.CSS_PORT,
         },
         configs,
-        capabilities: createAdminServicesCapabilities(req),
+        capabilities: createAdminServicesCapabilities(req, options),
       });
     } catch (error) {
       logger.error('[Admin] Status error:', error);
@@ -414,7 +422,7 @@ export function registerAdminRoutes(server: ApiServer): void {
     res: ServerResponse,
   ) => {
     try {
-      if (!assertAdminMutationAllowed(req, res)) {
+      if (!assertAdminMutationAllowed(req, res, options)) {
         return;
       }
       // Parse body from raw request
@@ -454,7 +462,7 @@ export function registerAdminRoutes(server: ApiServer): void {
     res: ServerResponse,
   ) => {
     try {
-      if (!assertAdminMutationAllowed(req, res)) {
+      if (!assertAdminMutationAllowed(req, res, options)) {
         return;
       }
       const ppid = process.ppid;

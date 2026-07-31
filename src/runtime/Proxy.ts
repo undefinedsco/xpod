@@ -4,6 +4,11 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { Supervisor } from '../supervisor/Supervisor';
 import { nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 import type { RuntimeHost, RuntimeListenEndpoint } from './host/types';
+import {
+  createGatewayAdminProxyHeaders,
+  isLoopbackRemoteAddress,
+  stripGatewayAdminProxyHeaders,
+} from './GatewayAdminProxyAuth';
 
 type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
 
@@ -40,6 +45,8 @@ export class GatewayProxy {
   private readonly exitOnStop: boolean;
   private readonly shutdownHandler?: () => Promise<void>;
   private readonly baseUrl?: string;
+  private readonly internalAdminAuthSecret?: string;
+  private readonly clientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
 
   constructor(
     port: number | undefined,
@@ -56,6 +63,8 @@ export class GatewayProxy {
     this.exitOnStop = options.exitOnStop ?? false;
     this.shutdownHandler = options.shutdownHandler;
     this.baseUrl = options.baseUrl;
+    this.internalAdminAuthSecret = options.internalAdminAuthSecret;
+    this.clientRemoteAddressResolver = options.clientRemoteAddressResolver;
     this.proxy = httpProxy.createProxyServer({
       xfwd: true,
     });
@@ -129,6 +138,9 @@ export class GatewayProxy {
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     const url = req.url ?? '/';
     const origin = req.headers.origin;
+    const originalRemoteAddress = this.clientRemoteAddressResolver?.(req) ?? req.socket.remoteAddress;
+    const originalClientLoopback = isLoopbackRemoteAddress(originalRemoteAddress);
+    stripGatewayAdminProxyHeaders(req.headers);
 
     // Store public host for routing before any CSS canonical-host rewrites.
     // External gateways pass the original domain through X-Forwarded-Host;
@@ -188,11 +200,13 @@ export class GatewayProxy {
 
     // 2a. Dashboard UI is served by API server under /dashboard/*
     if ((url === '/dashboard' || url.startsWith('/dashboard/')) && this.targets.api) {
+      this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
     }
 
     if ((apiHost || this.shouldRouteToApi(url)) && this.targets.api) {
+      this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
     }
@@ -222,6 +236,18 @@ export class GatewayProxy {
       || url.startsWith('/provision/')
       || url === '/.well-known/matrix/client'
       || url.startsWith('/_matrix/');
+  }
+
+  private applyInternalAdminProxyHeaders(req: http.IncomingMessage, originalClientLoopback: boolean): void {
+    if (!this.internalAdminAuthSecret) {
+      return;
+    }
+    Object.assign(req.headers, createGatewayAdminProxyHeaders({
+      secret: this.internalAdminAuthSecret,
+      method: req.method,
+      url: req.url,
+      originalClientLoopback,
+    }));
   }
 
   private isApiHost(hostHeader: string | undefined): boolean {
@@ -512,4 +538,6 @@ export interface GatewayProxyOptions {
   exitOnStop?: boolean;
   shutdownHandler?: () => Promise<void>;
   baseUrl?: string;
+  internalAdminAuthSecret?: string;
+  clientRemoteAddressResolver?: (req: http.IncomingMessage) => string | undefined;
 }

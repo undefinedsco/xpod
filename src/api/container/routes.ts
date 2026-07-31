@@ -316,10 +316,13 @@ function registerLocalRoutes(
   container: AwilixContainer<ApiContainerCradle>,
   server: ApiServer,
 ): void {
+  const config = container.resolve('config') as ApiContainerConfig;
   registerLinxCapabilitiesRoutes(server);
 
   // Admin API (配置管理、重启)
-  registerAdminRoutes(server);
+  registerAdminRoutes(server, {
+    internalAdminAuthSecret: config.gatewayAdminProxyAuthSecret,
+  });
   // DDNS status (托管式 Local 模式)
   try {
     const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true }) as any;

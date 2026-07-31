@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import './runtime/configure-drizzle-solid';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -319,6 +319,8 @@ async function startRuntime(options: RunOptions): Promise<void> {
       ]
     : [path.join(__dirname, 'api', 'main.js')];
 
+  const gatewayAdminProxyAuthSecret = randomBytes(32).toString('base64url');
+
   supervisor.register({
     name: 'api',
     command: childJsRuntime,
@@ -331,6 +333,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
       rdfIndexPath,
       authMode,
       externalOidcIssuer,
+      gatewayAdminProxyAuthSecret,
     }),
   });
 
@@ -351,6 +354,7 @@ async function startRuntime(options: RunOptions): Promise<void> {
   const proxy = new GatewayProxy(mainPort, supervisor, bindHost, {
     exitOnStop: true,
     baseUrl,
+    internalAdminAuthSecret: gatewayAdminProxyAuthSecret,
   });
   proxy.setTargets({
     css: `http://localhost:${cssPort}`,

@@ -255,6 +255,7 @@ export function buildApiChildEnv(options: {
   rdfIndexPath?: string
   authMode?: AuthMode | string
   externalOidcIssuer?: string
+  gatewayAdminProxyAuthSecret?: string
   baseEnv?: NodeJS.ProcessEnv
 }): Record<string, string> {
   const authMode = resolveAuthModeInput(options.authMode, options.baseEnv);
@@ -265,6 +266,7 @@ export function buildApiChildEnv(options: {
     XPOD_MAIN_PORT: options.mainPort.toString(),
     CSS_INTERNAL_URL: `http://localhost:${options.cssPort}`,
     CSS_BASE_URL: options.baseUrl,
+    ...(options.gatewayAdminProxyAuthSecret ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: options.gatewayAdminProxyAuthSecret } : {}),
     ...(options.rdfIndexPath ? { CSS_RDF_INDEX_PATH: options.rdfIndexPath } : {}),
     CSS_TOKEN_ENDPOINT: options.externalOidcIssuer
       ? oidcTokenEndpoint(options.externalOidcIssuer)

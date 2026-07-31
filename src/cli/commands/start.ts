@@ -1,4 +1,5 @@
 import type { CommandModule } from 'yargs';
+import { randomBytes } from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { Supervisor } from '../../supervisor';
@@ -161,6 +162,8 @@ export const startCommand: CommandModule<object, StartArgs> = {
         ]
       : [path.resolve(__dirname, '..', '..', 'api', 'main.js')];
 
+    const gatewayAdminProxyAuthSecret = randomBytes(32).toString('base64url');
+
     supervisor.register({
       name: 'api',
       command: childJsRuntime,
@@ -173,12 +176,14 @@ export const startCommand: CommandModule<object, StartArgs> = {
         rdfIndexPath,
         authMode,
         externalOidcIssuer,
+        gatewayAdminProxyAuthSecret,
       }),
     });
 
     const proxy = new GatewayProxy(mainPort, supervisor, '0.0.0.0', {
       exitOnStop: true,
       baseUrl,
+      internalAdminAuthSecret: gatewayAdminProxyAuthSecret,
     });
     proxy.setTargets({
       css: `http://localhost:${cssPort}`,

@@ -120,6 +120,9 @@ export interface ApiContainerConfig {
   gatewayInternalClientId?: string;
   gatewayInternalClientSecret?: string;
 
+  /** Runtime-generated secret used only between GatewayProxy and the internal API server for admin ingress evidence. */
+  gatewayAdminProxyAuthSecret?: string;
+
   /** AI Provider Connect is disabled by default for backwards-compatible startup. */
   aiGatewayConnectEnabled?: boolean;
   /** Platform signing secret for short-lived provider Connect attempts. */
