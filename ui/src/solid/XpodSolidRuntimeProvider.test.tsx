@@ -17,6 +17,12 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 type Listener = (...args: unknown[]) => void;
 
+const unsafeIssuerCases = [
+  ['userinfo', 'https://alice:secret@issuer.example/'],
+  ['query', 'https://issuer.example/?client_id=leak'],
+  ['hash', 'https://issuer.example/#access_token=leak'],
+] as const;
+
 class FakeSession implements SolidSessionAdapter {
   readonly fetch = mock(async () => new Response('ok'));
   readonly handleIncomingRedirect = mock(async () => this.info);
@@ -340,6 +346,36 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
+  for (const [label, unsafeIssuer] of unsafeIssuerCases) {
+    test(`rejects login issuers containing ${label} without persisting or redirecting`, async () => {
+      installDom();
+      window.sessionStorage.clear();
+      const session = new FakeSession();
+      const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+      const container = document.getElementById('root');
+      if (!container) throw new Error('missing root');
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <XpodSolidRuntimeProvider value={value}>
+            <InvalidLoginProbe issuer={unsafeIssuer} />
+          </XpodSolidRuntimeProvider>,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const loginButton = container.querySelector('button');
+      if (!loginButton) throw new Error('missing login button');
+      await act(async () => {
+        loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      });
+
+      expect(session.login).not.toHaveBeenCalled();
+      expect(window.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY)).toBeNull();
+      await unmount(root);
+    });
+  }
+
   test('discovers Pod storage from the authenticated WebID profile only', async () => {
     const fetchImpl = mock(async () => new Response(
       '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
@@ -412,10 +448,10 @@ describe('Xpod Solid runtime', () => {
   });
 });
 
-function InvalidLoginProbe() {
+function InvalidLoginProbe({ issuer = 'javascript:alert(1)' }: { issuer?: string }) {
   const runtime = useXpodSolidRuntime();
   return (
-    <button type="button" onClick={() => void runtime.login('javascript:alert(1)')}>
+    <button type="button" onClick={() => void runtime.login(issuer)}>
       login
     </button>
   );

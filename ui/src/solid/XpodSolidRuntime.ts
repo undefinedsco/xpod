@@ -165,6 +165,9 @@ export function normalizeXpodOidcIssuer(value: unknown): string | undefined {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
       return undefined;
     }
+    if (url.username || url.password || url.search || url.hash) {
+      return undefined;
+    }
     return url.toString();
   } catch {
     return undefined;
