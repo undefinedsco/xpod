@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 import { JSDOM } from 'jsdom';
-import { act } from 'react';
+import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
@@ -90,6 +90,20 @@ function deferredResponse(body: unknown) {
     }));
   });
   return { promise, resolve };
+}
+
+function deferredFetch(body: unknown) {
+  let resolve!: () => void;
+  const gate = new Promise<void>((done) => {
+    resolve = done;
+  });
+  const fetchImpl = mock(async () => {
+    await gate;
+    return new Response(JSON.stringify(body), {
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  return { fetchImpl, resolve };
 }
 
 function runtimeWith(fetchImpl: typeof fetch, overrides: Partial<XpodSolidRuntimeValue> = {}): XpodSolidRuntimeValue {
@@ -217,6 +231,41 @@ describe('PodPage', () => {
     expect(container.textContent).toContain(splitPodUrl);
     expect(container.textContent).toContain('Issuer');
     expect(container.textContent).toContain(splitIssuer);
+    await unmount(root);
+  });
+
+  test('loads the real status response after StrictMode remount cleanup', async () => {
+    installDom();
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    const response = deferredFetch(createStatus({
+      providers: 5,
+      containerUrl: 'https://pod.example/alice/settings/strict-mode.ttl',
+    }));
+    const runtime = runtimeWith(response.fetchImpl as typeof fetch);
+
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <XpodSolidRuntimeContext.Provider value={runtime}>
+            <PodPage />
+          </XpodSolidRuntimeContext.Provider>
+        </StrictMode>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(response.fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    await act(async () => {
+      response.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain('5 providers');
+    expect(container.textContent).toContain('https://pod.example/alice/settings/strict-mode.ttl');
+    expect(container.textContent).not.toContain('Usage unsupported');
+    expect(container.textContent).not.toContain('Refreshing usage');
     await unmount(root);
   });
 

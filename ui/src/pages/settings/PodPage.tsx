@@ -17,9 +17,12 @@ export default function PodPage() {
   const canLoad = runtime.state.status === 'authenticated' && Boolean(runtime.webId && runtime.podUrl);
   const identityKey = canLoad ? `${runtime.webId}\n${runtime.podUrl}` : undefined;
 
-  useEffect(() => () => {
-    mountedRef.current = false;
-    requestIdRef.current += 1;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestIdRef.current += 1;
+    };
   }, []);
 
   const loadStatus = useCallback(async () => {
