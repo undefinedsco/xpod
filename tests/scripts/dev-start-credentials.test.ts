@@ -254,4 +254,43 @@ start_cloud
     expect(result.stdout).not.toContain('unexpected-node');
     expect(await readFile(cleanupLog, 'utf8')).toBe('TERM');
   });
+
+  it('redacts all sensitive generated env values from successful cloud startup output', async () => {
+    const result = await runHarness(String.raw`
+ENV_FILE="$(mktemp)"
+CSS_BASE="http://localhost:6300"
+API_BASE="http://localhost:6301"
+bun() { return 0; }
+sleep() { return 0; }
+wait_for_service() { return 0; }
+init_credentials() {
+  write_env_value XPOD_CLIENT_ID "client-id-visible" id
+  write_env_value XPOD_CLIENT_SECRET "client-secret-sensitive" secret
+}
+create_test_node() {
+  write_env_value XPOD_NODE_ID "node-id-visible" id
+  write_env_value XPOD_NODE_TOKEN "node-token-sensitive" token
+  write_env_value XPOD_SIGNALING_URL "http://localhost:6301/signal" url
+  write_env_value xpOd_authToken "auth-token-sensitive" token
+  write_env_value SERVICE_PASSWORD "password-sensitive" secret
+  write_env_value OPENAI_API_KEY "api-key-sensitive" secret
+}
+start_cloud
+`);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("XPOD_CLIENT_ID='client-id-visible'");
+    expect(result.stdout).toContain("XPOD_NODE_ID='node-id-visible'");
+    expect(result.stdout).toContain("XPOD_SIGNALING_URL='http://localhost:6301/signal'");
+    expect(result.stdout).toContain('XPOD_CLIENT_SECRET=[redacted]');
+    expect(result.stdout).toContain('XPOD_NODE_TOKEN=[redacted]');
+    expect(result.stdout).toContain('xpOd_authToken=[redacted]');
+    expect(result.stdout).toContain('SERVICE_PASSWORD=[redacted]');
+    expect(result.stdout).toContain('OPENAI_API_KEY=[redacted]');
+    expect(result.stdout).not.toContain('client-secret-sensitive');
+    expect(result.stdout).not.toContain('node-token-sensitive');
+    expect(result.stdout).not.toContain('auth-token-sensitive');
+    expect(result.stdout).not.toContain('password-sensitive');
+    expect(result.stdout).not.toContain('api-key-sensitive');
+  });
 });

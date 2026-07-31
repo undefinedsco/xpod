@@ -159,6 +159,41 @@ write_env_value() {
   printf '%s=%s\n' "$name" "$(shell_quote "$value")" >> "$ENV_FILE"
 }
 
+is_sensitive_env_name() {
+  local upper
+  upper=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
+
+  case "$upper" in
+    *SECRET|*_SECRET|*TOKEN|*_TOKEN|*AUTHTOKEN|PASSWORD|*_PASSWORD|*API_KEY|*_API_KEY|*APIKEY|*_APIKEY|*PRIVATE_KEY|*_PRIVATE_KEY)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+redact_env_output() {
+  local line
+  local name
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *=*)
+        name="${line%%=*}"
+        if is_sensitive_env_name "$name"; then
+          printf '%s=[redacted]\n' "$name"
+        else
+          printf '%s\n' "$line"
+        fi
+        ;;
+      *)
+        printf '%s\n' "$line"
+        ;;
+    esac
+  done
+}
+
 validate_credentials_url() {
   local credentials_url=$1
 
@@ -358,7 +393,7 @@ start_cloud() {
   echo "=========================================="
   echo "环境变量已保存到: $ENV_FILE"
   echo "=========================================="
-  sed 's/^\(XPOD_CLIENT_SECRET=\).*/\1[redacted]/' "$ENV_FILE"
+  redact_env_output < "$ENV_FILE"
   echo "=========================================="
   echo ""
   echo "启动 Local 节点:"
