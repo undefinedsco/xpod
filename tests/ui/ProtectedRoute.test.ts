@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shouldRedirectToConsent } from '../../ui/src/components/ProtectedRoute';
+import { shouldRedirectToConsent } from '../../ui/src/components/ProtectedRoute.utils';
 
 describe('shouldRedirectToConsent', () => {
   it('redirects when logged in and oidc consent is pending', () => {

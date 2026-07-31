@@ -13,7 +13,7 @@ import {
   resolveConsentDisplayWebIds,
   resolveOidcCancelUrl,
   resolveOidcCancelRedirectLocation,
-} from '../../ui/src/pages/ConsentPage';
+} from '../../ui/src/pages/ConsentPage.utils';
 
 describe('ConsentPage WebID display rules', () => {
   it('does not show the issuer current WebID as a Local SP choice when scoped lookup is empty', () => {
@@ -85,7 +85,7 @@ describe('ConsentPage OIDC cancel redirect rules', () => {
     await expect(fetchOidcCancelRedirectLocation({
       cancelUrl: '/.account/oidc/cancel',
       timeoutMs: 1,
-      fetchImpl: (_url, init) => new Promise<Response>((_resolve, reject) => {
+      fetchImpl: (_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => {
           const error = new Error('aborted');
           error.name = 'AbortError';
