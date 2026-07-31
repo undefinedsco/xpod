@@ -135,6 +135,10 @@ function ConfigurationProbe() {
   );
 }
 
+function LogsProbe() {
+  return <div>Logs probe</div>;
+}
+
 async function renderServices(path: string, fetchImpl = createFetch()) {
   installDom();
   globalThis.fetch = fetchImpl;
@@ -234,6 +238,42 @@ describe('Services settings navigation', () => {
     expect((stackContainer.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null)?.hidden).toBe(false);
     expect(stackContainer.textContent).toContain('返回列表');
     expect(stackContainer.querySelectorAll('main')).toHaveLength(1);
+    await unmount(stackRoot);
+  });
+
+  test('opens the main pane for direct stack-mode child routes without reopening after pane back', async () => {
+    installDom();
+    globalThis.fetch = createFetch();
+    const stackContainer = document.getElementById('root');
+    if (!stackContainer) throw new Error('missing root');
+    const stackRoot = createRoot(stackContainer);
+
+    await act(async () => {
+      stackRoot.render(
+        <MemoryRouter initialEntries={['/services/logs']}>
+          <Routes>
+            <Route path="/services" element={<ServicesPage mode="stack" />}>
+              <Route index element={<RuntimeProbe />} />
+              <Route path="logs" element={<LogsProbe />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    expect((stackContainer.querySelector('[data-testid="workspace-list-pane"]') as HTMLElement | null)?.hidden).toBe(true);
+    expect((stackContainer.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null)?.hidden).toBe(false);
+    expect(stackContainer.textContent).toContain('Logs probe');
+
+    const backButton = Array.from(stackContainer.querySelectorAll('button')).find((button) => button.textContent?.includes('返回列表'));
+    await act(async () => {
+      backButton?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    expect((stackContainer.querySelector('[data-testid="workspace-list-pane"]') as HTMLElement | null)?.hidden).toBe(false);
+    expect((stackContainer.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null)?.hidden).toBe(true);
     await unmount(stackRoot);
   });
 

@@ -96,6 +96,7 @@ export default function ServicesPage({ mode = 'auto' }: { mode?: TwoPaneLayoutMo
         list={<ServicesSidebar snapshot={snapshot} loading={loading && !snapshot} />}
         main={
           <section className="min-h-full min-w-0 bg-background">
+            <ServicesRoutePaneSync />
             {error ? (
               <div role="alert" className="mx-6 mt-6 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 {error}
@@ -108,6 +109,25 @@ export default function ServicesPage({ mode = 'auto' }: { mode?: TwoPaneLayoutMo
       />
     </ServicesStatusContext.Provider>
   );
+}
+
+function ServicesRoutePaneSync() {
+  const location = useLocation();
+  const workspace = useWorkspaceLayout();
+  const lastSyncedPathRef = useRef<string | null>(null);
+  const normalizedPath = location.pathname.replace(/\/+$/, '') || '/services';
+
+  useEffect(() => {
+    if (lastSyncedPathRef.current === normalizedPath) return;
+    lastSyncedPathRef.current = normalizedPath;
+    if (normalizedPath === '/services') {
+      workspace.openList();
+      return;
+    }
+    workspace.openMain();
+  }, [normalizedPath, workspace]);
+
+  return null;
 }
 
 function ServicesHeader({ loading, onRefresh }: { loading: boolean; onRefresh: () => void }) {
