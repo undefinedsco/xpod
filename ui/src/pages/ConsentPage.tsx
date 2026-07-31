@@ -1,20 +1,44 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Shield, AlertCircle, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { CardWrapper } from '../components/CardWrapper';
 import { FirstPodCreator } from '../components/FirstPodCreator';
 import { persistReturnTo } from '../utils/returnTo';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
 import { lookupProvisionScopedWebIds } from '../utils/provision-scope';
+import { messageFromError, readResponseMessage } from '../utils/errors';
+import {
+  fetchOidcCancelRedirectLocation,
+  resolveConsentDisplayWebIds,
+  resolveOidcCancelUrl,
+} from './ConsentPage.utils';
+
+interface ConsentClientInfo {
+  client_id?: string;
+  client_name?: string;
+  client_uri?: string;
+}
+
+interface ConsentResponse {
+  client?: ConsentClientInfo;
+  location?: string;
+  webId?: string;
+}
+
+interface PickWebIdResponse {
+  location?: string;
+  message?: string;
+  webIds?: unknown;
+}
 
 export function ConsentPage() {
   const { idpIndex, isLoggedIn, controls } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
-  const [clientInfo, setClientInfo] = useState<any>(null);
+  const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
   const [currentWebId, setCurrentWebId] = useState<string | null>(null);
   const [webIds, setWebIds] = useState<string[]>([]);
   const [selectedWebId, setSelectedWebId] = useState('');
@@ -29,7 +53,7 @@ export function ConsentPage() {
   const pickWebIdUrl = `${idpIndex}oidc/pick-webid/`;
   const cancelUrl = resolveOidcCancelUrl(controls, idpIndex);
 
-  const refreshConsentState = async (): Promise<string[]> => {
+  const refreshConsentState = useCallback(async (): Promise<string[]> => {
     const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch, provisionCode);
     setProvisionCode(currentProvisionCode);
 
@@ -45,11 +69,11 @@ export function ConsentPage() {
       return [];
     }
     if (!consentRes.ok) {
-      const errJson = await consentRes.json().catch(() => ({}));
-      throw new Error(errJson.message || 'Failed to load consent info');
+      const errJson = await consentRes.json().catch(() => ({})) as unknown;
+      throw new Error(readResponseMessage(errJson) || 'Failed to load consent info');
     }
 
-    const consentData = await consentRes.json();
+    const consentData = await consentRes.json().catch(() => ({})) as ConsentResponse;
     setClientInfo(consentData.client || {});
     setCurrentWebId(consentData.webId || null);
 
@@ -63,7 +87,7 @@ export function ConsentPage() {
       return [];
     }
 
-    const pickData = await pickRes.json();
+    const pickData = await pickRes.json().catch(() => ({})) as PickWebIdResponse;
     const rawIds = Array.isArray(pickData.webIds)
       ? pickData.webIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
       : [];
@@ -83,7 +107,7 @@ export function ConsentPage() {
     }
 
     return ids;
-  };
+  }, [consentUrl, pickWebIdUrl, provisionCode]);
 
   useEffect(() => {
     console.log('[Consent] Page loaded, fetching consent info...');
@@ -91,13 +115,13 @@ export function ConsentPage() {
     (async () => {
       try {
         await refreshConsentState();
-      } catch (err: any) {
-        setError(err.message || 'Failed to load consent info');
+      } catch (err: unknown) {
+        setError(messageFromError(err, 'Failed to load consent info'));
       } finally {
         setIsLoading(false);
       }
     })();
-  }, [consentUrl, pickWebIdUrl]);
+  }, [refreshConsentState]);
 
   const parseWebIdInfo = (webId: string): { provider: string; podId: string; full: string } => {
     try {
@@ -151,7 +175,7 @@ export function ConsentPage() {
           credentials: 'include',
           body: JSON.stringify({ webId: selectedWebId, remember: false })
         });
-        const pickJson = await pickRes.json();
+        const pickJson = await pickRes.json().catch(() => ({})) as PickWebIdResponse;
         if (!pickRes.ok) {
           throw new Error(pickJson.message || 'Failed to select WebID');
         }
@@ -166,7 +190,7 @@ export function ConsentPage() {
         credentials: 'include',
         body: JSON.stringify({ remember: rememberClient })
       });
-      const consentJson = await consentRes.json();
+      const consentJson = await consentRes.json().catch(() => ({})) as ConsentResponse & { message?: string };
       console.log('[Consent] Response:', consentRes.status, consentJson);
       console.log('[Consent] Location header:', consentRes.headers.get('Location'));
       
@@ -188,8 +212,8 @@ export function ConsentPage() {
         setError('Authorization completed but no redirect URL received. The application may need to restart the login flow.');
         setIsLoading(false);
       }
-    } catch (err: any) {
-      setError(err.message || 'Consent failed');
+    } catch (err: unknown) {
+      setError(messageFromError(err, 'Consent failed'));
     } finally {
       setIsAuthorizing(false);
     }
@@ -205,8 +229,8 @@ export function ConsentPage() {
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
       });
       window.location.href = redirectUrl;
-    } catch (err: any) {
-      setError(err.message || 'Authorization cancellation failed');
+    } catch (err: unknown) {
+      setError(messageFromError(err, 'Authorization cancellation failed'));
     } finally {
       setIsCancelling(false);
     }
@@ -388,89 +412,4 @@ export function ConsentPage() {
       )}
     </CardWrapper>
   );
-}
-
-export function resolveConsentDisplayWebIds(
-  scopedWebIds: string[],
-  currentWebId: string | null,
-  isProvisionScopedSession: boolean,
-): string[] {
-  if (scopedWebIds.length > 0) {
-    return scopedWebIds;
-  }
-
-  // Local SP sessions must fail closed: currentWebId can be a Cloud account
-  // selection from the issuer and is not proof that the selected SP owns a Pod.
-  if (isProvisionScopedSession) {
-    return [];
-  }
-
-  return currentWebId ? [currentWebId] : [];
-}
-
-export function resolveOidcCancelUrl(
-  controls: { oidc?: { cancel?: string } } | null | undefined,
-  fallbackIdpIndex: string,
-): string {
-  return controls?.oidc?.cancel || `${fallbackIdpIndex}oidc/cancel`;
-}
-
-export interface OidcCancelRedirectOptions {
-  cancelUrl: string;
-  headers?: HeadersInit;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
-}
-
-export async function fetchOidcCancelRedirectLocation(options: OidcCancelRedirectOptions): Promise<string> {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? 15_000;
-  const controller = timeoutMs > 0 ? new AbortController() : null;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  if (controller) {
-    timeout = setTimeout(() => controller.abort(), timeoutMs);
-  }
-
-  try {
-    const res = await fetchImpl(options.cancelUrl, {
-      method: 'POST',
-      headers: options.headers,
-      credentials: 'include',
-      body: JSON.stringify({}),
-      signal: controller?.signal,
-    });
-    return await resolveOidcCancelRedirectLocation(res);
-  } catch (err: any) {
-    if (err?.name === 'AbortError') {
-      throw new Error('Authorization cancellation timed out. Please close this tab and retry login.');
-    }
-    throw err;
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-  }
-}
-
-export async function resolveOidcCancelRedirectLocation(res: Response): Promise<string> {
-  const json = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw new Error(readResponseMessage(json) || `Authorization cancellation failed (${res.status}).`);
-  }
-
-  const bodyLocation = isRecord(json) && typeof json.location === 'string' ? json.location.trim() : '';
-  const headerLocation = res.headers.get('Location')?.trim() || '';
-  const location = bodyLocation || headerLocation;
-  if (!location) {
-    throw new Error('Authorization cancellation did not return a redirect URL.');
-  }
-  return location;
-}
-
-function readResponseMessage(value: unknown): string {
-  return isRecord(value) && typeof value.message === 'string' ? value.message : '';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }

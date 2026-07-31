@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { Lock, Mail, ArrowRight, Loader2, Clock, Layers, Shield, Check, User } from 'lucide-react';
 import clsx from 'clsx';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { persistReturnTo, consumeReturnTo, getReturnToFromLocation } from '../utils/returnTo';
 import {
   checkRegistrationUsernameAvailability,
   getRegistrationUsernameError,
   normalizeRegistrationUsername,
 } from '../utils/registration';
+import { messageFromError } from '../utils/errors';
 import {
   RegistrationError,
   bootstrapAccountPasswordLogin,
@@ -185,7 +186,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
             });
             accountToken = bootstrap.accountToken;
             storeAccountSessionToken(accountToken);
-          } catch (err: any) {
+          } catch (err: unknown) {
             if (!(err instanceof RegistrationError) || err.code !== 'EMAIL_ALREADY_REGISTERED') {
               throw err;
             }
@@ -249,14 +250,14 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
           setFormError(json.message || 'Login failed');
         }
       }
-    } catch (err: any) {
-      if (err?.name === 'RegistrationError' && err.code === 'EMAIL_ALREADY_REGISTERED') {
+    } catch (err: unknown) {
+      if (err instanceof RegistrationError && err.code === 'EMAIL_ALREADY_REGISTERED') {
         setEmailError(err.message);
-      } else if (err?.name === 'RegistrationError' && err.code === 'USERNAME_ALREADY_TAKEN') {
+      } else if (err instanceof RegistrationError && err.code === 'USERNAME_ALREADY_TAKEN') {
         setIsUsernameAvailable(false);
         setUsernameAvailabilityError(err.message);
       } else {
-        setFormError(err.message || 'Operation failed');
+        setFormError(messageFromError(err, 'Operation failed'));
       }
     } finally {
       setIsLoading(false);

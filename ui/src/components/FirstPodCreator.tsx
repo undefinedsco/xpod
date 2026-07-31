@@ -6,6 +6,7 @@ import {
   waitForConsentWebIds,
   type FirstPodNameAvailabilityStatus,
 } from '../utils/consent-first-pod';
+import { messageFromError } from '../utils/errors';
 import { getRegistrationUsernameError, normalizeRegistrationUsername } from '../utils/registration';
 
 interface FirstPodCreatorProps {
@@ -90,8 +91,8 @@ export function FirstPodCreator({
         setCreatedPodName(null);
       }
       await onCreated(webIds);
-    } catch (err: any) {
-      onError(err.message || 'Failed to refresh authorization state');
+    } catch (err: unknown) {
+      onError(messageFromError(err, 'Failed to refresh authorization state'));
     } finally {
       setIsCreating(false);
     }
@@ -133,8 +134,8 @@ export function FirstPodCreator({
       setCreatedPodName(webIds.length > 0 ? null : normalizedName);
       setPodName(normalizedName);
       await onCreated(webIds);
-    } catch (err: any) {
-      onError(err.message || 'Failed to create Pod');
+    } catch (err: unknown) {
+      onError(messageFromError(err, 'Failed to create Pod'));
     } finally {
       setIsCreating(false);
     }

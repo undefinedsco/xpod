@@ -1,6 +1,7 @@
 import { buildPodCreatePayload, getStoredProvisionCode, resolveProvisionCodeForPodCreate } from './pod';
 import { accountTokenHeaders } from './account-session';
 import { lookupProvisionScopedWebIds } from './provision-scope';
+import { isRecord, readResponseMessage } from './errors';
 
 export interface RegistrationFlowResult {
   createdPod: boolean;
@@ -49,8 +50,17 @@ async function readErrorMessage(response: Response): Promise<string | undefined>
   return json?.message || json?.error;
 }
 
+async function readResponseRecord(response: Response): Promise<Record<string, unknown>> {
+  const value = await response.json().catch(() => ({})) as unknown;
+  return isRecord(value) ? value : {};
+}
+
 interface AccountControlsResponse {
   controls?: {
+    password?: {
+      create?: string;
+      login?: string;
+    };
     account?: {
       pod?: string;
       webId?: string;
@@ -69,6 +79,14 @@ interface AccountWebIdResponse {
 interface AccountStatusEndpoints {
   pod?: string;
   webId?: string;
+}
+
+interface AuthorizationResponse {
+  authorization?: string;
+}
+
+interface ConsentCheckResponse {
+  client?: unknown;
 }
 
 function extractConflictResourceUrl(message: string): string | undefined {
@@ -174,10 +192,10 @@ export async function bootstrapAccountPasswordLogin(
     body: JSON.stringify({}),
   });
   if (!res.ok) {
-    throw new Error((await res.json().catch(() => ({})) as any).message || 'Failed to create account');
+    throw new Error(readResponseMessage(await readResponseRecord(res)) || 'Failed to create account');
   }
 
-  const accountCreateResult = await res.json().catch(() => ({})) as { authorization?: string };
+  const accountCreateResult = await res.json().catch(() => ({})) as AuthorizationResponse;
   const accountToken = typeof accountCreateResult.authorization === 'string' ? accountCreateResult.authorization : '';
   if (!accountToken) {
     throw new Error('Account token not returned');
@@ -188,10 +206,10 @@ export async function bootstrapAccountPasswordLogin(
     credentials: 'include',
   } as RequestInit);
   if (!res.ok) {
-    throw new Error((await res.json().catch(() => ({})) as any).message || 'Failed to load account controls');
+    throw new Error(readResponseMessage(await readResponseRecord(res)) || 'Failed to load account controls');
   }
 
-  const controls = await res.json().catch(() => ({})) as any;
+  const controls = await res.json().catch(() => ({})) as AccountControlsResponse;
   const addPasswordUrl = controls.controls?.password?.create;
   const loginUrl = controls.controls?.password?.login;
   if (!addPasswordUrl) {
@@ -335,7 +353,7 @@ export async function completeRegistrationProvisioning(
     headers: accountTokenHeaders(accountToken),
     credentials: 'include',
   } as RequestInit);
-  const accountData = await res.json().catch(() => ({})) as any;
+  const accountData = await res.json().catch(() => ({})) as AccountControlsResponse;
   const createPodUrl = accountData.controls?.account?.pod;
   if (!createPodUrl) {
     throw new Error('Pod creation endpoint not found. The account API did not expose controls.account.pod.');
@@ -365,7 +383,7 @@ export async function completeRegistrationProvisioning(
     }
     throw new Error(message || 'Failed to create pod');
   }
-  const podCreateResult = await res.json().catch(() => ({})) as any;
+  const podCreateResult = await res.json().catch(() => ({})) as unknown;
   void podCreateResult;
 
   await defaultWaitForWebIdReady(fetchImpl, idpIndex, accountData.controls?.account, accountToken, 15_000, provisionCode);
@@ -379,7 +397,7 @@ async function hasPendingConsent(fetchImpl: typeof fetch, accountToken: string):
     credentials: 'include',
   } as RequestInit);
   if (consentCheck.ok) {
-    const consentData = await consentCheck.json().catch(() => ({})) as any;
+    const consentData = await consentCheck.json().catch(() => ({})) as ConsentCheckResponse;
     if (consentData.client) {
       return true;
     }

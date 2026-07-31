@@ -1,31 +1,9 @@
-import { useState, useEffect, createContext, useContext } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { storedAccountTokenHeaders, clearAccountSessionToken } from '../utils/account-session';
+import { AuthContext, type Controls } from './AuthContextValue';
 
-export interface Controls {
-  password?: { login?: string; create?: string; forgot?: string; reset?: string };
-  account?: { create?: string; logout?: string; webId?: string; pod?: string; clientCredentials?: string };
-  html?: { password?: { login?: string; register?: string; forgot?: string }; account?: { account?: string } };
-  oidc?: { webId?: string; consent?: string; cancel?: string };
-  main?: { logins?: string; index?: string };
-}
-
-export interface AuthContextType {
-  controls: Controls | null;
-  isInitializing: boolean;
-  initError: string | null;
-  idpIndex: string;
-  isLoggedIn: boolean;
-  authenticating: boolean;
-  hasOidcPending: boolean;
-  refetchControls: () => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextType | null>(null);
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
+interface ControlsResponse {
+  controls?: Controls;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -41,7 +19,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isLoggedIn = Boolean(controls?.account?.logout);
   const authenticating = isInitializing;
 
-  const checkOidcPending = async (): Promise<boolean> => {
+  const checkOidcPending = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch('/.account/oidc/consent/', {
         headers: storedAccountTokenHeaders(),
@@ -56,13 +34,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       return false;
     }
-  };
+  }, []);
 
-  const fetchControls = async () => {
+  const fetchControls = useCallback(async () => {
     try {
       const res = await fetch(idpIndex, { headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
-        const json = await res.json();
+        const json = await res.json().catch(() => ({})) as ControlsResponse;
         
         // If user is logged in, check if there's an OIDC flow waiting BEFORE setting state
         // This ensures hasOidcPending is set before isLoggedIn becomes true
@@ -85,21 +63,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // or the server is down. For now, we set an error.
         setInitError(`Failed to load configuration (Status: ${res.status})`);
       }
-    } catch (e) {
+    } catch {
       setInitError('Network error: Could not connect to authentication server');
     }
-  };
+  }, [checkOidcPending, idpIndex]);
 
   useEffect(() => {
     (async () => {
       await fetchControls();
       setIsInitializing(false);
     })();
-  }, [idpIndex]);
+  }, [fetchControls]);
 
-  const refetchControls = async () => {
+  const refetchControls = useCallback(async () => {
     await fetchControls();
-  };
+  }, [fetchControls]);
 
   return (
     <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, isLoggedIn, authenticating, hasOidcPending, refetchControls }}>

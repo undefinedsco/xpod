@@ -5,7 +5,7 @@
  */
 
 import { useChatKit, ChatKit } from '@openai/chatkit-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { useState, useCallback } from 'react';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 

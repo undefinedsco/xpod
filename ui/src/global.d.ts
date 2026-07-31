@@ -14,12 +14,12 @@ declare global {
         oidc?: {
           prompt?: string;
         };
-        [key: string]: any;
+        [key: string]: unknown;
       };
       authenticating?: boolean;
       error?: {
         message: string;
-        [key: string]: any;
+        [key: string]: unknown;
       } | null;
       prefilled?: Record<string, string>;
     };

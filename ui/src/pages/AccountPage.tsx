@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { buildPodCreatePayload, clearStoredProvisionCode, getStoredProvisionCode } from '../utils/pod';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import {
@@ -162,7 +162,7 @@ export function AccountPage() {
     }
   };
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const scope = currentStorageScope(window.location.origin, getStoredProvisionCode());
       let nextWebIds: string[] = [];
@@ -241,11 +241,11 @@ export function AccountPage() {
       setCredentials([]);
       setPodStateSettling(false);
     }
-  };
+  }, [controls?.account?.clientCredentials, controls?.account?.pod, controls?.account?.webId]);
 
   useEffect(() => {
     fetchData();
-  }, [controls]);
+  }, [fetchData]);
 
   const handleLogout = async () => {
     if (!controls?.account?.logout) return;

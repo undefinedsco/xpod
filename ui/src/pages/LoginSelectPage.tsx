@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { CardWrapper } from '../components/CardWrapper';
 import { LoadingScreen } from '../components/LoadingScreen';
 import { storedAccountTokenHeaders } from '../utils/account-session';

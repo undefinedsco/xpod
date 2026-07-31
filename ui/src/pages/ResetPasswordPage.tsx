@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams, Navigate } from 'react-router-dom';
 import { Lock, ArrowRight, Loader2, Check } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { CardWrapper } from '../components/CardWrapper';
 
 export function ResetPasswordPage() {

@@ -3,7 +3,9 @@ const RETURN_TO_KEY = 'xpod:returnTo';
 export function persistReturnTo(url: string): void {
   try {
     if (url) sessionStorage.setItem(RETURN_TO_KEY, url);
-  } catch {}
+  } catch {
+    return;
+  }
 }
 
 export function consumeReturnTo(): string | null {

@@ -1,18 +1,11 @@
 import { Navigate, useLocation } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { persistReturnTo } from '../utils/returnTo';
+import { shouldRedirectToConsent } from './ProtectedRoute.utils';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
   allowOidcPending?: boolean;
-}
-
-export function shouldRedirectToConsent(
-  isLoggedIn: boolean,
-  hasOidcPending: boolean,
-  allowOidcPending: boolean = false,
-): boolean {
-  return isLoggedIn && hasOidcPending && !allowOidcPending;
 }
 
 export function ProtectedRoute({ children, allowOidcPending = false }: ProtectedRouteProps) {

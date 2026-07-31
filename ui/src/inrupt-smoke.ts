@@ -422,7 +422,7 @@ async function checkDrizzleReadWrite(): Promise<void> {
       base: target.tableBase,
       type: SMOKE_TYPE,
     });
-    const db = drizzle(session as any, {
+    const db = drizzle(session as Parameters<typeof drizzle>[0], {
       podUrl: homeUrl,
       resourcePreparation: 'best-effort',
       schema: { inruptSmokeData: smokeResource },

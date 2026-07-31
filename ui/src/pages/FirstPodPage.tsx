@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HardDrive, Loader2, AlertCircle } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContextValue';
 import { CardWrapper } from '../components/CardWrapper';
 import { FirstPodCreator } from '../components/FirstPodCreator';
 import { storedAccountTokenHeaders } from '../utils/account-session';
+import { messageFromError } from '../utils/errors';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
 import {
   filterWebIdsByStorageRoot,
@@ -50,9 +51,9 @@ export function FirstPodPage() {
           return;
         }
         setNeedsFirstPod(true);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          setError(err.message || 'Failed to check storage state');
+          setError(messageFromError(err, 'Failed to check storage state'));
           setNeedsFirstPod(true);
         }
       } finally {
