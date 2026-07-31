@@ -11,7 +11,7 @@ import {
 } from '../service/AiClientConfigurationService';
 
 export interface AiClientConfigurationHandlerOptions {
-  service: AiClientConfigurationService;
+  service?: AiClientConfigurationService;
   jsonBodyLimitBytes?: number;
 }
 
@@ -22,13 +22,15 @@ export function registerAiClientConfigurationRoutes(
   const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 16 * 1024;
 
   server.get('/api/ai/client-configuration/:client', async (request, response, params) => {
+    if (!requireService(options, response)) return;
     if (!authorizeClientConfig(request, response, 'client-config:read')) {
       return;
     }
-    await sendServiceResult(response, () => options.service.inspect(requireClient(params.client)));
+    await sendServiceResult(response, () => options.service!.inspect(requireClient(params.client)));
   });
 
   server.post('/api/ai/client-configuration/:client/plan', async (request, response, params) => {
+    if (!requireService(options, response)) return;
     if (!authorizeClientConfig(request, response, 'client-config:write')) {
       return;
     }
@@ -36,7 +38,7 @@ export function registerAiClientConfigurationRoutes(
     if (!body) {
       return;
     }
-    await sendServiceResult(response, () => options.service.plan({
+    await sendServiceResult(response, () => options.service!.plan({
       client: requireClient(params.client),
       endpoint: requireString(body.endpoint, 'endpoint'),
       model: optionalString(body.model),
@@ -45,6 +47,7 @@ export function registerAiClientConfigurationRoutes(
   });
 
   server.post('/api/ai/client-configuration/:client/apply', async (request, response, params) => {
+    if (!requireService(options, response)) return;
     if (!authorizeClientConfig(request, response, 'client-config:write')) {
       return;
     }
@@ -52,15 +55,17 @@ export function registerAiClientConfigurationRoutes(
     if (!body) {
       return;
     }
-    await sendServiceResult(response, () => options.service.apply({
+    await sendServiceResult(response, () => options.service!.apply({
       client: requireClient(params.client),
       planId: requireString(body.planId, 'planId'),
       gatewayKey: requireString(body.gatewayKey, 'gatewayKey'),
+      confirmation: optionalConfirmation(body.confirmation),
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
   });
 
   server.post('/api/ai/client-configuration/:client/verify', async (request, response, params) => {
+    if (!requireService(options, response)) return;
     if (!authorizeClientConfig(request, response, 'client-config:read')) {
       return;
     }
@@ -68,18 +73,25 @@ export function registerAiClientConfigurationRoutes(
     if (!body) {
       return;
     }
-    await sendServiceResult(response, () => options.service.verify({
+    await sendServiceResult(response, () => options.service!.verify({
       client: requireClient(params.client),
       planId: optionalString(body.planId),
     }));
   });
 
   server.post('/api/ai/client-configuration/:client/restore', async (request, response, params) => {
+    if (!requireService(options, response)) return;
     if (!authorizeClientConfig(request, response, 'client-config:write')) {
       return;
     }
-    await sendServiceResult(response, () => options.service.restore(requireClient(params.client)));
+    await sendServiceResult(response, () => options.service!.restore(requireClient(params.client)));
   });
+}
+
+function requireService(options: AiClientConfigurationHandlerOptions, response: ServerResponse): boolean {
+  if (options.service) return true;
+  sendJson(response, 503, { error: 'client_configuration_unavailable' });
+  return false;
 }
 
 function authorizeClientConfig(
@@ -165,6 +177,14 @@ function requireString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function optionalConfirmation(value: unknown): { token: string; targetHash: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const token = optionalString(record.token);
+  const targetHash = optionalString(record.targetHash);
+  return token && targetHash ? { token, targetHash } : undefined;
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {

@@ -66,7 +66,9 @@ export function createXpodAiConnectionHost(runtime: XpodSolidRuntimeValue): WebE
       },
     },
     capabilities: {
-      aiClientConfiguration: runtime.currentPod
+      aiClientConfiguration: runtime.currentPod &&
+        runtime.aiClientConfiguration?.available === true &&
+        runtime.aiClientConfiguration.authority === 'local-filesystem'
         ? createXpodAiClientConfigurationBridge({
           podUrl: runtime.currentPod.podUrl,
           authenticatedFetch: runtime.fetch,
@@ -79,21 +81,21 @@ export function createXpodAiConnectionHost(runtime: XpodSolidRuntimeValue): WebE
 const unsupportedAiClientConfiguration = {
   inspect: async () => ({
     status: 'unavailable' as const,
-    message: 'AI client filesystem configuration is unavailable in the browser host.',
+    message: 'Host does not support local client configuration. Use the manual setup instructions for your client.',
   }),
   plan: async () => {
-    throw new Error('AI client filesystem configuration is unavailable in the browser host.');
+    throw new Error('Host does not support local client configuration. Use the manual setup instructions for your client.');
   },
   apply: async () => {
-    throw new Error('AI client filesystem configuration is unavailable in the browser host.');
+    throw new Error('Host does not support local client configuration. Use the manual setup instructions for your client.');
   },
   verify: async () => ({
     status: 'unavailable' as const,
-    message: 'AI client filesystem configuration is unavailable in the browser host.',
+    message: 'Host does not support local client configuration. Use the manual setup instructions for your client.',
   }),
   restore: async () => ({
     status: 'unavailable' as const,
-    message: 'AI client filesystem configuration is unavailable in the browser host.',
+    message: 'Host does not support local client configuration. Use the manual setup instructions for your client.',
   }),
 };
 

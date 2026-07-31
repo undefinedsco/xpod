@@ -9,6 +9,7 @@ import {
   type SolidSessionSnapshot,
 } from '@undefineds.co/solid-sdk';
 import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
+import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import { createContext, useContext } from 'react';
 import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision-scope';
 
@@ -29,6 +30,7 @@ export interface XpodSolidRuntimeValue {
   readonly podUrl?: string;
   readonly issuer?: string;
   readonly currentPod?: OpenPodRuntime<SolidDatabase>;
+  readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority'>;
   login(issuer: string): Promise<void>;
   logout(): Promise<void>;
 }

@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
+import { createXpodAiClientConfigurationBridge } from '../../api/ai-connection';
 import ModelsPage from './ModelsPage';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -70,7 +71,7 @@ describe('ModelsPage coding-client configuration capability', () => {
       throw new Error(`Unexpected request ${method} ${url.pathname}`);
     }) as typeof fetch;
 
-    const { container, root } = await renderModelsPage(runtimeWith(fetchImpl));
+    const { container, root } = await renderModelsPage(runtimeWith(fetchImpl, true));
 
     await waitForText(container, 'Codex');
     await act(async () => {
@@ -128,6 +129,42 @@ describe('ModelsPage coding-client configuration capability', () => {
     expect(container.textContent).not.toContain('应用 Codex 配置');
     await unmount(root);
   });
+
+  it('preserves structured client-config errors for failed-and-restored recovery UI', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/applets/service-access/ai-connection') {
+        return json({
+          invocation: {
+            baseUrl: 'https://pod.example',
+            gatewayKey: 'xpod_inv_v1.client-config-token',
+          },
+        });
+      }
+      if (url.pathname.endsWith('/apply')) {
+        return json({
+          code: 'verification_failed_restored',
+          message: '配置验证失败，已自动恢复原配置。',
+          details: { restored: true },
+        }, { status: 502 });
+      }
+      return json({ status: 'notConfigured' });
+    }) as typeof fetch;
+    const bridge = createXpodAiClientConfigurationBridge({
+      podUrl: POD_URL,
+      authenticatedFetch: fetchImpl,
+    });
+
+    await expect(bridge.apply({
+      client: 'codex',
+      planId: 'plan-1',
+      gatewayKey: 'xpod_gw_once',
+    })).rejects.toMatchObject({
+      code: 'verification_failed_restored',
+      status: 502,
+      details: { restored: true },
+    });
+  });
 });
 
 function installDom() {
@@ -169,7 +206,7 @@ async function unmount(root: Root) {
   });
 }
 
-function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
+function runtimeWith(fetchImpl: typeof fetch, clientConfigAvailable = false): XpodSolidRuntimeValue {
   return {
     session: {
       fetch: fetchImpl,
@@ -182,9 +219,12 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
     webId: WEB_ID,
     podUrl: POD_URL,
     currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    aiClientConfiguration: clientConfigAvailable
+      ? { available: true, authority: 'local-filesystem' }
+      : undefined,
     login: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
-  };
+  } as XpodSolidRuntimeValue;
 }
 
 function json(value: unknown, init: ResponseInit = {}) {

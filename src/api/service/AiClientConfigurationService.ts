@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 export type AiClientId = 'codex' | 'claude-code' | 'pi' | 'codebuddy';
 
 export interface AiClientConfigurationStatus {
-  status: 'notConfigured' | 'configured' | 'drifted' | 'unavailable';
+  status: 'notConfigured' | 'configured' | 'drifted' | 'unavailable' | 'unverifiable' | 'failedAndRestored';
   message?: string;
   installed?: boolean;
   configExists?: boolean;
@@ -18,6 +18,12 @@ export interface AiClientConfigurationPlan {
   conflicts: string[];
   backupLocation: string;
   replacementConfirmationRequired: boolean;
+  confirmation?: {
+    required: boolean;
+    token: string;
+    targetHash: string;
+    message?: string;
+  };
 }
 
 export interface AiClientConfigurationChange {
@@ -54,6 +60,10 @@ export interface ApplyInput {
   planId: string;
   gatewayKey: string;
   webId?: string;
+  confirmation?: {
+    token: string;
+    targetHash: string;
+  };
 }
 
 export interface VerifyInput {
@@ -80,6 +90,10 @@ interface StoredPlan {
   backupDir: string;
   targets: PlannedTarget[];
   gatewayKey?: string;
+  confirmation?: {
+    token: string;
+    targetHash: string;
+  };
 }
 
 interface PlannedTarget {
@@ -219,6 +233,12 @@ export class AiClientConfigurationService {
       webId: input.webId,
       backupDir,
       targets: [target],
+      ...(adapter.replacementConfirmationRequired ? {
+        confirmation: {
+          token: `confirm-${input.client}-${target.beforeHash.slice(0, 12)}`,
+          targetHash: target.beforeHash,
+        },
+      } : {}),
     };
     this.plans.set(plan.planId, plan);
     return publicPlan(plan, this.homeDir);
@@ -228,6 +248,15 @@ export class AiClientConfigurationService {
     const plan = this.requirePlan(input.client, input.planId);
     if (!input.gatewayKey?.startsWith('xpod_')) {
       throw new AiClientConfigurationError('invalid_gateway_key', 'Gateway key is required.', 400);
+    }
+    if (plan.confirmation) {
+      if (!input.confirmation?.token) {
+        throw new AiClientConfigurationError('confirmation_required', 'Replacement confirmation is required.', 409);
+      }
+      if (input.confirmation.token !== plan.confirmation.token ||
+        input.confirmation.targetHash !== plan.confirmation.targetHash) {
+        throw new AiClientConfigurationError('confirmation_stale', 'Replacement confirmation is stale.', 409);
+      }
     }
     return this.withTargetLocks(plan.targets.map((target) => target.filePath), async () => {
       for (const target of plan.targets) {
@@ -294,7 +323,11 @@ export class AiClientConfigurationService {
       return status;
     }
     if (!plan?.gatewayKey) {
-      return status;
+      return {
+        ...status,
+        status: 'unverifiable',
+        message: 'Gateway key is not recoverable after restart; re-apply the client configuration to verify it.',
+      };
     }
     const controller = new AbortController();
     await this.verifyGateway({
@@ -444,6 +477,14 @@ function publicPlan(plan: StoredPlan, homeDir: string): AiClientConfigurationPla
     conflicts: [],
     backupLocation: displayPath(homeDir, plan.backupDir),
     replacementConfirmationRequired: adapterFor(plan.client).replacementConfirmationRequired,
+    ...(plan.confirmation ? {
+      confirmation: {
+        required: true,
+        token: plan.confirmation.token,
+        targetHash: plan.confirmation.targetHash,
+        message: 'This client may replace the active default model. Re-enter the confirmation token before applying.',
+      },
+    } : {}),
   };
 }
 
@@ -491,7 +532,18 @@ function removeManagedConfiguration(adapter: Pick<ClientAdapter, 'format'>, cont
   if (isObject(parsed.xpod) && parsed.xpod._managedBy === MANAGED_BY) {
     delete parsed.xpod;
   }
+  stripStaleXpodEnv(parsed);
   return `${JSON.stringify(parsed, null, 2)}\n`;
+}
+
+function stripStaleXpodEnv(parsed: Record<string, unknown>): void {
+  if (!isObject(parsed.env)) return;
+  for (const key of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'CODEBUDDY_BASE_URL', 'CODEBUDDY_API_KEY']) {
+    const value = parsed.env[key];
+    if (typeof value === 'string' && (value.includes('xpod') || value.includes('/api/ai'))) {
+      delete parsed.env[key];
+    }
+  }
 }
 
 function containsManagedConfiguration(adapter: ClientAdapter, content: string): boolean {

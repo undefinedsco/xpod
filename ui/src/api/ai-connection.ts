@@ -164,6 +164,7 @@ export function createXpodAiClientConfigurationBridge({
       body: JSON.stringify({
         planId: input.planId,
         gatewayKey: input.gatewayKey,
+        confirmation: input.confirmation,
       }),
     })),
     verify: async (input) => readClientConfigJson<AiClientConfigurationStatus>(await gatewayFetch(`${clientConfigUrl(apiBase, input.client)}/verify`, {
@@ -249,14 +250,41 @@ function clientConfigUrl(apiBase: string, client: AiClientId): string {
 
 async function readClientConfigJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    await response.arrayBuffer();
-    throw new Error('AI client configuration request failed. Please try again.');
+    throw await clientConfigErrorFromResponse(response);
   }
   if (!response.headers.get('content-type')?.includes('application/json')) {
     await response.arrayBuffer();
     throw new Error('AI client configuration request failed. Please try again.');
   }
   return await response.json() as T;
+}
+
+async function clientConfigErrorFromResponse(response: Response): Promise<Error> {
+  let payload: unknown;
+  try {
+    payload = response.headers.get('content-type')?.includes('application/json')
+      ? await response.json()
+      : undefined;
+  } catch {
+    payload = undefined;
+  }
+  if (isRecord(payload)) {
+    const code = typeof payload.code === 'string'
+      ? payload.code
+      : typeof payload.error === 'string'
+        ? payload.error
+        : undefined;
+    const message = typeof payload.message === 'string'
+      ? payload.message
+      : 'AI client configuration request failed. Please try again.';
+    const error = new Error(message) as Error & { code?: string; status?: number; details?: unknown };
+    error.code = code;
+    error.status = response.status;
+    error.details = payload.details;
+    return error;
+  }
+  await response.arrayBuffer().catch(() => undefined);
+  return new Error('AI client configuration request failed. Please try again.');
 }
 
 function unavailableClientConfigStatus(): AiClientConfigurationStatus {
@@ -301,4 +329,8 @@ function isStructuredGatewayError(value: unknown): value is {
     && typeof (error as { message?: unknown }).message === 'string'
     && typeof (error as { status?: unknown }).status === 'number',
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

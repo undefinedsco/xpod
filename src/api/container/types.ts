@@ -126,6 +126,13 @@ export interface ApiContainerConfig {
 
   /** AI Provider Connect is disabled by default for backwards-compatible startup. */
   aiGatewayConnectEnabled?: boolean;
+  /** Local filesystem host capability for AI coding-client configuration. Disabled unless explicitly injected. */
+  aiClientConfiguration?: {
+    enabled: boolean;
+    homeDir: string;
+    backupRoot?: string;
+    authority: 'local-filesystem';
+  };
   /** Platform signing secret for short-lived provider Connect attempts. */
   aiGatewayConnectSigningSecret?: string;
   /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */

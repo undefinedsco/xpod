@@ -117,11 +117,10 @@ function registerSharedRoutes(
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
   const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
-  const aiClientConfigurationService = container.resolve('aiClientConfigurationService', { allowUnregistered: true })
-    ?? new AiClientConfigurationService();
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
+  const aiClientConfigurationService = resolveAiClientConfigurationService(container, config);
   const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true });
   const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true });
   const dnsCoordinator = container.resolve('dnsCoordinator', { allowUnregistered: true });
@@ -221,6 +220,22 @@ function registerSharedRoutes(
   } catch (error) {
     console.log(`[Shared] Quota & Usage routes not registered: ${error}`);
   }
+}
+
+function resolveAiClientConfigurationService(
+  container: AwilixContainer<ApiContainerCradle>,
+  config: ApiContainerConfig,
+): AiClientConfigurationService | undefined {
+  const injected = container.resolve('aiClientConfigurationService', { allowUnregistered: true });
+  if (injected) return injected;
+  const capability = config.aiClientConfiguration;
+  if (!capability?.enabled || capability.authority !== 'local-filesystem') {
+    return undefined;
+  }
+  return new AiClientConfigurationService({
+    homeDir: capability.homeDir,
+    backupRoot: capability.backupRoot,
+  });
 }
 
 function createDynamicEdgeCertificateBridge(config: ApiContainerConfig): unknown {

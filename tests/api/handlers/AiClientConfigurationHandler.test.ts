@@ -70,7 +70,7 @@ describe('AiClientConfigurationHandler', () => {
     expect(plan.client).toBe(client);
     expect(plan.planId).toMatch(/^aicfg_/);
     expect(plan.backupLocation).toContain('.xpod/client-config-backups');
-    expect(plan.replacementConfirmationRequired).toBe(client === 'pi');
+    expect(plan.confirmation?.required ?? false).toBe(client === 'pi');
     expect(plan.changes.length).toBeGreaterThan(0);
     expect(JSON.stringify(plan)).toContain('[redacted]');
     expect(JSON.stringify(plan)).not.toContain(GATEWAY_KEY);
@@ -83,7 +83,17 @@ describe('AiClientConfigurationHandler', () => {
 
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY, providerCredential: PROVIDER_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({
+        planId: plan.planId,
+        gatewayKey: GATEWAY_KEY,
+        providerCredential: PROVIDER_KEY,
+        ...(plan.confirmation ? {
+          confirmation: {
+            token: plan.confirmation.token,
+            targetHash: plan.confirmation.targetHash,
+          },
+        } : {}),
+      }, scopedAuth('client-config:write')),
       apply,
       { client },
     );
@@ -206,6 +216,118 @@ describe('AiClientConfigurationHandler', () => {
     const current = await fs.readFile(path.join(tmpDir, '.claude', 'settings.json'), 'utf8');
     expect(current).toContain('userEdited');
     expect(current).not.toContain(GATEWAY_KEY);
+  });
+
+  it('requires a fresh confirmation token for replacement-sensitive client plans', async () => {
+    const plan = await postPlan('pi');
+    expect(plan.confirmation).toMatchObject({ required: true });
+
+    const missing = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      missing,
+      { client: 'pi' },
+    );
+    expect(missing.statusCode).toBe(409);
+    expect(JSON.parse(missing.body)).toEqual({ error: 'confirmation_required' });
+
+    const stale = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({
+        planId: plan.planId,
+        gatewayKey: GATEWAY_KEY,
+        confirmation: { token: plan.confirmation.token, targetHash: 'stale' },
+      }, scopedAuth('client-config:write')),
+      stale,
+      { client: 'pi' },
+    );
+    expect(stale.statusCode).toBe(409);
+    expect(JSON.parse(stale.body)).toEqual({ error: 'confirmation_stale' });
+  });
+
+  it('verifies managed config after restart only when a recoverable key reference exists', async () => {
+    const plan = await postPlan('codex');
+    const apply = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      apply,
+      { client: 'codex' },
+    );
+    expect(apply.statusCode).toBe(200);
+
+    const restarted = new AiClientConfigurationService({
+      homeDir: tmpDir,
+      backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
+      verifyGateway: vi.fn(),
+      now: () => new Date('2026-07-31T08:00:00.000Z'),
+    });
+    const server = createServer();
+    routes = server.routes;
+    registerAiClientConfigurationRoutes(server.server, { service: restarted });
+
+    const verify = response();
+    await route('POST /api/ai/client-configuration/:client/verify')(
+      jsonRequest({}, scopedAuth('client-config:read')),
+      verify,
+      { client: 'codex' },
+    );
+    expect(JSON.parse(verify.body)).toMatchObject({
+      status: 'unverifiable',
+      message: expect.stringContaining('Gateway key is not recoverable'),
+    });
+  });
+
+  it('restore strips old and current managed values without reviving stale xpod keys', async () => {
+    const target = path.join(tmpDir, '.claude', 'settings.json');
+    await fs.writeFile(target, JSON.stringify({
+      env: {
+        KEEP_BEFORE: 'yes',
+        ANTHROPIC_BASE_URL: 'https://old-xpod.example/api/ai',
+        ANTHROPIC_AUTH_TOKEN: 'old-xpod-secret',
+      },
+    }, null, 2));
+    const plan = await postPlan('claude-code');
+    const apply = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      apply,
+      { client: 'claude-code' },
+    );
+    expect(apply.statusCode).toBe(200);
+    const afterApply = JSON.parse(await fs.readFile(target, 'utf8'));
+    afterApply.after = true;
+    afterApply.env.KEEP_AFTER = 'yes';
+    await fs.writeFile(target, JSON.stringify(afterApply, null, 2));
+
+    const restore = response();
+    await route('POST /api/ai/client-configuration/:client/restore')(
+      jsonRequest({}, scopedAuth('client-config:write')),
+      restore,
+      { client: 'claude-code' },
+    );
+
+    const restored = JSON.parse(await fs.readFile(target, 'utf8'));
+    expect(restored.after).toBe(true);
+    expect(restored.env.KEEP_BEFORE).toBe('yes');
+    expect(restored.env.KEEP_AFTER).toBe('yes');
+    expect(restored.env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(restored.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it('returns 503 when the local filesystem host capability is not registered', async () => {
+    const server = createServer();
+    routes = server.routes;
+    registerAiClientConfigurationRoutes(server.server, { service: undefined });
+
+    const res = response();
+    await route('GET /api/ai/client-configuration/:client')(
+      jsonRequest(undefined, scopedAuth('client-config:read')),
+      res,
+      { client: 'codex' },
+    );
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'client_configuration_unavailable' });
   });
 
   async function postPlan(client: AiClientId) {
