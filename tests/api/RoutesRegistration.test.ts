@@ -609,6 +609,38 @@ describe('registerRoutes mode wiring', () => {
     expect(hasEdgeNodeCertificateCapabilityBridge(bridgeId)).toBe(false);
   });
 
+  it('returns certificate renewal unavailable when the dynamic bridge source disappears after availability', async () => {
+    const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({ nodeId: 'node-disappears' })!;
+    let releaseSource: () => void = () => undefined;
+    const runtime = {
+      readCertificateStatus: vi.fn(async () => ({ status: 'valid', expiresAt: '2026-12-01T00:00:00.000Z' })),
+      isAvailable: vi.fn(async () => {
+        releaseSource();
+        return true;
+      }),
+      renewCertificate: vi.fn(async () => undefined),
+    };
+
+    releaseSource = getEdgeNodeCertificateCapabilityBridge(bridgeId).setSource(() => runtime);
+    registerRoutes(createContainer('local', {
+      config: {
+        nodeId: 'node-disappears',
+        publicUrl: 'https://local-public.example/',
+      },
+    }));
+
+    const renewRes = jsonResponse();
+    await routes['POST /api/network/settings/certificate/renew'](authedRequest('write'), renewRes, {});
+
+    expect(renewRes.statusCode).toBe(503);
+    expect(JSON.parse(renewRes.body)).toMatchObject({
+      code: 'certificate_renewal_unavailable',
+    });
+    expect(runtime.isAvailable).toHaveBeenCalledTimes(1);
+    expect(runtime.renewCertificate).not.toHaveBeenCalled();
+    expect(hasEdgeNodeCertificateCapabilityBridge(bridgeId)).toBe(false);
+  });
+
   it('keeps TLS unsupported when no certificate runtime surface is registered', async () => {
     registerRoutes(createContainer('local', {
       config: {

@@ -230,7 +230,14 @@ function createDynamicEdgeCertificateBridge(config: ApiContainerConfig): unknown
         ?? { supported: false, status: 'unsupported' };
     },
     renewCertificate: async () => {
-      return await findEdgeNodeCertificateCapabilityBridge(bridgeId)?.renewCertificate();
+      const bridge = findEdgeNodeCertificateCapabilityBridge(bridgeId);
+      if (!bridge) {
+        throw Object.assign(new Error('Certificate runtime is not available.'), {
+          statusCode: 503,
+          code: 'certificate_renewal_unavailable',
+        });
+      }
+      return await bridge.renewCertificate();
     },
     isAvailable: async () => {
       return Boolean(await findEdgeNodeCertificateCapabilityBridge(bridgeId)?.isAvailable());
