@@ -132,9 +132,9 @@ export function XpodSettingsLayout() {
         </>
       }
     >
-      <main className="min-h-full bg-background" aria-label="Xpod settings workspace">
+      <div className="min-h-full bg-background">
         <Outlet />
-      </main>
+      </div>
     </AppLayout>
   );
 }

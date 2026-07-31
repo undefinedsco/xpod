@@ -4,12 +4,13 @@ import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddl
 import {
   createAllowedAdminConfigPatch,
   createAdminServicesCapabilities,
+  isAdminMutationAllowed,
   isAdminSecretEnvKey,
   sanitizeEnvForRead,
   sanitizeLogMessage,
 } from '../../../src/api/handlers/AdminHandler';
 
-function request(host: string, token?: string): AuthenticatedRequest {
+function request(host: string, token?: string, remoteAddress = '127.0.0.1'): AuthenticatedRequest {
   const req = new PassThrough() as PassThrough & AuthenticatedRequest;
   req.method = 'GET';
   req.url = '/api/admin/status';
@@ -17,6 +18,10 @@ function request(host: string, token?: string): AuthenticatedRequest {
     host,
     ...(token ? { 'x-xpod-admin-token': token } : {}),
   };
+  Object.defineProperty(req, 'socket', {
+    configurable: true,
+    value: { remoteAddress },
+  });
   req.end();
   return req;
 }
@@ -26,7 +31,7 @@ describe('admin runtime config safety', () => {
     const previousToken = process.env.XPOD_ADMIN_TOKEN;
     process.env.XPOD_ADMIN_TOKEN = 'admin-token';
     try {
-      expect(createAdminServicesCapabilities(request('xpod.example')).services).toEqual({
+      expect(createAdminServicesCapabilities(request('xpod.example', undefined, '203.0.113.10')).services).toEqual({
         lifecycle: {
           restart: { supported: false, reason: 'requires_loopback_or_admin_token' },
         },
@@ -35,12 +40,34 @@ describe('admin runtime config safety', () => {
         },
       });
 
-      expect(createAdminServicesCapabilities(request('localhost:3000')).services).toEqual({
+      expect(createAdminServicesCapabilities(request('localhost:3000', undefined, '127.0.0.1')).services).toEqual({
         lifecycle: { restart: { supported: true } },
         configuration: { write: { supported: true } },
       });
 
-      expect(createAdminServicesCapabilities(request('xpod.example', 'admin-token')).services.lifecycle.restart.supported).toBe(true);
+      expect(createAdminServicesCapabilities(request('xpod.example', 'admin-token', '203.0.113.10')).services.lifecycle.restart.supported).toBe(true);
+    } finally {
+      if (previousToken === undefined) {
+        delete process.env.XPOD_ADMIN_TOKEN;
+      } else {
+        process.env.XPOD_ADMIN_TOKEN = previousToken;
+      }
+    }
+  });
+
+  it('uses socket loopback or a valid admin token for the shared mutation authorizer', () => {
+    const previousToken = process.env.XPOD_ADMIN_TOKEN;
+    process.env.XPOD_ADMIN_TOKEN = 'admin-token';
+    try {
+      const spoofedHost = request('localhost:3000', undefined, '203.0.113.10');
+      expect(isAdminMutationAllowed(spoofedHost)).toBe(false);
+      expect(createAdminServicesCapabilities(spoofedHost).services.lifecycle.restart.supported).toBe(false);
+
+      expect(isAdminMutationAllowed(request('xpod.example', undefined, '127.0.0.1'))).toBe(true);
+      expect(isAdminMutationAllowed(request('xpod.example', undefined, '::1'))).toBe(true);
+      expect(isAdminMutationAllowed(request('xpod.example', undefined, '::ffff:127.0.0.1'))).toBe(true);
+      expect(isAdminMutationAllowed(request('xpod.example', 'admin-token', '203.0.113.10'))).toBe(true);
+      expect(isAdminMutationAllowed(request('xpod.example', 'wrong-token', '203.0.113.10'))).toBe(false);
     } finally {
       if (previousToken === undefined) {
         delete process.env.XPOD_ADMIN_TOKEN;

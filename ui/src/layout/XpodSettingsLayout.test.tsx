@@ -44,7 +44,7 @@ describe('settings navigation metadata', () => {
 });
 
 describe('XpodSettingsLayout', () => {
-  test('renders SDK host shell navigation, host header search, and one main landmark', () => {
+  test('renders SDK host shell navigation and host header search without adding a nested workspace landmark', () => {
     const html = renderLayout('/models');
 
     expect(html).toContain('data-app-layout="workspace"');
@@ -54,7 +54,7 @@ describe('XpodSettingsLayout', () => {
     expect(html).toContain('Services');
     expect(html).toContain('aria-label="Search settings"');
     expect(html).toContain('Models workspace');
-    expect((html.match(/<main/g) ?? []).length).toBe(1);
+    expect((html.match(/<main/g) ?? []).length).toBe(0);
   });
 
   test('marks the active navigation link for assistive technology', () => {

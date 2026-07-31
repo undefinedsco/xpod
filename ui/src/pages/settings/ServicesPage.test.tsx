@@ -183,19 +183,58 @@ describe('Services settings navigation', () => {
     expect(legacyDashboardRedirects.settings).toBe('/services/configuration');
   });
 
-  test('renders services navigation, runtime data, and a single main landmark', async () => {
+  test('renders services through SDK two-pane slots with runtime data and a single main landmark', async () => {
     const { container, root, fetchImpl } = await renderServices('/services');
 
     expect(container.querySelector('[data-workspace-layout="two-pane"]')).toBeTruthy();
-    expect(container.textContent).toContain('Runtime');
-    expect(container.textContent).toContain('Logs');
-    expect(container.textContent).toContain('RDF');
-    expect(container.textContent).toContain('Configuration');
-    expect(container.textContent).toContain('Xpod runtime');
-    expect(container.querySelectorAll('main')).toHaveLength(0);
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Runtime');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Logs');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('RDF');
+    expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Configuration');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Xpod runtime');
+    expect(container.querySelectorAll('main')).toHaveLength(1);
     expect(fetchImpl).toHaveBeenCalledWith('/service/status', expect.anything());
     expect(fetchImpl).toHaveBeenCalledWith('/api/admin/status', expect.anything());
     await unmount(root);
+  });
+
+  test('uses SDK stack navigation and back-to-list behavior in narrow mode', async () => {
+    installDom();
+    globalThis.fetch = createFetch();
+    const stackContainer = document.getElementById('root');
+    if (!stackContainer) throw new Error('missing root');
+    const stackRoot = createRoot(stackContainer);
+
+    await act(async () => {
+      stackRoot.render(
+        <MemoryRouter initialEntries={['/services']}>
+          <Routes>
+            <Route path="/services" element={<ServicesPage mode="stack" />}>
+              <Route index element={<RuntimeProbe />} />
+              <Route path="runtime" element={<RuntimeProbe />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    const listPane = stackContainer.querySelector('[data-testid="workspace-list-pane"]');
+    const mainPane = stackContainer.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null;
+    expect(listPane).toBeTruthy();
+    expect(mainPane?.hidden).toBe(true);
+
+    const runtimeLink = Array.from(stackContainer.querySelectorAll('a')).find((link) => link.textContent?.includes('Runtime'));
+    await act(async () => {
+      runtimeLink?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect((stackContainer.querySelector('[data-testid="workspace-list-pane"]') as HTMLElement | null)?.hidden).toBe(true);
+    expect((stackContainer.querySelector('[data-testid="workspace-main-pane"]') as HTMLElement | null)?.hidden).toBe(false);
+    expect(stackContainer.textContent).toContain('返回列表');
+    expect(stackContainer.querySelectorAll('main')).toHaveLength(1);
+    await unmount(stackRoot);
   });
 
   test('checks public reachability against the resolved DDNS access URL', async () => {

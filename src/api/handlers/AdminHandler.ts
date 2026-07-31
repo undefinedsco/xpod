@@ -6,6 +6,8 @@
 import type { ServerResponse } from 'node:http';
 import type { ApiServer, RouteHandler } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 import fs from 'fs';
 import path from 'path';
 import { createReadStream, statSync } from 'fs';
@@ -151,20 +153,41 @@ function sanitizeLogEntry(entry: LogEntry, env: EnvConfig): LogEntry {
   };
 }
 
-function isLocalAdminHost(req: AuthenticatedRequest): boolean {
+function safeTokenEquals(actual: string, expected: string): boolean {
+  const actualHash = createHash('sha256').update(actual).digest();
+  const expectedHash = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(actualHash, expectedHash);
+}
+
+function isLoopbackRemoteAddress(remoteAddress: string | undefined): boolean {
+  if (!remoteAddress) return false;
+  const normalized = remoteAddress.startsWith('::ffff:')
+    ? remoteAddress.slice('::ffff:'.length)
+    : remoteAddress;
+
+  if (isIP(normalized) === 4) {
+    return normalized.startsWith('127.');
+  }
+  return normalized === '::1';
+}
+
+export function isAdminMutationAllowed(req: AuthenticatedRequest): boolean {
   const configuredToken = process.env.XPOD_ADMIN_TOKEN;
   const providedToken = req.headers['x-xpod-admin-token'] ??
     req.headers.authorization?.replace(/^Bearer\s+/i, '');
-  if (configuredToken && providedToken === configuredToken) {
+  if (
+    configuredToken &&
+    typeof providedToken === 'string' &&
+    safeTokenEquals(providedToken, configuredToken)
+  ) {
     return true;
   }
 
-  const host = String(req.headers.host ?? '').split(':')[0].toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1';
+  return isLoopbackRemoteAddress(req.socket.remoteAddress);
 }
 
 function assertAdminMutationAllowed(req: AuthenticatedRequest, res: ServerResponse): boolean {
-  if (isLocalAdminHost(req)) {
+  if (isAdminMutationAllowed(req)) {
     return true;
   }
   sendJson(res, 403, {
@@ -180,7 +203,7 @@ export function createAdminServicesCapabilities(req: AuthenticatedRequest): {
     configuration: { write: { supported: boolean; reason?: string } };
   };
 } {
-  const adminMutationSupported = isLocalAdminHost(req);
+  const adminMutationSupported = isAdminMutationAllowed(req);
   const adminMutationReason = adminMutationSupported ? undefined : 'requires_loopback_or_admin_token';
 
   return {

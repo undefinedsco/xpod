@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { TwoPaneLayout, useWorkspaceLayout, type TwoPaneLayoutMode } from '@undefineds.co/extension-sdk/react';
 import { clsx } from 'clsx';
 import { RefreshCw, Server } from 'lucide-react';
 import {
@@ -15,7 +16,7 @@ const unsupportedCapability: AdminCapability = {
   reason: 'capability_not_reported',
 };
 
-export default function ServicesPage() {
+export default function ServicesPage({ mode = 'auto' }: { mode?: TwoPaneLayoutMode }) {
   const [snapshot, setSnapshot] = useState<ServicesStatusSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -89,12 +90,11 @@ export default function ServicesPage() {
 
   return (
     <ServicesStatusContext.Provider value={contextValue}>
-      <div data-workspace-layout="two-pane" className="flex min-h-full flex-col bg-background">
-        <div className="h-16 shrink-0 border-b border-border">
-          <ServicesHeader loading={loading || refreshing} onRefresh={contextValue.refresh} />
-        </div>
-        <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[320px_minmax(0,1fr)]">
-          <ServicesSidebar snapshot={snapshot} loading={loading && !snapshot} />
+      <TwoPaneLayout
+        mode={mode}
+        header={<ServicesHeader loading={loading || refreshing} onRefresh={contextValue.refresh} />}
+        list={<ServicesSidebar snapshot={snapshot} loading={loading && !snapshot} />}
+        main={
           <section className="min-h-full min-w-0 bg-background">
             {error ? (
               <div role="alert" className="mx-6 mt-6 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -103,8 +103,9 @@ export default function ServicesPage() {
             ) : null}
             <Outlet />
           </section>
-        </div>
-      </div>
+        }
+        className="min-h-full"
+      />
     </ServicesStatusContext.Provider>
   );
 }
@@ -131,6 +132,7 @@ function ServicesHeader({ loading, onRefresh }: { loading: boolean; onRefresh: (
 
 function ServicesSidebar({ snapshot, loading }: { snapshot: ServicesStatusSnapshot | null; loading: boolean }) {
   const location = useLocation();
+  const workspace = useWorkspaceLayout();
   const services = snapshot?.servicesData ?? [];
   const runningCount = services.filter((service) => service.status === 'running').length;
   const serviceCount = services.length;
@@ -172,6 +174,7 @@ function ServicesSidebar({ snapshot, loading }: { snapshot: ServicesStatusSnapsh
             <NavLink
               key={item.id}
               to={item.path}
+              onClick={() => workspace.openMain()}
               className={({ isActive }) => clsx(
                 'flex gap-3 rounded-md px-3 py-2 text-sm transition-colors',
                 'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
