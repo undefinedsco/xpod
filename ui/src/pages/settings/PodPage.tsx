@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
 import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
@@ -10,38 +10,71 @@ export default function PodPage() {
   const [status, setStatus] = useState<PodSettingsStatus>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
+  const requestIdRef = useRef(0);
+  const activeIdentityKeyRef = useRef<string | undefined>(undefined);
+  const mountedRef = useRef(true);
 
   const canLoad = runtime.state.status === 'authenticated' && Boolean(runtime.webId && runtime.podUrl);
+  const identityKey = canLoad ? `${runtime.webId}\n${runtime.podUrl}` : undefined;
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    requestIdRef.current += 1;
+  }, []);
 
   const loadStatus = useCallback(async () => {
-    if (!runtime.webId || !runtime.podUrl) {
+    const webId = runtime.webId;
+    const podUrl = runtime.podUrl;
+    const requestIdentityKey = identityKey;
+    if (!webId || !podUrl || !requestIdentityKey) {
       return;
     }
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    const isCurrentRequest = () => (
+      mountedRef.current
+      && requestIdRef.current === requestId
+      && activeIdentityKeyRef.current === requestIdentityKey
+    );
+
     setLoading(true);
     setError(undefined);
     try {
-      setStatus(await fetchPodSettingsStatus({
-        webId: runtime.webId,
-        podUrl: runtime.podUrl,
+      const nextStatus = await fetchPodSettingsStatus({
+        webId,
+        podUrl,
         authenticatedFetch: runtime.fetch,
-      }));
+      });
+      if (isCurrentRequest()) {
+        setStatus(nextStatus);
+      }
     } catch {
-      setError('Pod settings request failed. Please try again.');
+      if (isCurrentRequest()) {
+        setError('Pod settings request failed. Please try again.');
+      }
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) {
+        setLoading(false);
+      }
     }
-  }, [runtime.fetch, runtime.podUrl, runtime.webId]);
+  }, [identityKey, runtime.fetch, runtime.podUrl, runtime.webId]);
 
   useEffect(() => {
-    if (canLoad) {
+    activeIdentityKeyRef.current = identityKey;
+    requestIdRef.current += 1;
+    setStatus(undefined);
+    setError(undefined);
+    setLoading(false);
+    if (identityKey) {
       void loadStatus();
     }
-  }, [canLoad, loadStatus]);
+  }, [identityKey, loadStatus]);
 
   const identity = useMemo(() => ({
     webId: runtime.webId ?? status?.identity.webId,
     podUrl: runtime.podUrl ?? status?.identity.podUrl,
-  }), [runtime.podUrl, runtime.webId, status]);
+    issuer: runtime.issuer,
+  }), [runtime.issuer, runtime.podUrl, runtime.webId, status]);
 
   const openPod = () => {
     if (!identity.podUrl) return;
@@ -62,6 +95,7 @@ export default function PodPage() {
           <IdentityCard
             webId={identity.webId}
             podUrl={identity.podUrl}
+            issuer={identity.issuer}
             sessionStatus={runtime.state.status}
             onOpenPod={openPod}
             onLogout={() => void runtime.logout()}
@@ -104,6 +138,7 @@ export default function PodPage() {
 export function IdentityCard({
   webId,
   podUrl,
+  issuer,
   sessionStatus,
   onOpenPod,
   onLogout,
@@ -112,6 +147,7 @@ export function IdentityCard({
 }: {
   webId?: string;
   podUrl?: string;
+  issuer?: string;
   sessionStatus: string;
   onOpenPod: () => void;
   onLogout: () => void;
@@ -128,6 +164,7 @@ export function IdentityCard({
         <div className="space-y-3 text-sm">
           <KeyValue label="WebID" value={webId ?? 'Not signed in'} />
           <KeyValue label="Pod" value={podUrl ?? 'Discovering'} />
+          <KeyValue label="Issuer" value={issuer ?? 'Unknown'} />
           <KeyValue label="Status" value={sessionStatus} />
         </div>
         <div className="flex flex-wrap gap-2">

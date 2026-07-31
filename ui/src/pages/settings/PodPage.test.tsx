@@ -10,6 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
+const ISSUER_URL = 'https://issuer.identity.example/';
 
 function installDom() {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -51,22 +52,65 @@ async function unmount(root: Root) {
   });
 }
 
-function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
+function createStatus({
+  webId = WEB_ID,
+  podUrl = POD_URL,
+  providers = 2,
+  containerUrl = 'https://pod.example/alice/settings/credentials.ttl',
+}: {
+  webId?: string;
+  podUrl?: string;
+  providers?: number;
+  containerUrl?: string;
+} = {}) {
+  return {
+    identity: { webId, podUrl },
+    storage: {
+      status: 'available',
+      usage: { storageBytes: 12_582_912, ingressBytes: 2048, egressBytes: 4096 },
+      limits: { storageLimitBytes: 104_857_600, bandwidthLimitBps: null },
+      source: 'identity_usage',
+    },
+    aiConnection: {
+      status: 'available',
+      containerUrl,
+      configuredProviders: providers,
+      lastSyncAt: '2026-07-31T03:04:05.000Z',
+      source: 'drizzle-solid',
+    },
+    generatedAt: '2026-07-31T03:05:00.000Z',
+  };
+}
+
+function deferredResponse(body: unknown) {
+  let resolve!: () => void;
+  const promise = new Promise<Response>((done) => {
+    resolve = () => done(new Response(JSON.stringify(body), {
+      headers: { 'content-type': 'application/json' },
+    }));
+  });
+  return { promise, resolve };
+}
+
+function runtimeWith(fetchImpl: typeof fetch, overrides: Partial<XpodSolidRuntimeValue> = {}): XpodSolidRuntimeValue {
+  const webId = overrides.webId ?? WEB_ID;
+  const podUrl = overrides.podUrl ?? POD_URL;
   return {
     session: {
       fetch: fetchImpl,
-      getSnapshot: () => ({ status: 'authenticated', webId: WEB_ID }),
+      getSnapshot: () => ({ status: 'authenticated', webId }),
       subscribe: () => () => undefined,
     } as XpodSolidRuntimeValue['session'],
     pod: {} as XpodSolidRuntimeValue['pod'],
     fetch: fetchImpl,
-    state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
-    webId: WEB_ID,
-    podUrl: POD_URL,
-    issuer: 'https://issuer.identity.example/',
-    currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    state: { status: 'authenticated', webId, podUrl },
+    webId,
+    podUrl,
+    issuer: ISSUER_URL,
+    currentPod: { podUrl } as XpodSolidRuntimeValue['currentPod'],
     login: mock(async () => undefined),
     logout: mock(async () => undefined),
+    ...overrides,
   };
 }
 
@@ -74,23 +118,7 @@ describe('PodPage', () => {
   test('renders real runtime identity, available usage, AI status, and safe actions', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe('https://pod.example/api/pod/settings/status');
-      return new Response(JSON.stringify({
-        identity: { webId: WEB_ID, podUrl: POD_URL },
-        storage: {
-          status: 'available',
-          usage: { storageBytes: 12_582_912, ingressBytes: 2048, egressBytes: 4096 },
-          limits: { storageLimitBytes: 104_857_600, bandwidthLimitBps: null },
-          source: 'identity_usage',
-        },
-        aiConnection: {
-          status: 'available',
-          containerUrl: 'https://pod.example/alice/settings/credentials.ttl',
-          configuredProviders: 2,
-          lastSyncAt: '2026-07-31T03:04:05.000Z',
-          source: 'drizzle-solid',
-        },
-        generatedAt: '2026-07-31T03:05:00.000Z',
-      }), { headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
     const runtime = runtimeWith(fetchImpl);
 
@@ -99,6 +127,7 @@ describe('PodPage', () => {
     expect(container.querySelector('[data-workspace-layout="two-pane"]')).toBeTruthy();
     expect(container.textContent).toContain(WEB_ID);
     expect(container.textContent).toContain(POD_URL);
+    expect(container.textContent).toContain(ISSUER_URL);
     expect(container.textContent).toContain('12 MB');
     expect(container.textContent).toContain('100 MB limit');
     expect(container.textContent).toContain('2 providers');
@@ -161,6 +190,108 @@ describe('PodPage', () => {
     expect(runtime.login).toHaveBeenCalledWith('https://issuer.identity.example/');
     expect(runtime.login).not.toHaveBeenCalledWith('https://id.example');
     expect(runtime.login).not.toHaveBeenCalledWith('https://storage.example');
+    await unmount(root);
+  });
+
+  test('keeps WebID, Pod, and issuer visually separate for split identity deployments', async () => {
+    const splitWebId = 'https://id.example/alice/profile/card#me';
+    const splitPodUrl = 'https://storage.example/alice/';
+    const splitIssuer = 'https://issuer.identity.example/';
+    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus({
+      webId: splitWebId,
+      podUrl: splitPodUrl,
+      containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
+    })), { headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+    const { container, root } = await renderPodPage(runtimeWith(fetchImpl, {
+      webId: splitWebId,
+      podUrl: splitPodUrl,
+      issuer: splitIssuer,
+      state: { status: 'authenticated', webId: splitWebId, podUrl: splitPodUrl },
+      currentPod: { podUrl: splitPodUrl } as XpodSolidRuntimeValue['currentPod'],
+    }));
+
+    expect(container.textContent).toContain('WebID');
+    expect(container.textContent).toContain(splitWebId);
+    expect(container.textContent).toContain('Pod');
+    expect(container.textContent).toContain(splitPodUrl);
+    expect(container.textContent).toContain('Issuer');
+    expect(container.textContent).toContain(splitIssuer);
+    await unmount(root);
+  });
+
+  test('ignores stale status responses after identity changes', async () => {
+    installDom();
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    const aWebId = 'https://id.example/alice/profile/card#me';
+    const aPodUrl = 'https://pod-a.example/alice/';
+    const bWebId = 'https://id.example/bob/profile/card#me';
+    const bPodUrl = 'https://pod-b.example/bob/';
+    const aResponse = deferredResponse(createStatus({
+      webId: aWebId,
+      podUrl: aPodUrl,
+      providers: 1,
+      containerUrl: 'https://pod-a.example/alice/settings/credentials.ttl',
+    }));
+    const bResponse = deferredResponse(createStatus({
+      webId: bWebId,
+      podUrl: bPodUrl,
+      providers: 7,
+      containerUrl: 'https://pod-b.example/bob/settings/credentials.ttl',
+    }));
+    const runtimeA = runtimeWith(mock(() => aResponse.promise) as typeof fetch, {
+      webId: aWebId,
+      podUrl: aPodUrl,
+      state: { status: 'authenticated', webId: aWebId, podUrl: aPodUrl },
+      currentPod: { podUrl: aPodUrl } as XpodSolidRuntimeValue['currentPod'],
+    });
+    const runtimeB = runtimeWith(mock(() => bResponse.promise) as typeof fetch, {
+      webId: bWebId,
+      podUrl: bPodUrl,
+      state: { status: 'authenticated', webId: bWebId, podUrl: bPodUrl },
+      currentPod: { podUrl: bPodUrl } as XpodSolidRuntimeValue['currentPod'],
+    });
+
+    await act(async () => {
+      root.render(
+        <XpodSolidRuntimeContext.Provider value={runtimeA}>
+          <PodPage />
+        </XpodSolidRuntimeContext.Provider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      root.render(
+        <XpodSolidRuntimeContext.Provider value={runtimeB}>
+          <PodPage />
+        </XpodSolidRuntimeContext.Provider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      bResponse.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain(bWebId);
+    expect(container.textContent).toContain(bPodUrl);
+    expect(container.textContent).toContain('7 providers');
+    expect(container.textContent).not.toContain(aPodUrl);
+    expect(container.textContent).not.toContain('1 providers');
+
+    await act(async () => {
+      aResponse.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain(bWebId);
+    expect(container.textContent).toContain(bPodUrl);
+    expect(container.textContent).toContain('7 providers');
+    expect(container.textContent).not.toContain(aWebId);
+    expect(container.textContent).not.toContain(aPodUrl);
+    expect(container.textContent).not.toContain('1 providers');
     await unmount(root);
   });
 });
