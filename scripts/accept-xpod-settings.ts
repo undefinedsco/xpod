@@ -16,7 +16,7 @@ export interface GateCommand {
   kind: 'command';
   command: string[];
   timeoutMs: number;
-  env?: Record<string, string>;
+  env?: Record<string, { present: boolean }>;
 }
 
 export interface ArtifactGate {
@@ -52,6 +52,21 @@ export interface EvidenceArtifact {
     checked: true;
     secretMaterialFound: false;
   };
+}
+
+export interface RealCodexProvenance {
+  webId: string;
+  gatewayKeyId: string;
+  gatewayKeyFingerprint: string;
+  credentialIri: string;
+  secretCellRef: string;
+  providerId: string;
+  providerRouteSource: 'pod-credential';
+  xpodBaseUrl: string;
+  generatedAt: string;
+  commandHash: string;
+  resultHash: string;
+  secretMaterialPrinted?: false;
 }
 
 export interface AcceptanceItem {
@@ -140,6 +155,22 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
 const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code)$/i;
 const SECRET_VALUE_PATTERN = /\b(?:sk-[A-Za-z0-9._-]+|xpod_gw_v1_[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+|oauth-code-[A-Za-z0-9._-]+)\b/g;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const PUBLIC_GATE_ENV_KEYS = new Set([
+  'XPOD_ACCEPTANCE_REAL_XPOD',
+  'XPOD_ACCEPTANCE_RUN_VISUAL',
+  'XPOD_ACCEPTANCE_RUN_DOCKER',
+  'XPOD_ACCEPTANCE_RUN_CODEX',
+  'XPOD_ACCEPTANCE_EXTERNAL_OAUTH',
+  'XPOD_SETTINGS_E2E_BASE_URL',
+  'XPOD_SETTINGS_E2E_ALICE_STATE',
+  'XPOD_SETTINGS_E2E_BOB_STATE',
+  'XPOD_SETTINGS_E2E_ALICE_POD_URL',
+  'XPOD_SETTINGS_E2E_TEST_API_KEY',
+  'XPOD_ACCEPTANCE_XPOD_BASE_URL',
+  'XPOD_ACCEPTANCE_MODEL',
+  'XPOD_ACCEPTANCE_GATEWAY_KEY',
+  'XPOD_ACCEPTANCE_OAUTH_EVIDENCE',
+]);
 
 export function buildAcceptancePlan(options: AcceptancePlanOptions = {}): AcceptanceReport {
   return buildAcceptanceReport({
@@ -372,8 +403,12 @@ function shellGate(command: string[], timeoutMs: number, env: Record<string, str
   };
 }
 
-function publicEnv(env: Record<string, string | undefined>): Record<string, string> {
-  return Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined)) as Record<string, string>;
+function publicEnv(env: Record<string, string | undefined>): Record<string, { present: boolean }> {
+  return Object.fromEntries(
+    Array.from(PUBLIC_GATE_ENV_KEYS)
+      .filter((key) => env[key] !== undefined)
+      .map((key) => [key, { present: true }]),
+  );
 }
 
 function hasRealHostEnv(env: Record<string, string | undefined>): boolean {
@@ -409,6 +444,10 @@ async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: strin
   if (!artifact.provenance || !/^sha256:[a-f0-9]{64}$/i.test(String(artifact.provenance.artifactHash))) {
     throw new Error('evidence provenance hash missing');
   }
+  const actualHash = `sha256:${canonicalAcceptanceArtifactHash(artifact)}`;
+  if (artifact.provenance.artifactHash !== actualHash) {
+    throw new Error('evidence provenance hash mismatch');
+  }
   if (artifact.redaction?.checked !== true || artifact.redaction.secretMaterialFound !== false) {
     throw new Error('evidence redaction check missing');
   }
@@ -417,7 +456,6 @@ async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: strin
   if (!Number.isFinite(generated) || !Number.isFinite(now) || Math.abs(now - generated) > gate.maxAgeMs) {
     throw new Error('evidence artifact is stale');
   }
-  const actualHash = `sha256:${createHash('sha256').update(raw.replace(/"artifactHash"\s*:\s*"sha256:[a-f0-9]{64}"/i, '"artifactHash":"sha256:0000000000000000000000000000000000000000000000000000000000000000"')).digest('hex')}`;
   return {
     ...artifact,
     provenance: {
@@ -427,12 +465,60 @@ async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: strin
   };
 }
 
+export function canonicalAcceptanceArtifactHash(input: unknown): string {
+  if (typeof input === 'string' || input instanceof Uint8Array) {
+    return createHash('sha256').update(input).digest('hex');
+  }
+  return createHash('sha256').update(stableStringify(stripArtifactHash(input))).digest('hex');
+}
+
+export function validateRealCodexProvenance(input: {
+  baseUrl: string;
+  model: string;
+  gatewayKey: string;
+  provenance: unknown;
+}): RealCodexProvenance & { secretMaterialPrinted: false } {
+  const provenance = input.provenance as Partial<RealCodexProvenance> | undefined;
+  if (!provenance || typeof provenance !== 'object') throw new Error('Real Codex provenance missing');
+  const expectedFingerprint = `sha256:${canonicalAcceptanceArtifactHash(input.gatewayKey)}`;
+  const errors: string[] = [];
+  if (!isHttpUrl(provenance.webId)) errors.push('webId must be a valid http URL');
+  if (!nonEmptyString(provenance.gatewayKeyId)) errors.push('gatewayKeyId missing');
+  if (provenance.gatewayKeyFingerprint !== expectedFingerprint) errors.push('gateway key fingerprint mismatch');
+  if (!isHttpUrl(provenance.credentialIri)) errors.push('credentialIri must be a valid Pod URI');
+  if (!isHttpUrl(provenance.secretCellRef)) errors.push('secretCellRef must be a valid Pod URI');
+  if (!nonEmptyString(provenance.providerId)) errors.push('providerId missing');
+  if (provenance.providerRouteSource !== 'pod-credential') errors.push('provider route source must be pod-credential');
+  if (normalizeUrl(provenance.xpodBaseUrl) !== normalizeUrl(input.baseUrl)) errors.push('xpodBaseUrl mismatch');
+  if (!Number.isFinite(Date.parse(String(provenance.generatedAt)))) errors.push('generatedAt missing');
+  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.commandHash))) errors.push('commandHash missing');
+  if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.resultHash))) errors.push('resultHash missing');
+  if (JSON.stringify(provenance).includes(input.gatewayKey) || /sk-[A-Za-z0-9._-]+/.test(JSON.stringify(provenance))) {
+    errors.push('secret material printed');
+  }
+  if (errors.length > 0) throw new Error(errors.join('; '));
+  return {
+    webId: provenance.webId!,
+    gatewayKeyId: provenance.gatewayKeyId!,
+    gatewayKeyFingerprint: provenance.gatewayKeyFingerprint!,
+    credentialIri: provenance.credentialIri!,
+    secretCellRef: provenance.secretCellRef!,
+    providerId: provenance.providerId!,
+    providerRouteSource: 'pod-credential',
+    xpodBaseUrl: provenance.xpodBaseUrl!,
+    generatedAt: provenance.generatedAt!,
+    commandHash: provenance.commandHash!,
+    resultHash: provenance.resultHash!,
+    secretMaterialPrinted: false,
+  };
+}
+
 async function executeGateCommand(gate: GateCommand): Promise<CommandResult> {
   const started = Date.now();
   return await new Promise((resolve, reject) => {
     const [command, ...args] = gate.command;
     const child = spawn(command, args, {
-      env: { ...process.env, ...(gate.env ?? {}) },
+      env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -453,6 +539,43 @@ async function executeGateCommand(gate: GateCommand): Promise<CommandResult> {
       });
     });
   });
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+    .join(',')}}`;
+}
+
+function stripArtifactHash(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripArtifactHash);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => key !== 'artifactHash')
+    .map(([key, item]) => [key, stripArtifactHash(item)]));
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isHttpUrl(value: unknown): value is string {
+  if (!nonEmptyString(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function normalizeUrl(value: unknown): string | undefined {
+  if (!isHttpUrl(value)) return undefined;
+  const url = new URL(value);
+  return url.toString().replace(/\/$/u, '');
 }
 
 function requirementTitle(id: string): string {

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,8 +7,10 @@ import {
   ACCEPTANCE_REQUIREMENTS,
   buildAcceptanceReport,
   buildAcceptancePlan,
+  canonicalAcceptanceArtifactHash,
   runAcceptance,
   redactAcceptanceSecrets,
+  validateRealCodexProvenance,
   writeAcceptanceEvidence,
 } from '../../scripts/accept-xpod-settings';
 
@@ -25,8 +27,6 @@ describe('Xpod settings product acceptance harness', () => {
   it('maps every product requirement to executable evidence or an honest not-complete gate', () => {
     const plan = buildAcceptancePlan({
       env: {},
-      dockerAvailable: false,
-      codexAvailable: false,
       now: '2026-08-01T00:00:00.000Z',
     });
 
@@ -81,7 +81,7 @@ describe('Xpod settings product acceptance harness', () => {
       },
       now: '2026-08-01T00:00:00.000Z',
       executeCommand: async (command) => ({
-        command,
+        command: command.command,
         exitCode: 7,
         durationMs: 12,
         stdout: 'visual stdout',
@@ -102,23 +102,24 @@ describe('Xpod settings product acceptance harness', () => {
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
   });
 
-  it('validates evidence artifacts with schema, freshness, provenance and redaction checks', async () => {
+  it('validates evidence artifacts with schema, freshness, provenance and matching canonical hash', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
     const artifactPath = path.join(tempRoot, 'oauth.json');
-    await import('node:fs/promises').then(({ writeFile }) => writeFile(artifactPath, JSON.stringify({
+    const artifact = withCanonicalHash({
       schema: 'xpod.acceptance.evidence.v1',
       generatedAt: '2026-08-01T00:00:00.000Z',
       requirementId: 'external-oauth',
       command: ['provider-contract', 'oauth'],
       provenance: {
         provider: 'kimi',
-        artifactHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        artifactHash: 'sha256:pending',
       },
       redaction: {
         checked: true,
         secretMaterialFound: false,
       },
-    }), 'utf8'));
+    });
+    await writeFile(artifactPath, JSON.stringify(artifact), 'utf8');
 
     const report = await runAcceptance({
       env: {
@@ -140,7 +141,147 @@ describe('Xpod settings product acceptance harness', () => {
     });
   });
 
-  it('rejects stale or secret-bearing evidence artifacts', () => {
+  it('rejects evidence artifacts with forged canonical hash', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
+    const artifactPath = path.join(tempRoot, 'oauth.json');
+    await writeFile(artifactPath, JSON.stringify(withCanonicalHash({
+      schema: 'xpod.acceptance.evidence.v1',
+      generatedAt: '2026-08-01T00:00:00.000Z',
+      requirementId: 'external-oauth',
+      command: ['provider-contract', 'oauth'],
+      provenance: {
+        provider: 'kimi',
+        artifactHash: 'sha256:pending',
+      },
+      redaction: {
+        checked: true,
+        secretMaterialFound: false,
+      },
+    }, 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')), 'utf8');
+
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+      },
+      now: '2026-08-01T00:05:00.000Z',
+      executeCommand: async () => {
+        throw new Error('artifact gate should not execute a command');
+      },
+    });
+
+    expect(report.items.find((item) => item.requirementId === 'external-oauth')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/hash/i),
+    });
+  });
+
+  it('rejects stale evidence artifacts', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
+    const artifactPath = path.join(tempRoot, 'oauth.json');
+    await writeFile(artifactPath, JSON.stringify(withCanonicalHash({
+      schema: 'xpod.acceptance.evidence.v1',
+      generatedAt: '2026-07-30T00:00:00.000Z',
+      requirementId: 'external-oauth',
+      command: ['provider-contract', 'oauth'],
+      provenance: {
+        provider: 'kimi',
+        artifactHash: 'sha256:pending',
+      },
+      redaction: {
+        checked: true,
+        secretMaterialFound: false,
+      },
+    })), 'utf8');
+
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+      },
+      now: '2026-08-01T00:05:00.000Z',
+      executeCommand: async () => {
+        throw new Error('artifact gate should not execute a command');
+      },
+    });
+
+    expect(report.items.find((item) => item.requirementId === 'external-oauth')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/stale/i),
+    });
+  });
+
+  it('rejects evidence artifacts with invalid schema', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
+    const artifactPath = path.join(tempRoot, 'oauth.json');
+    await writeFile(artifactPath, JSON.stringify(withCanonicalHash({
+      schema: 'xpod.acceptance.evidence.v0',
+      generatedAt: '2026-08-01T00:00:00.000Z',
+      requirementId: 'external-oauth',
+      command: ['provider-contract', 'oauth'],
+      provenance: {
+        provider: 'kimi',
+        artifactHash: 'sha256:pending',
+      },
+      redaction: {
+        checked: true,
+        secretMaterialFound: false,
+      },
+    })), 'utf8');
+
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+      },
+      now: '2026-08-01T00:05:00.000Z',
+      executeCommand: async () => {
+        throw new Error('artifact gate should not execute a command');
+      },
+    });
+
+    expect(report.items.find((item) => item.requirementId === 'external-oauth')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/schema/i),
+    });
+  });
+
+  it('rejects evidence artifacts without completed redaction checks', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
+    const artifactPath = path.join(tempRoot, 'oauth.json');
+    await writeFile(artifactPath, JSON.stringify(withCanonicalHash({
+      schema: 'xpod.acceptance.evidence.v1',
+      generatedAt: '2026-08-01T00:00:00.000Z',
+      requirementId: 'external-oauth',
+      command: ['provider-contract', 'oauth'],
+      provenance: {
+        provider: 'kimi',
+        artifactHash: 'sha256:pending',
+      },
+      redaction: {
+        checked: true,
+        secretMaterialFound: true,
+      },
+    })), 'utf8');
+
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+      },
+      now: '2026-08-01T00:05:00.000Z',
+      executeCommand: async () => {
+        throw new Error('artifact gate should not execute a command');
+      },
+    });
+
+    expect(report.items.find((item) => item.requirementId === 'external-oauth')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/redaction/i),
+    });
+  });
+
+  it('summarizes an empty report as healthy and complete', () => {
     const report = buildAcceptanceReport({
       generatedAt: '2026-08-01T00:00:00.000Z',
       items: [],
@@ -164,11 +305,13 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).not.toContain('if (await firstNavigable.count())');
   });
 
-  it('redacts provider secrets, gateway keys and OAuth material from JSON and markdown evidence', async () => {
+  it('records only allowlisted gate environment presence without environment values in JSON or markdown evidence', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
     const secret = 'sk-task12-provider-secret';
     const gatewayKey = 'xpod_gw_v1_task12_gateway_key';
     const oauthCode = 'oauth-code-task12';
+    const awsSecret = 'aws-secret-task12-value';
+    const randomSecret = 'plain-random-secret-task12';
     const plan = buildAcceptancePlan({
       env: {
         XPOD_ACCEPTANCE_RUN_CODEX: 'true',
@@ -176,9 +319,10 @@ describe('Xpod settings product acceptance harness', () => {
         XPOD_ACCEPTANCE_PROVIDER_API_KEY: secret,
         XPOD_ACCEPTANCE_GATEWAY_KEY: gatewayKey,
         XPOD_ACCEPTANCE_OAUTH_CODE: oauthCode,
+        AWS_SECRET_ACCESS_KEY: awsSecret,
+        OPENAI_API_KEY: 'sk-task12-openai-secret',
+        RANDOM_CONFIG: randomSecret,
       },
-      dockerAvailable: false,
-      codexAvailable: false,
       now: '2026-08-01T00:00:00.000Z',
     });
 
@@ -195,16 +339,67 @@ describe('Xpod settings product acceptance harness', () => {
     expect(markdown).not.toContain(secret);
     expect(markdown).not.toContain(gatewayKey);
     expect(markdown).not.toContain(oauthCode);
-    expect(json).toContain('[redacted]');
-    expect(markdown).toContain('[redacted]');
+    expect(json).not.toContain(awsSecret);
+    expect(markdown).not.toContain(awsSecret);
+    expect(json).not.toContain('sk-task12-openai-secret');
+    expect(markdown).not.toContain('sk-task12-openai-secret');
+    expect(json).not.toContain(randomSecret);
+    expect(markdown).not.toContain(randomSecret);
+    expect(json).toContain('"present": true');
+    expect(markdown).toContain('"present":true');
     expect(JSON.parse(json).summary).toMatchObject({ complete: false, healthy: false });
+  });
+
+  it('rejects real Codex provenance when the gateway key fingerprint or provider route is not runtime verified', () => {
+    expect(() => validateRealCodexProvenance({
+      baseUrl: 'http://127.0.0.1:3000',
+      model: 'gpt-5',
+      gatewayKey: 'xpod_gw_v1_local_keyid_secret',
+      provenance: {
+        webId: 'https://id.example/alice/profile/card#me',
+        gatewayKeyId: 'gak_alice',
+        gatewayKeyFingerprint: 'sha256:wrong',
+        credentialIri: 'https://pod.example/alice/settings/credentials.ttl#openai',
+        secretCellRef: 'https://pod.example/alice/settings/credentials.ttl#openai',
+        providerId: 'openai',
+        providerRouteSource: 'user-json',
+        xpodBaseUrl: 'http://127.0.0.1:3000',
+        generatedAt: '2026-08-01T00:00:00.000Z',
+        commandHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        resultHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      },
+    })).toThrow(/fingerprint|provider route/i);
+  });
+
+  it('accepts real Codex provenance only when gateway key and Pod credential metadata are cross-checked', () => {
+    const gatewayKey = 'xpod_gw_v1_local_keyid_secret';
+    expect(validateRealCodexProvenance({
+      baseUrl: 'http://127.0.0.1:3000',
+      model: 'gpt-5',
+      gatewayKey,
+      provenance: {
+        webId: 'https://id.example/alice/profile/card#me',
+        gatewayKeyId: 'gak_alice',
+        gatewayKeyFingerprint: `sha256:${canonicalAcceptanceArtifactHash(gatewayKey)}`,
+        credentialIri: 'https://pod.example/alice/settings/credentials.ttl#openai',
+        secretCellRef: 'https://pod.example/alice/settings/credentials.ttl#openai',
+        providerId: 'openai',
+        providerRouteSource: 'pod-credential',
+        xpodBaseUrl: 'http://127.0.0.1:3000',
+        generatedAt: '2026-08-01T00:00:00.000Z',
+        commandHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        resultHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      },
+    })).toMatchObject({
+      webId: 'https://id.example/alice/profile/card#me',
+      providerRouteSource: 'pod-credential',
+      secretMaterialPrinted: false,
+    });
   });
 
   it('classifies default local protocol and client fixtures as runnable without Docker, OAuth or real Codex credentials', () => {
     const plan = buildAcceptancePlan({
       env: { XPOD_ACCEPTANCE_BASE_URL: 'http://127.0.0.1:3000/' },
-      dockerAvailable: false,
-      codexAvailable: false,
       now: '2026-08-01T00:00:00.000Z',
     });
 
@@ -220,3 +415,16 @@ describe('Xpod settings product acceptance harness', () => {
     });
   });
 });
+
+function withCanonicalHash<T extends { provenance: { artifactHash: string } }>(
+  artifact: T,
+  overrideHash?: string,
+): T {
+  return {
+    ...artifact,
+    provenance: {
+      ...artifact.provenance,
+      artifactHash: overrideHash ?? `sha256:${canonicalAcceptanceArtifactHash(artifact)}`,
+    },
+  };
+}

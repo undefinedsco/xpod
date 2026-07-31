@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import os from 'node:os';
@@ -24,6 +24,11 @@ import { AiGatewayHandler } from '../src/api/handlers/AiGatewayHandler';
 import { AuthMiddleware, type AuthenticatedRequest } from '../src/api/middleware/AuthMiddleware';
 import { DeploymentRootKeyProvider, SecretCellVault } from '../src/security/secret-cell';
 import { CodexRuntimeProjector } from '../src/api/chatkit/runtime/CodexRuntimeProjector';
+import {
+  canonicalAcceptanceArtifactHash,
+  validateRealCodexProvenance,
+  type RealCodexProvenance,
+} from './accept-xpod-settings';
 
 interface SmokeOptions {
   baseUrl: string;
@@ -332,6 +337,12 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
   const projector = new CodexRuntimeProjector();
   const codexBaseUrl = new URL('/v1', withTrailingSlash(options.baseUrl)).toString().replace(/\/$/u, '');
   const startedAt = new Date().toISOString();
+  const initialProvenance = await fetchRealCodexProvenance({
+    baseUrl: options.baseUrl,
+    model: options.model,
+    gatewayKey: options.apiKey,
+    signal: AbortSignal.timeout(Math.min(timeoutMs, 30_000)),
+  });
   let restoreVerified = false;
   const runs: CodexRunEvidence[] = [];
 
@@ -364,16 +375,30 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
     }
   }
 
+  const storedRuns = runs.map(({ stdoutJsonl, stderrPreview, ...run }) => ({
+    ...run,
+    stderrPreview: sanitize(stderrPreview),
+    eventTypes: stdoutJsonl.map((event) => String(event.type ?? 'unknown')),
+  }));
+  const command = ['codex', 'exec', '--json', '--cd', '<workspace>', '<redacted-prompt>'];
+  const provenance = validateRealCodexProvenance({
+    baseUrl: options.baseUrl,
+    model: options.model,
+    gatewayKey: options.apiKey,
+    provenance: {
+      ...initialProvenance,
+      commandHash: `sha256:${canonicalAcceptanceArtifactHash(command)}`,
+      resultHash: `sha256:${canonicalAcceptanceArtifactHash(storedRuns)}`,
+    },
+  });
   const report = {
     schema: 'xpod.acceptance.evidence.v1',
     generatedAt: startedAt,
     requirementId: 'real-codex',
-    command: ['codex', 'exec', '--json', '--cd', '<workspace>', '<redacted-prompt>'],
+    command,
     provenance: {
-      baseUrl: options.baseUrl,
+      ...provenance,
       model: options.model,
-      webId: options.expectedWebId,
-      credentialSource: 'existing-stored-xpod-provider-credential',
       gatewayKeySource: args.apiKeyStdin ? 'stdin' : `env:${args.apiKeyEnv ?? 'AI_CONNECTION_API_KEY'}`,
       artifactHash: 'sha256:pending',
     },
@@ -383,11 +408,7 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
     },
     codexVersion: await codexVersion(),
     restoreVerified,
-    runs: runs.map(({ stdoutJsonl, stderrPreview, ...run }) => ({
-      ...run,
-      stderrPreview: sanitize(stderrPreview),
-      eventTypes: stdoutJsonl.map((event) => String(event.type ?? 'unknown')),
-    })),
+    runs: storedRuns,
   };
   assertRealCodexReport(report, options.apiKey);
   const reportWithHash = withArtifactHash(report);
@@ -406,6 +427,29 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
       finalMessage: run.finalMessage,
     })),
   }, null, 2));
+}
+
+async function fetchRealCodexProvenance(input: {
+  baseUrl: string;
+  model: string;
+  gatewayKey: string;
+  signal: AbortSignal;
+}): Promise<Omit<RealCodexProvenance, 'commandHash' | 'resultHash'>> {
+  const url = new URL('/v1/xpod/acceptance/provenance', withTrailingSlash(input.baseUrl));
+  url.searchParams.set('model', input.model);
+  const response = await fetch(url, {
+    headers: {
+      ...authHeaders(input.gatewayKey),
+      'x-xpod-acceptance-scope': 'real-codex',
+      'x-xpod-gateway-key-fingerprint': `sha256:${canonicalAcceptanceArtifactHash(input.gatewayKey)}`,
+    },
+    signal: input.signal,
+  });
+  const json = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    throw new Error(`Acceptance provenance lookup failed: HTTP ${response.status} ${JSON.stringify(json)}`);
+  }
+  return json as Omit<RealCodexProvenance, 'commandHash' | 'resultHash'>;
 }
 
 async function runFixtureCodexCliSmoke(args: ParsedArgs): Promise<void> {
@@ -1163,6 +1207,12 @@ function assertFixtureReport(report: FixtureReport): void {
 }
 
 function assertRealCodexReport(report: any, apiKey: string): void {
+  validateRealCodexProvenance({
+    baseUrl: report.provenance?.xpodBaseUrl,
+    model: report.provenance?.model,
+    gatewayKey: apiKey,
+    provenance: report.provenance,
+  });
   if (!report.restoreVerified) {
     throw new Error('Real Codex HOME restore was not verified');
   }
@@ -1190,18 +1240,11 @@ function assertRealCodexReport(report: any, apiKey: string): void {
 }
 
 function withArtifactHash<T extends { provenance: { artifactHash: string } }>(report: T): T {
-  const canonical = JSON.stringify({
-    ...report,
-    provenance: {
-      ...report.provenance,
-      artifactHash: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
-    },
-  });
   return {
     ...report,
     provenance: {
       ...report.provenance,
-      artifactHash: `sha256:${createHash('sha256').update(canonical).digest('hex')}`,
+      artifactHash: `sha256:${canonicalAcceptanceArtifactHash(report)}`,
     },
   };
 }

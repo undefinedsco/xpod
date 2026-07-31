@@ -85,6 +85,18 @@ export interface GatewayModelListItem {
   protocols?: GatewayProtocol[];
 }
 
+export interface GatewayAcceptanceProvenance {
+  webId: string;
+  gatewayKeyId: string;
+  gatewayKeyFingerprint: string;
+  credentialIri: string;
+  secretCellRef: string;
+  providerId: string;
+  providerRouteSource: 'pod-credential';
+  xpodBaseUrl: string;
+  generatedAt: string;
+}
+
 export class AiGatewayService {
   private readonly deployment: string;
   private readonly registry: ProviderRegistry;
@@ -230,6 +242,34 @@ export class AiGatewayService {
       }
     }
     return models;
+  }
+
+  public async acceptanceProvenance(input: {
+    auth: AuthContext;
+    model: string;
+    xpodBaseUrl: string;
+    gatewayKeyFingerprint: string;
+  }): Promise<GatewayAcceptanceProvenance> {
+    this.requireScope(input.auth, 'models:read');
+    const principal = this.requirePrincipal(input.auth);
+    const route = await this.router.route({
+      webId: principal.webId,
+      deployment: this.deployment,
+      auth: input.auth,
+      model: input.model,
+    });
+    const credential = route.credential as StoredGatewayCredential;
+    return {
+      webId: principal.webId,
+      gatewayKeyId: input.auth.type === 'solid' ? input.auth.gatewayKeyId ?? 'unknown' : 'unknown',
+      gatewayKeyFingerprint: input.gatewayKeyFingerprint,
+      credentialIri: credential.credentialIri,
+      secretCellRef: credential.encryptedSecret.credentialIri,
+      providerId: route.provider.id,
+      providerRouteSource: 'pod-credential',
+      xpodBaseUrl: input.xpodBaseUrl,
+      generatedAt: this.now().toISOString(),
+    };
   }
 
   private async *executeWithCredentialFailover(input: {
