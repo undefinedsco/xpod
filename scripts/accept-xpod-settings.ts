@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -16,13 +16,18 @@ export interface GateCommand {
   kind: 'command';
   command: string[];
   timeoutMs: number;
+  killAfterMs?: number;
   env?: Record<string, { present: boolean }>;
+  runtimeEnvKeys?: string[];
+  stdinEnvKey?: string;
 }
 
 export interface ArtifactGate {
   kind: 'artifact';
   path: string;
   maxAgeMs: number;
+  rootPath?: string;
+  allowExternalEvidence?: boolean;
 }
 
 export type AcceptanceGate = GateCommand | ArtifactGate;
@@ -34,6 +39,7 @@ export interface CommandResult {
   durationMs: number;
   stdout: string;
   stderr: string;
+  timedOut?: boolean;
 }
 
 export interface EvidenceArtifact {
@@ -152,9 +158,11 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   },
 ];
 
-const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code)$/i;
+const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code|password|passwd|credential)$/i;
+const SECRET_ENV_KEY_PATTERN = /(secret|token|key|password|passwd|authorization|credential|oauth[-_]?code)/i;
 const SECRET_VALUE_PATTERN = /\b(?:sk-[A-Za-z0-9._-]+|xpod_gw_v1_[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+|oauth-code-[A-Za-z0-9._-]+)\b/g;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_ACCEPTANCE_EVIDENCE_ROOT = path.resolve('.test-data/acceptance');
 const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_REAL_XPOD',
   'XPOD_ACCEPTANCE_RUN_VISUAL',
@@ -171,7 +179,27 @@ const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_MODEL',
   'XPOD_ACCEPTANCE_GATEWAY_KEY',
   'XPOD_ACCEPTANCE_OAUTH_EVIDENCE',
+  'XPOD_ACCEPTANCE_EVIDENCE_ROOT',
+  'XPOD_ACCEPTANCE_OAUTH_EVIDENCE_AUDITED_EXTERNAL',
 ]);
+const BASE_RUNTIME_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'LANG',
+  'LC_ALL',
+  'SHELL',
+  'CI',
+  'NO_PROXY',
+  'no_proxy',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'BUN_INSTALL',
+  'NODE_OPTIONS',
+  'PLAYWRIGHT_BROWSERS_PATH',
+];
 
 export function buildAcceptancePlan(options: AcceptancePlanOptions = {}): AcceptanceReport {
   return buildAcceptanceReport({
@@ -190,10 +218,14 @@ export async function runAcceptance(options: RunAcceptanceOptions = {}): Promise
   for (const item of items) {
     if (!item.gate) continue;
     if (item.gate.kind === 'command') {
-      const result = redactAcceptanceSecrets(await executeCommand(item.gate), redactionValues(env));
+      const result = redactAcceptanceSecrets(await executeCommand(item.gate), acceptanceRedactionValues(env));
       item.commandResult = result;
       item.status = result.exitCode === 0 ? 'pass' : 'fail';
-      item.reason = result.exitCode === 0 ? undefined : `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
+      item.reason = result.exitCode === 0
+        ? undefined
+        : result.timedOut
+          ? `Command timed out after ${item.gate.timeoutMs}ms.`
+          : `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
     } else {
       try {
         item.artifact = await validateEvidenceArtifact(item.gate, item.requirementId, generatedAt);
@@ -275,7 +307,7 @@ export async function writeAcceptanceEvidence(report: AcceptanceReport, options:
   outputDir?: string;
   extraRedactionValues?: string[];
 } = {}): Promise<{ jsonPath: string; markdownPath: string }> {
-  const outputDir = options.outputDir ?? path.resolve('.test-data/acceptance');
+  const outputDir = options.outputDir ?? DEFAULT_ACCEPTANCE_EVIDENCE_ROOT;
   await mkdir(outputDir, { recursive: true });
   const redactedReport = redactAcceptanceSecrets(report, options.extraRedactionValues);
   const jsonPath = path.join(outputDir, 'xpod-light-settings-acceptance.json');
@@ -353,13 +385,22 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       reason: runCodex
         ? missingRealCodexReason(env)
         : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, XPOD_ACCEPTANCE_GATEWAY_KEY with acceptance:read, and a stored provider credential.',
-      commands: ['printf "%s" "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "$XPOD_ACCEPTANCE_MODEL" --api-key-stdin'],
+      commands: ['bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "$XPOD_ACCEPTANCE_MODEL" --api-key-stdin'],
       evidence: ['scripts/ai-gateway-codex-smoke.ts real Codex mode writes redacted provenance JSON; fixture flags are not accepted.'],
       gate: runCodex && hasRealCodexEnv(env) ? shellGate([
-        'bash',
-        '-lc',
-        'printf "%s" "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "${XPOD_ACCEPTANCE_MODEL:-gpt-5}" --api-key-stdin --report-dir .test-data/acceptance/codex-real',
-      ], 10 * 60 * 1000, env) : undefined,
+        'bun',
+        'scripts/ai-gateway-codex-smoke.ts',
+        '--real-codex-cli',
+        '--base-url',
+        env.XPOD_ACCEPTANCE_XPOD_BASE_URL!,
+        '--model',
+        env.XPOD_ACCEPTANCE_MODEL ?? 'gpt-5',
+        '--api-key-stdin',
+        '--report-dir',
+        '.test-data/acceptance/codex-real',
+      ], 10 * 60 * 1000, env, {
+        stdinEnvKey: 'XPOD_ACCEPTANCE_GATEWAY_KEY',
+      }) : undefined,
     },
     {
       requirementId: 'external-oauth',
@@ -375,6 +416,8 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         kind: 'artifact',
         path: env.XPOD_ACCEPTANCE_OAUTH_EVIDENCE,
         maxAgeMs: ONE_DAY_MS,
+        rootPath: env.XPOD_ACCEPTANCE_EVIDENCE_ROOT ?? DEFAULT_ACCEPTANCE_EVIDENCE_ROOT,
+        allowExternalEvidence: env.XPOD_ACCEPTANCE_OAUTH_EVIDENCE_AUDITED_EXTERNAL === 'true',
       } : undefined,
     },
   ];
@@ -392,15 +435,30 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
 }
 
 function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts'], 3 * 60 * 1000, env);
+  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts'], 3 * 60 * 1000, env, {
+    runtimeEnvKeys: [
+      'XPOD_SETTINGS_E2E_BASE_URL',
+      'XPOD_SETTINGS_E2E_ALICE_STATE',
+      'XPOD_SETTINGS_E2E_BOB_STATE',
+      'XPOD_SETTINGS_E2E_ALICE_POD_URL',
+      'XPOD_SETTINGS_E2E_TEST_API_KEY',
+    ],
+  });
 }
 
-function shellGate(command: string[], timeoutMs: number, env: Record<string, string | undefined>): GateCommand {
+function shellGate(command: string[], timeoutMs: number, env: Record<string, string | undefined>, options: {
+  killAfterMs?: number;
+  runtimeEnvKeys?: string[];
+  stdinEnvKey?: string;
+} = {}): GateCommand {
   return {
     kind: 'command',
     command,
     timeoutMs,
+    killAfterMs: options.killAfterMs,
     env: publicEnv(env),
+    runtimeEnvKeys: options.runtimeEnvKeys,
+    stdinEnvKey: options.stdinEnvKey,
   };
 }
 
@@ -441,7 +499,16 @@ function missingRealCodexReason(env: Record<string, string | undefined>): string
 }
 
 async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: string, nowIso: string): Promise<EvidenceArtifact> {
-  const raw = await readFile(gate.path, 'utf8');
+  const stats = await lstat(gate.path);
+  if (stats.isSymbolicLink()) {
+    throw new Error('evidence artifact path must not be a symlink');
+  }
+  const resolvedPath = await realpath(gate.path);
+  const rootPath = await realpath(gate.rootPath ?? DEFAULT_ACCEPTANCE_EVIDENCE_ROOT);
+  if (!gate.allowExternalEvidence && !isPathInside(resolvedPath, rootPath)) {
+    throw new Error(`evidence artifact must be under the acceptance evidence root: ${rootPath}`);
+  }
+  const raw = await readFile(resolvedPath, 'utf8');
   const artifact = JSON.parse(raw) as EvidenceArtifact;
   if (artifact.schema !== 'xpod.acceptance.evidence.v1') throw new Error('invalid evidence schema');
   if (artifact.requirementId !== requirementId) throw new Error('evidence requirement mismatch');
@@ -518,32 +585,78 @@ export function validateRealCodexProvenance(input: {
   };
 }
 
-async function executeGateCommand(gate: GateCommand): Promise<CommandResult> {
+export async function executeGateCommand(
+  gate: GateCommand,
+  sourceEnv: Record<string, string | undefined> = process.env,
+): Promise<CommandResult> {
   const started = Date.now();
   return await new Promise((resolve, reject) => {
     const [command, ...args] = gate.command;
+    const detached = process.platform !== 'win32';
     const child = spawn(command, args, {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      detached,
+      env: buildGateRuntimeEnv(gate, sourceEnv),
+      stdio: gate.stdinEnvKey ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => child.kill('SIGTERM'), gate.timeoutMs);
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const killChild = (signal: NodeJS.Signals): void => {
+      if (!child.pid) return;
+      try {
+        if (process.platform !== 'win32' && detached) {
+          process.kill(-child.pid, signal);
+        } else {
+          child.kill(signal);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    };
+    if (gate.stdinEnvKey) {
+      if (!child.stdin) {
+        reject(new Error('Gate stdin stream was not created'));
+        return;
+      }
+      child.stdin.write(sourceEnv[gate.stdinEnvKey] ?? '');
+      child.stdin.end();
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killChild('SIGTERM');
+      killTimer = setTimeout(() => killChild('SIGKILL'), gate.killAfterMs ?? 2_000);
+    }, gate.timeoutMs);
+    child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
     child.on('error', reject);
     child.on('close', (exitCode, signal) => {
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       resolve({
         command: gate.command,
-        exitCode,
+        exitCode: timedOut && exitCode === null ? 124 : exitCode,
         signal,
         durationMs: Date.now() - started,
         stdout: stdout.slice(-4_000),
         stderr: stderr.slice(-4_000),
+        timedOut,
       });
     });
   });
+}
+
+export function buildGateRuntimeEnv(
+  gate: GateCommand,
+  sourceEnv: Record<string, string | undefined> = process.env,
+): NodeJS.ProcessEnv {
+  const keys = new Set([...BASE_RUNTIME_ENV_KEYS, ...(gate.runtimeEnvKeys ?? [])]);
+  if (gate.stdinEnvKey) keys.delete(gate.stdinEnvKey);
+  return Object.fromEntries(
+    Array.from(keys)
+      .map((key) => [key, sourceEnv[key]] as const)
+      .filter((entry): entry is readonly [string, string] => typeof entry[1] === 'string'),
+  );
 }
 
 function stableStringify(value: unknown): string {
@@ -587,14 +700,16 @@ function requirementTitle(id: string): string {
   return ACCEPTANCE_REQUIREMENTS.find((requirement) => requirement.id === id)?.title ?? id;
 }
 
-function redactionValues(env: Record<string, string | undefined>): string[] {
-  return [
-    env.XPOD_ACCEPTANCE_PROVIDER_API_KEY,
-    env.XPOD_ACCEPTANCE_GATEWAY_KEY,
-    env.XPOD_ACCEPTANCE_OAUTH_CODE,
-    env.OPENAI_API_KEY,
-    env.ANTHROPIC_API_KEY,
-  ].filter((value): value is string => Boolean(value));
+function isPathInside(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+export function acceptanceRedactionValues(env: Record<string, string | undefined>): string[] {
+  return Array.from(new Set(Object.entries(env)
+    .filter(([key, value]) => Boolean(value) && SECRET_ENV_KEY_PATTERN.test(key))
+    .map(([, value]) => value!)
+  ));
 }
 
 function renderMarkdown(report: AcceptanceReport): string {
@@ -639,9 +754,9 @@ async function main(): Promise<void> {
   const report = await runAcceptance({ allowIncomplete });
   const output = await writeAcceptanceEvidence(report, {
     outputDir,
-    extraRedactionValues: redactionValues(process.env),
+    extraRedactionValues: acceptanceRedactionValues(process.env),
   });
-  const redactedReport = redactAcceptanceSecrets(report, redactionValues(process.env));
+  const redactedReport = redactAcceptanceSecrets(report, acceptanceRedactionValues(process.env));
   console.log(JSON.stringify({
     ok: redactedReport.summary.healthy,
     healthy: redactedReport.summary.healthy,

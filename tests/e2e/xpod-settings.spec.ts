@@ -33,9 +33,8 @@ test.describe('Xpod settings product acceptance', () => {
       await openModule(bob, '/dashboard/models', 'Models');
       await expect(bob.locator('body')).not.toContainText(testApiKey!);
       await expect(bob.locator('body')).not.toContainText(/Alice OpenAI acceptance|acceptance-openai/i);
-
-      await cleanupApiKeyThroughUi(alice);
     } finally {
+      await cleanupApiKeyThroughUi(alice).catch(() => undefined);
       await alice.context().close();
       await bob.context().close();
     }

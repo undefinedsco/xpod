@@ -1,13 +1,16 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ACCEPTANCE_REQUIREMENTS,
+  acceptanceRedactionValues,
+  buildGateRuntimeEnv,
   buildAcceptanceReport,
   buildAcceptancePlan,
   canonicalAcceptanceArtifactHash,
+  executeGateCommand,
   runAcceptance,
   redactAcceptanceSecrets,
   validateRealCodexProvenance,
@@ -125,6 +128,7 @@ describe('Xpod settings product acceptance harness', () => {
       env: {
         XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
         XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: tempRoot,
       },
       now: '2026-08-01T00:05:00.000Z',
       executeCommand: async () => {
@@ -163,6 +167,7 @@ describe('Xpod settings product acceptance harness', () => {
       env: {
         XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
         XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: tempRoot,
       },
       now: '2026-08-01T00:05:00.000Z',
       executeCommand: async () => {
@@ -198,6 +203,7 @@ describe('Xpod settings product acceptance harness', () => {
       env: {
         XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
         XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: tempRoot,
       },
       now: '2026-08-01T00:05:00.000Z',
       executeCommand: async () => {
@@ -233,6 +239,7 @@ describe('Xpod settings product acceptance harness', () => {
       env: {
         XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
         XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: tempRoot,
       },
       now: '2026-08-01T00:05:00.000Z',
       executeCommand: async () => {
@@ -268,6 +275,7 @@ describe('Xpod settings product acceptance harness', () => {
       env: {
         XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
         XPOD_ACCEPTANCE_OAUTH_EVIDENCE: artifactPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: tempRoot,
       },
       now: '2026-08-01T00:05:00.000Z',
       executeCommand: async () => {
@@ -367,6 +375,139 @@ describe('Xpod settings product acceptance harness', () => {
     expect(json).toContain('"present": true');
     expect(markdown).toContain('"present":true');
     expect(JSON.parse(json).summary).toMatchObject({ complete: false, healthy: false });
+  });
+
+  it('builds command gates with minimal allowlisted runtime env and redacts all secret-like env values', () => {
+    const env = {
+      PATH: '/usr/bin',
+      HOME: '/tmp/home',
+      XPOD_ACCEPTANCE_RUN_CODEX: 'true',
+      XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
+      XPOD_ACCEPTANCE_XPOD_BASE_URL: 'http://127.0.0.1:3000',
+      XPOD_ACCEPTANCE_MODEL: 'gpt-5',
+      XPOD_ACCEPTANCE_GATEWAY_KEY: 'xpod_gw_v1_acceptance_secret',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret-task12-value',
+      RANDOM_PASSWORD: 'random-password-task12-value',
+      PUBLIC_FLAG: 'must-not-leak-to-child',
+    };
+
+    const plan = buildAcceptancePlan({ env, now: '2026-08-01T00:00:00.000Z' });
+    const gate = plan.items.find((item) => item.requirementId === 'real-codex')?.gate;
+    expect(gate).toMatchObject({
+      kind: 'command',
+      stdinEnvKey: 'XPOD_ACCEPTANCE_GATEWAY_KEY',
+    });
+    expect(gate?.kind === 'command' ? gate.command.join(' ') : '').not.toContain('XPOD_ACCEPTANCE_GATEWAY_KEY');
+
+    const runtimeEnv = buildGateRuntimeEnv(gate as any, env);
+    expect(runtimeEnv).toMatchObject({
+      PATH: '/usr/bin',
+      HOME: '/tmp/home',
+    });
+    expect(runtimeEnv.XPOD_ACCEPTANCE_GATEWAY_KEY).toBeUndefined();
+    expect(runtimeEnv.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(runtimeEnv.RANDOM_PASSWORD).toBeUndefined();
+    expect(runtimeEnv.PUBLIC_FLAG).toBeUndefined();
+    expect(acceptanceRedactionValues(env)).toEqual(expect.arrayContaining([
+      'xpod_gw_v1_acceptance_secret',
+      'aws-secret-task12-value',
+      'random-password-task12-value',
+    ]));
+  });
+
+  it('terminates timed-out gate process groups and returns a deterministic timeout result', async () => {
+    const result = await executeGateCommand({
+      kind: 'command',
+      command: [process.execPath, '-e', 'setTimeout(() => {}, 10000)'],
+      timeoutMs: 50,
+      killAfterMs: 50,
+    });
+
+    expect(result.timedOut).toBe(true);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.durationMs).toBeGreaterThanOrEqual(40);
+  });
+
+  it('rejects OAuth evidence symlinks and paths outside the acceptance evidence root unless explicitly audited', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
+    const evidenceRoot = path.join(tempRoot, 'evidence-root');
+    const outsideRoot = path.join(tempRoot, 'outside');
+    await mkdir(evidenceRoot, { recursive: true });
+    await mkdir(outsideRoot, { recursive: true });
+    const outsideArtifactPath = path.join(outsideRoot, 'oauth.json');
+    const symlinkPath = path.join(evidenceRoot, 'oauth-link.json');
+    const artifact = withCanonicalHash({
+      schema: 'xpod.acceptance.evidence.v1',
+      generatedAt: '2026-08-01T00:00:00.000Z',
+      requirementId: 'external-oauth',
+      command: ['provider-contract', 'oauth'],
+      provenance: {
+        provider: 'kimi',
+        artifactHash: 'sha256:pending',
+      },
+      redaction: {
+        checked: true,
+        secretMaterialFound: false,
+      },
+    });
+    await writeFile(outsideArtifactPath, JSON.stringify(artifact), 'utf8');
+    await symlink(outsideArtifactPath, symlinkPath);
+
+    const symlinkReport = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE: symlinkPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: evidenceRoot,
+      },
+      now: '2026-08-01T00:05:00.000Z',
+    });
+    expect(symlinkReport.items.find((item) => item.requirementId === 'external-oauth')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/symlink/i),
+    });
+
+    const externalReport = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE: outsideArtifactPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: evidenceRoot,
+      },
+      now: '2026-08-01T00:05:00.000Z',
+    });
+    expect(externalReport.items.find((item) => item.requirementId === 'external-oauth')).toMatchObject({
+      status: 'fail',
+      reason: expect.stringMatching(/acceptance evidence root/i),
+    });
+
+    const auditedReport = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_EXTERNAL_OAUTH: 'true',
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE: outsideArtifactPath,
+        XPOD_ACCEPTANCE_EVIDENCE_ROOT: evidenceRoot,
+        XPOD_ACCEPTANCE_OAUTH_EVIDENCE_AUDITED_EXTERNAL: 'true',
+      },
+      now: '2026-08-01T00:05:00.000Z',
+    });
+    expect(auditedReport.items.find((item) => item.requirementId === 'external-oauth')?.status).toBe('pass');
+  });
+
+  it('keeps Alice credential cleanup in a best-effort finally block', async () => {
+    const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
+    const credentialTestStart = spec.indexOf("persists Alice API-key credential as ciphertext");
+    const credentialTest = spec.slice(credentialTestStart, spec.indexOf("for (const viewport", credentialTestStart));
+
+    expect(credentialTest).toContain('finally');
+    expect(credentialTest).toContain('cleanupApiKeyThroughUi(alice)');
+    expect(credentialTest).toContain('.catch(() => undefined)');
+  });
+
+  it('requires real Codex stream and tool sentinel messages', async () => {
+    const script = await readFile(path.resolve('scripts/ai-gateway-codex-smoke.ts'), 'utf8');
+
+    expect(script).toContain('XPOD_REAL_STREAM_SENTINEL');
+    expect(script).toContain('XPOD_REAL_TOOL_SENTINEL');
+    expect(script).toContain('Real Codex stream run did not return the sentinel');
+    expect(script).toContain('Real Codex tool run did not return the sentinel');
   });
 
   it('rejects real Codex provenance when the gateway key fingerprint or provider route is not runtime verified', () => {

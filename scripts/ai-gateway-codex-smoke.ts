@@ -53,6 +53,8 @@ interface ParsedArgs {
 
 const TOOL_NAME = 'xpod_smoke_lookup';
 const CODEX_TOOL_FIXTURE = 'XPOD-CODEX-TOOL-FIXTURE';
+const REAL_STREAM_SENTINEL = 'XPOD_REAL_STREAM_SENTINEL';
+const REAL_TOOL_SENTINEL = 'XPOD_REAL_TOOL_SENTINEL';
 const FIXTURE_WEB_ID = 'https://id.example/alice/profile/card#me';
 const FIXTURE_MODEL = 'gpt-5';
 
@@ -334,7 +336,7 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
   const workspace = path.join(tempRoot, 'workspace');
   fs.mkdirSync(codexHome, { recursive: true });
   fs.mkdirSync(workspace, { recursive: true });
-  fs.writeFileSync(path.join(workspace, 'xpod-real-tool-fixture.txt'), 'XPOD REAL TOOL OK');
+  fs.writeFileSync(path.join(workspace, 'xpod-real-tool-fixture.txt'), REAL_TOOL_SENTINEL);
   const backup = snapshotCodexHome(codexHome);
   const projector = new CodexRuntimeProjector();
   const codexBaseUrl = new URL('/v1', withTrailingSlash(options.baseUrl)).toString().replace(/\/$/u, '');
@@ -360,7 +362,7 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
     runs.push(await runCodexExec({
       codexHome,
       workspace,
-      prompt: 'Answer with one short sentence: XPOD REAL STREAM OK',
+      prompt: `Answer with exactly this sentinel and no other text: ${REAL_STREAM_SENTINEL}`,
       timeoutMs,
     }));
     runs.push(await runCodexExec({
@@ -1232,11 +1234,14 @@ function assertRealCodexReport(report: any, apiKey: string): void {
       finalMessage: run.finalMessage,
     })))}`);
   }
-  if (!report.runs[0]?.finalMessage) {
-    throw new Error('Real Codex stream run did not produce a final message');
+  if (String(report.runs[0]?.finalMessage ?? '').trim() !== REAL_STREAM_SENTINEL) {
+    throw new Error('Real Codex stream run did not return the sentinel');
   }
   if (!report.runs[1]?.sawCommandExecution) {
     throw new Error('Real Codex tool run did not execute a tool call');
+  }
+  if (String(report.runs[1]?.finalMessage ?? '').trim() !== REAL_TOOL_SENTINEL) {
+    throw new Error('Real Codex tool run did not return the sentinel');
   }
   const serialized = JSON.stringify(report);
   if (serialized.includes(apiKey) || /xpod_gw_v1_[A-Za-z0-9._-]+/.test(serialized) || /sk-[A-Za-z0-9._-]+/.test(serialized)) {
