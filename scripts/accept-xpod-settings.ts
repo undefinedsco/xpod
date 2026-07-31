@@ -161,6 +161,9 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
 const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code|password|passwd|credential)$/i;
 const SECRET_ENV_KEY_PATTERN = /(secret|token|key|password|passwd|authorization|credential|oauth[-_]?code)/i;
 const SECRET_VALUE_PATTERN = /\b(?:sk-[A-Za-z0-9._-]+|xpod_gw_v1_[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+|oauth-code-[A-Za-z0-9._-]+)\b/g;
+const URL_CREDENTIAL_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s?#@]+@)([^/\s?#]+)/gi;
+const URL_WITH_USERINFO_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s?#@]+@[^/\s?#]+/i;
+const PROXY_ENV_KEY_PATTERN = /^(https?|all)_proxy$/i;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_ACCEPTANCE_EVIDENCE_ROOT = path.resolve('.test-data/acceptance');
 const PUBLIC_GATE_ENV_KEYS = new Set([
@@ -196,6 +199,10 @@ const BASE_RUNTIME_ENV_KEYS = [
   'no_proxy',
   'HTTP_PROXY',
   'HTTPS_PROXY',
+  'ALL_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
   'BUN_INSTALL',
   'NODE_OPTIONS',
   'PLAYWRIGHT_BROWSERS_PATH',
@@ -279,7 +286,8 @@ export function buildAcceptanceReport(input: {
 
 export function redactAcceptanceSecrets<T>(input: T, extraValues: string[] = []): T {
   const redactString = (value: string): string => {
-    let redacted = value.replace(SECRET_VALUE_PATTERN, (match) => match.startsWith('Bearer ') ? 'Bearer [redacted]' : '[redacted]');
+    let redacted = value.replace(URL_CREDENTIAL_PATTERN, '$1[redacted]@$3');
+    redacted = redacted.replace(SECRET_VALUE_PATTERN, (match) => match.startsWith('Bearer ') ? 'Bearer [redacted]' : '[redacted]');
     for (const extra of extraValues.filter(Boolean)) {
       redacted = redacted.split(extra).join('[redacted]');
     }
@@ -707,7 +715,10 @@ function isPathInside(candidate: string, root: string): boolean {
 
 export function acceptanceRedactionValues(env: Record<string, string | undefined>): string[] {
   return Array.from(new Set(Object.entries(env)
-    .filter(([key, value]) => Boolean(value) && SECRET_ENV_KEY_PATTERN.test(key))
+    .filter(([key, value]) => Boolean(value) && (
+      SECRET_ENV_KEY_PATTERN.test(key) ||
+      (PROXY_ENV_KEY_PATTERN.test(key) && URL_WITH_USERINFO_PATTERN.test(value!))
+    ))
     .map(([, value]) => value!)
   ));
 }

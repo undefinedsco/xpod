@@ -415,6 +415,64 @@ describe('Xpod settings product acceptance harness', () => {
     ]));
   });
 
+  it('redacts credentialed proxy env values and URL userinfo without changing credential-free proxies', () => {
+    const credentialedHttpProxy = 'http://user:proxy-pass@proxy.example:8080';
+    const credentialedHttpsProxy = 'https://user%40corp:p%40ss%3Aword@secure.proxy.example:8443/path';
+    const credentialedAllProxy = 'socks5://token%3Avalue@all.proxy.example:1080';
+    const credentialFreeProxy = 'http://proxy.example:3128';
+    const env = {
+      PATH: '/usr/bin',
+      HTTP_PROXY: credentialedHttpProxy,
+      HTTPS_PROXY: credentialedHttpsProxy,
+      ALL_PROXY: credentialedAllProxy,
+      no_proxy: 'localhost,127.0.0.1',
+      NO_PROXY: 'internal.example',
+      XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+      XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+    };
+    const redactionValues = acceptanceRedactionValues(env);
+    const gate = buildAcceptancePlan({ env, now: '2026-08-01T00:00:00.000Z' })
+      .items.find((item) => item.requirementId === 'browser-visual')?.gate;
+
+    expect(redactionValues).toEqual(expect.arrayContaining([
+      credentialedHttpProxy,
+      credentialedHttpsProxy,
+      credentialedAllProxy,
+    ]));
+    expect(redactionValues).not.toContain(credentialFreeProxy);
+    expect(redactionValues).not.toContain('localhost,127.0.0.1');
+    expect(buildGateRuntimeEnv(gate as any, env)).toMatchObject({
+      HTTP_PROXY: credentialedHttpProxy,
+      HTTPS_PROXY: credentialedHttpsProxy,
+      ALL_PROXY: credentialedAllProxy,
+      no_proxy: 'localhost,127.0.0.1',
+    });
+
+    const redacted = redactAcceptanceSecrets({
+      stdout: [
+        `http=${credentialedHttpProxy}`,
+        `https=${credentialedHttpsProxy}`,
+        `all=${credentialedAllProxy}`,
+        `plain=${credentialFreeProxy}`,
+        'generic=https://encoded%40user:encoded%3Apass@generic.proxy.example:9443/v1',
+      ].join('\n'),
+    }, redactionValues);
+    const serialized = JSON.stringify(redacted);
+
+    expect(serialized).not.toContain(credentialedHttpProxy);
+    expect(serialized).not.toContain(credentialedHttpsProxy);
+    expect(serialized).not.toContain(credentialedAllProxy);
+    expect(serialized).not.toContain('user:proxy-pass');
+    expect(serialized).not.toContain('user%40corp:p%40ss%3Aword');
+    expect(serialized).not.toContain('token%3Avalue');
+    expect(serialized).not.toContain('encoded%40user:encoded%3Apass');
+    expect(serialized).toContain('http://[redacted]@proxy.example:8080');
+    expect(serialized).toContain('https://[redacted]@secure.proxy.example:8443/path');
+    expect(serialized).toContain('socks5://[redacted]@all.proxy.example:1080');
+    expect(serialized).toContain('https://[redacted]@generic.proxy.example:9443/v1');
+    expect(serialized).toContain(credentialFreeProxy);
+  });
+
   it('terminates timed-out gate process groups and returns a deterministic timeout result', async () => {
     const result = await executeGateCommand({
       kind: 'command',
