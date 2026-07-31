@@ -308,6 +308,94 @@
         },
         {
           "@type": "YargsParameter",
+          "name": "acmeMode",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeEmail",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeDomains",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeDirectoryUrl",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeAccountKeyPath",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeCertificateKeyPath",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeCertificatePath",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeFullChainPath",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmeRenewBeforeDays",
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmePropagationDelayMs",
+          "options": {
+            "type": "number",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
+          "name": "acmePostDeployCommand",
+          "options": {
+            "type": "string",
+            "hidden": true
+          }
+        },
+        {
+          "@type": "YargsParameter",
           "name": "p2pEnabled",
           "options": {
             "type": "boolean",

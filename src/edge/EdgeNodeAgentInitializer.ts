@@ -1,6 +1,11 @@
 import { Initializer } from '@solid/community-server';
 import { getLoggerFor } from 'global-logger-factory';
 import { EdgeNodeAgent, type EdgeNodeAgentOptions } from './EdgeNodeAgent';
+import {
+  getEdgeNodeCertificateCapabilityBridge,
+  resolveEdgeNodeCertificateCapabilityBridgeId,
+  type EdgeNodeCertificateCapabilityBridge,
+} from './EdgeNodeCertificateCapabilityBridge';
 
 /**
  * 所有配置项设为可选，以便在 disabled 状态下即使缺少 CLI 变量也能成功实例化。
@@ -23,6 +28,18 @@ export interface EdgeNodeAgentInitializerOptions {
   p2pAcceptIntervalMs?: number | string;
   p2pConnectTimeoutMs?: number | string;
   p2pWinnerSelectionWindowMs?: number | string;
+  certificateBridgeId?: string;
+  acmeMode?: 'local' | 'cluster' | string;
+  acmeEmail?: string;
+  acmeDomains?: string | string[];
+  acmeDirectoryUrl?: string;
+  acmeAccountKeyPath?: string;
+  acmeCertificateKeyPath?: string;
+  acmeCertificatePath?: string;
+  acmeFullChainPath?: string;
+  acmeRenewBeforeDays?: number | string;
+  acmePropagationDelayMs?: number | string;
+  acmePostDeployCommand?: string | string[];
 }
 
 /**
@@ -34,12 +51,18 @@ export class EdgeNodeAgentInitializer extends Initializer {
   private readonly agent: EdgeNodeAgent;
   private readonly options: EdgeNodeAgentInitializerOptions;
   private readonly enabled: boolean;
+  private readonly certificateBridge?: EdgeNodeCertificateCapabilityBridge;
 
   public constructor(options: EdgeNodeAgentInitializerOptions) {
     super();
     this.options = options;
     this.agent = new EdgeNodeAgent();
     this.enabled = this.normalizeBoolean(options.enabled);
+    const bridgeId = options.certificateBridgeId ?? resolveEdgeNodeCertificateCapabilityBridgeId({
+      nodeId: options.nodeId,
+      baseUrl: options.baseUrl,
+    });
+    this.certificateBridge = bridgeId ? getEdgeNodeCertificateCapabilityBridge(bridgeId) : undefined;
   }
 
   public override async handle(): Promise<void> {
@@ -55,11 +78,17 @@ export class EdgeNodeAgentInitializer extends Initializer {
 
     try {
       await this.agent.start(this.buildAgentOptions(this.options));
+      this.certificateBridge?.setSource(() => this.agent.getCertificateRuntime());
       this.logger.info(`EdgeNodeAgent started (Node: ${this.options.nodeId})`);
     } catch (error: unknown) {
       this.logger.error(`Failed to start EdgeNodeAgent: ${(error as Error).message}`);
       throw error;
     }
+  }
+
+  public stop(): void {
+    this.certificateBridge?.clearSource();
+    this.agent.stop();
   }
 
   /**
@@ -82,6 +111,7 @@ export class EdgeNodeAgentInitializer extends Initializer {
 
   private buildAgentOptions(options: EdgeNodeAgentInitializerOptions): EdgeNodeAgentOptions {
     const p2pEnabled = this.normalizeBoolean(options.p2pEnabled);
+    const acme = this.buildAcmeOptions(options);
     return {
       signalEndpoint: options.signalEndpoint!,
       nodeId: options.nodeId!,
@@ -93,6 +123,7 @@ export class EdgeNodeAgentInitializer extends Initializer {
       enableNetworkDetection: options.enableNetworkDetection,
       metadata: options.metadata,
       intervalMs: this.normalizePositiveInteger(options.intervalMs),
+      ...(acme ? { acme } : {}),
       ...(p2pEnabled ? {
         p2p: {
           enabled: true,
@@ -104,6 +135,41 @@ export class EdgeNodeAgentInitializer extends Initializer {
         },
       } : {}),
     };
+  }
+
+  private buildAcmeOptions(options: EdgeNodeAgentInitializerOptions): EdgeNodeAgentOptions['acme'] | undefined {
+    if (!options.acmeCertificateKeyPath && !options.acmeCertificatePath) {
+      return undefined;
+    }
+    if (!options.acmeCertificateKeyPath || !options.acmeCertificatePath) {
+      throw new Error('EdgeNodeAgent ACME configuration requires acmeCertificateKeyPath and acmeCertificatePath together.');
+    }
+    const domains = this.normalizeStringList(options.acmeDomains);
+    return {
+      mode: options.acmeMode === 'cluster' ? 'cluster' : 'local',
+      email: options.acmeEmail,
+      domains,
+      directoryUrl: options.acmeDirectoryUrl,
+      accountKeyPath: options.acmeAccountKeyPath,
+      certificateKeyPath: options.acmeCertificateKeyPath,
+      certificatePath: options.acmeCertificatePath,
+      fullChainPath: options.acmeFullChainPath,
+      renewBeforeDays: this.normalizePositiveInteger(options.acmeRenewBeforeDays),
+      propagationDelayMs: this.normalizePositiveInteger(options.acmePropagationDelayMs),
+      postDeployCommand: this.normalizeStringList(options.acmePostDeployCommand),
+    };
+  }
+
+  private normalizeStringList(value: string | string[] | undefined): string[] | undefined {
+    if (Array.isArray(value)) {
+      const entries = value.map((entry) => entry.trim()).filter(Boolean);
+      return entries.length > 0 ? entries : undefined;
+    }
+    if (typeof value === 'string') {
+      const entries = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+      return entries.length > 0 ? entries : undefined;
+    }
+    return undefined;
   }
 
   private normalizeBoolean(value: string | boolean | undefined): boolean {

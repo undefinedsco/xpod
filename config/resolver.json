@@ -299,6 +299,92 @@
           }
         },
         {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeMode",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeMode",
+            "defaultValue": "local"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeEmail",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeEmail",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeDomains",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeDomains",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeDirectoryUrl",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeDirectoryUrl",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeAccountKeyPath",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeAccountKeyPath",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeCertificateKeyPath",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeCertificateKeyPath",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeCertificatePath",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeCertificatePath",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeFullChainPath",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeFullChainPath",
+            "defaultValue": ""
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmeRenewBeforeDays",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmeRenewBeforeDays"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmePropagationDelayMs",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmePropagationDelayMs"
+          }
+        },
+        {
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:acmePostDeployCommand",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "KeyExtractor",
+            "key": "acmePostDeployCommand",
+            "defaultValue": ""
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:p2pEnabled",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",

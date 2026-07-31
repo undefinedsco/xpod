@@ -18,6 +18,7 @@ import type { TunnelProvider } from '../../tunnel/TunnelProvider';
 import type { ActiveTunnelProvider, TunnelProfile } from '../../tunnel/TunnelProfiles';
 import type { AcmeCertificateManager } from '../../edge/acme/AcmeCertificateManager';
 import type { ClusterCertificateManager } from '../../edge/acme/ClusterCertificateManager';
+import type { EdgeNodeCertificateCapabilityBridge } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 import type { IdentityDatabase } from '../../identity/drizzle/db';
 import type { DdnsRepository } from '../../identity/drizzle/DdnsRepository';
 import type { PodLookupRepository } from '../../identity/drizzle/PodLookupRepository';
@@ -281,6 +282,7 @@ export interface ApiContainerCradle {
 
   // Optional runtime certificate managers. Routes only enable TLS status/renewal
   // when one of these services is explicitly registered by the active profile.
+  edgeNodeCertificateCapabilityBridge?: EdgeNodeCertificateCapabilityBridge;
   certificateManager?: unknown;
   acmeCertificateManager?: AcmeCertificateManager;
   clusterCertificateManager?: ClusterCertificateManager;

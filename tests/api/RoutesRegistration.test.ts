@@ -3,6 +3,10 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AcmeCertificateManager } from '../../src/edge/acme/AcmeCertificateManager';
+import {
+  getEdgeNodeCertificateCapabilityBridge,
+  resolveEdgeNodeCertificateCapabilityBridgeId,
+} from '../../src/edge/EdgeNodeCertificateCapabilityBridge';
 
 vi.mock('inngest/node', () => ({
   serve: vi.fn(() => vi.fn((_req: unknown, res: { end?: () => void }) => res.end?.())),
@@ -92,9 +96,11 @@ describe('registerRoutes mode wiring', () => {
       services?: Record<string, unknown>;
     } = {},
   ): any {
+    const config = { ...baseConfig, edition, ...overrides.config };
+    const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({ nodeId: config.nodeId, baseUrl: config.solidBaseUrl ?? config.publicUrl });
     const services: Record<string, unknown> = {
       apiServer: mockServer,
-      config: { ...baseConfig, edition, ...overrides.config },
+      config,
       nodeRepo: {},
       chatService: {},
       aiGatewayService: {
@@ -160,6 +166,7 @@ describe('registerRoutes mode wiring', () => {
         getEndpoint: vi.fn(() => 'https://local-tunnel.example/'),
       } : undefined,
       subdomainClient: edition === 'local' ? {} : undefined,
+      edgeNodeCertificateCapabilityBridge: bridgeId ? getEdgeNodeCertificateCapabilityBridge(bridgeId) : undefined,
       ...overrides.services,
     };
 
@@ -381,8 +388,10 @@ describe('registerRoutes mode wiring', () => {
     expect(certificateManager.renewCertificate).toHaveBeenCalledTimes(1);
   });
 
-  it('wires a local ACME certificate runtime surface into Network settings TLS status and renewal', async () => {
+  it('wires the production certificate bridge into Network settings TLS status and renewal', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'routes-acme-cert-'));
+    const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({ nodeId: 'node-1' })!;
+    const bridge = getEdgeNodeCertificateCapabilityBridge(bridgeId);
     try {
       const certPath = path.join(tmpDir, 'tls.crt');
       await fs.writeFile(certPath, SAMPLE_CERT, 'utf8');
@@ -399,11 +408,12 @@ describe('registerRoutes mode wiring', () => {
         renewBeforeDays: 10,
       });
       const renewSpy = vi.spyOn(acmeCertificateManager, 'renewCertificate').mockResolvedValue(undefined);
+      bridge.setSource(() => acmeCertificateManager);
       registerRoutes(createContainer('local', {
         config: {
+          nodeId: 'node-1',
           publicUrl: 'https://local-public.example/',
         },
-        services: { acmeCertificateManager },
       }));
 
       const statusRes = jsonResponse();
@@ -418,6 +428,7 @@ describe('registerRoutes mode wiring', () => {
       expect(renewRes.statusCode).toBe(200);
       expect(renewSpy).toHaveBeenCalledTimes(1);
     } finally {
+      bridge.clearSource();
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
@@ -441,7 +452,7 @@ describe('registerRoutes mode wiring', () => {
       tls: { supported: false, status: 'unsupported' },
       actions: { renewCertificate: false },
     });
-    expect(routes['POST /api/network/settings/certificate/renew']).toBeUndefined();
+    expect(routes['POST /api/network/settings/certificate/renew']).toBeTypeOf('function');
   });
 
   it('wires RDF stats routes to the container stats service', async () => {

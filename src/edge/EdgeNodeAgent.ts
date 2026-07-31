@@ -93,6 +93,7 @@ export class EdgeNodeAgent {
   private readonly logger = getLoggerFor(this);
   private heartbeat?: EdgeNodeSignalClient;
   private frpManager?: FrpcProcessManager;
+  private localCertificate?: AcmeCertificateManager;
   private clusterCertificate?: ClusterCertificateManager;
   private networkDetector?: EdgeNodeCapabilityDetector;
   private cachedNetworkInfo?: NetworkAddressInfo;
@@ -187,6 +188,12 @@ export class EdgeNodeAgent {
     this.p2pAcceptRunning = false;
     void this.frpManager?.stop();
     this.clusterCertificate?.stop();
+    this.localCertificate = undefined;
+    this.clusterCertificate = undefined;
+  }
+
+  public getCertificateRuntime(): AcmeCertificateManager | ClusterCertificateManager | undefined {
+    return this.clusterCertificate ?? this.localCertificate;
   }
 
   private startP2PAcceptLoop(options: EdgeNodeAgentOptions): void {
@@ -430,6 +437,7 @@ export class EdgeNodeAgent {
       renewBeforeDays: acmeOptions.renewBeforeDays,
       propagationDelayMs: acmeOptions.propagationDelayMs,
     });
+    this.localCertificate = manager;
     try {
       const issued = await manager.ensureCertificate();
       if (issued && acmeOptions.postDeployCommand && acmeOptions.postDeployCommand.length > 0) {

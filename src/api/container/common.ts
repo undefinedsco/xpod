@@ -58,6 +58,10 @@ import { RunAuthContextRegistry } from '../runs/RunAuthContextRegistry';
 import { InngestTaskScheduler, TaskAuthBindingService, TaskService } from '../tasks';
 import { EmbeddingServiceImpl, ProviderRegistryImpl } from '../../ai/service';
 import { createApiRdfEngine, createApiRdfSearchIndexingService, createApiRunContextRetriever } from './rdf';
+import {
+  getEdgeNodeCertificateCapabilityBridge,
+  resolveEdgeNodeCertificateCapabilityBridgeId,
+} from '../../edge/EdgeNodeCertificateCapabilityBridge';
 
 function resolveCssServiceBaseUrl(): string {
   if (process.env.CSS_INTERNAL_URL) {
@@ -93,6 +97,14 @@ export function registerCommonServices(
     // 数据库
     db: asFunction(({ config }: ApiContainerCradle) => {
       return getIdentityDatabase(config.databaseUrl);
+    }).singleton(),
+
+    edgeNodeCertificateCapabilityBridge: asFunction(({ config }: ApiContainerCradle) => {
+      const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({
+        nodeId: config.nodeId,
+        baseUrl: config.solidBaseUrl ?? config.publicUrl,
+      });
+      return bridgeId ? getEdgeNodeCertificateCapabilityBridge(bridgeId) : undefined;
     }).singleton(),
 
     // 仓库

@@ -76,6 +76,17 @@ describe('runtime bootstrap helpers', () => {
       XPOD_P2P_ACCEPT_INTERVAL_MS: '1500',
       XPOD_P2P_CONNECT_TIMEOUT_MS: '7000',
       XPOD_P2P_WINNER_SELECTION_WINDOW_MS: '50',
+      XPOD_ACME_MODE: 'cluster',
+      XPOD_ACME_EMAIL: 'ops@example.com',
+      XPOD_ACME_DOMAINS: 'node-1.example.com,node-1-alt.example.com',
+      XPOD_ACME_DIRECTORY_URL: 'https://acme.example/directory',
+      XPOD_ACME_ACCOUNT_KEY_PATH: '/tmp/account.key',
+      XPOD_ACME_CERTIFICATE_KEY_PATH: '/tmp/tls.key',
+      XPOD_ACME_CERTIFICATE_PATH: '/tmp/tls.crt',
+      XPOD_ACME_FULL_CHAIN_PATH: '/tmp/fullchain.pem',
+      XPOD_ACME_RENEW_BEFORE_DAYS: '20',
+      XPOD_ACME_DNS_PROPAGATION_DELAY_MS: '5000',
+      XPOD_ACME_POST_DEPLOY_COMMAND: 'systemctl,reload,caddy',
     });
 
     const shorthand = buildRuntimeShorthand(runtimeEnv, {
@@ -96,6 +107,17 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.p2pAcceptIntervalMs).toBe('1500');
     expect(shorthand.p2pConnectTimeoutMs).toBe('7000');
     expect(shorthand.p2pWinnerSelectionWindowMs).toBe('50');
+    expect(shorthand.acmeMode).toBe('cluster');
+    expect(shorthand.acmeEmail).toBe('ops@example.com');
+    expect(shorthand.acmeDomains).toBe('node-1.example.com,node-1-alt.example.com');
+    expect(shorthand.acmeDirectoryUrl).toBe('https://acme.example/directory');
+    expect(shorthand.acmeAccountKeyPath).toBe('/tmp/account.key');
+    expect(shorthand.acmeCertificateKeyPath).toBe('/tmp/tls.key');
+    expect(shorthand.acmeCertificatePath).toBe('/tmp/tls.crt');
+    expect(shorthand.acmeFullChainPath).toBe('/tmp/fullchain.pem');
+    expect(shorthand.acmeRenewBeforeDays).toBe('20');
+    expect(shorthand.acmePropagationDelayMs).toBe('5000');
+    expect(shorthand.acmePostDeployCommand).toBe('systemctl,reload,caddy');
     expect(shorthand.edgeNodesEnabled).toBe(true);
     expect(shorthand.centerRegistrationEnabled).toBe(true);
     expect(shorthand.emailConfigHost).toBe('');

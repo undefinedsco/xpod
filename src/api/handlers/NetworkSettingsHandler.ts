@@ -46,6 +46,7 @@ export interface NetworkCapabilityReader<T extends CapabilityStatus = Capability
 
 export interface CertificateRenewer {
   renew(): Promise<void>;
+  isAvailable?(): boolean | Promise<boolean>;
 }
 
 export interface CertificateCapability {
@@ -244,9 +245,27 @@ async function readNetworkStatus(
     tunnel,
     actions: {
       diagnose: true,
-      renewCertificate: Boolean(options.certificateRenewer),
+      renewCertificate: await isCertificateRenewalAvailable(options.certificateRenewer, logger),
     },
   };
+}
+
+async function isCertificateRenewalAvailable(
+  renewer: CertificateRenewer | undefined,
+  logger: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>,
+): Promise<boolean> {
+  if (!renewer) {
+    return false;
+  }
+  if (!renewer.isAvailable) {
+    return true;
+  }
+  try {
+    return Boolean(await renewer.isAvailable());
+  } catch (error) {
+    logger.warn(`Failed to read certificate renewal availability: ${redactSecretText(error)}`);
+    return false;
+  }
 }
 
 async function safeReadCapability<T extends CapabilityStatus>(
@@ -480,6 +499,9 @@ function createCertificateRenewer(candidate: unknown): CertificateRenewer | unde
     renew: async () => {
       await (candidate as Record<string, () => unknown>)[renewMethod]();
     },
+    ...(hasFunction(candidate, 'isAvailable') ? {
+      isAvailable: async () => Boolean(await (candidate as Record<string, () => unknown>).isAvailable()),
+    } : {}),
   };
 }
 

@@ -32,6 +32,50 @@
         "@id": "urn:solid-server:default:variable:nodeHeartbeatInterval",
         "@type": "Variable"
       },
+      "acmeMode": {
+        "@id": "urn:solid-server:default:variable:acmeMode",
+        "@type": "Variable"
+      },
+      "acmeEmail": {
+        "@id": "urn:solid-server:default:variable:acmeEmail",
+        "@type": "Variable"
+      },
+      "acmeDomains": {
+        "@id": "urn:solid-server:default:variable:acmeDomains",
+        "@type": "Variable"
+      },
+      "acmeDirectoryUrl": {
+        "@id": "urn:solid-server:default:variable:acmeDirectoryUrl",
+        "@type": "Variable"
+      },
+      "acmeAccountKeyPath": {
+        "@id": "urn:solid-server:default:variable:acmeAccountKeyPath",
+        "@type": "Variable"
+      },
+      "acmeCertificateKeyPath": {
+        "@id": "urn:solid-server:default:variable:acmeCertificateKeyPath",
+        "@type": "Variable"
+      },
+      "acmeCertificatePath": {
+        "@id": "urn:solid-server:default:variable:acmeCertificatePath",
+        "@type": "Variable"
+      },
+      "acmeFullChainPath": {
+        "@id": "urn:solid-server:default:variable:acmeFullChainPath",
+        "@type": "Variable"
+      },
+      "acmeRenewBeforeDays": {
+        "@id": "urn:solid-server:default:variable:acmeRenewBeforeDays",
+        "@type": "Variable"
+      },
+      "acmePropagationDelayMs": {
+        "@id": "urn:solid-server:default:variable:acmePropagationDelayMs",
+        "@type": "Variable"
+      },
+      "acmePostDeployCommand": {
+        "@id": "urn:solid-server:default:variable:acmePostDeployCommand",
+        "@type": "Variable"
+      },
       "p2pEnabled": {
         "@id": "urn:solid-server:default:variable:p2pEnabled",
         "@type": "Variable"

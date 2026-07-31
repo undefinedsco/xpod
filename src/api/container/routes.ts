@@ -123,6 +123,7 @@ function registerSharedRoutes(
     container.resolve('certificateManager', { allowUnregistered: true }),
     container.resolve('acmeCertificateManager', { allowUnregistered: true }),
     container.resolve('clusterCertificateManager', { allowUnregistered: true }),
+    container.resolve('edgeNodeCertificateCapabilityBridge', { allowUnregistered: true }),
   );
   const podLookupRepository = container.resolve('podLookupRepo');
   if (!podLookupRepository) {
