@@ -6,9 +6,11 @@
 #   API_PORT=6301 (cloud) / 5738 (local)
 #
 
-FROM oven/bun:1.3.8-alpine AS build
+FROM oven/bun:1.3.8 AS build
 
-RUN apk add --no-cache python3 make g++ cmake
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ cmake \
+ && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=development
 
 WORKDIR /app
