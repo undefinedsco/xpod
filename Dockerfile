@@ -13,6 +13,8 @@ RUN apk add --no-cache python3 make g++ cmake
 WORKDIR /app
 
 COPY package.json bun.lock ./
+COPY ui/package.json ./ui/package.json
+COPY packages ./packages
 COPY scripts/patch-jose.js ./scripts/patch-jose.js
 # Workaround: 禁用 SSL 验证以绕过代理 HTTPS 握手问题
 # 详见: docs/docker-build-troubleshooting.md

@@ -5,12 +5,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
+const EXTENSIONS_PACKAGE = '@undefineds.co/extensions';
 const WORKSPACE_PACKAGES = [
   '@undefineds.co/ai-connection',
   '@undefineds.co/extension-sdk',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
 ];
+const BUNDLED_LOCAL_PACKAGES = [ DRIZZLE_SOLID_PACKAGE, EXTENSIONS_PACKAGE, ...WORKSPACE_PACKAGES ];
 
 function getNpmInvocation(args) {
   if (process.platform === 'win32') {
@@ -27,7 +29,7 @@ function getNpmInvocation(args) {
 }
 
 function getBundledLocalDependencies(repoRoot) {
-  const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE ].flatMap((name) => {
+  const privatePatchedDependencies = [ DRIZZLE_SOLID_PACKAGE, EXTENSIONS_PACKAGE ].flatMap((name) => {
     const sourcePackageRoot = path.join(repoRoot, 'node_modules', ...name.split('/'));
     if (!fs.existsSync(sourcePackageRoot)) {
       return [];
@@ -50,7 +52,7 @@ function removeWorkspaceDependencies(packageRoot) {
     const dependencies = packageJson[field];
     if (!dependencies) continue;
     for (const [ name, version ] of Object.entries(dependencies)) {
-      if (typeof version === 'string' && version.startsWith('workspace:')) {
+      if (BUNDLED_LOCAL_PACKAGES.includes(name) || (typeof version === 'string' && version.startsWith('workspace:'))) {
         delete dependencies[name];
       }
     }
