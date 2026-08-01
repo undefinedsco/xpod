@@ -15,7 +15,7 @@ ENV NODE_ENV=development
 
 WORKDIR /app
 
-COPY package.json bun.lock ./
+COPY package.json bun.lock bunfig.toml ./
 COPY ui/package.json ./ui/package.json
 COPY packages ./packages
 COPY scripts/patch-jose.js ./scripts/patch-jose.js

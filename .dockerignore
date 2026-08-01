@@ -4,6 +4,7 @@
 # 构建需要的文件
 !package.json
 !bun.lock
+!bunfig.toml
 !yarn.lock
 !tsconfig.json
 !.componentsjs-generator-config.json
