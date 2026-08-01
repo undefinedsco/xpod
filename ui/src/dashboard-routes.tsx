@@ -1,6 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
-import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
+import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
 import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
@@ -20,7 +20,7 @@ function guardedRoute(element: React.ReactNode) {
 
 export const dashboardRoutes: RouteObject[] = [
   {
-    element: <XpodSettingsLayout />,
+    element: <XpodDashboardLayout />,
     children: [
       { index: true, element: <Navigate to="/overview" replace /> },
       {
