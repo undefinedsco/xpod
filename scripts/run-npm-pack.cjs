@@ -5,6 +5,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
+const WORKSPACE_PACKAGES = [
+  '@undefineds.co/ai-connection',
+  '@undefineds.co/extension-sdk',
+  '@undefineds.co/shared-ui',
+  '@undefineds.co/solid-sdk',
+];
 
 function getNpmInvocation(args) {
   if (process.platform === 'win32') {
@@ -29,7 +35,27 @@ function getBundledLocalDependencies(repoRoot) {
     return [{ name, sourcePackageRoot: fs.realpathSync(sourcePackageRoot) }];
   });
 
-  return privatePatchedDependencies;
+  const workspaceDependencies = WORKSPACE_PACKAGES.map((name) => ({
+    name,
+    sourcePackageRoot: path.join(repoRoot, 'packages', name.slice('@undefineds.co/'.length)),
+  }));
+
+  return [ ...privatePatchedDependencies, ...workspaceDependencies ];
+}
+
+function removeWorkspaceDependencies(packageRoot) {
+  const packageJsonPath = path.join(packageRoot, 'package.json');
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  for (const field of [ 'dependencies', 'optionalDependencies', 'peerDependencies' ]) {
+    const dependencies = packageJson[field];
+    if (!dependencies) continue;
+    for (const [ name, version ] of Object.entries(dependencies)) {
+      if (typeof version === 'string' && version.startsWith('workspace:')) {
+        delete dependencies[name];
+      }
+    }
+  }
+  fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n');
 }
 
 function shouldCopyBundledDependency(sourceRoot, sourcePath) {
@@ -119,6 +145,7 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies) {
 
   fs.mkdirSync(unpackDir, { recursive: true });
   execFileSync('tar', [ 'xf', tarballPath, '-C', unpackDir ]);
+  removeWorkspaceDependencies(packageDir);
 
   for (const dependency of dependencies) {
     const destinationDir = path.join(packageDir, 'node_modules', ...dependency.name.split('/'));
@@ -132,6 +159,7 @@ function bundleLocalDependenciesIntoTarball(tarballPath, dependencies) {
     if (dependency.name === DRIZZLE_SOLID_PACKAGE) {
       patchBundledDrizzleSolid(destinationDir);
     }
+    removeWorkspaceDependencies(destinationDir);
     console.log(`[npm-pack] bundled local dependency ${dependency.name}`);
   }
 

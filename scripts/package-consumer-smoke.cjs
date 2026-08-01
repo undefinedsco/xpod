@@ -24,6 +24,13 @@ function runInIsolatedConsumerProcess(consumerDir) {
       env: {
         ...process.env,
         XPOD_CONSUMER_SMOKE_CHILD: '1',
+        XPOD_GATEWAY_LOCATOR_KEY_ID: 'consumer-smoke',
+        XPOD_GATEWAY_LOCATOR_SECRET: 'consumer-smoke-locator-secret',
+        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'consumer-smoke-internal-client',
+        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'consumer-smoke-internal-secret',
+        XPOD_SECRET_CELL_KEY_ID: 'consumer-smoke',
+        XPOD_SECRET_CELL_KEY: 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+        XPOD_SECRET_CELL_PREVIOUS_KEYS: '{}',
       },
     });
     if (result.status !== 0) {
