@@ -10,6 +10,7 @@ import {
 } from '../../api/admin';
 import { serviceNavigationItems } from './services-navigation';
 import { ServicesStatusContext, type ServicesStatusContextValue } from './services-status-context';
+import { PaneListHeader } from './PaneListHeader';
 
 const unsupportedCapability: AdminCapability = {
   supported: false,
@@ -92,8 +93,9 @@ export default function ServicesPage({ mode = 'auto' }: { mode?: TwoPaneLayoutMo
     <ServicesStatusContext.Provider value={contextValue}>
       <TwoPaneLayout
         mode={mode}
-        header={<ServicesHeader loading={loading || refreshing} onRefresh={contextValue.refresh} />}
+        listHeader={<PaneListHeader title="Services" />}
         list={<ServicesSidebar snapshot={snapshot} loading={loading && !snapshot} />}
+        mainHeader={<ServicesHeader loading={loading || refreshing} onRefresh={contextValue.refresh} />}
         main={
           <section className="min-h-full min-w-0 bg-background">
             <ServicesRoutePaneSync />

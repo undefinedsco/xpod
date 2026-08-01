@@ -4,6 +4,7 @@ import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitl
 import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
+import { PaneListHeader } from './PaneListHeader';
 
 export default function PodPage() {
   const runtime = useXpodSolidRuntime();
@@ -92,7 +93,7 @@ export default function PodPage() {
   return (
     <TwoPaneLayout
       mode="auto"
-      header={<PodHeader loading={loading} onRefresh={loadStatus} />}
+      listHeader={<PaneListHeader title="Pod" />}
       list={
         <aside className="flex h-full flex-col gap-3 border-r border-border bg-muted/30 p-4">
           <IdentityCard
@@ -108,6 +109,7 @@ export default function PodPage() {
           <PodUsageCard storage={status?.storage} loading={loading && !status} />
         </aside>
       }
+      mainHeader={<PodHeader loading={loading} onRefresh={loadStatus} />}
       main={
         <section className="flex min-h-full flex-col gap-4 bg-background p-6">
           {error ? (

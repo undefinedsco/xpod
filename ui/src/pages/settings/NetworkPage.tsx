@@ -10,6 +10,7 @@ import {
   type NetworkSettingsStatus,
 } from '../../api/network-settings';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
+import { PaneListHeader } from './PaneListHeader';
 
 export default function NetworkPage() {
   const runtime = useXpodSolidRuntime();
@@ -169,13 +170,14 @@ export default function NetworkPage() {
   return (
     <TwoPaneLayout
       mode="auto"
-      header={<NetworkHeader loading={loading} onRefresh={loadStatus} />}
+      listHeader={<PaneListHeader title="Network" />}
       list={
         <aside className="flex h-full flex-col gap-3 border-r border-border bg-muted/30 p-4">
           <EndpointCard endpoint={status?.endpoint} loading={loading && !status} />
           <AddressCard sections={sections} loading={loading && !status} />
         </aside>
       }
+      mainHeader={<NetworkHeader loading={loading} onRefresh={loadStatus} />}
       main={
         <section className="flex min-h-full flex-col gap-4 bg-background p-6">
           {error ? (
