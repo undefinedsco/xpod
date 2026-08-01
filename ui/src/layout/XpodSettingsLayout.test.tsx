@@ -44,17 +44,17 @@ describe('settings navigation metadata', () => {
 });
 
 describe('XpodSettingsLayout', () => {
-  test('renders SDK host shell navigation and host header search without adding a nested workspace landmark', () => {
+  test('renders an icon-only Linx-sized host rail without a global settings header', () => {
     const html = renderLayout('/models');
 
     expect(html).toContain('data-app-layout="workspace"');
-    expect(html).toContain('Models');
-    expect(html).toContain('Pod');
-    expect(html).toContain('Network');
-    expect(html).toContain('Services');
-    expect(html).toContain('aria-label="Search settings"');
-    expect(html).toContain('min-h-[8.375rem]');
-    expect(html).toContain('md:h-full md:min-h-0');
+    expect(html).toContain('aria-label="Models"');
+    expect(html).toContain('aria-label="Pod"');
+    expect(html).toContain('aria-label="Network"');
+    expect(html).toContain('aria-label="Services"');
+    expect(html).not.toContain('aria-label="Search settings"');
+    expect(html).not.toContain('Xpod Settings');
+    expect(html).not.toContain('Runtime workspace');
     expect(html).toContain('Models workspace');
     expect((html.match(/<main/g) ?? []).length).toBe(0);
   });

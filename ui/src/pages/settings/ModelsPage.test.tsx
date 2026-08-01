@@ -94,7 +94,7 @@ function serviceAccessPayload() {
 }
 
 describe('ModelsPage AI Connection host', () => {
-  test('mounts the real AI Connection applet into SDK two-pane header, list, and main slots', async () => {
+  test('mounts AI Connection into aligned list and main header slots', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/api/applets/service-access/ai-connection')) {
@@ -122,13 +122,17 @@ describe('ModelsPage AI Connection host', () => {
     const { container, root } = await renderModelsPage(runtimeWith(fetchImpl));
 
     expect(container.querySelector('[data-workspace-layout="two-pane"]')).toBeTruthy();
+    expect(container.querySelector('[data-workspace-list-header="true"]')).toBeTruthy();
+    expect(container.querySelector('[data-workspace-main-header="true"]')).toBeTruthy();
+    expect(container.querySelector('[data-workspace-list-header="true"] input[aria-label="搜索 Provider"]')).toBeTruthy();
+    expect(container.querySelector('[data-workspace-list-header="true"] button[aria-label="添加 AI Connection"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('OpenAI');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Anthropic');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Kimi');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('百炼');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
     expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('服务访问已授权');
-    expect(container.textContent).toContain('AI Connection');
+    expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('OpenAI');
     await unmount(root);
   });
 });

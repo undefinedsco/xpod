@@ -13,8 +13,9 @@ export default function ModelsPage() {
 
   return (
     <TwoPaneLayout
-      header={mounted.slots.header}
+      listHeader={mounted.slots.listHeader}
       list={mounted.slots.list}
+      mainHeader={mounted.slots.mainHeader}
       main={mounted.slots.main}
       mode="auto"
     />

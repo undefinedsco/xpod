@@ -51,8 +51,9 @@ export const notesApplet = defineApplet({
   layout: {
     descriptor: defineAppletLayout({ type: 'two-pane' }),
     slots: {
-      header: () => <h1>Notes</h1>,
+      listHeader: () => <input aria-label="Search notes" />,
       list: () => <nav aria-label="Notes">Notes list</nav>,
+      mainHeader: () => <h1>Notes</h1>,
       main: ({ controller }) => {
         const { pod } = controller.host.solid
         return pod.status === 'ready'
@@ -66,8 +67,8 @@ export const notesApplet = defineApplet({
 ```
 
 Single-pane modules provide `layout.render`. Three-pane modules provide
-`layout.slots.header`, `list`, `main`, and `context`, plus optional descriptor
-context:
+`layout.slots.listHeader`, `list`, `mainHeader`, `main`, and `context`, plus
+optional descriptor context:
 
 ```tsx
 defineAppletLayout({
@@ -114,8 +115,9 @@ function AppletSurface({
   if (mounted.layout === 'three-pane') {
     return (
       <ThreePaneLayout
-        header={mounted.slots.header}
+        listHeader={mounted.slots.listHeader}
         list={mounted.slots.list}
+        mainHeader={mounted.slots.mainHeader}
         main={mounted.slots.main}
         context={mounted.slots.context}
         contextConfig={mounted.contextConfig}
@@ -125,8 +127,9 @@ function AppletSurface({
 
   return (
     <TwoPaneLayout
-      header={mounted.slots.header}
+      listHeader={mounted.slots.listHeader}
       list={mounted.slots.list}
+      mainHeader={mounted.slots.mainHeader}
       main={mounted.slots.main}
     />
   )
@@ -142,7 +145,6 @@ export function XpodSettingsHost({
   return (
     <AppLayout
       navigation={<nav aria-label="Xpod settings">Models / Pod / Network</nav>}
-      header={<div>Models</div>}
     >
       <AppletSurface applet={applet} host={host} />
     </AppLayout>
@@ -238,8 +240,9 @@ defineApplet({
   },
   createController: (host) => ({ host }),
   slots: {
-    header: () => <h1>Legacy</h1>,
+    listHeader: () => <input aria-label="Search legacy items" />,
     list: () => <nav>Items</nav>,
+    mainHeader: () => <h1>Legacy</h1>,
     main: () => <main>Detail</main>,
   },
 })
@@ -267,8 +270,9 @@ function Harness() {
     ? (
       <TwoPaneLayout
         mode="stack"
-        header={mounted.slots.header}
+        listHeader={mounted.slots.listHeader}
         list={mounted.slots.list}
+        mainHeader={mounted.slots.mainHeader}
         main={mounted.slots.main}
       />
     )
