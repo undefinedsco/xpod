@@ -1,0 +1,37 @@
+name: Diagnose Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Production environment to inspect
+        required: true
+        type: choice
+        options:
+          - co
+          - cn
+        default: co
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Diagnose .${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > ~/.kube/config
+
+      - name: Capture Xpod state
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods -o wide
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-cloud
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --tail=300 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-cloud --all-containers=true --previous --tail=300 --prefix=true --max-log-requests=10 || true
