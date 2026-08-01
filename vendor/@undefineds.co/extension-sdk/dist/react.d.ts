@@ -1,0 +1,12 @@
+import { type DescriptorSinglePaneAppletModule, type DescriptorThreePaneAppletModule, type DescriptorTwoPaneAppletModule, type MountedThreePaneApplet, type MountedSinglePaneApplet, type MountedTwoPaneApplet, type SinglePaneAppletModule, type TwoPaneAppletModule, type WebExtensionHost } from './web';
+export * from './react/layout-context';
+export * from './react/app-layout';
+export * from './react/workspace-layout';
+export * from './react/auth-boundary';
+export interface UseAppletOptions {
+    enabled?: boolean;
+}
+export declare function useApplet<TController, Database = unknown>(applet: TwoPaneAppletModule<TController, Database> | DescriptorTwoPaneAppletModule<TController, Database>, host: WebExtensionHost<Database>, options?: UseAppletOptions): MountedTwoPaneApplet<TController> | null;
+export declare function useApplet<TController, Database = unknown>(applet: SinglePaneAppletModule<TController, Database> | DescriptorSinglePaneAppletModule<TController, Database>, host: WebExtensionHost<Database>, options?: UseAppletOptions): MountedSinglePaneApplet<TController> | null;
+export declare function useApplet<TController, Database = unknown>(applet: DescriptorThreePaneAppletModule<TController, Database>, host: WebExtensionHost<Database>, options?: UseAppletOptions): MountedThreePaneApplet<TController> | null;
+export declare function useApplet<TController, Database = unknown>(applet: TwoPaneAppletModule<TController, Database> | SinglePaneAppletModule<TController, Database> | DescriptorTwoPaneAppletModule<TController, Database> | DescriptorSinglePaneAppletModule<TController, Database> | DescriptorThreePaneAppletModule<TController, Database>, host: WebExtensionHost<Database>, options?: UseAppletOptions): MountedTwoPaneApplet<TController> | MountedSinglePaneApplet<TController> | MountedThreePaneApplet<TController> | null;

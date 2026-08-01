@@ -1,0 +1,32 @@
+import { AiClientConfigTransaction } from './transaction';
+import type { AiClientConfigAdapter, AiClientConfigPlan, AiConnectionClientProfile, ClientDetection, ClientInspection, ClientVerification } from './types';
+export declare function hashWebId(webId: string): string;
+export declare function normalizeV1Endpoint(endpoint: string): string;
+export declare function normalizeMessagesEndpoint(endpoint: string): string;
+export declare function parseJsonObject(content: string | undefined, label: string): Record<string, unknown>;
+export declare function stringifyJson(value: unknown): string;
+export declare function looksLikePreviousXpodValue(value: unknown): boolean;
+export declare function stripLegacyXpodObject(value: Record<string, unknown>): void;
+export declare abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter {
+    protected readonly client: string;
+    private readonly executable;
+    protected readonly configPaths: string[];
+    protected readonly transaction: AiClientConfigTransaction;
+    protected readonly statePath: string;
+    protected constructor(client: string, executable: string, configPaths: string[], stateDirectory: string, transaction?: AiClientConfigTransaction);
+    detect(): Promise<ClientDetection>;
+    inspect(): Promise<ClientInspection>;
+    plan(profile: AiConnectionClientProfile): Promise<AiClientConfigPlan>;
+    apply(plan: AiClientConfigPlan): Promise<void>;
+    verify(profile: AiConnectionClientProfile): Promise<ClientVerification>;
+    restore(webId: string): Promise<void>;
+    protected abstract project(profile: AiConnectionClientProfile, current: Map<string, string | undefined>): Promise<Map<string, string>>;
+    protected abstract verifyProjection(profile: AiConnectionClientProfile): Promise<ClientVerification>;
+    protected abstract restoreFile(filePath: string, current: string | undefined, original: string | undefined, originallyExisted: boolean): Promise<string | null>;
+    protected readOptional(filePath: string): Promise<string | undefined>;
+    private validateProfile;
+    private readState;
+    private rejectSymlink;
+    private exists;
+    private isExecutableOnPath;
+}

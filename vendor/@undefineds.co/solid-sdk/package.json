@@ -1,0 +1,45 @@
+{
+  "name": "@undefineds.co/solid-sdk",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
+    },
+    "./pod-runtime": {
+      "types": "./dist/pod-runtime.d.ts",
+      "import": "./dist/pod-runtime.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && node ../../scripts/fix-dist-js-imports.mjs dist",
+    "test": "vitest run test"
+  },
+  "dependencies": {
+    "@inrupt/solid-client-authn-browser": "^4.0.0"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "react": "19.2.6",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
+  }
+}

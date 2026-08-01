@@ -1,0 +1,15 @@
+import type { WebExtensionModule } from '@undefineds.co/extension-sdk/web';
+import { type AiConnectionController } from './controller';
+export * from './ai-connection-client';
+export * from './AiClientConfigurationSection';
+export * from './AiConnectionPanel';
+export * from './AiConnectionList';
+export * from './AiConnectionMain';
+export * from './AiConnectionHeader';
+export * from './controller';
+export * from './AiProviderCard';
+export * from './AiQuotaCard';
+export * from './manifest';
+export declare const aiConnectionApplet: import("@undefineds.co/extension-sdk/web").TwoPaneAppletModule<AiConnectionController, unknown>;
+export declare const aiConnectionExtension: WebExtensionModule;
+export declare function createAiConnectionExtension(): WebExtensionModule;
