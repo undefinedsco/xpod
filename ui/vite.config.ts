@@ -36,6 +36,11 @@ export default defineConfig(() => {
       outDir: '../static/dashboard',
       input: 'dashboard.html',
     },
+    settings: {
+      base: '/settings/',
+      outDir: '../static/settings',
+      input: 'settings.html',
+    },
   };
 
   const config = configs[buildTarget as keyof typeof configs] || configs.app;
