@@ -20,8 +20,9 @@ import {
 export type TwoPaneLayoutMode = 'auto' | WorkspaceLayoutMode
 
 export interface TwoPaneLayoutProps {
-  header?: ReactNode
+  listHeader: ReactNode
   list: ReactNode
+  mainHeader: ReactNode
   main: ReactNode
   mode?: TwoPaneLayoutMode
   history?: WorkspaceLayoutHistoryAdapter
@@ -169,8 +170,9 @@ function useStackNavigation({
 }
 
 export function TwoPaneLayout({
-  header,
+  listHeader,
   list,
+  mainHeader,
   main,
   mode = 'auto',
   history,
@@ -206,11 +208,6 @@ export function TwoPaneLayout({
         data-workspace-layout="two-pane"
         data-workspace-mode={resolvedMode}
       >
-        {header ? (
-          <header className="h-16 shrink-0 border-b border-border bg-layout-content">
-            {header}
-          </header>
-        ) : null}
         <div
           className={cn(
             'grid min-h-0 flex-1',
@@ -223,7 +220,7 @@ export function TwoPaneLayout({
           <aside
             ref={paneRefs.list}
             className={cn(
-              'min-h-0 overflow-y-auto bg-layout-list-item @container',
+              'flex min-h-0 flex-col overflow-hidden bg-layout-list-item @container',
               isStack ? 'border-r-0' : 'border-r border-border',
             )}
             data-testid="workspace-list-pane"
@@ -231,26 +228,42 @@ export function TwoPaneLayout({
             hidden={listHidden}
             tabIndex={isStack ? -1 : undefined}
           >
-            {list}
+            <header
+              className="h-12 shrink-0 border-b border-border bg-layout-list-header"
+              data-workspace-list-header="true"
+            >
+              {listHeader}
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {list}
+            </div>
           </aside>
           <main
             ref={paneRefs.main}
-            className="min-h-0 overflow-y-auto bg-layout-content @container"
+            className="flex min-h-0 flex-col overflow-hidden bg-layout-content @container"
             data-testid="workspace-main-pane"
             data-workspace-pane="main"
             hidden={mainHidden}
             tabIndex={isStack ? -1 : undefined}
           >
-            {isStack ? (
-              <button
-                type="button"
-                className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
-                onClick={openList}
-              >
-                返回列表
-              </button>
-            ) : null}
-            {main}
+            <header
+              className="h-12 shrink-0 border-b border-border bg-layout-content"
+              data-workspace-main-header="true"
+            >
+              {mainHeader}
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {isStack ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
+                  onClick={openList}
+                >
+                  返回列表
+                </button>
+              ) : null}
+              {main}
+            </div>
           </main>
         </div>
       </section>

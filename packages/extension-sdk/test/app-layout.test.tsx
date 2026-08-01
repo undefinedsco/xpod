@@ -8,11 +8,10 @@ describe('AppLayout', () => {
     cleanup()
   })
 
-  it('renders host-owned navigation, header, and workspace content', () => {
+  it('renders a Linx-sized host rail without a global header', () => {
     render(
       <AppLayout
         navigation={<nav aria-label="设置分类">Models</nav>}
-        header={<h1>AI Connection</h1>}
         className="extension-host"
       >
         <main aria-label="Workspace">Workspace</main>
@@ -24,10 +23,10 @@ describe('AppLayout', () => {
     expect(layout?.getAttribute('data-app-layout')).toBe('workspace')
     expect(layout?.className).toContain('extension-host')
     expect(layout?.getAttribute('style')).toContain(
-      'grid-template-columns: 240px minmax(0, 1fr)',
+      'grid-template-columns: 60px minmax(0, 1fr)',
     )
     expect(screen.getByRole('navigation', { name: '设置分类' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'AI Connection' })).toBeTruthy()
+    expect(layout?.querySelector('[data-app-layout-header]')).toBeNull()
     expect(screen.getAllByRole('main')).toHaveLength(1)
     expect(screen.getByRole('main', { name: 'Workspace' })).toBeTruthy()
   })

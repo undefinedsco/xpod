@@ -224,8 +224,9 @@ describe('TwoPaneLayout', () => {
     render(
       <TwoPaneLayout
         mode="split"
-        header={<h1>Providers</h1>}
+        listHeader={<div>Search providers</div>}
         list={<nav aria-label="Provider list">List content</nav>}
+        mainHeader={<h1>Providers</h1>}
         main={<section aria-label="Provider details">Main content</section>}
       />,
     )
@@ -235,6 +236,10 @@ describe('TwoPaneLayout', () => {
     const grid = listPane.parentElement
 
     expect(screen.getByText('Providers')).toBeTruthy()
+    const listHeader = screen.getByText('Search providers').closest('[data-workspace-list-header]')
+    const mainHeader = screen.getByText('Providers').closest('[data-workspace-main-header]')
+    expect(listHeader?.className).toContain('h-12')
+    expect(mainHeader?.className).toContain('h-12')
     expect(listPane.getAttribute('data-workspace-pane')).toBe('list')
     expect(mainPane.getAttribute('data-workspace-pane')).toBe('main')
     expect(grid?.getAttribute('style')).toContain(
