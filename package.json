@@ -6,6 +6,10 @@
   "author": "developer@undefineds.co",
   "license": "MIT",
   "private": false,
+  "workspaces": [
+    "packages/*",
+    "ui"
+  ],
   "bin": {
     "xpod": "./bin/xpod.js"
   },
@@ -58,7 +62,9 @@
     "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/templates/": "templates/"
   },
   "scripts": {
-    "build": "bun run build:ts && bun run build:components && bun run build:ui",
+    "build": "bun run build:ts && bun run build:components && bun run build:packages && bun run build:ui",
+    "build:packages": "bun run --filter '@undefineds.co/solid-sdk' build && bun run --filter '@undefineds.co/shared-ui' build && bun run --filter '@undefineds.co/extension-sdk' build && bun run --filter '@undefineds.co/ai-connection' build",
+    "test:packages": "bun run --filter './packages/*' test",
     "postinstall": "node scripts/patch-jose.js",
     "prepack": "node scripts/prepare-package-manifest.cjs pack",
     "postpack": "node scripts/prepare-package-manifest.cjs restore",
@@ -167,7 +173,7 @@
     "nat-upnp": "^1.1.1",
     "node-pty": "^1.1.0",
     "nodemon": "^3.1.10",
-    "rdf-test-suite": "^2.1.3",
+    "rdf-test-suite": "2.1.4",
     "ts-node": "^10.9.2",
     "typescript": "5.5",
     "vitest": "^1.4.0"
@@ -187,7 +193,7 @@
     "@mariozechner/pi-coding-agent": "^0.55.1",
     "@radix-ui/react-slot": "^1.2.4",
     "@solid/community-server": "8.0.0-alpha.1",
-    "@undefineds.co/ai-connection": "file:vendor/@undefineds.co/ai-connection",
+    "@undefineds.co/ai-connection": "workspace:*",
     "@undefineds.co/drizzle-solid": "0.3.18",
     "@undefineds.co/extensions": "github:undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632",
     "@undefineds.co/models": "0.2.47",

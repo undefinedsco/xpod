@@ -44,7 +44,6 @@ export default defineConfig(() => {
     base: config.base,
     plugins: [react(), stripTrailingWhitespacePlugin()],
     resolve: {
-      preserveSymlinks: true,
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
