@@ -15,7 +15,7 @@ function lazyRoute(element: React.ReactNode) {
 }
 
 function guardedRoute(element: React.ReactNode) {
-  return <SettingsAuthBoundary>{element}</SettingsAuthBoundary>;
+  return <SettingsAuthBoundary product="Dashboard">{element}</SettingsAuthBoundary>;
 }
 
 export const dashboardRoutes: RouteObject[] = [
