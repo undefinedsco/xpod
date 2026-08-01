@@ -5,6 +5,16 @@ import { describe, expect, it } from 'vitest';
 const root = path.resolve(__dirname, '../..');
 
 describe('lite integration local runtime isolation', () => {
+  it('regenerates Components.js metadata before starting the runtime', async () => {
+    const script = await readFile(path.join(root, 'scripts/run-integration-lite-local.ts'), 'utf8');
+
+    const buildIndex = script.indexOf("runCommand('bun', [ 'run', 'build:components' ]");
+    const startIndex = script.indexOf("stack.start('local'");
+
+    expect(buildIndex).toBeGreaterThanOrEqual(0);
+    expect(buildIndex).toBeLessThan(startIndex);
+  });
+
   it('does not auto-register a standalone lite stack against the official Cloud', async () => {
     const script = await readFile(path.join(root, 'scripts/run-integration-lite-local.ts'), 'utf8');
 

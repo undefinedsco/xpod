@@ -28,6 +28,11 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Pr
 }
 
 async function main() {
+  const componentBuildExitCode = await runCommand('bun', [ 'run', 'build:components' ], process.env);
+  if (componentBuildExitCode !== 0) {
+    throw new Error(`Components.js metadata generation failed with exit code ${componentBuildExitCode}`);
+  }
+
   const stack = new XpodTestStack();
   let exitCode = 1;
 
