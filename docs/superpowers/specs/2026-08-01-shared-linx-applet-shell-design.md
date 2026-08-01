@@ -20,7 +20,14 @@ AI Connection is the first acceptance consumer. The shared contract must also su
 
 ## Ownership boundaries
 
-### Extension SDK
+### Xpod monorepo packages
+
+For the first product-grade implementation, Xpod is the source repository for both shared packages:
+
+- `packages/extension-sdk` publishes `@undefineds.co/extension-sdk`.
+- `packages/solid-sdk` publishes `@undefineds.co/solid-sdk`.
+
+This colocates the SDKs with the standalone acceptance product and its real service adapters. Linx consumes published or workspace-linked package builds; it does not maintain a second source copy. The packages remain independently publishable and must not import Xpod server internals.
 
 `@undefineds.co/extension-sdk` owns framework-neutral layout descriptors and React shell primitives:
 
@@ -32,15 +39,13 @@ AI Connection is the first acceptance consumer. The shared contract must also su
 
 The SDK exposes semantic props and slots, not Xpod-specific route names or provider logic. Consumers may choose icons and actions from their module registry, but may not override canonical dimensions with local CSS.
 
-### Solid SDK
-
 `@undefineds.co/solid-sdk` continues to own the single Solid runtime boundary, login surface contract, current session snapshot, Pod runtime, and capability access. Layout components consume an authentication state supplied by the host; they do not create another OIDC session or implement token fallback.
 
 The browser session follows normal Solid OIDC expiration and reauthentication behavior. No browser Bearer/DPoP credential is copied into a server-side fallback.
 
 ### Linx host
 
-Linx owns the module registry and route selection. Its existing `PrimaryLayout` becomes a thin host adapter around SDK shell primitives, or is removed once every route uses `AppLayout` directly. Linx remains the visual source of truth during migration: shared SDK tokens are extracted from Linx rather than approximated in Xpod.
+Linx owns the module registry and route selection. Its existing `PrimaryLayout` becomes a thin host adapter around SDK shell primitives, or is removed once every route uses `AppLayout` directly. The initial SDK tokens are extracted from Linx rather than approximated; after extraction the package contract in Xpod becomes the shared source of truth.
 
 ### Xpod host
 
@@ -97,11 +102,13 @@ These values are exported once. Linx and Xpod test against the exported contract
 
 ## Migration
 
-1. Add the canonical rail, header, and tokens to the extension SDK with behavior and accessibility tests.
-2. Update the extension test host so it is the lightweight visual and interaction acceptance environment for any applet.
-3. Migrate Linx `PrimaryLayout` to consume the SDK contract and verify no visual regression in existing modules.
-4. Replace Xpod's custom settings shell and page-specific list headers with the shared components.
-5. Mount AI Connection, Pod, Network, and Services through the same registry contract and remove superseded layout CSS and adapters.
+1. Import the existing extension and Solid SDK sources from the Linx worktree into Xpod `packages/`, preserving package history references and public names.
+2. Configure the Xpod workspace, package builds, and local UI resolution so both SDKs build and test independently without importing Xpod server internals.
+3. Add the canonical rail, header, and tokens to the extension SDK with behavior and accessibility tests.
+4. Update the Xpod-owned extension test host so it is the lightweight visual and interaction acceptance environment for any applet.
+5. Replace Xpod's custom settings shell and page-specific list headers with the shared components.
+6. Mount AI Connection, Pod, Network, and Services through the same registry contract and remove superseded layout CSS and adapters.
+7. In a later Linx change, consume the Xpod-published packages and migrate `PrimaryLayout`, verifying no visual regression in existing modules.
 
 Compatibility aliases may remain for one release, but new applets use the canonical APIs. No new dependency is required.
 
@@ -109,7 +116,8 @@ Compatibility aliases may remain for one release, but new applets use the canoni
 
 - Extension SDK unit tests cover slot placement, icon-only accessible names, account and utility ordering, canonical dimensions, list search/add behavior, divider interaction, keyboard focus, and narrow mode.
 - Solid SDK tests prove that the shell consumes one runtime/session and that expiry returns through the normal Solid OIDC flow.
-- Linx component tests prove its module registry renders through the shared shell and keeps existing routes working.
+- Package-boundary tests prove the SDK tarballs can be installed without Xpod server code and expose the expected ESM and type entry points.
+- Linx component tests, when its consumer migration begins, prove its module registry renders through the shared shell and keeps existing routes working.
 - Xpod component tests use real adapters or deterministic in-memory service doubles; no clickable control is accepted if it is disconnected from its command.
 - AI Connection acceptance verifies one API-key provider and one browser-OAuth provider end to end, Pod persistence, reload, quota display, deletion, and error recovery.
 - Visual acceptance compares standalone Xpod and Linx at the same viewport: rail, list header, content header, borders, spacing, colors, active states, and typography must align.
