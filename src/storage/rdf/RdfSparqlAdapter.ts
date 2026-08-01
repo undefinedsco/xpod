@@ -1211,7 +1211,17 @@ export class RdfSparqlAdapter {
             break;
           }
           if (optional) {
+            const disjunction = this.compileDisjunctiveFilterBranches(expression);
+            if (disjunction) {
+              state.addOptionalUnion(disjunction);
+              break;
+            }
             state.addOptionalFilters(this.compileFilter(expression));
+            break;
+          }
+          const disjunction = this.compileDisjunctiveFilterBranches(expression);
+          if (disjunction) {
+            state.addUnion(disjunction);
             break;
           }
           state.query.filters?.push(...this.compileFilter(expression));
@@ -2270,6 +2280,27 @@ export class RdfSparqlAdapter {
     }
 
     throw new UnsupportedSparqlQueryError(`FILTER ${operator} fallback to compatibility engine`);
+  }
+
+  private compileDisjunctiveFilterBranches(expression: Expression): RdfUnionQueryBranch[] | undefined {
+    const normalized = this.normalizeFunctionCallExpression(expression);
+    if (!normalized || !isOperationExpression(normalized) || normalized.operator.toLowerCase() !== '||') {
+      return undefined;
+    }
+
+    try {
+      this.compileOrFilter(normalized);
+      return undefined;
+    } catch (error) {
+      if (!(error instanceof UnsupportedSparqlQueryError)) {
+        throw error;
+      }
+    }
+
+    return this.flattenOrExpressions(normalized).map((branch) => ({
+      patterns: [],
+      filters: this.compileFilter(branch),
+    }));
   }
 
   private compileOrFilter(expression: OperationExpression): RdfQueryFilter {

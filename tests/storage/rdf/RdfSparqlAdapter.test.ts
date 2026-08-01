@@ -1268,6 +1268,40 @@ describe('RdfSparqlAdapter', () => {
     expect((filter?.value as any)?.value).toBe('2026-05-18T00:00:02.000Z');
   });
 
+  it('compiles composite cursor OR filters into local union branches', () => {
+    const compiled = adapter.compile(`
+      SELECT ?message ?content WHERE {
+        ?message <${CONTENT}> ?content .
+        FILTER(
+          ?content > "M"
+          || (?content = "M" && STR(?message) > "${BASE}.data/messages.ttl#message-10")
+        )
+      }
+      ORDER BY ?content ?message
+      LIMIT 101
+    `, BASE);
+
+    expect(compiled.query.filters).toEqual([]);
+    expect(compiled.query.unions).toEqual([{ branches: [
+      {
+        patterns: [],
+        filters: [{ variable: 'content', operator: '$gt', value: expect.objectContaining({ value: 'M' }) }],
+      },
+      {
+        patterns: [],
+        filters: [
+          { variable: 'content', operator: '$eq', value: expect.objectContaining({ value: 'M' }) },
+          {
+            variable: 'message',
+            operator: '$gt',
+            operand: 'stringValue',
+            value: `${BASE}.data/messages.ttl#message-10`,
+          },
+        ],
+      },
+    ] }]);
+  });
+
   it('compiles same-variable OR equality filters into a local IN filter', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?content WHERE {
@@ -4107,20 +4141,6 @@ describe('RdfSparqlAdapter', () => {
     expect(() => adapter.compile(`
       SELECT ?message WHERE {
         VALUES ?message { <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1> }
-      }
-    `, BASE)).toThrow(UnsupportedSparqlQueryError);
-
-    expect(() => adapter.compile(`
-      SELECT ?message ?content WHERE {
-        ?message <${CONTENT}> ?content .
-        FILTER(?content = "hello" || CONTAINS(STR(?content), "ell"))
-      }
-    `, BASE)).toThrow(UnsupportedSparqlQueryError);
-
-    expect(() => adapter.compile(`
-      SELECT ?message ?content WHERE {
-        ?message <${CONTENT}> ?content .
-        FILTER(?content = "hello" || ?message = <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1>)
       }
     `, BASE)).toThrow(UnsupportedSparqlQueryError);
 
