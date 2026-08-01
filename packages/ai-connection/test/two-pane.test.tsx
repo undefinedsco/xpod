@@ -38,7 +38,9 @@ describe('AI Connection two-pane contribution', () => {
   it('exposes only the two-pane slot contract', () => {
     expect(aiConnectionApplet.manifest.layout).toBe('two-pane')
     expect('mount' in aiConnectionApplet).toBe(false)
-    expect(Object.keys(aiConnectionApplet.slots).sort()).toEqual(['header', 'list', 'main'])
+    expect(Object.keys(aiConnectionApplet.slots).sort()).toEqual([
+      'list', 'listHeader', 'main', 'mainHeader',
+    ])
   })
 
   it('puts Provider search in the header and only Providers in list navigation', () => {
@@ -49,9 +51,12 @@ describe('AI Connection two-pane contribution', () => {
       }),
     )
 
-    render(<>{mounted.header}{mounted.list}{mounted.main}</>)
+    render(<>{mounted.listHeader}{mounted.list}<div data-testid="main-header">{mounted.mainHeader}</div>{mounted.main}</>)
 
     expect(screen.getByRole('searchbox', { name: '搜索 Provider' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
+    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'OpenAI' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
     for (const name of ['OpenAI', 'Anthropic', 'Kimi', '百炼', 'DeepSeek']) {
       expect(screen.getByRole('button', { name })).toBeTruthy()
     }
@@ -67,7 +72,7 @@ describe('AI Connection two-pane contribution', () => {
       }),
     )
 
-    render(<>{mounted.header}{mounted.list}</>)
+    render(<>{mounted.listHeader}{mounted.list}</>)
     fireEvent.change(screen.getByRole('searchbox', { name: '搜索 Provider' }), {
       target: { value: 'kimi' },
     })
@@ -84,9 +89,24 @@ describe('AI Connection two-pane contribution', () => {
       }),
     )
 
-    render(<>{mounted.list}{mounted.main}</>)
+    render(<>{mounted.list}<div data-testid="main-header">{mounted.mainHeader}</div>{mounted.main}</>)
     fireEvent.click(within(screen.getByRole('navigation', { name: 'AI 服务' })).getByRole('button', { name: 'Kimi' }))
 
     expect(screen.getByRole('region', { name: 'Kimi 详情' })).toBeTruthy()
+    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Kimi' })).toBeTruthy()
+  })
+
+  it('uses Add to open the first unconfigured Provider', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({ solid: readySolid() }),
+    )
+    mounted.controller.setProviderState('openai', 'configured')
+    mounted.controller.setProviderState('anthropic', 'unconfigured')
+
+    render(<>{mounted.listHeader}<div data-testid="main-header">{mounted.mainHeader}</div></>)
+    fireEvent.click(screen.getByRole('button', { name: '添加 AI Connection' }))
+
+    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Anthropic' })).toBeTruthy()
   })
 })

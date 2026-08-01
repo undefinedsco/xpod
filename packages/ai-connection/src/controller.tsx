@@ -64,6 +64,7 @@ export interface AiConnectionController {
   readonly providerLoadError?: string
   readonly serviceAccessState: ServiceAccessState
   selectProvider(provider: AiConnectionProvider): void
+  selectFirstUnconfiguredProvider(): void
   setSearchQuery(value: string): void
   setProviderState(provider: AiConnectionProvider, state: ProviderProductState): void
   ensureServiceAccess(): Promise<void>
@@ -131,6 +132,12 @@ export function createAiConnectionController(host: WebExtensionHost): AiConnecti
       if (selectedProvider === provider) return
       selectedProvider = provider
       notify()
+    },
+    selectFirstUnconfiguredProvider() {
+      const provider = PROVIDERS.find(
+        (candidate) => providerStates[candidate.id] === 'unconfigured',
+      ) ?? PROVIDERS[0]
+      if (provider) controller.selectProvider(provider.id)
     },
     setSearchQuery(value) {
       if (searchQuery === value) return

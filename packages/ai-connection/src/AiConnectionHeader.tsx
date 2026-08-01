@@ -1,6 +1,6 @@
-import { Input } from '@undefineds.co/shared-ui'
+import { Button, Input } from '@undefineds.co/shared-ui'
 import type { AppletSlotProps } from '@undefineds.co/extension-sdk/web'
-import { Search } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
 import {
   type AiConnectionController,
   useProviderSearch,
@@ -12,11 +12,8 @@ export function AiConnectionHeader({
   const searchQuery = useProviderSearch(controller)
 
   return (
-    <div className="flex h-full min-w-0 items-center gap-4 px-4">
-      <h1 className="shrink-0 text-sm font-medium text-foreground">
-        AI Connection
-      </h1>
-      <div className="relative ml-auto w-full max-w-xs">
+    <div className="flex h-full min-w-0 items-center gap-2 px-3">
+      <div className="relative min-w-0 flex-1">
         <Search
           aria-hidden="true"
           className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
@@ -30,6 +27,17 @@ export function AiConnectionHeader({
           className="h-8 border-transparent bg-muted/50 pl-8 text-xs focus-visible:bg-background"
         />
       </div>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 shrink-0"
+        aria-label="添加 AI Connection"
+        title="添加 AI Connection"
+        onClick={() => controller.selectFirstUnconfiguredProvider()}
+      >
+        <Plus className="h-4 w-4" aria-hidden="true" />
+      </Button>
     </div>
   )
 }

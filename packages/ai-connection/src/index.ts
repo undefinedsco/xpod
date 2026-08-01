@@ -6,6 +6,7 @@ import type { AppletManifest } from '@undefineds.co/extension-sdk/manifest'
 import { AiConnectionList } from './AiConnectionList'
 import { AiConnectionMain } from './AiConnectionMain'
 import { AiConnectionHeader } from './AiConnectionHeader'
+import { AiConnectionMainHeader } from './AiConnectionMainHeader'
 import {
   createAiConnectionController,
   type AiConnectionController,
@@ -18,6 +19,7 @@ export * from './AiConnectionPanel'
 export * from './AiConnectionList'
 export * from './AiConnectionMain'
 export * from './AiConnectionHeader'
+export * from './AiConnectionMainHeader'
 export * from './controller'
 export * from './AiProviderCard'
 export * from './AiQuotaCard'
@@ -32,8 +34,9 @@ export const aiConnectionApplet = defineApplet<AiConnectionController>({
     void controller.ensureServiceAccess()
   },
   slots: {
-    header: AiConnectionHeader,
+    listHeader: AiConnectionHeader,
     list: AiConnectionList,
+    mainHeader: AiConnectionMainHeader,
     main: AiConnectionMain,
   },
 })
