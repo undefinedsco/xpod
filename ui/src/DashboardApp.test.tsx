@@ -1,4 +1,6 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test, vi } from 'vitest';
+
+const mock = vi.fn;
 import { JSDOM } from 'jsdom';
 import { isValidElement } from 'react';
 import { act } from 'react';
@@ -108,32 +110,30 @@ async function unmount(root: Root) {
 }
 
 describe('dashboard routes', () => {
-  test('redirects the dashboard index to Models', () => {
-    expect(redirectTargetFor('/')).toBe('/models');
+  test('redirects the dashboard index to Overview', () => {
+    expect(redirectTargetFor('/')).toBe('/overview');
   });
 
-  test('keeps replaceable routes for the new settings sections', () => {
-    expect(routeElementFor('/models')).toBeTruthy();
-    expect(routeElementFor('/pod')).toBeTruthy();
+  test('owns the read-oriented observability routes', () => {
+    expect(routeElementFor('/overview')).toBeTruthy();
+    expect(routeElementFor('/runtime')).toBeTruthy();
+    expect(routeElementFor('/logs')).toBeTruthy();
+    expect(routeElementFor('/rdf')).toBeTruthy();
     expect(routeElementFor('/network')).toBeTruthy();
-    expect(routeElementFor('/services')).toBeTruthy();
+    expect(routeElementFor('/usage')).toBeTruthy();
   });
 
-  test('redirects legacy admin routes into Services subroutes', () => {
-    expect(redirectTargetFor('/status')).toBe('/services/runtime');
-    expect(redirectTargetFor('/logs')).toBe('/services/logs');
-    expect(redirectTargetFor('/rdf')).toBe('/services/rdf');
-    expect(redirectTargetFor('/settings')).toBe('/services/configuration');
+  test('does not own canonical settings sections', () => {
+    expect(redirectTargetFor('/models')).toBe('/overview');
+    expect(redirectTargetFor('/pod')).toBe('/overview');
+    expect(redirectTargetFor('/services')).toBe('/overview');
   });
 
   test('normalizes anonymous dashboard redirects before settings auth guard', async () => {
     const cases = [
-      ['/', '/models'],
-      ['/status', '/services/runtime'],
-      ['/logs', '/services/logs'],
-      ['/rdf', '/services/rdf'],
-      ['/settings', '/services/configuration'],
-      ['/dashboard.html', '/models'],
+      ['/', '/overview'],
+      ['/status', '/overview'],
+      ['/dashboard.html', '/overview'],
     ];
 
     for (const [from, to] of cases) {
