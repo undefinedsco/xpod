@@ -5,7 +5,6 @@ import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 const PodPage = lazy(() => import('./pages/settings/PodPage'));
-const NetworkPage = lazy(() => import('./pages/settings/NetworkPage'));
 const ServicesPage = lazy(() => import('./pages/settings/ServicesPage'));
 const SettingsPage = lazy(() => import('./pages/admin/SettingsPage').then((module) => ({ default: module.SettingsPage })));
 
@@ -23,11 +22,15 @@ export const settingsRoutes: RouteObject[] = [
     children: [
       { index: true, element: <Navigate to="/models" replace /> },
       { path: 'models', element: guardedRoute(lazyRoute(<ModelsPage />)) },
-      { path: 'pod', element: guardedRoute(lazyRoute(<PodPage />)) },
-      { path: 'network', element: guardedRoute(lazyRoute(<NetworkPage />)) },
+      { path: 'pod', element: guardedRoute(lazyRoute(<PodPage view="settings" />)) },
+      {
+        path: 'network',
+        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
+        children: [{ index: true, element: lazyRoute(<SettingsPage />) }],
+      },
       {
         path: 'services',
-        element: guardedRoute(lazyRoute(<ServicesPage />)),
+        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
         children: [
           { index: true, element: lazyRoute(<SettingsPage />) },
           { path: 'configuration', element: lazyRoute(<SettingsPage />) },

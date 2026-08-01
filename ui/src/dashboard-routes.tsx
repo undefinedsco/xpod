@@ -25,12 +25,12 @@ export const dashboardRoutes: RouteObject[] = [
       { index: true, element: <Navigate to="/overview" replace /> },
       {
         path: 'overview',
-        element: guardedRoute(lazyRoute(<ServicesPage />)),
+        element: guardedRoute(lazyRoute(<ServicesPage product="dashboard" />)),
         children: [{ index: true, element: lazyRoute(<StatusPage />) }],
       },
       {
         path: 'runtime',
-        element: guardedRoute(lazyRoute(<ServicesPage />)),
+        element: guardedRoute(lazyRoute(<ServicesPage product="dashboard" />)),
         children: [{ index: true, element: lazyRoute(<StatusPage />) }],
       },
       { path: 'logs', element: guardedRoute(lazyRoute(<LogsPage />)) },
@@ -41,7 +41,7 @@ export const dashboardRoutes: RouteObject[] = [
       },
       {
         path: 'usage',
-        element: guardedRoute(lazyRoute(<PodPage />)),
+        element: guardedRoute(lazyRoute(<PodPage view="usage" />)),
       },
       { path: 'status', element: <Navigate to="/overview" replace /> },
       { path: '*', element: <Navigate to="/overview" replace /> },

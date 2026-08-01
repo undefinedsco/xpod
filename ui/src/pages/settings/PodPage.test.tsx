@@ -1,4 +1,6 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test, vi } from 'vitest';
+
+const mock = vi.fn;
 import { JSDOM } from 'jsdom';
 import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -30,7 +32,7 @@ function installDom() {
   })) as unknown as typeof window.matchMedia;
 }
 
-async function renderPodPage(runtime: XpodSolidRuntimeValue) {
+async function renderPodPage(runtime: XpodSolidRuntimeValue, view: 'combined' | 'settings' | 'usage' = 'combined') {
   installDom();
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
@@ -38,7 +40,7 @@ async function renderPodPage(runtime: XpodSolidRuntimeValue) {
   await act(async () => {
     root.render(
       <XpodSolidRuntimeContext.Provider value={runtime}>
-        <PodPage />
+        <PodPage view={view} />
       </XpodSolidRuntimeContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -129,6 +131,24 @@ function runtimeWith(fetchImpl: typeof fetch, overrides: Partial<XpodSolidRuntim
 }
 
 describe('PodPage', () => {
+  test('separates identity settings from usage observability', async () => {
+    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+
+    const settings = await renderPodPage(runtimeWith(fetchImpl), 'settings');
+    expect(settings.container.textContent).toContain('Identity');
+    expect(settings.container.textContent).not.toContain('Current Pod quota view');
+    expect(settings.container.querySelector('a[href="/dashboard/usage"]')).toBeTruthy();
+    await unmount(settings.root);
+
+    const usage = await renderPodPage(runtimeWith(fetchImpl), 'usage');
+    expect(usage.container.textContent).toContain('Current Pod quota view');
+    expect(usage.container.textContent).not.toContain('Current Solid session');
+    expect(usage.container.querySelector('a[href="/settings/pod"]')).toBeTruthy();
+    await unmount(usage.root);
+  });
+
   test('renders real runtime identity, available usage, AI status, and safe actions', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe('https://pod.example/api/pod/settings/status');

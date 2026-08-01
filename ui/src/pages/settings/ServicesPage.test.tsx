@@ -1,4 +1,6 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test, vi } from 'vitest';
+
+const mock = vi.fn;
 import { JSDOM } from 'jsdom';
 import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -139,7 +141,7 @@ function LogsProbe() {
   return <div>Logs probe</div>;
 }
 
-async function renderServices(path: string, fetchImpl = createFetch()) {
+async function renderServices(path: string, fetchImpl = createFetch(), product: 'legacy' | 'dashboard' | 'settings' = 'legacy') {
   installDom();
   globalThis.fetch = fetchImpl;
   const container = document.getElementById('root');
@@ -150,7 +152,7 @@ async function renderServices(path: string, fetchImpl = createFetch()) {
     root.render(
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/services" element={<ServicesPage />}>
+          <Route path="/services" element={<ServicesPage product={product} />}>
             <Route index element={<RuntimeProbe />} />
             <Route path="runtime" element={<RuntimeProbe />} />
             <Route path="configuration" element={<ConfigurationProbe />} />
@@ -171,6 +173,16 @@ async function unmount(root: Root) {
 }
 
 describe('Services settings navigation', () => {
+  test('links runtime status and writable configuration across products', async () => {
+    const dashboard = await renderServices('/services', createFetch(), 'dashboard');
+    expect(dashboard.container.querySelector('a[href="/settings/services"]')).toBeTruthy();
+    await unmount(dashboard.root);
+
+    const settings = await renderServices('/services/configuration', createFetch(), 'settings');
+    expect(settings.container.querySelector('a[href="/dashboard/runtime"]')).toBeTruthy();
+    await unmount(settings.root);
+  });
+
   test('declares Runtime, Logs, RDF, and Configuration as one services subtree', () => {
     expect(serviceNavigationItems.map((item) => [item.id, item.label, item.path])).toEqual([
       ['runtime', 'Runtime', '/services/runtime'],

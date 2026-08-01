@@ -6,7 +6,7 @@ import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-se
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
 
-export default function PodPage() {
+export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'settings' | 'usage' }) {
   const runtime = useXpodSolidRuntime();
   const [status, setStatus] = useState<PodSettingsStatus>();
   const [error, setError] = useState<string>();
@@ -93,23 +93,25 @@ export default function PodPage() {
   return (
     <TwoPaneLayout
       mode="auto"
-      listHeader={<PaneListHeader title="Pod" />}
+      listHeader={<PaneListHeader title={view === 'usage' ? 'Usage' : 'Pod'} />}
       list={
         <aside className="flex h-full flex-col gap-3 border-r border-border bg-muted/30 p-4">
-          <IdentityCard
-            webId={identity.webId}
-            podUrl={identity.podUrl}
-            issuer={identity.issuer}
-            sessionStatus={runtime.state.status}
-            onOpenPod={openPod}
-            onLogout={() => void runtime.logout()}
-            onLoginAgain={loginAgain}
-            canLoginAgain={Boolean(runtime.issuer)}
-          />
-          <PodUsageCard storage={status?.storage} loading={loading && !status} />
+          {view !== 'usage' ? (
+            <IdentityCard
+              webId={identity.webId}
+              podUrl={identity.podUrl}
+              issuer={identity.issuer}
+              sessionStatus={runtime.state.status}
+              onOpenPod={openPod}
+              onLogout={() => void runtime.logout()}
+              onLoginAgain={loginAgain}
+              canLoginAgain={Boolean(runtime.issuer)}
+            />
+          ) : null}
+          {view !== 'settings' ? <PodUsageCard storage={status?.storage} loading={loading && !status} /> : null}
         </aside>
       }
-      mainHeader={<PodHeader loading={loading} onRefresh={loadStatus} />}
+      mainHeader={<PodHeader title={view === 'usage' ? 'Usage' : 'Pod'} loading={loading} onRefresh={loadStatus} />}
       main={
         <section className="flex min-h-full flex-col gap-4 bg-background p-6">
           {error ? (
@@ -281,17 +283,25 @@ function AiConnectionCard({
   );
 }
 
-function PodHeader({ loading, onRefresh }: { loading: boolean; onRefresh: () => void }) {
+function PodHeader({ title, loading, onRefresh }: { title: string; loading: boolean; onRefresh: () => void }) {
   return (
     <div className="flex h-full min-w-0 items-center justify-between gap-4 px-4">
       <div className="min-w-0">
-        <div className="text-sm font-semibold text-foreground">Pod</div>
+        <div className="text-sm font-semibold text-foreground">{title}</div>
         <div className="truncate text-xs text-muted-foreground">Identity, storage, and applet data status</div>
       </div>
-      <Button type="button" size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
-        <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-        Refresh
-      </Button>
+      <div className="flex items-center gap-2">
+        <a
+          className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground hover:bg-accent"
+          href={title === 'Usage' ? '/settings/pod' : '/dashboard/usage'}
+        >
+          {title === 'Usage' ? 'Configure Pod' : 'View usage'}
+        </a>
+        <Button type="button" size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
+          <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
+          Refresh
+        </Button>
+      </div>
     </div>
   );
 }

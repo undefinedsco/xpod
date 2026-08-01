@@ -17,7 +17,13 @@ const unsupportedCapability: AdminCapability = {
   reason: 'capability_not_reported',
 };
 
-export default function ServicesPage({ mode = 'auto' }: { mode?: TwoPaneLayoutMode }) {
+export default function ServicesPage({
+  mode = 'auto',
+  product = 'legacy',
+}: {
+  mode?: TwoPaneLayoutMode;
+  product?: 'legacy' | 'dashboard' | 'settings';
+}) {
   const [snapshot, setSnapshot] = useState<ServicesStatusSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -94,8 +100,8 @@ export default function ServicesPage({ mode = 'auto' }: { mode?: TwoPaneLayoutMo
       <TwoPaneLayout
         mode={mode}
         listHeader={<PaneListHeader title="Services" />}
-        list={<ServicesSidebar snapshot={snapshot} loading={loading && !snapshot} />}
-        mainHeader={<ServicesHeader loading={loading || refreshing} onRefresh={contextValue.refresh} />}
+        list={<ServicesSidebar snapshot={snapshot} loading={loading && !snapshot} showSections={product === 'legacy'} />}
+        mainHeader={<ServicesHeader product={product} loading={loading || refreshing} onRefresh={contextValue.refresh} />}
         main={
           <section className="min-h-full min-w-0 bg-background">
             <ServicesRoutePaneSync />
@@ -132,27 +138,53 @@ function ServicesRoutePaneSync() {
   return null;
 }
 
-function ServicesHeader({ loading, onRefresh }: { loading: boolean; onRefresh: () => void }) {
+function ServicesHeader({
+  product,
+  loading,
+  onRefresh,
+}: {
+  product: 'legacy' | 'dashboard' | 'settings';
+  loading: boolean;
+  onRefresh: () => void;
+}) {
   return (
     <div className="flex h-full min-w-0 items-center justify-between gap-4 px-4">
       <div className="min-w-0">
         <div className="text-sm font-semibold text-foreground">Services</div>
         <div className="truncate text-xs text-muted-foreground">Runtime health, logs, RDF indexing, and configuration</div>
       </div>
-      <button
-        type="button"
-        onClick={onRefresh}
-        disabled={loading}
-        className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
-      >
-        <RefreshCw className={clsx('mr-2 h-4 w-4', loading && 'animate-spin')} aria-hidden="true" />
-        Refresh
-      </button>
+      <div className="flex items-center gap-2">
+        {product !== 'legacy' ? (
+          <a
+            className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground hover:bg-accent"
+            href={product === 'dashboard' ? '/settings/services' : '/dashboard/runtime'}
+          >
+            {product === 'dashboard' ? 'Configure' : 'View runtime'}
+          </a>
+        ) : null}
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
+        >
+          <RefreshCw className={clsx('mr-2 h-4 w-4', loading && 'animate-spin')} aria-hidden="true" />
+          Refresh
+        </button>
+      </div>
     </div>
   );
 }
 
-function ServicesSidebar({ snapshot, loading }: { snapshot: ServicesStatusSnapshot | null; loading: boolean }) {
+function ServicesSidebar({
+  snapshot,
+  loading,
+  showSections,
+}: {
+  snapshot: ServicesStatusSnapshot | null;
+  loading: boolean;
+  showSections: boolean;
+}) {
   const location = useLocation();
   const workspace = useWorkspaceLayout();
   const services = snapshot?.servicesData ?? [];
@@ -188,7 +220,7 @@ function ServicesSidebar({ snapshot, loading }: { snapshot: ServicesStatusSnapsh
         </div>
       </div>
 
-      <nav aria-label="Services sections" className="space-y-1">
+      {showSections ? <nav aria-label="Services sections" className="space-y-1">
         {serviceNavigationItems.map((item) => {
           const Icon = item.icon;
           const isRuntimeIndex = item.id === 'runtime' && location.pathname === '/services';
@@ -213,7 +245,7 @@ function ServicesSidebar({ snapshot, loading }: { snapshot: ServicesStatusSnapsh
             </NavLink>
           );
         })}
-      </nav>
+      </nav> : null}
     </aside>
   );
 }

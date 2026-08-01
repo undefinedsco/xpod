@@ -208,10 +208,18 @@ function NetworkHeader({ loading, onRefresh }: { loading: boolean; onRefresh: ()
         <div className="text-sm font-semibold text-foreground">Network</div>
         <div className="truncate text-xs text-muted-foreground">Endpoint, DNS, TLS, tunnel, and connectivity diagnostics</div>
       </div>
-      <Button type="button" size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
-        <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
-        Refresh
-      </Button>
+      <div className="flex items-center gap-2">
+        <a
+          className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground hover:bg-accent"
+          href="/settings/network"
+        >
+          Configure
+        </a>
+        <Button type="button" size="sm" variant="outline" onClick={onRefresh} disabled={loading}>
+          <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
+          Refresh
+        </Button>
+      </div>
     </div>
   );
 }

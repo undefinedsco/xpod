@@ -1,4 +1,6 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test, vi } from 'vitest';
+
+const mock = vi.fn;
 import { JSDOM } from 'jsdom';
 import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -100,6 +102,16 @@ function runtimeWith(fetchImpl: typeof fetch, overrides: Partial<XpodSolidRuntim
 }
 
 describe('NetworkPage', () => {
+  test('links network status to its canonical Settings configuration', async () => {
+    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const { container, root } = await renderNetworkPage(runtimeWith(fetchImpl));
+
+    expect(container.querySelector('a[href="/settings/network"]')).toBeTruthy();
+    await unmount(root);
+  });
+
   test('renders live network status and only allowed actions', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
       expect(String(input)).toBe('https://pod.example/api/network/settings/status');
