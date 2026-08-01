@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
 import { ProvisionPodCreator } from '../../src/provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
 
@@ -430,6 +431,152 @@ describe('ProvisionPodCreator', () => {
       });
 
       expect(result.webId).toBe(customWebId);
+    });
+
+    describe('profile storage binding sync', () => {
+      const existingWebId = `${baseUrl}alice/profile/card#me`;
+      const cardUrl = `${baseUrl}alice/profile/card`;
+      const staleCardTurtle = `<${existingWebId}> <http://www.w3.org/ns/solid/terms#oidcIssuer> <${baseUrl}> .
+<${existingWebId}> <http://www.w3.org/ns/solid/terms#storage> <${baseUrl}alice/> .
+<${existingWebId}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://xmlns.com/foaf/0.1/Person> .
+`;
+
+      function makeResourceStore(turtle: string): any {
+        return {
+          getRepresentation: vi.fn().mockResolvedValue({
+            data: Readable.from(turtle),
+          }),
+          setRepresentation: vi.fn().mockResolvedValue(undefined),
+        };
+      }
+
+      function makeCreatorWithStore(resourceStore: any): ProvisionPodCreator {
+        return new ProvisionPodCreator({
+          baseUrl,
+          provisionBaseUrl: baseUrl,
+          identifierGenerator: mockIdentifierGenerator,
+          relativeWebIdPath: 'profile/card#me',
+          webIdStore: {
+            ...mockWebIdStore,
+            isLinked: vi.fn().mockResolvedValue(true),
+            findLinks: vi.fn().mockResolvedValue([{ id: 'webid-link-existing', webId: existingWebId }]),
+          },
+          podStore: mockPodStore,
+          resourceStore,
+        });
+      }
+
+      async function readStream(stream: any): Promise<string> {
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) {
+          chunks.push(Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks).toString('utf8');
+      }
+
+      it('replaces a stale solid:storage entry when the Pod moved to another SP', async () => {
+        const resourceStore = makeResourceStore(staleCardTurtle);
+        const localCreator = makeCreatorWithStore(resourceStore);
+        const provisionCode = makeProvisionCode();
+
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ podUrl: `${spUrl}/alice/` }),
+        });
+        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-existing');
+        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+        await localCreator.handle({
+          name: 'alice',
+          accountId: 'account-1',
+          settings: { provisionCode },
+        });
+
+        expect(resourceStore.getRepresentation).toHaveBeenCalledWith(
+          { path: cardUrl },
+          expect.objectContaining({ type: { 'text/turtle': 1 } }),
+        );
+        expect(resourceStore.setRepresentation).toHaveBeenCalledTimes(1);
+        const [identifier, representation] = resourceStore.setRepresentation.mock.calls[0];
+        expect(identifier).toEqual({ path: cardUrl });
+        const written = await readStream(representation.data);
+        expect(written).toContain('solid:storage <https://sp.example.com/alice/>');
+        expect(written).not.toContain(`solid:storage <${baseUrl}alice/>`);
+        expect(written).toContain('solid:oidcIssuer');
+      });
+
+      it('leaves the card untouched when the storage binding is already correct', async () => {
+        const freshCardTurtle = staleCardTurtle.replace(
+          `<${baseUrl}alice/> .\n<${existingWebId}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>`,
+          `<${spUrl}/alice/> .\n<${existingWebId}> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type>`,
+        );
+        const resourceStore = makeResourceStore(freshCardTurtle);
+        const localCreator = makeCreatorWithStore(resourceStore);
+        const provisionCode = makeProvisionCode();
+
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ podUrl: `${spUrl}/alice/` }),
+        });
+        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-existing');
+        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+        await localCreator.handle({
+          name: 'alice',
+          accountId: 'account-1',
+          settings: { provisionCode },
+        });
+
+        expect(resourceStore.setRepresentation).not.toHaveBeenCalled();
+      });
+
+      it('skips WebIDs hosted on a different server', async () => {
+        const resourceStore = makeResourceStore(staleCardTurtle);
+        const localCreator = makeCreatorWithStore(resourceStore);
+        const provisionCode = makeProvisionCode();
+
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ podUrl: `${spUrl}/alice/` }),
+        });
+        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-1');
+        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+        await localCreator.handle({
+          name: 'alice',
+          accountId: 'account-1',
+          webId: 'https://other.example.com/alice/profile/card#me',
+          settings: { provisionCode },
+        });
+
+        expect(resourceStore.getRepresentation).not.toHaveBeenCalled();
+        expect(resourceStore.setRepresentation).not.toHaveBeenCalled();
+      });
+
+      it('does not fail pod creation when the card sync fails', async () => {
+        const resourceStore = {
+          getRepresentation: vi.fn().mockRejectedValue(new Error('lock timeout')),
+          setRepresentation: vi.fn(),
+        };
+        const localCreator = makeCreatorWithStore(resourceStore);
+        const provisionCode = makeProvisionCode();
+
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ podUrl: `${spUrl}/alice/` }),
+        });
+        vi.spyOn(localCreator as any, 'handleWebId').mockResolvedValue('webid-link-existing');
+        vi.spyOn(localCreator as any, 'createPod').mockResolvedValue('pod-id-1');
+
+        const result = await localCreator.handle({
+          name: 'alice',
+          accountId: 'account-1',
+          settings: { provisionCode },
+        });
+
+        expect(result.podId).toBe('pod-id-1');
+        expect(resourceStore.setRepresentation).not.toHaveBeenCalled();
+      });
     });
   });
 

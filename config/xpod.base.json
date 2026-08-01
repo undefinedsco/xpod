@@ -179,6 +179,7 @@
         "relativeWebIdPath": "/profile/card#me",
         "webIdStore": { "@id": "urn:solid-server:default:WebIdStore" },
         "podStore": { "@id": "urn:solid-server:default:PodStore" },
+        "resourceStore": { "@id": "urn:solid-server:default:ResourceStore" },
         "identityDbUrl": { "@id": "urn:solid-server:default:variable:identityDbUrl" }
       }
     },

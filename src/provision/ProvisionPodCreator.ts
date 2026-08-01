@@ -9,12 +9,18 @@
  */
 
 import { getLoggerFor } from 'global-logger-factory';
+import { Readable } from 'node:stream';
+import { DataFactory, Parser, Writer } from 'n3';
 import {
   BasePodCreator,
+  BasicRepresentation,
+  guardStream,
+  readableToString,
   type PodCreatorInput,
   type PodCreatorOutput,
   type BasePodCreatorArgs,
   type ResourceIdentifier,
+  type ResourceStore,
   type PodSettings,
   ConflictHttpError,
 } from '@solid/community-server';
@@ -60,6 +66,14 @@ function isSameUrlRoot(left: string | undefined, right: string | undefined): boo
 
 function isSameNodeId(left: string | undefined, right: string | undefined): boolean {
   return Boolean(left && right && left.trim() === right.trim());
+}
+
+function isSameUrlOrigin(left: string, right: string): boolean {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
 }
 
 function buildDefaultWebId(issuer: string, podName: string, relativeWebIdPath: string): string {
@@ -109,6 +123,11 @@ export interface ProvisionPodCreatorArgs extends BasePodCreatorArgs {
   nodeId?: string;
   /** Kept in the component signature for config compatibility; Pod storage facts live in CSS account data. */
   identityDbUrl?: string;
+  /**
+   * Server-internal resource store. Used to reconcile the solid:storage binding in an existing
+   * WebID profile card after the Pod moves to another storage provider.
+   */
+  resourceStore?: ResourceStore;
 }
 
 interface StandardPodCreateOptions {
@@ -142,11 +161,13 @@ export class ProvisionPodCreator extends BasePodCreator {
   private readonly codec: ProvisionCodeCodec;
   private readonly oidcIssuer?: string;
   private readonly currentNodeId?: string;
+  private readonly resourceStore?: ResourceStore;
 
   public constructor(args: ProvisionPodCreatorArgs) {
     super(args);
     this.oidcIssuer = normalizeOptionalUrl(args.provisionBaseUrl);
     this.currentNodeId = normalizeOptionalString(args.nodeId);
+    this.resourceStore = args.resourceStore;
     this.codec = new ProvisionCodeCodec(this.oidcIssuer ?? args.baseUrl);
   }
 
@@ -236,6 +257,8 @@ export class ProvisionPodCreator extends BasePodCreator {
     podSettings.oidcIssuer = tokenOidcIssuer;
     const podId = await this.createPod(input.accountId, podSettings, !input.name, webIdLink.cleanupWebIdLink);
 
+    await this.trySyncProfileStorageBinding(webId, canonicalStorageUrl);
+
     this.provisionLogger.info(`Provisioned pod ${podName} on SP ${payload.spUrl}, podUrl: ${podUrl}`);
 
     return {
@@ -293,6 +316,8 @@ export class ProvisionPodCreator extends BasePodCreator {
     const podElapsed = Date.now() - podStarted;
     const totalElapsed = Date.now() - totalStarted;
 
+    await this.trySyncProfileStorageBinding(webId, storageUrl);
+
     this.provisionLogger.info(
       `[timing] ProvisionPodCreator.standard account=${input.accountId} pod=${baseIdentifier.path} handleWebId=${webIdElapsed}ms createPod=${podElapsed}ms total=${totalElapsed}ms`,
     );
@@ -335,5 +360,70 @@ export class ProvisionPodCreator extends BasePodCreator {
     const normalizedTarget = normalizeUrlRoot(webId) ?? webId;
     const links = await this.webIdStore.findLinks(accountId);
     return links.find((link) => (normalizeUrlRoot(link.webId) ?? link.webId) === normalizedTarget);
+  }
+
+  /**
+   * Best-effort reconcile of the solid:storage binding in a WebID profile card hosted on this server.
+   * Fresh pods get the correct binding from the pod resource templates, so this only rewrites
+   * the card when an existing WebID's Pod moved to a different storage URL.
+   * Never throws: the Pod itself is already created and a stale card is recoverable on retry.
+   */
+  private async trySyncProfileStorageBinding(webId: string, storageUrl: string): Promise<void> {
+    try {
+      await this.syncProfileStorageBinding(webId, storageUrl);
+    } catch (error: unknown) {
+      this.provisionLogger.error(
+        `Failed to sync solid:storage in profile card for ${webId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  private async syncProfileStorageBinding(webId: string, storageUrl: string): Promise<void> {
+    if (!this.resourceStore) {
+      return;
+    }
+
+    const cardUrl = webId.split('#')[0];
+    if (!cardUrl || !isSameUrlOrigin(cardUrl, this.baseUrl)) {
+      return;
+    }
+
+    const identifier = { path: cardUrl };
+    const representation = await this.resourceStore.getRepresentation(identifier, {
+      type: { 'text/turtle': 1 },
+    });
+    const turtle = await readableToString(representation.data);
+
+    const webIdNode = DataFactory.namedNode(webId);
+    const storagePredicate = DataFactory.namedNode('http://www.w3.org/ns/solid/terms#storage');
+    const quads = new Parser().parse(turtle);
+    const storageQuads = quads.filter((quad) =>
+      quad.subject.equals(webIdNode) && quad.predicate.equals(storagePredicate));
+
+    if (storageQuads.length === 1 && storageQuads[0].object.value === storageUrl) {
+      return;
+    }
+
+    const keptQuads = quads.filter((quad) =>
+      !(quad.subject.equals(webIdNode) && quad.predicate.equals(storagePredicate)));
+    keptQuads.push(DataFactory.quad(webIdNode, storagePredicate, DataFactory.namedNode(storageUrl)));
+
+    const writer = new Writer({
+      prefixes: {
+        foaf: 'http://xmlns.com/foaf/0.1/',
+        solid: 'http://www.w3.org/ns/solid/terms#',
+        rdf: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+      },
+    });
+    writer.addQuads(keptQuads);
+    const updatedTurtle = await new Promise<string>((resolve, reject) => {
+      writer.end((error, result) => error ? reject(error) : resolve(result));
+    });
+
+    await this.resourceStore.setRepresentation(
+      identifier,
+      new BasicRepresentation(guardStream(Readable.from(updatedTurtle)), identifier, 'text/turtle'),
+    );
+    this.provisionLogger.info(`Updated solid:storage in profile card ${cardUrl} to ${storageUrl}`);
   }
 }
