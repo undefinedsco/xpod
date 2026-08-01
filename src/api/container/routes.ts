@@ -22,6 +22,7 @@ import { registerRunRoutes } from '../handlers/RunHandler';
 import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
+import { registerSettingsRoutes } from '../handlers/SettingsHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
@@ -95,6 +96,8 @@ function registerHealthRoutes(server: ApiServer): void {
   // Dashboard 静态资源
   const staticDir = path.resolve(PACKAGE_ROOT, 'static/dashboard');
   registerDashboardRoutes(server, { staticDir });
+  const settingsStaticDir = path.resolve(PACKAGE_ROOT, 'static/settings');
+  registerSettingsRoutes(server, { staticDir: settingsStaticDir });
 }
 
 /**

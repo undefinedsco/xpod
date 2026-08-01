@@ -199,8 +199,8 @@ export class GatewayProxy {
     // path prefix to the IdP/Pod host. Path-based routing remains for local/dev
     // single-origin clients and existing legacy endpoints.
 
-    // 2a. Dashboard UI is served by API server under /dashboard/*
-    if ((url === '/dashboard' || url.startsWith('/dashboard/')) && this.targets.api) {
+    // 2a. Xpod web products are served by the API server.
+    if (this.isApiWebProductPath(url) && this.targets.api) {
       this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
@@ -229,6 +229,13 @@ export class GatewayProxy {
       res.writeHead(503);
       res.end('CSS Service Not Available');
     }
+  }
+
+  private isApiWebProductPath(url: string): boolean {
+    return url === '/dashboard'
+      || url.startsWith('/dashboard/')
+      || url === '/settings'
+      || url.startsWith('/settings/');
   }
 
   private shouldRouteToApi(url: string): boolean {
