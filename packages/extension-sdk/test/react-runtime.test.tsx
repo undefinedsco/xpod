@@ -24,8 +24,9 @@ describe('useApplet', () => {
       createController,
       activate,
       slots: {
-        header: ({ controller: value }) => <header>{value.selected} header</header>,
+        listHeader: ({ controller: value }) => <header>{value.selected} list header</header>,
         list: ({ controller: value }) => <nav>{value.selected} list</nav>,
+        mainHeader: ({ controller: value }) => <header>{value.selected} main header</header>,
         main: ({ controller: value }) => <main>{value.selected} main</main>,
       },
     })
@@ -34,13 +35,14 @@ describe('useApplet', () => {
     function Harness({ enabled = true }: { enabled?: boolean }) {
       const mounted = useApplet(applet, host, { enabled })
       return mounted
-        ? <>{mounted.slots.header}{mounted.slots.list}{mounted.slots.main}</>
+        ? <>{mounted.slots.listHeader}{mounted.slots.list}{mounted.slots.mainHeader}{mounted.slots.main}</>
         : <p>disabled</p>
     }
 
     const rendered = render(<Harness />)
 
-    expect(screen.getByText('demo header')).toBeTruthy()
+    expect(screen.getByText('demo list header')).toBeTruthy()
+    expect(screen.getByText('demo main header')).toBeTruthy()
     expect(screen.getByText('demo list')).toBeTruthy()
     expect(screen.getByText('demo main')).toBeTruthy()
     expect(createController).toHaveBeenCalledTimes(1)
@@ -76,8 +78,9 @@ describe('useApplet', () => {
       layout: {
         descriptor: defineAppletLayout({ type: 'two-pane' }),
         slots: {
-          header: ({ controller: value }) => <header>{value.selected} header</header>,
+          listHeader: ({ controller: value }) => <header>{value.selected} list header</header>,
           list: ({ controller: value }) => <nav>{value.selected} list</nav>,
+          mainHeader: ({ controller: value }) => <header>{value.selected} main header</header>,
           main: ({ controller: value }) => <main>{value.selected} main</main>,
         },
       },
@@ -87,13 +90,14 @@ describe('useApplet', () => {
     function Harness({ enabled = true }: { enabled?: boolean }) {
       const mounted = useApplet(applet, host, { enabled })
       return mounted
-        ? <>{mounted.slots.header}{mounted.slots.list}{mounted.slots.main}</>
+        ? <>{mounted.slots.listHeader}{mounted.slots.list}{mounted.slots.mainHeader}{mounted.slots.main}</>
         : <p>disabled</p>
     }
 
     const rendered = render(<Harness />)
 
-    expect(screen.getByText('descriptor demo header')).toBeTruthy()
+    expect(screen.getByText('descriptor demo list header')).toBeTruthy()
+    expect(screen.getByText('descriptor demo main header')).toBeTruthy()
     expect(screen.getByText('descriptor demo list')).toBeTruthy()
     expect(screen.getByText('descriptor demo main')).toBeTruthy()
     expect(createController).toHaveBeenCalledTimes(1)

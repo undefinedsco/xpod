@@ -202,8 +202,9 @@ export interface DescriptorThreePaneAppletModule<TController = unknown, Database
 }
 
 export type TwoPaneAppletSlots<TController, Database = unknown> = {
-  header: AppletSlot<TController, Database>;
+  listHeader: AppletSlot<TController, Database>;
   list: AppletSlot<TController, Database>;
+  mainHeader: AppletSlot<TController, Database>;
   main: AppletSlot<TController, Database>;
 };
 
@@ -216,8 +217,9 @@ export interface MountedTwoPaneApplet<TController> {
   layout: 'two-pane';
   controller: TController;
   slots: {
-    header: ReactElement;
+    listHeader: ReactElement;
     list: ReactElement;
+    mainHeader: ReactElement;
     main: ReactElement;
   };
 }
@@ -233,8 +235,9 @@ export interface MountedThreePaneApplet<TController> {
   controller: TController;
   contextConfig?: ThreePaneAppletLayoutDescriptor['context'];
   slots: {
-    header: ReactElement;
+    listHeader: ReactElement;
     list: ReactElement;
+    mainHeader: ReactElement;
     main: ReactElement;
     context: ReactElement;
   };
@@ -284,8 +287,9 @@ export function mountTwoPaneApplet<TController, Database = unknown>(
 
   return {
     controller: mounted.controller,
-    header: mounted.slots.header,
+    listHeader: mounted.slots.listHeader,
     list: mounted.slots.list,
+    mainHeader: mounted.slots.mainHeader,
     main: mounted.slots.main,
   };
 }
@@ -373,8 +377,9 @@ function mountResolvedApplet<TController, Database>(
       layout: 'two-pane',
       controller,
       slots: {
-        header: createElement(layout.slots.header, { controller, host }),
+        listHeader: createElement(layout.slots.listHeader, { controller, host }),
         list: createElement(layout.slots.list, { controller, host }),
+        mainHeader: createElement(layout.slots.mainHeader, { controller, host }),
         main: createElement(layout.slots.main, { controller, host }),
       },
     };
@@ -385,8 +390,9 @@ function mountResolvedApplet<TController, Database>(
     controller,
     contextConfig: layout.contextConfig,
     slots: {
-      header: createElement(layout.slots.header, { controller, host }),
+      listHeader: createElement(layout.slots.listHeader, { controller, host }),
       list: createElement(layout.slots.list, { controller, host }),
+      mainHeader: createElement(layout.slots.mainHeader, { controller, host }),
       main: createElement(layout.slots.main, { controller, host }),
       context: createElement(layout.slots.context, { controller, host }),
     },
@@ -485,8 +491,9 @@ function assertTwoPaneSlots<TController, Database>(
   label: string,
 ): asserts slots is TwoPaneAppletSlots<TController, Database> {
   assertSlotContainer(slots, label);
-  assertSlotFunction(slots.header, `${label} slot header`);
+  assertSlotFunction(slots.listHeader, `${label} slot listHeader`);
   assertSlotFunction(slots.list, `${label} slot list`);
+  assertSlotFunction(slots.mainHeader, `${label} slot mainHeader`);
   assertSlotFunction(slots.main, `${label} slot main`);
 }
 

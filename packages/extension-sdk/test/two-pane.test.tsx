@@ -46,8 +46,9 @@ describe('mountTwoPaneApplet', () => {
           layout: {
             descriptor: defineAppletLayout({ type: 'three-pane' }),
             slots: {
-              header: () => createElement('header'),
+              listHeader: () => createElement('header'),
               list: () => createElement('nav'),
+              mainHeader: () => createElement('header'),
               main: () => createElement('main'),
               context: () => createElement('aside'),
             },
@@ -83,7 +84,7 @@ describe('mountTwoPaneApplet', () => {
     expect(legacyModule.manifest).toBe(legacyManifest)
   })
 
-  it('creates one controller shared by header, list and main slots', () => {
+  it('creates one controller shared by list header, list, main header and main slots', () => {
     const controllers: object[] = []
     const module: TwoPaneAppletModule<object> = {
       manifest: {
@@ -95,13 +96,17 @@ describe('mountTwoPaneApplet', () => {
       },
       createController: () => ({}),
       slots: {
-        header: ({ controller }) => {
+        listHeader: ({ controller }) => {
           controllers.push(controller)
-          return createElement('header', null, 'Header')
+          return createElement('header', null, 'List header')
         },
         list: ({ controller }) => {
           controllers.push(controller)
           return createElement('nav', null, 'List')
+        },
+        mainHeader: ({ controller }) => {
+          controllers.push(controller)
+          return createElement('header', null, 'Main header')
         },
         main: ({ controller }) => {
           controllers.push(controller)
@@ -111,14 +116,16 @@ describe('mountTwoPaneApplet', () => {
     }
 
     const mounted = mountTwoPaneApplet(module, createMockWebExtensionHost())
-    renderToStaticMarkup(mounted.header)
+    renderToStaticMarkup(mounted.listHeader)
     renderToStaticMarkup(mounted.list)
+    renderToStaticMarkup(mounted.mainHeader)
     renderToStaticMarkup(mounted.main)
 
-    expect(Object.keys(mounted)).toEqual(['controller', 'header', 'list', 'main'])
-    expect(controllers).toHaveLength(3)
+    expect(Object.keys(mounted)).toEqual(['controller', 'listHeader', 'list', 'mainHeader', 'main'])
+    expect(controllers).toHaveLength(4)
     expect(controllers[0]).toBe(controllers[1])
     expect(controllers[1]).toBe(controllers[2])
+    expect(controllers[2]).toBe(controllers[3])
     expect(mounted.controller).toBe(controllers[0])
   })
 
@@ -133,8 +140,9 @@ describe('mountTwoPaneApplet', () => {
       },
       createController: () => ({}),
       slots: {
-        header: () => createElement('header'),
+        listHeader: () => createElement('header'),
         list: () => createElement('nav'),
+        mainHeader: () => createElement('header'),
         main: () => createElement('main'),
       },
     }
@@ -158,13 +166,17 @@ describe('mountTwoPaneApplet', () => {
       layout: {
         descriptor: defineAppletLayout({ type: 'two-pane' }),
         slots: {
-          header: ({ controller }) => {
+          listHeader: ({ controller }) => {
             controllers.push(controller)
-            return createElement('header', null, 'Header')
+            return createElement('header', null, 'List header')
           },
           list: ({ controller }) => {
             controllers.push(controller)
             return createElement('nav', null, 'List')
+          },
+          mainHeader: ({ controller }) => {
+            controllers.push(controller)
+            return createElement('header', null, 'Main header')
           },
           main: ({ controller }) => {
             controllers.push(controller)
@@ -176,15 +188,17 @@ describe('mountTwoPaneApplet', () => {
     }
 
     const mounted = mountApplet(module, createMockWebExtensionHost())
-    renderToStaticMarkup(mounted.slots.header)
+    renderToStaticMarkup(mounted.slots.listHeader)
     renderToStaticMarkup(mounted.slots.list)
+    renderToStaticMarkup(mounted.slots.mainHeader)
     renderToStaticMarkup(mounted.slots.main)
 
     expect(mounted.layout).toBe('two-pane')
-    expect(Object.keys(mounted.slots)).toEqual(['header', 'list', 'main'])
-    expect(controllers).toHaveLength(3)
+    expect(Object.keys(mounted.slots)).toEqual(['listHeader', 'list', 'mainHeader', 'main'])
+    expect(controllers).toHaveLength(4)
     expect(controllers[0]).toBe(controllers[1])
     expect(controllers[1]).toBe(controllers[2])
+    expect(controllers[2]).toBe(controllers[3])
     expect(mounted.controller).toBe(controllers[0])
   })
 
@@ -203,8 +217,9 @@ describe('mountTwoPaneApplet', () => {
           context: { collapsible: true, initiallyCollapsed: true },
         }),
         slots: {
-          header: ({ controller }) => createElement('header', null, controller.selected),
+          listHeader: ({ controller }) => createElement('header', null, controller.selected),
           list: ({ controller }) => createElement('nav', null, controller.selected),
+          mainHeader: ({ controller }) => createElement('header', null, controller.selected),
           main: ({ controller }) => createElement('main', null, controller.selected),
           context: ({ controller }) => createElement('aside', null, controller.selected),
         },
@@ -215,7 +230,7 @@ describe('mountTwoPaneApplet', () => {
     const mounted = mountApplet(module, createMockWebExtensionHost())
 
     expect(mounted.layout).toBe('three-pane')
-    expect(Object.keys(mounted.slots)).toEqual(['header', 'list', 'main', 'context'])
+    expect(Object.keys(mounted.slots)).toEqual(['listHeader', 'list', 'mainHeader', 'main', 'context'])
     expect(mounted.contextConfig).toEqual({ collapsible: true, initiallyCollapsed: true })
     expect(renderToStaticMarkup(mounted.slots.context)).toContain('three-pane')
   })
@@ -232,8 +247,9 @@ describe('mountTwoPaneApplet', () => {
       layout: {
         descriptor: defineAppletLayout({ type: 'two-pane' }),
         slots: {
-          header: () => createElement('header'),
+          listHeader: () => createElement('header'),
           list: () => createElement('nav'),
+          mainHeader: () => createElement('header'),
           main: () => createElement('main'),
         },
       },
@@ -269,7 +285,7 @@ describe('mountTwoPaneApplet', () => {
         },
       },
     } as unknown as DescriptorTwoPaneAppletModule<object>, host)).toThrow(
-      'Applet descriptor two-pane slot header must be a function',
+      'Applet descriptor two-pane slot listHeader must be a function',
     )
 
     expect(() => mountApplet({
@@ -277,8 +293,9 @@ describe('mountTwoPaneApplet', () => {
       layout: {
         descriptor: defineAppletLayout({ type: 'two-pane' }),
         slots: {
-          header: () => createElement('header'),
+          listHeader: () => createElement('header'),
           list: () => createElement('nav'),
+          mainHeader: () => createElement('header'),
           main: null,
         },
       },
@@ -305,8 +322,9 @@ describe('mountTwoPaneApplet', () => {
       layout: {
         descriptor: defineAppletLayout({ type: 'three-pane' }),
         slots: {
-          header: () => createElement('header'),
+          listHeader: () => createElement('header'),
           list: () => createElement('nav'),
+          mainHeader: () => createElement('header'),
           context: () => createElement('aside'),
         },
       },
@@ -319,8 +337,9 @@ describe('mountTwoPaneApplet', () => {
       layout: {
         descriptor: defineAppletLayout({ type: 'three-pane' }),
         slots: {
-          header: () => createElement('header'),
+          listHeader: () => createElement('header'),
           list: () => createElement('nav'),
+          mainHeader: () => createElement('header'),
           main: () => createElement('main'),
         },
       },
@@ -374,8 +393,9 @@ describe('mountTwoPaneApplet', () => {
       ...base,
       layout: {
         slots: {
-          header: () => createElement('header'),
+          listHeader: () => createElement('header'),
           list: () => createElement('nav'),
+          mainHeader: () => createElement('header'),
           main: () => createElement('main'),
         },
       },
@@ -388,8 +408,9 @@ describe('mountTwoPaneApplet', () => {
       layout: {
         descriptor: { type: 'grid' },
         slots: {
-          header: () => createElement('header'),
+          listHeader: () => createElement('header'),
           list: () => createElement('nav'),
+          mainHeader: () => createElement('header'),
           main: () => createElement('main'),
         },
       },
