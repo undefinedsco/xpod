@@ -17,5 +17,9 @@
 !templates/
 !types/
 
+# Never copy host build/install artifacts into the Linux build context.
+**/node_modules
+**/dist
+
 # Explicitly excluded (not needed in image)
 .github/

@@ -9,6 +9,7 @@
 FROM oven/bun:1.3.8-alpine AS build
 
 RUN apk add --no-cache python3 make g++ cmake
+ENV NODE_ENV=development
 
 WORKDIR /app
 
@@ -21,7 +22,7 @@ COPY scripts/patch-jose.js ./scripts/patch-jose.js
 RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
-RUN bun run build:ts && bun run build:components && node scripts/check-components-runtime-metadata.cjs && bun run build:ui
+RUN bun run build:ts && bun run build:components && node scripts/check-components-runtime-metadata.cjs && bun run build:packages && bun run build:ui
 
 # Runtime
 FROM node:22-alpine
