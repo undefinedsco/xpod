@@ -82,7 +82,7 @@
     "cloud": "dotenv -e .env.cloud -o -- bun --no-env-file src/main.ts -e .env.cloud -c config/cloud.json",
     "dev": "./scripts/dev-start.sh",
     "dev:local": "./scripts/dev-start.sh --local",
-    "settings:dev": "cd ui && bun run dev:dashboard",
+    "settings:dev": "cd ui && bun run dev:settings",
     "settings:open": "node scripts/open-settings.mjs",
     "settings:test": "bun run test -- tests/ui/settings-launch.test.ts",
     "settings:accept": "bun scripts/accept-xpod-settings.ts",

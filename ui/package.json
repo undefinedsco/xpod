@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:dashboard": "BUILD_TARGET=dashboard vite",
+    "dev:settings": "BUILD_TARGET=settings vite",
     "build": "tsc -b && vite build",
     "build:app": "tsc -b && vite build",
     "build:dashboard": "tsc -b && BUILD_TARGET=dashboard vite build",

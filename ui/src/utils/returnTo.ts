@@ -21,7 +21,10 @@ export function consumeReturnTo(): string | null {
 export function getReturnToFromLocation(): string | null {
   try {
     const value = new URLSearchParams(window.location.search).get('returnTo');
-    return value || null;
+    if (!value) return null;
+    const target = new URL(value, window.location.origin);
+    if (target.origin !== window.location.origin) return null;
+    return value;
   } catch {
     return null;
   }

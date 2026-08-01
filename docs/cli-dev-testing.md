@@ -44,9 +44,9 @@ Xpod host，再打开 settings 入口：
 bun run settings:open
 ```
 
-默认打开 `http://localhost:3000/dashboard/models`。如 host 不在默认端口，可用
+默认打开 `http://localhost:3000/settings/models`。如 host 不在默认端口，可用
 `XPOD_SETTINGS_URL`、`XPOD_DASHBOARD_URL`、`CSS_BASE_URL` 或 `XPOD_BASE_URL`
-指定已有 Xpod 地址；脚本会规范化为 `/dashboard/models`，只接受 `http`/`https`
+指定已有 Xpod 地址；脚本会规范化为 `/settings/models`，只接受 `http`/`https`
 URL，并在 host 不可达或系统 GUI open 命令失败时输出结构化 JSON 错误。
 
 开发 Dashboard UI 时可单独启动 Vite：
@@ -57,8 +57,8 @@ bun run settings:dev
 
 这只服务前端调试页面，不负责启动 Xpod。桌面版或托盘壳的边界也是如此：壳层可以
 调用 `settings:open` 或自己的 `openExternal`，并按需提供 client-config / 文件系统
-能力；Web host 本身仍可独立访问 `/dashboard/models`、`/dashboard/pod`、
-`/dashboard/network` 和 `/dashboard/services`。当前任务不实现 Electron 壳，也不伪造
+能力；Web host 的配置入口可独立访问 `/settings/models`、`/settings/pod`、
+`/settings/network` 和 `/settings/services`，状态入口为 `/dashboard/overview`。当前任务不伪造
 托盘能力。
 
 ### 常见启动问题

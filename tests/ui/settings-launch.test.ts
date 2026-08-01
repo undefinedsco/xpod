@@ -43,7 +43,7 @@ describe('settings launch scripts', () => {
   it('exposes independent dashboard commands without starting a second Xpod host', async () => {
     const pkg = JSON.parse(await readRepoFile('package.json')) as { scripts: Record<string, string> };
 
-    expect(pkg.scripts['settings:dev']).toBe('cd ui && bun run dev:dashboard');
+    expect(pkg.scripts['settings:dev']).toBe('cd ui && bun run dev:settings');
     expect(pkg.scripts['settings:open']).toBe('node scripts/open-settings.mjs');
     expect(pkg.scripts['settings:test']).toBe('bun run test -- tests/ui/settings-launch.test.ts');
     expect(pkg.scripts['settings:open']).not.toMatch(/\b(run|start|dev|local|cloud)\b/);
@@ -52,17 +52,17 @@ describe('settings launch scripts', () => {
   it('canonicalizes safe dashboard URLs and rejects non-browser URLs', async () => {
     const { canonicalizeSettingsUrl } = await import(openSettingsScript);
 
-    expect(canonicalizeSettingsUrl('http://127.0.0.1:6300')).toBe('http://127.0.0.1:6300/dashboard/models');
+    expect(canonicalizeSettingsUrl('http://127.0.0.1:6300')).toBe('http://127.0.0.1:6300/settings/models');
     expect(canonicalizeSettingsUrl('https://xpod.local/dashboard/network?debug=1#pane', {
       allowedHosts: 'xpod.local:443',
-    })).toBe('https://xpod.local/dashboard/models');
+    })).toBe('https://xpod.local/settings/models');
     expect(() => canonicalizeSettingsUrl('javascript:alert(1)')).toThrow(/http or https/);
     expect(() => canonicalizeSettingsUrl('http://user:pass@localhost:3000/dashboard/models')).toThrow(/credentials/);
     expect(() => canonicalizeSettingsUrl('http://10.0.0.5:3000')).toThrow(/not allowed/);
     expect(() => canonicalizeSettingsUrl('http://169.254.169.254/latest/meta-data')).toThrow(/not allowed/);
     expect(canonicalizeSettingsUrl('http://10.0.0.5:3000', {
       allowedHosts: '10.0.0.5:3000',
-    })).toBe('http://10.0.0.5:3000/dashboard/models');
+    })).toBe('http://10.0.0.5:3000/settings/models');
   });
 
   it('does not probe non-loopback settings hosts unless explicitly allowlisted', async () => {
@@ -113,9 +113,9 @@ describe('settings launch scripts', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      url: 'http://10.0.0.5:3000/dashboard/models',
+      url: 'http://10.0.0.5:3000/settings/models',
     });
-    expect(fetchFn).toHaveBeenCalledWith('http://10.0.0.5:3000/dashboard/models', expect.objectContaining({ method: 'HEAD' }));
+    expect(fetchFn).toHaveBeenCalledWith('http://10.0.0.5:3000/settings/models', expect.objectContaining({ method: 'HEAD' }));
     expect(spawnFn).toHaveBeenCalled();
   });
 
@@ -140,12 +140,12 @@ describe('settings launch scripts', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      url: 'http://127.0.0.1:6300/dashboard/models',
+      url: 'http://127.0.0.1:6300/settings/models',
       command: 'xdg-open',
-      args: ['http://127.0.0.1:6300/dashboard/models'],
+      args: ['http://127.0.0.1:6300/settings/models'],
     });
-    expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:6300/dashboard/models', expect.objectContaining({ method: 'HEAD' }));
-    expect(spawnFn).toHaveBeenCalledWith('xdg-open', ['http://127.0.0.1:6300/dashboard/models'], expect.objectContaining({
+    expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:6300/settings/models', expect.objectContaining({ method: 'HEAD' }));
+    expect(spawnFn).toHaveBeenCalledWith('xdg-open', ['http://127.0.0.1:6300/settings/models'], expect.objectContaining({
       detached: true,
       stdio: 'ignore',
     }));
@@ -183,7 +183,7 @@ describe('settings launch scripts', () => {
       code: 'open_command_failed',
       reason: 'timeout',
       command: 'xdg-open',
-      url: 'http://localhost:3000/dashboard/models',
+      url: 'http://localhost:3000/settings/models',
     });
     expect(kill).toHaveBeenCalledTimes(1);
     expect(unref).toHaveBeenCalledTimes(1);
@@ -221,7 +221,7 @@ describe('settings launch scripts', () => {
     expect(result).toMatchObject({
       ok: true,
       command: 'open',
-      url: 'http://localhost:3000/dashboard/models',
+      url: 'http://localhost:3000/settings/models',
     });
     expect(kill).not.toHaveBeenCalled();
     expect(unref).toHaveBeenCalledTimes(1);
@@ -250,7 +250,7 @@ describe('settings launch scripts', () => {
       code: 'open_command_failed',
       command: 'open',
       exitCode: 1,
-      url: 'http://localhost:3000/dashboard/models',
+      url: 'http://localhost:3000/settings/models',
     });
   });
 });
@@ -285,7 +285,7 @@ describe('settings dashboard static launch smoke', () => {
       },
     });
 
-    await waitForOk(runtime.fetch, '/dashboard/models');
+    await waitForOk(runtime.fetch, '/settings/models');
   }, 90_000);
 
   afterAll(async () => {
@@ -293,7 +293,7 @@ describe('settings dashboard static launch smoke', () => {
   });
 
   it('serves the current dashboard bundle for settings deep links', async () => {
-    for (const route of ['/dashboard/models', '/dashboard/pod', '/dashboard/network', '/dashboard/services']) {
+    for (const route of ['/settings/models', '/settings/pod', '/settings/network', '/settings/services']) {
       const response = await runtime.fetch(route);
       expect(response.status, route).toBe(200);
       expect(response.headers.get('content-type'), route).toContain('text/html');
