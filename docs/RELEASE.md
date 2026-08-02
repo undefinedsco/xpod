@@ -1,107 +1,186 @@
 # 发布流程
 
-## 版本发布步骤
+Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
+和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
+`release/<version>`，由新的 RC 重新验收。
 
-1. **确保在 main 分支**：`git checkout main`
-2. **确保代码已合并**：所有待发布的改动已从 api 分支合并到 main
-3. **确保测试通过**：单元测试和集成测试全部通过
-4. **版本号升级**：使用 npm version 自动升级版本号并创建 tag
-   ```bash
-   # Patch 版本（bug 修复）：0.1.7 → 0.1.8
-   npm version patch -m "🔖 Release v%s
+## 生命周期总览
 
-   - 功能点 1
-   - 功能点 2"
+1. 从准备发布的 commit 创建 `release/<version>` 分支，例如
+   `release/0.3.68`。
+2. 每个推送到 `release/<version>` 的 commit 都触发
+   `.github/workflows/candidate.yml`，生成一个新的 RC。
+3. RC workflow 会发布 `@undefineds.co/xpod` 到 npm `next`，版本格式为
+   `0.3.68-rc.<run-number>.<run-attempt>+<sha>`，例如
+   `0.3.68-rc.41.1+abcdef123456`。RC 不发布平台子包，也不移动 npm
+   `latest`。
+4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
+   版本 tag，并记录 canonical digest，例如
+   `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
+5. RC workflow 将该 digest 部署到 `https://rc.id.undefineds.co` 并运行公开
+   和认证验收。
+6. 验收成功后上传 `release-acceptance-${GITHUB_SHA}.json` artifact。该
+   artifact 是 stable tag promotion 的唯一凭证。
+7. 只在接受的 exact commit 上创建 stable tag，例如 `v0.3.68`。
+8. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
+   artifact，校验 stable tag、release branch、npm version、required
+   checks 和 accepted digest 后，才发布 npm `latest`、把 accepted digest
+   重新标记为 stable/latest 容器 tag，并调用生产部署。
 
-   # Minor 版本（新功能）：0.1.8 → 0.2.0
-   npm version minor -m "🔖 Release v%s
+## 一次性 RC 环境
 
-   - 新功能描述"
+GitHub 需要配置独立的 GitHub Environment `rc`：
 
-   # Major 版本（破坏性变更）：0.2.0 → 1.0.0
-   npm version major -m "🔖 Release v%s
+| 类型 | 名称 | 说明 |
+| --- | --- | --- |
+| Secret | `KUBE_CONFIG_DATA` | base64 编码的 kubeconfig，只授予 RC namespace 所需权限 |
+| Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
+| Secret | `XPOD_SETTINGS_E2E_ALICE_STATE` | RC 认证验收的 Alice OIDC state |
+| Secret | `XPOD_SETTINGS_E2E_BOB_STATE` | RC 认证验收的 Bob OIDC state |
+| Secret | `XPOD_SETTINGS_E2E_TEST_API_KEY` | RC 认证验收 API key |
+| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |
+| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |
+| Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
+| Variable | `XPOD_SETTINGS_E2E_ALICE_POD_URL` | Alice 的 RC Pod URL |
+| Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
 
-   - 破坏性变更描述"
-   ```
-5. **推送到远程**：`git push origin main --tags`
-6. **自动构建发布**：GitHub Actions 会自动触发 `.github/workflows/release.yml`，构建 Docker 镜像、先发布平台 Bun 二进制子包、再发布主 npm 包
-7. **验证发布**：访问 https://github.com/undefinedsco/xpod/actions 查看构建状态
-8. **切回工作分支**：`git checkout api`
+RC 公开入口固定为 `https://rc.id.undefineds.co`，DNS 和 Ingress 必须将该
+域名路由到 RC 服务。RC overlay 本身不创建 Ingress，不创建 physical PostgreSQL、
+Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
+但必须使用独立 logical database or schema、独立 Redis DB 和独立 object bucket。
 
-## Docker 镜像标签规则
+RC Kubernetes 资源默认在 namespace `xpod-rc`：
 
-推送 tag 后，GitHub Actions 会自动构建并推送以下标签：
+- runtime Secret：`xpod-rc-secret`
+- Xpod Deployment：`xpod-rc`
+- Inngest Deployment：`xpod-inngest`
+- ConfigMap：`xpod-rc-config`
 
-- `ghcr.io/undefinedsco/xpod:0.1.8` - 完整版本号
-- `ghcr.io/undefinedsco/xpod:0.1` - major.minor
-- `ghcr.io/undefinedsco/xpod:latest` - 最新版本（仅默认分支）
-- `ghcr.io/undefinedsco/xpod:sha-xxx` - commit hash
+Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
+独立值，至少包括：
 
-## 语义化版本规范
+- `CSS_SPARQL_ENDPOINT`
+- `CSS_IDENTITY_DB_URL`
+- `CSS_REDIS_CLIENT`
+- `CSS_MINIO_ENDPOINT`
+- `CSS_MINIO_ACCESS_KEY`
+- `CSS_MINIO_SECRET_KEY`
+- `CSS_MINIO_BUCKET_NAME`
+- `XPOD_INNGEST_EVENT_KEY`
+- `XPOD_INNGEST_SIGNING_KEY`
 
-- **Patch (0.1.x)**：向后兼容的 bug 修复
-- **Minor (0.x.0)**：向后兼容的新功能
-- **Major (x.0.0)**：破坏性变更
+候选 workflow 会拒绝生产域名、生产 bucket、生产数据库名称或
+`xpod-cloud`/`prod`/`production` 风格值。不要通过 `XPOD_REDIS_PREFIX`
+或 `XPOD_OBJECT_PREFIX` 试图隔离 RC；当前代码不读取这些变量，隔离必须由
+Redis DB、数据库/schema principal 和 bucket 完成。
 
-## 注意事项
+## 操作命令
 
-- 发布前务必确认所有测试通过
-- 发布前务必确认 `package.json` 里的平台 `optionalDependencies` 版本与主版本一致（CI 会执行 `yarn check:platform-package-version`）
-- 安装/烟测链路默认尊重用户级 `npm` / `bun` registry 配置；也可显式设置 `XPOD_INSTALL_REGISTRY`
-- 发布链路默认固定到官方源 `https://registry.npmjs.org`，如确需覆盖请显式设置 `XPOD_PUBLISH_REGISTRY`
-- 国内网络下本地安装可先执行 `npm config set registry https://registry.npmmirror.com` 与 `bun pm config set --global registry https://registry.npmmirror.com`
-- 提交信息应清晰列出本次发布的主要改动
-- 推送 tag 后无法撤回，请谨慎操作
-- 如需回滚，创建新的 patch 版本修复问题
+创建 release branch：
 
-## 当前任务进度（2026-04-17）
+```bash
+git switch -c release/0.3.68
+git push -u origin release/0.3.68
+```
 
-### 本轮已完成
+正常修复继续推送普通 commit。每个 commit 都发布新的 RC，旧 RC 不需要回滚
+npm `next`，因为 npm 版本不可变。
 
-- `xpod`
-  - 当前分支提交：`7688152`（onboarding 连续性、WebID profile storage backfill、本地 dev/test cleanup）
-  - 已拣入 `main`：`028a2f9`
-  - 已打 tag：`v0.2.17`
-  - 已推送 `main` 与 tag
-- `homepage`
-  - 文案已统一到最新口径：
-    - 中文：`你的主理人永不停歇` / `所有碎片合为一体` / `一个主理人，多个智能体`
-    - 英文：`Your AI Secretary Never Stops` / `All Your Pieces, In One Place` / `One Secretary, Many Agents`
-  - 已打 tag：`v0.1.2`
-  - GHCR 与 Sealos 发布已成功
+接受某个 RC 后，在 exact commit 上打 stable tag：
 
-### 本轮验证结果
+```bash
+git tag -s v0.3.68 <accepted-sha>
+git push origin v0.3.68
+```
 
-- `xpod`
-  - `bun run build:ts` 通过
-  - 相关单测通过：
-    - `tests/ui/registration.test.ts`
-    - `tests/ui/registration-flow.test.ts`
-    - `tests/provision/ProvisionPodCreator.test.ts`
-    - `tests/identity/PodLookupRepository.test.ts`
-    - `tests/api/handlers/PodManagementHandler.test.ts`
-    - `tests/identity/ScopedPickWebIdHandler.test.ts`
-    - `tests/storage/QuintStoreSparqlDataAccessor.host-canonicalization.test.ts`
-    - `tests/util/MultiDomainIdentifierStrategy.test.ts`
-  - `bun run test:integration` 中 lite 路径通过
-  - `bun run test:integration:full` 未完成，原因是当前会话下 Docker daemon 不可用，不是测试断言失败
-- `homepage`
-  - `npm run build` 通过
-  - 构建期间存在 CSS minify warning，但未阻塞产物生成和部署
+不要在未通过 RC 的 commit 上打 tag。不要手动输入 digest 给 release
+workflow；stable promotion 只能使用 acceptance artifact 里的 accepted
+digest。
 
-### 当前发布状态
+## RC 验收凭证
 
-- `xpod`
-  - `Release` run `24519327445`：失败
-  - `CI` run `24519328480`：失败
-  - `Deploy` run `24519574466`：跳过
-  - 结论：`v0.2.17` 已推送，但自动发布链路失败，需单独定位 GitHub Actions 失败原因
-- `homepage`
-  - `CD GHCR` run `24519346077`：成功
-  - `CD Sealos` run `24519346122`：成功
+RC 成功后必须存在 artifact：`release-acceptance-${GITHUB_SHA}.json`。
+stable promotion 校验以下内容：
 
-### 下一步
+- stable tag 是 `vX.Y.Z`，且 tag commit 是 workflow source SHA；
+- tag commit 属于 `release/<version>`；
+- tag commit 的 `package.json` version 等于 stable version；
+- artifact 的 source SHA、source branch、target version、candidate version
+  和 endpoint 与当前 tag 匹配；
+- image digest 是 `sha256:<64-lowercase-hex>`；
+- required checks 全部通过，包括 `image`、`npm-node`、`npm-bun`、
+  `service-status`、`oidc`、`dashboard`、`protected-route`、
+  `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
+  `authenticated-pod`。
 
-- 优先定位 `xpod` 的 `Release` / `CI` 失败原因
-- 修复后重新发一个 patch tag
-- 确认修复版成功后，再检查 `.co` 环境的实际部署和冒烟链路
+`deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
+`direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做
+exact digest promotion，不重建镜像。
+
+## 失败诊断和恢复
+
+RC 失败时，先看 workflow 的 `Dump diagnostics` 输出。它会收集
+deployment、replicaset、pod、service、describe 和当前/previous logs，不会
+读取 Secret 内容。
+
+常见硬 blocker：
+
+- GitHub Environment `rc` 不存在或 secret/var 缺失；
+- `rc.id.undefineds.co` DNS/Ingress 未指向 RC；
+- RC `APP_ENV_FILE` 复用了生产 domain、database、bucket 或凭据；
+- logical database or schema、Redis DB、object bucket 权限未创建；
+- 认证验收所需 Alice/Bob state、Alice Pod URL 或 test API key 缺失。
+
+修复方式是提交新的 release branch commit，让 candidate workflow 产生新的
+RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
+
+如果 `XPOD_RC_SCALE_TO_ZERO=true`，candidate workflow 最后会把
+`deployment/xpod-rc` 和 `deployment/xpod-inngest` scale-to-zero。下一次
+RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
+手动恢复 RC 时可在同一 namespace 将两个 Deployment scale 到 1，然后重新
+运行 candidate workflow 做完整验收。
+
+## 生产提升和回滚
+
+stable release workflow 在 promotion guard 通过后执行三件事：
+
+1. 从 exact commit 构建并发布 npm stable version；如果该版本已存在，会先
+   验证 registry 中的版本号并保证 npm `latest` 指向目标版本。
+2. 使用 `docker buildx imagetools create` 将 accepted digest 标记为
+   `ghcr.io/undefinedsco/xpod:<version>` 和 `ghcr.io/undefinedsco/xpod:latest`，
+   不重新构建镜像。
+3. 调用 `.github/workflows/deploy.yml`，以
+   `ghcr.io/undefinedsco/xpod@sha256:<64-hex>` 的 digest 形式部署生产。
+
+生产 deploy workflow 要求输入 stable SemVer、immutable image digest 和
+目标 environment。它会先捕获当前 `deployment/xpod-cloud` 的 previous
+image，apply runtime Secret 和 manifests，再 `set image` 到请求 digest。
+公开健康、OIDC、dashboard、settings 401、Kubernetes Deployment image、
+ready Pod imageID 和 direct pod health 全部通过后才算部署成功。
+
+如果生产 rollout 或健康门禁失败，workflow 会 rollback 到捕获的 previous
+image 并等待 readiness，然后输出 diagnostics。回滚不是新发布；需要修复时
+继续在 `release/<version>` 上提交新 commit，重新走 RC 和 stable tag。
+
+## 本地验证
+
+发布相关改动提交前至少运行：
+
+```bash
+bun run test -- \
+  tests/scripts/release-candidate.test.ts \
+  tests/scripts/release-acceptance-manifest.test.ts \
+  tests/scripts/render-rc-manifests.test.ts \
+  tests/scripts/rc-deployment-manifest.test.ts \
+  tests/scripts/candidate-workflow.test.ts \
+  tests/scripts/release-promotion-workflow.test.ts \
+  tests/scripts/deploy-workflow-health-gate.test.ts \
+  tests/scripts/production-diagnostics-workflow.test.ts \
+  tests/scripts/release-docs.test.ts
+bunx github-actionlint .github/workflows/candidate.yml .github/workflows/release.yml .github/workflows/deploy.yml
+bun run build:ts
+bun run test:integration
+```
+
+`bun run test:integration` 会运行 lite 和 full 集成链路。若 Docker、数据库或
+本机网络权限缺失，记录真实失败输出；不要把未运行的集成测试写成通过。
