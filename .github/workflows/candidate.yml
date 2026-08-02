@@ -379,6 +379,26 @@ jobs:
           if (/(?:prod|production|xpod-cloud)/i.test(databaseValues) || productionDomainPattern.test(databaseValues)) {
             throw new Error('production database is not allowed in RC APP_ENV_FILE');
           }
+          const redisValue = entries.get('CSS_REDIS_CLIENT') || '';
+          if (/(?:prod|production|xpod-cloud)/i.test(redisValue) || productionDomainPattern.test(redisValue)) {
+            throw new Error('production Redis is not allowed in RC APP_ENV_FILE');
+          }
+          let redisUrl;
+          try {
+            redisUrl = new URL(redisValue);
+          } catch {
+            throw new Error('CSS_REDIS_CLIENT must be a valid Redis URL');
+          }
+          if (!['redis:', 'rediss:'].includes(redisUrl.protocol)) {
+            throw new Error('CSS_REDIS_CLIENT must use redis:// or rediss://');
+          }
+          const dbMatch = /^\/([0-9]+)$/.exec(redisUrl.pathname);
+          if (!dbMatch) {
+            throw new Error('RC Redis URL must include an explicit nonzero DB index');
+          }
+          if (Number(dbMatch[1]) === 0) {
+            throw new Error('RC Redis DB must use a non-default database index');
+          }
           NODE
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
@@ -429,7 +449,18 @@ jobs:
           set -euo pipefail
           curl --fail --silent --show-error --max-time 15 https://rc.id.undefineds.co/service/status > /dev/null
           curl --fail --silent --show-error --max-time 15 https://rc.id.undefineds.co/.well-known/openid-configuration > /dev/null
-          curl --fail --silent --show-error --max-time 15 https://rc.id.undefineds.co/settings/ > /dev/null
+          dashboard_file="$RUNNER_TEMP/dashboard.html"
+          curl --fail --silent --show-error --location --max-time 15 https://rc.id.undefineds.co/dashboard/ --output "$dashboard_file"
+          if ! grep -qi '<!doctype html\|<html' "$dashboard_file"; then
+            echo "::error::dashboard did not return HTML"
+            exit 1
+          fi
+          settings_file="$RUNNER_TEMP/settings.html"
+          curl --fail --silent --show-error --location --max-time 15 https://rc.id.undefineds.co/settings/ --output "$settings_file"
+          if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
+            echo "::error::settings did not return HTML"
+            exit 1
+          fi
           status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://rc.id.undefineds.co/settings/api/providers)"
           if [ "$status" != "401" ]; then
             echo "::error::protected settings route must reject anonymous requests with 401"

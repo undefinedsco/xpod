@@ -144,9 +144,13 @@ describe('production deployment workflow', () => {
     expect(runText).toContain('oidc_url="$PUBLIC_BASE_URL/.well-known/openid-configuration"');
     expect(runText).toContain('dashboard_url="$PUBLIC_BASE_URL/dashboard/"');
     expect(runText).toContain('settings_url="$PUBLIC_BASE_URL/settings/"');
+    expect(runText).toContain('protected_settings_url="$PUBLIC_BASE_URL/settings/api/providers"');
     expect(runText).toContain('dashboard.html');
+    expect(runText).toContain('settings.html');
     expect(runText).toContain('<!doctype html\\|<html');
-    expect(runText).toContain('expected_status "$settings_url" 401');
+    expect(runText).toContain('settings did not return HTML');
+    expect(runText).toContain('expected_status "$protected_settings_url" 401');
+    expect(runText).not.toContain('expected_status "$settings_url" 401');
     expect(runText).toContain('deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud');
     expect(runText).toContain('imageID');
     expect(runText).toContain('service/status');

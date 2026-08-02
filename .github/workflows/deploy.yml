@@ -230,6 +230,7 @@ jobs:
           oidc_url="$PUBLIC_BASE_URL/.well-known/openid-configuration"
           dashboard_url="$PUBLIC_BASE_URL/dashboard/"
           settings_url="$PUBLIC_BASE_URL/settings/"
+          protected_settings_url="$PUBLIC_BASE_URL/settings/api/providers"
 
           for attempt in $(seq 1 24); do
             if expected_status "$service_url" 200; then
@@ -247,7 +248,13 @@ jobs:
             echo "::error::dashboard did not return HTML"
             exit 1
           fi
-          expected_status "$settings_url" 401
+          settings_file="$RUNNER_TEMP/settings.html"
+          curl --fail --silent --show-error --location --max-time 15 "$settings_url" --output "$settings_file"
+          if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
+            echo "::error::settings did not return HTML"
+            exit 1
+          fi
+          expected_status "$protected_settings_url" 401
 
           deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then
@@ -457,6 +464,7 @@ jobs:
           oidc_url="$PUBLIC_BASE_URL/.well-known/openid-configuration"
           dashboard_url="$PUBLIC_BASE_URL/dashboard/"
           settings_url="$PUBLIC_BASE_URL/settings/"
+          protected_settings_url="$PUBLIC_BASE_URL/settings/api/providers"
 
           for attempt in $(seq 1 24); do
             if expected_status "$service_url" 200; then
@@ -474,7 +482,13 @@ jobs:
             echo "::error::dashboard did not return HTML"
             exit 1
           fi
-          expected_status "$settings_url" 401
+          settings_file="$RUNNER_TEMP/settings.html"
+          curl --fail --silent --show-error --location --max-time 15 "$settings_url" --output "$settings_file"
+          if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
+            echo "::error::settings did not return HTML"
+            exit 1
+          fi
+          expected_status "$protected_settings_url" 401
 
           deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-cloud -o 'jsonpath={.spec.template.spec.containers[?(@.name=="xpod")].image}')"
           if [[ "$deployment_image" != "$TARGET_IMAGE" ]]; then

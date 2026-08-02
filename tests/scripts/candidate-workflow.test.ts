@@ -168,7 +168,12 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('https://rc.id.undefineds.co/service/status');
     expect(runText).toContain('/.well-known/openid-configuration');
+    expect(runText).toContain('https://rc.id.undefineds.co/dashboard/');
     expect(runText).toContain('/settings/');
+    expect(runText).toContain('dashboard.html');
+    expect(runText).toContain('settings.html');
+    expect(runText).toContain('dashboard did not return HTML');
+    expect(runText).toContain('settings did not return HTML');
     expect(runText).toContain('401');
     expect(runText).not.toContain('https://id.undefineds.co');
     expect(runText).not.toContain('xpod-cloud-secret');
@@ -181,6 +186,9 @@ describe('release candidate workflow', () => {
 
     expect(runText).toContain('CSS_IDENTITY_DB_URL');
     expect(runText).toContain('CSS_REDIS_CLIENT');
+    expect(runText).toContain('RC Redis DB must use a non-default database index');
+    expect(runText).toContain('RC Redis URL must include an explicit nonzero DB index');
+    expect(runText).toContain('production Redis is not allowed in RC APP_ENV_FILE');
     expect(runText).toContain('CSS_MINIO_BUCKET_NAME');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');

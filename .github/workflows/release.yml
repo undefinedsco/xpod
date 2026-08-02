@@ -312,7 +312,11 @@ jobs:
 
   promote_image:
     name: Promote accepted GHCR digest
-    needs: promotion_guard
+    needs:
+      - promotion_guard
+      - publish_npm_latest
+      - verify_npm_consumer_node
+      - verify_npm_consumer_bun
     runs-on: ubuntu-latest
     permissions:
       contents: read

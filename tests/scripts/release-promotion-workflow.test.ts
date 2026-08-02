@@ -159,7 +159,12 @@ describe('stable release promotion workflow', () => {
     const promote = workflow.jobs.promote_image;
     const runText = jobRunText(workflow, 'promote_image');
 
-    expect(promote.needs).toBe('promotion_guard');
+    expect(promote.needs).toEqual(expect.arrayContaining([
+      'promotion_guard',
+      'publish_npm_latest',
+      'verify_npm_consumer_node',
+      'verify_npm_consumer_bun',
+    ]));
     expect(promote.permissions).toEqual({
       contents: 'read',
       packages: 'write',

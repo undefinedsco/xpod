@@ -66,9 +66,12 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 - `XPOD_INNGEST_SIGNING_KEY`
 
 候选 workflow 会拒绝生产域名、生产 bucket、生产数据库名称或
-`xpod-cloud`/`prod`/`production` 风格值。不要通过 `XPOD_REDIS_PREFIX`
-或 `XPOD_OBJECT_PREFIX` 试图隔离 RC；当前代码不读取这些变量，隔离必须由
-Redis DB、数据库/schema principal 和 bucket 完成。
+`xpod-cloud`/`prod`/`production` 风格值。`CSS_REDIS_CLIENT` 必须显式指向
+独立 Redis DB，格式上应类似 `CSS_REDIS_CLIENT=.../<nonzero>`；候选 workflow
+会拒绝缺少 DB index、使用 Redis DB 0 或包含 production marker 的 Redis URL。
+不要通过 `XPOD_REDIS_PREFIX` 或 `XPOD_OBJECT_PREFIX` 试图隔离 RC；当前代码
+不读取这些变量，隔离必须由 nonzero Redis DB index、数据库/schema principal
+和 bucket 完成。
 
 ## 操作命令
 
@@ -124,8 +127,8 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 
 - GitHub Environment `rc` 不存在或 secret/var 缺失；
 - `rc.id.undefineds.co` DNS/Ingress 未指向 RC；
-- RC `APP_ENV_FILE` 复用了生产 domain、database、bucket 或凭据；
-- logical database or schema、Redis DB、object bucket 权限未创建；
+- RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
+- logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
 - 认证验收所需 Alice/Bob state、Alice Pod URL 或 test API key 缺失。
 
 修复方式是提交新的 release branch commit，让 candidate workflow 产生新的
