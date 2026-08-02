@@ -11,7 +11,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   metadata:
@@ -59,6 +58,7 @@ jobs:
     timeout-minutes: 35
     env:
       XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
+      REF_NAME: ${{ github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,7 +80,7 @@ jobs:
       - name: Apply candidate root version
         run: |
           node scripts/release-candidate.cjs \
-            --branch "${{ github.ref_name }}" \
+            --branch "$REF_NAME" \
             --run-number "${{ github.run_number }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --sha "${{ github.sha }}" \
@@ -111,6 +111,7 @@ jobs:
     timeout-minutes: 35
     env:
       XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
+      REF_NAME: ${{ github.ref_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -132,7 +133,7 @@ jobs:
       - name: Apply candidate root version
         run: |
           node scripts/release-candidate.cjs \
-            --branch "${{ github.ref_name }}" \
+            --branch "$REF_NAME" \
             --run-number "${{ github.run_number }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --sha "${{ github.sha }}" \
@@ -166,6 +167,7 @@ jobs:
       XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
       XPOD_PUBLISH_TAG: next
+      REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -183,7 +185,7 @@ jobs:
       - name: Apply candidate root version
         run: |
           node scripts/release-candidate.cjs \
-            --branch "${{ github.ref_name }}" \
+            --branch "$REF_NAME" \
             --run-number "${{ github.run_number }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --sha "${{ github.sha }}" \
@@ -244,8 +246,13 @@ jobs:
   build_image:
     needs: [metadata, prepublish_npm_tarball, prepublish_bun_tarball]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+    env:
+      REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -259,7 +266,7 @@ jobs:
       - name: Apply candidate root version
         run: |
           node scripts/release-candidate.cjs \
-            --branch "${{ github.ref_name }}" \
+            --branch "$REF_NAME" \
             --run-number "${{ github.run_number }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --sha "${{ github.sha }}" \
@@ -282,14 +289,34 @@ jobs:
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
-      SEALOS_NAMESPACE: xpod-rc
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       RC_AUTHENTICATED_SMOKE_COMMAND: ${{ secrets.RC_AUTHENTICATED_SMOKE_COMMAND }}
+      REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up kubeconfig
         run: |
           set -euo pipefail
+          validate_k8s_name() {
+            local name="$1"
+            local label="$2"
+            if [[ ! "$name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#name} -gt 63 ]]; then
+              echo "::error::${label} must be a valid Kubernetes name"
+              exit 1
+            fi
+          }
+          if [ -z "$SEALOS_NAMESPACE" ]; then
+            echo "::error::SEALOS_NAMESPACE is required"
+            exit 1
+          fi
+          if [ -z "$XPOD_RUNTIME_SECRET_NAME" ]; then
+            echo "::error::XPOD_RUNTIME_SECRET_NAME is required"
+            exit 1
+          fi
+          validate_k8s_name "$SEALOS_NAMESPACE" SEALOS_NAMESPACE
+          validate_k8s_name "$XPOD_RUNTIME_SECRET_NAME" XPOD_RUNTIME_SECRET_NAME
           mkdir -p ~/.kube
           printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
@@ -348,14 +375,26 @@ jobs:
         run: |
           set -euo pipefail
           kubectl create namespace "$SEALOS_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-secret \
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
             --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy RC image by digest
         run: |
           set -euo pipefail
-          kubectl apply -k deploy/sealos/rc
+          raw_manifest="${RUNNER_TEMP}/xpod-rc.raw.yaml"
+          rendered_manifest="${RUNNER_TEMP}/xpod-rc.rendered.yaml"
+          kubectl kustomize deploy/sealos/rc > "$raw_manifest"
+          node - "$raw_manifest" "$rendered_manifest" "$SEALOS_NAMESPACE" "$XPOD_RUNTIME_SECRET_NAME" <<'NODE'
+          const fs = require('node:fs');
+          const [ inputPath, outputPath, namespace, secretName ] = process.argv.slice(2);
+          const input = fs.readFileSync(inputPath, 'utf8');
+          const output = input
+            .replaceAll('namespace: xpod-rc', `namespace: ${namespace}`)
+            .replaceAll('name: xpod-rc-secret', `name: ${secretName}`);
+          fs.writeFileSync(outputPath, output);
+          NODE
+          kubectl apply -f "$rendered_manifest"
           kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
@@ -411,7 +450,7 @@ jobs:
             --target-version "${{ needs.metadata.outputs.target }}" \
             --candidate-version "${{ needs.metadata.outputs.candidate }}" \
             --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
-            --source-branch "${{ github.ref_name }}" \
+            --source-branch "$REF_NAME" \
             --image-digest "${{ needs.build_image.outputs.digest }}" \
             --npm-package "@undefineds.co/xpod" \
             --npm-version "${{ needs.publish_npm_next.outputs.candidate-version }}" \

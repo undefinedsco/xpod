@@ -29,6 +29,10 @@ function jobRunText(workflow: Workflow, jobName: string): string {
   return stepRuns(workflow.jobs[jobName]).join('\n');
 }
 
+function allRuns(workflow: Workflow): string[] {
+  return Object.values(workflow.jobs ?? {}).flatMap((job: any) => stepRuns(job));
+}
+
 describe('release candidate workflow', () => {
   it('only runs on release branches with branch-scoped cancellation and minimal permissions', async () => {
     const workflow = await loadWorkflow();
@@ -42,8 +46,26 @@ describe('release candidate workflow', () => {
     });
     expect(workflow.permissions).toEqual({
       contents: 'read',
+    });
+    expect(workflow.jobs.build_image.permissions).toEqual({
+      contents: 'read',
       packages: 'write',
     });
+    expect(workflow.jobs.publish_npm_next.permissions).toBeUndefined();
+    expect(workflow.jobs.deploy_and_accept.permissions).toBeUndefined();
+    for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
+      if (jobName !== 'build_image') {
+        expect((job as any).permissions?.packages, jobName).toBeUndefined();
+      }
+    }
+  });
+
+  it('does not interpolate untrusted refs directly inside shell commands', async () => {
+    const workflow = await loadWorkflow();
+
+    for (const run of allRuns(workflow)) {
+      expect(run).not.toContain('${{ github.ref_name }}');
+    }
   });
 
   it('derives candidate metadata with release-candidate.cjs and exposes the expected job outputs', async () => {
@@ -131,9 +153,19 @@ describe('release candidate workflow', () => {
     ]));
     expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
-    expect(runText).toContain('kubectl apply -k deploy/sealos/rc');
+    expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
+    expect(deploy.env.XPOD_RUNTIME_SECRET_NAME).toBe('${{ vars.XPOD_RUNTIME_SECRET_NAME }}');
+    expect(runText).toContain('kubectl kustomize deploy/sealos/rc');
+    expect(runText).toContain('kubectl apply -f "$rendered_manifest"');
+    expect(runText).toContain('SEALOS_NAMESPACE is required');
+    expect(runText).toContain('XPOD_RUNTIME_SECRET_NAME is required');
+    expect(runText).toContain('must be a valid Kubernetes name');
+    expect(runText).toContain('namespace: xpod-rc');
+    expect(runText).toContain('name: xpod-rc-secret');
+    expect(runText).not.toContain('SEALOS_NAMESPACE: xpod-rc');
+    expect(runText).not.toContain('xpod-rc-secret \\');
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
-    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-secret');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME"');
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
     expect(runText).toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('https://rc.id.undefineds.co/service/status');
