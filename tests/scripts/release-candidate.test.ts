@@ -82,6 +82,24 @@ describe('release candidate metadata', () => {
     }).candidateVersion).toBe('0.3.68-rc.42.2');
   });
 
+  it('preserves large GitHub run numbers without numeric precision loss', () => {
+    expect(deriveCandidate({
+      branch: 'release/0.3.68',
+      runNumber: '9007199254740993',
+      runAttempt: 1,
+      sha: fullSha,
+    }).candidateVersion).toBe('0.3.68-rc.9007199254740993');
+  });
+
+  it('preserves large GitHub run attempts without numeric precision loss', () => {
+    expect(deriveCandidate({
+      branch: 'release/0.3.68',
+      runNumber: 42,
+      runAttempt: '9007199254740993',
+      sha: fullSha,
+    }).candidateVersion).toBe('0.3.68-rc.42.9007199254740993');
+  });
+
   it('prints candidate metadata as JSON from the CLI', async () => {
     const { stdout } = await runCli([
       '--branch', 'release/0.3.68',
@@ -196,6 +214,19 @@ describe('release candidate metadata', () => {
     });
   });
 
+  it('rejects missing CLI option values with the option name', async () => {
+    await expect(runCli([
+      '--branch', 'release/0.3.68',
+      '--run-number', '42',
+      '--run-attempt', '1',
+      '--sha', fullSha,
+      '--repo-root',
+      '--json',
+    ])).rejects.toMatchObject({
+      stderr: expect.stringContaining('--repo-root requires a value'),
+    });
+  });
+
   it('applies the candidate version only to the root manifest and syncs root platform optional dependencies', async () => {
     const manifestRoot = await makeManifestRepo();
     const beforeWorkspaceManifests = await readWorkspaceManifests(manifestRoot);
@@ -221,5 +252,25 @@ describe('release candidate metadata', () => {
     expect(rootManifest.optionalDependencies['@undefineds.co/xpod-linux-x64-gnu']).toBe('0.3.68-rc.42.2');
     expect(rootManifest.optionalDependencies.untouched).toBe('1.2.3');
     await expect(readWorkspaceManifests(manifestRoot)).resolves.toEqual(beforeWorkspaceManifests);
+  });
+
+  it('rejects applying the root version to a workspace package manifest without changing it', async () => {
+    const manifestRoot = await makeManifestRepo();
+    const workspaceRoot = path.join(manifestRoot, 'packages/one');
+    const beforeWorkspaceManifest = await readFile(path.join(workspaceRoot, 'package.json'), 'utf8');
+
+    await expect(runCli([
+      '--branch', 'release/0.3.68',
+      '--run-number', '42',
+      '--run-attempt', '2',
+      '--sha', fullSha,
+      '--json',
+      '--apply-root-version',
+      '--repo-root', workspaceRoot,
+    ], { repoRoot: manifestRoot })).rejects.toMatchObject({
+      stderr: expect.stringContaining('root @undefineds.co/xpod package.json'),
+    });
+
+    await expect(readFile(path.join(workspaceRoot, 'package.json'), 'utf8')).resolves.toBe(beforeWorkspaceManifest);
   });
 });

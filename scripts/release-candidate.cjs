@@ -13,7 +13,7 @@ function parsePositiveInteger(value, fieldName) {
     throw new Error(`${fieldName} must be a positive integer`);
   }
 
-  return Number(text);
+  return text;
 }
 
 function validateSha(sha) {
@@ -40,7 +40,7 @@ function deriveCandidate({ branch, runNumber, runAttempt, sha }) {
   const parsedRunNumber = parsePositiveInteger(runNumber, 'runNumber');
   const parsedRunAttempt = parsePositiveInteger(runAttempt, 'runAttempt');
   const sourceSha = validateSha(sha);
-  const candidateVersion = parsedRunAttempt === 1
+  const candidateVersion = parsedRunAttempt === '1'
     ? `${targetVersion}-rc.${parsedRunNumber}`
     : `${targetVersion}-rc.${parsedRunNumber}.${parsedRunAttempt}`;
 
@@ -50,6 +50,15 @@ function deriveCandidate({ branch, runNumber, runAttempt, sha }) {
     shaTag: `sha-${sourceSha}`,
     sourceSha,
   };
+}
+
+function readOptionValue(argv, index, optionName) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw new Error(`${optionName} requires a value`);
+  }
+
+  return value;
 }
 
 function parseArgs(argv) {
@@ -63,19 +72,24 @@ function parseArgs(argv) {
     const arg = argv[i];
     switch (arg) {
       case '--branch':
-        args.branch = argv[++i];
+        args.branch = readOptionValue(argv, i, arg);
+        i += 1;
         break;
       case '--run-number':
-        args.runNumber = argv[++i];
+        args.runNumber = readOptionValue(argv, i, arg);
+        i += 1;
         break;
       case '--run-attempt':
-        args.runAttempt = argv[++i];
+        args.runAttempt = readOptionValue(argv, i, arg);
+        i += 1;
         break;
       case '--sha':
-        args.sha = argv[++i];
+        args.sha = readOptionValue(argv, i, arg);
+        i += 1;
         break;
       case '--repo-root':
-        args.repoRoot = path.resolve(argv[++i]);
+        args.repoRoot = path.resolve(readOptionValue(argv, i, arg));
+        i += 1;
         break;
       case '--json':
         args.json = true;
@@ -116,6 +130,10 @@ function syncPlatformPackageVersion(repoRoot, packageJsonPath) {
 function applyRootVersion(repoRoot, candidateVersion) {
   const packageJsonPath = path.join(repoRoot, 'package.json');
   const packageJson = readPackageJson(packageJsonPath);
+  if (packageJson.name !== '@undefineds.co/xpod') {
+    throw new Error('--apply-root-version requires repoRoot to point at the root @undefineds.co/xpod package.json');
+  }
+
   packageJson.version = candidateVersion;
   writePackageJson(packageJsonPath, packageJson);
   syncPlatformPackageVersion(repoRoot, packageJsonPath);
@@ -150,4 +168,5 @@ module.exports = {
   deriveCandidate,
   main,
   parseArgs,
+  readOptionValue,
 };
