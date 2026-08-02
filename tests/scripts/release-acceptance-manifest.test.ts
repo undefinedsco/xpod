@@ -96,6 +96,19 @@ describe('release acceptance manifest', () => {
     expect(JSON.stringify(result)).not.toContain(fullSha);
   });
 
+  it('rejects source SHAs that are not exactly 40 hex characters even when expected matches', () => {
+    const result = validateManifest(
+      validManifest({ sourceSha: 'not-a-sha' }),
+      expected({ sourceSha: 'not-a-sha' }),
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'sourceSha' }),
+    ]));
+    expect(JSON.stringify(result)).not.toContain('not-a-sha');
+  });
+
   it('rejects mutable image tags instead of immutable sha256 digests', () => {
     const result = validateManifest(validManifest({ imageDigest: 'latest' }), expected());
 
@@ -217,6 +230,68 @@ describe('release acceptance manifest', () => {
     ]);
 
     expect(JSON.parse(validation.stdout)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('rejects CLI create when required fields are missing without printing a partial manifest', async () => {
+    await expect(runCli([
+      'create',
+      '--target-version', '0.3.68',
+    ], {
+      XPOD_SECRET_VALUE: 'create-missing-secret-sentinel',
+    })).rejects.toMatchObject({
+      stdout: '',
+      stderr: expect.stringContaining('manifest validation failed'),
+    });
+
+    await expect(runCli([
+      'create',
+      '--target-version', '0.3.68',
+    ], {
+      XPOD_SECRET_VALUE: 'create-missing-secret-sentinel',
+    })).rejects.toMatchObject({
+      stderr: expect.not.stringContaining('create-missing-secret-sentinel'),
+    });
+  });
+
+  it('rejects CLI create when release constraints fail without leaking secrets', async () => {
+    const checksPath = await tempFile('checks.json', JSON.stringify(validInput().checks));
+
+    await expect(runCli([
+      'create',
+      '--target-version', '0.3.68',
+      '--candidate-version', '0.3.69-rc.42',
+      '--source-sha', 'not-a-sha',
+      '--source-branch', 'main',
+      '--image-digest', 'latest',
+      '--npm-package', '@undefineds.co/other',
+      '--npm-version', '0.3.69-rc.42',
+      '--endpoint', 'https://example.com',
+      '--accepted-at', 'not-a-date',
+      '--checks-file', checksPath,
+    ], {
+      XPOD_PASSWORD: 'create-invalid-secret-sentinel',
+    })).rejects.toMatchObject({
+      stdout: '',
+      stderr: expect.stringContaining('manifest validation failed'),
+    });
+
+    await expect(runCli([
+      'create',
+      '--target-version', '0.3.68',
+      '--candidate-version', '0.3.69-rc.42',
+      '--source-sha', 'not-a-sha',
+      '--source-branch', 'main',
+      '--image-digest', 'latest',
+      '--npm-package', '@undefineds.co/other',
+      '--npm-version', '0.3.69-rc.42',
+      '--endpoint', 'https://example.com',
+      '--accepted-at', 'not-a-date',
+      '--checks-file', checksPath,
+    ], {
+      XPOD_PASSWORD: 'create-invalid-secret-sentinel',
+    })).rejects.toMatchObject({
+      stderr: expect.not.stringContaining('create-invalid-secret-sentinel'),
+    });
   });
 
   it('returns a machine-readable validation failure and non-zero exit code from the CLI', async () => {

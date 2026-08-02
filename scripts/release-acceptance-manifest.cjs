@@ -17,6 +17,7 @@ const ALLOWED_TOP_LEVEL_FIELDS = [
 
 const SENSITIVE_FIELD_PATTERN = /(?:secret|token|password|credential|api[-_]?key)/i;
 const STABLE_TAG_PATTERN = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/;
+const SOURCE_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
@@ -129,6 +130,10 @@ function validateManifest(manifest, expected) {
 
   if (manifest.sourceSha !== expected?.sourceSha) {
     addError(errors, 'sourceSha', 'sourceSha must match the expected source SHA');
+  }
+
+  if (!SOURCE_SHA_PATTERN.test(manifest.sourceSha)) {
+    addError(errors, 'sourceSha', 'sourceSha must be exactly 40 lowercase hex characters');
   }
 
   if (targetVersion && manifest.sourceBranch !== `release/${targetVersion}`) {
@@ -296,7 +301,20 @@ function main(argv = process.argv.slice(2)) {
   const [ command, ...rest ] = argv;
 
   if (command === 'create') {
-    const manifest = createManifest(parseCreateArgs(rest));
+    const input = parseCreateArgs(rest);
+    const manifest = createManifest(input);
+    const result = validateManifest(manifest, {
+      tag: `v${manifest.targetVersion}`,
+      sourceSha: manifest.sourceSha,
+      requiredChecks: Object.keys(manifest.checks),
+    });
+    if (!isPlainObject(input.checks)) {
+      addError(result.errors, 'checks', 'checks-file is required');
+      result.valid = false;
+    }
+    if (!result.valid) {
+      throw new Error('manifest validation failed');
+    }
     process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
     return 0;
   }
