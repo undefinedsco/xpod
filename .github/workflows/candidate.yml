@@ -291,10 +291,21 @@ jobs:
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
-      RC_AUTHENTICATED_SMOKE_COMMAND: ${{ secrets.RC_AUTHENTICATED_SMOKE_COMMAND }}
+      XPOD_ACCEPTANCE_REAL_XPOD: 'true'
+      XPOD_SETTINGS_E2E_BASE_URL: https://rc.id.undefineds.co
+      XPOD_SETTINGS_E2E_ALICE_STATE: ${{ secrets.XPOD_SETTINGS_E2E_ALICE_STATE }}
+      XPOD_SETTINGS_E2E_BOB_STATE: ${{ secrets.XPOD_SETTINGS_E2E_BOB_STATE }}
+      XPOD_SETTINGS_E2E_ALICE_POD_URL: ${{ vars.XPOD_SETTINGS_E2E_ALICE_POD_URL }}
+      XPOD_SETTINGS_E2E_TEST_API_KEY: ${{ secrets.XPOD_SETTINGS_E2E_TEST_API_KEY }}
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - run: bun install --frozen-lockfile
 
       - name: Set up kubeconfig
         run: |
@@ -382,22 +393,36 @@ jobs:
       - name: Deploy RC image by digest
         run: |
           set -euo pipefail
-          raw_manifest="${RUNNER_TEMP}/xpod-rc.raw.yaml"
           rendered_manifest="${RUNNER_TEMP}/xpod-rc.rendered.yaml"
-          kubectl kustomize deploy/sealos/rc > "$raw_manifest"
-          node - "$raw_manifest" "$rendered_manifest" "$SEALOS_NAMESPACE" "$XPOD_RUNTIME_SECRET_NAME" <<'NODE'
-          const fs = require('node:fs');
-          const [ inputPath, outputPath, namespace, secretName ] = process.argv.slice(2);
-          const input = fs.readFileSync(inputPath, 'utf8');
-          const output = input
-            .replaceAll('namespace: xpod-rc', `namespace: ${namespace}`)
-            .replaceAll('name: xpod-rc-secret', `name: ${secretName}`);
-          fs.writeFileSync(outputPath, output);
-          NODE
+          node scripts/render-rc-manifests.cjs \
+            --overlay deploy/sealos/rc \
+            --output "$rendered_manifest" \
+            --namespace "$SEALOS_NAMESPACE" \
+            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
           kubectl apply -f "$rendered_manifest"
           kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
+          expected_image="ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
+          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc -o jsonpath='{.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          if [ "$deployment_image" != "$expected_image" ]; then
+            echo "::error::deployment image digest mismatch"
+            exit 1
+          fi
+          pod_name="$(kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-rc -o jsonpath='{.items[0].metadata.name}')"
+          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.containerStatuses[?(@.name=="xpod")].imageID}')"
+          if [[ "$pod_image_id" != *"${{ needs.build_image.outputs.digest }}"* ]]; then
+            echo "::error::ready pod imageID digest mismatch"
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- node -e "fetch('http://127.0.0.1:3000/service/status').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
+          cat > "${RUNNER_TEMP}/deployment-checks.json" <<'JSON'
+          {
+            "image": "passed",
+            "deployed-digest": "passed",
+            "direct-pod": "passed"
+          }
+          JSON
 
       - name: Verify public RC service
         run: |
@@ -413,6 +438,7 @@ jobs:
           cat > "${RUNNER_TEMP}/public-checks.json" <<'JSON'
           {
             "service-status": "passed",
+            "public-service": "passed",
             "oidc": "passed",
             "dashboard": "passed",
             "protected-route": "passed"
@@ -422,11 +448,19 @@ jobs:
       - name: Authenticated pod smoke
         run: |
           set -euo pipefail
-          if [ -z "${RC_AUTHENTICATED_SMOKE_COMMAND:-}" ]; then
-            echo "::error::Authenticated smoke is required; configure RC_AUTHENTICATED_SMOKE_COMMAND in the rc environment"
-            exit 1
-          fi
-          bash -euo pipefail -c "$RC_AUTHENTICATED_SMOKE_COMMAND"
+          required=(
+            XPOD_SETTINGS_E2E_ALICE_STATE
+            XPOD_SETTINGS_E2E_BOB_STATE
+            XPOD_SETTINGS_E2E_ALICE_POD_URL
+            XPOD_SETTINGS_E2E_TEST_API_KEY
+          )
+          for key in "${required[@]}"; do
+            if [ -z "${!key:-}" ]; then
+              echo "::error::${key} is required"
+              exit 1
+            fi
+          done
+          bun scripts/accept-xpod-settings.ts --output-dir "${RUNNER_TEMP}/acceptance"
           printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
 
       - name: Create acceptance manifest
@@ -437,9 +471,9 @@ jobs:
           const path = require('node:path');
           const temp = process.env.RUNNER_TEMP;
           const checks = {
-            image: 'passed',
             'npm-node': 'passed',
             'npm-bun': 'passed',
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'deployment-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'authenticated-check.json'), 'utf8')),

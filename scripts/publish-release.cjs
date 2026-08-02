@@ -20,6 +20,7 @@ function runFile(file, args, extraEnv = {}, options = {}) {
     cwd: options.cwd,
     stdio: 'inherit',
     env: { ...options.env, ...extraEnv },
+    ...(options.commandOptions ?? {}),
   });
 }
 
@@ -55,6 +56,50 @@ function readPublishedVersion(packageName, version, registry) {
     return typeof parsed === 'string' && parsed.length > 0 ? parsed : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function readNpmDistTag(packageName, tag, registry, npmEnv, options = {}) {
+  try {
+    const output = runFile('npm', [
+      'view',
+      packageName,
+      `dist-tags.${tag}`,
+      '--json',
+      '--registry',
+      registry,
+    ], npmEnv, {
+      ...options,
+      commandOptions: {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+      },
+    });
+    const text = String(output ?? '').trim();
+    if (!text) return undefined;
+    const parsed = JSON.parse(text);
+    return typeof parsed === 'string' && parsed.length > 0 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ensureNpmDistTag(packageName, version, tag, registry, npmEnv, options = {}) {
+  const current = readNpmDistTag(packageName, tag, registry, npmEnv, options);
+  if (current !== version) {
+    runFile('npm', [
+      'dist-tag',
+      'add',
+      `${packageName}@${version}`,
+      tag,
+      '--registry',
+      registry,
+    ], npmEnv, options);
+  }
+
+  const verified = readNpmDistTag(packageName, tag, registry, npmEnv, options);
+  if (verified !== version) {
+    throw new Error(`[publish:release] npm dist-tag ${tag} points to ${verified ?? '(missing)'}, expected ${version}`);
   }
 }
 
@@ -111,6 +156,7 @@ function main(argv = process.argv.slice(2), options = {}) {
   const publishPlatformPackages = env.XPOD_PUBLISH_PLATFORM_PACKAGES === 'true';
   const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY', env) || OFFICIAL_NPM_REGISTRY;
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  const explicitPublishTag = Object.hasOwn(env, 'XPOD_PUBLISH_TAG');
   const publishTag = resolvePublishTag(packageJson.version, env);
   const mismatches = getPlatformDependencyMismatches(packageJson, packageJson.version);
 
@@ -159,6 +205,9 @@ function main(argv = process.argv.slice(2), options = {}) {
   if (!dryRun) {
     const publishedVersion = (options.readPublishedVersion ?? readPublishedVersion)(packageJson.name, packageJson.version, publishRegistry);
     if (publishedVersion === packageJson.version) {
+      if (explicitPublishTag && publishTag) {
+        ensureNpmDistTag(packageJson.name, packageJson.version, publishTag, publishRegistry, npmEnv, { ...options, cwd: repoRoot, env });
+      }
       console.log(`[publish:release] ${packageRef} already exists on ${publishRegistry}, skipping npm publish`);
       console.log(`[publish:release] registry: ${publishRegistry}`);
       return;
@@ -180,6 +229,9 @@ function main(argv = process.argv.slice(2), options = {}) {
     if (!dryRun) {
       const publishedVersion = (options.readPublishedVersion ?? readPublishedVersion)(packageJson.name, packageJson.version, publishRegistry);
       if (publishedVersion === packageJson.version) {
+        if (explicitPublishTag && publishTag) {
+          ensureNpmDistTag(packageJson.name, packageJson.version, publishTag, publishRegistry, npmEnv, { ...options, cwd: repoRoot, env });
+        }
         console.log(`[publish:release] ${packageRef} is already available on ${publishRegistry}, treating publish as successful`);
         console.log(`[publish:release] registry: ${publishRegistry}`);
         return;
@@ -192,6 +244,9 @@ function main(argv = process.argv.slice(2), options = {}) {
   console.log(`[publish:release] ${dryRun ? 'dry-run complete' : 'publish complete'}`);
   console.log(`[publish:release] registry: ${publishRegistry}`);
   if (publishTag) {
+    if (!dryRun && explicitPublishTag) {
+      ensureNpmDistTag(packageJson.name, packageJson.version, publishTag, publishRegistry, npmEnv, { ...options, cwd: repoRoot, env });
+    }
     console.log(`[publish:release] dist-tag: ${publishTag}`);
   }
 }
@@ -208,5 +263,6 @@ module.exports = {
   inferPublishTag,
   main,
   resolvePublishTag,
+  ensureNpmDistTag,
   validatePublishTag,
 };

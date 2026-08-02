@@ -155,13 +155,11 @@ describe('release candidate workflow', () => {
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
     expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
     expect(deploy.env.XPOD_RUNTIME_SECRET_NAME).toBe('${{ vars.XPOD_RUNTIME_SECRET_NAME }}');
-    expect(runText).toContain('kubectl kustomize deploy/sealos/rc');
+    expect(runText).toContain('node scripts/render-rc-manifests.cjs');
     expect(runText).toContain('kubectl apply -f "$rendered_manifest"');
     expect(runText).toContain('SEALOS_NAMESPACE is required');
     expect(runText).toContain('XPOD_RUNTIME_SECRET_NAME is required');
     expect(runText).toContain('must be a valid Kubernetes name');
-    expect(runText).toContain('namespace: xpod-rc');
-    expect(runText).toContain('name: xpod-rc-secret');
     expect(runText).not.toContain('SEALOS_NAMESPACE: xpod-rc');
     expect(runText).not.toContain('xpod-rc-secret \\');
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
@@ -195,10 +193,19 @@ describe('release candidate workflow', () => {
 
   it('requires authenticated smoke configuration instead of manufacturing a passed result', async () => {
     const workflow = await loadWorkflow();
+    const deploy = workflow.jobs.deploy_and_accept;
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
-    expect(runText).toContain('RC_AUTHENTICATED_SMOKE_COMMAND');
-    expect(runText).toContain('Authenticated smoke is required');
+    expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
+    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://rc.id.undefineds.co');
+    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBe('${{ secrets.XPOD_SETTINGS_E2E_ALICE_STATE }}');
+    expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBe('${{ secrets.XPOD_SETTINGS_E2E_BOB_STATE }}');
+    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_POD_URL).toBe('${{ vars.XPOD_SETTINGS_E2E_ALICE_POD_URL }}');
+    expect(deploy.env.XPOD_SETTINGS_E2E_TEST_API_KEY).toBe('${{ secrets.XPOD_SETTINGS_E2E_TEST_API_KEY }}');
+    expect(deploy.env.RC_AUTHENTICATED_SMOKE_COMMAND).toBeUndefined();
+    expect(runText).toContain('bun scripts/accept-xpod-settings.ts');
+    expect(runText).not.toContain('RC_AUTHENTICATED_SMOKE_COMMAND');
+    expect(runText).not.toMatch(/bash\s+-euo pipefail\s+-c|\bbash\s+-c|\bsh\s+-c/);
     expect(runText).toContain('authenticated-pod');
     expect(runText).not.toContain('"authenticated-pod":"passed"');
   });
@@ -217,6 +224,9 @@ describe('release candidate workflow', () => {
       'oidc',
       'dashboard',
       'protected-route',
+      'deployed-digest',
+      'direct-pod',
+      'public-service',
       'secret-isolation',
       'authenticated-pod',
     ]) {
@@ -247,5 +257,19 @@ describe('release candidate workflow', () => {
     expect(text).not.toContain('deploy/sealos/cloud');
     expect(text).not.toContain('environment: production');
     expect(allRunText(workflow)).not.toContain('https://id.undefineds.co');
+  });
+
+  it('binds deployment acceptance to the exact digest and direct pod health before public checks', async () => {
+    const workflow = await loadWorkflow();
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc');
+    expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
+    expect(runText).toContain('imageID');
+    expect(runText).toContain('direct-pod');
+    expect(runText).toContain('public-service');
+    expect(runText).toContain('deployed-digest');
+    expect(runText).toContain('127.0.0.1:3000/service/status');
+    expect(runText).not.toContain("image: 'passed'");
   });
 });

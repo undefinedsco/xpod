@@ -33,6 +33,7 @@ async function makePackageRepo(version: string): Promise<string> {
 }
 
 function createRunner(commands: Command[]) {
+  const distTagViews = new Map<string, string | undefined>();
   return (file: string, args: string[], options: { cwd?: string }) => {
     commands.push({ file, args: [ ...args ]});
 
@@ -47,6 +48,15 @@ function createRunner(commands: Command[]) {
     if (file === process.execPath && args[0]?.endsWith('check-pack-json.cjs')) {
       const packJsonPath = args[1];
       JSON.parse(require('node:fs').readFileSync(packJsonPath, 'utf8'));
+    }
+
+    if (file === 'npm' && args[0] === 'view' && args[2]?.startsWith('dist-tags.')) {
+      const tag = args[2].slice('dist-tags.'.length);
+      return JSON.stringify(distTagViews.get(tag) ?? null);
+    }
+
+    if (file === 'npm' && args[0] === 'dist-tag' && args[1] === 'add') {
+      distTagViews.set(args[3], args[2].split('@').at(-1));
     }
 
     return '';
@@ -156,5 +166,61 @@ describe('publish-release npm dist-tag handling', () => {
     expect(serializedCommands).not.toContain('npm publish ');
     expect(commands.find((command) => command.file === 'npm')?.args).toContain('next');
     await expect(readFile(path.join(root, 'package.json'), 'utf8')).resolves.toContain('"version": "1.2.3-rc.9"');
+  });
+
+  it('repairs a stale explicit next dist-tag when the candidate version already exists', async () => {
+    const root = await makePackageRepo('1.2.3-rc.9');
+    const commands: Command[] = [];
+
+    main([ '--skip-build' ], {
+      cwd: root,
+      env: {
+        XPOD_PUBLISH_TAG: 'next',
+        XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+      },
+      readPublishedVersion: () => '1.2.3-rc.9',
+      runFile: createRunner(commands),
+    });
+
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ file: 'npm', args: [ 'view', '@undefineds.co/xpod', 'dist-tags.next', '--json', '--registry', 'https://registry.npmjs.org' ]}),
+      expect.objectContaining({ file: 'npm', args: [ 'dist-tag', 'add', '@undefineds.co/xpod@1.2.3-rc.9', 'next', '--registry', 'https://registry.npmjs.org' ]}),
+    ]));
+    expect(commands.filter((command) => command.file === 'npm' && command.args[0] === 'view' && command.args[2] === 'dist-tags.next')).toHaveLength(2);
+    expect(JSON.stringify(commands)).not.toContain('npm dist-tag add ');
+  });
+
+  it('verifies explicit next after a successful npm publish and does not manage tags for stable implicit publishes', async () => {
+    const rcRoot = await makePackageRepo('1.2.3-rc.10');
+    const rcCommands: Command[] = [];
+
+    main([ '--skip-build' ], {
+      cwd: rcRoot,
+      env: {
+        XPOD_PUBLISH_TAG: 'next',
+        XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+      },
+      readPublishedVersion: () => undefined,
+      runFile: createRunner(rcCommands),
+    });
+
+    const publishIndex = rcCommands.findIndex((command) => command.file === 'npm' && command.args[0] === 'publish');
+    const tagAddIndex = rcCommands.findIndex((command) => command.file === 'npm' && command.args[0] === 'dist-tag');
+    expect(publishIndex).toBeGreaterThan(-1);
+    expect(tagAddIndex).toBeGreaterThan(publishIndex);
+
+    const stableRoot = await makePackageRepo('1.2.3');
+    const stableCommands: Command[] = [];
+    main([ '--skip-build' ], {
+      cwd: stableRoot,
+      env: {
+        XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+      },
+      readPublishedVersion: () => undefined,
+      runFile: createRunner(stableCommands),
+    });
+
+    expect(stableCommands.some((command) => command.file === 'npm' && command.args[0] === 'dist-tag')).toBe(false);
+    expect(stableCommands.some((command) => command.file === 'npm' && command.args[0] === 'view' && command.args[2]?.startsWith('dist-tags.'))).toBe(false);
   });
 });
