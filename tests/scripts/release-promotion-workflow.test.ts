@@ -47,9 +47,12 @@ describe('stable release promotion workflow', () => {
       contents: 'read',
     });
     expect(workflow.concurrency).toEqual({
-      group: 'stable-release-${{ github.repository }}-${{ github.ref }}',
+      group: 'stable-release-${{ github.repository }}-${{ github.workflow }}',
       'cancel-in-progress': false,
     });
+    expect(workflow.concurrency.group).not.toContain('github.ref');
+    expect(workflow.concurrency.group).not.toContain('github.ref_name');
+    expect(workflow.concurrency.group).not.toContain('github.sha');
     expect(text).not.toContain('continue-on-error');
     expect(text).not.toContain('docker/build-push-action');
     expect(text).not.toContain('docker/metadata-action');
