@@ -460,7 +460,8 @@ jobs:
               exit 1
             fi
           done
-          bun scripts/accept-xpod-settings.ts --output-dir "${RUNNER_TEMP}/acceptance"
+          bun scripts/accept-xpod-settings.ts --allow-incomplete --output-dir "${RUNNER_TEMP}/acceptance"
+          node scripts/assert-rc-authenticated-smoke.cjs "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.json"
           printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
 
       - name: Create acceptance manifest

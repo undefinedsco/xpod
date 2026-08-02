@@ -203,7 +203,9 @@ describe('release candidate workflow', () => {
     expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_POD_URL).toBe('${{ vars.XPOD_SETTINGS_E2E_ALICE_POD_URL }}');
     expect(deploy.env.XPOD_SETTINGS_E2E_TEST_API_KEY).toBe('${{ secrets.XPOD_SETTINGS_E2E_TEST_API_KEY }}');
     expect(deploy.env.RC_AUTHENTICATED_SMOKE_COMMAND).toBeUndefined();
-    expect(runText).toContain('bun scripts/accept-xpod-settings.ts');
+    expect(runText).toContain('bun scripts/accept-xpod-settings.ts --allow-incomplete');
+    expect(runText).toContain('node scripts/assert-rc-authenticated-smoke.cjs');
+    expect(runText).toContain('xpod-light-settings-acceptance.json');
     expect(runText).not.toContain('RC_AUTHENTICATED_SMOKE_COMMAND');
     expect(runText).not.toMatch(/bash\s+-euo pipefail\s+-c|\bbash\s+-c|\bsh\s+-c/);
     expect(runText).toContain('authenticated-pod');
