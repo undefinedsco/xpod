@@ -174,7 +174,9 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('settings.html');
     expect(runText).toContain('dashboard did not return HTML');
     expect(runText).toContain('settings did not return HTML');
+    expect(runText).toContain('https://rc.id.undefineds.co/api/pod/settings/status');
     expect(runText).toContain('401');
+    expect(runText).not.toContain('/settings/api/providers');
     expect(runText).not.toContain('https://id.undefineds.co');
     expect(runText).not.toContain('xpod-cloud-secret');
     expect(runText).not.toMatch(/XPOD_GATEWAY_INTERNAL_CLIENT_(ID|SECRET).*required/i);

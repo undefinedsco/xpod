@@ -230,7 +230,7 @@ jobs:
           oidc_url="$PUBLIC_BASE_URL/.well-known/openid-configuration"
           dashboard_url="$PUBLIC_BASE_URL/dashboard/"
           settings_url="$PUBLIC_BASE_URL/settings/"
-          protected_settings_url="$PUBLIC_BASE_URL/settings/api/providers"
+          protected_settings_url="$PUBLIC_BASE_URL/api/pod/settings/status"
 
           for attempt in $(seq 1 24); do
             if expected_status "$service_url" 200; then
@@ -464,7 +464,7 @@ jobs:
           oidc_url="$PUBLIC_BASE_URL/.well-known/openid-configuration"
           dashboard_url="$PUBLIC_BASE_URL/dashboard/"
           settings_url="$PUBLIC_BASE_URL/settings/"
-          protected_settings_url="$PUBLIC_BASE_URL/settings/api/providers"
+          protected_settings_url="$PUBLIC_BASE_URL/api/pod/settings/status"
 
           for attempt in $(seq 1 24); do
             if expected_status "$service_url" 200; then

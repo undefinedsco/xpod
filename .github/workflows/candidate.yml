@@ -461,7 +461,7 @@ jobs:
             echo "::error::settings did not return HTML"
             exit 1
           fi
-          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://rc.id.undefineds.co/settings/api/providers)"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://rc.id.undefineds.co/api/pod/settings/status)"
           if [ "$status" != "401" ]; then
             echo "::error::protected settings route must reject anonymous requests with 401"
             exit 1
