@@ -43,6 +43,7 @@ import { registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
 import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
+import { registerDeviceNotificationRuntime, type DeviceNotificationRuntimeOptions } from '../handlers/DeviceNotificationRuntime';
 import { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
@@ -185,6 +186,11 @@ function registerSharedRoutes(
   registerAiClientConfigurationRoutes(server, {
     service: aiClientConfigurationService,
   });
+  const notificationOrigin = config.publicUrl ?? config.solidBaseUrl ?? process.env.CSS_BASE_URL ?? `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`;
+  registerDeviceNotificationRuntime(server, {
+    origin: notificationOrigin,
+    authorizeTopic: createOwnerOnlyNotificationTopicAuthorizer(notificationOrigin),
+  });
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
@@ -228,6 +234,16 @@ function registerSharedRoutes(
   } catch (error) {
     console.log(`[Shared] Quota & Usage routes not registered: ${error}`);
   }
+}
+
+type DeviceNotificationTopicAuthorizer = NonNullable<DeviceNotificationRuntimeOptions['authorizeTopic']>;
+
+function createOwnerOnlyNotificationTopicAuthorizer(origin: string): DeviceNotificationTopicAuthorizer {
+  return async ({ identity, topic }) => {
+    // Owner-only fallback until a shared Solid Read permission reader is available for runtime injection.
+    // This is not a full WebACL/ACP authorization decision.
+    return topic.startsWith(new URL(`/${identity.localPart}/`, origin).toString());
+  };
 }
 
 function resolveAiClientConfigurationService(

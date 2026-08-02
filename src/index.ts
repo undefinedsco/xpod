@@ -55,6 +55,11 @@ import { RouterHttpHandler } from './http/RouterHttpHandler';
 import { RouterHttpRoute } from './http/RouterHttpRoute';
 import { TracingHandler } from './http/TracingHandler';
 import { TerminalHttpHandler } from './http/terminal/TerminalHttpHandler';
+import { DeviceNotificationHub } from './notifications/DeviceNotificationHub';
+import { DeviceNotificationResourceListener } from './notifications/DeviceNotificationResourceListener';
+import { DeviceNotificationWebSocketServer } from './http/DeviceNotificationWebSocketServer';
+import { DeviceNotificationTicketHandler } from './api/handlers/DeviceNotificationTicketHandler';
+import { registerDeviceNotificationRuntime } from './api/handlers/DeviceNotificationRuntime';
 import { EdgeNodeCertificateHttpHandler } from './http/admin/EdgeNodeCertificateHttpHandler';
 import { ReservedSuffixIdentifierGenerator } from './pods/ReservedSuffixIdentifierGenerator';
 import { DrizzleIndexedStorage } from './identity/drizzle/DrizzleIndexedStorage';
@@ -133,6 +138,7 @@ import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
 
 export * from './api/reconciler';
 export * from './edge/reachability';
+export * from './notifications';
 
 export type {
   DnsProvider,
@@ -185,6 +191,11 @@ export {
   TracingHandler,
   EdgeNodeCertificateHttpHandler,
   TerminalHttpHandler,
+  DeviceNotificationHub,
+  DeviceNotificationResourceListener,
+  DeviceNotificationWebSocketServer,
+  DeviceNotificationTicketHandler,
+  registerDeviceNotificationRuntime,
   ReservedSuffixIdentifierGenerator,
   DrizzleIndexedStorage,
   ValidatingIdentityProviderHttpHandler,

@@ -160,6 +160,41 @@ describe('ObservableResourceStore', () => {
   });
 
   describe('listener management', () => {
+    it('should notify global listeners registered after store construction', async () => {
+      const globalListener = createMockListener();
+      ObservableResourceStore.addGlobalListener(globalListener);
+
+      const identifier: ResourceIdentifier = { path: '/test/global-after-construction.txt' };
+      const representation = { data: Readable.from(['test']), metadata: {} } as Representation;
+
+      await observableStore.setRepresentation(identifier, representation);
+
+      vi.runAllTimers();
+
+      expect(globalListener.events).toHaveLength(1);
+      expect(globalListener.events[0]).toMatchObject({
+        path: '/test/global-after-construction.txt',
+        action: 'create',
+      });
+
+      ObservableResourceStore.removeGlobalListener(globalListener);
+    });
+
+    it('should de-duplicate listeners registered globally and on the instance', async () => {
+      ObservableResourceStore.addGlobalListener(mockListener);
+
+      const identifier: ResourceIdentifier = { path: '/test/deduped-listener.txt' };
+      const representation = { data: Readable.from(['test']), metadata: {} } as Representation;
+
+      await observableStore.setRepresentation(identifier, representation);
+
+      vi.runAllTimers();
+
+      expect(mockListener.events).toHaveLength(1);
+
+      ObservableResourceStore.removeGlobalListener(mockListener);
+    });
+
     it('should support adding listeners dynamically', async () => {
       const newListener = createMockListener();
       observableStore.addListener(newListener);

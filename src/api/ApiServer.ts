@@ -1,5 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { Duplex } from 'node:stream';
 import { getLoggerFor } from 'global-logger-factory';
 import type { AuthMiddleware, AuthenticatedRequest } from './middleware/AuthMiddleware';
 import { nodeRuntimeHost } from '../runtime/host/node/NodeRuntimeHost';
@@ -40,6 +41,8 @@ export interface ApiServerOptions {
   corsOrigins?: string[];
 }
 
+export type UpgradeHandler = (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
+
 /**
  * Standalone API Server
  */
@@ -50,6 +53,9 @@ export class ApiServer {
   private readonly authMiddleware: AuthMiddleware;
   private readonly corsOrigins: string[];
   private readonly routes: Route[] = [];
+  private readonly upgradeHandlers: UpgradeHandler[] = [];
+  private readonly shutdownHandlers: Array<() => void | Promise<void>> = [];
+  private responseHeaders: Record<string, string> = {};
   private server?: Server;
 
   public constructor(options: ApiServerOptions) {
@@ -119,6 +125,21 @@ export class ApiServer {
     this.route('ALL', path, handler, { ...options, allMethods: true });
   }
 
+  public addUpgradeHandler(handler: UpgradeHandler): void {
+    this.upgradeHandlers.push(handler);
+    if (this.server) {
+      this.server.on('upgrade', handler);
+    }
+  }
+
+  public addShutdownHandler(handler: () => void | Promise<void>): void {
+    this.shutdownHandlers.push(handler);
+  }
+
+  public addResponseHeaders(headers: Record<string, string>): void {
+    this.responseHeaders = { ...this.responseHeaders, ...headers };
+  }
+
   /**
    * Start the server
    */
@@ -134,6 +155,9 @@ export class ApiServer {
           }
         });
       });
+      for (const handler of this.upgradeHandlers) {
+        this.server.on('upgrade', handler);
+      }
 
       this.runtimeHost.listen(this.server, this.listenEndpoint).then(() => {
         this.logger.info(`API Server listening on ${this.runtimeHost.formatListenEndpoint(this.listenEndpoint)}`);
@@ -152,7 +176,8 @@ export class ApiServer {
         return;
       }
 
-      this.runtimeHost.close(this.server, this.listenEndpoint).then(() => {
+      Promise.all(this.shutdownHandlers.map(async (handler) => handler())).then(() =>
+        this.runtimeHost.close(this.server!, this.listenEndpoint)).then(() => {
           this.logger.info('API Server stopped');
           resolve();
       }, reject);
@@ -185,6 +210,9 @@ export class ApiServer {
 
     // Add CORS headers
     this.handleCors(request, response);
+    for (const [name, value] of Object.entries(this.responseHeaders)) {
+      response.setHeader(name, value);
+    }
 
     // Find matching route
     const match = this.findRoute(method, path);

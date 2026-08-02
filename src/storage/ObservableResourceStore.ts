@@ -61,6 +61,8 @@ export interface ObservableResourceStoreOptions {
  * 3. 事件异步处理，不阻塞主流程
  */
 export class ObservableResourceStore<T extends ResourceStore = ResourceStore> extends PassthroughStore<T> {
+  private static readonly globalListeners: ResourceChangeListener[] = [];
+
   protected readonly logger = getLoggerFor(this);
   private readonly emitter = new EventEmitter();
   private readonly listeners: ResourceChangeListener[];
@@ -80,6 +82,19 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
    */
   public addListener(listener: ResourceChangeListener): void {
     this.listeners.push(listener);
+  }
+
+  public static addGlobalListener(listener: ResourceChangeListener): void {
+    if (!this.globalListeners.includes(listener)) {
+      this.globalListeners.push(listener);
+    }
+  }
+
+  public static removeGlobalListener(listener: ResourceChangeListener): void {
+    const index = this.globalListeners.indexOf(listener);
+    if (index !== -1) {
+      this.globalListeners.splice(index, 1);
+    }
   }
 
   /**
@@ -181,7 +196,11 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
    * 通知所有监听器
    */
   private notifyListeners(event: ResourceChangeEvent): void {
-    for (const listener of this.listeners) {
+    const listeners = new Set([
+      ...ObservableResourceStore.globalListeners,
+      ...this.listeners,
+    ]);
+    for (const listener of listeners) {
       listener.onResourceChanged(event).catch((error) => {
         this.logger.error(`Listener error for ${event.path}: ${error}`);
       });
