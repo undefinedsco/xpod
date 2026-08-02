@@ -143,6 +143,20 @@ describe('release candidate metadata', () => {
 
     expect(() => deriveCandidate({
       branch: 'release/0.3.68',
+      runNumber: 0,
+      runAttempt: 1,
+      sha: fullSha,
+    })).toThrow(/runNumber/);
+
+    expect(() => deriveCandidate({
+      branch: 'release/0.3.68',
+      runNumber: -1,
+      runAttempt: 1,
+      sha: fullSha,
+    })).toThrow(/runNumber/);
+
+    expect(() => deriveCandidate({
+      branch: 'release/0.3.68',
       runNumber: 42,
       runAttempt: 'abc',
       sha: fullSha,
