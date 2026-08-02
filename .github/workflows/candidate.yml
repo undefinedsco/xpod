@@ -1,0 +1,447 @@
+name: Release Candidate
+
+on:
+  push:
+    branches: ['release/**']
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.candidate.outputs.target }}
+      candidate: ${{ steps.candidate.outputs.candidate }}
+      shaTag: ${{ steps.candidate.outputs.shaTag }}
+      sourceSha: ${{ steps.candidate.outputs.sourceSha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release candidate metadata
+        id: candidate
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_NAME" != release/* ]]; then
+            echo "::error::candidate workflow can only run on release/** branches"
+            exit 1
+          fi
+          metadata="$(node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "$RUN_NUMBER" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --sha "$SOURCE_SHA" \
+            --json)"
+          node -e '
+            const metadata = JSON.parse(process.argv[1]);
+            const fs = require("node:fs");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `target=${metadata.targetVersion}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate=${metadata.candidateVersion}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `shaTag=${metadata.shaTag}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `sourceSha=${metadata.sourceSha}\n`);
+          ' "$metadata"
+
+  prepublish_npm_tarball:
+    name: prepublish npm tarball (${{ matrix.os }} / node${{ matrix.node-version }})
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [22, 24, 25]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Apply candidate root version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "${{ github.ref_name }}" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+
+      - name: Check platform package versions
+        run: bun run check:platform-package-version
+
+      - name: Build package
+        run: bun run build
+
+      - name: Pack npm tarball
+        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
+
+      - name: Verify npm tarball contents
+        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
+
+      - name: Install tarball in clean consumer workspace
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
+
+      - name: Consumer runtime smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
+
+  prepublish_bun_tarball:
+    name: prepublish bun tarball (${{ matrix.os }} / node${{ matrix.node-version }})
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [22, 24, 25]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Apply candidate root version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "${{ github.ref_name }}" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+
+      - name: Check platform package versions
+        run: bun run check:platform-package-version
+
+      - name: Build package
+        run: bun run build
+
+      - name: Pack npm tarball
+        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
+
+      - name: Verify npm tarball contents
+        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
+
+      - name: Install tarball with Bun in clean consumer workspace
+        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
+
+      - name: Consumer runtime smoke under Bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
+
+  publish_npm_next:
+    needs: [metadata, prepublish_npm_tarball, prepublish_bun_tarball]
+    runs-on: ubuntu-latest
+    outputs:
+      candidate-version: ${{ needs.metadata.outputs.candidate }}
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
+      XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      XPOD_PUBLISH_TAG: next
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: bun install --frozen-lockfile
+
+      - name: Apply candidate root version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "${{ github.ref_name }}" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+
+      - name: Build package
+        run: bun run build
+
+      - name: Publish release candidate to npm next
+        run: node scripts/publish-release.cjs --skip-build
+
+  verify_npm_node:
+    needs: publish_npm_next
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Wait for npm package
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}"
+
+      - name: Install published package in clean workspace
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
+
+      - name: Published runtime smoke
+        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
+
+  verify_npm_bun:
+    needs: publish_npm_next
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Wait for npm package
+        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}"
+
+      - name: Install published package with Bun in clean workspace
+        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
+
+      - name: Published runtime smoke under Bun
+        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
+
+  build_image:
+    needs: [metadata, prepublish_npm_tarball, prepublish_bun_tarball]
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply candidate root version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "${{ github.ref_name }}" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+
+      - name: Build and push RC image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/undefinedsco/xpod:sha-${{ needs.metadata.outputs.sourceSha }}
+            ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
+
+  deploy_and_accept:
+    needs: [metadata, publish_npm_next, verify_npm_node, verify_npm_bun, build_image]
+    runs-on: ubuntu-latest
+    environment: rc
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+      SEALOS_NAMESPACE: xpod-rc
+      RC_AUTHENTICATED_SMOKE_COMMAND: ${{ secrets.RC_AUTHENTICATED_SMOKE_COMMAND }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubeconfig
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Validate RC runtime secret isolation
+        run: |
+          set -euo pipefail
+          env_file="${RUNNER_TEMP}/xpod-rc.env"
+          printf '%s\n' "$APP_ENV_FILE" > "$env_file"
+          chmod 600 "$env_file"
+          node - "$env_file" <<'NODE'
+          const fs = require('node:fs');
+          const text = fs.readFileSync(process.argv[2], 'utf8');
+          const required = [
+            'CSS_SPARQL_ENDPOINT',
+            'CSS_IDENTITY_DB_URL',
+            'CSS_REDIS_CLIENT',
+            'CSS_MINIO_ENDPOINT',
+            'CSS_MINIO_ACCESS_KEY',
+            'CSS_MINIO_SECRET_KEY',
+            'CSS_MINIO_BUCKET_NAME',
+            'XPOD_INNGEST_EVENT_KEY',
+            'XPOD_INNGEST_SIGNING_KEY',
+          ];
+          const entries = new Map();
+          for (const line of text.split(/\r?\n/)) {
+            if (!line || line.trimStart().startsWith('#')) continue;
+            const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+            if (match) entries.set(match[1], match[2]);
+          }
+          for (const key of required) {
+            if (!entries.has(key) || entries.get(key).trim() === '') {
+              throw new Error(`missing required RC secret key: ${key}`);
+            }
+          }
+          const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
+          const allValues = Array.from(entries.values()).join('\n');
+          if (productionDomainPattern.test(allValues)) {
+            throw new Error('production domain is not allowed in RC APP_ENV_FILE');
+          }
+          const bucket = entries.get('CSS_MINIO_BUCKET_NAME') || '';
+          if (/^(xpod-cloud|undefineds|prod|production)(?:$|[-_])/i.test(bucket) || /(?:^|[-_])(prod|production)(?:$|[-_])/i.test(bucket)) {
+            throw new Error('production bucket is not allowed in RC APP_ENV_FILE');
+          }
+          const databaseValues = [
+            entries.get('CSS_IDENTITY_DB_URL') || '',
+            entries.get('CSS_SPARQL_ENDPOINT') || '',
+          ].join('\n');
+          if (/(?:prod|production|xpod-cloud)/i.test(databaseValues) || productionDomainPattern.test(databaseValues)) {
+            throw new Error('production database is not allowed in RC APP_ENV_FILE');
+          }
+          NODE
+          echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
+
+      - name: Create namespace and runtime secret
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$SEALOS_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-secret \
+            --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy RC image by digest
+        run: |
+          set -euo pipefail
+          kubectl apply -k deploy/sealos/rc
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+          kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
+          kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
+
+      - name: Verify public RC service
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 https://rc.id.undefineds.co/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://rc.id.undefineds.co/.well-known/openid-configuration > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://rc.id.undefineds.co/settings/ > /dev/null
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://rc.id.undefineds.co/settings/api/providers)"
+          if [ "$status" != "401" ]; then
+            echo "::error::protected settings route must reject anonymous requests with 401"
+            exit 1
+          fi
+          cat > "${RUNNER_TEMP}/public-checks.json" <<'JSON'
+          {
+            "service-status": "passed",
+            "oidc": "passed",
+            "dashboard": "passed",
+            "protected-route": "passed"
+          }
+          JSON
+
+      - name: Authenticated pod smoke
+        run: |
+          set -euo pipefail
+          if [ -z "${RC_AUTHENTICATED_SMOKE_COMMAND:-}" ]; then
+            echo "::error::Authenticated smoke is required; configure RC_AUTHENTICATED_SMOKE_COMMAND in the rc environment"
+            exit 1
+          fi
+          bash -euo pipefail -c "$RC_AUTHENTICATED_SMOKE_COMMAND"
+          printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
+
+      - name: Create acceptance manifest
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const temp = process.env.RUNNER_TEMP;
+          const checks = {
+            image: 'passed',
+            'npm-node': 'passed',
+            'npm-bun': 'passed',
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'authenticated-check.json'), 'utf8')),
+          };
+          fs.writeFileSync(path.join(temp, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+          node scripts/release-acceptance-manifest.cjs create \
+            --target-version "${{ needs.metadata.outputs.target }}" \
+            --candidate-version "${{ needs.metadata.outputs.candidate }}" \
+            --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
+            --source-branch "${{ github.ref_name }}" \
+            --image-digest "${{ needs.build_image.outputs.digest }}" \
+            --npm-package "@undefineds.co/xpod" \
+            --npm-version "${{ needs.publish_npm_next.outputs.candidate-version }}" \
+            --endpoint "https://rc.id.undefineds.co" \
+            --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
+
+      - name: Upload acceptance manifest
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/release-acceptance.json
+          if-no-files-found: error
+
+      - name: Dump diagnostics
+        if: failure()
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-inngest || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-inngest || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-inngest --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
+
+      - name: Scale RC deployments to zero
+        if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true
+          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-inngest --replicas=0 || true

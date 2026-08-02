@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { getPlatformDependencyMismatches } = require('./platform-binaries.cjs');
 const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org';
 
-function readNonEmptyEnv(key) {
-  const value = process.env[key];
+function readNonEmptyEnv(key, env = process.env) {
+  const value = env[key];
   if (typeof value !== 'string') {
     return undefined;
   }
@@ -14,10 +14,12 @@ function readNonEmptyEnv(key) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function run(command, extraEnv = {}) {
-  execSync(command, {
+function runFile(file, args, extraEnv = {}, options = {}) {
+  const runner = options.runFile ?? execFileSync;
+  return runner(file, args, {
+    cwd: options.cwd,
     stdio: 'inherit',
-    env: { ...process.env, ...extraEnv },
+    env: { ...options.env, ...extraEnv },
   });
 }
 
@@ -32,8 +34,9 @@ function readPackMetadata(packJsonPath) {
 
 function readPublishedVersion(packageName, version, registry) {
   try {
-    const output = execSync(
-      `npm view ${JSON.stringify(`${packageName}@${version}`)} version --json --registry ${JSON.stringify(registry)}`,
+    const output = execFileSync(
+      'npm',
+      [ 'view', `${packageName}@${version}`, 'version', '--json', '--registry', registry ],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
         encoding: 'utf8',
@@ -65,26 +68,61 @@ function inferPublishTag(version) {
   return tag ? tag : undefined;
 }
 
-function main() {
-  const repoRoot = process.cwd();
-  const dryRun = process.argv.includes('--dry-run') || process.env.XPOD_PUBLISH_DRY_RUN === 'true';
-  const skipBuild = process.argv.includes('--skip-build');
-  const publishPlatformPackages = process.env.XPOD_PUBLISH_PLATFORM_PACKAGES === 'true';
-  const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY') || OFFICIAL_NPM_REGISTRY;
+function isSemverLike(value) {
+  return /^(?:v)?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][0-9A-Za-z.-]+)?$/.test(value);
+}
+
+function validatePublishTag(tag) {
+  if (typeof tag !== 'string' || tag.length === 0) {
+    throw new Error('XPOD_PUBLISH_TAG must be non-empty when set');
+  }
+  if (tag.trim() !== tag || /\s/.test(tag)) {
+    throw new Error('XPOD_PUBLISH_TAG must not contain whitespace');
+  }
+  if (tag.startsWith('-')) {
+    throw new Error('XPOD_PUBLISH_TAG must not start with -');
+  }
+  if (tag.startsWith('.') || tag.endsWith('.')) {
+    throw new Error('XPOD_PUBLISH_TAG must not start or end with .');
+  }
+  if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(tag)) {
+    throw new Error('XPOD_PUBLISH_TAG contains unsupported characters');
+  }
+  if (isSemverLike(tag)) {
+    throw new Error('XPOD_PUBLISH_TAG must not be a SemVer version');
+  }
+  return tag;
+}
+
+function resolvePublishTag(version, env = process.env) {
+  if (Object.hasOwn(env, 'XPOD_PUBLISH_TAG')) {
+    return validatePublishTag(env.XPOD_PUBLISH_TAG);
+  }
+
+  const inferred = inferPublishTag(version);
+  return inferred ? validatePublishTag(inferred) : undefined;
+}
+
+function main(argv = process.argv.slice(2), options = {}) {
+  const env = { ...process.env, ...(options.env ?? {}) };
+  const repoRoot = options.cwd ?? process.cwd();
+  const dryRun = argv.includes('--dry-run') || env.XPOD_PUBLISH_DRY_RUN === 'true';
+  const skipBuild = argv.includes('--skip-build');
+  const publishPlatformPackages = env.XPOD_PUBLISH_PLATFORM_PACKAGES === 'true';
+  const publishRegistry = readNonEmptyEnv('XPOD_PUBLISH_REGISTRY', env) || OFFICIAL_NPM_REGISTRY;
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-  const publishTag = inferPublishTag(packageJson.version);
+  const publishTag = resolvePublishTag(packageJson.version, env);
   const mismatches = getPlatformDependencyMismatches(packageJson, packageJson.version);
 
   if (mismatches.length > 0) {
-    console.error('[publish:release] package.json optionalDependencies do not match version');
-    for (const mismatch of mismatches) {
-      console.error(`- ${mismatch.packageName}: expected ${mismatch.expected}, got ${mismatch.actual ?? '(missing)'}`);
-    }
-    process.exit(1);
+    const details = mismatches
+      .map((mismatch) => `${mismatch.packageName}: expected ${mismatch.expected}, got ${mismatch.actual ?? '(missing)'}`)
+      .join('; ');
+    throw new Error(`[publish:release] package.json optionalDependencies do not match version: ${details}`);
   }
 
   if (!skipBuild) {
-    run('bun run build');
+    runFile('bun', [ 'run', 'build' ], {}, { ...options, cwd: repoRoot, env });
   }
 
   const npmCacheDir = path.join(repoRoot, '.test-data', 'npm-cache');
@@ -94,18 +132,22 @@ function main() {
   fs.mkdirSync(packDir, { recursive: true });
 
   const npmEnv = {
+    ...env,
     npm_config_cache: npmCacheDir,
     npm_config_registry: publishRegistry,
     XPOD_INCLUDE_PLATFORM_PACKAGES: publishPlatformPackages ? 'true' : 'false',
   };
 
-  run(`node scripts/run-npm-pack.cjs ${JSON.stringify(packDir)} ${JSON.stringify(npmCacheDir)}`, npmEnv);
+  runFile(process.execPath, [ path.join(repoRoot, 'scripts/run-npm-pack.cjs'), packDir, npmCacheDir ], npmEnv, { ...options, cwd: repoRoot, env });
 
   const packJsonPath = path.join(packDir, 'pack.json');
-  run(`node scripts/check-pack-json.cjs ${JSON.stringify(packJsonPath)}`);
+  runFile(process.execPath, [ path.join(repoRoot, 'scripts/check-pack-json.cjs'), packJsonPath ], npmEnv, { ...options, cwd: repoRoot, env });
 
   if (publishPlatformPackages) {
-    run(`node scripts/publish-platform-packages.cjs${dryRun ? ' --dry-run' : ''}`, npmEnv);
+    runFile(process.execPath, [
+      path.join(repoRoot, 'scripts/publish-platform-packages.cjs'),
+      ...(dryRun ? [ '--dry-run' ] : []),
+    ], npmEnv, { ...options, cwd: repoRoot, env });
   } else {
     console.log('[publish:release] skipping platform package publish (set XPOD_PUBLISH_PLATFORM_PACKAGES=true to enable)');
   }
@@ -115,7 +157,7 @@ function main() {
   const packageRef = `${packageJson.name}@${packageJson.version}`;
 
   if (!dryRun) {
-    const publishedVersion = readPublishedVersion(packageJson.name, packageJson.version, publishRegistry);
+    const publishedVersion = (options.readPublishedVersion ?? readPublishedVersion)(packageJson.name, packageJson.version, publishRegistry);
     if (publishedVersion === packageJson.version) {
       console.log(`[publish:release] ${packageRef} already exists on ${publishRegistry}, skipping npm publish`);
       console.log(`[publish:release] registry: ${publishRegistry}`);
@@ -124,10 +166,19 @@ function main() {
   }
 
   try {
-    run(`npm publish ${JSON.stringify(tarballPath)} --registry ${publishRegistry} --access public${publishTag ? ` --tag ${publishTag}` : ''}${dryRun ? ' --dry-run' : ''}`, npmEnv);
+    runFile('npm', [
+      'publish',
+      tarballPath,
+      '--registry',
+      publishRegistry,
+      '--access',
+      'public',
+      ...(publishTag ? [ '--tag', publishTag ] : []),
+      ...(dryRun ? [ '--dry-run' ] : []),
+    ], npmEnv, { ...options, cwd: repoRoot, env });
   } catch (error) {
     if (!dryRun) {
-      const publishedVersion = readPublishedVersion(packageJson.name, packageJson.version, publishRegistry);
+      const publishedVersion = (options.readPublishedVersion ?? readPublishedVersion)(packageJson.name, packageJson.version, publishRegistry);
       if (publishedVersion === packageJson.version) {
         console.log(`[publish:release] ${packageRef} is already available on ${publishRegistry}, treating publish as successful`);
         console.log(`[publish:release] registry: ${publishRegistry}`);
@@ -145,8 +196,17 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (_error) {
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (_error) {
+    process.exit(1);
+  }
 }
+
+module.exports = {
+  inferPublishTag,
+  main,
+  resolvePublishTag,
+  validatePublishTag,
+};
