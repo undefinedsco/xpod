@@ -48,7 +48,7 @@ describe('stable release promotion workflow', () => {
     expect(text).not.toMatch(/\bbuild-and-push\b/);
   });
 
-  it('validates the tag, exact commit, release branch, candidate artifact, digest, and unused npm version before publishing', async () => {
+  it('validates the tag, exact commit, release branch, candidate artifact, and digest without blocking npm reruns', async () => {
     const workflow = await loadWorkflow();
     const guard = workflow.jobs.promotion_guard;
     const runText = jobRunText(workflow, 'promotion_guard');
@@ -80,28 +80,43 @@ describe('stable release promotion workflow', () => {
     expect(runText).toContain('node scripts/release-acceptance-manifest.cjs validate');
     expect(runText).toContain('--tag "$TAG_NAME"');
     expect(runText).toContain('--source-sha "$TAG_SHA"');
-    expect(runText).toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${VERSION}"');
-    expect(runText).toContain('stable npm version already exists');
+    expect(runText).not.toContain('stable npm version already exists');
+    expect(runText).not.toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${VERSION}"');
+    expect(runText).not.toContain('npm_status=');
     expect(runText).toContain('image_digest=');
     expect(runText).not.toContain('workflow_dispatch');
     expect(runText).not.toContain('INPUT_DIGEST');
   });
 
-  it('publishes npm latest from the exact accepted commit and makes Node and Bun consumers blocking', async () => {
+  it('publishes npm latest idempotently from the exact accepted commit and makes Node and Bun consumers blocking', async () => {
     const workflow = await loadWorkflow();
     const publish = workflow.jobs.publish_npm_latest;
+    const publishRunText = jobRunText(workflow, 'publish_npm_latest');
+    const publishStep = publish.steps.find((step: any) => step.name === 'Publish stable package to npm latest');
 
     expect(publish.needs).toBe('promotion_guard');
     expect(publish.env).toMatchObject({
       NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}',
       XPOD_PUBLISH_REGISTRY: 'https://registry.npmjs.org',
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+      XPOD_PUBLISH_TAG: 'latest',
       XPOD_ACCEPTED_SHA: '${{ github.sha }}',
     });
-    expect(jobRunText(workflow, 'publish_npm_latest')).toContain('git checkout --detach "$XPOD_ACCEPTED_SHA"');
-    expect(jobRunText(workflow, 'publish_npm_latest')).toContain('node -e');
-    expect(jobRunText(workflow, 'publish_npm_latest')).toContain('packageJson.version !== process.env.RELEASE_VERSION');
-    expect(jobRunText(workflow, 'publish_npm_latest')).toContain('node scripts/publish-release.cjs --skip-build');
+    expect(publishRunText).toContain('git checkout --detach "$XPOD_ACCEPTED_SHA"');
+    expect(publishRunText).toContain('node -e');
+    expect(publishRunText).toContain('packageJson.version !== process.env.RELEASE_VERSION');
+    expect(publishRunText).toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${RELEASE_VERSION}"');
+    expect(publishRunText).toContain('npm_status=');
+    expect(publishRunText).toContain('exists=false');
+    expect(publishRunText).toContain('exists=true');
+    expect(publishRunText).toContain('failed to verify stable npm version availability');
+    expect(publishRunText).toContain('published version mismatch');
+    expect(publishRunText).toContain('node scripts/publish-release.cjs --skip-build');
+    expect(publishStep.if).toBe("steps.npm_state.outputs.exists == 'false'");
+    expect(publishRunText).toContain('npm view "@undefineds.co/xpod" dist-tags.latest --json');
+    expect(publishRunText).toContain('npm dist-tag add "@undefineds.co/xpod@$RELEASE_VERSION" latest');
+    expect(publishRunText).toContain('npm latest dist-tag points to unexpected version');
+    expect(publishRunText).toContain('npm latest dist-tag did not verify');
 
     for (const jobName of [ 'verify_npm_consumer_node', 'verify_npm_consumer_bun' ]) {
       const job = workflow.jobs[jobName];

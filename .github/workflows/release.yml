@@ -57,17 +57,6 @@ jobs:
             exit 1
           fi
 
-          registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${VERSION}"
-          npm_status="$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' --max-time 20 "$registry_url")"
-          if [[ "$npm_status" == "200" ]]; then
-            echo "::error::stable npm version already exists"
-            exit 1
-          fi
-          if [[ "$npm_status" != "404" ]]; then
-            echo "::error::failed to verify stable npm version availability: HTTP $npm_status"
-            exit 1
-          fi
-
           runs_json="$(gh run list \
             --workflow "Release Candidate" \
             --commit "$TAG_SHA" \
@@ -133,6 +122,7 @@ jobs:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
+      XPOD_PUBLISH_TAG: latest
       XPOD_ACCEPTED_SHA: ${{ github.sha }}
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
     steps:
@@ -169,8 +159,57 @@ jobs:
       - name: Build package
         run: bun run build
 
+      - name: Inspect npm stable version state
+        id: npm_state
+        run: |
+          set -euo pipefail
+          registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${RELEASE_VERSION}"
+          response_file="$RUNNER_TEMP/npm-version.json"
+          npm_status="$(curl --silent --show-error --location --output "$response_file" --write-out '%{http_code}' --max-time 20 "$registry_url")"
+          if [[ "$npm_status" == "404" ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$npm_status" != "200" ]]; then
+            echo "::error::failed to verify stable npm version availability: HTTP $npm_status"
+            exit 1
+          fi
+          published_version="$(node -e '
+            const fs = require("node:fs");
+            const metadata = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            process.stdout.write(typeof metadata.version === "string" ? metadata.version : "");
+          ' "$response_file")"
+          if [[ "$published_version" != "$RELEASE_VERSION" ]]; then
+            echo "::error::published version mismatch"
+            exit 1
+          fi
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+
       - name: Publish stable package to npm latest
+        if: steps.npm_state.outputs.exists == 'false'
         run: node scripts/publish-release.cjs --skip-build
+
+      - name: Ensure npm latest dist-tag
+        run: |
+          set -euo pipefail
+          latest_version="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+          latest_version="${latest_version%\"}"
+          latest_version="${latest_version#\"}"
+          if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
+            exit 0
+          fi
+          if [[ -n "$latest_version" && "$latest_version" != "null" ]]; then
+            echo "::error::npm latest dist-tag points to unexpected version"
+            exit 1
+          fi
+          npm dist-tag add "@undefineds.co/xpod@$RELEASE_VERSION" latest --registry "$XPOD_PUBLISH_REGISTRY"
+          verified_latest="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+          verified_latest="${verified_latest%\"}"
+          verified_latest="${verified_latest#\"}"
+          if [[ "$verified_latest" != "$RELEASE_VERSION" ]]; then
+            echo "::error::npm latest dist-tag did not verify"
+            exit 1
+          fi
 
   verify_npm_consumer_node:
     name: verify-npm-consumer-node (${{ matrix.os }} / node${{ matrix.node-version }})
