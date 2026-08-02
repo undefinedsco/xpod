@@ -70,9 +70,14 @@ describe('production deployment workflow', () => {
   it('uses separate .co and .cn production environments with reusable-call-friendly selectors', async () => {
     const workflow = await loadWorkflow();
 
-    expect(Object.keys(workflow.jobs).sort()).toEqual([ 'deploy-cn', 'deploy-co' ]);
+    expect(Object.keys(workflow.jobs).sort()).toEqual([ 'deploy-cn', 'deploy-co', 'preflight' ]);
+    expect(workflow.jobs.preflight.if).toBeUndefined();
+    expect(workflow.jobs.preflight['runs-on']).toBe('ubuntu-latest');
+    expect(workflow.jobs.preflight.environment).toBeUndefined();
     expect(workflow.jobs['deploy-co'].environment).toBe('co');
     expect(workflow.jobs['deploy-cn'].environment).toBe('cn');
+    expect(workflow.jobs['deploy-co'].needs).toBe('preflight');
+    expect(workflow.jobs['deploy-cn'].needs).toBe('preflight');
     expect(workflow.jobs['deploy-co'].concurrency).toEqual({
       group: 'deploy-co',
       'cancel-in-progress': false,
@@ -89,14 +94,17 @@ describe('production deployment workflow', () => {
 
   it('validates all untrusted inputs and Kubernetes names through env-injected shell variables', async () => {
     const workflow = await loadWorkflow();
+    const preflightRunText = jobRunText(workflow, 'preflight');
     const runText = allRunText(workflow);
 
-    expect(runText).toContain('VERSION_REGEX=');
-    expect(runText).toContain('^[0-9]+\\.[0-9]+\\.[0-9]+');
-    expect(runText).toContain('DIGEST_REGEX=');
-    expect(runText).toContain('^sha256:[0-9a-f]{64}$');
-    expect(runText).toContain('ENVIRONMENT_REGEX=');
-    expect(runText).toContain('^(co|cn)$');
+    expect(preflightRunText).toContain("VERSION_REGEX='^[0-9]+\\.[0-9]+\\.[0-9]+$'");
+    expect(preflightRunText).not.toContain('-[0-9A-Za-z.-]+');
+    expect(preflightRunText).not.toContain('\\+[0-9A-Za-z.-]+');
+    expect(preflightRunText).toContain('DIGEST_REGEX=');
+    expect(preflightRunText).toContain('^sha256:[0-9a-f]{64}$');
+    expect(preflightRunText).toContain('ENVIRONMENT_REGEX=');
+    expect(preflightRunText).toContain('^(co|cn)$');
+    expect(preflightRunText).toContain('environment=all is only allowed for manual workflow_dispatch recovery');
     expect(runText).toContain('K8S_NAME_REGEX=');
     expect(runText).toContain('SEALOS_NAMESPACE must be a valid Kubernetes name');
     expect(runText).toContain('XPOD_RUNTIME_SECRET_NAME must be a valid Kubernetes name');
