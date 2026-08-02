@@ -11,7 +11,7 @@ the default npm channel or deploy production.
 ## Goals
 
 - Make every commit on `release/<version>` produce a uniquely versioned RC.
-- Publish RC npm packages under the `next` dist-tag.
+- Publish the Xpod RC package under the `next` dist-tag.
 - Publish a commit-addressed GHCR image and deploy it to the RC environment.
 - Run product-level acceptance against the public RC endpoint.
 - Permit a formal `v<version>` release only from an accepted commit on the
@@ -66,9 +66,12 @@ Pushes to `release/**` run a dedicated candidate workflow:
 
 1. Validate the branch name and derive the target stable version.
 2. Run all pre-publication checks.
-3. Materialize the derived RC version into package manifests only inside the
-   workflow workspace.
-4. Publish every public workspace package with npm dist-tag `next`.
+3. Materialize the derived RC version into Xpod's root package manifest only
+   inside the workflow workspace.
+4. Publish `@undefineds.co/xpod` with npm dist-tag `next` through the existing
+   release packager. Independently versioned SDK workspace packages are not
+   republished merely because Xpod enters RC; an SDK release remains an explicit
+   versioned change in that package.
 5. Build the Xpod container once and push immutable tags
    `sha-<full-commit>` and `<rc-version>`.
 6. Record the resolved image digest as workflow output and an artifact.
@@ -76,7 +79,7 @@ Pushes to `release/**` run a dedicated candidate workflow:
    namespace.
 8. Run public acceptance against `https://rc.id.undefineds.co`.
 9. Record an acceptance artifact containing the source commit, target stable
-   version, RC package versions, container digest, test summary, and public
+   version, RC package version, container digest, test summary, and public
    endpoint results. It must contain no credentials or response secrets.
 
 Candidate publication may create multiple `next` versions. It must never move
