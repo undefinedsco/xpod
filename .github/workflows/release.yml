@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: stable-release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   promotion_guard:
     name: Validate accepted release candidate
@@ -122,7 +126,6 @@ jobs:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
-      XPOD_PUBLISH_TAG: latest
       XPOD_ACCEPTED_SHA: ${{ github.sha }}
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
     steps:
@@ -184,6 +187,40 @@ jobs:
             exit 1
           fi
           echo "exists=true" >> "$GITHUB_OUTPUT"
+
+      - name: Guard npm latest before publish
+        run: |
+          set -euo pipefail
+          latest_json="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+          LATEST_JSON="$latest_json" node - <<'NODE'
+          function parseStableVersion(value) {
+            const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
+            if (!match) {
+              throw new Error(`invalid stable SemVer: ${value}`);
+            }
+            return match.slice(1).map((part) => Number(part));
+          }
+
+          function compareStable(left, right) {
+            const parsedLeft = parseStableVersion(left);
+            const parsedRight = parseStableVersion(right);
+            for (let index = 0; index < parsedLeft.length; index += 1) {
+              if (parsedLeft[index] !== parsedRight[index]) {
+                return parsedLeft[index] - parsedRight[index];
+              }
+            }
+            return 0;
+          }
+
+          const releaseVersion = process.env.RELEASE_VERSION;
+          const latestVersion = JSON.parse(process.env.LATEST_JSON);
+          if (typeof latestVersion !== 'string' || latestVersion.length === 0) {
+            throw new Error('npm latest dist-tag is missing or invalid');
+          }
+          if (compareStable(latestVersion, releaseVersion) > 0) {
+            throw new Error('npm latest dist-tag is newer than release version');
+          }
+          NODE
 
       - name: Publish stable package to npm latest
         if: steps.npm_state.outputs.exists == 'false'

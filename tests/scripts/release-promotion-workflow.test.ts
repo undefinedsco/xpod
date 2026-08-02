@@ -32,6 +32,10 @@ function allRunText(workflow: Workflow): string {
     .join('\n');
 }
 
+function stepIndex(job: any, name: string): number {
+  return (job.steps ?? []).findIndex((step: any) => step.name === name);
+}
+
 describe('stable release promotion workflow', () => {
   it('runs only for stable v tags with minimal top-level permissions and no error-tolerant gates', async () => {
     const workflow = await loadWorkflow();
@@ -41,6 +45,10 @@ describe('stable release promotion workflow', () => {
     expect(workflow.on.workflow_dispatch).toBeUndefined();
     expect(workflow.permissions).toEqual({
       contents: 'read',
+    });
+    expect(workflow.concurrency).toEqual({
+      group: 'stable-release-${{ github.repository }}-${{ github.ref }}',
+      'cancel-in-progress': false,
     });
     expect(text).not.toContain('continue-on-error');
     expect(text).not.toContain('docker/build-push-action');
@@ -93,15 +101,16 @@ describe('stable release promotion workflow', () => {
     const publish = workflow.jobs.publish_npm_latest;
     const publishRunText = jobRunText(workflow, 'publish_npm_latest');
     const publishStep = publish.steps.find((step: any) => step.name === 'Publish stable package to npm latest');
+    const latestGuardRun = publish.steps.find((step: any) => step.name === 'Guard npm latest before publish')?.run ?? '';
 
     expect(publish.needs).toBe('promotion_guard');
     expect(publish.env).toMatchObject({
       NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}',
       XPOD_PUBLISH_REGISTRY: 'https://registry.npmjs.org',
       XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
-      XPOD_PUBLISH_TAG: 'latest',
       XPOD_ACCEPTED_SHA: '${{ github.sha }}',
     });
+    expect(publish.env.XPOD_PUBLISH_TAG).toBeUndefined();
     expect(publishRunText).toContain('git checkout --detach "$XPOD_ACCEPTED_SHA"');
     expect(publishRunText).toContain('node -e');
     expect(publishRunText).toContain('packageJson.version !== process.env.RELEASE_VERSION');
@@ -113,6 +122,15 @@ describe('stable release promotion workflow', () => {
     expect(publishRunText).toContain('published version mismatch');
     expect(publishRunText).toContain('node scripts/publish-release.cjs --skip-build');
     expect(publishStep.if).toBe("steps.npm_state.outputs.exists == 'false'");
+    expect(stepIndex(publish, 'Guard npm latest before publish')).toBeGreaterThan(-1);
+    expect(stepIndex(publish, 'Guard npm latest before publish')).toBeLessThan(stepIndex(publish, 'Publish stable package to npm latest'));
+    expect(latestGuardRun).toContain('function parseStableVersion');
+    expect(latestGuardRun).toMatch(/const match = \/\^\(0\|\[1-9\]\\d\*\)\\\.\(0\|\[1-9\]\\d\*\)\\\.\(0\|\[1-9\]\\d\*\)\$\/\.exec\(value\);/);
+    expect(latestGuardRun).toContain('function compareStable');
+    expect(latestGuardRun).toContain('compareStable(latestVersion, releaseVersion) > 0');
+    expect(latestGuardRun).toContain('npm latest dist-tag is newer than release version');
+    expect(latestGuardRun).not.toContain('npm dist-tag add');
+    expect(latestGuardRun).not.toContain('node scripts/publish-release.cjs');
     expect(publishRunText).toContain('npm view "@undefineds.co/xpod" dist-tags.latest --json');
     expect(publishRunText).toContain('npm dist-tag add "@undefineds.co/xpod@$RELEASE_VERSION" latest');
     expect(publishRunText).toContain('npm latest dist-tag points to unexpected version');
