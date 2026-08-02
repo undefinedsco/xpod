@@ -53,6 +53,26 @@ function findOne(objects: KubernetesObject[], kind: string, name: string): Kuber
   return matches[0];
 }
 
+function envMap(container: any): Record<string, string> {
+  return Object.fromEntries((container.env ?? []).map((entry: { name: string; value: string }) => [ entry.name, entry.value ]));
+}
+
+function expectDeploymentSelectorsMatchTemplate(deployment: KubernetesObject): void {
+  expect(deployment.spec?.selector?.matchLabels).toEqual(deployment.spec?.template?.metadata?.labels);
+}
+
+function expectPodSecurityBaseline(deployment: KubernetesObject): void {
+  const podSpec = deployment.spec?.template?.spec;
+  expect(podSpec?.automountServiceAccountToken).toBe(false);
+  expect(podSpec?.securityContext?.seccompProfile).toEqual({ type: 'RuntimeDefault' });
+  for (const container of podSpec?.containers ?? []) {
+    expect(container.securityContext).toMatchObject({
+      allowPrivilegeEscalation: false,
+      capabilities: { drop: [ 'ALL' ]},
+    });
+  }
+}
+
 describe('RC Sealos deployment manifest', () => {
   it('renders an isolated Xpod RC overlay without production-only resources or secrets', async () => {
     const manifest = await runKustomize();
@@ -94,6 +114,18 @@ describe('RC Sealos deployment manifest', () => {
     const xpodContainer = xpodDeployment.spec?.template?.spec?.containers?.find((container: any) => container.name === 'xpod');
     expect(xpodContainer).toBeDefined();
     expect(xpodContainer.image).toBe('ghcr.io/undefinedsco/xpod:replace-me');
+    expect(envMap(xpodContainer)).toMatchObject({
+      NODE_ENV: 'production',
+      XPOD_EDITION: 'cloud',
+      XPOD_PORT: '3000',
+      CSS_PORT: '6300',
+      API_PORT: '6301',
+      CSS_LOGGING_LEVEL: 'info',
+      CSS_BASE_URL: 'https://rc.id.undefineds.co',
+      CSS_ALLOWED_HOSTS: 'rc.id.undefineds.co',
+      CSS_BASE_STORAGE_DOMAIN: 'rc.id.undefineds.co',
+      XPOD_EDGE_NODES_ENABLED: 'true',
+    });
     expect(xpodContainer.envFrom).toEqual([
       { configMapRef: { name: 'xpod-rc-config', optional: true }},
       { secretRef: { name: 'xpod-rc-secret' }},
@@ -110,6 +142,9 @@ describe('RC Sealos deployment manifest', () => {
 
     const xpodService = findOne(objects, 'Service', 'xpod');
     expect(xpodService.spec?.selector).toEqual({ app: 'xpod-rc' });
+    expect(xpodService.spec?.selector).toEqual(xpodDeployment.spec?.template?.metadata?.labels);
+    expectDeploymentSelectorsMatchTemplate(xpodDeployment);
+    expectPodSecurityBaseline(xpodDeployment);
 
     const inngestDeployment = findOne(objects, 'Deployment', 'xpod-inngest');
     const inngestContainer = inngestDeployment.spec?.template?.spec?.containers?.find((container: any) => container.name === 'inngest');
@@ -122,6 +157,11 @@ describe('RC Sealos deployment manifest', () => {
       '--redis-uri',
       '$(CSS_REDIS_CLIENT)',
     ]));
+    const inngestService = findOne(objects, 'Service', 'xpod-inngest');
+    expect(inngestService.spec?.selector).toEqual({ app: 'xpod-inngest' });
+    expect(inngestService.spec?.selector).toEqual(inngestDeployment.spec?.template?.metadata?.labels);
+    expectDeploymentSelectorsMatchTemplate(inngestDeployment);
+    expectPodSecurityBaseline(inngestDeployment);
 
     expect(objects.some((object) => object.kind === 'Ingress')).toBe(false);
     expect(objects.some((object) => object.kind === 'StatefulSet' || object.kind === 'PersistentVolumeClaim')).toBe(false);

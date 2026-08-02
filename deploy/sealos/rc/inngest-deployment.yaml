@@ -16,6 +16,10 @@ spec:
       labels:
         app: xpod-inngest
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: inngest
           image: inngest/inngest:v1.19.4
@@ -51,6 +55,11 @@ spec:
           envFrom:
             - secretRef:
                 name: xpod-rc-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           readinessProbe:
             httpGet:
               path: /health
