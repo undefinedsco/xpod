@@ -20,6 +20,8 @@ const STABLE_TAG_PATTERN = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))$/
 const SOURCE_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const MAX_TRAVERSAL_DEPTH = 32;
+const MAX_TRAVERSAL_NODES = 2000;
 
 function createManifest(input) {
   return {
@@ -42,29 +44,59 @@ function addError(errors, path, message) {
 }
 
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  return Boolean(value) && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function scanSensitiveFields(value, errors, path = '') {
-  if (!isPlainObject(value) && !Array.isArray(value)) {
+  if ((!isPlainObject(value) && !Array.isArray(value)) || path === 'checks') {
     return;
   }
 
-  const entries = Array.isArray(value)
-    ? value.map((item, index) => [ String(index), item ])
-    : Object.entries(value);
+  const seen = new WeakSet();
+  const stack = [{ value, path, depth: 0 }];
+  let visitedNodes = 0;
 
-  for (const [ key, childValue ] of entries) {
-    const childPath = path ? `${path}.${key}` : key;
-    if (SENSITIVE_FIELD_PATTERN.test(key)) {
-      addError(errors, childPath, 'sensitive fields are not allowed');
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || (!isPlainObject(current.value) && !Array.isArray(current.value))) {
+      continue;
     }
-    scanSensitiveFields(childValue, errors, childPath);
+
+    if (seen.has(current.value)) {
+      addError(errors, current.path, 'cyclic object reference is not allowed');
+      continue;
+    }
+    seen.add(current.value);
+
+    visitedNodes += 1;
+    if (visitedNodes > MAX_TRAVERSAL_NODES) {
+      addError(errors, current.path, 'maximum traversal nodes exceeded');
+      continue;
+    }
+
+    if (current.depth > MAX_TRAVERSAL_DEPTH) {
+      addError(errors, current.path, 'maximum traversal depth exceeded');
+      continue;
+    }
+
+    const entries = Array.isArray(current.value)
+      ? current.value.map((item, index) => [ String(index), item ])
+      : Object.entries(current.value);
+
+    for (const [ key, childValue ] of entries) {
+      const childPath = current.path ? `${current.path}.${key}` : key;
+      if (SENSITIVE_FIELD_PATTERN.test(key)) {
+        addError(errors, childPath, 'sensitive fields are not allowed');
+      }
+      if (childPath !== 'checks') {
+        stack.push({ value: childValue, path: childPath, depth: current.depth + 1 });
+      }
+    }
   }
 }
 
 function validateRequiredString(manifest, errors, field) {
-  if (typeof manifest[field] !== 'string' || manifest[field].length === 0) {
+  if (!Object.hasOwn(manifest, field) || typeof manifest[field] !== 'string' || manifest[field].length === 0) {
     addError(errors, field, `${field} is required`);
     return false;
   }
@@ -100,7 +132,7 @@ function validateManifest(manifest, expected) {
   }
 
   for (const field of ALLOWED_TOP_LEVEL_FIELDS) {
-    if (!(field in manifest)) {
+    if (!Object.hasOwn(manifest, field)) {
       addError(errors, field, `${field} is required`);
     }
   }
@@ -112,6 +144,10 @@ function validateManifest(manifest, expected) {
   const tagMatch = STABLE_TAG_PATTERN.exec(String(expected?.tag ?? ''));
   if (!tagMatch) {
     addError(errors, 'targetVersion', 'expected tag must be a stable v<version> tag');
+  }
+
+  if (!Array.isArray(expected?.requiredChecks) || expected.requiredChecks.length === 0) {
+    addError(errors, 'requiredChecks', 'expected requiredChecks must contain at least one check');
   }
 
   const targetVersion = tagMatch?.[1];
@@ -140,7 +176,7 @@ function validateManifest(manifest, expected) {
     addError(errors, 'sourceBranch', 'sourceBranch must match release/<version>');
   }
 
-  if (targetVersion && !new RegExp(`^${escapeRegExp(targetVersion)}-rc\\.\\d+(?:\\.\\d+)?$`).test(manifest.candidateVersion)) {
+  if (targetVersion && !new RegExp(`^${escapeRegExp(targetVersion)}-rc\\.[1-9]\\d*(?:\\.[1-9]\\d*)?$`).test(manifest.candidateVersion)) {
     addError(errors, 'candidateVersion', 'candidateVersion must be an rc for the target version');
   }
 
@@ -165,7 +201,14 @@ function validateManifest(manifest, expected) {
   }
 
   if (!isPlainObject(manifest.checks)) {
-    addError(errors, 'checks', 'checks must be an object');
+    addError(errors, 'checks', 'checks must be a plain object');
+    if (manifest.checks && typeof manifest.checks === 'object') {
+      for (const checkName of expected?.requiredChecks ?? []) {
+        if (!Object.hasOwn(manifest.checks, checkName) || manifest.checks[checkName] !== 'passed') {
+          addError(errors, `checks.${checkName}`, 'required check must be present and passed');
+        }
+      }
+    }
   } else {
     for (const [ checkName, checkValue ] of Object.entries(manifest.checks)) {
       if (checkValue !== 'passed') {
@@ -174,7 +217,7 @@ function validateManifest(manifest, expected) {
     }
 
     for (const checkName of expected?.requiredChecks ?? []) {
-      if (manifest.checks[checkName] !== 'passed') {
+      if (!Object.hasOwn(manifest.checks, checkName) || manifest.checks[checkName] !== 'passed') {
         addError(errors, `checks.${checkName}`, 'required check must be present and passed');
       }
     }
@@ -308,8 +351,8 @@ function main(argv = process.argv.slice(2)) {
       sourceSha: manifest.sourceSha,
       requiredChecks: Object.keys(manifest.checks),
     });
-    if (!isPlainObject(input.checks)) {
-      addError(result.errors, 'checks', 'checks-file is required');
+    if (!isPlainObject(input.checks) || Object.keys(input.checks).length === 0) {
+      addError(result.errors, 'checks', 'checks-file must contain at least one check');
       result.valid = false;
     }
     if (!result.valid) {

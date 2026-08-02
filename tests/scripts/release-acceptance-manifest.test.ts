@@ -84,6 +84,29 @@ describe('release acceptance manifest', () => {
     expect(validateManifest(manifest, expected())).toEqual({ valid: true, errors: [] });
   });
 
+  it('rejects inherited manifest fields and inherited checks', () => {
+    const inheritedManifest = Object.create(validManifest());
+    const inheritedChecks = Object.create({
+      'build:ts': 'passed',
+      integration: 'passed',
+    });
+
+    expect(validateManifest(inheritedManifest, expected()).errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: '' }),
+    ]));
+
+    const result = validateManifest({
+      ...validManifest(),
+      checks: inheritedChecks,
+    }, expected());
+    expect(result.valid).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'checks' }),
+      expect.objectContaining({ path: 'checks.build:ts' }),
+      expect.objectContaining({ path: 'checks.integration' }),
+    ]));
+  });
+
   it('rejects a source SHA mismatch without echoing the SHA', () => {
     const result = validateManifest(validManifest(), expected({
       sourceSha: 'fedcba9876543210fedcba9876543210fedcba98',
@@ -125,6 +148,10 @@ describe('release acceptance manifest', () => {
       [ 'sourceBranch', validManifest({ sourceBranch: 'main' }), expected() ],
       [ 'candidateVersion', validManifest({ candidateVersion: '0.3.69-rc.1', npmVersion: '0.3.69-rc.1' }), expected() ],
       [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-beta.1', npmVersion: '0.3.68-beta.1' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.0', npmVersion: '0.3.68-rc.0' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.01', npmVersion: '0.3.68-rc.01' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.1.0', npmVersion: '0.3.68-rc.1.0' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.1.01', npmVersion: '0.3.68-rc.1.01' }), expected() ],
       [ 'npmPackage', validManifest({ npmPackage: '@undefineds.co/other' }), expected() ],
       [ 'npmVersion', validManifest({ npmVersion: '0.3.68-rc.41' }), expected() ],
     ] as const;
@@ -150,6 +177,15 @@ describe('release acceptance manifest', () => {
       ]));
   });
 
+  it('requires non-empty expected required checks for pure validation', () => {
+    const result = validateManifest(validManifest(), expected({ requiredChecks: [] }));
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'requiredChecks' }),
+    ]));
+  });
+
   it('rejects invalid timestamps', () => {
     const result = validateManifest(validManifest({ acceptedAt: 'not-a-date' }), expected());
 
@@ -164,13 +200,12 @@ describe('release acceptance manifest', () => {
       ...validManifest(),
       releaseNotes: 'not declared in schema',
     };
-    const withNestedSecret = validManifest({
-      checks: {
-        'build:ts': 'passed',
-        integration: 'passed',
-        nested: { apiKey: 'do-not-leak-this-value' },
+    const withNestedSecret = {
+      ...validManifest(),
+      metadata: {
+        apiKey: 'do-not-leak-this-value',
       },
-    });
+    };
 
     expect(validateManifest(withExtraTopLevel, expected()).errors).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: 'releaseNotes' }),
@@ -179,9 +214,62 @@ describe('release acceptance manifest', () => {
     const result = validateManifest(withNestedSecret, expected());
     expect(result.valid).toBe(false);
     expect(result.errors).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: 'checks.nested.apiKey' }),
+      expect.objectContaining({ path: 'metadata.apiKey' }),
     ]));
     expect(JSON.stringify(result)).not.toContain('do-not-leak-this-value');
+  });
+
+  it('does not treat legal check names as sensitive payload fields', () => {
+    const manifest = validManifest({
+      checks: {
+        'build:ts': 'passed',
+        integration: 'passed',
+        'kubernetes-secret-keys-present': 'passed',
+      },
+    });
+
+    expect(validateManifest(manifest, expected({
+      requiredChecks: [ ...requiredChecks, 'kubernetes-secret-keys-present' ],
+    }))).toEqual({ valid: true, errors: [] });
+  });
+
+  it('returns validation errors for cyclic metadata instead of throwing or echoing values', () => {
+    const metadata: Record<string, unknown> = {};
+    metadata.self = metadata;
+    metadata.note = 'cycle-secret-value';
+    const manifest = {
+      ...validManifest(),
+      metadata,
+    };
+    let result: ReturnType<typeof validateManifest> | undefined;
+
+    expect(() => {
+      result = validateManifest(manifest, expected());
+    }).not.toThrow();
+    expect(result?.valid).toBe(false);
+    expect(result?.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'metadata.self' }),
+    ]));
+    expect(JSON.stringify(result)).not.toContain('cycle-secret-value');
+  });
+
+  it('returns validation errors when metadata traversal exceeds the depth limit', () => {
+    const metadata: Record<string, unknown> = {};
+    let cursor = metadata;
+    for (let index = 0; index < 48; index += 1) {
+      cursor.child = {};
+      cursor = cursor.child as Record<string, unknown>;
+    }
+
+    const result = validateManifest({
+      ...validManifest(),
+      metadata,
+    }, expected());
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('maximum traversal depth') }),
+    ]));
   });
 
   it('does not serialize extra input or environment sentinel secrets through createManifest', () => {
@@ -253,6 +341,27 @@ describe('release acceptance manifest', () => {
     });
   });
 
+  it('rejects CLI create when checks-file is empty', async () => {
+    const checksPath = await tempFile('checks.json', '{}');
+
+    await expect(runCli([
+      'create',
+      '--target-version', '0.3.68',
+      '--candidate-version', '0.3.68-rc.42',
+      '--source-sha', fullSha,
+      '--source-branch', 'release/0.3.68',
+      '--image-digest', imageDigest,
+      '--npm-package', '@undefineds.co/xpod',
+      '--npm-version', '0.3.68-rc.42',
+      '--endpoint', 'https://rc.id.undefineds.co',
+      '--accepted-at', acceptedAt,
+      '--checks-file', checksPath,
+    ])).rejects.toMatchObject({
+      stdout: '',
+      stderr: expect.stringContaining('manifest validation failed'),
+    });
+  });
+
   it('rejects CLI create when release constraints fail without leaking secrets', async () => {
     const checksPath = await tempFile('checks.json', JSON.stringify(validInput().checks));
 
@@ -309,6 +418,20 @@ describe('release acceptance manifest', () => {
     })).rejects.toMatchObject({
       stdout: expect.stringContaining('"valid":false'),
       stderr: expect.not.stringContaining('cli-error-secret-sentinel'),
+    });
+  });
+
+  it('requires at least one required check from the validate CLI', async () => {
+    const manifestPath = await tempFile('manifest.json', JSON.stringify(validManifest()));
+
+    await expect(runCli([
+      'validate',
+      '--manifest', manifestPath,
+      '--tag', 'v0.3.68',
+      '--source-sha', fullSha,
+    ])).rejects.toMatchObject({
+      stdout: expect.stringContaining('"valid":false'),
+      stderr: '',
     });
   });
 });
