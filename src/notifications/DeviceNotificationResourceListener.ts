@@ -1,4 +1,4 @@
-import type { ResourceChangeEvent, ResourceChangeListener } from '../storage/ObservableResourceStore';
+import type { ResourceChangeEvent } from '../storage/ObservableResourceStore';
 import type { DeviceNotificationOperation } from './device-notification-protocol';
 
 export interface DeviceNotificationResourcePublisher {
@@ -10,7 +10,7 @@ export interface DeviceNotificationResourceListenerOptions {
   hub: DeviceNotificationResourcePublisher;
 }
 
-export class DeviceNotificationResourceListener implements ResourceChangeListener {
+export class DeviceNotificationResourceListener {
   private readonly origin: URL;
   private readonly hub: DeviceNotificationResourcePublisher;
 
