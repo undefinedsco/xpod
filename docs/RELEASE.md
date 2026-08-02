@@ -10,17 +10,13 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
    `release/0.3.68`。
 2. 每个推送到 `release/<version>` 的 commit 都触发
    `.github/workflows/candidate.yml`，生成一个新的 RC。
-3. RC workflow 会发布 `@undefineds.co/xpod` 到 npm `next`，版本格式为
-   `0.3.68-rc.<run-number>.<run-attempt>+<sha>`，例如
-   `0.3.68-rc.41.1+abcdef123456`。RC 不发布平台子包，也不移动 npm
-   `latest`。
+3. RC workflow 会发布 `@undefineds.co/xpod` 到 npm `next`。首次运行格式为 `0.3.68-rc.<run-number>`；rerun 格式为 `0.3.68-rc.<run-number>.<run-attempt>`。例如 `0.3.68-rc.41`，rerun 示例为 `0.3.68-rc.41.2`。RC 不发布平台子包，也不移动 npm `latest`。
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
 5. RC workflow 将该 digest 部署到 `https://rc.id.undefineds.co` 并运行公开
    和认证验收。
-6. 验收成功后上传 `release-acceptance-${GITHUB_SHA}.json` artifact。该
-   artifact 是 stable tag promotion 的唯一凭证。
+6. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 7. 只在接受的 exact commit 上创建 stable tag，例如 `v0.3.68`。
 8. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、release branch、npm version、required
@@ -38,8 +34,8 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `XPOD_SETTINGS_E2E_ALICE_STATE` | RC 认证验收的 Alice OIDC state |
 | Secret | `XPOD_SETTINGS_E2E_BOB_STATE` | RC 认证验收的 Bob OIDC state |
 | Secret | `XPOD_SETTINGS_E2E_TEST_API_KEY` | RC 认证验收 API key |
-| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |
-| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |
+| Variable | `SEALOS_NAMESPACE` | 必填变量，推荐值 `xpod-rc` |
+| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
 | Variable | `XPOD_SETTINGS_E2E_ALICE_POD_URL` | Alice 的 RC Pod URL |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
@@ -49,7 +45,7 @@ RC 公开入口固定为 `https://rc.id.undefineds.co`，DNS 和 Ingress 必须�
 Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
 但必须使用独立 logical database or schema、独立 Redis DB 和独立 object bucket。
 
-RC Kubernetes 资源默认在 namespace `xpod-rc`：
+推荐的 RC Kubernetes 资源拓扑：
 
 - runtime Secret：`xpod-rc-secret`
 - Xpod Deployment：`xpod-rc`
@@ -99,7 +95,8 @@ digest。
 
 ## RC 验收凭证
 
-RC 成功后必须存在 artifact：`release-acceptance-${GITHUB_SHA}.json`。
+RC 成功后必须存在 artifact name `release-acceptance-${GITHUB_SHA}`，
+且其中必须包含 artifact 内文件 `release-acceptance.json`。
 stable promotion 校验以下内容：
 
 - stable tag 是 `vX.Y.Z`，且 tag commit 是 workflow source SHA；

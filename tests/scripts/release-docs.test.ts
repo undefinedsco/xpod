@@ -36,7 +36,8 @@ describe('release lifecycle documentation', () => {
       'object bucket',
       'Ingress',
       'Do not reuse the production `APP_ENV_FILE`',
-      'release-acceptance-${GITHUB_SHA}.json',
+      'release-acceptance-${GITHUB_SHA}',
+      'release-acceptance.json',
       '`deployed-digest`',
       'accepted digest',
       'stable tag',
@@ -54,5 +55,26 @@ describe('release lifecycle documentation', () => {
     expect(text).not.toContain('npm version patch');
     expect(text).not.toContain('npm version minor');
     expect(text).not.toContain('npm version major');
+  });
+
+  it('locks exact RC version, artifact, and required environment variable wording', async () => {
+    const text = await loadReleaseDoc();
+
+    expect(text).toContain('首次运行格式为 `0.3.68-rc.<run-number>`');
+    expect(text).toContain('rerun 格式为 `0.3.68-rc.<run-number>.<run-attempt>`');
+    expect(text).toContain('例如 `0.3.68-rc.41`，rerun 示例为 `0.3.68-rc.41.2`');
+    expect(text).not.toContain('+<sha>');
+    expect(text).not.toContain('+abcdef');
+    expect(text).not.toMatch(/0\.3\.68-rc\.[^`\s]*\+sha/);
+
+    expect(text).toContain('artifact name 是 `release-acceptance-${GITHUB_SHA}`');
+    expect(text).toContain('artifact 内文件是 `release-acceptance.json`');
+    expect(text).not.toContain('release-acceptance-${GITHUB_SHA}.json');
+
+    expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，推荐值 `xpod-rc` |');
+    expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |');
+    expect(text).not.toContain('| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |');
+    expect(text).not.toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |');
+    expect(text).not.toContain('默认在 namespace `xpod-rc`');
   });
 });
