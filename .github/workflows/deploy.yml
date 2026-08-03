@@ -118,8 +118,10 @@ jobs:
       - name: Verify public service
         run: |
           for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error --max-time 10 https://id.undefineds.cn/service/status > /dev/null; then
-              exit 0
+            if status_payload=$(curl --fail --silent --show-error --max-time 10 https://id.undefineds.cn/service/status); then
+              if jq -e 'length == 2 and ((map(.name) | sort) == ["api", "css"]) and all(.status == "running")' <<< "$status_payload" > /dev/null; then
+                exit 0
+              fi
             fi
             sleep 5
           done
@@ -244,8 +246,10 @@ jobs:
       - name: Verify public service
         run: |
           for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error --max-time 10 https://id.undefineds.co/service/status > /dev/null; then
-              exit 0
+            if status_payload=$(curl --fail --silent --show-error --max-time 10 https://id.undefineds.co/service/status); then
+              if jq -e 'length == 2 and ((map(.name) | sort) == ["api", "css"]) and all(.status == "running")' <<< "$status_payload" > /dev/null; then
+                exit 0
+              fi
             fi
             sleep 5
           done

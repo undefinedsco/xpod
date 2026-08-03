@@ -8,5 +8,7 @@ describe('production deployment workflow', () => {
     expect(workflow.match(/name: Verify public service/g)).toHaveLength(2);
     expect(workflow).toContain('https://id.undefineds.co/service/status');
     expect(workflow).toContain('https://id.undefineds.cn/service/status');
+    expect(workflow.match(/all\(\.status == "running"\)/g)).toHaveLength(2);
+    expect(workflow.match(/\(map\(\.name\) \| sort\) == \["api", "css"\]/g)).toHaveLength(2);
   });
 });
