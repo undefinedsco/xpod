@@ -140,6 +140,7 @@ export function AccountPage() {
   const [showWebIdDropdown, setShowWebIdDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const aiApiBaseUrl = getAiApiBaseUrl();
+  const accountControls = controls?.account;
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -169,8 +170,8 @@ export function AccountPage() {
       let allWebIds: string[] = [];
       let allPods: PodView[] = [];
       let scopedEntries: ScopedWebIdEntry[] = [];
-      if (controls?.account?.webId) {
-        const res = await fetch(controls.account.webId, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+      if (accountControls?.webId) {
+        const res = await fetch(accountControls.webId, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountWebIdResponse;
           const links = json.webIdLinks || {};
@@ -181,8 +182,8 @@ export function AccountPage() {
         }
       }
 
-      if (controls?.account?.pod) {
-        const res = await fetch(controls.account.pod, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+      if (accountControls?.pod) {
+        const res = await fetch(accountControls.pod, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountPodResponse;
           allPods = normalizePods(json);
@@ -215,8 +216,8 @@ export function AccountPage() {
         setPodStateSettling(false);
       }
 
-      if (controls?.account?.clientCredentials) {
-        const res = await fetch(controls.account.clientCredentials, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+      if (accountControls?.clientCredentials) {
+        const res = await fetch(accountControls.clientCredentials, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountClientCredentialsResponse;
           const creds = json.clientCredentials || {};
@@ -241,10 +242,12 @@ export function AccountPage() {
       setCredentials([]);
       setPodStateSettling(false);
     }
-  }, [controls?.account?.clientCredentials, controls?.account?.pod, controls?.account?.webId]);
+  }, [accountControls]);
 
   useEffect(() => {
-    fetchData();
+    queueMicrotask(() => {
+      void fetchData();
+    });
   }, [fetchData]);
 
   const handleLogout = async () => {

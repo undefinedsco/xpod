@@ -70,7 +70,11 @@ export default function ServicesPage({
 
   useEffect(() => {
     mountedRef.current = true;
-    void loadSnapshot(true);
+    queueMicrotask(() => {
+      if (mountedRef.current) {
+        void loadSnapshot(true);
+      }
+    });
     const interval = setInterval(() => void loadSnapshot(false), 10_000);
 
     return () => {

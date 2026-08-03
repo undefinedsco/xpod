@@ -42,24 +42,38 @@ export function FirstPodCreator({
   const isWaitingForWebId = Boolean(normalizedName && createdPodName === normalizedName);
 
   useEffect(() => {
+    let cancelled = false;
+    const updateAvailability = (nextAvailability: AvailabilityState): void => {
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setAvailability(nextAvailability);
+        }
+      });
+    };
+
     if (!normalizedName) {
-      setAvailability({ status: 'idle' });
-      return;
+      updateAvailability({ status: 'idle' });
+      return () => {
+        cancelled = true;
+      };
     }
     if (isWaitingForWebId) {
-      setAvailability({
+      updateAvailability({
         status: 'created',
         message: 'Storage was created. Refresh authorization when the WebID is ready.',
       });
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
     if (nameError) {
-      setAvailability({ status: 'invalid', message: nameError });
-      return;
+      updateAvailability({ status: 'invalid', message: nameError });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    let cancelled = false;
-    setAvailability({ status: 'checking', message: 'Checking Pod name...' });
+    updateAvailability({ status: 'checking', message: 'Checking Pod name...' });
     const timeout = setTimeout(() => {
       void checkFirstPodNameAvailability({
         provisionCode,

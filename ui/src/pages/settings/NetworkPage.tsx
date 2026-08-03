@@ -88,19 +88,26 @@ export default function NetworkPage() {
   }, [identityKey, isCurrentRequest, runtime.fetch, runtime.podUrl]);
 
   useEffect(() => {
+    let cancelled = false;
     activeIdentityKeyRef.current = identityKey;
     requestIdRef.current += 1;
     diagnoseActionIdRef.current += 1;
     renewActionIdRef.current += 1;
-    setStatus(undefined);
-    setDiagnostics([]);
-    setError(undefined);
-    setLoading(false);
-    setDiagnosing(false);
-    setRenewing(false);
-    if (identityKey) {
-      void loadStatus();
-    }
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setStatus(undefined);
+      setDiagnostics([]);
+      setError(undefined);
+      setLoading(false);
+      setDiagnosing(false);
+      setRenewing(false);
+      if (identityKey) {
+        void loadStatus();
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [identityKey, loadStatus]);
 
   const runDiagnose = useCallback(async () => {

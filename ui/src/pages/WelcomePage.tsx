@@ -43,38 +43,55 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const normalizedUsername = normalizeRegistrationUsername(username);
   const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
 
+  const updateUsernameAvailability = (next: {
+    available: boolean | null;
+    checking: boolean;
+    error: string | null;
+    suggestions: string[];
+  }): void => {
+    setIsCheckingUsername(next.checking);
+    setIsUsernameAvailable(next.available);
+    setUsernameSuggestions(next.suggestions);
+    setUsernameAvailabilityError(next.error);
+  };
+
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
     if (returnTo) persistReturnTo(returnTo);
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const scheduleUsernameAvailability = (next: Parameters<typeof updateUsernameAvailability>[0]): void => {
+      queueMicrotask(() => {
+        if (!cancelled) {
+          updateUsernameAvailability(next);
+        }
+      });
+    };
+
     if (!isRegister) {
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(null);
-      setUsernameSuggestions([]);
-      setUsernameAvailabilityError(null);
-      return;
+      scheduleUsernameAvailability({ checking: false, available: null, suggestions: [], error: null });
+      return () => {
+        cancelled = true;
+      };
     }
 
     if (!normalizedUsername) {
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(null);
-      setUsernameSuggestions([]);
-      setUsernameAvailabilityError(null);
-      return;
+      scheduleUsernameAvailability({ checking: false, available: null, suggestions: [], error: null });
+      return () => {
+        cancelled = true;
+      };
     }
 
     if (usernameError) {
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(false);
-      setUsernameSuggestions([]);
-      setUsernameAvailabilityError(usernameError);
-      return;
+      scheduleUsernameAvailability({ checking: false, available: false, suggestions: [], error: usernameError });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    let cancelled = false;
-    setIsCheckingUsername(true);
+    scheduleUsernameAvailability({ checking: true, available: null, suggestions: [], error: null });
 
     const timer = window.setTimeout(async () => {
       const result = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
