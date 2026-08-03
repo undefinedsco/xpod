@@ -275,7 +275,7 @@ describe('InternalPodDataHttpHandler', () => {
 
   it('respects GET response backpressure while streaming ResourceStore data', async () => {
     const store = createStore();
-    vi.mocked(store.getRepresentation).mockResolvedValueOnce(new BasicRepresentation(
+    store.getRepresentation.mockResolvedValueOnce(new BasicRepresentation(
       Readable.from([ 'chunk-1', 'chunk-2' ]),
       new RepresentationMetadata({ path: CREDENTIAL_RESOURCE }, { 'content-type': 'text/turtle' }),
     ));

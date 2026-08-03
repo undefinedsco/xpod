@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
@@ -462,6 +463,72 @@ describe('runtime bootstrap helpers', () => {
       '@id': 'urn:undefineds:xpod:SolidRdfEngine',
     });
     expect(rewrittenLocal['@graph']?.[0]?.rdfEngine).toBeUndefined();
+  });
+
+  it('preserves full InternalPodDataHttpHandler type and parameter IRIs when runtime context is older than the package config', () => {
+    const writes = new Map<string, string>();
+    const writeTextFile = vi.fn((filePath: string, content: string) => {
+      writes.set(filePath, content);
+    });
+    const readTextFile = vi.fn((filePath: string): string => {
+      const byPath: Record<string, unknown> = {
+        '/package/config/local.json': {
+          '@context': [
+            'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld',
+            'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld',
+          ],
+          import: ['./xpod.base.json'],
+        },
+        '/package/config/xpod.base.json': JSON.parse(readFileSync(path.join(PACKAGE_ROOT, 'config/xpod.base.json'), 'utf8')),
+        '/package/dist/components/context.jsonld': {
+          '@context': [
+            {},
+            {
+              SolidRdfDataAccessor: {
+                '@id': 'undefineds:dist/storage/accessors/SolidRdfDataAccessor.jsonld#SolidRdfDataAccessor',
+                '@context': {},
+              },
+            },
+          ],
+        },
+      };
+      return JSON.stringify(byPath[filePath] ?? {});
+    });
+
+    createCssRuntimeConfig({
+      id: 'older-published-context',
+      mode: 'local',
+      runtimeRoot: '/runtime',
+      cssAuthMode: 'acp',
+    } as any, true, {
+      dirname: (filePath: string): string => path.posix.dirname(filePath),
+      ensureDir: vi.fn(),
+      joinPath: (...segments: string[]): string => {
+        if (segments[0] === PACKAGE_ROOT) {
+          return path.posix.join('/package', ...segments.slice(1));
+        }
+        return path.posix.join(...segments);
+      },
+      readTextFile,
+      writeTextFile,
+    });
+
+    const rewrittenBase = JSON.parse(writes.get('/runtime/config/xpod.base.json') ?? '{}');
+    const handler = rewrittenBase['@graph']?.find((entry: Record<string, unknown>) =>
+      entry['@id'] === 'urn:undefineds:xpod:InternalPodDataHttpHandler');
+    expect(handler?.['@type']).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler',
+    );
+    expect(handler?.['@context']?.resourceStore).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore',
+    );
+    expect(handler?.['@context']?.patchBodyParser).toBe(
+      'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser',
+    );
+    expect(handler?.resourceStore).toEqual({ '@id': 'urn:solid-server:default:ResourceStore' });
+    expect(handler?.patchBodyParser).toEqual({ '@id': 'urn:solid-server:default:PatchBodyParser' });
+    expect(handler?.['InternalPodDataHttpHandler:_options_resourceStore']).toBeUndefined();
+    expect(handler?.['InternalPodDataHttpHandler:_options_patchBodyParser']).toBeUndefined();
   });
 
   it('should escape Components config imports when runtime paths contain spaces', () => {

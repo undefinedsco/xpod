@@ -225,14 +225,13 @@
     },
     {
       "comment": "Loopback-only runtime-signed hosted Pod data channel for AI Connection resources.",
-      "@type": "InternalPodDataHttpHandler",
+      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler",
       "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler",
       "@context": {
-        "InternalPodDataHttpHandler": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler",
-        "resourceStore": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
-        "gatewayAdminProxyAuthSecret": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_gatewayAdminProxyAuthSecret",
-        "patchBodyParser": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser",
-        "baseUrl": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
+        "resourceStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
+        "gatewayAdminProxyAuthSecret": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_gatewayAdminProxyAuthSecret",
+        "patchBodyParser": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser",
+        "baseUrl": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
       },
       "resourceStore": {
         "@id": "urn:solid-server:default:ResourceStore"
