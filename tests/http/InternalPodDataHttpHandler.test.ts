@@ -4,8 +4,11 @@ import {
   BasicRepresentation,
   NotImplementedHttpError,
   RepresentationMetadata,
+  SparqlUpdateBodyParser,
+  type BodyParser,
   type HttpRequest,
   type HttpResponse,
+  type Patch,
   type ResourceStore,
 } from '@solid/community-server';
 import { InternalPodDataHttpHandler } from '../../src/http/InternalPodDataHttpHandler';
@@ -18,6 +21,12 @@ const PROVIDER_RESOURCE = 'https://pod.example/alice/settings/providers/__servic
 const GATEWAY_KEY_RESOURCE = 'https://pod.example/alice/.data/ai/gateway/access-keys.ttl';
 const QUOTA_RESOURCE = 'https://pod.example/alice/.data/ai/gateway/quota.ttl';
 const SECRET_BODY = '{"secretPayload":{"apiKey":"sk-test-canary"}}';
+
+type TestOnlyInternalPodDataOptions = ConstructorParameters<typeof InternalPodDataHttpHandler>[0] & {
+  nonceTtlMs?: number;
+  nonceMaxEntries?: number;
+  now?: () => number;
+};
 
 class MockResponse extends Writable {
   public statusCode = 200;
@@ -48,6 +57,24 @@ class MockResponse extends Writable {
 
   public bodyText(): string {
     return Buffer.concat(this.chunks).toString('utf8');
+  }
+}
+
+class BackpressureResponse extends MockResponse {
+  public waitedForDrain = false;
+  private firstWrite = true;
+
+  public override write(chunk: any, encoding?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean {
+    super.write(chunk, encoding as BufferEncoding, callback);
+    if (!this.firstWrite) {
+      return true;
+    }
+    this.firstWrite = false;
+    setImmediate(() => {
+      this.waitedForDrain = true;
+      this.emit('drain');
+    });
+    return false;
   }
 }
 
@@ -98,11 +125,15 @@ function createStore(): ResourceStore & {
   } as unknown as ReturnType<typeof createStore>;
 }
 
-function createHandler(store = createStore()): InternalPodDataHttpHandler {
+function createHandler(
+  store = createStore(),
+  options: Partial<TestOnlyInternalPodDataOptions> = {},
+): InternalPodDataHttpHandler {
   return new InternalPodDataHttpHandler({
     resourceStore: store,
     gatewayAdminProxyAuthSecret: SECRET,
     baseUrl: 'https://pod.example/',
+    ...options,
   });
 }
 
@@ -139,6 +170,15 @@ async function handle(
   request: HttpRequest,
 ): Promise<MockResponse> {
   const response = new MockResponse();
+  await handler.handle({ request, response: response as unknown as HttpResponse });
+  return response;
+}
+
+async function handleWithResponse(
+  handler: InternalPodDataHttpHandler,
+  request: HttpRequest,
+  response: MockResponse,
+): Promise<MockResponse> {
   await handler.handle({ request, response: response as unknown as HttpResponse });
   return response;
 }
@@ -182,6 +222,27 @@ describe('InternalPodDataHttpHandler', () => {
     expect(store.getRepresentation).toHaveBeenCalledTimes(1);
   });
 
+  it('expires replay markers and fails closed when the nonce cache reaches its hard max', async () => {
+    let now = 0;
+    const store = createStore();
+    const handler = createHandler(store, {
+      nonceTtlMs: 10,
+      nonceMaxEntries: 1,
+      now: () => now,
+    });
+
+    const nonceA = signedHeaders({ nonce: 'nonce-a' });
+    expect((await handle(handler, createRequest('GET', '/.internal/pod-data', { headers: nonceA }))).statusCode).toBe(200);
+    expect((await handle(handler, createRequest('GET', '/.internal/pod-data', { headers: nonceA }))).statusCode).toBe(404);
+
+    now = 11;
+    expect((await handle(handler, createRequest('GET', '/.internal/pod-data', { headers: nonceA }))).statusCode).toBe(200);
+
+    const nonceB = signedHeaders({ nonce: 'nonce-b' });
+    expect((await handle(handler, createRequest('GET', '/.internal/pod-data', { headers: nonceB }))).statusCode).toBe(404);
+    expect((await handle(handler, createRequest('GET', '/.internal/pod-data', { headers: nonceA }))).statusCode).toBe(404);
+  });
+
   it('returns 404 for non-loopback transport before touching ResourceStore', async () => {
     const store = createStore();
     const handler = createHandler(store);
@@ -210,6 +271,78 @@ describe('InternalPodDataHttpHandler', () => {
     }
 
     expect(store.getRepresentation).toHaveBeenCalledTimes(4);
+  });
+
+  it('respects GET response backpressure while streaming ResourceStore data', async () => {
+    const store = createStore();
+    vi.mocked(store.getRepresentation).mockResolvedValueOnce(new BasicRepresentation(
+      Readable.from([ 'chunk-1', 'chunk-2' ]),
+      new RepresentationMetadata({ path: CREDENTIAL_RESOURCE }, { 'content-type': 'text/turtle' }),
+    ));
+    const handler = createHandler(store);
+    const response = new BackpressureResponse();
+
+    await handleWithResponse(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({ nonce: 'backpressure' }),
+    }), response);
+
+    expect(response.waitedForDrain).toBe(true);
+    expect(response.bodyText()).toBe('chunk-1chunk-2');
+  });
+
+  it('parses PATCH through the injected CSS PatchBodyParser before calling ResourceStore.modifyResource', async () => {
+    const store = createStore();
+    const patchBodyParser = new SparqlUpdateBodyParser();
+    const handler = createHandler(store, { patchBodyParser });
+    const sparql = `INSERT DATA { <${CREDENTIAL_RESOURCE}#s> <https://schema.org/name> "Alice" . }`;
+
+    const response = await handle(handler, createRequest('PATCH', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'PATCH',
+          scopes: [ 'ai:credentials:write' ],
+          nonce: 'patch-real-parser',
+        }),
+        'content-type': 'application/sparql-update',
+      },
+      body: sparql,
+    }));
+
+    expect(response.statusCode).toBe(204);
+    const patch = store.modifyResource.mock.calls[0][1] as Patch & { algebra?: unknown };
+    expect(patch).not.toBeInstanceOf(BasicRepresentation);
+    expect(patch.metadata.contentType).toBe('application/sparql-update');
+    expect(patch.algebra).toEqual(expect.objectContaining({ type: expect.any(String) }));
+  });
+
+  it('passes PATCH metadata and request body to the injected parser', async () => {
+    const store = createStore();
+    const parsedPatch = { metadata: new RepresentationMetadata({ path: CREDENTIAL_RESOURCE }), data: Readable.from([]), binary: true, isEmpty: false } as Patch;
+    const patchBodyParser = {
+      handleSafe: vi.fn(async ({ request, metadata }) => {
+        expect(request.method).toBe('PATCH');
+        expect(metadata.identifier.value).toBe(CREDENTIAL_RESOURCE);
+        expect(metadata.contentType).toBe('application/sparql-update');
+        return parsedPatch;
+      }),
+    } as unknown as BodyParser;
+    const handler = createHandler(store, { patchBodyParser });
+
+    const response = await handle(handler, createRequest('PATCH', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'PATCH',
+          scopes: [ 'ai:credentials:write' ],
+          nonce: 'patch-injected-parser',
+        }),
+        'content-type': 'application/sparql-update',
+      },
+      body: 'INSERT DATA {}',
+    }));
+
+    expect(response.statusCode).toBe(204);
+    expect(patchBodyParser.handleSafe).toHaveBeenCalledTimes(1);
+    expect(store.modifyResource).toHaveBeenCalledWith({ path: CREDENTIAL_RESOURCE }, parsedPatch);
   });
 
   it('rejects owner mismatches, non-hosted paths, non-model resources, and signature-bound intent tampering', async () => {

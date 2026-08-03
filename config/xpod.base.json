@@ -225,12 +225,14 @@
     },
     {
       "comment": "Loopback-only runtime-signed hosted Pod data channel for AI Connection resources.",
-      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler",
+      "@type": "InternalPodDataHttpHandler",
       "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler",
       "@context": {
-        "resourceStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
-        "gatewayAdminProxyAuthSecret": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_gatewayAdminProxyAuthSecret",
-        "baseUrl": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
+        "InternalPodDataHttpHandler": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler",
+        "resourceStore": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
+        "gatewayAdminProxyAuthSecret": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_gatewayAdminProxyAuthSecret",
+        "patchBodyParser": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser",
+        "baseUrl": "undefineds:dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
       },
       "resourceStore": {
         "@id": "urn:solid-server:default:ResourceStore"
@@ -238,6 +240,9 @@
       "gatewayAdminProxyAuthSecret": {
         "@id": "urn:solid-server:default:variable:gatewayAdminProxyAuthSecret",
         "@type": "Variable"
+      },
+      "patchBodyParser": {
+        "@id": "urn:solid-server:default:PatchBodyParser"
       },
       "baseUrl": {
         "@id": "urn:solid-server:default:variable:baseUrl",
