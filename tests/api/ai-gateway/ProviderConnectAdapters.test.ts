@@ -171,6 +171,11 @@ describe('PlaintextCredentialPayload', () => {
       { storageMode: 'unknown-v1', secretPayload },
       { encryptedSecret: JSON.stringify({ ciphertext: 'sk-plain-secret' }) },
       { storageMode: 'secret-cell-v1', encryptedSecret: JSON.stringify({ ciphertext: 'sk-plain-secret' }) },
+      {
+        storageMode: 'plaintext-v1',
+        secretPayload,
+        encryptedSecret: JSON.stringify({ ciphertext: 'sk-plain-secret' }),
+      },
     ]) {
       expect(() => decodePlaintextCredential(row)).toThrow(UnsupportedCredentialStorageModeError);
       expect(() => decodePlaintextCredential(row)).not.toThrow(/sk-plain-secret/);

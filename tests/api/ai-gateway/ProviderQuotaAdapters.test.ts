@@ -16,7 +16,10 @@ vi.mock('@undefineds.co/ai-connection/client-config', () => {
 
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
 import type { CredentialVault, ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
-import { encodePlaintextCredential } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
+import {
+  encodePlaintextCredential,
+  UnsupportedCredentialStorageModeError,
+} from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
@@ -343,6 +346,43 @@ describe('ProviderQuotaAdapters', () => {
     expect(unsupported.status).toBe('unsupported');
     expect(repository.rows).toHaveLength(2);
     expect(repository.rows.map((row) => row.status).sort()).toEqual(['available', 'unsupported']);
+  });
+
+  it('fails closed on mixed plaintext and legacy encrypted quota credential rows before provider fetch', async () => {
+    const canary = 'sk-quota-mixed-row-canary';
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const mixedCredential = {
+      ...credential('kimi', { type: 'apiKey', apiKey: canary }),
+      encryptedSecret: JSON.stringify({ ciphertext: canary }),
+    } as QuotaCredentialRecord & { encryptedSecret: string };
+    const adapter: ProviderQuotaAdapter = {
+      provider: 'kimi',
+      fetch: vi.fn(async () => {
+        throw new Error('adapter fetch should not run');
+      }),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault: createVault(),
+      adapters: [adapter],
+      credentials: [mixedCredential],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await expect(service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      refresh: true,
+    })).rejects.toThrow(UnsupportedCredentialStorageModeError);
+    await expect(service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      refresh: true,
+    })).rejects.not.toThrow(canary);
+    expect(adapter.fetch).not.toHaveBeenCalled();
+    expect(repository.rows).toHaveLength(0);
   });
 
   it('marks stale cached snapshots and never leaks decrypted secrets into cache rows', async () => {

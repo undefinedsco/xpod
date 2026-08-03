@@ -51,15 +51,15 @@ export function decodePlaintextCredential(row: PlaintextCredentialRow): Provider
 }
 
 function storageModeFromRow(row: PlaintextCredentialRow): string {
-  if (typeof row.storageMode === 'string' && row.storageMode.trim()) {
-    return row.storageMode.trim();
-  }
   if (
     row.encryptedSecret !== undefined
     || row.wrappedDataKey !== undefined
     || row.encryptionAlgorithm !== undefined
   ) {
     return SECRET_CELL_CREDENTIAL_STORAGE_MODE;
+  }
+  if (typeof row.storageMode === 'string' && row.storageMode.trim()) {
+    return row.storageMode.trim();
   }
   return 'missing';
 }
