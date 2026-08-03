@@ -138,12 +138,16 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     return row ? recordFromRow(row) : undefined;
   }
 
-  public async touchLastUsed(id: string, lastUsedAt: Date): Promise<void> {
+  public async touchLastUsed(
+    id: string,
+    lastUsedAt: Date,
+    context?: GatewayAccessKeyRepositoryContext,
+  ): Promise<void> {
     const locator = this.locatorCodec.decode(id);
     if (!locator) {
       return;
     }
-    const { db, resource } = await this.dbForOwner(locator.owner);
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
     await db.updateById(resource, gatewayAccessKeyStorageId(id), { lastUsedAt });
   }
 

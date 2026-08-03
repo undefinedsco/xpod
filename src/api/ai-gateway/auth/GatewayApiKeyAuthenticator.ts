@@ -35,7 +35,7 @@ export interface GatewayAccessKeyRepository {
   findByIdForAuthentication?(id: string): Promise<GatewayAccessKeyRecord | undefined>;
   listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
   revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
-  touchLastUsed(id: string, lastUsedAt: Date): Promise<void>;
+  touchLastUsed(id: string, lastUsedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<void>;
 }
 
 export interface GatewayApiKeyAuthenticatorOptions {
@@ -124,12 +124,6 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     }
 
     const lastUsedAt = this.now();
-    try {
-      await this.repository.touchLastUsed(record.id, lastUsedAt);
-    } catch (cause) {
-      return infrastructureError(cause);
-    }
-
     const context: SolidAuthContext = {
       type: 'solid',
       webId: record.owner,
@@ -140,6 +134,12 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       scopes: record.scopes,
       tokenType: 'Bearer',
     };
+    try {
+      await this.repository.touchLastUsed(record.id, lastUsedAt, { auth: context });
+    } catch (cause) {
+      return infrastructureError(cause);
+    }
+
     return { success: true, context };
   }
 

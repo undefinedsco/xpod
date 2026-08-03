@@ -158,7 +158,22 @@ describe('GatewayApiKeyAuthenticator', () => {
             : null;
         },
         findByIri: vi.fn(async () => null),
-        updateById: vi.fn(async () => null),
+        async updateById(_resource: unknown, id: string, patch: unknown) {
+          await podFetch('https://id.example/alice/.data/ai/gateway/access-keys.ttl', {
+            method: 'PUT',
+            body: JSON.stringify(patch),
+          });
+          return id === gatewayAccessKeyResource.buildId({ id: issued.record.id })
+            ? {
+                ...issued.record,
+                id: gatewayAccessKeyResource.buildId({ id: issued.record.id }),
+                owner: WEB_ID,
+                scopes: ['models:read', 'inference:write'],
+                createdAt: new Date('2026-08-03T00:00:00.000Z'),
+                ...(patch as Record<string, unknown>),
+              }
+            : null;
+        },
       } as never),
     });
     const keyId = repository.createKeyId(WEB_ID, 'cloud');
@@ -175,7 +190,7 @@ describe('GatewayApiKeyAuthenticator', () => {
       success: true,
       context: { webId: WEB_ID, viaGatewayApiKey: true },
     });
-    expect(sent).toHaveLength(1);
+    expect(sent).toHaveLength(2);
     expect(verifyGatewayAdminProxyHeaders({
       headers: headersRecord(sent[0].headers),
       secret: SECRET,
@@ -189,6 +204,21 @@ describe('GatewayApiKeyAuthenticator', () => {
         method: 'GET',
         principalKind: 'gateway-key',
         scopes: ['ai:gateway-key:verify'],
+      },
+    });
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[1].headers),
+      secret: SECRET,
+      method: 'PUT',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: WEB_ID,
+        method: 'PUT',
+        principalKind: 'gateway-key',
+        scopes: ['ai:credentials:write'],
       },
     });
   });
