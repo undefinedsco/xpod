@@ -529,6 +529,7 @@ describe('runtime bootstrap helpers', () => {
     );
     expect(handler?.resourceStore).toEqual({ '@id': 'urn:solid-server:default:ResourceStore' });
     expect(handler?.patchBodyParser).toEqual({ '@id': 'urn:solid-server:default:PatchBodyParser' });
+    expect(handler?.gatewayAdminProxyAuthSecret).toBeUndefined();
     expect(handler?.['InternalPodDataHttpHandler:_options_resourceStore']).toBeUndefined();
     expect(handler?.['InternalPodDataHttpHandler:_options_patchBodyParser']).toBeUndefined();
   });
