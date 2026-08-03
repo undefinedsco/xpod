@@ -802,13 +802,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     if (result.status === 'error') {
       throw new NativeSparqlExecutionError(result.error || 'native SPARQL engine returned error status');
     }
-    throw new UnsupportedSparqlQueryError(
-      `native SPARQL engine returned ${result.status}${result.error ? `: ${result.error}` : ''}`,
-      {
-        capability: 'sparql.native',
-        hint: 'Run the query through a native SPARQL engine that can access the current Pod scope, or disable the native SPARQL path for this engine.',
-      },
-    );
+    return undefined;
   }
 
   private recordPrimary(

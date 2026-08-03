@@ -360,6 +360,33 @@ describe('SolidRdfSparqlEngine', () => {
     });
   });
 
+  it('falls through to the RDF3X query path when QLever reports an unsupported shape', async () => {
+    const nativeEngine = new UnsupportedNativeSparqlEngineFake({
+      bindings: [{ message: namedNode(`${BASE}message`) }],
+      metrics: {
+        engine: 'solid-rdf',
+        plan: ['PostgresRdf3xJoin'],
+        scannedRows: 1,
+        joinedRows: 1,
+        returnedRows: 1,
+        durationMs: 1,
+        indexChoices: ['rdf3x'],
+        filtersApplied: 0,
+        filtersPushedDown: 0,
+      },
+    });
+    engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike);
+
+    const results = await arrayFromStream(await engine.queryBindings(
+      `SELECT ?message WHERE { ?message <${CONTENT}> ?content }`,
+      BASE,
+    ));
+
+    expect(results[0].get('message')?.value).toBe(`${BASE}message`);
+    expect(nativeEngine.calls).toEqual(['sparqlQuery', 'query']);
+    expect(engine.getMetrics().lastPrimary?.plan).toContain('PostgresRdf3xJoin');
+  });
+
   it('routes ASK through native SPARQL when the RDF engine exposes it', async () => {
     const nativeEngine = new NativeSparqlEngineFake({
       status: 'ok',
@@ -6435,5 +6462,17 @@ class NativeSparqlEngineFake extends AsyncRdfEngineFake {
 
   public override async query(): Promise<RdfQueryResult> {
     throw new Error('TS planner path should not run when native SPARQL is available');
+  }
+}
+
+class UnsupportedNativeSparqlEngineFake extends AsyncRdfEngineFake {
+  public async sparqlQuery(): Promise<NativeSparqlFakeResult> {
+    this.calls.push('sparqlQuery');
+    return {
+      status: 'unsupported',
+      mediaType: 'application/sparql-results+json',
+      body: '',
+      error: 'unsupported-expression',
+    };
   }
 }

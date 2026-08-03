@@ -239,6 +239,8 @@
         "@id": "urn:undefineds:xpod:PostgresRdfVectorIndex"
       },
       "options_rdfAccelerationProfile": "pg-hot-operators",
+      "options_nativeSparqlEnabled": true,
+      "options_nativeSparqlRequired": false,
       "options_autoOpen": true,
       "options_maintenanceIntervalMs": 60000,
       "options_maintenanceSourceBatchSize": 256

@@ -632,6 +632,7 @@ export interface PostgresRdfEngineOptions {
   textIndex?: RdfTextIndexInput;
   vectorIndex?: RdfVectorIndexInput;
   nativeSparqlEnabled?: boolean;
+  nativeSparqlRequired?: boolean;
 }
 
 interface PostgresRdfTermRow {
@@ -1663,7 +1664,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private lastOpenFailedAt?: string;
   private lastOpenError?: string;
   private lastColdStart?: RdfEngineColdStartStats;
-  public readonly sparqlQuery?: (
+  public sparqlQuery?: (
     query: string,
     options: RdfNativeSparqlQueryOptions,
   ) => Promise<RdfNativeSparqlResult>;
@@ -1746,7 +1747,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await runPhase('schema', () => this.initializeSchema());
           await this.initializeStatisticsStore();
           this.pgAcceleration = await runPhase('acceleration-probe', () => this.probePgAcceleration());
-          await runPhase('native-sparql-probe', () => this.probeNativeSparql());
+          await runPhase('native-sparql-probe', async () => {
+            try {
+              await this.probeNativeSparql();
+            } catch (error) {
+              if (
+                this.pgOptions.nativeSparqlRequired !== false
+                || !(error instanceof NativeSparqlUnavailableError)
+              ) {
+                throw error;
+              }
+              this.sparqlQuery = undefined;
+              this.logger.warn(`Optional native SPARQL unavailable; RDF3X remains active: ${errorMessage(error)}`);
+            }
+          });
           this.initialized = true;
           await runPhase('maintenance-scheduler', async () => {
             this.startMaintenanceScheduler();
@@ -1836,7 +1850,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       authorizationModel: 'mixed',
     };
     if (options.operation) {
-      extensionOptions.operation = options.operation;
+      extensionOptions.operation = 'execute';
     }
     if (options.timeoutMs !== undefined) {
       extensionOptions.timeoutMs = options.timeoutMs;
@@ -1856,6 +1870,9 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     if (options.accessScope?.mode) {
       extensionOptions.accessMode = options.accessScope.mode;
+    }
+    if (options.accessScope) {
+      extensionOptions.accessScopeResolved = true;
     }
     if (options.accessScope?.allowedGraphUrls) {
       extensionOptions.allowedGraphUrls = options.accessScope.allowedGraphUrls;
@@ -1906,19 +1923,27 @@ export class PostgresRdfEngine implements RdfEngineLike {
         'SELECT xpod_rdf.native_sparql_capabilities() AS capabilities',
       );
     } catch (error) {
-      throw new Error(
-        `Native SPARQL requires ABI version 1: ${errorMessage(error)}`,
-      );
+      if (isMissingNativeSparqlCapability(error)) {
+        throw new NativeSparqlUnavailableError(
+          `Native SPARQL requires ABI version 1: ${errorMessage(error)}`,
+        );
+      }
+      throw error;
     }
     const raw = rows[0]?.capabilities;
     const capabilities = typeof raw === 'string' ? JSON.parse(raw) as unknown : raw;
+    if (!capabilities || typeof capabilities !== 'object') {
+      throw new Error('Native SPARQL capabilities returned an invalid response');
+    }
+    const capabilityRecord = capabilities as { abiVersion?: unknown; ready?: unknown };
     if (
-      !capabilities
-      || typeof capabilities !== 'object'
-      || (capabilities as { abiVersion?: unknown }).abiVersion !== 1
-      || (capabilities as { ready?: unknown }).ready !== true
+      (typeof capabilityRecord.abiVersion === 'number' && capabilityRecord.abiVersion !== 1)
+      || (typeof capabilityRecord.ready === 'boolean' && capabilityRecord.ready === false)
     ) {
-      throw new Error('Native SPARQL requires native SPARQL ABI version 1');
+      throw new NativeSparqlUnavailableError('Native SPARQL requires native SPARQL ABI version 1');
+    }
+    if (capabilityRecord.abiVersion !== 1 || capabilityRecord.ready !== true) {
+      throw new Error('Native SPARQL capabilities returned an invalid response');
     }
   }
 
@@ -9734,6 +9759,20 @@ function withQueryCachePlan(result: RdfQueryResult, ...markers: string[]): RdfQu
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+class NativeSparqlUnavailableError extends Error {}
+
+function isMissingNativeSparqlCapability(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+  if (code === '3F000' || code === '42883') {
+    return true;
+  }
+  const message = errorMessage(error);
+  return /schema ["']xpod_rdf["'] does not exist/i.test(message)
+    || /function xpod_rdf\.native_sparql_capabilities\([^)]*\) does not exist/i.test(message);
 }
 
 function chunkArray<T>(values: T[], size: number): T[][] {
