@@ -329,6 +329,7 @@ export function buildRuntimeShorthand(
       ['acmePropagationDelayMs', envValue('XPOD_ACME_DNS_PROPAGATION_DELAY_MS')],
       ['acmePostDeployCommand', envValue('XPOD_ACME_POST_DEPLOY_COMMAND')],
       ['serviceToken', envValue('XPOD_SERVICE_TOKEN')],
+      ['gatewayAdminProxyAuthSecret', envValue('XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET')],
     ]),
     baseUrl: state.baseUrl,
     rootFilePath: state.rootFilePath,

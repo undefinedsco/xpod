@@ -144,14 +144,6 @@ export const startCommand: CommandModule<object, StartArgs> = {
       externalOidcIssuer,
     });
 
-    supervisor.register({
-      name: 'css',
-      command: childJsRuntime,
-      args: cssArgs,
-      cwd: cssRuntimeConfig.cwd,
-      env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode),
-    });
-
     const isDevMode = __filename.endsWith('.ts');
     const apiArgs = isDevMode
       ? [
@@ -162,6 +154,14 @@ export const startCommand: CommandModule<object, StartArgs> = {
       : [path.resolve(__dirname, '..', '..', 'api', 'main.js')];
 
     const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
+
+    supervisor.register({
+      name: 'css',
+      command: childJsRuntime,
+      args: cssArgs,
+      cwd: cssRuntimeConfig.cwd,
+      env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode, process.env, gatewayAdminProxyAuthSecret),
+    });
 
     supervisor.register({
       name: 'api',

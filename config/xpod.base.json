@@ -224,6 +224,22 @@
       }
     },
     {
+      "comment": "Loopback-only runtime-signed hosted Pod data channel for AI Connection resources.",
+      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler",
+      "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler",
+      "@context": {
+        "resourceStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
+        "gatewayAdminProxyAuthSecret": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_gatewayAdminProxyAuthSecret"
+      },
+      "resourceStore": {
+        "@id": "urn:solid-server:default:ResourceStore"
+      },
+      "gatewayAdminProxyAuthSecret": {
+        "@id": "urn:solid-server:default:variable:gatewayAdminProxyAuthSecret",
+        "@type": "Variable"
+      }
+    },
+    {
       "comment": "Tracing handler for request ID and logging. Added to CSS Middleware.",
       "@id": "urn:undefineds:xpod:TracingHandler",
       "@type": "TracingHandler"

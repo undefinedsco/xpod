@@ -292,21 +292,6 @@ async function startRuntime(options: RunOptions): Promise<void> {
     externalOidcIssuer,
   });
 
-  supervisor.register({
-    name: 'css',
-    command: childJsRuntime,
-    args: buildCssArgs({
-      cssBinary,
-      configPath: cssRuntimeConfig.configPath,
-      cssModuleRoot,
-      cssPort,
-      baseUrl,
-      externalOidcIssuer,
-    }),
-    cwd: cssRuntimeConfig.cwd,
-    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode),
-  });
-
   // API server: resolve the entry point dynamically
   // In dev (ts-node): use ts-node to run the .ts file
   // In production: use the compiled .js file
@@ -320,6 +305,21 @@ async function startRuntime(options: RunOptions): Promise<void> {
     : [path.join(__dirname, 'api', 'main.js')];
 
   const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
+
+  supervisor.register({
+    name: 'css',
+    command: childJsRuntime,
+    args: buildCssArgs({
+      cssBinary,
+      configPath: cssRuntimeConfig.configPath,
+      cssModuleRoot,
+      cssPort,
+      baseUrl,
+      externalOidcIssuer,
+    }),
+    cwd: cssRuntimeConfig.cwd,
+    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode, process.env, gatewayAdminProxyAuthSecret),
+  });
 
   supervisor.register({
     name: 'api',

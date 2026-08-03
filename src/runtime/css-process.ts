@@ -27,12 +27,16 @@ export function buildCssChildEnv(
   oidcIssuer?: string,
   authModeInput?: AuthMode | string,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  gatewayAdminProxyAuthSecret?: string,
 ): Record<string, string> {
   const authMode = resolveAuthModeInput(authModeInput, baseEnv);
   const env: Record<string, string> = {
     ...baseEnv,
     CSS_PORT: cssPort.toString(),
     CSS_BASE_URL: baseUrl,
+    ...((gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET)
+      ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET }
+      : {}),
   } as Record<string, string>;
   applyAuthModeEnv(env, authMode);
 
