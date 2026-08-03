@@ -23,6 +23,16 @@ export {
 } from './PostgresRdfTextIndex';
 export { RdfVectorIndex } from './RdfVectorIndex';
 export { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './PostgresRdfVectorIndex';
+export { PostgresRdfStatisticsStore } from './PostgresRdfStatisticsStore';
+export type {
+  RdfStatisticsDimensionKind,
+  RdfStatisticsDimensionSnapshot,
+  RdfStatisticsPairKind,
+  RdfStatisticsPairSnapshot,
+  RdfStatisticsPodSnapshot,
+  RdfStatisticsStore,
+} from './RdfStatisticsStore';
+export type { PostgresRdfSqlExecutor } from './PostgresRdfSqlExecutor';
 export {
   isLineAddressableRdf,
   isLineAddressableRdfContentType,

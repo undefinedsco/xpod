@@ -12,6 +12,8 @@ import { RdfTextIndex } from './RdfTextIndex';
 import { RdfVectorIndex } from './RdfVectorIndex';
 import { PostgresRdfTextIndex, type PostgresRdfTextIndexOptions } from './PostgresRdfTextIndex';
 import { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './PostgresRdfVectorIndex';
+import { PostgresRdfStatisticsStore } from './PostgresRdfStatisticsStore';
+import type { RdfStatisticsDimensionKind, RdfStatisticsPairKind } from './RdfStatisticsStore';
 import { NativeSparqlExecutionError } from './RdfSparqlAdapter';
 import {
   RDF3X_GRAPH_PROJECTION_TABLE,
@@ -1649,6 +1651,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private readonly logger = getLoggerFor(this);
   private executor: AsyncSqlExecutor | null = null;
   private termDictionary: PostgresRdfTermDictionary | null = null;
+  private statisticsStore: PostgresRdfStatisticsStore | null = null;
   private initialized = false;
   private initializing: Promise<void> | null = null;
   private readonly pgOptions: PostgresRdfEngineOptions;
@@ -1777,6 +1780,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           this.termDictionary = new PostgresRdfTermDictionary(this.requireExecutor());
           await runPhase('term-dictionary', () => this.termDictionary!.initialize());
           await runPhase('schema', () => this.initializeSchema());
+          await this.initializeStatisticsStore();
           this.pgAcceleration = await runPhase('acceleration-probe', () => this.probePgAcceleration());
           await runPhase('native-sparql-probe', () => this.probeNativeSparql());
           this.initialized = true;
@@ -1827,6 +1831,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       await this.textIndex?.close();
     }
     this.executor = null;
+    this.statisticsStore = null;
     if (this.pglite) {
       await this.pglite.close();
       this.pglite = null;
@@ -8058,8 +8063,50 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private async estimateResolvedRows(resolved: PgResolvedPattern): Promise<number> {
+    const sharedEstimate = await this.estimateResolvedRowsFromSharedStatistics(resolved);
+    if (sharedEstimate !== undefined) {
+      return sharedEstimate;
+    }
     const compiled = this.compileScanSql(resolved, { limit: 0 });
     return this.scalarCount(compiled.countSql, compiled.countParams);
+  }
+
+  private async estimateResolvedRowsFromSharedStatistics(resolved: PgResolvedPattern): Promise<number | undefined> {
+    const graphId = resolved.ids.graph;
+    if (!this.statisticsStore || graphId === undefined) {
+      return undefined;
+    }
+    const podScopeId = await this.statisticsStore.podScopeForGraph(graphId);
+    if (!podScopeId) {
+      return undefined;
+    }
+
+    const estimates: number[] = [];
+    const dimensions: Array<[RdfStatisticsDimensionKind, number | undefined]> = [
+      ['graph', graphId],
+      ['subject', resolved.ids.subject],
+      ['predicate', resolved.ids.predicate],
+      ['object', resolved.ids.object],
+    ];
+    for (const [kind, key] of dimensions) {
+      if (key !== undefined) {
+        const snapshot = await this.statisticsStore.dimension(podScopeId, kind, key);
+        if (snapshot) estimates.push(snapshot.quadCount);
+      }
+    }
+    const pairs: Array<[RdfStatisticsPairKind, number | undefined, number | undefined]> = [
+      ['GP', graphId, resolved.ids.predicate],
+      ['SP', resolved.ids.subject, resolved.ids.predicate],
+      ['SO', resolved.ids.subject, resolved.ids.object],
+      ['PO', resolved.ids.predicate, resolved.ids.object],
+    ];
+    for (const [kind, leftKey, rightKey] of pairs) {
+      if (leftKey !== undefined && rightKey !== undefined) {
+        const snapshot = await this.statisticsStore.pair(podScopeId, kind, leftKey, rightKey);
+        if (snapshot) estimates.push(snapshot.quadCount);
+      }
+    }
+    return estimates.length > 0 ? Math.min(...estimates) : undefined;
   }
 
   private async estimateResolvedDistinctRows(resolved: PgResolvedPattern, key: PgPatternKey): Promise<number> {
@@ -9541,6 +9588,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
       throw new Error('PostgresRdfEngine is not open');
     }
     return this.executor;
+  }
+
+  private async initializeStatisticsStore(): Promise<void> {
+    const rows = await this.requireExecutor().query<{ statistics_table: string | null }>(
+      "SELECT to_regclass('xpod_rdf.rdf_stats_versions')::text AS statistics_table",
+    );
+    this.statisticsStore = rows[0]?.statistics_table
+      ? new PostgresRdfStatisticsStore(this.requireExecutor())
+      : null;
   }
 
   private requireTextIndex(): RdfTextIndexLike {
