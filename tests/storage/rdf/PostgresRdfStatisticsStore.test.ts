@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   PostgresRdfStatisticsStore,
   type PostgresRdfSqlExecutor,
@@ -24,6 +26,14 @@ class RecordingExecutor implements PostgresRdfSqlExecutor {
 }
 
 describe('PostgresRdfStatisticsStore', () => {
+  it('does not retain PostgreSQL-private RDF3X statistics tables or dirty queues', () => {
+    const source = readFileSync(path.resolve(__dirname, '../../../src/storage/rdf/PostgresRdfEngine.ts'), 'utf8');
+
+    expect(source).not.toContain('rdf3x_stat_');
+    expect(source).not.toContain('rdf3x_dirty_');
+    expect(source).not.toContain('rdf3x_metadata');
+  });
+
   it('returns one exact Pod snapshot only when facts and exact versions match', async () => {
     const executor = new RecordingExecutor([[
       {

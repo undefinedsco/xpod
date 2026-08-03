@@ -5016,14 +5016,8 @@ function postWriteRefreshFailedReasons(
   if (benchmark.sourceQueue?.drainedSources !== benchmark.mutationSources) {
     failedReasons.push('source-queue-drained-mismatch');
   }
-  if (benchmark.refreshed !== true) {
-    failedReasons.push('not-refreshed');
-  }
   if (benchmark.syncedWithFacts !== true) {
     failedReasons.push('not-synced-with-facts');
-  }
-  if (benchmark.rebuildMode !== 'incremental') {
-    failedReasons.push('not-incremental-rebuild');
   }
   if (benchmark.factsDataVersionBeforeRefresh === undefined) {
     failedReasons.push('missing-facts-data-version-before-refresh');

@@ -15,11 +15,6 @@ import { PostgresRdfVectorIndex, type PostgresRdfVectorIndexOptions } from './Po
 import { PostgresRdfStatisticsStore } from './PostgresRdfStatisticsStore';
 import type { RdfStatisticsDimensionKind, RdfStatisticsPairKind } from './RdfStatisticsStore';
 import { NativeSparqlExecutionError } from './RdfSparqlAdapter';
-import {
-  RDF3X_GRAPH_PROJECTION_TABLE,
-  RDF3X_PAIR_PROJECTION_TABLE_BY_NAME,
-  RDF3X_TERM_PROJECTION_TABLE_BY_NAME,
-} from './Rdf3xSchema';
 import type {
   RdfBindingRow,
   RdfDerivedIndexMaintenanceResult,
@@ -133,7 +128,6 @@ const XSD_DECIMAL = 'http://www.w3.org/2001/XMLSchema#decimal';
 const RDF_LANG_STRING = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#langString';
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const POSTGRES_RDF_SCHEMA_VERSION = 1;
-const POSTGRES_RDF3X_SCHEMA_VERSION = 1;
 const PG_STRING_ESCAPE = '\u001f';
 const POSTGRES_RDF_WRITE_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000];
 const RETRYABLE_POSTGRES_WRITE_ERROR_CODES = new Set(['40P01', '40001']);
@@ -152,9 +146,6 @@ const PG_SEARCH_CANDIDATE_BUDGET_MULTIPLIER = 32;
 const RDF_ACCESS_CONTROL_OVERRIDE_TABLE = 'rdf_access_control_overrides';
 const RDF_TERMS_TABLE = 'rdf_terms';
 const RDF_DERIVED_INDEX_MAINTENANCE_LEASE = 'rdf-derived-indexes';
-const RDF3X_DIRTY_GRAPH_TABLE = 'rdf3x_dirty_graphs';
-const RDF3X_DIRTY_PAIR_TABLE = 'rdf3x_dirty_pairs';
-const RDF3X_DIRTY_TERM_TABLE = 'rdf3x_dirty_terms';
 const RDF_QUERY_RESULT_CACHE_KEY_VERSION = 2;
 const RDF_MATERIALIZED_RESULT_CACHE_KEY_VERSION = 1;
 const RDF_QUERY_TEMPLATE_CACHE_KEY_VERSION = 1;
@@ -208,9 +199,14 @@ const RDF_PLANNER_STATS_TABLES = [
   'rdf_terms',
   'rdf_sources',
   'rdf_quads',
-  RDF3X_GRAPH_PROJECTION_TABLE,
-  ...Object.values(RDF3X_PAIR_PROJECTION_TABLE_BY_NAME),
-  ...Object.values(RDF3X_TERM_PROJECTION_TABLE_BY_NAME),
+] as const;
+const RDF_SHARED_PLANNER_STATS_TABLES = [
+  'xpod_rdf.rdf_stats_pod',
+  'xpod_rdf.rdf_stats_dimension',
+  'xpod_rdf.rdf_stats_pair',
+  'xpod_rdf.rdf_stats_membership',
+  'xpod_rdf.rdf_stats_metrics',
+  'xpod_rdf.rdf_stats_distributions',
 ] as const;
 
 type PgPatternKey = 'graph' | 'subject' | 'predicate' | 'object';
@@ -224,18 +220,6 @@ interface PgPermutation {
   columns: PgIndexedColumn[];
 }
 
-interface PgPairProjection {
-  name: Rdf3xPairProjectionName;
-  table: string;
-  columns: [PgIndexedColumn, PgIndexedColumn];
-  remainder: PgIndexedColumn;
-}
-
-interface PgTermProjection {
-  name: Rdf3xTermProjectionName;
-  table: string;
-  column: PgIndexedColumn;
-}
 
 interface PgResolvedPattern {
   ids: Partial<Record<PgPatternKey, number>>;
@@ -283,11 +267,6 @@ interface PgQuadIdRow {
   object_id: number;
 }
 
-interface PgDirtyProjectionStats {
-  graphs: number;
-  pairs: number;
-  terms: number;
-}
 
 type PgDirtySourceOperation = 'upsert' | 'delete';
 
@@ -586,21 +565,6 @@ const PERMUTATIONS: PgPermutation[] = [
   { name: 'POS', indexName: 'rdf_quads_posg', columns: ['predicate_id', 'object_id', 'subject_id', 'graph_id'] },
   { name: 'OSP', indexName: 'rdf_quads_ospg', columns: ['object_id', 'subject_id', 'predicate_id', 'graph_id'] },
   { name: 'OPS', indexName: 'rdf_quads_opsg', columns: ['object_id', 'predicate_id', 'subject_id', 'graph_id'] },
-];
-
-const PAIR_PROJECTIONS: PgPairProjection[] = [
-  { name: 'SP', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.SP, columns: ['subject_id', 'predicate_id'], remainder: 'object_id' },
-  { name: 'SO', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.SO, columns: ['subject_id', 'object_id'], remainder: 'predicate_id' },
-  { name: 'PS', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.PS, columns: ['predicate_id', 'subject_id'], remainder: 'object_id' },
-  { name: 'PO', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.PO, columns: ['predicate_id', 'object_id'], remainder: 'subject_id' },
-  { name: 'OS', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.OS, columns: ['object_id', 'subject_id'], remainder: 'predicate_id' },
-  { name: 'OP', table: RDF3X_PAIR_PROJECTION_TABLE_BY_NAME.OP, columns: ['object_id', 'predicate_id'], remainder: 'subject_id' },
-];
-
-const TERM_PROJECTIONS: PgTermProjection[] = [
-  { name: 'S', table: RDF3X_TERM_PROJECTION_TABLE_BY_NAME.S, column: 'subject_id' },
-  { name: 'P', table: RDF3X_TERM_PROJECTION_TABLE_BY_NAME.P, column: 'predicate_id' },
-  { name: 'O', table: RDF3X_TERM_PROJECTION_TABLE_BY_NAME.O, column: 'object_id' },
 ];
 
 const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
@@ -2010,7 +1974,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await this.markDirtySource(tx, options.source, 'upsert');
         }
         const insertedRows = await this.insertQuads(tx, scopedDictionary, quadList, sourceId, options?.sourceLineNo ?? null);
-        await this.markDirtyQuadRows(tx, insertedRows);
         await this.bumpFactsDataVersion(tx);
         if (accessCacheInvalidation) {
           await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
@@ -2032,7 +1995,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         const replacedRows = await this.quadRowsForSource(sourceId, tx);
         await tx.exec('DELETE FROM rdf_quads WHERE source_file_id = $1', [sourceId]);
         const insertedRows = await this.insertQuads(tx, scopedDictionary, quads, sourceId, null);
-        await this.markDirtyQuadRows(tx, [...replacedRows, ...insertedRows]);
         await this.bumpFactsDataVersion(tx);
         if (accessCacheInvalidation) {
           await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
@@ -2061,7 +2023,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         const deleteResult = await tx.query<{ count: number }>('DELETE FROM rdf_quads WHERE source_file_id = $1 RETURNING 1', [sourceRow.id]);
         await this.markDirtySourceRow(tx, sourceRow, 'delete');
         await tx.exec('DELETE FROM rdf_sources WHERE id = $1', [sourceRow.id]);
-        await this.markDirtyQuadRows(tx, deletedRows);
         await this.bumpFactsDataVersion(tx);
         if (accessCacheInvalidation) {
           await this.invalidateAccessControlQueryCaches(tx, accessCacheInvalidation);
@@ -2141,7 +2102,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.withRetryableWrite(async () => {
       await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
-        await this.markDirtyQuads(tx, scopedDictionary, scan.quads);
         for (const value of scan.quads) {
           await this.deleteExactQuad(tx, scopedDictionary, value);
         }
@@ -2172,7 +2132,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     deletedRows = await this.withRetryableWrite(async () => {
       deletedRows = await executor.transaction(async (tx) => {
         const scopedDictionary = new PostgresRdfTermDictionary(tx);
-        await this.markDirtyQuads(tx, scopedDictionary, uniqueDeleteQuads);
         let deletedRows = 0;
         for (const value of uniqueDeleteQuads) {
           const deleted = await this.deleteExactQuad(tx, scopedDictionary, value);
@@ -2183,7 +2142,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await this.markDirtySource(tx, options.source, 'upsert');
         }
         const insertedRows = await this.insertQuads(tx, scopedDictionary, inserts, sourceId, options?.sourceLineNo ?? null);
-        await this.markDirtyQuadRows(tx, insertedRows);
         if (deletedRows > 0 || inserts.length > 0) {
           await this.bumpFactsDataVersion(tx);
           if (accessCacheInvalidation) {
@@ -3126,46 +3084,23 @@ export class PostgresRdfEngine implements RdfEngineLike {
   public async refreshDerivedIndexes(options?: RdfDerivedIndexRefreshOptions): Promise<RdfDerivedIndexRefreshResult> {
     await this.ensureReady();
     const factsDataVersion = await this.readFactsDataVersion();
-    const previousFactsDataVersion = await this.readRdf3xFactsDataVersion();
     const sourceQueueCutoff = await this.dirtySourceQueueCutoff();
     const pendingSources = await this.dirtySourceQueueCount(this.requireExecutor(), sourceQueueCutoff);
     const maxDirtySources = this.normalizeDirtySourceBatchSize(options?.maxDirtySources);
-    const forceFull = options?.mode === 'full';
-    if (!forceFull && previousFactsDataVersion === factsDataVersion) {
-      const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
-      const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff, maxDirtySources);
-      return {
-        derivedIndexProfile: 'rdf3x',
-        factsDataVersion,
-        rdf3x: {
-          refreshed: false,
-          previousFactsDataVersion,
-          factsDataVersion,
-          syncedWithFacts: true,
-          plannerStats,
-          sourceQueue: {
-            pendingSources,
-            drainedSources,
-          },
-        },
-      };
+    if (options?.mode === 'full' && this.statisticsStore) {
+      await this.requireExecutor().query('SELECT xpod_rdf.rebuild_statistics(NULL)');
     }
-    const dirtyStats = await this.dirtyProjectionStats();
-    const rebuild = forceFull || isEmptyDirtyProjectionStats(dirtyStats)
-      ? await this.rebuildRdf3xDerivedIndexes(factsDataVersion)
-      : await this.refreshRdf3xDirtyDerivedIndexes(factsDataVersion, dirtyStats);
     const plannerStats = await this.refreshPlannerStats(this.requireExecutor());
     const drainedSources = await this.clearDirtySourceQueue(this.requireExecutor(), sourceQueueCutoff, maxDirtySources);
     return {
       derivedIndexProfile: 'rdf3x',
       factsDataVersion,
       rdf3x: {
-        refreshed: forceFull || previousFactsDataVersion !== factsDataVersion,
-        previousFactsDataVersion,
+        refreshed: options?.mode === 'full' && Boolean(this.statisticsStore),
+        previousFactsDataVersion: factsDataVersion,
         factsDataVersion,
         syncedWithFacts: true,
         plannerStats,
-        rebuild,
         sourceQueue: {
           pendingSources,
           drainedSources,
@@ -3302,7 +3237,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.initializeQueryResultCacheSchema(executor);
     await this.initializeMaterializedResultCacheSchema(executor);
     await this.initializeMaterializedViewSchema(executor);
-    await this.initializeRdf3xSchema(executor);
   }
 
   private async initializeQueryResultCacheSchema(executor: AsyncSqlExecutor): Promise<void> {
@@ -3552,79 +3486,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     });
   }
 
-  private async initializeRdf3xSchema(executor: AsyncSqlExecutor): Promise<void> {
-    await executor.exec(`
-      CREATE TABLE IF NOT EXISTS rdf3x_metadata (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    `);
-    const row = await executor.query<{ value: string }>("SELECT value FROM rdf3x_metadata WHERE key = 'schema_version'");
-    const version = row[0]?.value;
-    if (version !== undefined && version !== String(POSTGRES_RDF3X_SCHEMA_VERSION)) {
-      await this.dropRdf3xDerivedSchema(executor);
-    }
-
-    await executor.exec(`
-      CREATE TABLE IF NOT EXISTS ${RDF3X_GRAPH_PROJECTION_TABLE} (
-        graph_id BIGINT PRIMARY KEY,
-        membership_count BIGINT NOT NULL
-      )
-    `);
-    await executor.exec(`
-      CREATE TABLE IF NOT EXISTS ${RDF3X_DIRTY_GRAPH_TABLE} (
-        graph_id BIGINT PRIMARY KEY
-      )
-    `);
-    await executor.exec(`
-      CREATE TABLE IF NOT EXISTS ${RDF3X_DIRTY_PAIR_TABLE} (
-        projection TEXT NOT NULL,
-        left_id BIGINT NOT NULL,
-        right_id BIGINT NOT NULL,
-        PRIMARY KEY (projection, left_id, right_id)
-      )
-    `);
-    await executor.exec(`
-      CREATE TABLE IF NOT EXISTS ${RDF3X_DIRTY_TERM_TABLE} (
-        projection TEXT NOT NULL,
-        term_id BIGINT NOT NULL,
-        PRIMARY KEY (projection, term_id)
-      )
-    `);
-    for (const projection of PAIR_PROJECTIONS) {
-      await executor.exec(`
-        CREATE TABLE IF NOT EXISTS ${projection.table} (
-          ${projection.columns[0]} BIGINT NOT NULL,
-          ${projection.columns[1]} BIGINT NOT NULL,
-          triple_count BIGINT NOT NULL,
-          membership_count BIGINT NOT NULL,
-          min_${projection.remainder} BIGINT,
-          max_${projection.remainder} BIGINT,
-          PRIMARY KEY (${projection.columns.join(', ')})
-        )
-      `);
-    }
-    for (const projection of TERM_PROJECTIONS) {
-      await executor.exec(`
-        CREATE TABLE IF NOT EXISTS ${projection.table} (
-          ${projection.column} BIGINT PRIMARY KEY,
-          triple_count BIGINT NOT NULL,
-          membership_count BIGINT NOT NULL
-        )
-      `);
-    }
-    await executor.exec(`
-      INSERT INTO rdf3x_metadata (key, value)
-      VALUES ('schema_version', $1)
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-    `, [String(POSTGRES_RDF3X_SCHEMA_VERSION)]);
-    await executor.exec(`
-      INSERT INTO rdf3x_metadata (key, value)
-      VALUES ('facts_data_version', '0')
-      ON CONFLICT (key) DO NOTHING
-    `);
-  }
-
   private async initializeDirtySourceQueueSchema(executor: AsyncSqlExecutor): Promise<void> {
     await executor.exec(`
       CREATE TABLE IF NOT EXISTS ${RDF_DIRTY_SOURCE_TABLE} (
@@ -3656,6 +3517,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     `);
   }
 
+
   private async initializeAccessControlOverrideSchema(executor: AsyncSqlExecutor): Promise<void> {
     await executor.exec(`
       CREATE TABLE IF NOT EXISTS ${RDF_ACCESS_CONTROL_OVERRIDE_TABLE} (
@@ -3676,296 +3538,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     `);
   }
 
-  private async dropRdf3xDerivedSchema(executor: AsyncSqlExecutor): Promise<void> {
-    for (const table of [
-      ...PAIR_PROJECTIONS.map((projection) => projection.table),
-      ...TERM_PROJECTIONS.map((projection) => projection.table),
-      RDF3X_GRAPH_PROJECTION_TABLE,
-      RDF3X_DIRTY_GRAPH_TABLE,
-      RDF3X_DIRTY_PAIR_TABLE,
-      RDF3X_DIRTY_TERM_TABLE,
-    ]) {
-      await executor.exec(`DROP TABLE IF EXISTS ${table}`);
-    }
-    await executor.exec('DELETE FROM rdf3x_metadata');
-  }
 
-  private async clearRdf3xDerivedTables(executor: AsyncSqlExecutor): Promise<void> {
-    for (const projection of PAIR_PROJECTIONS) {
-      await executor.exec(`DELETE FROM ${projection.table}`);
-    }
-    for (const projection of TERM_PROJECTIONS) {
-      await executor.exec(`DELETE FROM ${projection.table}`);
-    }
-    await executor.exec(`DELETE FROM ${RDF3X_GRAPH_PROJECTION_TABLE}`);
-  }
-
-  private async rebuildRdf3xDerivedIndexes(factsDataVersion: number): Promise<NonNullable<RdfDerivedIndexRefreshResult['rdf3x']>['rebuild']> {
-    const start = Date.now();
-    const executor = this.requireExecutor();
-    const scannedQuads = await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_FACTS_TABLE}`);
-    await executor.transaction(async (tx) => {
-      await this.clearRdf3xDerivedTables(tx);
-      for (const projection of PAIR_PROJECTIONS) {
-        await tx.exec(`
-          INSERT INTO ${projection.table} (
-            ${projection.columns[0]},
-            ${projection.columns[1]},
-            triple_count,
-            membership_count,
-            min_${projection.remainder},
-            max_${projection.remainder}
-          )
-          SELECT
-            triple.${projection.columns[0]},
-            triple.${projection.columns[1]},
-            triple.triple_count,
-            COALESCE(member.membership_count, 0) AS membership_count,
-            triple.min_remainder,
-            triple.max_remainder
-          FROM (
-            SELECT
-              ${projection.columns[0]},
-              ${projection.columns[1]},
-              COUNT(DISTINCT ${projection.remainder}) AS triple_count,
-              MIN(${projection.remainder}) AS min_remainder,
-              MAX(${projection.remainder}) AS max_remainder
-            FROM ${RDF_FACTS_TABLE}
-            GROUP BY ${projection.columns[0]}, ${projection.columns[1]}
-          ) triple
-          LEFT JOIN (
-            SELECT
-              ${projection.columns[0]},
-              ${projection.columns[1]},
-              COUNT(*) AS membership_count
-            FROM ${RDF_FACTS_TABLE}
-            GROUP BY ${projection.columns[0]}, ${projection.columns[1]}
-          ) member
-            ON member.${projection.columns[0]} = triple.${projection.columns[0]}
-           AND member.${projection.columns[1]} = triple.${projection.columns[1]}
-        `);
-      }
-      for (const projection of TERM_PROJECTIONS) {
-        await tx.exec(`
-          INSERT INTO ${projection.table} (
-            ${projection.column},
-            triple_count,
-            membership_count
-          )
-          SELECT
-            triple.${projection.column},
-            triple.triple_count,
-            COALESCE(member.membership_count, 0) AS membership_count
-          FROM (
-            SELECT
-              ${projection.column},
-              COUNT(*) AS triple_count
-            FROM (
-              SELECT DISTINCT subject_id, predicate_id, object_id
-              FROM ${RDF_FACTS_TABLE}
-            ) distinct_triples
-            GROUP BY ${projection.column}
-          ) triple
-          LEFT JOIN (
-            SELECT
-              ${projection.column},
-              COUNT(*) AS membership_count
-            FROM ${RDF_FACTS_TABLE}
-            GROUP BY ${projection.column}
-          ) member
-            ON member.${projection.column} = triple.${projection.column}
-        `);
-      }
-      await tx.exec(`
-        INSERT INTO ${RDF3X_GRAPH_PROJECTION_TABLE} (
-          graph_id,
-          membership_count
-        )
-        SELECT graph_id, COUNT(*) AS membership_count
-        FROM ${RDF_FACTS_TABLE}
-        GROUP BY graph_id
-      `);
-      await tx.exec(`
-        INSERT INTO rdf3x_metadata (key, value)
-        VALUES ('facts_data_version', $1)
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-      `, [String(factsDataVersion)]);
-      await this.clearRdf3xDirtyTables(tx);
-    });
-    const stats = await this.rdf3xStats();
-    return {
-      mode: 'full',
-      scannedQuads,
-      uniqueTriples: stats.uniqueTriples,
-      memberships: stats.membershipCount,
-      projectionRows: pairProjectionRowTotal(stats.pairProjectionRows) + termProjectionRowTotal(stats.termProjectionRows),
-      factsDataVersion,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  private async refreshRdf3xDirtyDerivedIndexes(
-    factsDataVersion: number,
-    dirtyStats: PgDirtyProjectionStats,
-  ): Promise<NonNullable<RdfDerivedIndexRefreshResult['rdf3x']>['rebuild']> {
-    const start = Date.now();
-    const executor = this.requireExecutor();
-    const scannedQuads = await this.estimateDirtyRefreshScanRows();
-    await executor.transaction(async (tx) => {
-      await this.refreshDirtyGraphProjection(tx);
-      for (const projection of PAIR_PROJECTIONS) {
-        await this.refreshDirtyPairProjection(tx, projection);
-      }
-      for (const projection of TERM_PROJECTIONS) {
-        await this.refreshDirtyTermProjection(tx, projection);
-      }
-      await tx.exec(`
-        INSERT INTO rdf3x_metadata (key, value)
-        VALUES ('facts_data_version', $1)
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-      `, [String(factsDataVersion)]);
-      await this.clearRdf3xDirtyTables(tx);
-    });
-    const stats = await this.rdf3xStats();
-    return {
-      mode: 'incremental',
-      scannedQuads,
-      uniqueTriples: stats.uniqueTriples,
-      memberships: stats.membershipCount,
-      projectionRows: pairProjectionRowTotal(stats.pairProjectionRows) + termProjectionRowTotal(stats.termProjectionRows),
-      factsDataVersion,
-      durationMs: Date.now() - start,
-      dirtyGraphs: dirtyStats.graphs,
-      dirtyPairs: dirtyStats.pairs,
-      dirtyTerms: dirtyStats.terms,
-    };
-  }
-
-  private async refreshDirtyGraphProjection(executor: AsyncSqlExecutor): Promise<void> {
-    await executor.exec(`
-      DELETE FROM ${RDF3X_GRAPH_PROJECTION_TABLE}
-      WHERE graph_id IN (SELECT graph_id FROM ${RDF3X_DIRTY_GRAPH_TABLE})
-    `);
-    await executor.exec(`
-      INSERT INTO ${RDF3X_GRAPH_PROJECTION_TABLE} (
-        graph_id,
-        membership_count
-      )
-      SELECT q.graph_id, COUNT(*) AS membership_count
-      FROM ${RDF_FACTS_TABLE} q
-      JOIN ${RDF3X_DIRTY_GRAPH_TABLE} dirty
-        ON dirty.graph_id = q.graph_id
-      GROUP BY q.graph_id
-    `);
-  }
-
-  private async refreshDirtyPairProjection(executor: AsyncSqlExecutor, projection: PgPairProjection): Promise<void> {
-    const [left, right] = projection.columns;
-    await executor.exec(`
-      DELETE FROM ${projection.table} target
-      WHERE EXISTS (
-        SELECT 1
-        FROM ${RDF3X_DIRTY_PAIR_TABLE} dirty
-        WHERE dirty.projection = $1
-          AND dirty.left_id = target.${left}
-          AND dirty.right_id = target.${right}
-      )
-    `, [projection.name]);
-    await executor.exec(`
-      INSERT INTO ${projection.table} (
-        ${left},
-        ${right},
-        triple_count,
-        membership_count,
-        min_${projection.remainder},
-        max_${projection.remainder}
-      )
-      SELECT
-        q.${left},
-        q.${right},
-        COUNT(DISTINCT q.${projection.remainder}) AS triple_count,
-        COUNT(*) AS membership_count,
-        MIN(q.${projection.remainder}) AS min_remainder,
-        MAX(q.${projection.remainder}) AS max_remainder
-      FROM ${RDF_FACTS_TABLE} q
-      JOIN ${RDF3X_DIRTY_PAIR_TABLE} dirty
-        ON dirty.projection = $1
-       AND dirty.left_id = q.${left}
-       AND dirty.right_id = q.${right}
-      GROUP BY q.${left}, q.${right}
-    `, [projection.name]);
-  }
-
-  private async refreshDirtyTermProjection(executor: AsyncSqlExecutor, projection: PgTermProjection): Promise<void> {
-    await executor.exec(`
-      DELETE FROM ${projection.table} target
-      WHERE EXISTS (
-        SELECT 1
-        FROM ${RDF3X_DIRTY_TERM_TABLE} dirty
-        WHERE dirty.projection = $1
-          AND dirty.term_id = target.${projection.column}
-      )
-    `, [projection.name]);
-    await executor.exec(`
-      INSERT INTO ${projection.table} (
-        ${projection.column},
-        triple_count,
-        membership_count
-      )
-      SELECT
-        triple.term_id,
-        triple.triple_count,
-        COALESCE(member.membership_count, 0) AS membership_count
-      FROM (
-        SELECT
-          distinct_triples.term_id,
-          COUNT(*) AS triple_count
-        FROM (
-          SELECT DISTINCT
-            q.subject_id,
-            q.predicate_id,
-            q.object_id,
-            q.${projection.column} AS term_id
-          FROM ${RDF_FACTS_TABLE} q
-          JOIN ${RDF3X_DIRTY_TERM_TABLE} dirty
-            ON dirty.projection = $1
-           AND dirty.term_id = q.${projection.column}
-        ) distinct_triples
-        GROUP BY distinct_triples.term_id
-      ) triple
-      LEFT JOIN (
-        SELECT
-          q.${projection.column} AS term_id,
-          COUNT(*) AS membership_count
-        FROM ${RDF_FACTS_TABLE} q
-        JOIN ${RDF3X_DIRTY_TERM_TABLE} dirty
-          ON dirty.projection = $1
-         AND dirty.term_id = q.${projection.column}
-        GROUP BY q.${projection.column}
-      ) member
-        ON member.term_id = triple.term_id
-    `, [projection.name]);
-  }
-
-  private async dirtyProjectionStats(executor = this.requireExecutor()): Promise<PgDirtyProjectionStats> {
-    try {
-      const [graphs, pairs, terms] = await Promise.all([
-        this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF3X_DIRTY_GRAPH_TABLE}`),
-        this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF3X_DIRTY_PAIR_TABLE}`),
-        this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF3X_DIRTY_TERM_TABLE}`),
-      ]);
-      return { graphs, pairs, terms };
-    } catch {
-      await this.initializeRdf3xSchema(executor);
-      return { graphs: 0, pairs: 0, terms: 0 };
-    }
-  }
-
-  private async clearRdf3xDirtyTables(executor: AsyncSqlExecutor): Promise<void> {
-    await executor.exec(`DELETE FROM ${RDF3X_DIRTY_GRAPH_TABLE}`);
-    await executor.exec(`DELETE FROM ${RDF3X_DIRTY_PAIR_TABLE}`);
-    await executor.exec(`DELETE FROM ${RDF3X_DIRTY_TERM_TABLE}`);
-  }
 
   private async dirtySourceQueueCutoff(executor = this.requireExecutor()): Promise<string> {
     const rows = await executor.query<{ cutoff: string }>('SELECT clock_timestamp()::text AS cutoff');
@@ -4098,39 +3671,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
     this.maintenanceTimer = undefined;
   }
 
-  private async estimateDirtyRefreshScanRows(): Promise<number> {
-    const rows = await this.requireExecutor().query<{ count: number }>(`
-      SELECT COUNT(*) AS count
-      FROM ${RDF_FACTS_TABLE} q
-      WHERE q.graph_id IN (SELECT graph_id FROM ${RDF3X_DIRTY_GRAPH_TABLE})
-         OR EXISTS (
-           SELECT 1
-           FROM ${RDF3X_DIRTY_PAIR_TABLE} dirty
-           WHERE (dirty.projection = 'SP' AND dirty.left_id = q.subject_id AND dirty.right_id = q.predicate_id)
-              OR (dirty.projection = 'SO' AND dirty.left_id = q.subject_id AND dirty.right_id = q.object_id)
-              OR (dirty.projection = 'PS' AND dirty.left_id = q.predicate_id AND dirty.right_id = q.subject_id)
-              OR (dirty.projection = 'PO' AND dirty.left_id = q.predicate_id AND dirty.right_id = q.object_id)
-              OR (dirty.projection = 'OS' AND dirty.left_id = q.object_id AND dirty.right_id = q.subject_id)
-              OR (dirty.projection = 'OP' AND dirty.left_id = q.object_id AND dirty.right_id = q.predicate_id)
-         )
-         OR EXISTS (
-           SELECT 1
-           FROM ${RDF3X_DIRTY_TERM_TABLE} dirty
-           WHERE (dirty.projection = 'S' AND dirty.term_id = q.subject_id)
-              OR (dirty.projection = 'P' AND dirty.term_id = q.predicate_id)
-              OR (dirty.projection = 'O' AND dirty.term_id = q.object_id)
-         )
-    `);
-    return Number(rows[0]?.count ?? 0) || 0;
-  }
-
   private async refreshPlannerStats(executor: AsyncSqlExecutor): Promise<RdfPlannerStatsRefreshResult> {
     const start = Date.now();
-    for (const table of RDF_PLANNER_STATS_TABLES) {
+    const tables = this.statisticsStore
+      ? [...RDF_PLANNER_STATS_TABLES, ...RDF_SHARED_PLANNER_STATS_TABLES]
+      : [...RDF_PLANNER_STATS_TABLES];
+    for (const table of tables) {
       await executor.exec(`ANALYZE ${table}`);
     }
     return {
-      analyzedTables: [...RDF_PLANNER_STATS_TABLES],
+      analyzedTables: tables,
       durationMs: Date.now() - start,
     };
   }
@@ -8470,123 +8020,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     `, [sourceId]);
   }
 
-  private async markDirtyQuads(
-    executor: AsyncSqlExecutor,
-    dictionary: PostgresRdfTermDictionary,
-    quads: Quad[],
-  ): Promise<void> {
-    if (quads.length === 0) {
-      return;
-    }
-    const rows: PgQuadIdRow[] = [];
-    for (const quadValue of quads) {
-      const graphId = await dictionary.find(quadValue.graph);
-      const subjectId = await dictionary.find(quadValue.subject);
-      const predicateId = await dictionary.find(quadValue.predicate);
-      const objectId = await dictionary.find(quadValue.object);
-      if (graphId === undefined || subjectId === undefined || predicateId === undefined || objectId === undefined) {
-        continue;
-      }
-      rows.push({
-        graph_id: graphId,
-        subject_id: subjectId,
-        predicate_id: predicateId,
-        object_id: objectId,
-      });
-    }
-    await this.markDirtyQuadRows(executor, rows);
-  }
-
-  private async markDirtyQuadRows(executor: AsyncSqlExecutor, rows: PgQuadIdRow[]): Promise<void> {
-    if (rows.length === 0) {
-      return;
-    }
-
-    const graphIds = new Set<number>();
-    const pairKeys = new Map<string, { projection: string; leftId: number; rightId: number }>();
-    const termKeys = new Map<string, { projection: string; termId: number }>();
-
-    for (const row of rows) {
-      graphIds.add(row.graph_id);
-      for (const projection of PAIR_PROJECTIONS) {
-        const leftId = row[projection.columns[0]];
-        const rightId = row[projection.columns[1]];
-        pairKeys.set(`${projection.name}\u001f${leftId}\u001f${rightId}`, {
-          projection: projection.name,
-          leftId,
-          rightId,
-        });
-      }
-      for (const projection of TERM_PROJECTIONS) {
-        const termId = row[projection.column];
-        termKeys.set(`${projection.name}\u001f${termId}`, {
-          projection: projection.name,
-          termId,
-        });
-      }
-    }
-
-    await this.insertDirtyGraphIds(executor, [...graphIds]);
-    await this.insertDirtyPairKeys(executor, [...pairKeys.values()]);
-    await this.insertDirtyTermKeys(executor, [...termKeys.values()]);
-  }
-
-  private async insertDirtyGraphIds(executor: AsyncSqlExecutor, graphIds: number[]): Promise<void> {
-    for (const chunk of chunkArray(graphIds, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
-      if (chunk.length === 0) continue;
-      await executor.exec(`
-        INSERT INTO ${RDF3X_DIRTY_GRAPH_TABLE} (graph_id)
-        SELECT graph_id
-        FROM UNNEST($1::bigint[]) AS input(graph_id)
-        ON CONFLICT DO NOTHING
-      `, [chunk]);
-    }
-  }
-
-  private async insertDirtyPairKeys(
-    executor: AsyncSqlExecutor,
-    pairs: Array<{ projection: string; leftId: number; rightId: number }>,
-  ): Promise<void> {
-    for (const chunk of chunkArray(pairs, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
-      if (chunk.length === 0) continue;
-      await executor.exec(`
-        INSERT INTO ${RDF3X_DIRTY_PAIR_TABLE} (projection, left_id, right_id)
-        SELECT projection, left_id, right_id
-        FROM UNNEST(
-          $1::text[],
-          $2::bigint[],
-          $3::bigint[]
-        ) AS input(projection, left_id, right_id)
-        ON CONFLICT DO NOTHING
-      `, [
-        chunk.map((row) => row.projection),
-        chunk.map((row) => row.leftId),
-        chunk.map((row) => row.rightId),
-      ]);
-    }
-  }
-
-  private async insertDirtyTermKeys(
-    executor: AsyncSqlExecutor,
-    terms: Array<{ projection: string; termId: number }>,
-  ): Promise<void> {
-    for (const chunk of chunkArray(terms, POSTGRES_RDF_BULK_UNNEST_CHUNK_SIZE)) {
-      if (chunk.length === 0) continue;
-      await executor.exec(`
-        INSERT INTO ${RDF3X_DIRTY_TERM_TABLE} (projection, term_id)
-        SELECT projection, term_id
-        FROM UNNEST(
-          $1::text[],
-          $2::bigint[]
-        ) AS input(projection, term_id)
-        ON CONFLICT DO NOTHING
-      `, [
-        chunk.map((row) => row.projection),
-        chunk.map((row) => row.termId),
-      ]);
-    }
-  }
-
   private async withRetryableWrite<T>(operation: () => Promise<T>): Promise<T> {
     let attempt = 0;
     while (true) {
@@ -8822,12 +8255,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
   }
 
   private async readRdf3xFactsDataVersion(): Promise<number> {
-    try {
-      const row = await this.requireExecutor().query<{ value: string }>("SELECT value FROM rdf3x_metadata WHERE key = 'facts_data_version'");
-      return Number(row[0]?.value ?? 0) || 0;
-    } catch {
-      return 0;
-    }
+    return this.readFactsDataVersion();
   }
 
   private async ensureReady(): Promise<void> {
@@ -9216,26 +8644,52 @@ export class PostgresRdfEngine implements RdfEngineLike {
         FROM ${RDF_FACTS_TABLE}
       ) distinct_triples
     `);
+    const pairColumns: Record<Rdf3xPairProjectionName, [PgIndexedColumn, PgIndexedColumn]> = {
+      SP: ['subject_id', 'predicate_id'],
+      SO: ['subject_id', 'object_id'],
+      PS: ['predicate_id', 'subject_id'],
+      PO: ['predicate_id', 'object_id'],
+      OS: ['object_id', 'subject_id'],
+      OP: ['object_id', 'predicate_id'],
+    };
+    const termColumns: Record<Rdf3xTermProjectionName, PgIndexedColumn> = {
+      S: 'subject_id',
+      P: 'predicate_id',
+      O: 'object_id',
+    };
+    const pairProjectionRows = Object.fromEntries(await Promise.all(
+      Object.entries(pairColumns).map(async ([name, columns]) => [
+        name,
+        await this.scalarCount(`
+          SELECT COUNT(*) AS count
+          FROM (
+            SELECT DISTINCT ${columns[0]}, ${columns[1]}
+            FROM ${RDF_FACTS_TABLE}
+          ) distinct_pairs
+        `),
+      ]),
+    )) as Rdf3xIndexStats['pairProjectionRows'];
+    const termProjectionRows = Object.fromEntries(await Promise.all(
+      Object.entries(termColumns).map(async ([name, column]) => [
+        name,
+        await this.scalarCount(`SELECT COUNT(DISTINCT ${column}) AS count FROM ${RDF_FACTS_TABLE}`),
+      ]),
+    )) as Rdf3xIndexStats['termProjectionRows'];
     return {
       uniqueTriples,
       membershipCount: await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF_FACTS_TABLE}`),
-      graphCount: await this.scalarCount(`SELECT COUNT(*) AS count FROM ${RDF3X_GRAPH_PROJECTION_TABLE}`),
-      factsDataVersion: await this.readRdf3xFactsDataVersion(),
+      graphCount: await this.scalarCount(`SELECT COUNT(DISTINCT graph_id) AS count FROM ${RDF_FACTS_TABLE}`),
+      factsDataVersion: await this.readFactsDataVersion(),
       permutationRows: Object.fromEntries(PERMUTATIONS.map((permutation) => [permutation.name, uniqueTriples])) as Rdf3xIndexStats['permutationRows'],
-      pairProjectionRows: Object.fromEntries(await Promise.all(PAIR_PROJECTIONS.map(async (projection) => [
-        projection.name,
-        await this.scalarCount(`SELECT COUNT(*) AS count FROM ${projection.table}`),
-      ]))) as Rdf3xIndexStats['pairProjectionRows'],
-      termProjectionRows: Object.fromEntries(await Promise.all(TERM_PROJECTIONS.map(async (projection) => [
-        projection.name,
-        await this.scalarCount(`SELECT COUNT(*) AS count FROM ${projection.table}`),
-      ]))) as Rdf3xIndexStats['termProjectionRows'],
+      pairProjectionRows,
+      termProjectionRows,
       databaseBytes,
       tableBytes: sumSpaceObjects(spaceObjects, 'table'),
       indexBytes: sumSpaceObjects(spaceObjects, 'index'),
       spaceObjects,
     };
   }
+
 
   private async queryResultCacheStats(): Promise<RdfQueryResultCacheStats> {
     const spaceObjects = await this.collectCacheSpaceObjects(RDF_QUERY_RESULT_CACHE_TABLE);
@@ -9491,6 +8945,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
           tbl.relname AS table_name,
           pg_total_relation_size(rel.oid) AS bytes
         FROM pg_class rel
+        JOIN pg_namespace namespace ON namespace.oid = rel.relnamespace
         LEFT JOIN pg_index idx ON idx.indexrelid = rel.oid
         LEFT JOIN pg_class tbl ON tbl.oid = idx.indrelid
         WHERE rel.relkind IN ('r', 'i')
@@ -9536,10 +8991,8 @@ export class PostgresRdfEngine implements RdfEngineLike {
         LEFT JOIN pg_class tbl ON tbl.oid = idx.indrelid
         WHERE rel.relkind IN ('r', 'i')
           AND ${derived
-            ? "(rel.relname LIKE 'rdf3x_%' OR tbl.relname LIKE 'rdf3x_%')"
-            : `(rel.relname LIKE 'rdf_%' OR tbl.relname LIKE 'rdf_%')
-              AND rel.relname NOT LIKE 'rdf3x_%'
-              AND COALESCE(tbl.relname, '') NOT LIKE 'rdf3x_%'
+            ? "namespace.nspname = 'xpod_rdf' AND (rel.relname LIKE 'rdf_stats_%' OR tbl.relname LIKE 'rdf_stats_%')"
+            : `namespace.nspname = current_schema() AND (rel.relname LIKE 'rdf_%' OR tbl.relname LIKE 'rdf_%')
               AND rel.relname <> '${RDF_QUERY_RESULT_CACHE_TABLE}'
               AND COALESCE(tbl.relname, '') <> '${RDF_QUERY_RESULT_CACHE_TABLE}'
               AND rel.relname <> '${RDF_MATERIALIZED_RESULT_CACHE_TABLE}'
@@ -9558,15 +9011,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }));
     } catch {
       const tables = derived
-        ? [
-          'rdf3x_metadata',
-          RDF3X_GRAPH_PROJECTION_TABLE,
-          RDF3X_DIRTY_GRAPH_TABLE,
-          RDF3X_DIRTY_PAIR_TABLE,
-          RDF3X_DIRTY_TERM_TABLE,
-          ...PAIR_PROJECTIONS.map((projection) => projection.table),
-          ...TERM_PROJECTIONS.map((projection) => projection.table),
-        ]
+        ? [...RDF_SHARED_PLANNER_STATS_TABLES]
         : ['rdf_terms', 'rdf_sources', RDF_DIRTY_SOURCE_TABLE, RDF_MAINTENANCE_LEASE_TABLE, RDF_FACTS_TABLE, 'rdf_index_metadata'];
       const rows = await Promise.all(tables.map(async (table) => ({
         name: table,
@@ -9594,9 +9039,20 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const rows = await this.requireExecutor().query<{ statistics_table: string | null }>(
       "SELECT to_regclass('xpod_rdf.rdf_stats_versions')::text AS statistics_table",
     );
-    this.statisticsStore = rows[0]?.statistics_table
-      ? new PostgresRdfStatisticsStore(this.requireExecutor())
-      : null;
+    if (!rows[0]?.statistics_table) {
+      this.statisticsStore = null;
+      return;
+    }
+    await this.requireExecutor().query('SELECT xpod_rdf.ensure_statistics_triggers()');
+    const state = await this.requireExecutor().query<{ fact_count: number | string; version_count: number | string }>(`
+      SELECT
+        (SELECT COUNT(*) FROM rdf_quads) AS fact_count,
+        (SELECT COUNT(*) FROM xpod_rdf.rdf_stats_versions) AS version_count
+    `);
+    if (Number(state[0]?.fact_count ?? 0) > 0 && Number(state[0]?.version_count ?? 0) === 0) {
+      await this.requireExecutor().query('SELECT xpod_rdf.rebuild_statistics(NULL)');
+    }
+    this.statisticsStore = new PostgresRdfStatisticsStore(this.requireExecutor());
   }
 
   private requireTextIndex(): RdfTextIndexLike {
@@ -10286,10 +9742,6 @@ function chunkArray<T>(values: T[], size: number): T[][] {
     chunks.push(values.slice(index, index + size));
   }
   return chunks;
-}
-
-function isEmptyDirtyProjectionStats(stats: PgDirtyProjectionStats): boolean {
-  return stats.graphs === 0 && stats.pairs === 0 && stats.terms === 0;
 }
 
 function restoreValue(key: string, value: unknown): unknown {
@@ -12753,14 +12205,6 @@ function joinSolutionMappingKeyExpression(variableAliases: Map<string, string>, 
     if (!alias) throw new Error(`Postgres RDF-3X COUNT(DISTINCT *) cannot read unbound variable: ${variableName}`);
     return `source.${alias}`;
   }).join(` || ':' || `);
-}
-
-function pairProjectionRowTotal(rows: Record<Rdf3xPairProjectionName, number>): number {
-  return Object.values(rows).reduce((sum, count) => sum + count, 0);
-}
-
-function termProjectionRowTotal(rows: Record<Rdf3xTermProjectionName, number>): number {
-  return Object.values(rows).reduce((sum, count) => sum + count, 0);
 }
 
 function sumSpaceObjects(objects: RdfIndexSpaceObject[], kind: RdfIndexSpaceObject['kind']): number {

@@ -9,21 +9,10 @@ const RDF_FACT_TABLES = [
 const RDF_DERIVED_TABLES = [
   'rdf_query_result_cache',
   'rdf_materialized_result_cache',
-  'rdf3x_stat_g',
-  'rdf3x_stat_sp',
-  'rdf3x_stat_so',
-  'rdf3x_stat_ps',
-  'rdf3x_stat_po',
-  'rdf3x_stat_os',
-  'rdf3x_stat_op',
-  'rdf3x_stat_s',
-  'rdf3x_stat_p',
-  'rdf3x_stat_o',
 ] as const;
 
 const RDF_METADATA_TABLES = [
   'rdf_index_metadata',
-  'rdf3x_metadata',
 ] as const;
 
 interface CliOptions {
@@ -164,9 +153,6 @@ function tableAction(table: string, includeFacts: boolean): string {
   if (table === 'rdf_index_metadata') {
     return includeFacts ? 'reset data_version' : 'leave schema_version; no fact reset';
   }
-  if (table === 'rdf3x_metadata') {
-    return 'reset facts_data_version';
-  }
   return 'inspect';
 }
 
@@ -187,13 +173,6 @@ async function executeReset(client: PoolClient, options: CliOptions, plan: Exist
     ];
     if (truncateTables.length > 0) {
       await client.query(`TRUNCATE TABLE ${truncateTables.map((table) => qualifiedName(options.schema, table)).join(', ')} RESTART IDENTITY`);
-    }
-    if (existing.has('rdf3x_metadata')) {
-      await client.query(`
-        INSERT INTO ${qualifiedName(options.schema, 'rdf3x_metadata')} (key, value)
-        VALUES ('facts_data_version', '0')
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-      `);
     }
     if (options.includeFacts && existing.has('rdf_index_metadata')) {
       await client.query(`
