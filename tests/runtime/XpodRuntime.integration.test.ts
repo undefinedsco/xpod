@@ -96,6 +96,8 @@ describe('XpodRuntime Local first-run Cloud registration', () => {
       runtimeRoot,
       logLevel: 'warn',
       env: {
+        ...isolatedLocalEnv,
+        XPOD_LOCAL_AUTO_PROVISION: 'true',
         XPOD_CLOUD_API_ENDPOINT: cloudOrigin,
         XPOD_LOCAL_SETUP_PATH: setupPath,
         XPOD_PROVIDER_ID: 'local-auto',
