@@ -47,9 +47,16 @@ export interface ResourceChangeListener {
   onResourceChanged(event: ResourceChangeEvent): Promise<void>;
 }
 
+/** Durable append boundary used before asynchronous derived-index delivery. */
+export interface ResourceChangeRecorder {
+  recordResourceChange(event: ResourceChangeEvent): Promise<void>;
+}
+
 export interface ObservableResourceStoreOptions {
   /** 资源变更监听器列表 */
   listeners?: ResourceChangeListener[];
+  /** Durable outbox writers. A resource mutation does not return until these append. */
+  recorders?: ResourceChangeRecorder[];
 }
 
 /**
@@ -66,10 +73,12 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
   protected readonly logger = getLoggerFor(this);
   private readonly emitter = new EventEmitter();
   private readonly listeners: ResourceChangeListener[];
+  private readonly recorders: ResourceChangeRecorder[];
 
   public constructor(source: T, options: ObservableResourceStoreOptions = {}) {
     super(source);
     this.listeners = options.listeners ?? [];
+    this.recorders = options.recorders ?? [];
 
     // 注册内部事件处理
     this.emitter.on('resource:changed', (event: ResourceChangeEvent) => {
@@ -119,7 +128,7 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
 
     // 从 ChangeMap 中获取新创建的资源路径
     for (const [identifier] of change) {
-      this.emitChange(identifier.path, 'create');
+      await this.emitChange(identifier.path, 'create');
     }
 
     return change;
@@ -139,7 +148,7 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
 
     const change = await super.setRepresentation(identifier, representation, conditions);
 
-    this.emitChange(identifier.path, action);
+    await this.emitChange(identifier.path, action);
 
     return change;
   }
@@ -153,7 +162,7 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
   ): Promise<ChangeMap> {
     const change = await super.deleteResource(identifier, conditions);
 
-    this.emitChange(identifier.path, 'delete');
+    await this.emitChange(identifier.path, 'delete');
 
     return change;
   }
@@ -168,7 +177,7 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
   ): Promise<ChangeMap> {
     const change = await super.modifyResource(identifier, patch, conditions);
 
-    this.emitChange(identifier.path, 'update');
+    await this.emitChange(identifier.path, 'update');
 
     return change;
   }
@@ -176,7 +185,7 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
   /**
    * 发出资源变更事件
    */
-  private emitChange(path: string, action: ResourceChangeAction): void {
+  private async emitChange(path: string, action: ResourceChangeAction): Promise<void> {
     const event: ResourceChangeEvent = {
       path,
       action,
@@ -185,6 +194,10 @@ export class ObservableResourceStore<T extends ResourceStore = ResourceStore> ex
     };
 
     this.logger.debug(`Resource ${action}: ${path}`);
+
+    for (const recorder of this.recorders) {
+      await recorder.recordResourceChange(event);
+    }
 
     // 异步发出事件，不阻塞主流程
     setImmediate(() => {

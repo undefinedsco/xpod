@@ -4,7 +4,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ObservableResourceStore } from '../../src/storage/ObservableResourceStore';
-import type { ResourceChangeEvent, ResourceChangeListener } from '../../src/storage/ObservableResourceStore';
+import type {
+  ResourceChangeEvent,
+  ResourceChangeListener,
+  ResourceChangeRecorder,
+} from '../../src/storage/ObservableResourceStore';
 import type { ResourceStore, Representation, ResourceIdentifier, ChangeMap } from '@solid/community-server';
 import { Readable } from 'node:stream';
 
@@ -225,6 +229,40 @@ describe('ObservableResourceStore', () => {
   });
 
   describe('error handling', () => {
+    it('durably records a change before the write returns', async () => {
+      const recorded: ResourceChangeEvent[] = [];
+      const recorder: ResourceChangeRecorder = {
+        recordResourceChange: vi.fn(async (event) => {
+          recorded.push(event);
+        }),
+      };
+      observableStore = new ObservableResourceStore(mockStore, {
+        listeners: [mockListener],
+        recorders: [recorder],
+      });
+
+      await observableStore.setRepresentation(
+        { path: '/alice/doc.md' },
+        { data: Readable.from(['test']), metadata: {} } as Representation,
+      );
+
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({ path: '/alice/doc.md', action: 'create' });
+      expect(mockListener.events).toHaveLength(0);
+    });
+
+    it('fails visibly when the durable recorder cannot append the change', async () => {
+      const recorder: ResourceChangeRecorder = {
+        recordResourceChange: vi.fn().mockRejectedValue(new Error('outbox unavailable')),
+      };
+      observableStore = new ObservableResourceStore(mockStore, { recorders: [recorder] });
+
+      await expect(observableStore.setRepresentation(
+        { path: '/alice/doc.md' },
+        { data: Readable.from(['test']), metadata: {} } as Representation,
+      )).rejects.toThrow('outbox unavailable');
+    });
+
     it('should not block on listener errors', async () => {
       const errorListener: ResourceChangeListener = {
         onResourceChanged: vi.fn().mockRejectedValue(new Error('Listener failed')),
