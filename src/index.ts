@@ -137,6 +137,7 @@ import { LocalPodProvisioningService } from './provision/LocalPodProvisioningSer
 import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
 import { PostgresDerivedIndexJournal } from './storage/PostgresDerivedIndexJournal';
 import { ObservableResourceStore } from './storage/ObservableResourceStore';
+import { RdfDerivedIndexingListener } from './storage/RdfDerivedIndexingListener';
 
 export * from './api/reconciler';
 export * from './edge/reachability';
@@ -279,6 +280,7 @@ export {
   SqliteSolidFsSyncJournal,
   PostgresDerivedIndexJournal,
   ObservableResourceStore,
+  RdfDerivedIndexingListener,
 };
 
 export type {
@@ -290,3 +292,7 @@ export type {
   ResourceChangeListener,
   ResourceChangeRecorder,
 } from './storage/ObservableResourceStore';
+export type {
+  RdfDerivedIndexEngine,
+  RdfDerivedIndexingListenerOptions,
+} from './storage/RdfDerivedIndexingListener';

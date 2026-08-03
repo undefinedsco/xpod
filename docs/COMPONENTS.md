@@ -94,6 +94,7 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 - **Purpose**: CSS subscribe 写入口到 FTS/VEC 派生索引的持久化 outbox
 - **Ordering**: 只允许同一 Pod 最早的未完成事件被 claim；不同 Pod 可并行
 - **Recovery**: processing lease 超时后自动回到 pending，失败按延迟重试；`reconcilePod` 可从权威资源清单补录历史数据
+- **Consumer**: `RdfDerivedIndexingListener` 对每个事件只读取一次资源权威内容，随后更新 `PostgresRdfTextIndex` 与 `PostgresRdfVectorIndex`；两者都成功后才把 outbox 行标记为 done
 - **Deployment**: Cloud 使用 PostgreSQL；Local 不创建第二份日志，继续由 `SqliteSolidFsSyncJournal` 驱动 composite RDF/text/vector syncer
 
 ## Identity & Authentication
