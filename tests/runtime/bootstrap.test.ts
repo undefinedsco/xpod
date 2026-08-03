@@ -31,6 +31,7 @@ const ALLOW_ALL_AUTH_IMPORTS = [
   'css:config/ldp/authorization/allow-all.json',
   'css:config/util/auxiliary/empty.json',
 ];
+const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 
 describe('runtime bootstrap helpers', () => {
   it('should resolve socket runtime bootstrap layout', async() => {
@@ -329,6 +330,7 @@ describe('runtime bootstrap helpers', () => {
 
     const [, content] = writeTextFile.mock.calls[0];
     const parsed = JSON.parse(content);
+    expect(parsed['@context']).toContain(XPOD_COMPONENTS_CONTEXT);
     expect(parsed.import).toEqual([
       '../package/config/local.json',
       ...ACP_AUTH_IMPORTS,

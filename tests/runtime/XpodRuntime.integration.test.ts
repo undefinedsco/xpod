@@ -21,7 +21,11 @@ function listen(server: http.Server): Promise<{ origin: string }> {
   });
 }
 
-const isolatedLocalEnv = { XPOD_LOCAL_AUTO_PROVISION: 'false' };
+const isolatedLocalEnv = {
+  XPOD_LOCAL_AUTO_PROVISION: 'false',
+  XPOD_SECRET_CELL_KEY_ID: 'runtime-test-cell',
+  XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 13).toString('base64'),
+};
 
 function close(server: http.Server): Promise<void> {
   return new Promise((resolve, reject) => {

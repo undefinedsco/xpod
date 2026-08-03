@@ -18,6 +18,7 @@ import { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
 const CSS_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld';
+const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 const ASYNC_HANDLERS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld';
 
 export interface RuntimeBootstrapState {
@@ -374,6 +375,7 @@ export function createCssRuntimeConfig(
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
       CSS_COMPONENTS_CONTEXT,
+      XPOD_COMPONENTS_CONTEXT,
       ASYNC_HANDLERS_CONTEXT,
     ],
     import: [
