@@ -136,6 +136,7 @@ import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
 import { PostgresDerivedIndexJournal } from './storage/PostgresDerivedIndexJournal';
+import { ObservableResourceStore } from './storage/ObservableResourceStore';
 
 export * from './api/reconciler';
 export * from './edge/reachability';
@@ -277,6 +278,7 @@ export {
   // SolidFS recovery exports
   SqliteSolidFsSyncJournal,
   PostgresDerivedIndexJournal,
+  ObservableResourceStore,
 };
 
 export type {

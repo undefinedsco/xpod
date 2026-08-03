@@ -192,6 +192,15 @@
       "options_defaultMetric": "cosine"
     },
     {
+      "comment": "Durable Pod-ordered outbox for asynchronous FTS/vector refresh.",
+      "@id": "urn:undefineds:xpod:DerivedIndexChangeJournal",
+      "@type": "PostgresDerivedIndexJournal",
+      "options_connectionString": {
+        "@id": "urn:solid-server:default:variable:sparqlEndpoint",
+        "@type": "Variable"
+      }
+    },
+    {
       "comment": "RDF query engine backed by PostgreSQL facts plus PostgreSQL RDF-3X derived stats.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
       "@type": "PostgresRdfEngine",
@@ -403,36 +412,42 @@
       }
     },
     {
-      "comment": "等位替换: 用 UsageTrackingStore 包装 SparqlUpdateResourceStore 替换默认的 DataAccessorBasedStore",
+      "comment": "等位替换: 写入成功后先持久化派生索引 outbox，再异步通知 FTS/vector",
       "@type": "Override",
       "overrideInstance": {
         "@id": "urn:solid-server:default:ResourceStore_Backend"
       },
       "overrideParameters": {
-        "@type": "UsageTrackingStore",
-        "UsageTrackingStore:_source": {
-          "@type": "SparqlUpdateResourceStore",
-          "identifierStrategy": {
-            "@id": "urn:solid-server:default:IdentifierStrategy"
+        "@type": "ObservableResourceStore",
+        "source": {
+          "@type": "UsageTrackingStore",
+          "UsageTrackingStore:_source": {
+            "@type": "SparqlUpdateResourceStore",
+            "identifierStrategy": {
+              "@id": "urn:solid-server:default:IdentifierStrategy"
+            },
+            "auxiliaryStrategy": {
+              "@id": "urn:solid-server:default:AuxiliaryStrategy"
+            },
+            "metadataStrategy": {
+              "@id": "urn:solid-server:default:MetadataStrategy"
+            },
+            "accessor": {
+              "@id": "urn:undefineds:xpod:MixDataAccessor"
+            }
           },
-          "auxiliaryStrategy": {
-            "@id": "urn:solid-server:default:AuxiliaryStrategy"
+          "options_identityDbUrl": {
+            "@id": "urn:solid-server:default:variable:identityDbUrl",
+            "@type": "Variable"
           },
-          "metadataStrategy": {
-            "@id": "urn:solid-server:default:MetadataStrategy"
-          },
-          "accessor": {
-            "@id": "urn:undefineds:xpod:MixDataAccessor"
+          "options_defaultAccountBandwidthLimitBps": {
+            "@type": "Literal",
+            "value": 10485760
           }
         },
-        "options_identityDbUrl": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
-          "@type": "Variable"
-        },
-        "options_defaultAccountBandwidthLimitBps": {
-          "@type": "Literal",
-          "value": 10485760
-        }
+        "options_recorders": [
+          { "@id": "urn:undefineds:xpod:DerivedIndexChangeJournal" }
+        ]
       }
     },
     {

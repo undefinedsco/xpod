@@ -14,6 +14,7 @@ Xpod 遵循**等位替换原则**：用自定义组件替换 CSS 同层级的默
 | `SparqlDataAccessor` | `QuadstoreSparqlDataAccessor` | 基于 Quadstore + SQLUp 的 SPARQL 存储，支持 SQLite/PostgreSQL/MySQL |
 | `BaseLoginAccountStorage` | `DrizzleIndexedStorage` | 数据库存储账户信息，支持集群部署，替代 CSS 的文件存储 |
 | `PassthroughStore` | `UsageTrackingStore` | 包装 Store，添加带宽/存储用量追踪和限速功能 |
+| `ResourceStore` 写入通知边界 | `ObservableResourceStore` + `PostgresDerivedIndexJournal` | Cloud 写成功后、响应返回前追加一条 Pod 级持久化 outbox；FTS/VEC 异步消费且 Pod 内保序。Local 继续复用 SolidFS 文件 journal |
 | `HttpHandler` (HandlerServerConfigurator.handler) | `MainHttpHandler` (ChainedHttpHandler) | 用链式中间件替换单一 handler，支持洋葱模型。包含 `TracingMiddleware` (请求追踪) 和可选的 `SignalAwareHttpHandler` (集群模式) |
 | `PickWebIdHandler` | `ScopedPickWebIdHandler` | OIDC consent 选择 WebID 时只展示当前 SP 可解析的 Pod，避免 Cloud IdP + Local SP 登录选回 Cloud Pod |
 | `PodCreator` | `ProvisionPodCreator` | Pod 创建时写入 `solid:storage` 模板变量，canonical storage URL 留在 CSS account Pod 数据中 |
@@ -87,6 +88,13 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
   - Records account/pod-scoped usage in `identity_usage`
   - Applies bandwidth throttling via `createBandwidthThrottleTransform`
 - **Deployment**: Server mode only
+
+### PostgresDerivedIndexJournal
+- **Path**: `src/storage/PostgresDerivedIndexJournal.ts`
+- **Purpose**: CSS subscribe 写入口到 FTS/VEC 派生索引的持久化 outbox
+- **Ordering**: 只允许同一 Pod 最早的未完成事件被 claim；不同 Pod 可并行
+- **Recovery**: processing lease 超时后自动回到 pending，失败按延迟重试；`reconcilePod` 可从权威资源清单补录历史数据
+- **Deployment**: Cloud 使用 PostgreSQL；Local 不创建第二份日志，继续由 `SqliteSolidFsSyncJournal` 驱动 composite RDF/text/vector syncer
 
 ## Identity & Authentication
 
