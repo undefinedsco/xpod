@@ -8,8 +8,6 @@ import { spawn } from 'node:child_process';
 import { stdin } from 'node:process';
 
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../src/api/ai-gateway/AiGatewayService';
-import { createGatewayApiKey } from '../src/api/ai-gateway/auth/GatewayApiKey';
-import { GatewayApiKeyAuthenticator, type GatewayAccessKeyRecord, type GatewayAccessKeyRepository } from '../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { SecretCellCredentialVault } from '../src/api/ai-gateway/credentials/SecretCellCredentialVault';
 import type { CredentialSecret, CredentialVault, EncryptedCredentialSecret } from '../src/api/ai-gateway/credentials/CredentialVault';
 import { createDefaultProviderRegistry } from '../src/api/ai-gateway/providers/ProviderRegistry';
@@ -19,9 +17,11 @@ import type { ProviderRuntimeRegistry } from '../src/api/ai-gateway/providers/Pr
 import { InMemorySessionAffinityStore } from '../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../src/api/ai-gateway/routing/ModelRouter';
 import type { AuthContext } from '../src/api/auth/AuthContext';
+import type { Authenticator, AuthResult } from '../src/api/auth/Authenticator';
 import { ProviderHttpTransport } from '../src/api/service/provider-http-transport';
 import { AiGatewayHandler } from '../src/api/handlers/AiGatewayHandler';
 import { AuthMiddleware, type AuthenticatedRequest } from '../src/api/middleware/AuthMiddleware';
+import { encodeClientCredentialsApiKey } from '../src/api/tasks/TaskAuthBinding';
 import { DeploymentRootKeyProvider, SecretCellVault } from '../src/security/secret-cell';
 import { CodexRuntimeProjector } from '../src/api/chatkit/runtime/CodexRuntimeProjector';
 import {
@@ -318,11 +318,11 @@ function printUsage(): void {
   console.log(`Usage:
   bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-env AI_CONNECTION_API_KEY
   printf '%s' "$AI_CONNECTION_API_KEY" | bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
-  printf '%s' "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
+  printf '%s' "$XPOD_ACCEPTANCE_API_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
   bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli
 
 The real Codex mode requires the Xpod runtime to have XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true
-and the Gateway key to include acceptance:read plus normal protocol scopes. The script never
+and XPOD_ACCEPTANCE_API_KEY to be a Solid client credentials API key. The script never
 accepts the API key as a CLI value. It prints only non-sensitive provenance evidence.`);
 }
 
@@ -344,7 +344,7 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
   const initialProvenance = await fetchRealCodexProvenance({
     baseUrl: options.baseUrl,
     model: options.model,
-    gatewayKey: options.apiKey,
+    apiKey: options.apiKey,
     signal: AbortSignal.timeout(Math.min(timeoutMs, 30_000)),
   });
   let restoreVerified = false;
@@ -388,7 +388,7 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
   const provenance = validateRealCodexProvenance({
     baseUrl: options.baseUrl,
     model: options.model,
-    gatewayKey: options.apiKey,
+    apiKey: options.apiKey,
     provenance: {
       ...initialProvenance,
       commandHash: `sha256:${canonicalAcceptanceArtifactHash(command)}`,
@@ -403,7 +403,7 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
     provenance: {
       ...provenance,
       model: options.model,
-      gatewayKeySource: args.apiKeyStdin ? 'stdin' : `env:${args.apiKeyEnv ?? 'AI_CONNECTION_API_KEY'}`,
+      apiKeySource: args.apiKeyStdin ? 'stdin' : `env:${args.apiKeyEnv ?? 'AI_CONNECTION_API_KEY'}`,
       artifactHash: 'sha256:pending',
     },
     redaction: {
@@ -436,14 +436,14 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
 async function fetchRealCodexProvenance(input: {
   baseUrl: string;
   model: string;
-  gatewayKey: string;
+  apiKey: string;
   signal: AbortSignal;
 }): Promise<Omit<RealCodexProvenance, 'commandHash' | 'resultHash'>> {
   const url = new URL('/v1/xpod/acceptance/provenance', withTrailingSlash(input.baseUrl));
   url.searchParams.set('model', input.model);
   const response = await fetch(url, {
     headers: {
-      ...authHeaders(input.gatewayKey),
+      ...authHeaders(input.apiKey),
     },
     signal: input.signal,
   });
@@ -451,12 +451,7 @@ async function fetchRealCodexProvenance(input: {
   if (!response.ok) {
     throw new Error(`Acceptance provenance lookup failed: HTTP ${response.status} ${JSON.stringify(json)}`);
   }
-  const provenance = json as Omit<RealCodexProvenance, 'commandHash' | 'resultHash'>;
-  const expectedFingerprint = `sha256:${canonicalAcceptanceArtifactHash(input.gatewayKey)}`;
-  if (provenance.gatewayKeyFingerprint !== expectedFingerprint) {
-    throw new Error('Acceptance provenance Gateway key fingerprint mismatch');
-  }
-  return provenance;
+  return json as Omit<RealCodexProvenance, 'commandHash' | 'resultHash'>;
 }
 
 async function runFixtureCodexCliSmoke(args: ParsedArgs): Promise<void> {
@@ -482,7 +477,7 @@ async function runFixtureCodexCliSmoke(args: ParsedArgs): Promise<void> {
   const appliedConfig = {
     codexHome,
     baseUrl: new URL('/v1', xpod.baseUrl).toString().replace(/\/$/u, ''),
-    apiKey: xpod.gatewayKeyPlaintext,
+    apiKey: xpod.apiKeyPlaintext,
     wireApi: 'responses' as const,
     model: FIXTURE_MODEL,
   };
@@ -691,8 +686,8 @@ function writeSse(response: ServerResponse, events: Record<string, unknown>[]): 
 
 interface FixtureXpodGateway {
   baseUrl: string;
-  gatewayKeyPlaintext: string;
-  gatewayKeyId: string;
+  apiKeyPlaintext: string;
+  clientIdHash: string;
   xpodResponses: Array<{
     path: string;
     eventTypes: string[];
@@ -703,23 +698,16 @@ interface FixtureXpodGateway {
   }>;
   credentialStoreCalls: Array<{ webId: string; deployment: string }>;
   vaultOpenCalls: Array<{ webId: string; credentialIri: string; provider: string }>;
-  gatewayTouches: string[];
+  authTouches: string[];
   stop(): Promise<void>;
 }
 
 async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Promise<FixtureXpodGateway> {
   const deployment = 'local' as const;
-  const gatewayKey = await createGatewayApiKey({ deployment, keyId: 'gak_codex_smoke' });
-  const accessKeys = new InMemoryAccessKeyRepository();
-  await accessKeys.create({
-    id: gatewayKey.record.id,
-    owner: FIXTURE_WEB_ID,
-    secretHash: gatewayKey.record.secretHash,
-    deployment,
-    scopes: ['models:read', 'inference:write'],
-    createdAt: new Date(),
-    name: 'Codex smoke',
-  });
+  const clientId = 'codex-smoke-client';
+  const clientSecret = randomBytes(24).toString('base64url');
+  const apiKey = encodeClientCredentialsApiKey(clientId, clientSecret);
+  const authTouches: string[] = [];
 
   const secretCell = new SecretCellCredentialVault({
     vault: new SecretCellVault({
@@ -778,9 +766,12 @@ async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Pr
     } as unknown as ProviderRuntimeRegistry,
   });
   const auth = new AuthMiddleware({
-    authenticator: new GatewayApiKeyAuthenticator({
-      repository: accessKeys,
-      deployment,
+    authenticator: new FixtureClientCredentialsAuthenticator({
+      apiKey,
+      webId: FIXTURE_WEB_ID,
+      clientId,
+      clientSecret,
+      touches: authTouches,
     }),
   });
   const handler = new AiGatewayHandler({ service });
@@ -809,12 +800,12 @@ async function startFixtureXpodGateway(options: { upstreamBaseUrl: string }): Pr
   if (!address || typeof address === 'string') throw new Error('Failed to start Xpod fixture server');
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
-    gatewayKeyPlaintext: gatewayKey.plaintext,
-    gatewayKeyId: gatewayKey.record.id,
+    apiKeyPlaintext: apiKey,
+    clientIdHash: `sha256:${canonicalAcceptanceArtifactHash(clientId)}`,
     xpodResponses,
     credentialStoreCalls: credentialCalls,
     vaultOpenCalls: countingVault.openCalls,
-    gatewayTouches: accessKeys.touches,
+    authTouches,
     stop: () => close(server),
   };
 }
@@ -860,33 +851,37 @@ class CountingCredentialVault implements CredentialVault {
   }
 }
 
-class InMemoryAccessKeyRepository implements GatewayAccessKeyRepository {
-  private readonly records = new Map<string, GatewayAccessKeyRecord>();
-  public readonly touches: string[] = [];
+class FixtureClientCredentialsAuthenticator implements Authenticator {
+  public constructor(private readonly options: {
+    apiKey: string;
+    webId: string;
+    clientId: string;
+    clientSecret: string;
+    touches: string[];
+  }) {}
 
-  public async create(record: GatewayAccessKeyRecord): Promise<GatewayAccessKeyRecord> {
-    this.records.set(record.id, record);
-    return record;
+  public canAuthenticate(request: IncomingMessage): boolean {
+    return request.headers.authorization?.startsWith('Bearer sk-') === true;
   }
 
-  public async findById(id: string): Promise<GatewayAccessKeyRecord | undefined> {
-    return this.records.get(id);
-  }
-
-  public async listByOwner(owner: string): Promise<GatewayAccessKeyRecord[]> {
-    return Array.from(this.records.values()).filter((record) => record.owner === owner);
-  }
-
-  public async revoke(id: string, revokedAt: Date): Promise<GatewayAccessKeyRecord | undefined> {
-    const record = this.records.get(id);
-    if (!record) return undefined;
-    const revoked = { ...record, revokedAt };
-    this.records.set(id, revoked);
-    return revoked;
-  }
-
-  public async touchLastUsed(id: string): Promise<void> {
-    this.touches.push(id);
+  public async authenticate(request: IncomingMessage): Promise<AuthResult> {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/iu, '').trim();
+    if (token !== this.options.apiKey) {
+      return { success: false, error: 'Invalid fixture Solid client credentials', category: 'invalid_credentials' };
+    }
+    this.options.touches.push(this.options.clientId);
+    return {
+      success: true,
+      context: {
+        type: 'solid',
+        webId: this.options.webId,
+        clientId: this.options.clientId,
+        clientSecret: this.options.clientSecret,
+        viaApiKey: true,
+        accessToken: token,
+        tokenType: 'Bearer',
+      },
+    };
   }
 }
 
@@ -1092,7 +1087,7 @@ function verifyProjectedCodexHome(codexHome: string, expected: { baseUrl: string
     throw new Error('Codex config did not select Responses wire API');
   }
   if (auth.OPENAI_API_KEY !== expected.apiKey) {
-    throw new Error('Codex auth did not receive Gateway API key');
+    throw new Error('Codex auth did not receive API key');
   }
 }
 
@@ -1103,7 +1098,8 @@ interface FixtureReport {
   tempRoot?: string;
   provenance: {
     webId: string;
-    gatewayKeyId: string;
+    authType: 'client_credentials';
+    clientIdHash: string;
     credentialIri: string;
     credentialProvider: string;
     credentialSource: 'pod-secret-cell';
@@ -1118,7 +1114,7 @@ interface FixtureReport {
     responses: FixtureXpodGateway['xpodResponses'];
     credentialStoreCalls: FixtureXpodGateway['credentialStoreCalls'];
     vaultOpenCalls: FixtureXpodGateway['vaultOpenCalls'];
-    gatewayTouches: string[];
+    authTouches: string[];
   };
   upstream: {
     requestCount: number;
@@ -1143,7 +1139,8 @@ function buildFixtureReport(input: {
     tempRoot: input.tempRoot,
     provenance: {
       webId: FIXTURE_WEB_ID,
-      gatewayKeyId: input.xpod.gatewayKeyId,
+      authType: 'client_credentials',
+      clientIdHash: input.xpod.clientIdHash,
       credentialIri: input.xpod.vaultOpenCalls[0]?.credentialIri ?? 'missing',
       credentialProvider: input.xpod.vaultOpenCalls[0]?.provider ?? 'missing',
       credentialSource: 'pod-secret-cell',
@@ -1161,7 +1158,7 @@ function buildFixtureReport(input: {
       responses: input.xpod.xpodResponses,
       credentialStoreCalls: input.xpod.credentialStoreCalls,
       vaultOpenCalls: input.xpod.vaultOpenCalls,
-      gatewayTouches: input.xpod.gatewayTouches,
+      authTouches: input.xpod.authTouches,
     },
     upstream: {
       requestCount: input.upstream.requests.length,
@@ -1205,8 +1202,8 @@ function assertFixtureReport(report: FixtureReport): void {
   if (report.xpod.vaultOpenCalls.length < 3 || !report.xpod.vaultOpenCalls.every((call) => call.webId === FIXTURE_WEB_ID)) {
     throw new Error('SecretCell credential open provenance is incomplete');
   }
-  if (report.xpod.gatewayTouches.length < 3) {
-    throw new Error('Gateway API key authenticator did not touch successful uses');
+  if (report.xpod.authTouches.length < 3) {
+    throw new Error('Client credentials authenticator did not touch successful uses');
   }
   if (report.upstream.requestCount < 3 || report.upstream.bearerHeaders.some((header) => header !== 'Bearer <redacted>')) {
     throw new Error('Upstream fixture did not receive provider-token authenticated requests');
@@ -1217,7 +1214,7 @@ function assertRealCodexReport(report: any, apiKey: string): void {
   validateRealCodexProvenance({
     baseUrl: report.provenance?.xpodBaseUrl,
     model: report.provenance?.model,
-    gatewayKey: apiKey,
+    apiKey,
     provenance: report.provenance,
   });
   if (!report.restoreVerified) {
@@ -1244,7 +1241,7 @@ function assertRealCodexReport(report: any, apiKey: string): void {
     throw new Error('Real Codex tool run did not return the sentinel');
   }
   const serialized = JSON.stringify(report);
-  if (serialized.includes(apiKey) || /xpod_gw_v1_[A-Za-z0-9._-]+/.test(serialized) || /sk-[A-Za-z0-9._-]+/.test(serialized)) {
+  if (serialized.includes(apiKey) || /sk-[A-Za-z0-9._-]+/.test(serialized)) {
     throw new Error('Real Codex report contains secret material');
   }
 }
@@ -1261,7 +1258,7 @@ function withArtifactHash<T extends { provenance: { artifactHash: string } }>(re
 
 function sanitize(value: string): string {
   return value
-    .replaceAll(/xpod_gw_v1_[A-Za-z]+_[A-Za-z0-9_-]+_[A-Za-z0-9-]+/gu, 'xpod_gw_v1_<redacted>')
+    .replaceAll(/sk-[A-Za-z0-9._=-]+/gu, 'sk-<redacted>')
     .replaceAll(/fixture-upstream-token/gu, '<redacted-provider-token>');
 }
 

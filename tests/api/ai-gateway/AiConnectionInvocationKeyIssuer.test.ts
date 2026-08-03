@@ -5,14 +5,14 @@ import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/I
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
-const AI_CONNECTION_INVOCATION_SCOPES = ['models:read', 'inference:write'];
+const AI_CONNECTION_INVOCATION_SCOPES = ['client-config:read', 'client-config:write'];
 const SCOPES = AI_CONNECTION_INVOCATION_SCOPES;
 const AUDIENCE = 'https://pod.example';
 
 function requestWith(token: string): any {
   return {
     method: 'GET',
-    url: '/v1/models',
+    url: '/api/ai/client-configuration/codex',
     headers: { authorization: `Bearer ${token}` },
   };
 }
@@ -32,14 +32,14 @@ describe('AiConnectionInvocationKeyIssuer', () => {
     });
     const context = { auth: { type: 'solid' as const, webId: WEB_ID } };
 
-    const concurrent = await Promise.all(Array.from({ length: 20 }, () => issuer.issue(context)));
-    expect(new Set(concurrent.map((entry) => entry.gatewayKey)).size).toBe(1);
+    const concurrent = await Promise.all(Array.from({ length: 20 }, () => issuer.issueClientConfiguration(context)));
+    expect(new Set(concurrent.map((entry) => entry.apiKey)).size).toBe(1);
     expect(new Set(concurrent.map((entry) => entry.expiresAt)).size).toBe(1);
     now = new Date('2026-07-24T00:04:20.000Z');
-    expect((await issuer.issue(context)).gatewayKey).toBe(concurrent[0].gatewayKey);
+    expect((await issuer.issueClientConfiguration(context)).apiKey).toBe(concurrent[0].apiKey);
   });
 
-  it('rotates before expiry and authenticates as the current WebID with minimal scopes', async () => {
+  it('rotates before expiry and authenticates as the current WebID with client-config-only scopes', async () => {
     let now = new Date('2026-07-24T00:00:00.000Z');
     const codec = new AesInvocationTokenCodec({
       active: { kid: 'active', secret: 'invocation-secret' },
@@ -54,11 +54,11 @@ describe('AiConnectionInvocationKeyIssuer', () => {
       now: () => now,
     });
     const context = { auth: { type: 'solid' as const, webId: WEB_ID } };
-    const first = await issuer.issue(context);
+    const first = await issuer.issueClientConfiguration(context);
 
     now = new Date('2026-07-24T00:04:31.000Z');
-    const rotated = await issuer.issue(context);
-    expect(rotated.gatewayKey).not.toBe(first.gatewayKey);
+    const rotated = await issuer.issueClientConfiguration(context);
+    expect(rotated.apiKey).not.toBe(first.apiKey);
     expect(rotated.expiresAt).toBe('2026-07-24T00:09:31.000Z');
 
     const authenticator = new InvocationTokenAuthenticator({
@@ -67,10 +67,7 @@ describe('AiConnectionInvocationKeyIssuer', () => {
       audience: 'http://127.0.0.1:3000',
       now: () => now,
     });
-    const authenticated = await authenticator.authenticate({
-      ...requestWith(rotated.gatewayKey),
-      url: '/v1/models',
-    });
+    const authenticated = await authenticator.authenticate(requestWith(rotated.apiKey));
     expect(authenticated).toMatchObject({
       success: true,
       context: {
@@ -81,6 +78,18 @@ describe('AiConnectionInvocationKeyIssuer', () => {
         scopes: AI_CONNECTION_INVOCATION_SCOPES,
       },
     });
+  });
+
+  it('rejects interactive Solid auth for runtime inference issuance', async () => {
+    const issuer = new AiConnectionInvocationKeyIssuer({
+      codec: new AesInvocationTokenCodec({ active: { kid: 'active', secret: 'invocation-secret' } }),
+      deployment: 'local',
+      baseUrl: 'http://127.0.0.1:3000/v1',
+    });
+
+    await expect(issuer.issue({
+      auth: { type: 'solid', webId: WEB_ID },
+    })).rejects.toThrow(/delegated Solid client credentials/);
   });
 
   it('fails closed for untrusted, incomplete client credentials, and non-canonical Solid identities', async () => {
@@ -98,7 +107,7 @@ describe('AiConnectionInvocationKeyIssuer', () => {
     await expect(issuer.issue({
       auth: { type: 'solid', webId: WEB_ID, viaApiKey: true },
     })).rejects.toThrow(/authenticated Solid WebID/);
-    await expect(issuer.issue({
+    await expect(issuer.issueClientConfiguration({
       auth: { type: 'solid', webId: 'HTTPS://pod.example:443/alice/../alice/profile/card#me' },
     })).rejects.toThrow(/canonical/);
   });
@@ -120,7 +129,7 @@ describe('AiConnectionInvocationKeyIssuer', () => {
       },
     });
 
-    expect(Buffer.from(result.gatewayKey.slice(3), 'base64').toString('utf8'))
+    expect(Buffer.from(result.apiKey.slice(3), 'base64').toString('utf8'))
       .toBe('task-client:task-secret');
     expect(result.expiresAt).toBeUndefined();
   });
@@ -135,7 +144,7 @@ describe('AiConnectionInvocationKeyIssuer', () => {
     const result = await issuer.issueClientConfiguration({
       auth: { type: 'solid', webId: WEB_ID },
     });
-    expect(codec.decode(result.gatewayKey)?.scopes).toEqual(['client-config:read', 'client-config:write']);
+    expect(codec.decode(result.apiKey)?.scopes).toEqual(['client-config:read', 'client-config:write']);
   });
 });
 

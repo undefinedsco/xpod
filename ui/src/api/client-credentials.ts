@@ -22,9 +22,11 @@ export function encodeClientCredentialsApiKey(clientId: string, clientSecret: st
 
 export function createAccountControlsClientCredentialManager(
   clientCredentialsUrl: string | undefined,
+  currentWebId: string | undefined,
   fetchImpl: typeof fetch = fetch,
 ): AiClientCredentialManager | undefined {
-  if (!clientCredentialsUrl) return undefined;
+  if (!clientCredentialsUrl || !currentWebId) return undefined;
+  const allowedResourceUrls = new Set<string>();
   return {
     available: true,
     accountUrl: '/.account/',
@@ -36,9 +38,13 @@ export function createAccountControlsClientCredentialManager(
       });
       if (!response.ok) throw new Error('Failed to list Client Credentials');
       const payload = await response.json() as ClientCredentialsResponse;
-      return normalizeClientCredentialRecords(payload.clientCredentials);
+      const records = normalizeClientCredentialRecords(payload.clientCredentials)
+        .filter((record) => record.webId === currentWebId);
+      for (const record of records) allowedResourceUrls.add(record.resourceUrl);
+      return records;
     },
     async create(input) {
+      if (input.webId !== currentWebId) throw new Error('Cannot create a Client Credential for another WebID');
       const response = await fetchImpl(clientCredentialsUrl, {
         method: 'POST',
         headers: storedAccountTokenHeaders({
@@ -53,9 +59,14 @@ export function createAccountControlsClientCredentialManager(
       });
       if (!response.ok) throw new Error('Failed to create Client Credential');
       const payload = await response.json() as CreatedClientCredentialResponse;
-      return normalizeCreatedClientCredential(payload, input.webId, clientCredentialsUrl);
+      const created = normalizeCreatedClientCredential(payload, input.webId, clientCredentialsUrl);
+      allowedResourceUrls.add(created.resourceUrl);
+      return created;
     },
     async revoke(resourceUrl) {
+      if (!allowedResourceUrls.has(resourceUrl)) {
+        throw new Error('Cannot revoke a Client Credential outside the current WebID');
+      }
       const response = await fetchImpl(resourceUrl, {
         method: 'DELETE',
         headers: storedAccountTokenHeaders({ Accept: 'application/json' }),

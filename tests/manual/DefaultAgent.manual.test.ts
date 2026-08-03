@@ -3,7 +3,7 @@
  *
  * Requirements:
  * - AI_CONNECTION_BASE_URL (Xpod /v1 gateway endpoint)
- * - AI_CONNECTION_API_KEY (Xpod-issued gateway key, not raw provider secret)
+ * - AI_CONNECTION_API_KEY (Xpod-issued API key, not raw provider secret)
  * - Claude Code CLI installed (or set CLAUDE_CODE_PATH)
  *
  * Notes:
@@ -71,7 +71,7 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
           maxTurns: 2,
           connection: {
             baseUrl: process.env.AI_CONNECTION_BASE_URL!,
-            gatewayKey: process.env.AI_CONNECTION_API_KEY!,
+            apiKey: process.env.AI_CONNECTION_API_KEY!,
           },
         },
       );
@@ -99,7 +99,7 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
           maxTurns: 2,
           connection: {
             baseUrl: process.env.AI_CONNECTION_BASE_URL!,
-            gatewayKey: process.env.AI_CONNECTION_API_KEY!,
+            apiKey: process.env.AI_CONNECTION_API_KEY!,
           },
         },
       );

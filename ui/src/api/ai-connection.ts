@@ -34,11 +34,7 @@ export function createXpodAiConnectionClient({
   return createAiConnectionClient({
     webId,
     podBaseUrl: podUrl,
-    authenticatedFetch: createServiceAccessGatewayFetch({
-      podUrl,
-      authenticatedFetch,
-      now,
-    }),
+    authenticatedFetch,
   });
 }
 

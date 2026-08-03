@@ -35,7 +35,7 @@ describe('Task service Run materialization', () => {
     const invocationKeyIssuer = {
       issue: vi.fn(async () => ({
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'task-invocation-secret',
+        apiKey: 'task-invocation-secret',
         model: 'linx',
       })),
     };
@@ -91,7 +91,7 @@ describe('Task service Run materialization', () => {
         webId: 'http://localhost/alice/profile/card#me',
       }),
     }));
-    expect(backend.inputs[0].config.aiConnection?.gatewayKey).toBe('task-invocation-secret');
+    expect(backend.inputs[0].config.aiConnection?.apiKey).toBe('task-invocation-secret');
     expect(backend.inputs[0]).toMatchObject({
       runId: result.run?.id,
       prompt: 'ship this once',

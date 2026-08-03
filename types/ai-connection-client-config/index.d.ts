@@ -1,7 +1,7 @@
 declare module '@undefineds.co/ai-connection/client-config' {
   export interface AiConnectionClientProfile {
     endpoint: string;
-    gatewayKey: string;
+    apiKey?: string;
     webId: string;
     model?: string;
   }

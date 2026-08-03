@@ -193,7 +193,7 @@ describe('Inngest Task scheduler', () => {
     const invocationKeyIssuer = {
       issue: vi.fn(async () => ({
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'scheduled-task-invocation-secret',
+        apiKey: 'scheduled-task-invocation-secret',
         model: 'linx',
       })),
     };
@@ -255,7 +255,7 @@ describe('Inngest Task scheduler', () => {
         webId: 'http://localhost/alice/profile/card#me',
       }),
     }));
-    expect(runtimeDriver.inputs[0].config.aiConnection?.gatewayKey).toBe('scheduled-task-invocation-secret');
+    expect(runtimeDriver.inputs[0].config.aiConnection?.apiKey).toBe('scheduled-task-invocation-secret');
     expect(JSON.stringify(result[0].run.metadata)).not.toContain('scheduled-task-invocation-secret');
   });
 });

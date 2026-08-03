@@ -92,7 +92,7 @@ export interface DefaultAgentAiConnection {
   /** Xpod AI Connection endpoint, usually the current /v1 gateway URL */
   baseUrl: string;
   /** Xpod-issued gateway key for this invocation */
-  gatewayKey: string;
+  apiKey: string;
 }
 
 /**
@@ -150,7 +150,7 @@ export function getDefaultAgentConfig(input: {
 export function isDefaultAgentAvailable(input: {
   connection?: DefaultAgentAiConnection;
 } = {}): boolean {
-  return Boolean(input.connection?.baseUrl?.trim() && input.connection?.gatewayKey?.trim());
+  return Boolean(input.connection?.baseUrl?.trim() && input.connection?.apiKey?.trim());
 }
 
 /**
@@ -236,7 +236,7 @@ curl -s -X PUT \\
 function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext): NodeJS.ProcessEnv {
   const connection = requireAiConnectionRuntimeConfig({
     baseUrl: config.connection?.baseUrl,
-    apiKey: config.connection?.gatewayKey,
+    apiKey: config.connection?.apiKey,
     model: config.model,
   }, 'Default Agent');
 

@@ -9,7 +9,8 @@ const CLIENT_CREDENTIALS_URL = 'https://pod.example/.account/client-credentials/
 
 describe('account controls Client Credentials manager', () => {
   it('is unavailable when account controls do not expose a Client Credentials endpoint', () => {
-    expect(createAccountControlsClientCredentialManager(undefined)).toBeUndefined();
+    expect(createAccountControlsClientCredentialManager(undefined, WEB_ID)).toBeUndefined();
+    expect(createAccountControlsClientCredentialManager(CLIENT_CREDENTIALS_URL, undefined)).toBeUndefined();
   });
 
   it('lists, creates, encodes, and revokes Solid Client Credentials through account controls', async () => {
@@ -35,6 +36,7 @@ describe('account controls Client Credentials manager', () => {
         return json({
           clientCredentials: {
             'https://pod.example/.account/client-credentials/existing-id/': WEB_ID,
+            'https://pod.example/.account/client-credentials/bob-id/': 'https://pod.example/bob/profile/card#me',
           },
         });
       }
@@ -52,7 +54,7 @@ describe('account controls Client Credentials manager', () => {
       return new Response(null, { status: 405 });
     }) as typeof fetch;
 
-    const manager = createAccountControlsClientCredentialManager(CLIENT_CREDENTIALS_URL, fetchImpl);
+    const manager = createAccountControlsClientCredentialManager(CLIENT_CREDENTIALS_URL, WEB_ID, fetchImpl);
 
     await expect(manager?.list()).resolves.toEqual([{
       id: 'existing-id',
@@ -69,6 +71,8 @@ describe('account controls Client Credentials manager', () => {
       apiKey: encodeClientCredentialsApiKey('created-id', 'created-secret'),
     });
     await manager?.revoke('https://pod.example/.account/client-credentials/created-id/');
+    await expect(manager?.revoke('https://pod.example/.account/client-credentials/bob-id/'))
+      .rejects.toThrow('outside the current WebID');
 
     expect(calls.map((call) => [call.method, call.url])).toEqual([
       ['GET', CLIENT_CREDENTIALS_URL],

@@ -19,8 +19,6 @@ const CLIENT_CONFIG_CAPABILITY = '/api/ai/client-configuration/capability';
 const ALLOWED_INVOCATION_SCOPES = new Set([
   'client-config:read',
   'client-config:write',
-  'models:read',
-  'inference:write',
 ]);
 
 export class InvocationTokenAuthenticator implements Authenticator {
@@ -86,12 +84,6 @@ function requiredScope(request: IncomingMessage): string | undefined {
   const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
   if (pathname === CLIENT_CONFIG_CAPABILITY || pathname.startsWith(CLIENT_CONFIG_PREFIX)) {
     return request.method === 'GET' ? 'client-config:read' : 'client-config:write';
-  }
-  if (pathname === '/v1/models') {
-    return 'models:read';
-  }
-  if (pathname === '/v1/responses' || pathname === '/v1/messages' || pathname === '/v1/chat/completions') {
-    return 'inference:write';
   }
   return undefined;
 }

@@ -98,7 +98,7 @@ async function runSmoke(runner: RunnerType): Promise<{
     ...(runner === 'codebuddy' ? {} : {
       aiConnection: {
         baseUrl: process.env.AI_CONNECTION_BASE_URL,
-        gatewayKey: process.env.AI_CONNECTION_API_KEY,
+        apiKey: process.env.AI_CONNECTION_API_KEY,
         model: process.env.DEFAULT_MODEL ?? 'linx',
       },
     }),
@@ -147,7 +147,7 @@ async function runSmoke(runner: RunnerType): Promise<{
       }
     }
   }
-  expect(persistedRunJson.join('\n')).not.toContain('gatewayKey');
+  expect(persistedRunJson.join('\n')).not.toContain('apiKey');
   expect(persistedRunJson.join('\n')).not.toContain(process.env.AI_CONNECTION_API_KEY ?? '__missing__');
 
   return { sawAnyEvent, sawAssistantDone, assistantText, sawAuthRequired, runtimeError };

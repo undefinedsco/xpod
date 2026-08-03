@@ -185,7 +185,7 @@ describe('Executor With Options Constructor', () => {
     credential,
     aiConnection: {
       baseUrl: 'http://127.0.0.1:3000/v1',
-      gatewayKey: 'gateway-key',
+      apiKey: 'gateway-key',
     },
   };
 
@@ -280,7 +280,7 @@ describe('ClaudeExecutor', () => {
   };
   const aiConnection = {
     baseUrl: 'http://127.0.0.1:3000/v1',
-    gatewayKey: 'gateway-key',
+    apiKey: 'gateway-key',
   };
 
   beforeEach(() => {
@@ -455,7 +455,7 @@ describe('AgentExecutorFactory', () => {
       credential: { providerId: 'anthropic', apiKey: 'key' },
       aiConnection: {
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
+        apiKey: 'gateway-key',
       },
     });
     expect(executor.executorType).toBe('claude');
@@ -495,7 +495,7 @@ describe('AgentExecutorFactory', () => {
       apiKey: 'direct-key',
     }, {
       baseUrl: 'http://127.0.0.1:3000/v1',
-      gatewayKey: 'gateway-key',
+      apiKey: 'gateway-key',
     });
     expect(executor.executorType).toBe('claude');
     expect(executor.providerId).toBe('xpod');
@@ -524,7 +524,7 @@ describe('Usage Statistics', () => {
       credential: { providerId: 'anthropic', apiKey: 'key' },
       aiConnection: {
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'gateway-key',
+        apiKey: 'gateway-key',
       },
     });
     const result = await executor.executeAndWait(testConfig, 'Test');

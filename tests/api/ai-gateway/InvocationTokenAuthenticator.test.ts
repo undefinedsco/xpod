@@ -38,9 +38,7 @@ describe('InvocationTokenAuthenticator', () => {
     });
 
     expect(authenticator.canAuthenticate(requestWith(token, '/api/ai/client-configuration/codex'))).toBe(true);
-    expect(authenticator.canAuthenticate(requestWith(token, '/v1/models'))).toBe(true);
-    await expect(authenticator.authenticate(requestWith(token, '/v1/models')))
-      .resolves.toMatchObject({ success: false, statusCode: 401 });
+    expect(authenticator.canAuthenticate(requestWith(token, '/v1/models'))).toBe(false);
 
     await expect(authenticator.authenticate(requestWith(token, '/api/ai/client-configuration/codex')))
       .resolves
@@ -50,13 +48,13 @@ describe('InvocationTokenAuthenticator', () => {
           type: 'solid',
           webId: WEB_ID,
           accountId: WEB_ID,
-        internalInvocation: true,
+          internalInvocation: true,
           scopes: ['client-config:read', 'client-config:write'],
         },
       });
   });
 
-  it('enforces inference scopes by route without granting client configuration access', async () => {
+  it('rejects inference scopes and never authenticates inference routes', async () => {
     const codec = new AesInvocationTokenCodec({
       active: { kid: 'active', secret: 'invocation-secret' },
     });
@@ -76,10 +74,8 @@ describe('InvocationTokenAuthenticator', () => {
       now: () => new Date('2026-08-04T00:01:00.000Z'),
     });
 
-    await expect(authenticator.authenticate(requestWith(token, '/v1/models')))
-      .resolves.toMatchObject({ success: true });
-    await expect(authenticator.authenticate(requestWith(token, '/v1/responses', 'POST')))
-      .resolves.toMatchObject({ success: true });
+    expect(authenticator.canAuthenticate(requestWith(token, '/v1/models'))).toBe(false);
+    expect(authenticator.canAuthenticate(requestWith(token, '/v1/responses', 'POST'))).toBe(false);
     await expect(authenticator.authenticate(requestWith(token, '/api/ai/client-configuration/codex', 'POST')))
       .resolves
       .toMatchObject({

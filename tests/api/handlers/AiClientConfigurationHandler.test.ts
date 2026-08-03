@@ -10,6 +10,8 @@ import {
   type AiClientId,
 } from '../../../src/api/service/AiClientConfigurationService';
 import { registerAiClientConfigurationRoutes } from '../../../src/api/handlers/AiClientConfigurationHandler';
+import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/InvocationTokenAuthenticator';
+import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
 
 interface TestResponse {
   statusCode: number;
@@ -228,9 +230,32 @@ describe('AiClientConfigurationHandler', () => {
     );
     expect(denied.statusCode).toBe(403);
 
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'test', secret: 'handler-invocation-secret' } });
+    const token = codec.encode({
+      deployment: 'local',
+      audience: ENDPOINT,
+      issuer: ENDPOINT,
+      webId: WEB_ID,
+      scopes: ['client-config:read'],
+      issuedAt: new Date('2026-07-31T07:59:00.000Z'),
+      expiresAt: new Date('2026-07-31T08:01:00.000Z'),
+    });
+    const authentication = await new InvocationTokenAuthenticator({
+      codec,
+      deployment: 'local',
+      audience: ENDPOINT,
+      now: () => new Date('2026-07-31T08:00:00.000Z'),
+    }).authenticate({
+      method: 'GET',
+      url: '/api/ai/client-configuration/codex',
+      headers: { authorization: `Bearer ${token}` },
+    } as never);
+    expect(authentication.success).toBe(true);
+    if (!authentication.success) throw new Error('Expected invocation authentication to succeed');
+
     const allowed = response();
     await route('GET /api/ai/client-configuration/:client')(
-      jsonRequest(undefined, scopedAuth('client-config:read')),
+      jsonRequest(undefined, authentication.context),
       allowed,
       { client: 'codex' },
     );
@@ -448,7 +473,6 @@ function scopedAuth(scope: 'client-config:read' | 'client-config:write'): Authen
   return {
     type: 'solid',
     webId: WEB_ID,
-    viaApiKey: true,
     internalInvocation: true,
     scopes: scope === 'client-config:read'
       ? ['client-config:read']

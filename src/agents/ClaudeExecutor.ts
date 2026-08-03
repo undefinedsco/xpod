@@ -82,7 +82,7 @@ export class ClaudeExecutor extends BaseAgentExecutor {
   private requireAiConnection() {
     return requireAiConnectionRuntimeConfig({
       baseUrl: this.aiConnection?.baseUrl,
-      apiKey: this.aiConnection?.gatewayKey,
+      apiKey: this.aiConnection?.apiKey,
       model: this.aiConnection?.model,
     }, 'Claude executor');
   }

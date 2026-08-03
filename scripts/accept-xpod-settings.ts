@@ -68,8 +68,8 @@ export interface EvidenceArtifact {
 
 export interface RealCodexProvenance {
   webId: string;
-  gatewayKeyId: string;
-  gatewayKeyFingerprint: string;
+  authType: 'client_credentials' | 'solid_oidc' | 'solid_dpop';
+  clientIdHash?: string;
   credentialIriHash: string;
   secretCellRefHash: string;
   providerId: string;
@@ -154,7 +154,7 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   },
   {
     id: 'real-codex',
-    title: 'Real Codex uses a stored Xpod credential and Gateway key',
+    title: 'Real Codex uses Solid client credentials and a stored Xpod credential',
     source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 6',
   },
   {
@@ -166,7 +166,7 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
 
 const SECRET_KEY_PATTERN = /(api[-_]?key|gateway[-_]?key|token|secret|authorization|oauth[-_]?code|password|passwd|credential)$/i;
 const SECRET_ENV_KEY_PATTERN = /(secret|token|key|password|passwd|authorization|credential|oauth[-_]?code)/i;
-const SECRET_VALUE_PATTERN = /\b(?:sk-[A-Za-z0-9._-]+|xpod_gw_v1_[A-Za-z0-9._-]+|Bearer\s+[A-Za-z0-9._-]+|oauth-code-[A-Za-z0-9._-]+)\b/g;
+const SECRET_VALUE_PATTERN = /(?:\bsk-[A-Za-z0-9._=-]+|\bBearer\s+[A-Za-z0-9._=-]+|\boauth-code-[A-Za-z0-9._-]+)/g;
 const URL_CREDENTIAL_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s?#@]+@)([^/\s?#]+)/gi;
 const URL_WITH_USERINFO_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s?#@]+@[^/\s?#]+/i;
 const PROXY_ENV_KEY_PATTERN = /^(https?|all)_proxy$/i;
@@ -186,7 +186,7 @@ const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_SETTINGS_E2E_TEST_API_KEY',
   'XPOD_ACCEPTANCE_XPOD_BASE_URL',
   'XPOD_ACCEPTANCE_MODEL',
-  'XPOD_ACCEPTANCE_GATEWAY_KEY',
+  'XPOD_ACCEPTANCE_API_KEY',
   'XPOD_ACCEPTANCE_OAUTH_EVIDENCE',
   'XPOD_ACCEPTANCE_EVIDENCE_ROOT',
   'XPOD_ACCEPTANCE_OAUTH_EVIDENCE_AUDITED_EXTERNAL',
@@ -395,7 +395,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       status: runCodex && hasRealCodexEnv(env) ? 'skip' : 'not_complete',
       reason: runCodex
         ? missingRealCodexReason(env)
-        : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, XPOD_ACCEPTANCE_GATEWAY_KEY with acceptance:read, and a stored provider credential.',
+        : 'Requires XPOD_ACCEPTANCE_RUN_CODEX=true, XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, XPOD_ACCEPTANCE_API_KEY as sk-base64(client_id:client_secret), and a stored provider credential.',
       commands: ['bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url "$XPOD_ACCEPTANCE_XPOD_BASE_URL" --model "$XPOD_ACCEPTANCE_MODEL" --api-key-stdin'],
       evidence: ['scripts/ai-gateway-codex-smoke.ts real Codex mode writes redacted provenance JSON; fixture flags are not accepted.'],
       gate: runCodex && hasRealCodexEnv(env) ? shellGate([
@@ -410,7 +410,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         '--report-dir',
         '.test-data/acceptance/codex-real',
       ], 10 * 60 * 1000, env, {
-        stdinEnvKey: 'XPOD_ACCEPTANCE_GATEWAY_KEY',
+        stdinEnvKey: 'XPOD_ACCEPTANCE_API_KEY',
       }) : undefined,
     },
     {
@@ -506,13 +506,13 @@ function hasRealCodexEnv(env: Record<string, string | undefined>): boolean {
   return Boolean(
     env.XPOD_ACCEPTANCE_ENDPOINTS_ENABLED === 'true' &&
     env.XPOD_ACCEPTANCE_XPOD_BASE_URL &&
-    env.XPOD_ACCEPTANCE_GATEWAY_KEY
+    env.XPOD_ACCEPTANCE_API_KEY
   );
 }
 
 function missingRealCodexReason(env: Record<string, string | undefined>): string {
   if (hasRealCodexEnv(env)) return 'Real Codex gate is enabled and must execute.';
-  return 'Requires XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, and XPOD_ACCEPTANCE_GATEWAY_KEY with acceptance:read; Gateway key must be supplied by env/stdin, not as a command argument.';
+  return 'Requires XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true on the Xpod runtime, XPOD_ACCEPTANCE_XPOD_BASE_URL, and XPOD_ACCEPTANCE_API_KEY as sk-base64(client_id:client_secret); API key must be supplied by env/stdin, not as a command argument.';
 }
 
 async function validateEvidenceArtifact(gate: ArtifactGate, requirementId: string, nowIso: string): Promise<EvidenceArtifact> {
@@ -564,16 +564,17 @@ export function canonicalAcceptanceArtifactHash(input: unknown): string {
 export function validateRealCodexProvenance(input: {
   baseUrl: string;
   model: string;
-  gatewayKey: string;
+  apiKey: string;
   provenance: unknown;
 }): RealCodexProvenance & { secretMaterialPrinted: false } {
   const provenance = input.provenance as Partial<RealCodexProvenance> | undefined;
   if (!provenance || typeof provenance !== 'object') throw new Error('Real Codex provenance missing');
-  const expectedFingerprint = `sha256:${canonicalAcceptanceArtifactHash(input.gatewayKey)}`;
   const errors: string[] = [];
   if (!isHttpUrl(provenance.webId)) errors.push('webId must be a valid http URL');
-  if (!nonEmptyString(provenance.gatewayKeyId)) errors.push('gatewayKeyId missing');
-  if (provenance.gatewayKeyFingerprint !== expectedFingerprint) errors.push('gateway key fingerprint mismatch');
+  if (!['client_credentials', 'solid_oidc', 'solid_dpop'].includes(String(provenance.authType))) errors.push('authType missing');
+  if (provenance.authType === 'client_credentials' && !/^sha256:[a-f0-9]{64}$/i.test(String(provenance.clientIdHash))) {
+    errors.push('clientIdHash missing');
+  }
   if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.credentialIriHash))) errors.push('credentialIriHash missing');
   if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.secretCellRefHash))) errors.push('secretCellRefHash missing');
   if (!nonEmptyString(provenance.providerId)) errors.push('providerId missing');
@@ -582,14 +583,14 @@ export function validateRealCodexProvenance(input: {
   if (!Number.isFinite(Date.parse(String(provenance.generatedAt)))) errors.push('generatedAt missing');
   if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.commandHash))) errors.push('commandHash missing');
   if (!/^sha256:[a-f0-9]{64}$/i.test(String(provenance.resultHash))) errors.push('resultHash missing');
-  if (JSON.stringify(provenance).includes(input.gatewayKey) || /sk-[A-Za-z0-9._-]+/.test(JSON.stringify(provenance))) {
+  if (JSON.stringify(provenance).includes(input.apiKey) || /sk-[A-Za-z0-9._-]+/.test(JSON.stringify(provenance))) {
     errors.push('secret material printed');
   }
   if (errors.length > 0) throw new Error(errors.join('; '));
   return {
     webId: provenance.webId!,
-    gatewayKeyId: provenance.gatewayKeyId!,
-    gatewayKeyFingerprint: provenance.gatewayKeyFingerprint!,
+    authType: provenance.authType!,
+    clientIdHash: provenance.clientIdHash,
     credentialIriHash: provenance.credentialIriHash!,
     secretCellRefHash: provenance.secretCellRefHash!,
     providerId: provenance.providerId!,

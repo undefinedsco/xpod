@@ -62,7 +62,7 @@ function piAiConnectionAgentConfig(overrides: Record<string, unknown> = {}) {
 function piAiConnection(overrides: Record<string, unknown> = {}) {
   return {
     baseUrl: 'http://127.0.0.1:3000/v1',
-    gatewayKey: 'gateway-key',
+    apiKey: 'gateway-key',
     model: 'linx',
     ...overrides,
   };
@@ -579,7 +579,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     const invocationKeyIssuer = {
       issue: vi.fn(async () => ({
         baseUrl: 'http://127.0.0.1:3000/v1',
-        gatewayKey: 'invocation-fixture-secret',
+        apiKey: 'invocation-fixture-secret',
         model: 'linx',
       })),
     };
@@ -611,12 +611,12 @@ describe('Managed Agents Inngest Chat backend', () => {
           runner: { type: 'codex', protocol: 'pi' },
           aiConnection: {
             baseUrl: 'http://127.0.0.1:3000/v1',
-            gatewayKey: 'metadata-fixture-secret',
+            apiKey: 'metadata-fixture-secret',
             model: 'linx',
           },
           diagnostics: {
             nested: {
-              gatewayKey: 'nested-fixture-secret',
+              apiKey: 'nested-fixture-secret',
             },
           },
         },
@@ -645,8 +645,8 @@ describe('Managed Agents Inngest Chat backend', () => {
         webId: 'http://localhost/alice/profile/card#me',
       }),
     }));
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('invocation-fixture-secret');
-    expect(JSON.stringify(run.metadata)).not.toContain('gatewayKey');
+    expect(driver.inputs[0].config.aiConnection?.apiKey).toBe('invocation-fixture-secret');
+    expect(JSON.stringify(run.metadata)).not.toContain('apiKey');
     expect(JSON.stringify(run.metadata)).not.toContain('metadata-fixture-secret');
     expect(JSON.stringify(run.metadata)).not.toContain('invocation-fixture-secret');
     expect(JSON.stringify(run.metadata)).not.toContain('nested-fixture-secret');
@@ -1084,7 +1084,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       aiConnectionInvocationKeyIssuer: {
         issue: vi.fn(async () => ({
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'durable-fixture-secret',
+          apiKey: 'durable-fixture-secret',
           model: 'linx',
         })),
       },
@@ -1190,7 +1190,7 @@ describe('Managed Agents Inngest Chat backend', () => {
       },
       conversation: [],
     });
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('durable-fixture-secret');
+    expect(driver.inputs[0].config.aiConnection?.apiKey).toBe('durable-fixture-secret');
     expect(JSON.stringify((await store.loadRun(run.id, context)).metadata)).not.toContain('durable-fixture-secret');
 
     const completedRun = await store.loadRun(run.id, context);
@@ -1671,7 +1671,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         }
         return {
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: `continuation-fixture-secret-${issuedCount}`,
+          apiKey: `continuation-fixture-secret-${issuedCount}`,
           model: 'linx',
         };
       }),
@@ -1778,9 +1778,9 @@ describe('Managed Agents Inngest Chat backend', () => {
       }),
     }));
     expect(driver.inputs).toHaveLength(3);
-    expect(driver.inputs[0].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-1');
-    expect(driver.inputs[1].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-3');
-    expect(driver.inputs[2].config.aiConnection?.gatewayKey).toBe('continuation-fixture-secret-4');
+    expect(driver.inputs[0].config.aiConnection?.apiKey).toBe('continuation-fixture-secret-1');
+    expect(driver.inputs[1].config.aiConnection?.apiKey).toBe('continuation-fixture-secret-3');
+    expect(driver.inputs[2].config.aiConnection?.apiKey).toBe('continuation-fixture-secret-4');
     expect(JSON.stringify((await store.loadRun(runId, context)).metadata)).not.toContain('continuation-fixture-secret');
     expect(driver.inputs[2].runId).toBe(runId);
     expect(driver.inputs[2].continuation).toEqual({

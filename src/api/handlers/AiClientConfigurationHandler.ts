@@ -147,14 +147,14 @@ function hasClientConfigScope(auth: AuthContext, scope: 'client-config:read' | '
   if (auth.type === 'service') {
     return true;
   }
-  return auth.type === 'solid' && auth.viaApiKey === true && auth.internalInvocation === true;
+  return auth.type === 'solid' && auth.internalInvocation === true;
 }
 
 function readScopes(auth: AuthContext): string[] {
   if (auth.type === 'service') {
     return auth.scopes;
   }
-  if (auth.type === 'solid' && auth.viaApiKey === true) {
+  if (auth.type === 'solid' && auth.internalInvocation === true) {
     return auth.scopes ?? [];
   }
   return [];

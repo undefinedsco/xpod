@@ -180,7 +180,6 @@ export class AiClientConfigurationService {
     const profile = {
       endpoint: normalizeEndpoint(input.endpoint),
       apiKey: PLAN_SECRET_PLACEHOLDER,
-      gatewayKey: PLAN_SECRET_PLACEHOLDER,
       webId: input.webId ?? 'https://xpod.local/.well-known/ai-client-configuration#owner',
       model: input.model,
     };
@@ -232,7 +231,6 @@ export class AiClientConfigurationService {
       const profile = {
         ...plan.profile,
         apiKey: input.apiKey,
-        gatewayKey: input.apiKey,
         webId: input.webId ?? plan.profile.webId,
       };
       const adapter = this.adapterFor(plan.client);

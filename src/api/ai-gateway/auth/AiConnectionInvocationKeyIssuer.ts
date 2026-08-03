@@ -56,10 +56,10 @@ export class AiConnectionInvocationKeyIssuer {
     if (auth.viaApiKey === true && auth.clientId && auth.clientSecret) {
       return {
         baseUrl: this.baseUrl,
-        gatewayKey: encodeClientCredentialsApiKey(auth.clientId, auth.clientSecret),
+        apiKey: encodeClientCredentialsApiKey(auth.clientId, auth.clientSecret),
       };
     }
-    return this.issueScoped(auth, ['models:read', 'inference:write']);
+    throw new Error('AI Connection runtime execution requires delegated Solid client credentials');
   }
 
   public async issueClientConfiguration(context: StoreContext): Promise<AIConnectionInvocationConfig> {
@@ -111,7 +111,7 @@ export class AiConnectionInvocationKeyIssuer {
   private toInvocationConfig(invocation: CachedInvocation): AIConnectionInvocationConfig {
     return {
       baseUrl: this.baseUrl,
-      gatewayKey: invocation.plaintext,
+      apiKey: invocation.plaintext,
       expiresAt: invocation.expiresAt.toISOString(),
     };
   }

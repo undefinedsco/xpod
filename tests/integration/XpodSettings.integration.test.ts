@@ -409,18 +409,19 @@ describe('Xpod settings product acceptance harness', () => {
     expect(gatewayHandler).toContain('acceptanceEndpointsEnabled === true');
   });
 
-  it('documents that real Codex acceptance requires a dedicated acceptance scoped Gateway key', async () => {
+  it('documents that real Codex acceptance requires Solid client credentials', async () => {
     const docs = await readFile(path.resolve('docs/acceptance/xpod-light-settings.md'), 'utf8');
 
     expect(docs).toContain('XPOD_ACCEPTANCE_ENDPOINTS_ENABLED=true');
-    expect(docs).toContain('acceptance:read');
-    expect(docs).toContain('do not reuse a default user key');
+    expect(docs).toContain('XPOD_ACCEPTANCE_API_KEY');
+    expect(docs).toContain('sk-base64(client_id:client_secret)');
+    expect(docs).toContain('Do not reuse a raw provider key');
   });
 
   it('records only allowlisted gate environment presence without environment values in JSON or markdown evidence', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-acceptance-'));
     const secret = 'sk-task12-provider-secret';
-    const gatewayKey = 'xpod_gw_v1_task12_gateway_key';
+    const apiKey = `sk-${Buffer.from('task12-client:task12-secret').toString('base64')}`;
     const oauthCode = 'oauth-code-task12';
     const awsSecret = 'aws-secret-task12-value';
     const randomSecret = 'plain-random-secret-task12';
@@ -430,7 +431,7 @@ describe('Xpod settings product acceptance harness', () => {
         XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
         XPOD_ACCEPTANCE_XPOD_BASE_URL: 'http://127.0.0.1:3000',
         XPOD_ACCEPTANCE_PROVIDER_API_KEY: secret,
-        XPOD_ACCEPTANCE_GATEWAY_KEY: gatewayKey,
+        XPOD_ACCEPTANCE_API_KEY: apiKey,
         XPOD_ACCEPTANCE_OAUTH_CODE: oauthCode,
         AWS_SECRET_ACCESS_KEY: awsSecret,
         OPENAI_API_KEY: 'sk-task12-openai-secret',
@@ -441,16 +442,16 @@ describe('Xpod settings product acceptance harness', () => {
 
     const output = await writeAcceptanceEvidence(plan, {
       outputDir: tempRoot,
-      extraRedactionValues: [secret, gatewayKey, oauthCode],
+      extraRedactionValues: [secret, apiKey, oauthCode],
     });
     const json = await readFile(output.jsonPath, 'utf8');
     const markdown = await readFile(output.markdownPath, 'utf8');
 
     expect(json).not.toContain(secret);
-    expect(json).not.toContain(gatewayKey);
+    expect(json).not.toContain(apiKey);
     expect(json).not.toContain(oauthCode);
     expect(markdown).not.toContain(secret);
-    expect(markdown).not.toContain(gatewayKey);
+    expect(markdown).not.toContain(apiKey);
     expect(markdown).not.toContain(oauthCode);
     expect(json).not.toContain(awsSecret);
     expect(markdown).not.toContain(awsSecret);
@@ -471,7 +472,7 @@ describe('Xpod settings product acceptance harness', () => {
       XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true',
       XPOD_ACCEPTANCE_XPOD_BASE_URL: 'http://127.0.0.1:3000',
       XPOD_ACCEPTANCE_MODEL: 'gpt-5',
-      XPOD_ACCEPTANCE_GATEWAY_KEY: 'xpod_gw_v1_acceptance_secret',
+      XPOD_ACCEPTANCE_API_KEY: `sk-${Buffer.from('acceptance-client:acceptance-secret').toString('base64')}`,
       AWS_SECRET_ACCESS_KEY: 'aws-secret-task12-value',
       RANDOM_PASSWORD: 'random-password-task12-value',
       PUBLIC_FLAG: 'must-not-leak-to-child',
@@ -481,21 +482,21 @@ describe('Xpod settings product acceptance harness', () => {
     const gate = plan.items.find((item) => item.requirementId === 'real-codex')?.gate;
     expect(gate).toMatchObject({
       kind: 'command',
-      stdinEnvKey: 'XPOD_ACCEPTANCE_GATEWAY_KEY',
+      stdinEnvKey: 'XPOD_ACCEPTANCE_API_KEY',
     });
-    expect(gate?.kind === 'command' ? gate.command.join(' ') : '').not.toContain('XPOD_ACCEPTANCE_GATEWAY_KEY');
+    expect(gate?.kind === 'command' ? gate.command.join(' ') : '').not.toContain('XPOD_ACCEPTANCE_API_KEY');
 
     const runtimeEnv = buildGateRuntimeEnv(gate as any, env);
     expect(runtimeEnv).toMatchObject({
       PATH: '/usr/bin',
       HOME: '/tmp/home',
     });
-    expect(runtimeEnv.XPOD_ACCEPTANCE_GATEWAY_KEY).toBeUndefined();
+    expect(runtimeEnv.XPOD_ACCEPTANCE_API_KEY).toBeUndefined();
     expect(runtimeEnv.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(runtimeEnv.RANDOM_PASSWORD).toBeUndefined();
     expect(runtimeEnv.PUBLIC_FLAG).toBeUndefined();
     expect(acceptanceRedactionValues(env)).toEqual(expect.arrayContaining([
-      'xpod_gw_v1_acceptance_secret',
+      `sk-${Buffer.from('acceptance-client:acceptance-secret').toString('base64')}`,
       'aws-secret-task12-value',
       'random-password-task12-value',
     ]));
@@ -658,15 +659,14 @@ describe('Xpod settings product acceptance harness', () => {
     expect(script).toContain('Real Codex tool run did not return the sentinel');
   });
 
-  it('rejects real Codex provenance when the gateway key fingerprint or provider route is not runtime verified', () => {
+  it('rejects real Codex provenance when Solid auth provenance or provider route is not runtime verified', () => {
     expect(() => validateRealCodexProvenance({
       baseUrl: 'http://127.0.0.1:3000',
       model: 'gpt-5',
-      gatewayKey: 'xpod_gw_v1_local_keyid_secret',
+      apiKey: `sk-${Buffer.from('alice-client:alice-secret').toString('base64')}`,
       provenance: {
         webId: 'https://id.example/alice/profile/card#me',
-        gatewayKeyId: 'gak_alice',
-        gatewayKeyFingerprint: 'sha256:wrong',
+        authType: 'client_credentials',
         credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
@@ -676,19 +676,20 @@ describe('Xpod settings product acceptance harness', () => {
         commandHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         resultHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       },
-    })).toThrow(/fingerprint|provider route/i);
+    })).toThrow(/clientIdHash|provider route/i);
   });
 
-  it('accepts real Codex provenance only when gateway key and Pod credential metadata are cross-checked', () => {
-    const gatewayKey = 'xpod_gw_v1_local_keyid_secret';
+  it('accepts real Codex provenance only when Solid client credentials and Pod credential metadata are cross-checked', () => {
+    const clientId = 'alice-client';
+    const apiKey = `sk-${Buffer.from(`${clientId}:alice-secret`).toString('base64')}`;
     expect(validateRealCodexProvenance({
       baseUrl: 'http://127.0.0.1:3000',
       model: 'gpt-5',
-      gatewayKey,
+      apiKey,
       provenance: {
         webId: 'https://id.example/alice/profile/card#me',
-        gatewayKeyId: 'gak_alice',
-        gatewayKeyFingerprint: `sha256:${canonicalAcceptanceArtifactHash(gatewayKey)}`,
+        authType: 'client_credentials',
+        clientIdHash: `sha256:${canonicalAcceptanceArtifactHash(clientId)}`,
         credentialIriHash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         secretCellRefHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         providerId: 'openai',
@@ -700,6 +701,7 @@ describe('Xpod settings product acceptance harness', () => {
       },
     })).toMatchObject({
       webId: 'https://id.example/alice/profile/card#me',
+      authType: 'client_credentials',
       providerRouteSource: 'pod-credential',
       secretMaterialPrinted: false,
     });
@@ -715,7 +717,7 @@ describe('Xpod settings product acceptance harness', () => {
     expect(plan.items.find((item) => item.requirementId === 'gateway-protocols')?.status).toBe('pass');
     expect(plan.items.find((item) => item.requirementId === 'client-config')?.status).toBe('pass');
     expect(redactAcceptanceSecrets({
-      header: `Bearer ${process.env.XPOD_ACCEPTANCE_GATEWAY_KEY ?? 'xpod_gw_v1_default'}`,
+      header: `Bearer ${process.env.XPOD_ACCEPTANCE_API_KEY ?? `sk-${Buffer.from('default-client:default-secret').toString('base64')}`}`,
       nested: { apiKey: 'sk-local-contract' },
     })).toEqual({
       header: 'Bearer [redacted]',

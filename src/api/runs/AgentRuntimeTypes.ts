@@ -58,12 +58,12 @@ export interface AgentRuntimeConfig {
 }
 
 export type PersistedAgentRuntimeConfig = Omit<AgentRuntimeConfig, 'aiConnection'> & {
-  aiConnection?: Omit<AIConnectionInvocationConfig, 'gatewayKey'>;
+  aiConnection?: Omit<AIConnectionInvocationConfig, 'apiKey'>;
 };
 
 /**
  * Runtime config persisted with a Run is a non-secret binding description.
- * The gateway key is restored from the current execution context on each
+ * The API key is restored from the current execution context on each
  * initial or continuation invocation.
  */
 export function toPersistedAgentRuntimeConfig(config: AgentRuntimeConfig): PersistedAgentRuntimeConfig {
@@ -96,7 +96,7 @@ export function deepScrubGatewayKey<T>(value: T): T {
   }
   const output: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (key === 'gatewayKey') {
+    if (key === 'apiKey') {
       continue;
     }
     output[key] = deepScrubGatewayKey(item);
@@ -116,14 +116,14 @@ function readInvocationAiConnection<TContext>(context: TContext | undefined): AI
   if (
     typeof value.baseUrl !== 'string'
     || value.baseUrl.trim().length === 0
-    || typeof value.gatewayKey !== 'string'
-    || value.gatewayKey.trim().length === 0
+    || typeof value.apiKey !== 'string'
+    || value.apiKey.trim().length === 0
   ) {
     return undefined;
   }
   return {
     baseUrl: value.baseUrl,
-    gatewayKey: value.gatewayKey,
+    apiKey: value.apiKey,
     ...(typeof value.model === 'string' && value.model.trim().length > 0 ? { model: value.model } : {}),
   };
 }

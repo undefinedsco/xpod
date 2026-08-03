@@ -144,13 +144,12 @@ describe('registerRoutes mode wiring', () => {
           reason: 'not-cloud',
         }),
       },
-      gatewayAccessKeyRepository: {},
-      gatewayInternalPodAccess: {},
       hostedPodDataAccess: {
         getTrustedFetch: vi.fn(async () => fetch),
       },
       aiConnectionInvocationKeyIssuer: {
         issue: vi.fn(async () => undefined),
+        issueClientConfiguration: vi.fn(async () => undefined),
       },
       providerConnectService: {},
       db: {},
