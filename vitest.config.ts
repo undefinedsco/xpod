@@ -1,7 +1,13 @@
+import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 const coverageEnabled = process.env.COVERAGE === 'true';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@undefineds.co/ai-connection/client-config': path.resolve(__dirname, 'packages/ai-connection/src/client-config/index.ts'),
+    },
+  },
   test: {
     // Always load `.env.local` when present. For integration runs we also allow it to
     // override ambient env vars to keep tests deterministic across machines.

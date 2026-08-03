@@ -49,7 +49,6 @@ export interface AiGatewayServiceOptions {
   registry: ProviderRegistry;
   router: ModelRouter;
   credentials: GatewayCredentialStore;
-  vault?: unknown;
   runtimes: ProviderRuntimeRegistry;
   frontends?: GatewayProtocolFrontend[];
   now?: () => Date;

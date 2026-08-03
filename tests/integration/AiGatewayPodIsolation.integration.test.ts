@@ -7,8 +7,7 @@ import { GatewayApiKeyAuthenticator } from '../../src/api/ai-gateway/auth/Gatewa
 import { AesGatewayKeyLocatorCodec } from '../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import { PodGatewayAccessKeyRepository } from '../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { PodConnectedCredentialRepository } from '../../src/api/ai-gateway/connect';
-import type { CredentialVault } from '../../src/api/ai-gateway/credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from '../../src/api/ai-gateway/credentials/KeyWrapper';
+import { encodePlaintextCredential } from '../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
 import { createDefaultProviderRegistry } from '../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from '../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
@@ -31,22 +30,6 @@ function auth(webId: string): AuthContext {
   };
 }
 
-function encryptedSecret(webId: string, provider: string, id: string): EncryptedCredentialSecret {
-  return {
-    algorithm: 'AES-256-GCM',
-    aadPurpose: 'xpod-ai-connection-test',
-    aadVersion: 'v1',
-    ciphertext: `ciphertext-for-${id}`,
-    nonce: `nonce-for-${id}`,
-    webId,
-    credentialIri: `https://pod.example/${encodeURIComponent(webId)}/settings/ai-connection.ttl#${id}`,
-    provider,
-    dekWrapAlgorithm: 'xpod-secret-cell-root-hkdf-aes-256-gcm',
-    keyId: 'test-root-v1',
-    wrappedDek: `wrapped-dek-for-${id}`,
-  };
-}
-
 function credential(input: {
   id: string;
   webId: string;
@@ -63,7 +46,8 @@ function credential(input: {
     models: input.models,
     health: 'healthy',
     quota: { status: 'available' },
-    encryptedSecret: encryptedSecret(input.webId, provider, input.id),
+    storageMode: 'plaintext-v1',
+    secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: PLAINTEXT_PROVIDER_SECRET }),
   };
 }
 
@@ -74,29 +58,16 @@ function createService(options: {
 }): {
   service: AiGatewayService;
   store: GatewayCredentialStore;
-  vault: CredentialVault;
   runtime: { seenApiKeys: string[] };
   podArtifact: unknown;
 } {
   const registry = createDefaultProviderRegistry();
   const runtime = { seenApiKeys: options.runtimeKeys ?? [] };
   const store: GatewayCredentialStore = {
-    listCredentials: vi.fn(async({ webId }) => options.credentials.filter((item) => item.encryptedSecret.webId === webId)),
+    listCredentials: vi.fn(async({ webId }) =>
+      options.credentials.filter((item) => item.credentialIri.includes(encodeURIComponent(webId)))),
     recordSuccess: vi.fn(async() => {}),
     recordFailure: vi.fn(async() => {}),
-  };
-  const vault: CredentialVault = {
-    seal: vi.fn(),
-    rewrap: vi.fn(),
-    open: vi.fn(async(principal, credentialIri, provider, encrypted) => {
-      if (encrypted.webId !== principal.webId || !credentialIri.includes(encodeURIComponent(principal.webId))) {
-        throw Object.assign(new Error('credential does not belong to the current WebID'), { status: 403 });
-      }
-      return {
-        apiKey: PLAINTEXT_PROVIDER_SECRET,
-        provider,
-      };
-    }),
   };
   const runtimes = {
     get: vi.fn(() => ({
@@ -111,10 +82,9 @@ function createService(options: {
 
   return {
     store,
-    vault,
     runtime,
     podArtifact: {
-      credentials: options.credentials.map((item) => item.encryptedSecret),
+      credentials: options.credentials,
     },
     service: new AiGatewayService({
       deployment: options.deployment,
@@ -125,7 +95,6 @@ function createService(options: {
         credentials: store.listCredentials,
       }),
       credentials: store,
-      vault,
       runtimes,
     }),
   };
@@ -256,7 +225,8 @@ describe('AI Connection Pod isolation integration', () => {
       provider: 'openai',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: encryptedSecret(ALICE_WEB_ID, 'openai', 'alice-openai'),
+      storageMode: 'plaintext-v1',
+      secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: PLAINTEXT_PROVIDER_SECRET }),
       status: 'active',
     });
     await repository.upsertConnectedCredential({
@@ -266,7 +236,8 @@ describe('AI Connection Pod isolation integration', () => {
       provider: 'deepseek',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: encryptedSecret(BOB_WEB_ID, 'deepseek', 'bob-deepseek'),
+      storageMode: 'plaintext-v1',
+      secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: PLAINTEXT_PROVIDER_SECRET }),
       status: 'active',
     });
     const fixture = createService({
@@ -282,7 +253,6 @@ describe('AI Connection Pod isolation integration', () => {
         credentials: repository.listCredentials.bind(repository),
       }),
       credentials: repository as unknown as GatewayCredentialStore,
-      vault: fixture.vault,
       runtimes: (fixture.service as any).runtimes,
     });
 
@@ -297,7 +267,7 @@ describe('AI Connection Pod isolation integration', () => {
       protocol: 'responses',
       body: { model: 'deepseek-chat', input: 'hi' },
     })).rejects.toMatchObject({ code: 'credential_unavailable' });
-    expect(podRows(backing)).not.toContain(PLAINTEXT_PROVIDER_SECRET);
+    expect(podRows(backing)).toContain(PLAINTEXT_PROVIDER_SECRET);
   });
 
   it('authenticates A/B Gateway keys through the production Pod key repository without cross-touching metadata', async() => {
@@ -371,12 +341,7 @@ describe('AI Connection Pod isolation integration', () => {
         messages: [{ role: 'user', content: 'hi' }],
       },
     })).rejects.toMatchObject({ code: 'credential_unavailable' });
-    expect(fixture.vault.open).not.toHaveBeenCalledWith(
-      expect.objectContaining({ webId: ALICE_WEB_ID }),
-      expect.stringContaining(encodeURIComponent(BOB_WEB_ID)),
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(fixture.runtime.seenApiKeys).toEqual([]);
   });
 
   it('rejects keys minted for a different deployment before Pod credentials are reachable', async() => {
@@ -430,7 +395,7 @@ describe('AI Connection Pod isolation integration', () => {
     });
   });
 
-  it('does not persist fixture plaintext secrets in Pod-shaped records or response artifacts', async() => {
+  it('does not expose fixture plaintext secrets in gateway responses or logs', async() => {
     const issued = await createGatewayApiKey({ deployment: 'cloud', keyId: 'gak_no_plaintext' });
     const repository = new InMemoryGatewayAccessKeyRepository();
     await repository.create({
@@ -451,7 +416,6 @@ describe('AI Connection Pod isolation integration', () => {
     });
     const artifact = JSON.stringify({
       gatewayKeyRecord: await repository.findById('gak_no_plaintext'),
-      pod: fixture.podArtifact,
       response,
       logs: [
         'AI Connection request completed',
@@ -460,6 +424,7 @@ describe('AI Connection Pod isolation integration', () => {
     });
 
     expect(fixture.runtime.seenApiKeys).toEqual([PLAINTEXT_PROVIDER_SECRET]);
+    expect(JSON.stringify(fixture.podArtifact)).toContain(PLAINTEXT_PROVIDER_SECRET);
     expect(artifact).not.toContain(PLAINTEXT_PROVIDER_SECRET);
     expect(artifact).not.toContain(issued.plaintext);
     expect(artifact).not.toContain(issued.secret);

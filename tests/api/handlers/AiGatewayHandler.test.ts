@@ -9,8 +9,7 @@ import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/provi
 import { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
-import type { CredentialVault } from '../../../src/api/ai-gateway/credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import { encodePlaintextCredential } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
 import type { GatewayEvent } from '../../../src/api/ai-gateway/types';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
@@ -51,20 +50,8 @@ async function eventually(assertion: () => void, options: { timeoutMs?: number; 
   throw lastError;
 }
 
-function encrypted(provider: string): EncryptedCredentialSecret {
-  return {
-    algorithm: 'AES-256-GCM',
-    aadPurpose: 'test',
-    aadVersion: 'v1',
-    ciphertext: 'ciphertext',
-    nonce: 'nonce',
-    webId: WEB_ID,
-    credentialIri: `https://pod.example/settings/credentials.ttl#${provider}`,
-    provider,
-    dekWrapAlgorithm: 'test',
-    keyId: 'test',
-    wrappedDek: 'wrapped',
-  };
+function secretPayload(apiKey: string): string {
+  return encodePlaintextCredential({ type: 'apiKey', apiKey });
 }
 
 function request(path: string, body?: unknown, auth: AuthenticatedRequest['auth'] = {
@@ -178,7 +165,8 @@ function createFixture(options: {
       models: ['gpt-5'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
-      encryptedSecret: encrypted('openai'),
+      storageMode: 'plaintext-v1' as const,
+      secretPayload: secretPayload('sk-primary'),
       runtimeCredential: { baseUrl: 'https://api.openai.com/v1' },
     },
     ...(options.firstProviderFails ? [{
@@ -191,7 +179,8 @@ function createFixture(options: {
       models: ['gpt-5'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
-      encryptedSecret: encrypted('openai'),
+      storageMode: 'plaintext-v1' as const,
+      secretPayload: secretPayload('sk-backup'),
       runtimeCredential: { baseUrl: 'https://api.openai.com/v1' },
     }] : []),
     ...(options.includeDeepSeek ? [{
@@ -203,7 +192,8 @@ function createFixture(options: {
       models: ['deepseek-chat'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
-      encryptedSecret: encrypted('deepseek'),
+      storageMode: 'plaintext-v1' as const,
+      secretPayload: secretPayload('sk-primary'),
     }] : []),
   ];
   const otherCredentials = options.otherWebIdCredential ? [{
@@ -215,19 +205,13 @@ function createFixture(options: {
     models: ['gpt-5'],
     health: 'healthy' as const,
     quota: { status: 'available' as const },
-    encryptedSecret: encrypted('openai'),
+    storageMode: 'plaintext-v1' as const,
+    secretPayload: secretPayload('sk-other'),
   }] : [];
   const store: GatewayCredentialStore = {
     listCredentials: vi.fn(async({ webId }) => webId === WEB_ID ? credentials : otherCredentials),
     recordSuccess: vi.fn(async() => {}),
     recordFailure: vi.fn(async() => {}),
-  };
-  const vault: CredentialVault = {
-    seal: vi.fn(),
-    rewrap: vi.fn(),
-    open: vi.fn(async(_principal, credentialIri) => ({
-      apiKey: credentialIri.includes('backup') ? 'sk-backup' : 'sk-primary',
-    })),
   };
   const runtime = {
     provider: 'openai',
@@ -270,7 +254,6 @@ function createFixture(options: {
       credentials: store.listCredentials,
     }),
     credentials: store,
-    vault,
     runtimes,
   });
   const { server, routes } = createServer();
@@ -278,7 +261,7 @@ function createFixture(options: {
     service,
     acceptanceEndpointsEnabled: options.acceptanceEndpointsEnabled,
   });
-  return { routes, service, store, vault, runtime, runtimes };
+  return { routes, service, store, runtime, runtimes };
 }
 
 async function callRoute(routes: Record<string, Function>, methodAndPath: string, req: AuthenticatedRequest): Promise<any> {
@@ -289,7 +272,7 @@ async function callRoute(routes: Record<string, Function>, methodAndPath: string
 
 describe('AiGatewayHandler', () => {
   it('aggregates non-streaming chat completions without exposing provider secrets to the handler', async () => {
-    const { routes, vault, runtime } = createFixture({
+    const { routes, runtime } = createFixture({
       events: [
         { type: 'response.started', id: 'chatcmpl_1' },
         { type: 'text.delta', text: 'hi' },
@@ -327,7 +310,6 @@ describe('AiGatewayHandler', () => {
       }],
       usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 },
     });
-    expect(vault.open).toHaveBeenCalledOnce();
     expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'sk-primary' }));
     expect(JSON.stringify(res.body)).not.toContain('sk-primary');
   });
@@ -700,7 +682,7 @@ describe('AiGatewayHandler', () => {
       gatewayKeyId: 'gak_acceptance',
       gatewayKeyFingerprint: serverFingerprint,
       credentialIriHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      secretCellRefHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      credentialPayloadRefHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       providerId: 'openai',
       providerRouteSource: 'pod-credential',
       xpodBaseUrl: 'http://localhost',
@@ -710,6 +692,7 @@ describe('AiGatewayHandler', () => {
     expect(JSON.stringify(body)).not.toContain('sk-primary');
     expect(body.credentialIri).toBeUndefined();
     expect(body.secretCellRef).toBeUndefined();
+    expect(body.secretPayload).toBeUndefined();
   });
 
   it('maps bounded body errors to 400 and 413', async () => {

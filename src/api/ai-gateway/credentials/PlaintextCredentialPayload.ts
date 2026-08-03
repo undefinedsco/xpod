@@ -24,7 +24,7 @@ export class UnsupportedCredentialStorageModeError extends Error {
 }
 
 export function encodePlaintextCredential(secret: ProviderSecret): string {
-  if (!isPlainObject(secret)) {
+  if (!isValidProviderSecret(secret)) {
     throw new UnsupportedCredentialStorageModeError(PLAINTEXT_CREDENTIAL_STORAGE_MODE);
   }
   return JSON.stringify(secret);
@@ -44,7 +44,7 @@ export function decodePlaintextCredential(row: PlaintextCredentialRow): Provider
   } catch {
     throw new UnsupportedCredentialStorageModeError(storageMode);
   }
-  if (!isPlainObject(parsed)) {
+  if (!isValidProviderSecret(parsed)) {
     throw new UnsupportedCredentialStorageModeError(storageMode);
   }
   return parsed;
@@ -66,4 +66,14 @@ function storageModeFromRow(row: PlaintextCredentialRow): string {
 
 function isPlainObject(value: unknown): value is ProviderSecret {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isValidProviderSecret(value: unknown): value is ProviderSecret {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  return ['apiKey', 'accessToken', 'refreshToken', 'token'].some((field) => {
+    const token = value[field];
+    return typeof token === 'string' && token.trim().length > 0;
+  });
 }

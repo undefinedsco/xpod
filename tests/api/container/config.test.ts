@@ -87,7 +87,6 @@ describe('loadConfigFromEnv', () => {
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
-      secretCellCredentialVaultFactory: testCredentialVault,
     }));
 
     const internalPodAccess = container.resolve('gatewayInternalPodAccess');

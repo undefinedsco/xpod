@@ -127,13 +127,13 @@ describe('Gateway internal Pod access container config', () => {
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
   });
 
-  it('fails fast for inference without the SecretCell credential vault', () => {
+  it('constructs inference without requiring the SecretCell credential vault', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       secretCellCredentialVaultFactory: undefined,
     }));
 
-    expect(() => container.resolve('aiGatewayService')).toThrow(/XPOD_SECRET_CELL_KEY/);
+    expect(container.resolve('aiGatewayService')).toBeTruthy();
   });
 
   it('constructs the inference gateway service when required dependencies are configured', () => {
@@ -159,12 +159,20 @@ describe('Gateway internal Pod access container config', () => {
     });
   });
 
-  it('fails fast when Connect is enabled without the SecretCell credential vault', () => {
-    expect(() => createApiContainer(baseConfig({
+  it('keeps Connect enabled without requiring the SecretCell credential vault', async () => {
+    const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayKimiClientId: 'xpod-kimi-client',
+      aiGatewayConnectSigningSecret: 'connect-signing-secret',
       secretCellCredentialVaultFactory: undefined,
-    })).resolve('providerConnectService')).toThrow(/XPOD_SECRET_CELL_KEY/);
+    })).resolve('providerConnectService');
+
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({ status: 'pending' });
   });
 
   it('keeps browser-assisted Connect usable when only the optional Kimi client id is missing', async () => {
@@ -196,12 +204,11 @@ describe('Gateway internal Pod access container config', () => {
     });
   });
 
-  it('constructs the configured provider Connect service with injected SecretCell vault and Kimi client id', async () => {
+  it('constructs the configured provider Connect service with Kimi client id', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
       aiGatewayKimiClientId: 'xpod-kimi-client',
-      secretCellCredentialVaultFactory: testCredentialVault,
     })).resolve('providerConnectService');
 
     await expect(service.begin({

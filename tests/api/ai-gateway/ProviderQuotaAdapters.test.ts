@@ -1,21 +1,8 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@undefineds.co/ai-connection/client-config', () => {
-  class Adapter {}
-  return {
-    CodexConfigAdapter: Adapter,
-    ClaudeCodeConfigAdapter: Adapter,
-    CodeBuddyConfigAdapter: Adapter,
-    PiConfigAdapter: Adapter,
-    AiConnectionClientProfile: class {},
-    AiClientConfigPlan: class {},
-    ConfigWrite: class {},
-  };
-}, { virtual: true });
-
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
-import type { CredentialVault, ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
+import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import {
   encodePlaintextCredential,
   UnsupportedCredentialStorageModeError,
@@ -57,14 +44,6 @@ function jsonFetch(
       headers: result.headers,
     });
   }) as unknown as typeof fetch;
-}
-
-function createVault(): CredentialVault {
-  return {
-    seal: vi.fn(),
-    open: vi.fn(),
-    rewrap: vi.fn(),
-  };
 }
 
 function credential(provider: string, secret: ProviderSecret = { type: 'apiKey', apiKey: 'provider-secret' }): QuotaCredentialRecord {
@@ -301,11 +280,9 @@ describe('ProviderQuotaAdapters', () => {
 
   it('caches available, unsupported and error snapshots in the Pod-scoped repository', async () => {
     const repository = new InMemoryQuotaSnapshotRepository();
-    const vault = createVault();
     const kimiCredential = await credential('kimi');
     const service = new ProviderQuotaService({
       repository,
-      vault,
       adapters: [
         new KimiQuotaAdapter({
           fetch: jsonFetch(() => ({
@@ -363,7 +340,6 @@ describe('ProviderQuotaAdapters', () => {
     };
     const service = new ProviderQuotaService({
       repository,
-      vault: createVault(),
       adapters: [adapter],
       credentials: [mixedCredential],
       now: () => new Date('2026-07-23T00:00:00.000Z'),
@@ -387,11 +363,9 @@ describe('ProviderQuotaAdapters', () => {
 
   it('marks stale cached snapshots and never leaks decrypted secrets into cache rows', async () => {
     const repository = new InMemoryQuotaSnapshotRepository();
-    const vault = createVault();
     const kimiCredential = await credential('kimi', { type: 'apiKey', apiKey: 'secret-never-cache' });
     const service = new ProviderQuotaService({
       repository,
-      vault,
       adapters: [
         new KimiQuotaAdapter({
           fetch: jsonFetch(() => ({ status: 500, body: { error: 'secret-never-cache failed' } })),
@@ -424,7 +398,6 @@ describe('ProviderQuotaAdapters', () => {
     const networkCredential = await credential('kimi', { type: 'apiKey', apiKey: 'secret-never-cache' });
     const networkService = new ProviderQuotaService({
       repository: networkRepository,
-      vault: createVault(),
       adapters: [
         new KimiQuotaAdapter({
           fetch: vi.fn(async () => {
@@ -453,7 +426,6 @@ describe('ProviderQuotaAdapters', () => {
     const jsonCredential = await credential('deepseek', { type: 'apiKey', apiKey: 'deepseek-secret' });
     const jsonService = new ProviderQuotaService({
       repository: jsonRepository,
-      vault: createVault(),
       adapters: [
         new DeepSeekQuotaAdapter({
           fetch: vi.fn(async () => new Response('not-json', { status: 200 })) as unknown as typeof fetch,
@@ -483,7 +455,6 @@ describe('ProviderQuotaAdapters', () => {
     const abortError = new DOMException('The operation was aborted', 'AbortError');
     const service = new ProviderQuotaService({
       repository,
-      vault: createVault(),
       adapters: [
         new KimiQuotaAdapter({
           fetch: vi.fn(async () => {
@@ -520,7 +491,6 @@ describe('ProviderQuotaAdapters', () => {
     const fetchStarted = new Promise<void>((resolve) => {
       markFetchStarted = resolve;
     });
-    const vault = createVault();
     const adapter: ProviderQuotaAdapter = {
       provider: 'kimi',
       fetch: vi.fn(async (input): Promise<NormalizedQuotaSnapshot> => {
@@ -538,7 +508,6 @@ describe('ProviderQuotaAdapters', () => {
     };
     const service = new ProviderQuotaService({
       repository,
-      vault,
       adapters: [adapter],
       credentials: [firstCredential, secondCredential],
       now: () => new Date('2026-07-23T00:00:00.000Z'),
@@ -602,7 +571,6 @@ describe('ProviderQuotaAdapters', () => {
     };
     const service = new ProviderQuotaService({
       repository,
-      vault: createVault(),
       adapters: [
         new KimiQuotaAdapter({
           fetch: jsonFetch(() => ({ body: { data: { available_balance: '1.00' } } })),

@@ -198,16 +198,12 @@ export function registerCommonServices(
           adapters: [],
         });
       }
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway Connect requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
       const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
       if (!signingSecret) {
         throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
       }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
-      const vault = config.secretCellCredentialVaultFactory();
       const attempts = new InMemoryConnectAttemptStore();
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
@@ -215,7 +211,6 @@ export function registerCommonServices(
           consoleUrl: 'https://platform.openai.com/api-keys',
           attempts,
           credentialRepository,
-          vault,
           deployment: config.edition,
           signingSecret,
         }),
@@ -224,7 +219,6 @@ export function registerCommonServices(
           consoleUrl: 'https://console.anthropic.com/settings/keys',
           attempts,
           credentialRepository,
-          vault,
           deployment: config.edition,
           signingSecret,
         }),
@@ -233,7 +227,6 @@ export function registerCommonServices(
           consoleUrl: 'https://bailian.console.aliyun.com/',
           attempts,
           credentialRepository,
-          vault,
           deployment: config.edition,
           signingSecret,
         }),
@@ -242,7 +235,6 @@ export function registerCommonServices(
         adapters.push(new KimiDeviceCodeConnectAdapter({
           attempts,
           credentialRepository,
-          vault,
           deployment: config.edition,
           signingSecret,
           clientId: config.aiGatewayKimiClientId,
@@ -258,7 +250,6 @@ export function registerCommonServices(
         }),
         adapters,
         credentialRepository,
-        vault,
       });
     }).singleton(),
 
@@ -301,9 +292,6 @@ export function registerCommonServices(
 
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway inference requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
       const gatewayRuntimeRegistry = cradle.gatewayRuntimeRegistry;
@@ -319,7 +307,6 @@ export function registerCommonServices(
         router,
         credentials: gatewayCredentialStore,
         runtimes: gatewayRuntimeRegistry,
-        vault: config.secretCellCredentialVaultFactory(),
       });
     }).singleton(),
 
@@ -328,14 +315,10 @@ export function registerCommonServices(
       if (!config.aiGatewayConnectEnabled) {
         return undefined;
       }
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway quota requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: config.secretCellCredentialVaultFactory(),
         adapters: [
           new OpenAiQuotaAdapter(),
           new AnthropicQuotaAdapter(),

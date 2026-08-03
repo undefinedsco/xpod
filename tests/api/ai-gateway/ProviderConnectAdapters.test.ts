@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
-import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
 import {
   decodePlaintextCredential,
   encodePlaintextCredential,
@@ -23,20 +21,6 @@ import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/provi
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
-
-class StaticKeyWrapper implements KeyWrapper {
-  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
-    return {
-      algorithm: 'test-static-wrap',
-      keyId: `${context.webId}|${context.credentialIri}|${context.provider}`,
-      wrappedDek: Buffer.from(dek).toString('base64url'),
-    };
-  }
-
-  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
-    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
-  }
-}
 
 class RecordingCredentialRepository implements PodCredentialRepository {
   public readonly rows: ConnectCredentialRecord[] = [];
@@ -95,10 +79,6 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     latest.status = 'revoked';
     return structuredClone(latest);
   }
-}
-
-function vault(): WebCryptoCredentialVault {
-  return new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
 }
 
 function latestMatchingRow<T>(rows: T[], predicate: (row: T) => boolean): T | undefined {
@@ -181,6 +161,38 @@ describe('PlaintextCredentialPayload', () => {
       expect(() => decodePlaintextCredential(row)).not.toThrow(/sk-plain-secret/);
     }
   });
+
+  it('rejects plaintext-v1 payloads without a usable provider token and never reports token content', () => {
+    for (const secret of [
+      {},
+      { token: 123 },
+      { apiKey: '   ' },
+      { unknown: 'sk-unknown-only' },
+    ]) {
+      const secretPayload = JSON.stringify(secret);
+      expect(() => decodePlaintextCredential({
+        storageMode: 'plaintext-v1',
+        secretPayload,
+      })).toThrow(UnsupportedCredentialStorageModeError);
+      expect(() => decodePlaintextCredential({
+        storageMode: 'plaintext-v1',
+        secretPayload,
+      })).not.toThrow(/sk-unknown-only|123/);
+      expect(() => encodePlaintextCredential(secret)).toThrow(UnsupportedCredentialStorageModeError);
+    }
+
+    for (const secret of [
+      { apiKey: 'sk-valid' },
+      { accessToken: 'access-token' },
+      { refreshToken: 'refresh-token' },
+      { token: 'opaque-token' },
+    ]) {
+      expect(decodePlaintextCredential({
+        storageMode: 'plaintext-v1',
+        secretPayload: encodePlaintextCredential(secret),
+      })).toEqual(secret);
+    }
+  });
 });
 
 describe('BrowserAssistedApiKeyConnectAdapter', () => {
@@ -192,7 +204,6 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       consoleUrl: 'https://platform.openai.com/api-keys',
       attempts,
       credentialRepository: repository,
-      vault: vault(),
       deployment: 'cloud',
       now: () => new Date('2026-07-23T00:00:00.000Z'),
       randomBytes: () => Buffer.alloc(32, 7),
@@ -288,7 +299,6 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       consoleUrl: 'https://console.anthropic.com/settings/keys',
       attempts,
       credentialRepository: repository,
-      vault: vault(),
       deployment: 'local',
       now: () => now,
       randomBytes: () => Buffer.alloc(32, 9),
@@ -393,7 +403,6 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       fetch: fetchMock as typeof fetch,
       attempts: new InMemoryConnectAttemptStore(),
       credentialRepository: repository,
-      vault: vault(),
       deployment: 'cloud',
       clientId: 'xpod-kimi-device-client',
       now: () => now,
@@ -495,7 +504,6 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       }),
       adapters: [adapter],
       credentialRepository: repository,
-      vault: vault(),
     });
     await expect(service.refresh({
       webId: WEB_ID,
@@ -511,7 +519,6 @@ describe('KimiDeviceCodeConnectAdapter', () => {
     const base = {
       attempts: new InMemoryConnectAttemptStore(),
       credentialRepository: new RecordingCredentialRepository(),
-      vault: vault(),
       deployment: 'cloud' as const,
       clientId: 'xpod-kimi-device-client',
       signingSecret: 'connect-signing-secret',
@@ -538,7 +545,6 @@ describe('KimiDeviceCodeConnectAdapter', () => {
     const base = {
       attempts: new InMemoryConnectAttemptStore(),
       credentialRepository: new RecordingCredentialRepository(),
-      vault: vault(),
       deployment: 'cloud' as const,
       clientId: 'xpod-kimi-device-client',
       signingSecret: 'connect-signing-secret',
@@ -593,7 +599,6 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       }) as typeof fetch,
       attempts: new InMemoryConnectAttemptStore(),
       credentialRepository: repository,
-      vault: vault(),
       deployment: 'cloud',
       clientId: 'xpod-kimi-device-client',
       signingSecret: 'connect-signing-secret',
@@ -657,7 +662,6 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       fetch: fetchMock as typeof fetch,
       attempts: new InMemoryConnectAttemptStore(),
       credentialRepository: new RecordingCredentialRepository(),
-      vault: vault(),
       deployment: 'cloud',
       clientId: 'xpod-kimi-device-client',
       now: () => now,
@@ -743,7 +747,8 @@ describe('ProviderConnectService', () => {
       provider,
       deployment: 'cloud' as const,
       authMode: 'apiKey' as const,
-      encryptedSecret: { ciphertext: 'not-public' },
+      storageMode: 'plaintext-v1' as const,
+      secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: 'sk-not-public' }),
       status: 'active' as const,
       accountLabel: 'Alice',
       version: 3,
@@ -807,7 +812,6 @@ describe('ProviderConnectService', () => {
       }) as typeof fetch,
       attempts: new InMemoryConnectAttemptStore(),
       credentialRepository: repository,
-      vault: vault(),
       deployment: 'cloud',
       clientId: 'xpod-kimi-device-client',
       signingSecret: 'connect-signing-secret',
@@ -816,7 +820,6 @@ describe('ProviderConnectService', () => {
       registry: createDefaultProviderRegistry({ connect: { kimi: { configured: true } } }),
       adapters: [adapter],
       credentialRepository: repository,
-      vault: vault(),
     });
 
     await expect(service.refresh({
@@ -856,14 +859,12 @@ describe('ProviderConnectService', () => {
         update: vi.fn() as any,
       } as any),
     });
-    const sharedVault = vault();
     const attempts = new InMemoryConnectAttemptStore();
     const adapter = new BrowserAssistedApiKeyConnectAdapter({
       provider: 'openai',
       consoleUrl: 'https://platform.openai.com/api-keys',
       attempts,
       credentialRepository: repository,
-      vault: sharedVault,
       deployment: 'cloud',
       signingSecret: 'connect-signing-secret',
       randomBytes: () => Buffer.alloc(32, 13),

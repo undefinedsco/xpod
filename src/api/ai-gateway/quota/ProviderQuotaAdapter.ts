@@ -9,7 +9,7 @@ import type { AuthContext } from '../../auth/AuthContext';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
-import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
+import type { ProviderSecret } from '../credentials/CredentialVault';
 import { decodePlaintextCredential } from '../credentials/PlaintextCredentialPayload';
 
 export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
@@ -90,7 +90,6 @@ export interface ProviderQuotaStatusInput {
 
 export interface ProviderQuotaServiceOptions {
   repository: QuotaSnapshotRepository;
-  vault: CredentialVault;
   adapters: ProviderQuotaAdapter[];
   credentialRepository?: PodCredentialRepository;
   credentials?: QuotaCredentialRecord[];

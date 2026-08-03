@@ -5,8 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AiGatewayService, type GatewayCredentialStore } from '../../src/api/ai-gateway/AiGatewayService';
 import { registerAiGatewayRoutes } from '../../src/api/handlers/AiGatewayHandler';
 import { ChatCompletionsFrontend } from '../../src/api/ai-gateway/protocol';
-import type { CredentialVault } from '../../src/api/ai-gateway/credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from '../../src/api/ai-gateway/credentials/KeyWrapper';
+import { encodePlaintextCredential } from '../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
 import { createDefaultProviderRegistry } from '../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from '../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
@@ -16,22 +15,6 @@ import type { AuthenticatedRequest } from '../../src/api/middleware/AuthMiddlewa
 import type { ApiServer } from '../../src/api/ApiServer';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
-
-function encrypted(provider: string): EncryptedCredentialSecret {
-  return {
-    algorithm: 'AES-256-GCM',
-    aadPurpose: 'xpod-ai-connection-test',
-    aadVersion: 'v1',
-    ciphertext: 'ciphertext',
-    nonce: 'nonce',
-    webId: WEB_ID,
-    credentialIri: `https://pod.example/settings/ai-connection.ttl#${provider}`,
-    provider,
-    dekWrapAlgorithm: 'test',
-    keyId: 'test',
-    wrappedDek: 'wrapped',
-  };
-}
 
 async function eventually(assertion: () => void, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -142,15 +125,11 @@ function createFixture(options: {
       models: ['gpt-5'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
-      encryptedSecret: encrypted('openai'),
+      storageMode: 'plaintext-v1' as const,
+      secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: 'sk-runtime-only' }),
     }]),
     recordSuccess: vi.fn(async() => {}),
     recordFailure: vi.fn(async() => {}),
-  };
-  const vault: CredentialVault = {
-    seal: vi.fn(),
-    rewrap: vi.fn(),
-    open: vi.fn(async() => ({ apiKey: 'sk-runtime-only' })),
   };
   const runtimeExecute = vi.fn((input: { signal: AbortSignal }) => {
     if (options.streamFactory) {
@@ -173,7 +152,6 @@ function createFixture(options: {
       credentials: store.listCredentials,
     }),
     credentials: store,
-    vault,
     runtimes: {
       get: vi.fn(() => ({ execute: runtimeExecute })),
     } as unknown as ProviderRuntimeRegistry,

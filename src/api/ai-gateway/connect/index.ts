@@ -5,7 +5,7 @@ import {
   aiRuntimeRepository,
   credentialResource,
 } from '@undefineds.co/models';
-import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
+import type { ProviderSecret } from '../credentials/CredentialVault';
 import {
   decodePlaintextCredential,
   encodePlaintextCredential,
@@ -515,7 +515,6 @@ export interface BrowserAssistedApiKeyConnectAdapterOptions {
   consoleUrl: string;
   attempts: InMemoryConnectAttemptStore;
   credentialRepository: PodCredentialRepository;
-  vault: CredentialVault;
   deployment: GatewayDeployment;
   now?: () => Date;
   randomBytes?: (bytes: number) => Buffer;
@@ -959,7 +958,6 @@ export interface ProviderConnectServiceOptions {
   registry: ProviderRegistry;
   adapters: ProviderConnectAdapter[];
   credentialRepository?: PodCredentialRepository;
-  vault?: CredentialVault;
 }
 
 export interface ProviderConnectionSummary {
