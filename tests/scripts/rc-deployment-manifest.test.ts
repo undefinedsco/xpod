@@ -90,6 +90,7 @@ describe('RC Sealos deployment manifest', () => {
       'ConfigMap/xpod-rc-config',
       'Deployment/xpod-inngest',
       'Deployment/xpod-rc',
+      'Ingress/xpod-rc',
       'Namespace/xpod-rc',
       'Service/xpod',
       'Service/xpod-inngest',
@@ -163,7 +164,21 @@ describe('RC Sealos deployment manifest', () => {
     expectDeploymentSelectorsMatchTemplate(inngestDeployment);
     expectPodSecurityBaseline(inngestDeployment);
 
-    expect(objects.some((object) => object.kind === 'Ingress')).toBe(false);
+    const ingress = findOne(objects, 'Ingress', 'xpod-rc');
+    expect(ingress.metadata?.namespace).toBe('xpod-rc');
+    expect(ingress.spec?.tls).toEqual([{ hosts: ['rc.id.undefineds.co'], secretName: 'xpod-rc-tls' }]);
+    expect(ingress.spec?.rules).toEqual([{
+      host: 'rc.id.undefineds.co',
+      http: {
+        paths: [{
+          path: '/',
+          pathType: 'Prefix',
+          backend: { service: { name: 'xpod', port: { name: 'http' } } },
+        }],
+      },
+    }]);
+    expect(JSON.stringify(ingress)).not.toContain('xpod-cloud');
+    expect(JSON.stringify(ingress)).not.toContain('xpod-cloud-tls');
     expect(objects.some((object) => object.kind === 'StatefulSet' || object.kind === 'PersistentVolumeClaim')).toBe(false);
   });
 });

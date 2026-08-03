@@ -31,18 +31,16 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | --- | --- | --- |
 | Secret | `KUBE_CONFIG_DATA` | base64 编码的 kubeconfig，只授予 RC namespace 所需权限 |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
-| Secret | `XPOD_SETTINGS_E2E_ALICE_STATE` | RC 认证验收的 Alice OIDC state |
-| Secret | `XPOD_SETTINGS_E2E_BOB_STATE` | RC 认证验收的 Bob OIDC state |
-| Secret | `XPOD_SETTINGS_E2E_TEST_API_KEY` | RC 认证验收 API key |
+| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
 | Variable | `SEALOS_NAMESPACE` | 必填变量，推荐值 `xpod-rc` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_RC_SCALE_TO_ZERO` | 设为 `true` 时验收后执行 scale-to-zero |
-| Variable | `XPOD_SETTINGS_E2E_ALICE_POD_URL` | Alice 的 RC Pod URL |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
 
-RC 公开入口固定为 `https://rc.id.undefineds.co`，DNS 和 Ingress 必须将该
-域名路由到 RC 服务。RC overlay 本身不创建 Ingress，不创建 physical PostgreSQL、
-Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
+RC 公开入口固定为 `https://rc.id.undefineds.co`。RC overlay 会创建固定
+Ingress 并路由到 RC 服务；发布前 DNS 必须已经指向 Sealos ingress，且 RC
+namespace 中必须存在覆盖该 host 的 `xpod-rc-tls` TLS Secret。overlay 不创建
+physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
 但必须使用独立 logical database or schema、独立 Redis DB 和独立 object bucket。
 
 推荐的 RC Kubernetes 资源拓扑：
@@ -51,6 +49,26 @@ Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基�
 - Xpod Deployment：`xpod-rc`
 - Inngest Deployment：`xpod-inngest`
 - ConfigMap：`xpod-rc-config`
+- seed Secret：`xpod-rc-seed`
+
+`XPOD_RC_SEED_CONFIG` 使用与 `CSS_SEED_CONFIG` 相同的 seed account JSON
+数组格式，至少包含可密码登录的 Alice 和 Bob 账号，并分别声明 Alice/Bob 的
+Pod 名称。candidate workflow 会把该 secret 写入 Kubernetes Secret
+`xpod-rc-seed`，并把 Xpod 容器的 `CSS_SEED_CONFIG=/app/config/seeds/rc.json`
+固定到只读挂载文件。RC 启动后由 CSS seed initializer 创建账号和 Pod。
+认证验收随后通过真实浏览器 OIDC 流程登录 seed Alice/Bob，生成 Playwright
+storage state、Alice Pod URL 和一次性 provider API-key canary，再运行真实 settings
+验收。验收通过受保护的 `/api/pod/settings/status` 让服务端使用当前 WebID 的
+可信 fetch 和 drizzle-solid 读取 Pod，证明 Alice 保存前后的 provider 数量增加、
+Bob 的独立 WebID 数量不变；adapter 回归另行锁定 `plaintext-v1` RDF 序列化。
+产品 UI/API 不回显 canary，也不创建或遗留 Solid Client Credentials。
+
+这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
+
+- 不要配置 `XPOD_SETTINGS_E2E_ALICE_STATE`
+- 不要配置 `XPOD_SETTINGS_E2E_BOB_STATE`
+- 不要配置 `XPOD_SETTINGS_E2E_ALICE_POD_URL`
+- 不要配置 `XPOD_SETTINGS_E2E_TEST_API_KEY`
 
 Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 独立值，至少包括：
@@ -129,7 +147,8 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 - `rc.id.undefineds.co` DNS/Ingress 未指向 RC；
 - RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
 - logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
-- 认证验收所需 Alice/Bob state、Alice Pod URL 或 test API key 缺失。
+- `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
+- seed Alice/Bob 无法完成浏览器 OIDC 登录，或一次性 provider canary 验收失败。
 
 修复方式是提交新的 release branch commit，让 candidate workflow 产生新的
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
@@ -176,7 +195,8 @@ bun run test -- \
   tests/scripts/release-promotion-workflow.test.ts \
   tests/scripts/deploy-workflow-health-gate.test.ts \
   tests/scripts/production-diagnostics-workflow.test.ts \
-  tests/scripts/release-docs.test.ts
+  tests/scripts/release-docs.test.ts \
+  tests/scripts/prepare-rc-authenticated-smoke.test.ts
 bunx github-actionlint .github/workflows/candidate.yml .github/workflows/release.yml .github/workflows/deploy.yml
 bun run build:ts
 bun run test:integration

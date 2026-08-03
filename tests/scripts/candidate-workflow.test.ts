@@ -93,6 +93,7 @@ describe('release candidate workflow', () => {
     const bunJob = workflow.jobs.prepublish_bun_tarball;
 
     expect(nodeJob.needs).toContain('metadata');
+    expect(nodeJob.needs).toContain('rc_prerequisites');
     expect(nodeJob['continue-on-error']).toBeUndefined();
     expect(nodeJob.strategy.matrix.os).toEqual(expect.arrayContaining([ 'ubuntu-latest', 'macos-latest' ]));
     expect(nodeJob.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
@@ -103,10 +104,26 @@ describe('release candidate workflow', () => {
     expect(jobRunText(workflow, 'prepublish_npm_tarball')).toContain('node scripts/package-consumer-smoke.cjs');
 
     expect(bunJob.needs).toContain('metadata');
+    expect(bunJob.needs).toContain('rc_prerequisites');
     expect(bunJob['continue-on-error']).toBeUndefined();
     expect(bunJob.strategy.matrix.os).toEqual(expect.arrayContaining([ 'ubuntu-latest', 'macos-latest' ]));
     expect(bunJob.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
     expect(jobRunText(workflow, 'prepublish_bun_tarball')).toContain('bun scripts/package-consumer-smoke.cjs');
+  });
+
+  it('checks RC DNS and namespace TLS before publishing artifacts', async () => {
+    const workflow = await loadWorkflow();
+    const preflight = workflow.jobs.rc_prerequisites;
+    const runText = jobRunText(workflow, 'rc_prerequisites');
+
+    expect(preflight.needs).toBe('metadata');
+    expect(preflight.environment).toBe('rc');
+    expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
+    expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
+    expect(runText).toContain("resolve4('rc.id.undefineds.co')");
+    expect(runText).toContain('get secret xpod-rc-tls');
+    expect(runText).toContain('tls.crt');
+    expect(runText).toContain('rc.id.undefineds.co');
   });
 
   it('publishes npm with tag next and verifies published Node and Bun consumers before acceptance', async () => {
@@ -201,22 +218,37 @@ describe('release candidate workflow', () => {
     expect(runText).not.toMatch(/grep .*APP_ENV_FILE/);
   });
 
-  it('requires authenticated smoke configuration instead of manufacturing a passed result', async () => {
+  it('derives authenticated smoke configuration from the fixed RC seed instead of manual secrets', async () => {
     const workflow = await loadWorkflow();
     const deploy = workflow.jobs.deploy_and_accept;
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
     expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://rc.id.undefineds.co');
-    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBe('${{ secrets.XPOD_SETTINGS_E2E_ALICE_STATE }}');
-    expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBe('${{ secrets.XPOD_SETTINGS_E2E_BOB_STATE }}');
-    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_POD_URL).toBe('${{ vars.XPOD_SETTINGS_E2E_ALICE_POD_URL }}');
-    expect(deploy.env.XPOD_SETTINGS_E2E_TEST_API_KEY).toBe('${{ secrets.XPOD_SETTINGS_E2E_TEST_API_KEY }}');
+    expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
+    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBeUndefined();
+    expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBeUndefined();
+    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_POD_URL).toBeUndefined();
+    expect(deploy.env.XPOD_SETTINGS_E2E_TEST_API_KEY).toBeUndefined();
     expect(deploy.env.RC_AUTHENTICATED_SMOKE_COMMAND).toBeUndefined();
+    expect(runText).toContain('XPOD_RC_SEED_CONFIG is required');
+    expect(runText).toContain('CSS_SEED_CONFIG=/app/config/seeds/rc.json');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-seed');
+    expect(runText).toContain("secretName: 'xpod-rc-seed'");
+    expect(runText).toContain("mountPath: '/app/config/seeds'");
+    expect(runText).toContain('scripts/prepare-rc-authenticated-smoke.ts');
+    expect(runText).toContain('bunx playwright install --with-deps chromium');
+    expect(runText).toContain('--seed-config "${RUNNER_TEMP}/xpod-rc-seed.json"');
+    expect(runText).toContain('set -a');
+    expect(runText).toContain('${RUNNER_TEMP}/rc-authenticated-smoke.env');
     expect(runText).toContain('bun scripts/accept-xpod-settings.ts --allow-incomplete');
     expect(runText).toContain('node scripts/assert-rc-authenticated-smoke.cjs');
     expect(runText).toContain('xpod-light-settings-acceptance.json');
     expect(runText).not.toContain('RC_AUTHENTICATED_SMOKE_COMMAND');
+    expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_ALICE_STATE');
+    expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_BOB_STATE');
+    expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_TEST_API_KEY');
+    expect(runText).not.toContain('vars.XPOD_SETTINGS_E2E_ALICE_POD_URL');
     expect(runText).not.toMatch(/bash\s+-euo pipefail\s+-c|\bbash\s+-c|\bsh\s+-c/);
     expect(runText).toContain('authenticated-pod');
     expect(runText).not.toContain('"authenticated-pod":"passed"');

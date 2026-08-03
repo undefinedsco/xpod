@@ -21,15 +21,14 @@ describe('release lifecycle documentation', () => {
       'GitHub Environment `rc`',
       '`KUBE_CONFIG_DATA`',
       '`APP_ENV_FILE`',
+      '`XPOD_RC_SEED_CONFIG`',
       '`SEALOS_NAMESPACE`',
       '`XPOD_RUNTIME_SECRET_NAME`',
       '`XPOD_RC_SCALE_TO_ZERO`',
-      '`XPOD_SETTINGS_E2E_ALICE_STATE`',
-      '`XPOD_SETTINGS_E2E_BOB_STATE`',
-      '`XPOD_SETTINGS_E2E_ALICE_POD_URL`',
-      '`XPOD_SETTINGS_E2E_TEST_API_KEY`',
       '`xpod-rc`',
       '`xpod-rc-secret`',
+      '`xpod-rc-seed`',
+      '`CSS_SEED_CONFIG=/app/config/seeds/rc.json`',
       'physical PostgreSQL',
       'logical database or schema',
       'Redis DB',
@@ -51,6 +50,11 @@ describe('release lifecycle documentation', () => {
     ]) {
       expect(text).toContain(expected);
     }
+
+    expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_ALICE_STATE`');
+    expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_BOB_STATE`');
+    expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_ALICE_POD_URL`');
+    expect(text).toContain('不要配置 `XPOD_SETTINGS_E2E_TEST_API_KEY`');
 
     expect(text).toContain('ghcr.io/undefinedsco/xpod@sha256:');
     expect(text).toContain('git tag -s v0.3.68 <accepted-sha>');
@@ -76,6 +80,7 @@ describe('release lifecycle documentation', () => {
 
     expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，推荐值 `xpod-rc` |');
     expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |');
+    expect(text).toContain('| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |');
     expect(text).not.toContain('| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |');
     expect(text).not.toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |');
     expect(text).not.toContain('默认在 namespace `xpod-rc`');

@@ -44,6 +44,10 @@ describe('RC manifest renderer', () => {
     expect(manifest).toContain('namespace: custom-rc');
     expect(manifest).toContain('name: custom-secret');
     expect(manifest).toContain('secretRef:');
+    const ingress = objects.find((object) => object.kind === 'Ingress' && object.metadata?.name === 'xpod-rc');
+    expect(ingress?.metadata?.namespace).toBe('custom-rc');
+    expect(ingress?.spec?.rules?.[0]?.host).toBe('rc.id.undefineds.co');
+    expect(ingress?.spec?.tls?.[0]?.secretName).toBe('xpod-rc-tls');
   });
 
   it('rejects unsafe Kubernetes names before rendering', async () => {

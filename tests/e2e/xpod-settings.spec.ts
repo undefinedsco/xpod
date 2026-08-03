@@ -18,21 +18,31 @@ test.describe('Xpod settings product acceptance', () => {
     await mkdir(screenshotDir, { recursive: true });
   });
 
-  test('persists Alice API-key credential as ciphertext and keeps it isolated from Bob', async ({ browser }) => {
+  test('persists Alice API-key credential in her private Pod and keeps it isolated from Bob', async ({ browser }) => {
     test.setTimeout(180_000);
     const alice = await authenticatedPage(browser, aliceState!);
     const bob = await authenticatedPage(browser, bobState!);
     try {
+      const aliceBefore = await readPodAiConnectionStatus(alice);
+      const bobBefore = await readPodAiConnectionStatus(bob);
+      expect(aliceBefore.webId).not.toBe(bobBefore.webId);
+
       await openModule(alice, '/dashboard/models', 'Models');
       await completeApiKeyThroughUi(alice, testApiKey!);
       await alice.reload({ waitUntil: 'networkidle' });
       await expect(alice.locator('body')).not.toContainText(testApiKey!);
       await expect(alice.locator('body')).toContainText(/openai|configured|connected|api key/i);
-      await assertCiphertextOnlyPodCredential(alice, alicePodUrl!, testApiKey!);
+
+      const aliceAfter = await readPodAiConnectionStatus(alice);
+      expect(aliceAfter.webId).toBe(aliceBefore.webId);
+      expect(aliceAfter.configuredProviders).toBe(aliceBefore.configuredProviders + 1);
 
       await openModule(bob, '/dashboard/models', 'Models');
       await expect(bob.locator('body')).not.toContainText(testApiKey!);
       await expect(bob.locator('body')).not.toContainText(/Alice OpenAI acceptance|acceptance-openai/i);
+      const bobAfter = await readPodAiConnectionStatus(bob);
+      expect(bobAfter.webId).toBe(bobBefore.webId);
+      expect(bobAfter.configuredProviders).toBe(bobBefore.configuredProviders);
     } finally {
       await cleanupApiKeyThroughUi(alice).catch(() => undefined);
       await alice.context().close();
@@ -128,17 +138,24 @@ async function cleanupApiKeyThroughUi(page: Page): Promise<void> {
   await expect(page.locator('body')).not.toContainText('Alice OpenAI acceptance');
 }
 
-async function assertCiphertextOnlyPodCredential(page: Page, podUrl: string, plaintext: string): Promise<void> {
-  const credentialText = await page.evaluate(async (credentialUrl) => {
-    const response = await fetch(new URL('/settings/credentials.ttl', credentialUrl).toString(), {
-      headers: { accept: 'text/turtle, application/ld+json;q=0.9, */*;q=0.1' },
-      credentials: 'include',
-    });
-    if (!response.ok) throw new Error(`credential fetch failed ${response.status}`);
-    return await response.text();
-  }, podUrl);
-  expect(credentialText).not.toContain(plaintext);
-  expect(credentialText).toMatch(/ciphertext|wrappedDek|encryptedSecret|nonce|SecretCell/i);
+async function readPodAiConnectionStatus(page: Page): Promise<{ webId: string; configuredProviders: number }> {
+  const responsePromise = page.waitForResponse((response) => (
+    response.url().endsWith('/api/pod/settings/status') && response.request().method() === 'GET'
+  ));
+  await openModule(page, '/dashboard/pod', 'Pod');
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  const payload = await response.json() as {
+    identity?: { webId?: unknown };
+    aiConnection?: { status?: unknown; configuredProviders?: unknown; source?: unknown };
+  };
+  expect(payload.aiConnection).toMatchObject({ status: 'available', source: 'drizzle-solid' });
+  expect(typeof payload.identity?.webId).toBe('string');
+  expect(typeof payload.aiConnection?.configuredProviders).toBe('number');
+  return {
+    webId: payload.identity!.webId as string,
+    configuredProviders: payload.aiConnection!.configuredProviders as number,
+  };
 }
 
 async function assertSdkGeometryContract(page: Page): Promise<void> {

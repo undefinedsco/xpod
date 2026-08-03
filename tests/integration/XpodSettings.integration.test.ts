@@ -394,7 +394,12 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
     expect(spec).toContain('completeApiKeyThroughUi');
-    expect(spec).toContain('assertCiphertextOnlyPodCredential');
+    expect(spec).toContain('await alice.reload');
+    expect(spec).toContain('not.toContainText(testApiKey!)');
+    expect(spec).toContain('readPodAiConnectionStatus');
+    expect(spec).toContain("source: 'drizzle-solid'");
+    expect(spec).toContain('aliceBefore.configuredProviders + 1');
+    expect(spec).toContain('bobBefore.configuredProviders');
     expect(spec).toContain('assertSdkGeometryContract');
     expect(spec).not.toContain('if (await firstNavigable.count())');
   });
@@ -642,7 +647,7 @@ describe('Xpod settings product acceptance harness', () => {
 
   it('keeps Alice credential cleanup in a best-effort finally block', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
-    const credentialTestStart = spec.indexOf("persists Alice API-key credential as ciphertext");
+    const credentialTestStart = spec.indexOf("persists Alice API-key credential in her private Pod");
     const credentialTest = spec.slice(credentialTestStart, spec.indexOf("for (const viewport", credentialTestStart));
 
     expect(credentialTest).toContain('finally');

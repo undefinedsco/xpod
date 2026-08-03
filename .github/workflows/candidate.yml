@@ -51,9 +51,51 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `sourceSha=${metadata.sourceSha}\n`);
           ' "$metadata"
 
+  rc_prerequisites:
+    needs: metadata
+    runs-on: ubuntu-latest
+    environment: rc
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+    steps:
+      - name: Verify RC DNS and TLS prerequisites
+        run: |
+          set -euo pipefail
+          if [ -z "$KUBE_CONFIG_DATA" ]; then
+            echo "::error::KUBE_CONFIG_DATA is required"
+            exit 1
+          fi
+          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
+            echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
+            exit 1
+          fi
+          node - <<'NODE'
+          const { resolve4, resolve6 } = require('node:dns').promises;
+          Promise.any([
+            resolve4('rc.id.undefineds.co'),
+            resolve6('rc.id.undefineds.co'),
+          ]).then((addresses) => {
+            if (!addresses.length) throw new Error('empty DNS result');
+          }).catch((error) => {
+            console.error(`::error::rc.id.undefineds.co must resolve before RC artifacts are published: ${error.message}`);
+            process.exit(1);
+          });
+          NODE
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          cert_file="${RUNNER_TEMP}/xpod-rc-tls.crt"
+          kubectl -n "$SEALOS_NAMESPACE" get secret xpod-rc-tls -o 'jsonpath={.data.tls\.crt}' | base64 -d > "$cert_file"
+          if [ ! -s "$cert_file" ]; then
+            echo "::error::xpod-rc-tls must contain tls.crt"
+            exit 1
+          fi
+          openssl x509 -in "$cert_file" -noout -checkhost rc.id.undefineds.co
+
   prepublish_npm_tarball:
     name: prepublish npm tarball (${{ matrix.os }} / node${{ matrix.node-version }})
-    needs: metadata
+    needs: [metadata, rc_prerequisites]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
@@ -106,7 +148,7 @@ jobs:
 
   prepublish_bun_tarball:
     name: prepublish bun tarball (${{ matrix.os }} / node${{ matrix.node-version }})
-    needs: metadata
+    needs: [metadata, rc_prerequisites]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
@@ -289,14 +331,11 @@ jobs:
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+      XPOD_RC_SEED_CONFIG: ${{ secrets.XPOD_RC_SEED_CONFIG }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_SETTINGS_E2E_BASE_URL: https://rc.id.undefineds.co
-      XPOD_SETTINGS_E2E_ALICE_STATE: ${{ secrets.XPOD_SETTINGS_E2E_ALICE_STATE }}
-      XPOD_SETTINGS_E2E_BOB_STATE: ${{ secrets.XPOD_SETTINGS_E2E_BOB_STATE }}
-      XPOD_SETTINGS_E2E_ALICE_POD_URL: ${{ vars.XPOD_SETTINGS_E2E_ALICE_POD_URL }}
-      XPOD_SETTINGS_E2E_TEST_API_KEY: ${{ secrets.XPOD_SETTINGS_E2E_TEST_API_KEY }}
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -306,6 +345,9 @@ jobs:
           bun-version: 1.3.8
 
       - run: bun install --frozen-lockfile
+
+      - name: Install Chromium for authenticated acceptance
+        run: bunx playwright install --with-deps chromium
 
       - name: Set up kubeconfig
         run: |
@@ -326,6 +368,10 @@ jobs:
             echo "::error::XPOD_RUNTIME_SECRET_NAME is required"
             exit 1
           fi
+          if [ -z "$XPOD_RC_SEED_CONFIG" ]; then
+            echo "::error::XPOD_RC_SEED_CONFIG is required"
+            exit 1
+          fi
           validate_k8s_name "$SEALOS_NAMESPACE" SEALOS_NAMESPACE
           validate_k8s_name "$XPOD_RUNTIME_SECRET_NAME" XPOD_RUNTIME_SECRET_NAME
           mkdir -p ~/.kube
@@ -336,11 +382,15 @@ jobs:
         run: |
           set -euo pipefail
           env_file="${RUNNER_TEMP}/xpod-rc.env"
+          seed_file="${RUNNER_TEMP}/xpod-rc-seed.json"
           printf '%s\n' "$APP_ENV_FILE" > "$env_file"
+          printf '%s\n' "$XPOD_RC_SEED_CONFIG" > "$seed_file"
           chmod 600 "$env_file"
-          node - "$env_file" <<'NODE'
+          chmod 600 "$seed_file"
+          node - "$env_file" "$seed_file" <<'NODE'
           const fs = require('node:fs');
           const text = fs.readFileSync(process.argv[2], 'utf8');
+          const seedText = fs.readFileSync(process.argv[3], 'utf8');
           const required = [
             'CSS_SPARQL_ENDPOINT',
             'CSS_IDENTITY_DB_URL',
@@ -362,6 +412,14 @@ jobs:
             if (!entries.has(key) || entries.get(key).trim() === '') {
               throw new Error(`missing required RC secret key: ${key}`);
             }
+          }
+          const seed = JSON.parse(seedText);
+          if (!Array.isArray(seed)) {
+            throw new Error('XPOD_RC_SEED_CONFIG must be a seed account array');
+          }
+          const accountKeys = seed.map((entry) => `${entry?.email || ''} ${entry?.pods?.map?.((pod) => pod?.name).join(' ') || ''}`.toLowerCase());
+          if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
+            throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
           }
           const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
           const allValues = Array.from(entries.values()).join('\n');
@@ -400,6 +458,7 @@ jobs:
             throw new Error('RC Redis DB must use a non-default database index');
           }
           NODE
+          printf '\nCSS_SEED_CONFIG=/app/config/seeds/rc.json\n' >> "$env_file"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
       - name: Create namespace and runtime secret
@@ -408,6 +467,9 @@ jobs:
           kubectl create namespace "$SEALOS_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
             --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-seed \
+            --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy RC image by digest
@@ -420,6 +482,43 @@ jobs:
             --namespace "$SEALOS_NAMESPACE" \
             --secret-name "$XPOD_RUNTIME_SECRET_NAME"
           kubectl apply -f "$rendered_manifest"
+          kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc --type=strategic -p "$(node - <<'NODE'
+          process.stdout.write(JSON.stringify({
+            spec: {
+              template: {
+                spec: {
+                  containers: [
+                    {
+                      name: 'xpod',
+                      env: [
+                        {
+                          name: 'CSS_SEED_CONFIG',
+                          value: '/app/config/seeds/rc.json',
+                        },
+                      ],
+                      volumeMounts: [
+                        {
+                          name: 'xpod-rc-seed',
+                          mountPath: '/app/config/seeds',
+                          readOnly: true,
+                        },
+                      ],
+                    },
+                  ],
+                  volumes: [
+                    {
+                      name: 'xpod-rc-seed',
+                      secret: {
+                        secretName: 'xpod-rc-seed',
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          }));
+          NODE
+          )"
           kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
           kubectl rollout status deployment/xpod-inngest -n "$SEALOS_NAMESPACE" --timeout=300s
           kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
@@ -479,18 +578,14 @@ jobs:
       - name: Authenticated pod smoke
         run: |
           set -euo pipefail
-          required=(
-            XPOD_SETTINGS_E2E_ALICE_STATE
-            XPOD_SETTINGS_E2E_BOB_STATE
-            XPOD_SETTINGS_E2E_ALICE_POD_URL
-            XPOD_SETTINGS_E2E_TEST_API_KEY
-          )
-          for key in "${required[@]}"; do
-            if [ -z "${!key:-}" ]; then
-              echo "::error::${key} is required"
-              exit 1
-            fi
-          done
+          bun scripts/prepare-rc-authenticated-smoke.ts \
+            --base-url "$XPOD_SETTINGS_E2E_BASE_URL" \
+            --seed-config "${RUNNER_TEMP}/xpod-rc-seed.json" \
+            --output-env "${RUNNER_TEMP}/rc-authenticated-smoke.env" \
+            --state-dir "${RUNNER_TEMP}/rc-authenticated-smoke-state"
+          set -a
+          . "${RUNNER_TEMP}/rc-authenticated-smoke.env"
+          set +a
           bun scripts/accept-xpod-settings.ts --allow-incomplete --output-dir "${RUNNER_TEMP}/acceptance"
           node scripts/assert-rc-authenticated-smoke.cjs "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.json"
           printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"

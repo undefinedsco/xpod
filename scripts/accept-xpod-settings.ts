@@ -346,7 +346,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         ? missingRealHostReason(env)
         : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
       commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
-      evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod ciphertext inspection when the real-host gate is complete.'],
+      evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload and verifies A/B Pod provider counts through the protected drizzle-solid-backed Pod status API when the real-host gate is complete.'],
       gate: runRealPod && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
     },
     {

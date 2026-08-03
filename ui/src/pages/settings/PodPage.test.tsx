@@ -275,7 +275,7 @@ describe('PodPage', () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(response.fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(response.fetchImpl.mock.calls).toHaveLength(1);
 
     await act(async () => {
       response.resolve();

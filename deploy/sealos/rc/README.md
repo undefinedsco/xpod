@@ -1,8 +1,13 @@
 # Xpod RC Sealos overlay
 
-This overlay renders one RC Xpod instance in the `xpod-rc` namespace.
-It intentionally does not deploy physical PostgreSQL, Redis, object storage, or
-Ingress resources.
+This overlay renders one RC Xpod instance and its fixed
+`rc.id.undefineds.co` Ingress in the `xpod-rc` namespace. It intentionally
+does not deploy physical PostgreSQL, Redis, or object storage resources.
+
+Before a release branch is pushed, DNS must resolve `rc.id.undefineds.co` to
+the Sealos ingress address and a TLS Secret named `xpod-rc-tls` whose certificate
+covers that host must already exist in the selected RC namespace. A
+`*.id.undefineds.co` certificate covers the RC host; `*.undefineds.co` does not.
 
 Apply the namespace before creating the runtime Secret from an operator-owned
 env file:
