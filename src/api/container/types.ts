@@ -50,6 +50,7 @@ import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinity
 import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import type { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 
 /**
@@ -236,6 +237,7 @@ export interface ApiContainerCradle {
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
   gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
+  hostedPodDataAccess: HostedPodDataAccess;
   gatewayAccessKeyRepository: GatewayAccessKeyRepository;
   invocationTokenCodec: InvocationTokenCodec;
   aiConnectionInvocationKeyIssuer: AiConnectionInvocationKeyIssuer;

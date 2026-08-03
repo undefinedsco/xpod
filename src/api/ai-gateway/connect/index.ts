@@ -342,7 +342,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     db: ConnectedCredentialDb;
     credential: typeof credentialResource;
   }> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const credential = alias(this.credentialTemplate, 'credential');
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
@@ -350,8 +350,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     return { db, credential };
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }

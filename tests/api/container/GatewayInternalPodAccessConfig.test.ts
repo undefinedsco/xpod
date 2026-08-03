@@ -127,6 +127,18 @@ describe('Gateway internal Pod access container config', () => {
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
   });
 
+  it('constructs hosted Pod data access without delegated client credentials', () => {
+    const container = createApiContainer(baseConfig({
+      gatewayInternalClientId: undefined,
+      gatewayInternalClientSecret: undefined,
+      gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
+    }));
+
+    expect(container.resolve('gatewayInternalPodAccess')).toBeUndefined();
+    expect(container.resolve('hostedPodDataAccess')).toBeTruthy();
+    expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
+  });
+
   it('constructs inference without requiring the SecretCell credential vault', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',

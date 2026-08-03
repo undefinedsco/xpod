@@ -94,7 +94,7 @@ function createRequest(
   request.method = method;
   request.url = path;
   request.headers = { host: 'localhost:3001', ...options.headers };
-  request.socket = { remoteAddress: options.remoteAddress ?? '127.0.0.1' };
+  request.socket = { remoteAddress: options.remoteAddress ?? '127.0.0.1' } as HttpRequest['socket'];
   const setEncoding = stream.setEncoding.bind(stream);
   request.setEncoding = ((encoding: BufferEncoding) => {
     setEncoding(encoding);

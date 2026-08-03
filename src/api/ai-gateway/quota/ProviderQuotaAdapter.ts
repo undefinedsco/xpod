@@ -467,14 +467,14 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<QuotaSnapshotDb> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
     await db.init?.(quotaSnapshotResource);
     return db;
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }

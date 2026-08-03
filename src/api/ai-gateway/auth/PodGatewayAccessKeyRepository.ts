@@ -43,7 +43,7 @@ export interface PodGatewayAccessKeyRepositoryOptions {
 }
 
 export interface InternalPodAccessTokenProvider {
-  getTrustedFetch(owner: string): Promise<typeof fetch | undefined>;
+  getTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch | undefined>;
 }
 
 export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository {
@@ -131,7 +131,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     resource: GatewayAccessKeyResource;
     listResource: GatewayAccessKeyResource;
   }> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, context?.auth);
     const resource = gatewayAccessKeyResource;
     const listResource = this.usesDefaultDbFactory
       ? createGatewayAccessKeyResource(owner)
@@ -147,8 +147,8 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     return { db, resource, listResource };
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }

@@ -82,24 +82,46 @@ describe('loadConfigFromEnv', () => {
     })).resolves.toMatchObject({ status: 'unsupported' });
   });
 
-  it('injects one singleton internal Pod access provider into all gateway services that need Pod access', () => {
+  it('injects one singleton hosted Pod data adapter into active AI Connection Pod paths', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
+      gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
     }));
 
-    const internalPodAccess = container.resolve('gatewayInternalPodAccess');
+    const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
     const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository') as any;
     const providerConnectService = container.resolve('providerConnectService') as any;
     const gatewayCredentialStore = container.resolve('gatewayCredentialStore') as any;
     const providerQuotaService = container.resolve('providerQuotaService') as any;
 
-    expect(gatewayAccessKeyRepository.internalPodAccess).toBe(internalPodAccess);
-    expect(providerConnectService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
-    expect(gatewayCredentialStore.internalPodAccess).toBe(internalPodAccess);
-    expect(providerQuotaService.repository.internalPodAccess).toBe(internalPodAccess);
-    expect(providerQuotaService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
+    expect(gatewayAccessKeyRepository.internalPodAccess).toBe(hostedPodDataAccess);
+    expect(providerConnectService.credentialRepository.internalPodAccess).toBe(hostedPodDataAccess);
+    expect(gatewayCredentialStore.internalPodAccess).toBe(hostedPodDataAccess);
+    expect(providerQuotaService.repository.internalPodAccess).toBe(hostedPodDataAccess);
+    expect(providerQuotaService.credentialRepository.internalPodAccess).toBe(hostedPodDataAccess);
+  });
+
+  it('does not use public CSS_BASE_URL as the hosted Pod internal channel', () => {
+    process.env.CSS_BASE_URL = 'https://pod.example/';
+    delete process.env.CSS_INTERNAL_URL;
+    const container = createApiContainer(baseConfig({
+      gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
+    }));
+
+    const hostedPodDataAccess = container.resolve('hostedPodDataAccess') as any;
+
+    expect(hostedPodDataAccess.cssBaseUrl.href).toBe('http://localhost:3000/');
+  });
+
+  it('fails closed when CSS_INTERNAL_URL is not loopback', () => {
+    process.env.CSS_INTERNAL_URL = 'https://pod.example/';
+    const container = createApiContainer(baseConfig({
+      gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
+    }));
+
+    expect(() => container.resolve('hostedPodDataAccess')).toThrow('hosted_pod_css_loopback_required');
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {

@@ -23,6 +23,7 @@ import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorC
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
+import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import {
   BrowserAssistedApiKeyConnectAdapter,
@@ -74,6 +75,10 @@ function resolveCssServiceBaseUrl(): string {
   }
 
   return 'http://localhost:3000/';
+}
+
+function resolveHostedPodCssBaseUrl(): string {
+  return process.env.CSS_INTERNAL_URL ?? 'http://localhost:3000/';
 }
 
 function resolveAiConnectionBaseUrl(config: ApiContainerCradle['config']): string {
@@ -144,7 +149,14 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction(({ config, gatewayInternalPodAccess }: ApiContainerCradle) => {
+    hostedPodDataAccess: asFunction(({ config }: ApiContainerCradle) => {
+      return new HostedPodDataAccess({
+        cssBaseUrl: resolveHostedPodCssBaseUrl(),
+        gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
+      });
+    }).singleton(),
+
+    gatewayAccessKeyRepository: asFunction(({ config, hostedPodDataAccess }: ApiContainerCradle) => {
       if (!config.gatewayLocatorSecret) {
         throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for Gateway API key locator encryption');
       }
@@ -156,7 +168,7 @@ export function registerCommonServices(
           },
           previous: config.gatewayPreviousLocatorSecrets,
         }),
-        internalPodAccess: gatewayInternalPodAccess,
+        internalPodAccess: hostedPodDataAccess,
       });
     }).singleton(),
 
@@ -202,7 +214,7 @@ export function registerCommonServices(
       if (!signingSecret) {
         throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
       }
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess;
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
       const attempts = new InMemoryConnectAttemptStore();
       const adapters = [
@@ -266,9 +278,9 @@ export function registerCommonServices(
       return registry;
     }).singleton(),
 
-    gatewayCredentialStore: asFunction(({ gatewayInternalPodAccess }: ApiContainerCradle) => {
+    gatewayCredentialStore: asFunction(({ hostedPodDataAccess }: ApiContainerCradle) => {
       return new PodConnectedCredentialRepository({
-        internalPodAccess: gatewayInternalPodAccess,
+        internalPodAccess: hostedPodDataAccess,
       });
     }).singleton(),
 
@@ -315,7 +327,7 @@ export function registerCommonServices(
       if (!config.aiGatewayConnectEnabled) {
         return undefined;
       }
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess;
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
