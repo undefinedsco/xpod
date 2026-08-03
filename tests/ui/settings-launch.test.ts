@@ -276,10 +276,6 @@ describe('settings dashboard static launch smoke', () => {
       env: {
         XPOD_LOCAL_AUTO_PROVISION: 'false',
         CSS_ALLOWED_HOSTS: 'localhost,127.0.0.1',
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'settings-launch-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'settings-launch-secret',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'settings-launch-locator-secret',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'settings-launch-locator',
         XPOD_SECRET_CELL_KEY_ID: 'settings-launch',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 11).toString('base64'),
       },

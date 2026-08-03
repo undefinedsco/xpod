@@ -135,11 +135,10 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
     solidBaseUrl: process.env.CSS_BASE_URL,
-    gatewayLocatorSecret: process.env.XPOD_GATEWAY_LOCATOR_SECRET,
-    gatewayLocatorKeyId: process.env.XPOD_GATEWAY_LOCATOR_KEY_ID,
-    gatewayPreviousLocatorSecrets: parseGatewayPreviousLocatorSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
-    gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
-    gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
+    aiConnectionInvocationSecret: process.env.XPOD_AI_CONNECTION_INVOCATION_SECRET,
+    aiConnectionInvocationKeyId: process.env.XPOD_AI_CONNECTION_INVOCATION_KEY_ID,
+    aiConnectionPreviousInvocationSecrets: parsePreviousInvocationSecrets(process.env.XPOD_AI_CONNECTION_PREVIOUS_INVOCATION_SECRETS),
+    aiGatewaySessionAffinitySecret: process.env.XPOD_AI_GATEWAY_SESSION_AFFINITY_SECRET,
     gatewayAdminProxyAuthSecret: process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET,
     aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
     secretCellCredentialVaultFactory,
@@ -250,7 +249,7 @@ function assertSecretCellKeyId(value: string, variable: string): void {
   }
 }
 
-function parseGatewayPreviousLocatorSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
+function parsePreviousInvocationSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
   if (!value?.trim()) {
     return undefined;
   }

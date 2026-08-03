@@ -581,7 +581,7 @@ describe('AiGatewayHandler', () => {
     expect(post.runtime.execute).toHaveBeenCalledTimes(1);
   });
 
-  it('lists only current-WebID available models and requires models:read scope', async () => {
+  it('lists only models available to the current Solid WebID', async () => {
     const { routes } = createFixture({ otherWebIdCredential: true });
     const ok = await callRoute(routes, 'GET /v1/models', request('/v1/models'));
     expect(ok.statusCode).toBe(200);
@@ -590,14 +590,6 @@ describe('AiGatewayHandler', () => {
     expect(body.data.map((model: any) => model.id)).not.toContain('gpt-4.1');
     expect(body.data.map((model: any) => model.id)).not.toContain('deepseek-chat');
 
-    const forbidden = await callRoute(routes, 'GET /v1/models', request('/v1/models', undefined, {
-      type: 'solid',
-      webId: OTHER_WEB_ID,
-      viaGatewayApiKey: true,
-      gatewayKeyId: 'gak_read',
-      scopes: ['inference:write'],
-    } as any));
-    expect(forbidden.statusCode).toBe(403);
   });
 
   it('does not register acceptance provenance endpoint unless explicitly enabled', () => {
@@ -606,26 +598,18 @@ describe('AiGatewayHandler', () => {
     expect(routes['GET /v1/xpod/acceptance/provenance']).toBeUndefined();
   });
 
-  it('rejects acceptance provenance for non-Gateway callers and Gateway keys missing acceptance:read', async () => {
+  it('accepts a Solid principal for acceptance provenance', async () => {
     const { routes } = createFixture({ acceptanceEndpointsEnabled: true });
     const path = '/v1/xpod/acceptance/provenance?model=gpt-5';
 
-    const nonGateway = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(path, undefined, {
+    const result = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(path, undefined, {
       type: 'solid',
       webId: WEB_ID,
-      scopes: ['models:read', 'acceptance:read'],
+      viaApiKey: true,
+      clientId: 'client-id',
     }));
-    expect(nonGateway.statusCode).toBe(403);
-
-    const missingScope = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(path, undefined, {
-      type: 'solid',
-      webId: WEB_ID,
-      viaGatewayApiKey: true,
-      gatewayKeyId: 'gak_protocol_only',
-      gatewayKeyFingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      scopes: ['models:read', 'inference:write'],
-    } as any));
-    expect(missingScope.statusCode).toBe(403);
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({ authType: 'client-credentials' });
   });
 
   it('validates acceptance provenance model input and fails unresolved credentials honestly', async () => {
@@ -633,11 +617,9 @@ describe('AiGatewayHandler', () => {
     const auth = {
       type: 'solid',
       webId: WEB_ID,
-      viaGatewayApiKey: true,
-      gatewayKeyId: 'gak_acceptance',
-      gatewayKeyFingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      scopes: ['acceptance:read'],
-    } as any;
+      viaApiKey: true,
+      clientId: 'client-id',
+    } as const;
 
     const missingModel = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(
       '/v1/xpod/acceptance/provenance',
@@ -654,9 +636,8 @@ describe('AiGatewayHandler', () => {
     expect(unresolved.statusCode).toBe(404);
   });
 
-  it('returns server-derived acceptance provenance without raw Gateway or provider secrets', async () => {
+  it('returns server-derived acceptance provenance without client or provider secrets', async () => {
     const { routes } = createFixture({ acceptanceEndpointsEnabled: true });
-    const serverFingerprint = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const callerFingerprint = 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
     const res = await callRoute(routes, 'GET /v1/xpod/acceptance/provenance', request(
@@ -665,11 +646,9 @@ describe('AiGatewayHandler', () => {
       {
         type: 'solid',
         webId: WEB_ID,
-        viaGatewayApiKey: true,
-        gatewayKeyId: 'gak_acceptance',
-        gatewayKeyFingerprint: serverFingerprint,
-        scopes: ['acceptance:read'],
-      } as any,
+        viaApiKey: true,
+        clientId: 'client-id',
+      },
       {
         'x-xpod-gateway-key-fingerprint': callerFingerprint,
       },
@@ -679,8 +658,8 @@ describe('AiGatewayHandler', () => {
     const body = JSON.parse(res.body);
     expect(body).toMatchObject({
       webId: WEB_ID,
-      gatewayKeyId: 'gak_acceptance',
-      gatewayKeyFingerprint: serverFingerprint,
+      authType: 'client-credentials',
+      clientIdHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       credentialIriHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       credentialPayloadRefHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       providerId: 'openai',

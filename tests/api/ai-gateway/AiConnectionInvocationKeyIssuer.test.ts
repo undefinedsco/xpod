@@ -1,27 +1,24 @@
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { AiConnectionInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionInvocationKeyIssuer';
-import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { InvocationTokenAuthenticator } from '../../../src/api/ai-gateway/auth/InvocationTokenAuthenticator';
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
-import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
-import {
-  AesGatewayKeyLocatorCodec,
-  createGatewayKeyLocator,
-} from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
-import { canManageGatewayKeys } from '../../../src/api/ai-gateway/auth/GatewayPrincipal';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
-const SCOPES = ['models:read', 'inference:write'];
-const AI_CONNECTION_INVOCATION_SCOPES = [...SCOPES, 'client-config:read', 'client-config:write'];
+const AI_CONNECTION_INVOCATION_SCOPES = ['models:read', 'inference:write'];
+const SCOPES = AI_CONNECTION_INVOCATION_SCOPES;
 const AUDIENCE = 'https://pod.example';
 
 function requestWith(token: string): any {
-  return { headers: { authorization: `Bearer ${token}` } };
+  return {
+    method: 'GET',
+    url: '/v1/models',
+    headers: { authorization: `Bearer ${token}` },
+  };
 }
 
 describe('AiConnectionInvocationKeyIssuer', () => {
-  it('single-flights concurrent issuance, reuses within the safety window, and never writes a repository record', async () => {
-    const repository = new InMemoryGatewayAccessKeyRepository();
+  it('single-flights concurrent issuance and reuses within the safety window', async () => {
     let now = new Date('2026-07-24T00:00:00.000Z');
     const codec = new AesInvocationTokenCodec({
       active: { kid: 'active', secret: 'invocation-secret' },
@@ -40,7 +37,6 @@ describe('AiConnectionInvocationKeyIssuer', () => {
     expect(new Set(concurrent.map((entry) => entry.expiresAt)).size).toBe(1);
     now = new Date('2026-07-24T00:04:20.000Z');
     expect((await issuer.issue(context)).gatewayKey).toBe(concurrent[0].gatewayKey);
-    await expect(repository.listByOwner(WEB_ID)).resolves.toEqual([]);
   });
 
   it('rotates before expiry and authenticates as the current WebID with minimal scopes', async () => {
@@ -65,31 +61,29 @@ describe('AiConnectionInvocationKeyIssuer', () => {
     expect(rotated.gatewayKey).not.toBe(first.gatewayKey);
     expect(rotated.expiresAt).toBe('2026-07-24T00:09:31.000Z');
 
-    const repository = new InMemoryGatewayAccessKeyRepository();
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository,
-      invocationTokenCodec: codec,
+    const authenticator = new InvocationTokenAuthenticator({
+      codec,
       deployment: 'local',
-      invocationTokenAudience: 'http://127.0.0.1:3000',
+      audience: 'http://127.0.0.1:3000',
       now: () => now,
     });
-    const authenticated = await authenticator.authenticate(requestWith(rotated.gatewayKey));
+    const authenticated = await authenticator.authenticate({
+      ...requestWith(rotated.gatewayKey),
+      url: '/v1/models',
+    });
     expect(authenticated).toMatchObject({
       success: true,
       context: {
         type: 'solid',
         webId: WEB_ID,
         accountId: WEB_ID,
-        viaGatewayApiKey: true,
         internalInvocation: true,
         scopes: AI_CONNECTION_INVOCATION_SCOPES,
       },
     });
-    expect(canManageGatewayKeys(authenticated.context)).toBe(false);
-    await expect(repository.listByOwner(WEB_ID)).resolves.toEqual([]);
   });
 
-  it('fails closed for untrusted, chained, and non-canonical Solid identities', async () => {
+  it('fails closed for untrusted, incomplete client credentials, and non-canonical Solid identities', async () => {
     const codec = new AesInvocationTokenCodec({
       active: { kid: 'active', secret: 'invocation-secret' },
     });
@@ -102,11 +96,46 @@ describe('AiConnectionInvocationKeyIssuer', () => {
 
     await expect(issuer.issue({ userId: 'anonymous' })).rejects.toThrow(/authenticated Solid WebID/);
     await expect(issuer.issue({
-      auth: { type: 'solid', webId: WEB_ID, viaGatewayApiKey: true },
+      auth: { type: 'solid', webId: WEB_ID, viaApiKey: true },
     })).rejects.toThrow(/authenticated Solid WebID/);
     await expect(issuer.issue({
       auth: { type: 'solid', webId: 'HTTPS://pod.example:443/alice/../alice/profile/card#me' },
     })).rejects.toThrow(/canonical/);
+  });
+
+  it('reuses existing CSS client credentials for delegated task runs', async () => {
+    const issuer = new AiConnectionInvocationKeyIssuer({
+      codec: new AesInvocationTokenCodec({ active: { kid: 'active', secret: 'invocation-secret' } }),
+      deployment: 'cloud',
+      baseUrl: 'https://api.example/v1',
+    });
+
+    const result = await issuer.issue({
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        viaApiKey: true,
+        clientId: 'task-client',
+        clientSecret: 'task-secret',
+      },
+    });
+
+    expect(Buffer.from(result.gatewayKey.slice(3), 'base64').toString('utf8'))
+      .toBe('task-client:task-secret');
+    expect(result.expiresAt).toBeUndefined();
+  });
+
+  it('issues a separate client-configuration-only token for the applet host', async () => {
+    const codec = new AesInvocationTokenCodec({ active: { kid: 'active', secret: 'invocation-secret' } });
+    const issuer = new AiConnectionInvocationKeyIssuer({
+      codec,
+      deployment: 'cloud',
+      baseUrl: 'https://api.example/v1',
+    });
+    const result = await issuer.issueClientConfiguration({
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(codec.decode(result.gatewayKey)?.scopes).toEqual(['client-config:read', 'client-config:write']);
   });
 });
 
@@ -116,13 +145,10 @@ describe('stateless invocation authentication', () => {
     const codec = new AesInvocationTokenCodec({
       active: { kid: 'active', secret: 'shared-secret' },
     });
-    const repository = new InMemoryGatewayAccessKeyRepository();
-    const repositoryLookup = vi.spyOn(repository, 'findById');
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository,
-      invocationTokenCodec: codec,
+    const authenticator = new InvocationTokenAuthenticator({
+      codec,
       deployment: 'local',
-      invocationTokenAudience: AUDIENCE,
+      audience: AUDIENCE,
       now: () => now,
     });
     const valid = codec.encode({
@@ -139,7 +165,7 @@ describe('stateless invocation authentication', () => {
       audience: AUDIENCE,
       issuer: AUDIENCE,
       webId: WEB_ID,
-      scopes: ['models:read'],
+      scopes: ['inference:write'],
       issuedAt: now,
       expiresAt: new Date(now.getTime() + 5 * 60_000),
     });
@@ -161,12 +187,6 @@ describe('stateless invocation authentication', () => {
       issuedAt: new Date(now.getTime() + 5_001),
       expiresAt: new Date(now.getTime() + 65_001),
     });
-    const locatorCodec = new AesGatewayKeyLocatorCodec({
-      active: { kid: 'active', secret: 'shared-secret' },
-    });
-    const locator = createGatewayKeyLocator(WEB_ID, 'local', locatorCodec);
-    expect(codec.decode(locator)).toBeUndefined();
-    expect(locatorCodec.decode(valid)).toBeUndefined();
     expect(() => codec.encode({
       deployment: 'local',
       audience: AUDIENCE,
@@ -196,7 +216,6 @@ describe('stateless invocation authentication', () => {
       category: 'invalid_credentials',
       statusCode: 401,
     });
-    expect(repositoryLookup).not.toHaveBeenCalled();
   });
 
   it('rejects same-deployment invocation tokens for a different audience, tampered audience, and legacy tokens without audience', async () => {
@@ -204,11 +223,10 @@ describe('stateless invocation authentication', () => {
     const codec = new AesInvocationTokenCodec({
       active: { kid: 'active', secret: 'shared-secret' },
     });
-    const authenticator = new GatewayApiKeyAuthenticator({
-      repository: new InMemoryGatewayAccessKeyRepository(),
-      invocationTokenCodec: codec,
+    const authenticator = new InvocationTokenAuthenticator({
+      codec,
       deployment: 'cloud',
-      invocationTokenAudience: 'https://api.example',
+      audience: 'https://api.example',
       now: () => now,
     });
     const wrongAudience = codec.encode({

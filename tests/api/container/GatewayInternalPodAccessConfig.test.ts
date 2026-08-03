@@ -31,16 +31,12 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
     databaseUrl: ':memory:',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'https://issuer.example/.oidc/token',
-    gatewayLocatorSecret: 'locator-secret',
-    gatewayLocatorKeyId: 'active',
-    gatewayInternalClientId: 'internal-client',
-    gatewayInternalClientSecret: 'internal-secret',
     ...overrides,
   };
 }
 
-describe('Gateway internal Pod access container config', () => {
-  it('loads internal gateway client credentials from env without using user/provider AI secrets', () => {
+describe('AI credential container config', () => {
+  it('does not load obsolete Gateway locator or internal client credentials', () => {
     const previous = { ...process.env };
     try {
       process.env.XPOD_GATEWAY_LOCATOR_SECRET = 'locator-secret';
@@ -56,14 +52,11 @@ describe('Gateway internal Pod access container config', () => {
 
       const config = loadConfigFromEnv();
 
-      expect(config.gatewayLocatorSecret).toBe('locator-secret');
-      expect(config.gatewayLocatorKeyId).toBe('active');
-      expect(config.gatewayPreviousLocatorSecrets).toEqual([
-        { kid: 'old-1', secret: 'previous-secret' },
-        { kid: 'old-2', secret: 'older-secret' },
-      ]);
-      expect(config.gatewayInternalClientId).toBe('internal-client');
-      expect(config.gatewayInternalClientSecret).toBe('internal-secret');
+      expect(config).not.toHaveProperty('gatewayLocatorSecret');
+      expect(config).not.toHaveProperty('gatewayLocatorKeyId');
+      expect(config).not.toHaveProperty('gatewayPreviousLocatorSecrets');
+      expect(config).not.toHaveProperty('gatewayInternalClientId');
+      expect(config).not.toHaveProperty('gatewayInternalClientSecret');
       expect(config.secretCellCredentialVaultFactory).toBeTypeOf('function');
     } finally {
       process.env = previous;
@@ -100,48 +93,34 @@ describe('Gateway internal Pod access container config', () => {
     }
   });
 
-  it('keeps the API container startable when optional delegated Pod access credentials are missing', () => {
-    const container = createApiContainer(baseConfig({
-      gatewayInternalClientId: undefined,
-      gatewayInternalClientSecret: undefined,
-    }));
+  it('keeps the API container startable without delegated Pod access credentials or locator secret', () => {
+    const container = createApiContainer(baseConfig());
 
-    expect(container.resolve('gatewayInternalPodAccess')).toBeUndefined();
-    expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
+    expect(container.resolve('invocationTokenCodec')).toBeTruthy();
+    expect(container.resolve('aiGatewayService')).toBeTruthy();
   });
 
-  it('does not silently fall back to rotating service tokens as locator secrets', () => {
+  it('does not use rotating service tokens as invocation or affinity secrets', () => {
     const container = createApiContainer(baseConfig({
-      gatewayLocatorSecret: undefined,
-      gatewayLocatorKeyId: undefined,
       serviceToken: 'rotating-service-token',
       nodeToken: 'rotating-node-token',
     }));
 
-    expect(() => container.resolve('gatewayAccessKeyRepository')).toThrow(/GATEWAY_LOCATOR_SECRET/);
-  });
-
-  it('constructs the default gateway repository when locator and internal access are configured', () => {
-    const container = createApiContainer(baseConfig());
-
-    expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
+    expect(container.resolve('invocationTokenCodec')).toBeTruthy();
+    expect(container.resolve('gatewaySessionAffinityStore')).toBeTruthy();
   });
 
   it('constructs hosted Pod data access without delegated client credentials', () => {
     const container = createApiContainer(baseConfig({
-      gatewayInternalClientId: undefined,
-      gatewayInternalClientSecret: undefined,
       gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
     }));
 
-    expect(container.resolve('gatewayInternalPodAccess')).toBeUndefined();
     expect(container.resolve('hostedPodDataAccess')).toBeTruthy();
-    expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
+    expect(container.resolve('gatewayCredentialStore')).toBeTruthy();
   });
 
   it('constructs inference without requiring the SecretCell credential vault', () => {
     const container = createApiContainer(baseConfig({
-      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       secretCellCredentialVaultFactory: undefined,
     }));
 
@@ -150,7 +129,6 @@ describe('Gateway internal Pod access container config', () => {
 
   it('constructs the inference gateway service when required dependencies are configured', () => {
     const container = createApiContainer(baseConfig({
-      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       secretCellCredentialVaultFactory: testCredentialVault,
     }));
 

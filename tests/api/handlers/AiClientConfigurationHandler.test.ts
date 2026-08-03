@@ -23,7 +23,7 @@ type RouteHandler = (request: AuthenticatedRequest, response: TestResponse, para
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const ENDPOINT = 'https://xpod.example';
-const GATEWAY_KEY = 'xpod_gw_v1_super_secret_gateway_key';
+const GATEWAY_KEY = `sk-${Buffer.from('client-id:client-secret').toString('base64')}`;
 const PROVIDER_KEY = 'sk-provider-must-never-appear';
 
 const CLIENTS: AiClientId[] = ['codex', 'claude-code', 'pi', 'codebuddy'];
@@ -86,7 +86,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         providerCredential: PROVIDER_KEY,
         ...(plan.confirmation ? {
           confirmation: {
@@ -99,7 +99,7 @@ describe('AiClientConfigurationHandler', () => {
       { client },
     );
 
-    expect(apply.statusCode).toBe(200);
+    expect(apply.statusCode, apply.body).toBe(200);
     expect(JSON.stringify(JSON.parse(apply.body))).not.toContain(GATEWAY_KEY);
     expect(JSON.stringify(JSON.parse(apply.body))).not.toContain(PROVIDER_KEY);
     await expectClientConfigured(tmpDir, client);
@@ -142,7 +142,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         ...(plan.confirmation ? {
           confirmation: {
             token: plan.confirmation.token,
@@ -153,7 +153,7 @@ describe('AiClientConfigurationHandler', () => {
       apply,
       { client },
     );
-    expect(apply.statusCode).toBe(200);
+    expect(apply.statusCode, apply.body).toBe(200);
 
     const restore = response();
     await route('POST /api/ai/client-configuration/:client/restore')(
@@ -185,7 +185,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const res = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       res,
       { client: 'codex' },
     );
@@ -247,7 +247,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const res = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       res,
       { client: 'claude-code' },
     );
@@ -265,7 +265,7 @@ describe('AiClientConfigurationHandler', () => {
 
     const missing = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       missing,
       { client: 'pi' },
     );
@@ -276,7 +276,7 @@ describe('AiClientConfigurationHandler', () => {
     await route('POST /api/ai/client-configuration/:client/apply')(
       jsonRequest({
         planId: plan.planId,
-        gatewayKey: GATEWAY_KEY,
+        apiKey: GATEWAY_KEY,
         confirmation: { token: plan.confirmation.token, targetHash: 'stale' },
       }, scopedAuth('client-config:write')),
       stale,
@@ -290,11 +290,11 @@ describe('AiClientConfigurationHandler', () => {
     const plan = await postPlan('codex');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       apply,
       { client: 'codex' },
     );
-    expect(apply.statusCode).toBe(200);
+    expect(apply.statusCode, apply.body).toBe(200);
 
     const restarted = new AiClientConfigurationService({
       homeDir: tmpDir,
@@ -314,7 +314,7 @@ describe('AiClientConfigurationHandler', () => {
     );
     expect(JSON.parse(verify.body)).toMatchObject({
       status: 'unverifiable',
-      message: expect.stringContaining('Gateway key is not recoverable'),
+      message: expect.stringContaining('API key is not recoverable'),
     });
   });
 
@@ -330,11 +330,11 @@ describe('AiClientConfigurationHandler', () => {
     const plan = await postPlan('claude-code');
     const apply = response();
     await route('POST /api/ai/client-configuration/:client/apply')(
-      jsonRequest({ planId: plan.planId, gatewayKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
       apply,
       { client: 'claude-code' },
     );
-    expect(apply.statusCode).toBe(200);
+    expect(apply.statusCode, apply.body).toBe(200);
     const afterApply = JSON.parse(await fs.readFile(target, 'utf8'));
     afterApply.after = true;
     afterApply.env.KEEP_AFTER = 'yes';
@@ -448,9 +448,8 @@ function scopedAuth(scope: 'client-config:read' | 'client-config:write'): Authen
   return {
     type: 'solid',
     webId: WEB_ID,
-    viaGatewayApiKey: true,
+    viaApiKey: true,
     internalInvocation: true,
-    gatewayKeyId: 'gak_invocation',
     scopes: scope === 'client-config:read'
       ? ['client-config:read']
       : ['client-config:read', 'client-config:write'],

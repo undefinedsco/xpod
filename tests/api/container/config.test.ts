@@ -13,9 +13,6 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
     databaseUrl: ':memory:',
     corsOrigins: ['*'],
     cssTokenEndpoint: 'https://issuer.example/.oidc/token',
-    gatewayLocatorSecret: 'locator-secret',
-    gatewayInternalClientId: 'internal-client',
-    gatewayInternalClientSecret: 'internal-secret',
     ...overrides,
   };
 }
@@ -67,10 +64,8 @@ describe('loadConfigFromEnv', () => {
     expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
   });
 
-  it('constructs disabled provider Connect without eagerly requiring internal service credentials', async () => {
+  it('constructs disabled provider Connect without delegated service credentials', async () => {
     const service = createApiContainer(baseConfig({
-      gatewayInternalClientId: undefined,
-      gatewayInternalClientSecret: undefined,
       aiGatewayConnectEnabled: false,
     })).resolve('providerConnectService');
 
@@ -84,19 +79,16 @@ describe('loadConfigFromEnv', () => {
 
   it('injects one singleton hosted Pod data adapter into active AI Connection Pod paths', () => {
     const container = createApiContainer(baseConfig({
-      gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
       gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
     }));
 
     const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
-    const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository') as any;
     const providerConnectService = container.resolve('providerConnectService') as any;
     const gatewayCredentialStore = container.resolve('gatewayCredentialStore') as any;
     const providerQuotaService = container.resolve('providerQuotaService') as any;
 
-    expect(gatewayAccessKeyRepository.internalPodAccess).toBe(hostedPodDataAccess);
     expect(providerConnectService.credentialRepository.internalPodAccess).toBe(hostedPodDataAccess);
     expect(gatewayCredentialStore.internalPodAccess).toBe(hostedPodDataAccess);
     expect(providerQuotaService.repository.internalPodAccess).toBe(hostedPodDataAccess);

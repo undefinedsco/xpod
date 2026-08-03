@@ -45,7 +45,7 @@ export interface GatewayAdminProxyIntent {
   ownerWebId: string;
   method: 'GET' | 'PUT' | 'PATCH' | 'DELETE';
   resourceUrl: string;
-  principalKind: 'solid-user' | 'gateway-key';
+  principalKind: 'solid-user';
   scopes: string[];
 }
 
@@ -183,7 +183,7 @@ function parseGatewayAdminProxyIntent(value: string | undefined): GatewayAdminPr
     if (typeof parsed.ownerWebId !== 'string' ||
       typeof parsed.resourceUrl !== 'string' ||
       (parsed.method !== 'GET' && parsed.method !== 'PUT' && parsed.method !== 'PATCH' && parsed.method !== 'DELETE') ||
-      (parsed.principalKind !== 'solid-user' && parsed.principalKind !== 'gateway-key') ||
+      parsed.principalKind !== 'solid-user' ||
       !Array.isArray(parsed.scopes) ||
       !parsed.scopes.every((scope) => typeof scope === 'string')) {
       return undefined;

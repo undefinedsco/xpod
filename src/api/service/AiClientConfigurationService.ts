@@ -56,7 +56,7 @@ export interface AiClientConfigurationServiceOptions {
   now?: () => Date;
   verifyGateway?: (input: {
     endpoint: string;
-    gatewayKey: string;
+    apiKey: string;
     model?: string;
     signal: AbortSignal;
   }) => Promise<unknown>;
@@ -74,7 +74,7 @@ export interface PlanInput {
 export interface ApplyInput {
   client: AiClientId;
   planId: string;
-  gatewayKey: string;
+  apiKey: string;
   webId?: string;
   confirmation?: {
     token: string;
@@ -94,7 +94,7 @@ interface StoredPlan {
   nativePlan: AiClientConfigPlan;
   targets: PlannedTarget[];
   backupDir: string;
-  gatewayKey?: string;
+  apiKey?: string;
   confirmation?: {
     token: string;
     targetHash: string;
@@ -179,6 +179,7 @@ export class AiClientConfigurationService {
     const client = requireSupportedClient(input.client);
     const profile = {
       endpoint: normalizeEndpoint(input.endpoint),
+      apiKey: PLAN_SECRET_PLACEHOLDER,
       gatewayKey: PLAN_SECRET_PLACEHOLDER,
       webId: input.webId ?? 'https://xpod.local/.well-known/ai-client-configuration#owner',
       model: input.model,
@@ -207,8 +208,8 @@ export class AiClientConfigurationService {
 
   public async apply(input: ApplyInput): Promise<{ applied: true }> {
     const plan = this.requirePlan(input.client, input.planId);
-    if (!input.gatewayKey?.startsWith('xpod_')) {
-      throw new AiClientConfigurationError('invalid_gateway_key', 'Gateway key is required.', 400);
+    if (!input.apiKey?.startsWith('sk-')) {
+      throw new AiClientConfigurationError('invalid_api_key', 'CSS client credentials API key is required.', 400);
     }
     if (plan.confirmation) {
       if (!input.confirmation?.token) {
@@ -230,13 +231,14 @@ export class AiClientConfigurationService {
 
       const profile = {
         ...plan.profile,
-        gatewayKey: input.gatewayKey,
+        apiKey: input.apiKey,
+        gatewayKey: input.apiKey,
         webId: input.webId ?? plan.profile.webId,
       };
       const adapter = this.adapterFor(plan.client);
       const nativePlan = await mapAdapterError(() => adapter.plan(profile));
       await mapAdapterError(() => adapter.apply(nativePlan));
-      plan.gatewayKey = input.gatewayKey;
+      plan.apiKey = input.apiKey;
       plan.profile = profile;
       plan.nativePlan = nativePlan;
 
@@ -261,11 +263,11 @@ export class AiClientConfigurationService {
     if (status.status !== 'configured') {
       return status;
     }
-    if (!plan?.gatewayKey) {
+    if (!plan?.apiKey) {
       return {
         ...status,
         status: 'unverifiable',
-        message: 'Gateway key is not recoverable after restart; re-apply the client configuration to verify it.',
+        message: 'API key is not recoverable after restart; re-apply the client configuration to verify it.',
       };
     }
     const adapter = this.adapterFor(input.client);
@@ -276,7 +278,7 @@ export class AiClientConfigurationService {
     const controller = new AbortController();
     await this.verifyGateway({
       endpoint: plan.profile.endpoint,
-      gatewayKey: plan.gatewayKey,
+      apiKey: plan.apiKey,
       model: plan.profile.model,
       signal: controller.signal,
     });
@@ -425,13 +427,13 @@ async function readOptional(filePath: string): Promise<string | undefined> {
 }
 
 function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number): NonNullable<AiClientConfigurationServiceOptions['verifyGateway']> {
-  return async ({ endpoint, gatewayKey, model, signal }) => {
+  return async ({ endpoint, apiKey, model, signal }) => {
     const timeout = AbortSignal.timeout(timeoutMs);
     const linked = mergeSignals(signal, timeout);
     const base = endpoint.replace(/\/+$/u, '');
     await checkedGatewayFetch(fetchImpl, `${base}/v1/models`, {
       method: 'GET',
-      headers: { accept: 'application/json', authorization: `Bearer ${gatewayKey}` },
+      headers: { accept: 'application/json', authorization: `Bearer ${apiKey}` },
       signal: linked,
     });
     await checkedGatewayFetch(fetchImpl, `${base}/v1/responses`, {
@@ -439,7 +441,7 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
-        authorization: `Bearer ${gatewayKey}`,
+        authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: model ?? 'xpod/default',

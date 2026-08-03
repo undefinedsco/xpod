@@ -230,7 +230,7 @@ The repair reads `CSS_SPARQL_ENDPOINT` (or `--sparqlEndpoint`) and only backfill
 
 ### InternalPodDataHttpHandler
 - **Path**: `src/http/InternalPodDataHttpHandler.ts`
-- **Purpose**: Hosted-Pod-only internal data channel for AI Connection Credential, Provider, GatewayAccessKey, and QuotaSnapshot documents
+- **Purpose**: Hosted-Pod-only internal data channel for AI Connection Credential, Provider, and QuotaSnapshot documents
 - **Endpoint**: `/.internal/pod-data`
 - **Functionality**:
   - Requires loopback transport and the runtime-generated `XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET`

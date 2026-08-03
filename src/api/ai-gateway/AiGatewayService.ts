@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
-import { getWebId, hasGatewayScope } from '../auth/AuthContext';
+import { getWebId } from '../auth/AuthContext';
 import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
@@ -80,8 +80,8 @@ export interface GatewayModelListItem {
 
 export interface GatewayAcceptanceProvenance {
   webId: string;
-  gatewayKeyId: string;
-  gatewayKeyFingerprint: string;
+  authType: 'solid-oidc' | 'client-credentials';
+  clientIdHash?: string;
   credentialIriHash: string;
   credentialPayloadRefHash: string;
   providerId: string;
@@ -128,7 +128,6 @@ export class AiGatewayService {
   }
 
   public async execute(input: GatewayExecutionInput): Promise<GatewayExecution> {
-    this.requireScope(input.auth, 'inference:write');
     const principal = this.requirePrincipal(input.auth);
     const frontend = this.frontend(input.protocol);
     const request = frontend.parseRequest(input.body);
@@ -169,7 +168,6 @@ export class AiGatewayService {
   }
 
   public async listModels(auth: AuthContext): Promise<GatewayModelListItem[]> {
-    this.requireScope(auth, 'models:read');
     const principal = this.requirePrincipal(auth);
     const credentials = await this.credentials.listCredentials({
       webId: principal.webId,
@@ -241,14 +239,7 @@ export class AiGatewayService {
     model: string;
     xpodBaseUrl: string;
   }): Promise<GatewayAcceptanceProvenance> {
-    this.requireScope(input.auth, 'acceptance:read');
     const principal = this.requirePrincipal(input.auth);
-    if (input.auth.type !== 'solid' || input.auth.viaGatewayApiKey !== true || !input.auth.gatewayKeyFingerprint) {
-      throw new GatewayProtocolError('Acceptance provenance requires a Gateway API key principal', {
-        code: 'invalid_request',
-        status: 403,
-      });
-    }
     let route: ModelRouteResult;
     try {
       route = await this.router.route({
@@ -277,8 +268,12 @@ export class AiGatewayService {
     const credential = route.credential as StoredGatewayCredential;
     return {
       webId: principal.webId,
-      gatewayKeyId: input.auth.type === 'solid' ? input.auth.gatewayKeyId ?? 'unknown' : 'unknown',
-      gatewayKeyFingerprint: input.auth.gatewayKeyFingerprint,
+      authType: input.auth.type === 'solid' && input.auth.viaApiKey === true
+        ? 'client-credentials'
+        : 'solid-oidc',
+      ...(input.auth.type === 'solid' && input.auth.clientId
+        ? { clientIdHash: hashProvenanceValue(input.auth.clientId) }
+        : {}),
       credentialIriHash: hashProvenanceValue(credential.credentialIri),
       credentialPayloadRefHash: hashProvenanceValue(credential.credentialIri),
       providerId: route.provider.id,
@@ -407,15 +402,6 @@ export class AiGatewayService {
     return { webId };
   }
 
-  private requireScope(auth: AuthContext, scope: string): void {
-    if (!hasGatewayScope(auth, scope)) {
-      throw new GatewayProtocolError(`Missing required scope: ${scope}`, {
-        code: 'invalid_request',
-        status: 403,
-        details: { scope },
-      });
-    }
-  }
 }
 
 function hashProvenanceValue(value: string): string {

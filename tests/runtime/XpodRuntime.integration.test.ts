@@ -240,10 +240,6 @@ describe('XpodRuntime admin proxy authorization lifecycle', () => {
       logLevel: 'warn',
       env: {
         ...isolatedLocalEnv,
-        XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'admin-proxy-test-client',
-        XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'admin-proxy-test-secret',
-        XPOD_GATEWAY_LOCATOR_SECRET: 'admin-proxy-test-locator-secret',
-        XPOD_GATEWAY_LOCATOR_KEY_ID: 'admin-proxy-test-locator-key',
         XPOD_SECRET_CELL_KEY_ID: 'admin-proxy-test-cell',
         XPOD_SECRET_CELL_KEY: Buffer.alloc(32, 7).toString('base64'),
       },

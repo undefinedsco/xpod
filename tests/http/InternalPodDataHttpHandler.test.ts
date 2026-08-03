@@ -18,7 +18,6 @@ const SECRET = 'test-runtime-gateway-admin-secret';
 const OWNER = 'https://pod.example/alice/profile/card#me';
 const CREDENTIAL_RESOURCE = 'https://pod.example/alice/settings/credentials.ttl';
 const PROVIDER_RESOURCE = 'https://pod.example/alice/settings/providers/__service_access__.ttl';
-const GATEWAY_KEY_RESOURCE = 'https://pod.example/alice/.data/ai/gateway/access-keys.ttl';
 const QUOTA_RESOURCE = 'https://pod.example/alice/.data/ai/gateway/quota.ttl';
 const SECRET_BODY = '{"secretPayload":{"apiKey":"sk-test-canary"}}';
 
@@ -142,7 +141,7 @@ function signedHeaders(input: {
   path?: string;
   ownerWebId?: string;
   resourceUrl?: string;
-  principalKind?: 'solid-user' | 'gateway-key';
+  principalKind?: 'solid-user';
   scopes?: string[];
   nonce?: string;
   issuedAt?: number;
@@ -261,7 +260,7 @@ describe('InternalPodDataHttpHandler', () => {
     const store = createStore();
     const handler = createHandler(store);
 
-    for (const resourceUrl of [ CREDENTIAL_RESOURCE, PROVIDER_RESOURCE, GATEWAY_KEY_RESOURCE, QUOTA_RESOURCE ]) {
+    for (const resourceUrl of [ CREDENTIAL_RESOURCE, PROVIDER_RESOURCE, QUOTA_RESOURCE ]) {
       const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
         headers: signedHeaders({ resourceUrl, nonce: resourceUrl }),
       }));
@@ -270,32 +269,23 @@ describe('InternalPodDataHttpHandler', () => {
       expect(response.bodyText()).toBe(`stored:${resourceUrl}`);
     }
 
-    expect(store.getRepresentation).toHaveBeenCalledTimes(4);
+    expect(store.getRepresentation).toHaveBeenCalledTimes(3);
   });
 
-  it('accepts gateway-key verification scope only for GET gateway key reads', async () => {
+  it('rejects removed gateway-key verification pre-auth scope', async () => {
     const store = createStore();
     const handler = createHandler(store);
 
     const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
       headers: signedHeaders({
-        resourceUrl: GATEWAY_KEY_RESOURCE,
-        principalKind: 'gateway-key',
-        scopes: [ 'ai:gateway-key:verify' ],
-      }),
-    }));
-
-    expect(response.statusCode).toBe(200);
-    expect(response.bodyText()).toBe(`stored:${GATEWAY_KEY_RESOURCE}`);
-
-    const forbidden = await handle(handler, createRequest('GET', '/.internal/pod-data', {
-      headers: signedHeaders({
         resourceUrl: CREDENTIAL_RESOURCE,
-        principalKind: 'gateway-key',
+        principalKind: 'solid-user',
         scopes: [ 'ai:gateway-key:verify' ],
       }),
     }));
-    expect(forbidden.statusCode).toBe(404);
+
+    expect(response.statusCode).toBe(404);
+    expect(store.getRepresentation).not.toHaveBeenCalled();
   });
 
   it('respects GET response backpressure while streaming ResourceStore data', async () => {

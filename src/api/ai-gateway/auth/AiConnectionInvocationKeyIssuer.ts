@@ -1,9 +1,7 @@
 import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
 import type { StoreContext } from '../../chatkit/store';
 import type { AIConnectionInvocationConfig } from '../../../agents/types';
-import type { GatewayDeployment } from './GatewayApiKey';
-import { DEFAULT_GATEWAY_API_KEY_SCOPES } from './GatewayApiKeyAuthenticator';
-import { requireCanonicalOrigin, requireCanonicalWebId, type InvocationTokenCodec } from './InvocationTokenCodec';
+import { requireCanonicalOrigin, requireCanonicalWebId, type GatewayDeployment, type InvocationTokenCodec } from './InvocationTokenCodec';
 
 // ACP can remain in an interactive authentication wait for five minutes.
 // Ten minutes covers that boundary plus the resumed turn while retaining a
@@ -55,19 +53,35 @@ export class AiConnectionInvocationKeyIssuer {
 
   public async issue(context: StoreContext): Promise<AIConnectionInvocationConfig> {
     const auth = requireTrustedSolidAuth(context.auth as AuthContext | undefined);
+    if (auth.viaApiKey === true && auth.clientId && auth.clientSecret) {
+      return {
+        baseUrl: this.baseUrl,
+        gatewayKey: encodeClientCredentialsApiKey(auth.clientId, auth.clientSecret),
+      };
+    }
+    return this.issueScoped(auth, ['models:read', 'inference:write']);
+  }
+
+  public async issueClientConfiguration(context: StoreContext): Promise<AIConnectionInvocationConfig> {
+    const auth = requireInteractiveSolidAuth(context.auth as AuthContext | undefined);
+    return this.issueScoped(auth, ['client-config:read', 'client-config:write']);
+  }
+
+  private async issueScoped(auth: SolidAuthContext, scopes: string[]): Promise<AIConnectionInvocationConfig> {
     const webId = requireCanonicalWebId(auth.webId);
+    const cacheKey = `${webId}\n${scopes.join(' ')}`;
     const now = this.now();
-    const cached = this.cache.get(webId);
+    const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt.getTime() - now.getTime() >= this.reuseSafetyMarginMs) {
       return this.toInvocationConfig(cached);
     }
-    let pending = this.pending.get(webId);
+    let pending = this.pending.get(cacheKey);
     if (!pending) {
-      pending = Promise.resolve().then(() => this.createInvocation(webId, now));
-      this.pending.set(webId, pending);
+      pending = Promise.resolve().then(() => this.createInvocation(cacheKey, webId, scopes, now));
+      this.pending.set(cacheKey, pending);
       const clearPending = (): void => {
-        if (this.pending.get(webId) === pending) {
-          this.pending.delete(webId);
+        if (this.pending.get(cacheKey) === pending) {
+          this.pending.delete(cacheKey);
         }
       };
       void pending.then(clearPending, clearPending);
@@ -77,7 +91,7 @@ export class AiConnectionInvocationKeyIssuer {
     return this.toInvocationConfig(issued);
   }
 
-  private createInvocation(webId: string, createdAt: Date): CachedInvocation {
+  private createInvocation(cacheKey: string, webId: string, scopes: string[], createdAt: Date): CachedInvocation {
     this.pruneCache(createdAt);
     const expiresAt = new Date(createdAt.getTime() + this.ttlMs);
     const plaintext = this.codec.encode({
@@ -85,12 +99,12 @@ export class AiConnectionInvocationKeyIssuer {
       audience: this.audience,
       issuer: this.issuer,
       webId,
-      scopes: [...DEFAULT_GATEWAY_API_KEY_SCOPES, 'client-config:read', 'client-config:write'],
+      scopes,
       issuedAt: createdAt,
       expiresAt,
     });
     const cached = { plaintext, expiresAt };
-    this.cache.set(webId, cached);
+    this.cache.set(cacheKey, cached);
     return cached;
   }
 
@@ -128,11 +142,27 @@ function requireTrustedSolidAuth(auth: AuthContext | undefined): SolidAuthContex
     auth?.type !== 'solid'
     || typeof auth.webId !== 'string'
     || auth.webId.trim().length === 0
-    || auth.viaGatewayApiKey === true
+    || (auth.viaApiKey === true && (!auth.clientId || !auth.clientSecret))
   ) {
     throw new Error('AI Connection invocation key requires an authenticated Solid WebID');
   }
   return auth;
+}
+
+function requireInteractiveSolidAuth(auth: AuthContext | undefined): SolidAuthContext {
+  if (
+    auth?.type !== 'solid'
+    || typeof auth.webId !== 'string'
+    || auth.webId.trim().length === 0
+    || auth.viaApiKey === true
+  ) {
+    throw new Error('AI Connection client configuration requires an authenticated interactive Solid WebID');
+  }
+  return auth;
+}
+
+function encodeClientCredentialsApiKey(clientId: string, clientSecret: string): string {
+  return `sk-${Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64')}`;
 }
 
 function requireBaseUrl(value: string): string {

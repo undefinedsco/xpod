@@ -15,8 +15,7 @@ const WEB_ID = 'https://id.example/alice/profile/card#me';
 const AUTH: AuthContext = {
   type: 'solid',
   webId: WEB_ID,
-  viaGatewayApiKey: true,
-  scopes: ['models:read', 'inference:write'],
+  viaApiKey: true,
 };
 
 function credential(input: Partial<StoredGatewayCredential> & {

@@ -449,9 +449,6 @@ function readAuthScopes(auth: AuthContext): string[] {
   if (auth.type === 'service') {
     return auth.scopes;
   }
-  if (auth.type === 'solid' && auth.viaGatewayApiKey === true) {
-    return auth.scopes ?? [];
-  }
   return [];
 }
 

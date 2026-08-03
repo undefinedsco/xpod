@@ -118,7 +118,6 @@ function registerSharedRoutes(
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
-  const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
   const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const providerConnectService = container.resolve('providerConnectService');
@@ -175,7 +174,6 @@ function registerSharedRoutes(
     rdfStorageStatsService,
   });
   registerAiGatewayManagementRoutes(server, {
-    repository: gatewayAccessKeyRepository,
     deployment: config.edition,
     connectService: providerConnectService,
     quotaService: providerQuotaService,

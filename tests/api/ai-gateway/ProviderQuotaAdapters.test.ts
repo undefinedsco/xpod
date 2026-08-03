@@ -21,7 +21,6 @@ import {
   type QuotaCredentialRecord,
 } from '../../../src/api/ai-gateway/quota';
 import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
-import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
@@ -871,7 +870,6 @@ describe('AiGatewayManagementHandler quota routes', () => {
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       quotaService: quotaService as never,
     });
@@ -907,22 +905,22 @@ describe('AiGatewayManagementHandler quota routes', () => {
     }));
   });
 
-  it('rejects gateway-key principals from provider quota management routes', async () => {
+  it('rejects non-user service principals from provider quota management routes', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
-      repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       quotaService: { status: vi.fn() } as never,
     });
     const res = response();
 
     await routes['GET /api/ai/gateway/providers/:provider/quota/status'](request({
-      type: 'solid',
-      webId: WEB_ID,
-      viaGatewayApiKey: true,
-    } as any), res, { provider: 'kimi' });
+      type: 'service',
+      serviceType: 'compute',
+      serviceId: 'worker',
+      scopes: [],
+    }), res, { provider: 'kimi' });
 
     expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage provider quota state' });
+    expect(JSON.parse(res.body)).toEqual({ error: 'Provider quota requires the current Solid identity' });
   });
 });

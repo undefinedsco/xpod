@@ -83,4 +83,13 @@ describe('ClientCredentialsAuthenticator', () => {
       viaApiKey: true,
     });
   });
+
+  it('does not claim legacy xpod gateway or invocation bearer tokens', () => {
+    const authenticator = new ClientCredentialsAuthenticator({
+      tokenEndpoint: 'https://example.com/token',
+    });
+
+    expect(authenticator.canAuthenticate(makeRequest('xpod_gw_v1_cloud_gak_legacy_secret'))).toBe(false);
+    expect(authenticator.canAuthenticate(makeRequest('xpod_inv_v1.kid.nonce.ciphertext.tag'))).toBe(false);
+  });
 });

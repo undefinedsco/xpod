@@ -66,7 +66,7 @@ export function registerAiClientConfigurationRoutes(
     await sendServiceResult(response, () => options.service!.apply({
       client: requireClient(params.client),
       planId: requireString(body.planId, 'planId'),
-      gatewayKey: requireString(body.gatewayKey, 'gatewayKey'),
+      apiKey: requireString(body.apiKey, 'apiKey'),
       confirmation: optionalConfirmation(body.confirmation),
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
@@ -147,14 +147,14 @@ function hasClientConfigScope(auth: AuthContext, scope: 'client-config:read' | '
   if (auth.type === 'service') {
     return true;
   }
-  return auth.type === 'solid' && auth.viaGatewayApiKey === true && auth.internalInvocation === true;
+  return auth.type === 'solid' && auth.viaApiKey === true && auth.internalInvocation === true;
 }
 
 function readScopes(auth: AuthContext): string[] {
   if (auth.type === 'service') {
     return auth.scopes;
   }
-  if (auth.type === 'solid' && auth.viaGatewayApiKey === true) {
+  if (auth.type === 'solid' && auth.viaApiKey === true) {
     return auth.scopes ?? [];
   }
   return [];

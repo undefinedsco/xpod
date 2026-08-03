@@ -40,8 +40,7 @@ function request(path: string, body: unknown): AuthenticatedRequest {
     type: 'solid',
     webId: WEB_ID,
     accountId: WEB_ID,
-    scopes: ['models:read', 'inference:write'],
-    viaGatewayApiKey: true,
+    viaApiKey: true,
   };
   req.end(JSON.stringify(body));
   return req;

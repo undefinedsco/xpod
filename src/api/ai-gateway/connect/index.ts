@@ -11,11 +11,11 @@ import {
   encodePlaintextCredential,
   PLAINTEXT_CREDENTIAL_STORAGE_MODE,
 } from '../credentials/PlaintextCredentialPayload';
-import type { GatewayDeployment } from '../auth/GatewayApiKey';
+import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
 import { DEFAULT_PROVIDER_DESCRIPTORS } from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
-import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
+import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
 
 export type ConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
 export type ConnectAttemptStatus =

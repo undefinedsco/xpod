@@ -4,6 +4,7 @@
  * cloud 和 local 模式都需要的服务
  */
 
+import { randomBytes } from 'node:crypto';
 import { asFunction, type AwilixContainer } from 'awilix';
 import type { ApiContainerCradle } from './types';
 
@@ -17,10 +18,7 @@ import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthent
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
-import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
-import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
-import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import { InvocationTokenAuthenticator } from '../ai-gateway/auth/InvocationTokenAuthenticator';
 import { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
@@ -93,6 +91,10 @@ function resolveAiConnectionAudience(config: ApiContainerCradle['config']): stri
   return new URL(resolveAiConnectionBaseUrl(config)).origin;
 }
 
+function randomSecret(): string {
+  return randomBytes(32).toString('base64url');
+}
+
 /**
  * 注册共享服务到容器
  */
@@ -138,17 +140,6 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayInternalPodAccess: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        return undefined;
-      }
-      return new ClientCredentialsInternalPodAccessTokenProvider({
-        tokenEndpoint: config.cssTokenEndpoint,
-        clientId: config.gatewayInternalClientId,
-        clientSecret: config.gatewayInternalClientSecret,
-      });
-    }).singleton(),
-
     hostedPodDataAccess: asFunction(({ config }: ApiContainerCradle) => {
       return new HostedPodDataAccess({
         cssBaseUrl: resolveHostedPodCssBaseUrl(),
@@ -156,32 +147,13 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction(({ config, hostedPodDataAccess }: ApiContainerCradle) => {
-      if (!config.gatewayLocatorSecret) {
-        throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for Gateway API key locator encryption');
-      }
-      return new PodGatewayAccessKeyRepository({
-        locatorCodec: new AesGatewayKeyLocatorCodec({
-          active: {
-            kid: config.gatewayLocatorKeyId ?? 'active',
-            secret: config.gatewayLocatorSecret,
-          },
-          previous: config.gatewayPreviousLocatorSecrets,
-        }),
-        internalPodAccess: hostedPodDataAccess,
-      });
-    }).singleton(),
-
     invocationTokenCodec: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayLocatorSecret) {
-        throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for invocation token encryption');
-      }
       return new AesInvocationTokenCodec({
         active: {
-          kid: config.gatewayLocatorKeyId ?? 'active',
-          secret: config.gatewayLocatorSecret,
+          kid: config.aiConnectionInvocationKeyId ?? 'ephemeral',
+          secret: config.aiConnectionInvocationSecret ?? randomSecret(),
         },
-        previous: config.gatewayPreviousLocatorSecrets,
+        previous: config.aiConnectionPreviousInvocationSecrets,
       });
     }).singleton(),
 
@@ -210,10 +182,7 @@ export function registerCommonServices(
           adapters: [],
         });
       }
-      const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
-      if (!signingSecret) {
-        throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
-      }
+      const signingSecret = config.aiGatewayConnectSigningSecret ?? randomSecret();
       const internalPodAccess = cradle.hostedPodDataAccess;
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
       const attempts = new InMemoryConnectAttemptStore();
@@ -289,10 +258,7 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
-      const secret = config.gatewayLocatorSecret;
-      if (!secret) {
-        throw new Error('AI Gateway inference requires XPOD_GATEWAY_LOCATOR_SECRET for session affinity hashing');
-      }
+      const secret = config.aiGatewaySessionAffinitySecret ?? randomSecret();
       if (config.redisUrl) {
         return new RedisSessionAffinityStore({
           client: config.redisUrl,
@@ -341,7 +307,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, invocationTokenCodec, config }: ApiContainerCradle) => {
+    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, invocationTokenCodec, config }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
         publicBaseUrl: config.solidBaseUrl,
@@ -360,17 +326,16 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
-      const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
-        repository: gatewayAccessKeyRepository,
-        invocationTokenCodec,
+      const invocationTokenAuthenticator = new InvocationTokenAuthenticator({
+        codec: invocationTokenCodec,
         deployment: config.edition,
-        invocationTokenAudience: resolveAiConnectionAudience(config),
+        audience: resolveAiConnectionAudience(config),
       });
 
       return new MultiAuthenticator({
-        // Order: Solid DPoP → Service Token → Node Token → Gateway Key → Client Credentials.
+        // Order: Solid DPoP → Service Token → Node Token → short-lived invocation → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
-        authenticators: [solidAuthenticator, serviceTokenAuthenticator, nodeTokenAuthenticator, gatewayApiKeyAuthenticator, clientCredAuthenticator],
+        authenticators: [solidAuthenticator, serviceTokenAuthenticator, nodeTokenAuthenticator, invocationTokenAuthenticator, clientCredAuthenticator],
       });
     }).singleton(),
 

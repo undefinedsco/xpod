@@ -7,7 +7,6 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
-import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
 import type { VercelChatService } from '../service/VercelChatService';
@@ -49,7 +48,6 @@ import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
-import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import type { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 
@@ -113,14 +111,15 @@ export interface ApiContainerConfig {
   cssTokenEndpoint: string;
   solidBaseUrl?: string;
 
-  /** Gateway locator encryption secret. Internal platform secret; not a user/provider AI credential. */
-  gatewayLocatorSecret?: string;
-  gatewayLocatorKeyId?: string;
-  gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
+  /** Independent short-lived AI Connection invocation token key. Falls back to process-ephemeral when omitted. */
+  aiConnectionInvocationSecret?: string;
+  aiConnectionInvocationKeyId?: string;
+  aiConnectionPreviousInvocationSecrets?: Array<{ kid: string; secret: string }>;
+
+  /** Independent session-affinity hashing secret. Falls back to process-ephemeral when omitted. */
+  aiGatewaySessionAffinitySecret?: string;
 
   /** Internal service client used to read user-owned private Pod gateway-key hashes. */
-  gatewayInternalClientId?: string;
-  gatewayInternalClientSecret?: string;
 
   /** Runtime-generated secret used only between GatewayProxy and the internal API server for admin ingress evidence. */
   gatewayAdminProxyAuthSecret?: string;
@@ -236,9 +235,7 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
-  gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
   hostedPodDataAccess: HostedPodDataAccess;
-  gatewayAccessKeyRepository: GatewayAccessKeyRepository;
   invocationTokenCodec: InvocationTokenCodec;
   aiConnectionInvocationKeyIssuer: AiConnectionInvocationKeyIssuer;
   aiClientConfigurationService?: AiClientConfigurationService;

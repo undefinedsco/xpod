@@ -2,7 +2,6 @@ import { resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
 import {
   aiProviderResource,
   credentialResource,
-  gatewayAccessKeyResource,
   quotaSnapshotResource,
 } from '@undefineds.co/models';
 
@@ -18,7 +17,7 @@ export interface AiConnectionServiceAccessDescriptor {
 }
 
 export interface AiConnectionServiceAccessResource {
-  id: 'providerCredentials' | 'providerDefinitions' | 'gatewayAccessKeys' | 'quotaSnapshots';
+  id: 'providerCredentials' | 'providerDefinitions' | 'quotaSnapshots';
   url: string;
   mediaType: 'text/turtle';
   access: {
@@ -40,7 +39,6 @@ interface PodResourceLocator {
 const declaredResourceBases = new WeakMap<object, string>([
   [credentialResource, declaredResourceBase(credentialResource)],
   [aiProviderResource, declaredResourceBase(aiProviderResource)],
-  [gatewayAccessKeyResource, declaredResourceBase(gatewayAccessKeyResource)],
   [quotaSnapshotResource, declaredResourceBase(quotaSnapshotResource)],
 ]);
 
@@ -57,7 +55,6 @@ export function createAiConnectionServiceAccess(input: {
     resources: [
       ['providerCredentials', resourceUrl(input.ownerWebId, credentialResource)],
       ['providerDefinitions', resourceUrl(input.ownerWebId, aiProviderResource)],
-      ['gatewayAccessKeys', resourceUrl(input.ownerWebId, gatewayAccessKeyResource)],
       ['quotaSnapshots', resourceUrl(input.ownerWebId, quotaSnapshotResource)],
     ].map(([id, url]) => ({
       id,

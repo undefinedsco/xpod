@@ -6,8 +6,8 @@ import {
   type QuotaSnapshotRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
-import type { GatewayDeployment } from '../auth/GatewayApiKey';
-import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
+import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
+import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
 import type { ProviderSecret } from '../credentials/CredentialVault';
 import { decodePlaintextCredential } from '../credentials/PlaintextCredentialPayload';
