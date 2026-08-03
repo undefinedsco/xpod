@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../../../src/api/ai-gateway/AiGatewayService';
-import type { CredentialVault } from '../../../src/api/ai-gateway/credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import {
+  encodePlaintextCredential,
+  UnsupportedCredentialStorageModeError,
+} from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
@@ -16,22 +18,6 @@ const AUTH: AuthContext = {
   viaGatewayApiKey: true,
   scopes: ['models:read', 'inference:write'],
 };
-
-function encrypted(id: string, provider = 'openai'): EncryptedCredentialSecret {
-  return {
-    algorithm: 'AES-256-GCM',
-    aadPurpose: 'test',
-    aadVersion: 'v1',
-    ciphertext: 'ciphertext',
-    nonce: 'nonce',
-    webId: WEB_ID,
-    credentialIri: `https://pod.example/settings/credentials.ttl#${id}`,
-    provider,
-    dekWrapAlgorithm: 'test',
-    keyId: 'test',
-    wrappedDek: 'wrapped',
-  };
-}
 
 function credential(input: Partial<StoredGatewayCredential> & {
   id: string;
@@ -51,7 +37,11 @@ function credential(input: Partial<StoredGatewayCredential> & {
     quota: input.quota ?? { status: 'available' },
     cooldownUntil: input.cooldownUntil,
     metadata: input.metadata,
-    encryptedSecret: input.encryptedSecret ?? encrypted(input.id, input.provider),
+    storageMode: input.storageMode ?? 'plaintext-v1',
+    secretPayload: input.secretPayload ?? encodePlaintextCredential({
+      type: 'apiKey',
+      apiKey: input.credentialIri?.includes('backup') ? 'sk-backup' : 'sk-primary',
+    }),
     version: input.version,
     runtimeCredential: input.runtimeCredential,
   };
@@ -60,20 +50,12 @@ function credential(input: Partial<StoredGatewayCredential> & {
 function serviceWith(credentials: StoredGatewayCredential[], now = new Date('2026-07-23T00:00:00.000Z')): {
   service: AiGatewayService;
   store: GatewayCredentialStore;
-  vault: CredentialVault;
 } {
   const registry = createDefaultProviderRegistry();
   const store: GatewayCredentialStore = {
     listCredentials: vi.fn(async() => credentials),
     recordSuccess: vi.fn(async() => {}),
     recordFailure: vi.fn(async() => {}),
-  };
-  const vault: CredentialVault = {
-    seal: vi.fn(),
-    rewrap: vi.fn(),
-    open: vi.fn(async(_principal, credentialIri) => ({
-      apiKey: credentialIri.includes('backup') ? 'sk-backup' : 'sk-primary',
-    })),
   };
   const runtimes = {
     get: vi.fn(() => ({
@@ -87,7 +69,6 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
 
   return {
     store,
-    vault,
     service: new AiGatewayService({
       deployment: 'cloud',
       registry,
@@ -98,7 +79,6 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
         now: () => now,
       }),
       credentials: store,
-      vault,
       runtimes,
       now: () => now,
     }),
@@ -141,7 +121,6 @@ describe('AiGatewayService', () => {
         credentials: store.listCredentials,
       }),
       credentials: store,
-      vault: { seal: vi.fn(), rewrap: vi.fn(), open: vi.fn() },
       runtimes: { get: vi.fn() } as unknown as ProviderRuntimeRegistry,
     });
 
@@ -156,21 +135,22 @@ describe('AiGatewayService', () => {
     expect(models.map((model) => model.id)).not.toContain('gpt-5-dynamic-safe');
   });
 
-  it('rewraps an old-key credential through the production inference read path', async() => {
-    const oldEncrypted = { ...encrypted('rotating'), keyId: 'root-v1' };
-    const activeEncrypted = { ...oldEncrypted, keyId: 'root-v2', wrappedDek: 'rewrapped' };
+  it('opens plaintext-v1 credential payloads through the production inference read path without rewrap', async() => {
+    const runtimeExecute = vi.fn(async function* () {
+      yield { type: 'response.started', id: 'resp_1' };
+      yield { type: 'text.delta', text: 'ok' };
+      yield { type: 'response.completed', finishReason: 'stop' };
+    });
     const fixture = serviceWith([
       credential({
         id: 'rotating',
         provider: 'openai',
         models: ['gpt-5'],
         version: 4,
-        encryptedSecret: oldEncrypted,
+        secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: 'sk-plaintext-runtime' }),
       }),
     ]);
-    fixture.vault.needsRewrap = vi.fn(() => true);
-    fixture.vault.rewrap = vi.fn(async() => activeEncrypted);
-    fixture.store.rewrapCredential = vi.fn(async() => true);
+    (fixture.service as any).runtimes.get = vi.fn(() => ({ execute: runtimeExecute }));
 
     await fixture.service.complete({
       auth: AUTH,
@@ -181,16 +161,40 @@ describe('AiGatewayService', () => {
       },
     });
 
-    expect(fixture.vault.rewrap).toHaveBeenCalledWith(
-      { webId: WEB_ID },
-      oldEncrypted,
-    );
-    expect(fixture.store.rewrapCredential).toHaveBeenCalledWith({
-      webId: WEB_ID,
-      deployment: 'cloud',
-      credentialId: 'rotating',
-      expectedVersion: 4,
-      encryptedSecret: activeEncrypted,
-    });
+    expect(runtimeExecute).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: 'sk-plaintext-runtime',
+    }));
+    expect(fixture.store).not.toHaveProperty('rewrapCredential');
+  });
+
+  it('fails closed on legacy encrypted credential rows before provider runtime I/O', async() => {
+    const runtimeExecute = vi.fn();
+    const fixture = serviceWith([
+      {
+        ...credential({ id: 'legacy', provider: 'openai', models: ['gpt-5'] }),
+        storageMode: 'secret-cell-v1' as 'plaintext-v1',
+        secretPayload: '',
+        encryptedSecret: { ciphertext: 'sk-legacy-secret' },
+      } as unknown as StoredGatewayCredential,
+    ]);
+    (fixture.service as any).runtimes.get = vi.fn(() => ({ execute: runtimeExecute }));
+
+    await expect(fixture.service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })).rejects.toThrow(UnsupportedCredentialStorageModeError);
+    await expect(fixture.service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })).rejects.not.toThrow(/sk-legacy-secret/);
+    expect(runtimeExecute).not.toHaveBeenCalled();
   });
 });

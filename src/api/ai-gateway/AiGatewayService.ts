@@ -2,8 +2,7 @@ import { createHash } from 'node:crypto';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId, hasGatewayScope } from '../auth/AuthContext';
-import type { CredentialVault } from './credentials/CredentialVault';
-import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
+import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
 import type { ProviderCapabilities, ProviderRegistry } from './providers/ProviderRegistry';
@@ -19,7 +18,8 @@ import type {
 } from './types';
 
 export interface StoredGatewayCredential extends GatewayCredentialCandidate {
-  encryptedSecret: EncryptedCredentialSecret;
+  storageMode: 'plaintext-v1';
+  secretPayload: string;
   version?: number;
   runtimeCredential?: ProviderRuntimeCredential;
 }
@@ -32,13 +32,6 @@ export interface GatewayCredentialStore {
   }): Promise<StoredGatewayCredential[]>;
   recordSuccess?(input: GatewayCredentialHealthRecord): Promise<void>;
   recordFailure?(input: GatewayCredentialHealthRecord): Promise<void>;
-  rewrapCredential?(input: {
-    webId: string;
-    deployment: string;
-    credentialId: string;
-    expectedVersion?: number;
-    encryptedSecret: EncryptedCredentialSecret;
-  }): Promise<boolean>;
 }
 
 export interface GatewayCredentialHealthRecord {
@@ -56,7 +49,7 @@ export interface AiGatewayServiceOptions {
   registry: ProviderRegistry;
   router: ModelRouter;
   credentials: GatewayCredentialStore;
-  vault: CredentialVault;
+  vault?: unknown;
   runtimes: ProviderRuntimeRegistry;
   frontends?: GatewayProtocolFrontend[];
   now?: () => Date;
@@ -91,7 +84,7 @@ export interface GatewayAcceptanceProvenance {
   gatewayKeyId: string;
   gatewayKeyFingerprint: string;
   credentialIriHash: string;
-  secretCellRefHash: string;
+  credentialPayloadRefHash: string;
   providerId: string;
   providerRouteSource: 'pod-credential';
   xpodBaseUrl: string;
@@ -103,7 +96,6 @@ export class AiGatewayService {
   private readonly registry: ProviderRegistry;
   private readonly router: ModelRouter;
   private readonly credentials: GatewayCredentialStore;
-  private readonly vault: CredentialVault;
   private readonly runtimes: ProviderRuntimeRegistry;
   private readonly frontends = new Map<GatewayProtocol, GatewayProtocolFrontend>();
   private readonly now: () => Date;
@@ -113,7 +105,6 @@ export class AiGatewayService {
     this.registry = options.registry;
     this.router = options.router;
     this.credentials = options.credentials;
-    this.vault = options.vault;
     this.runtimes = options.runtimes;
     this.now = options.now ?? (() => new Date());
     for (const frontend of options.frontends ?? [
@@ -289,7 +280,7 @@ export class AiGatewayService {
       gatewayKeyId: input.auth.type === 'solid' ? input.auth.gatewayKeyId ?? 'unknown' : 'unknown',
       gatewayKeyFingerprint: input.auth.gatewayKeyFingerprint,
       credentialIriHash: hashProvenanceValue(credential.credentialIri),
-      secretCellRefHash: hashProvenanceValue(credential.encryptedSecret.credentialIri),
+      credentialPayloadRefHash: hashProvenanceValue(credential.credentialIri),
       providerId: route.provider.id,
       providerRouteSource: 'pod-credential',
       xpodBaseUrl: input.xpodBaseUrl,
@@ -368,22 +359,7 @@ export class AiGatewayService {
     route: ModelRouteResult,
     credential: StoredGatewayCredential,
   ): Promise<string> {
-    const secret = await this.vault.open(
-      principal,
-      credential.credentialIri,
-      route.provider.id,
-      credential.encryptedSecret,
-    );
-    if (this.vault.needsRewrap?.(credential.encryptedSecret) && this.credentials.rewrapCredential) {
-      const rewrapped = await this.vault.rewrap(principal, credential.encryptedSecret);
-      await this.credentials.rewrapCredential({
-        webId: principal.webId,
-        deployment: this.deployment,
-        credentialId: credential.id,
-        expectedVersion: credential.version,
-        encryptedSecret: rewrapped,
-      });
-    }
+    const secret = decodePlaintextCredential(credential);
     const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
     if (typeof apiKey !== 'string' || !apiKey) {
       throw new GatewayProtocolError('Credential secret does not contain a usable provider token', {

@@ -1,10 +1,22 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('@undefineds.co/ai-connection/client-config', () => {
+  class Adapter {}
+  return {
+    CodexConfigAdapter: Adapter,
+    ClaudeCodeConfigAdapter: Adapter,
+    CodeBuddyConfigAdapter: Adapter,
+    PiConfigAdapter: Adapter,
+    AiConnectionClientProfile: class {},
+    AiClientConfigPlan: class {},
+    ConfigWrite: class {},
+  };
+}, { virtual: true });
+
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
-import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
-import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
 import type { CredentialVault, ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
+import { encodePlaintextCredential } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
@@ -27,21 +39,6 @@ const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
 const CREDENTIAL_IRI = 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi';
 
-class TestKeyWrapper implements KeyWrapper {
-  public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
-    return {
-      algorithm: 'test',
-      keyId: `${context.webId}|${context.credentialIri}|${context.provider}`,
-      keyVersion: 'v1',
-      wrappedDek: Buffer.from(dek).toString('base64url'),
-    };
-  }
-
-  public async unwrapDek(_context: KeyWrapContext, wrapped: WrappedDataKey): Promise<Uint8Array> {
-    return new Uint8Array(Buffer.from(wrapped.wrappedDek, 'base64url'));
-  }
-}
-
 function jsonFetch(
   handler: (url: string, init: RequestInit | undefined) => {
     status?: number;
@@ -59,12 +56,15 @@ function jsonFetch(
   }) as unknown as typeof fetch;
 }
 
-function createVault(): WebCryptoCredentialVault {
-  return new WebCryptoCredentialVault({ keyWrapper: new TestKeyWrapper() });
+function createVault(): CredentialVault {
+  return {
+    seal: vi.fn(),
+    open: vi.fn(),
+    rewrap: vi.fn(),
+  };
 }
 
-async function credential(provider: string, secret: ProviderSecret = { type: 'apiKey', apiKey: 'provider-secret' }): Promise<QuotaCredentialRecord> {
-  const vault = createVault();
+function credential(provider: string, secret: ProviderSecret = { type: 'apiKey', apiKey: 'provider-secret' }): QuotaCredentialRecord {
   const credentialIri = CREDENTIAL_IRI.replace('kimi', provider);
   return {
     id: `${provider}-credential`,
@@ -73,7 +73,8 @@ async function credential(provider: string, secret: ProviderSecret = { type: 'ap
     provider,
     deployment: 'cloud',
     authMode: 'apiKey',
-    encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, provider, secret),
+    storageMode: 'plaintext-v1',
+    secretPayload: encodePlaintextCredential(secret),
     status: 'active',
   };
 }
@@ -479,11 +480,7 @@ describe('ProviderQuotaAdapters', () => {
     const fetchStarted = new Promise<void>((resolve) => {
       markFetchStarted = resolve;
     });
-    const vault: CredentialVault = {
-      seal: vi.fn(),
-      rewrap: vi.fn(),
-      open: vi.fn(async () => ({ type: 'apiKey', apiKey: 'provider-secret' })),
-    } as unknown as CredentialVault;
+    const vault = createVault();
     const adapter: ProviderQuotaAdapter = {
       provider: 'kimi',
       fetch: vi.fn(async (input): Promise<NormalizedQuotaSnapshot> => {
@@ -523,7 +520,9 @@ describe('ProviderQuotaAdapters', () => {
       });
     await fetchStarted;
     expect(adapter.fetch).toHaveBeenCalledTimes(1);
-    expect(vault.open).toHaveBeenCalledTimes(1);
+    expect(adapter.fetch).toHaveBeenLastCalledWith(expect.objectContaining({
+      secret: { type: 'apiKey', apiKey: 'provider-secret' },
+    }));
     releaseFetch?.();
     await expect(Promise.all([sameScopeA, sameScopeB])).resolves.toHaveLength(2);
     expect(repository.rows.filter((row) => row.credential === firstCredential.credentialIri)).toHaveLength(1);
@@ -547,7 +546,6 @@ describe('ProviderQuotaAdapters', () => {
 
     expect(differentScopeA.credential).toBe(firstCredential.credentialIri);
     expect(differentScopeB.credential).toBe(secondCredential.credentialIri);
-    expect(vault.open).toHaveBeenCalledTimes(3);
     expect(adapter.fetch).toHaveBeenCalledTimes(3);
   });
 
@@ -560,12 +558,7 @@ describe('ProviderQuotaAdapters', () => {
       id: 'bob-kimi',
       webId: OTHER_WEB_ID,
       credentialIri: bobCredentialIri,
-      encryptedSecret: await createVault().seal(
-        { webId: OTHER_WEB_ID },
-        bobCredentialIri,
-        'kimi',
-        { type: 'apiKey', apiKey: 'provider-secret' },
-      ),
+      secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: 'provider-secret' }),
     };
     const service = new ProviderQuotaService({
       repository,

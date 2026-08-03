@@ -10,6 +10,7 @@ import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
 import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
+import { decodePlaintextCredential } from '../credentials/PlaintextCredentialPayload';
 
 export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
 
@@ -98,7 +99,6 @@ export interface ProviderQuotaServiceOptions {
 
 export class ProviderQuotaService {
   private readonly repository: QuotaSnapshotRepository;
-  private readonly vault: CredentialVault;
   private readonly adapters = new Map<string, ProviderQuotaAdapter>();
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: QuotaCredentialRecord[];
@@ -107,7 +107,6 @@ export class ProviderQuotaService {
 
   public constructor(options: ProviderQuotaServiceOptions) {
     this.repository = options.repository;
-    this.vault = options.vault;
     this.credentialRepository = options.credentialRepository;
     this.credentials = options.credentials ?? [];
     this.now = options.now ?? (() => new Date());
@@ -243,28 +242,7 @@ export class ProviderQuotaService {
     now: Date;
     signal?: AbortSignal;
   }): Promise<NormalizedQuotaSnapshot> {
-    const secret = await this.vault.open(
-      { webId: input.webId },
-      input.credential.credentialIri,
-      input.provider,
-      input.credential.encryptedSecret,
-    );
-    if (
-      this.vault.needsRewrap?.(input.credential.encryptedSecret)
-      && this.credentialRepository?.rewrapCredential
-    ) {
-      const rewrapped = await this.vault.rewrap(
-        { webId: input.webId },
-        input.credential.encryptedSecret,
-      );
-      await this.credentialRepository.rewrapCredential({
-        webId: input.webId,
-        deployment: input.deployment,
-        credentialId: input.credential.id,
-        expectedVersion: input.credential.version,
-        encryptedSecret: rewrapped,
-      });
-    }
+    const secret = decodePlaintextCredential(input.credential);
     let snapshot: NormalizedQuotaSnapshot;
     try {
       snapshot = await input.adapter.fetch({

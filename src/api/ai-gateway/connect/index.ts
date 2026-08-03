@@ -5,8 +5,12 @@ import {
   aiRuntimeRepository,
   credentialResource,
 } from '@undefineds.co/models';
-import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
-import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
+import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
+import {
+  decodePlaintextCredential,
+  encodePlaintextCredential,
+  PLAINTEXT_CREDENTIAL_STORAGE_MODE,
+} from '../credentials/PlaintextCredentialPayload';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
 import { DEFAULT_PROVIDER_DESCRIPTORS } from '../providers/ProviderRegistry';
@@ -95,7 +99,8 @@ export interface ConnectCredentialRecord {
   provider: string;
   deployment: GatewayDeployment;
   authMode: 'apiKey' | 'deviceCodeOAuth';
-  encryptedSecret: EncryptedCredentialSecret;
+  storageMode: 'plaintext-v1';
+  secretPayload: string;
   status: 'active' | 'revoked';
   accountLabel?: string;
   expiresAt?: Date;
@@ -123,14 +128,6 @@ export interface PodCredentialRepository {
     record: ConnectCredentialRecord,
     context?: { auth?: AuthContext },
   ): Promise<ConnectCredentialRecord>;
-  rewrapCredential?(input: {
-    webId: string;
-    deployment: GatewayDeployment;
-    credentialId: string;
-    expectedVersion?: number;
-    encryptedSecret: EncryptedCredentialSecret;
-    auth?: AuthContext;
-  }): Promise<boolean>;
   markReauthRequired(input: {
     webId: string;
     provider: string;
@@ -200,7 +197,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const { db, credential } = await this.dbForOwner(input.webId, input.auth);
     const id = aiRuntimeRepository.credentialId(input);
     const row = await db.findById<Record<string, unknown>>(credential, id);
-    const record = row ? recordFromCredentialRow(row) : undefined;
+    const record = row ? recordFromCredentialRow(row, input.webId) : undefined;
     if (!record) {
       return undefined;
     }
@@ -232,7 +229,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     defaultModel?: string;
     health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
     quota?: { status: 'available' | 'unsupported' | 'exhausted' | 'error' };
-    encryptedSecret: EncryptedCredentialSecret;
+    storageMode: 'plaintext-v1';
+    secretPayload: string;
     version?: number;
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
@@ -254,7 +252,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       }),
     )).filter((row): row is Record<string, unknown> => row !== null);
     return rows
-      .map(recordFromCredentialRow)
+      .map((row) => recordFromCredentialRow(row, input.webId))
       .filter((record) => record.webId === input.webId)
       .filter((record) => record.deployment === input.deployment)
       .filter((record) => record.status === 'active')
@@ -269,7 +267,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         priority: priorityFromMetadata(record.metadata),
         health: record.reauthRequired ? 'reauthRequired' : 'healthy',
         quota: { status: 'available' },
-        encryptedSecret: record.encryptedSecret,
+        storageMode: record.storageMode,
+        secretPayload: record.secretPayload,
         version: record.version,
         runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
         metadata: record.metadata,
@@ -293,47 +292,10 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     });
     if (existing) {
       const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
-      return recordFromCredentialRow(updated ?? row);
+      return recordFromCredentialRow(updated ?? row, record.webId);
     }
     await db.insert(credential).values(row).execute();
-    return recordFromCredentialRow(row);
-  }
-
-  public async rewrapCredential(input: {
-    webId: string;
-    deployment: GatewayDeployment;
-    credentialId: string;
-    expectedVersion?: number;
-    encryptedSecret: EncryptedCredentialSecret;
-    auth?: AuthContext;
-  }): Promise<boolean> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const existing = await db.findById<Record<string, unknown>>(credential, input.credentialId);
-    if (!existing) {
-      return false;
-    }
-    const current = recordFromCredentialRow(existing);
-    if (current.webId !== input.webId || current.deployment !== input.deployment) {
-      return false;
-    }
-    const currentVersion = versionFromRow(existing);
-    if (input.expectedVersion === undefined || currentVersion !== input.expectedVersion) {
-      return false;
-    }
-    const updated = await db.update(credential)
-      .set({
-        encryptedSecret: JSON.stringify(input.encryptedSecret),
-        wrappedDataKey: input.encryptedSecret.wrappedDek,
-        encryptionAlgorithm: input.encryptedSecret.algorithm,
-        keyVersion: String(currentVersion + 1),
-      })
-      .where(and(
-        eq(credential.id, input.credentialId),
-        eq(credential.keyVersion, String(input.expectedVersion)),
-      ))
-      .returning()
-      .execute();
-    return updated.length === 1;
+    return recordFromCredentialRow(row, record.webId);
   }
 
   public async markReauthRequired(input: {
@@ -359,7 +321,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       status: 'active',
       keyVersion: String(existingVersion + 1),
     });
-    return updated ? recordFromCredentialRow(updated) : undefined;
+    return updated ? recordFromCredentialRow(updated, input.webId) : undefined;
   }
 
   public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
@@ -373,7 +335,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       status: 'revoked',
       keyVersion: String(versionFromRow(existing) + 1),
     });
-    return updated ? recordFromCredentialRow(updated) : undefined;
+    return updated ? recordFromCredentialRow(updated, input.webId) : undefined;
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<{
@@ -565,7 +527,6 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
   private readonly consoleUrl: string;
   protected readonly attempts: InMemoryConnectAttemptStore;
   protected readonly credentialRepository: PodCredentialRepository;
-  protected readonly vault: CredentialVault;
   protected readonly deployment: GatewayDeployment;
   protected readonly now: () => Date;
   protected readonly randomBytes: (bytes: number) => Buffer;
@@ -576,7 +537,6 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
     this.consoleUrl = options.consoleUrl;
     this.attempts = options.attempts;
     this.credentialRepository = options.credentialRepository;
-    this.vault = options.vault;
     this.deployment = options.deployment;
     this.now = options.now ?? (() => new Date());
     this.randomBytes = options.randomBytes ?? nodeRandomBytes;
@@ -615,12 +575,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       deployment: input.deployment,
       provider: this.provider,
     });
-    const encryptedSecret = await this.vault.seal(
-      principal(input.webId),
-      credentialIri,
-      this.provider,
-      { type: 'apiKey', apiKey: input.apiKey },
-    );
+    const secretPayload = encodePlaintextCredential({ type: 'apiKey', apiKey: input.apiKey });
     const record = await this.credentialRepository.upsertConnectedCredential({
       id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: this.provider }),
       credentialIri,
@@ -628,7 +583,8 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       provider: this.provider,
       deployment: input.deployment,
       authMode: 'apiKey',
-      encryptedSecret,
+      storageMode: PLAINTEXT_CREDENTIAL_STORAGE_MODE,
+      secretPayload,
       status: 'active',
       accountLabel: input.accountLabel,
       expectedVersion: consumed.expectedCredentialVersion,
@@ -962,7 +918,6 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       scope: stringFrom(body.scope),
       idToken: stringFrom(body.id_token),
     };
-    const encryptedSecret = await this.vault.seal(principal(input.webId), credentialIri, 'kimi', secret);
     return this.credentialRepository.upsertConnectedCredential({
       id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: 'kimi' }),
       credentialIri,
@@ -970,7 +925,8 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       provider: 'kimi',
       deployment: input.deployment,
       authMode: 'deviceCodeOAuth',
-      encryptedSecret,
+      storageMode: PLAINTEXT_CREDENTIAL_STORAGE_MODE,
+      secretPayload: encodePlaintextCredential(secret),
       status: 'active',
       expiresAt,
       expectedVersion,
@@ -1025,13 +981,11 @@ export interface ProviderConnectionSummary {
 export class ProviderConnectService {
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
-  private readonly vault?: CredentialVault;
   private readonly adapters = new Map<string, ProviderConnectAdapter>();
 
   public constructor(options: ProviderConnectServiceOptions) {
     this.registry = options.registry;
     this.credentialRepository = options.credentialRepository;
-    this.vault = options.vault;
     for (const adapter of options.adapters) {
       this.adapters.set(normalizeProvider(adapter.provider), adapter);
     }
@@ -1134,19 +1088,14 @@ export class ProviderConnectService {
     if (!adapter.refresh) {
       throw new Error('Provider does not support refresh');
     }
-    if (!this.credentialRepository || !this.vault) {
-      throw new Error('CredentialVault and PodCredentialRepository are required for provider refresh');
+    if (!this.credentialRepository) {
+      throw new Error('PodCredentialRepository is required for provider refresh');
     }
     const current = await this.credentialRepository.getActiveCredential(input);
     if (!current) {
       throw new Error('Active provider credential not found');
     }
-    const secret = await this.vault.open(
-      { webId: input.webId },
-      current.credentialIri,
-      normalizeProvider(input.provider),
-      current.encryptedSecret,
-    );
+    const secret = decodePlaintextCredential(current);
     try {
       return await adapter.refresh(input, current, secret);
     } catch (error) {
@@ -1212,9 +1161,8 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     service: 'ai',
     authMode: record.authMode,
     status: record.status,
-    encryptedSecret: JSON.stringify(record.encryptedSecret),
-    wrappedDataKey: record.encryptedSecret.wrappedDek,
-    encryptionAlgorithm: record.encryptedSecret.algorithm,
+    storageMode: record.storageMode,
+    secretPayload: record.secretPayload,
     keyVersion: String(record.version ?? 1),
     scopes: record.scopes ?? [],
     expiresAt: record.expiresAt,
@@ -1225,21 +1173,33 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
   };
 }
 
-function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentialRecord {
-  const encrypted = parseEncryptedSecret(row.encryptedSecret);
+function recordFromCredentialRow(row: Record<string, unknown>, owner: string): ConnectCredentialRecord {
+  const storageMode = stringFrom(row.storageMode) === PLAINTEXT_CREDENTIAL_STORAGE_MODE
+    ? PLAINTEXT_CREDENTIAL_STORAGE_MODE
+    : stringFrom(row.storageMode);
+  const secretPayload = typeof row.secretPayload === 'string' ? row.secretPayload : '';
+  decodePlaintextCredential({
+    storageMode,
+    secretPayload,
+    encryptedSecret: row.encryptedSecret,
+    wrappedDataKey: row.wrappedDataKey,
+    encryptionAlgorithm: row.encryptionAlgorithm,
+  });
   const id = stringFrom(row.id);
   const provider = providerFromRelation(stringFrom(row.provider))
     || providerFromCredentialId(id);
   const deployment = deploymentFromCredentialId(id);
-  const webId = encrypted.webId;
+  const credentialIri = stringFrom(row.credentialIri)
+    || aiRuntimeRepository.credentialIri(owner, { deployment, provider });
   return {
     id,
-    credentialIri: encrypted.credentialIri,
-    webId,
+    credentialIri,
+    webId: owner,
     provider,
     deployment,
     authMode: stringFrom(row.authMode) === 'deviceCodeOAuth' ? 'deviceCodeOAuth' : 'apiKey',
-    encryptedSecret: encrypted,
+    storageMode: PLAINTEXT_CREDENTIAL_STORAGE_MODE,
+    secretPayload,
     status: stringFrom(row.status) === 'revoked' ? 'revoked' : 'active',
     accountLabel: stringFrom(row.accountLabel) || stringFrom(row.label) || undefined,
     expiresAt: dateFrom(row.expiresAt),
@@ -1310,17 +1270,6 @@ function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undef
     : undefined;
 }
 
-function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error('Credential row is missing encrypted secret payload');
-  }
-  const parsed = JSON.parse(value);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Credential row encrypted secret payload is invalid');
-  }
-  return parsed as EncryptedCredentialSecret;
-}
-
 function versionFromRow(row: Record<string, unknown>): number {
   const value = row.keyVersion;
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -1380,9 +1329,6 @@ function codeChallenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url');
 }
 
-function principal(webId: string): GatewayPrincipal {
-  return { webId };
-}
 
 function cloneAttempt(attempt: ConnectAttempt): ConnectAttempt {
   return {
