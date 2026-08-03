@@ -91,7 +91,7 @@ export interface DefaultAgentConfig {
 export interface DefaultAgentAiConnection {
   /** Xpod AI Connection endpoint, usually the current /v1 gateway URL */
   baseUrl: string;
-  /** Xpod-issued gateway key for this invocation */
+  /** Solid client-credentials API key for this invocation */
   apiKey: string;
 }
 
@@ -276,7 +276,7 @@ export async function runDefaultAgent(
     return {
       content: '',
       success: false,
-      error: 'Default Agent not configured: AI Connection baseUrl and gateway key are required',
+      error: 'Default Agent not configured: AI Connection baseUrl and API key are required',
     };
   }
 
@@ -358,7 +358,7 @@ export async function* streamDefaultAgent(
   const config = getDefaultAgentConfig(options);
 
   if (!isDefaultAgentAvailable(config)) {
-    throw new Error('Default Agent not configured: AI Connection baseUrl and gateway key are required');
+    throw new Error('Default Agent not configured: AI Connection baseUrl and API key are required');
   }
 
   const abortController = new AbortController();

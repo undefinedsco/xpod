@@ -67,7 +67,7 @@ export type PersistedAgentRuntimeConfig = Omit<AgentRuntimeConfig, 'aiConnection
  * initial or continuation invocation.
  */
 export function toPersistedAgentRuntimeConfig(config: AgentRuntimeConfig): PersistedAgentRuntimeConfig {
-  return deepScrubGatewayKey(config) as PersistedAgentRuntimeConfig;
+  return deepScrubApiKey(config) as PersistedAgentRuntimeConfig;
 }
 
 export function withInvocationAiConnection<TContext>(
@@ -87,9 +87,9 @@ export function withInvocationAiConnection<TContext>(
   } as AgentRuntimeConfig;
 }
 
-export function deepScrubGatewayKey<T>(value: T): T {
+export function deepScrubApiKey<T>(value: T): T {
   if (Array.isArray(value)) {
-    return value.map((item) => deepScrubGatewayKey(item)) as T;
+    return value.map((item) => deepScrubApiKey(item)) as T;
   }
   if (!value || typeof value !== 'object' || value instanceof Date) {
     return value;
@@ -99,7 +99,7 @@ export function deepScrubGatewayKey<T>(value: T): T {
     if (key === 'apiKey') {
       continue;
     }
-    output[key] = deepScrubGatewayKey(item);
+    output[key] = deepScrubApiKey(item);
   }
   return output as T;
 }

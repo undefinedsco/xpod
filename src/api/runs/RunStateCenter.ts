@@ -21,7 +21,7 @@ import {
   nowTimestamp,
 } from '../chatkit/types';
 import {
-  deepScrubGatewayKey,
+  deepScrubApiKey,
   toPersistedAgentRuntimeConfig,
   withInvocationAiConnection,
   type AgentRuntimeConfig,
@@ -693,7 +693,7 @@ export class RunStateCenter<TContext = StoreContext> {
   }
 
   private async saveRun(run: RunRecordData, context: TContext): Promise<void> {
-    await this.runStore?.saveRun(deepScrubGatewayKey(run), context);
+    await this.runStore?.saveRun(deepScrubApiKey(run), context);
   }
 
   private async appendRunStep(
