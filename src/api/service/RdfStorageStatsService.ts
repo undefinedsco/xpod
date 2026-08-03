@@ -87,7 +87,6 @@ export class RdfStorageStatsService {
       driver: 'pg',
       connectionString,
       rdfAccelerationProfile: this.options.rdfAccelerationProfile ?? 'pg-hot-operators',
-      deferPgCustomIndexInitialization: true,
       maintenanceIntervalMs: 0,
     });
     try {

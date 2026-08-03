@@ -66,14 +66,12 @@ import type {
   RdfQueryCacheExplain,
   RdfQueryMetrics,
   RdfQueryPlannerExplain,
-  RdfQueryPlannerNativeOperatorRejection,
   RdfQueryResultCacheStats,
   RdfQueryTemplateCacheStats,
   RdfAccessControlOverrideIndexStats,
   RdfQueryResult,
   RdfQueryTemplateCacheExplain,
   RdfPlannerStatsRefreshResult,
-  RdfPgCustomIndexStats,
   RdfPgAccelerationProfile,
   RdfPgAccelerationProvider,
   RdfPgAccelerationStats,
@@ -201,53 +199,8 @@ const HOT_OPERATOR_REQUIRED_CAPABILITIES = [
   ...PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES,
   ...RESULT_CACHE_REQUIRED_CAPABILITIES,
 ];
-const CUSTOM_INDEX_REQUIRED_CAPABILITIES = [
-  'index.xpod_rdf_perm',
-];
-const PG_NATIVE_CUSTOM_INDEX_OPERATOR_CAPABILITIES = [
-  'aggregate.bgp_count',
-  'aggregate.bgp_group_count',
-  'aggregate.bgp_numeric',
-  'aggregate.subject_star_count',
-  'index.xpod_rdf_perm.scan_any',
-  'index.xpod_rdf_perm.scan_any.limit',
-  'index.xpod_rdf_perm.count_any',
-  'index.xpod_rdf_perm.distinct_any',
-  'join.required_bgp.native',
-  'join.required_bgp.order_page.native',
-  'join.required_bgp.order_page.topn.native',
-  'join.slot_filter.native',
-  'join.subject_star',
-  'join.values.native',
-  'join.values.limit.native',
-] as const;
 const SQL_ABI_ALLOWED_CAPABILITIES = [
   'cache.result',
-];
-const NATIVE_EXTENSION_ONLY_CAPABILITIES = [
-  'aggregate.bgp_count',
-  'aggregate.bgp_group_count',
-  'aggregate.bgp_numeric',
-  'aggregate.subject_star_count',
-  'index.xpod_rdf_perm',
-  'index.xpod_rdf_perm.count',
-  'index.xpod_rdf_perm.count_any',
-  'index.xpod_rdf_perm.distinct',
-  'index.xpod_rdf_perm.distinct.stream',
-  'index.xpod_rdf_perm.distinct_any',
-  'index.xpod_rdf_perm.probe',
-  'index.xpod_rdf_perm.scan',
-  'index.xpod_rdf_perm.scan.limit',
-  'index.xpod_rdf_perm.scan_any',
-  'index.xpod_rdf_perm.scan_any.limit',
-  'join.required_bgp.limit.native',
-  'join.required_bgp.native',
-  'join.required_bgp.order_page.native',
-  'join.required_bgp.order_page.topn.native',
-  'join.slot_filter.native',
-  'join.subject_star',
-  'join.values.limit.native',
-  'join.values.native',
 ];
 const RDF_PLANNER_STATS_TABLES = [
   'rdf_terms',
@@ -433,26 +386,6 @@ interface PgNumericAggregateFactsCutoverDecision {
   minSourceRows: number;
   maxSourceRows: number;
   threshold: number;
-}
-
-interface PgCustomIndexBgpJoinShape {
-  indexNames: string[];
-  constants: Array<number | null>;
-  variableSlots: number[];
-  variableSlotsByName: Map<string, number>;
-  outputSlots: number[];
-  variableAliases: Map<string, string>;
-  indexChoices: string[];
-  internalFilters: PgCompiledSlotFilterSource[];
-}
-
-interface PgCustomIndexBgpJoinShapeOptions {
-  allowedTermFilter?: (
-    pattern: PgCompiledJoinPattern,
-    key: PgPatternKey,
-    filter: PgResolvedTermFilter,
-  ) => boolean;
-  preferredLeadingVariables?: string[];
 }
 
 interface PgQueryResultCacheRow {
@@ -644,13 +577,6 @@ const TERM_COLUMN: Record<PgPatternKey, PgIndexedColumn> = {
   object: 'object_id',
 };
 
-const PG_CUSTOM_INDEX_PROJECT_COLUMN: Record<PgPatternKey, number> = {
-  graph: 1,
-  subject: 2,
-  predicate: 3,
-  object: 4,
-};
-
 const PERMUTATIONS: PgPermutation[] = [
   { name: 'SPO', indexName: 'rdf_quads_spog', columns: ['subject_id', 'predicate_id', 'object_id', 'graph_id'] },
   { name: 'SOP', indexName: 'rdf_quads_sopg', columns: ['subject_id', 'object_id', 'predicate_id', 'graph_id'] },
@@ -676,8 +602,6 @@ const TERM_PROJECTIONS: PgTermProjection[] = [
 ];
 
 const OBJECT_RANGE_KINDS: RdfTermKind[] = ['iri', 'literal', 'blank'];
-const PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS = 4096;
-const PG_CUSTOM_INDEX_MAX_VALUE_ROWS = 8192;
 const DEFAULT_RDF_MAINTENANCE_LEASE_TTL_MS = 120_000;
 const DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS = 64;
 
@@ -734,7 +658,6 @@ export interface PostgresRdfEngineOptions {
   queryExplainSlowQueryMaxEntries?: number;
   rdfAccelerationProfile?: RdfPgAccelerationProfile;
   rdfAccelerationRequiredCapabilities?: string[];
-  deferPgCustomIndexInitialization?: boolean;
   maintenanceIntervalMs?: number;
   maintenanceSourceBatchSize?: number;
   maintenanceLeaseTtlMs?: number;
@@ -1758,7 +1681,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
   } | null = null;
   private pglite: PGlite | null = null;
   private pgPool: any = null;
-  private pgCustomIndexesReady = false;
   private readonly textIndex?: RdfTextIndexLike;
   private readonly vectorIndex?: RdfVectorIndexLike;
   private readonly ownsTextIndex: boolean;
@@ -1857,9 +1779,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
           await runPhase('schema', () => this.initializeSchema());
           this.pgAcceleration = await runPhase('acceleration-probe', () => this.probePgAcceleration());
           await runPhase('native-sparql-probe', () => this.probeNativeSparql());
-          if (!this.pgOptions.deferPgCustomIndexInitialization) {
-            await runPhase('custom-indexes', () => this.initializePgCustomIndexes());
-          }
           this.initialized = true;
           await runPhase('maintenance-scheduler', async () => {
             this.startMaintenanceScheduler();
@@ -1874,7 +1793,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
             readyAt,
             durationMs: this.lastOpenDurationMs,
             phases,
-            customIndexDeferred: Boolean(this.pgOptions.deferPgCustomIndexInitialization),
             maintenanceEnabled: (this.pgOptions.maintenanceIntervalMs ?? 0) > 0,
             ownsTextIndex: this.ownsTextIndex,
             ownsVectorIndex: this.ownsVectorIndex,
@@ -1924,7 +1842,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     this.termDictionary = null;
     this.initialized = false;
-    this.pgCustomIndexesReady = false;
     this.queryTemplateCache.clear();
     this.queryTemplateCacheHits = 0;
     this.queryTemplateCacheMisses = 0;
@@ -3252,12 +3169,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     };
   }
 
-  public async ensurePgCustomIndexes(): Promise<RdfPgAccelerationStats> {
-    await this.ensureReady();
-    await this.initializePgCustomIndexes();
-    return this.pgAccelerationStats();
-  }
-
   public async storageStats(options: RdfStorageStatsOptions = {}): Promise<RdfEngineStorageStats> {
     await this.ensureReady();
     const facts = await this.factsStats();
@@ -3325,55 +3236,10 @@ export class PostgresRdfEngine implements RdfEngineLike {
 
   private async pgAccelerationStats(): Promise<RdfPgAccelerationStats> {
     const acceleration = this.pgAcceleration ?? this.disabledPgAccelerationStats();
-    const activeOperators = this.effectivePgAccelerationActiveOperators(acceleration);
-    const deferredCustomIndex = this.pgCustomIndexBuildIsDeferred(acceleration);
-    const result: RdfPgAccelerationStats = {
-      ...acceleration,
-      activeOperators,
-      ...(deferredCustomIndex
-        ? {
-            fallbackReason: 'index-build-deferred' as const,
-            fallbackDetail: 'PostgreSQL RDF custom permutation indexes are deferred until ensurePgCustomIndexes() runs',
-          }
-        : {}),
-    };
-    if (
-      result.enabled !== true
-      || result.profile !== 'pg-custom-index'
-      || result.capabilityProviders?.['index.xpod_rdf_perm'] !== 'extension'
-      || !this.pgCustomIndexesReady
-    ) {
-      return result;
-    }
     return {
-      ...result,
-      customIndexes: await this.pgCustomIndexStats(),
+      ...acceleration,
+      activeOperators: this.effectivePgAccelerationActiveOperators(acceleration),
     };
-  }
-
-  private async pgCustomIndexStats(): Promise<RdfPgCustomIndexStats[]> {
-    const executor = this.requireExecutor();
-    const results: RdfPgCustomIndexStats[] = [];
-    for (const permutation of PERMUTATIONS) {
-      const name = pgCustomPermutationIndexName(permutation);
-      try {
-        const rows = await executor.query<{ stats: string }>('SELECT xpod_rdf.perm_index_stats($1::regclass) AS stats', [name]);
-        results.push({
-          name,
-          permutation: permutation.name,
-          columns: permutation.columns,
-          stats: parseJsonObject(rows[0]?.stats),
-        });
-      } catch (error) {
-        results.push({
-          name,
-          permutation: permutation.name,
-          columns: permutation.columns,
-          error: errorMessage(error),
-        });
-      }
-    }
-    return results;
   }
 
   private async initializeSchema(): Promise<void> {
@@ -3432,42 +3298,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     await this.initializeMaterializedResultCacheSchema(executor);
     await this.initializeMaterializedViewSchema(executor);
     await this.initializeRdf3xSchema(executor);
-  }
-
-  private async initializePgCustomIndexes(): Promise<void> {
-    const acceleration = this.pgAcceleration;
-    if (
-      acceleration?.profile !== 'pg-custom-index'
-      || acceleration.enabled !== true
-      || acceleration.capabilityProviders?.['index.xpod_rdf_perm'] !== 'extension'
-    ) {
-      this.pgCustomIndexesReady = false;
-      return;
-    }
-    if (this.pgCustomIndexesReady) {
-      return;
-    }
-
-    try {
-      const executor = this.requireExecutor();
-      for (const permutation of PERMUTATIONS) {
-        await executor.exec(`
-          CREATE INDEX IF NOT EXISTS ${pgCustomPermutationIndexName(permutation)}
-          ON ${RDF_FACTS_TABLE}
-          USING xpod_rdf_perm (${permutation.columns.map((column) => `${column} xpod_rdf.term_id_ops`).join(', ')})
-        `);
-      }
-      this.pgCustomIndexesReady = true;
-    } catch (error) {
-      this.pgCustomIndexesReady = false;
-      this.pgAcceleration = {
-        ...acceleration,
-        enabled: false,
-        activeOperators: undefined,
-        fallbackReason: 'probe-failed',
-        fallbackDetail: `Failed to initialize xpod_rdf custom indexes: ${errorMessage(error)}`,
-      };
-    }
   }
 
   private async initializeQueryResultCacheSchema(executor: AsyncSqlExecutor): Promise<void> {
@@ -4309,10 +4139,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         metrics: this.indexMetrics('none', 0, 0, start, [`unresolved ${resolved.unresolved}`]),
       };
     }
-    const nativeScan = await this.tryScanPgCustomIndexAny(pattern, resolved, options, start);
-    if (nativeScan) {
-      return nativeScan;
-    }
     const compiled = this.compileScanSql(resolved, options);
     const matchedRows = await this.scalarCount(compiled.countSql, compiled.countParams);
     const rows = await this.requireExecutor().query<PgQuadIdRow>(compiled.sql, compiled.params);
@@ -4322,87 +4148,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         ...this.pgAccelerationActiveMarkersForScan(pattern),
         ...compiled.queryPlan,
         compiled.sql,
-      ]),
-    };
-  }
-
-  private async tryScanPgCustomIndexAny(
-    pattern: QuintPattern,
-    resolved: PgResolvedPattern,
-    options: RdfQuadScanOptions | undefined,
-    start: number,
-  ): Promise<RdfQuadIndexScanResult | undefined> {
-    const baseCapability = 'index.xpod_rdf_perm.scan_any';
-    const limitCapability = 'index.xpod_rdf_perm.scan_any.limit';
-    const canUseLimitEarlyStop = this.nativeScanCanUseLimitEarlyStop(options)
-      && this.canUsePgAccelerationCapability(limitCapability);
-    const capability = canUseLimitEarlyStop ? limitCapability : baseCapability;
-    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
-    if (!customResolved || !this.canUsePgAccelerationCapability(baseCapability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
-      return undefined;
-    }
-    if (customResolved.graphPrefix !== undefined) {
-      return undefined;
-    }
-
-    const permutation = this.choosePermutation(customResolved);
-    const prefixFilters = this.pgCustomIndexPrefixFilters(customResolved, permutation);
-    if (prefixFilters.every((filter) => filter === null)) {
-      return undefined;
-    }
-    if (prefixFilters.some((filter) => filter?.length === 0)) {
-      return {
-        quads: [],
-        metrics: this.indexMetrics(permutation.name, 0, 0, start, [
-          ...this.pgAccelerationActiveMarkersForScan(pattern),
-          `XpodRdfExtensionOperator(${capability})`,
-          `PostgresRdfNativeCustomIndexScanAny(${permutation.name})`,
-        ]),
-      };
-    }
-
-    const builder = new PgSqlBuilder([
-      pgCustomPermutationIndexName(permutation),
-      ...prefixFilters,
-    ]);
-    const conditions: string[] = [];
-    const joins: string[] = [];
-    const queryPlan: string[] = [];
-    const alias = 'q';
-    this.appendResolvedPatternConditions(customResolved, alias, conditions, joins, builder, queryPlan, false);
-    this.appendSlotTermRangeConditions(options?.slotTermRanges, alias, conditions, builder, queryPlan);
-    const order = this.buildOrderClause(options, alias);
-    const pagination = this.buildPagination(options, builder);
-    const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
-    const sql = `
-      SELECT ${alias}.graph_id, ${alias}.subject_id, ${alias}.predicate_id, ${alias}.object_id
-      FROM xpod_rdf.perm_index_scan_any(
-        $1::regclass,
-        $2::bigint[],
-        $3::bigint[],
-        $4::bigint[],
-        $5::bigint[]
-      ) native_scan
-      JOIN ${RDF_FACTS_TABLE} ${alias} ON ${alias}.ctid = native_scan.heap_tid${joins.join('')}
-      ${whereClause}
-      ${order || ` ORDER BY ${permutation.columns.map((column) => `${alias}.${column}`).join(', ')}`}
-      ${pagination.sql}
-    `;
-    const count = options?.slotTermRanges?.length ? undefined : await this.pgCustomIndexCountAny(customResolved, permutation);
-    const fallbackCount = count === undefined ? this.compileScanSql(customResolved, options) : undefined;
-    const matchedRows = count ?? await this.scalarCount(fallbackCount!.countSql, fallbackCount!.countParams);
-    const rows = await this.requireExecutor().query<PgQuadIdRow>(sql, builder.snapshot());
-    return {
-      quads: await this.rowsToQuads(rows),
-      metrics: this.indexMetrics(permutation.name, matchedRows, rows.length, start, [
-        ...this.pgAccelerationActiveMarkersForScan(pattern),
-        `XpodRdfExtensionOperator(${capability})`,
-        ...(canUseLimitEarlyStop ? [`PostgresRdfNativeCustomIndexScanAnyLimit(${permutation.name})`] : []),
-        `PostgresRdfNativeCustomIndexScanAny(${permutation.name})`,
-        ...queryPlan,
-        ...(order ? [`Rdf3xJoinOrder(${describeScanOrder(options)})`] : []),
-        ...(pagination.sql ? ['Pagination'] : []),
-        sql,
       ]),
     };
   }
@@ -4509,18 +4254,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     if ((query.orderBy ?? []).some((entry) => !visibleVariables.includes(entry.variable))) {
       return undefined;
-    }
-    const nativeDistinct = await this.tryQueryPgCustomIndexDistinct(query, compiledPatterns, compiledValues ?? [], project, start);
-    if (nativeDistinct) {
-      return nativeDistinct;
-    }
-    const nativeValuesJoin = await this.tryQueryPgCustomIndexValuesJoin(query, compiledPatterns, compiledValues ?? [], project, start);
-    if (nativeValuesJoin) {
-      return nativeValuesJoin;
-    }
-    const nativeBgpJoin = await this.tryQueryPgCustomIndexBgpJoin(query, compiledPatterns, compiledValues ?? [], project, start);
-    if (nativeBgpJoin) {
-      return nativeBgpJoin;
     }
     const joinOptions = {
       template,
@@ -5934,11 +5667,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
         return [...RESULT_CACHE_REQUIRED_CAPABILITIES];
       case 'pg-hot-operators':
         return [...HOT_OPERATOR_REQUIRED_CAPABILITIES];
-      case 'pg-custom-index':
-        return [
-          ...HOT_OPERATOR_REQUIRED_CAPABILITIES,
-          ...CUSTOM_INDEX_REQUIRED_CAPABILITIES,
-        ];
       default: {
         const exhaustive: never = profile;
         throw new Error(`Unsupported PostgreSQL RDF acceleration profile: ${String(exhaustive)}`);
@@ -5954,25 +5682,13 @@ export class PostgresRdfEngine implements RdfEngineLike {
   private activePgAccelerationOperators(capabilities: string[]): string[] {
     const wiredOperators = new Set<string>([
       ...PG_ENGINE_SQL_HOT_OPERATOR_CAPABILITIES,
-      ...PG_NATIVE_CUSTOM_INDEX_OPERATOR_CAPABILITIES,
       ...RESULT_CACHE_REQUIRED_CAPABILITIES,
     ]);
     return capabilities.filter((capability) => wiredOperators.has(capability)).sort();
   }
 
   private effectivePgAccelerationActiveOperators(acceleration: RdfPgAccelerationStats | null = this.pgAcceleration): string[] {
-    const activeOperators = acceleration?.activeOperators ?? [];
-    if (!this.pgCustomIndexBuildIsDeferred(acceleration)) {
-      return activeOperators;
-    }
-    return activeOperators.filter((capability) => !isNativeExtensionOnlyCapability(capability));
-  }
-
-  private pgCustomIndexBuildIsDeferred(acceleration: RdfPgAccelerationStats | null = this.pgAcceleration): boolean {
-    return acceleration?.enabled === true
-      && acceleration.profile === 'pg-custom-index'
-      && acceleration.capabilityProviders?.['index.xpod_rdf_perm'] === 'extension'
-      && !this.pgCustomIndexesReady;
+    return acceleration?.activeOperators ?? [];
   }
 
   private pgAccelerationCapabilityProviders(
@@ -5985,7 +5701,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
     }
     if (providerProbe) {
       for (const capability of providerProbe.capabilities) {
-        if (!providers.has(capability) || isNativeExtensionOnlyCapability(capability)) {
+        if (!providers.has(capability)) {
           providers.set(capability, providerProbe.provider);
         }
       }
@@ -5997,9 +5713,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     profile: RdfPgAccelerationProfile,
     providerProbe: PgAccelerationCapabilityProbe | null,
   ): RdfPgAccelerationProvider {
-    if (profile === 'pg-custom-index' && providerProbe?.provider === 'extension') {
-      return 'extension';
-    }
     return 'engine-sql';
   }
 
@@ -6010,8 +5723,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       case 'pg-result-cache':
         return [...RESULT_CACHE_REQUIRED_CAPABILITIES];
       case 'pg-hot-operators':
-        return [...HOT_OPERATOR_REQUIRED_CAPABILITIES];
-      case 'pg-custom-index':
         return [...HOT_OPERATOR_REQUIRED_CAPABILITIES];
       default: {
         const exhaustive: never = profile;
@@ -6083,9 +5794,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       requested: Boolean(acceleration?.requested),
       enabled: Boolean(acceleration?.enabled),
       ...(acceleration?.provider ? { provider: acceleration.provider } : {}),
-      ...(this.pgCustomIndexBuildIsDeferred(acceleration)
-        ? { fallbackReason: 'index-build-deferred' as const }
-        : acceleration?.fallbackReason ? { fallbackReason: acceleration.fallbackReason } : {}),
+      ...(acceleration?.fallbackReason ? { fallbackReason: acceleration.fallbackReason } : {}),
       ...(acceleration?.activeOperators ? { activeOperators: this.effectivePgAccelerationActiveOperators(acceleration) } : {}),
       ...(options.query ? { unsupportedCapabilities: this.unsupportedPgAccelerationCapabilities(options.query) } : {}),
     };
@@ -6119,7 +5828,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     const hasPlan = (marker: string): boolean => plan.some((entry) => entry.includes(marker));
     const hasPlanPrefix = (marker: string): boolean => plan.some((entry) => entry.startsWith(marker));
     const rejectedCapabilities = query ? this.unsupportedPgAccelerationCapabilities(query) : [];
-    const usedNativeCapabilities = this.usedPgNativeCapabilities(plan);
     const reasons = new Set<string>();
     const estimateInputs = new Set<string>();
     const availableStats = new Set<string>([
@@ -6141,26 +5849,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       reasons.add('query-result-cache-hit');
       estimateInputs.add('facts.dataVersion');
       estimateInputs.add('query.cache.scope');
-    } else if (hasPlanPrefix('XpodRdfExtensionOperator(')) {
-      selectedPath = 'native-extension';
-      reasons.add('native-extension-operator-selected');
-      estimateInputs.add('pgAcceleration.capabilities');
-      if (hasPlan('PostgresRdfNativeGraphPrefixSlotFilter')) {
-        reasons.add('graph-prefix-slot-filter-pushed-down');
-      }
-      if (hasPlan('PostgresRdfNativeCustomIndexBgpOrderPage')) {
-        reasons.add('order-pagination-pushed-down');
-      }
-      if (hasPlanPrefix('PostgresRdfNativeCustomIndexSubjectStar')) {
-        reasons.add('subject-star-shape-detected');
-      }
-      if (
-        hasPlanPrefix('PostgresRdfNativeCustomIndexBgpCount')
-        || hasPlanPrefix('PostgresRdfNativeCustomIndexBgpGroupCount')
-        || hasPlanPrefix('PostgresRdfNativeCustomIndexBgpNumericAggregate')
-      ) {
-        reasons.add('aggregate-pushed-down');
-      }
     } else if (hasPlan('PostgresRdf3x') || hasPlanPrefix('Rdf3xJoinBGP(')) {
       selectedPath = 'rdf3x';
       reasons.add('rdf3x-sql-path-selected');
@@ -6251,17 +5939,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (rejectedCapabilities.length > 0) {
       reasons.add('pg-acceleration-capability-unsupported');
     }
-    const rejectedNativeOperators = query
-      ? this.rejectedPgNativeOperators(query, selectedPath, usedNativeCapabilities, hasPlan)
-      : [];
-    if (rejectedNativeOperators.length > 0) {
-      reasons.add('native-operator-rejected');
-      estimateInputs.add('pgAcceleration.capabilities');
-      if (rejectedNativeOperators.some((entry) => entry.reason.startsWith('cost-cutover-'))) {
-        reasons.add('native-operator-cost-cutover');
-        estimateInputs.add('facts.exactPatternCounts');
-      }
-    }
     if (runtime.scannedRows > 0) {
       reasons.add('runtime-scan-rows-reported');
       estimateInputs.add('query.metrics.scannedRows');
@@ -6284,112 +5961,7 @@ export class PostgresRdfEngine implements RdfEngineLike {
       ...(slowQuery ? { slowQuery } : {}),
       ...(histogramHints.length > 0 ? { histogramHints } : {}),
       ...(rejectedCapabilities.length > 0 ? { rejectedCapabilities } : {}),
-      ...(rejectedNativeOperators.length > 0 ? { rejectedNativeOperators } : {}),
     };
-  }
-
-  private usedPgNativeCapabilities(plan: string[]): Set<string> {
-    const capabilities = new Set<string>();
-    for (const entry of plan) {
-      const match = /^XpodRdfExtensionOperator\(([^)]+)\)/.exec(entry);
-      if (match) {
-        capabilities.add(match[1]);
-      }
-    }
-    return capabilities;
-  }
-
-  private rejectedPgNativeOperators(
-    query: RdfQuery,
-    selectedPath: RdfQueryPlannerExplain['selectedPath'],
-    usedNativeCapabilities: Set<string>,
-    hasPlan: (marker: string) => boolean,
-  ): RdfQueryPlannerNativeOperatorRejection[] {
-    if (!this.pgAcceleration?.enabled || selectedPath === 'native-extension') {
-      return [];
-    }
-    const activeNativeOperators = new Set(
-      this.effectivePgAccelerationActiveOperators(this.pgAcceleration)
-        .filter((capability) => isNativeExtensionOnlyCapability(capability)),
-    );
-    const rejected = new Map<string, string>();
-    const add = (capability: string, reason: string): void => {
-      if (activeNativeOperators.has(capability) && !usedNativeCapabilities.has(capability)) {
-        rejected.set(capability, reason);
-      }
-    };
-
-    const aggregates = queryAggregates(query);
-    const requiredPatternCount = query.patterns.length > 0 ? query.patterns.length : 1;
-    const hasValues = (query.values?.length ?? 0) > 0;
-    const hasGraphPrefix = this.queryHasGraphPrefix(query);
-    if (aggregates.length > 0) {
-      if (aggregates.some((aggregate) => aggregate.type !== 'count')) {
-        add(
-          'aggregate.bgp_numeric',
-          hasValues
-            ? 'cost-cutover-values-native-regression'
-            : hasPlan('PostgresNumericAggregateFactsCutover')
-            ? 'cost-cutover-small-grouped-numeric-aggregate'
-            : 'shape-gate',
-        );
-      } else if ((query.groupBy?.length ?? 0) > 0) {
-        add('aggregate.bgp_group_count', 'cost-cutover-group-count-native-regression');
-      } else if (requiredPatternCount > 1) {
-        const countReason = aggregates.some((aggregate) => aggregate.distinct || (aggregate.distinctVariables ?? []).length > 0)
-          ? 'cost-cutover-count-distinct-native-regression'
-          : 'cost-cutover-bgp-count-native-regression';
-        add('aggregate.bgp_count', countReason);
-        if (this.queryHasSubjectStarShape(query)) {
-          add('aggregate.subject_star_count', countReason);
-        }
-      } else {
-        add(
-          'index.xpod_rdf_perm.count_any',
-          hasGraphPrefix ? 'cost-cutover-graph-prefix-native-regression' : 'shape-gate',
-        );
-      }
-      return [...rejected.entries()]
-        .map(([capability, reason]) => ({ capability, reason }))
-        .sort((left, right) => left.capability.localeCompare(right.capability));
-    }
-
-    if (query.distinct && requiredPatternCount === 1 && (query.select?.length ?? 0) === 1) {
-      add('index.xpod_rdf_perm.distinct_any', 'shape-gate');
-    }
-    if (hasValues) {
-      add(query.limit !== undefined || query.offset !== undefined ? 'join.values.limit.native' : 'join.values.native', 'cost-cutover-values-native-regression');
-    } else if (requiredPatternCount > 1) {
-      if (this.queryHasSubjectStarShape(query) && !hasGraphPrefix) {
-        add('join.subject_star', 'shape-gate');
-      }
-      add(
-        'join.required_bgp.native',
-        hasGraphPrefix
-          ? 'cost-cutover-graph-prefix-native-regression'
-          : 'cost-cutover-generic-bgp-native-regression',
-      );
-    }
-    return [...rejected.entries()]
-      .map(([capability, reason]) => ({ capability, reason }))
-      .sort((left, right) => left.capability.localeCompare(right.capability));
-  }
-
-  private queryHasGraphPrefix(query: RdfQuery): boolean {
-    return query.patterns.some((pattern) => (
-      isQueryTermOperator(pattern.graph) && typeof pattern.graph.$startsWith === 'string'
-    ));
-  }
-
-  private queryHasSubjectStarShape(query: RdfQuery): boolean {
-    if (query.patterns.length < 3) {
-      return false;
-    }
-    const subjectVariables = query.patterns.map((pattern) => (
-      isVariable(pattern.subject) ? pattern.subject.variable : undefined
-    ));
-    const first = subjectVariables[0];
-    return Boolean(first && subjectVariables.every((variableName) => variableName === first));
   }
 
   private queryPlannerRuntimeExplain(metrics: RdfQueryMetrics): RdfQueryPlannerExplain['runtime'] {
@@ -7279,22 +6851,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
     if (!this.canRdf3xAggregate(query, aggregates)) {
       return undefined;
     }
-    const nativeCount = await this.tryQueryPgCustomIndexCount(query, patterns, aggregates, values, start);
-    if (nativeCount) {
-      return nativeCount;
-    }
-    const nativeBgpCount = await this.tryQueryPgCustomIndexBgpCount(query, patterns, aggregates, values, start);
-    if (nativeBgpCount) {
-      return nativeBgpCount;
-    }
-    const nativeBgpGroupCount = await this.tryQueryPgCustomIndexBgpGroupCount(query, patterns, aggregates, values, start);
-    if (nativeBgpGroupCount) {
-      return nativeBgpGroupCount;
-    }
-    const nativeBgpNumericAggregate = await this.tryQueryPgCustomIndexBgpNumericAggregate(query, patterns, aggregates, values, start);
-    if (nativeBgpNumericAggregate) {
-      return nativeBgpNumericAggregate;
-    }
     const visibleVariables = uniqueStrings(query.patterns.flatMap((pattern) => variablesInPattern(pattern)));
     const joinOptions = {
       template,
@@ -7430,1309 +6986,6 @@ export class PostgresRdfEngine implements RdfEngineLike {
       this.pgOptions.numericAggregateFactsCutoverMaxSourceRows
         ?? DEFAULT_NUMERIC_AGGREGATE_FACTS_CUTOVER_MAX_SOURCE_ROWS,
     );
-  }
-
-  private async tryQueryPgCustomIndexCount(
-    query: RdfQuery,
-    patterns: PgCompiledJoinPattern[],
-    aggregates: ReturnType<typeof queryAggregates>,
-    values: PgCompiledValuesSource[],
-    start: number,
-  ): Promise<RdfQueryResult | undefined> {
-    const capability = 'index.xpod_rdf_perm.count_any';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
-    if (
-      query.patterns.length !== 1
-      || patterns.length !== 1
-      || values.length > 0
-      || aggregates.length !== 1
-      || (query.groupBy ?? []).length > 0
-      || (query.having ?? []).length > 0
-      || (query.orderBy ?? []).length > 0
-      || query.distinct
-      || query.limit !== undefined
-      || query.offset !== undefined
-    ) {
-      return undefined;
-    }
-
-    const aggregate = aggregates[0];
-    if (
-      aggregate.type !== 'count'
-      || aggregate.distinct
-      || (aggregate.distinctVariables ?? []).length > 0
-      || (query.select ?? [aggregate.as]).some((variableName) => variableName !== aggregate.as)
-    ) {
-      return undefined;
-    }
-    const visibleVariables = uniqueStrings(query.patterns.flatMap((pattern) => variablesInPattern(pattern)));
-    if (aggregate.variable && !visibleVariables.includes(aggregate.variable)) {
-      return undefined;
-    }
-
-    const [pattern] = patterns;
-    if (pattern.equalities.length > 0) {
-      return undefined;
-    }
-    const resolved = await this.resolvePattern(pattern.pattern);
-    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
-    if (!customResolved || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
-      return undefined;
-    }
-    if (customResolved.graphPrefix !== undefined) {
-      return undefined;
-    }
-
-    const permutation = this.choosePermutation(customResolved);
-    const count = await this.pgCustomIndexCountAny(customResolved, permutation);
-    if (count === undefined) {
-      return undefined;
-    }
-    return this.pgCustomIndexCountResult(query, aggregate, count, permutation, capability, start);
-  }
-
-  private async pgCustomIndexCountAny(resolved: PgResolvedPattern, permutation: PgPermutation): Promise<number | undefined> {
-    const capability = 'index.xpod_rdf_perm.count_any';
-    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
-    if (!customResolved || !this.canUsePgAccelerationCapability(capability) || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
-      return undefined;
-    }
-    if (customResolved.graphPrefix !== undefined) {
-      return undefined;
-    }
-
-    const fullFilters = this.pgCustomIndexFullFilters(customResolved);
-    if (fullFilters.some((filter) => filter?.length === 0)) {
-      return 0;
-    }
-    const prefixFilters = this.pgCustomIndexPrefixFilters(customResolved, permutation);
-    if (prefixFilters.every((filter) => filter === null)) {
-      return undefined;
-    }
-    if (prefixFilters.some((filter) => filter?.length === 0)) {
-      return 0;
-    }
-
-    const rows = await this.requireExecutor().query<{ count: number }>(`
-      SELECT xpod_rdf.perm_index_count_any(
-        $1::regclass,
-        $2::regclass,
-        $3::bigint[],
-        $4::bigint[],
-        $5::bigint[],
-        $6::bigint[],
-        $7::bigint[],
-        $8::bigint[],
-        $9::bigint[],
-        $10::bigint[]
-      ) AS count
-    `, [
-      RDF_FACTS_TABLE,
-      pgCustomPermutationIndexName(permutation),
-      ...prefixFilters,
-      ...fullFilters,
-    ]);
-    return pgInteger(rows[0]?.count) ?? 0;
-  }
-
-  private pgCustomIndexCountResult(
-    query: RdfQuery,
-    aggregate: RdfQueryAggregate,
-    count: number,
-    permutation: PgPermutation,
-    capability: string,
-    start: number,
-  ): RdfQueryResult {
-    return {
-      bindings: [
-        {
-          [aggregate.as]: DataFactory.literal(String(count), DataFactory.namedNode(XSD_INTEGER)) as Term,
-        },
-      ],
-      count,
-      metrics: this.localMetrics(
-        start,
-        count,
-        count,
-        1,
-        [permutation.name],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          `XpodRdfExtensionOperator(${capability})`,
-          `PostgresRdfNativeCustomIndexCountAny(${permutation.name})`,
-          aggregatePlan([aggregate], false),
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
-  }
-
-  private async tryQueryPgCustomIndexBgpCount(
-    query: RdfQuery,
-    patterns: PgCompiledJoinPattern[],
-    aggregates: ReturnType<typeof queryAggregates>,
-    values: PgCompiledValuesSource[],
-    start: number,
-  ): Promise<RdfQueryResult | undefined> {
-    if (
-      query.patterns.length < 2
-      || query.patterns.length > 8
-      || patterns.length !== query.patterns.length
-      || aggregates.length === 0
-      || aggregates.length > 8
-      || query.distinct
-      || (query.groupBy ?? []).length > 0
-      || (query.having ?? []).length > 0
-      || (query.orderBy ?? []).length > 0
-      || query.limit !== undefined
-      || query.offset !== undefined
-    ) {
-      return undefined;
-    }
-
-    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
-    const capability = subjectStarKey && this.canUsePgAccelerationCapability('aggregate.subject_star_count')
-      ? 'aggregate.subject_star_count'
-      : 'aggregate.bgp_count';
-    if (
-      !subjectStarKey
-      || !this.canUsePgAccelerationCapability('aggregate.subject_star_count')
-      || aggregates.some((aggregate) => aggregate.distinct || (aggregate.distinctVariables ?? []).length > 0)
-    ) {
-      return undefined;
-    }
-
-    const aggregateAliases = new Map<string, string>();
-    const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
-    const shape = await this.pgCustomIndexBgpJoinShape(patterns, []);
-    if (!shape) {
-      return undefined;
-    }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
-    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
-    if (!valuesShape || !filtersShape) {
-      return undefined;
-    }
-    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
-      return undefined;
-    }
-    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
-      return undefined;
-    }
-    if (shape.internalFilters.length > 0) {
-      return undefined;
-    }
-
-    const aggregateSlots: number[] = [];
-    const aggregateDistinct: number[] = [];
-    for (const [index, aggregate] of aggregates.entries()) {
-      if (aggregate.type !== 'count') {
-        return undefined;
-      }
-      const slot = this.pgCustomIndexBgpCountAggregateSlot(aggregate, shape.variableSlotsByName);
-      if (slot === undefined) {
-        return undefined;
-      }
-      aggregateSlots.push(slot);
-      aggregateDistinct.push(aggregate.distinct ? 1 : 0);
-      aggregateAliases.set(aggregate.as, `a${index}`);
-      aggregateTypes.set(aggregate.as, 'integer');
-    }
-    if ((query.select ?? []).some((variableName) => !aggregateAliases.has(variableName))) {
-      return undefined;
-    }
-
-    const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
-    const constantsParam = 2 + shape.indexNames.length;
-    const variableSlotsParam = constantsParam + 1;
-    const valueSlotsParam = variableSlotsParam + 1;
-    const valueRowsParam = valueSlotsParam + 1;
-    const filterSlotsParam = valueRowsParam + 1;
-    const filterOffsetsParam = filterSlotsParam + 1;
-    const filterValuesParam = filterOffsetsParam + 1;
-    const aggregateSlotsParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
-    const aggregateDistinctParam = aggregateSlotsParam + 1;
-    const filterArguments = shape.internalFilters.length > 0
-      ? `,
-        $${filterSlotsParam}::smallint[],
-        $${filterOffsetsParam}::bigint[],
-        $${filterValuesParam}::bigint[]`
-      : '';
-    const projection = aggregates.map((_aggregate, index) => `native_count.count${index + 1} AS a${index}`).join(', ');
-    const sql = `
-      SELECT ${projection}
-      FROM xpod_rdf.bgp_count(
-        $1::regclass,
-        ARRAY[${indexPlaceholders}]::oid[],
-        $${constantsParam}::bigint[],
-        $${variableSlotsParam}::smallint[],
-        $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[]${filterArguments},
-        $${aggregateSlotsParam}::smallint[],
-        $${aggregateDistinctParam}::smallint[]
-      ) native_count
-    `;
-    const rows = await this.requireExecutor().query<Record<string, number>>(sql, [
-      RDF_FACTS_TABLE,
-      ...shape.indexNames,
-      shape.constants,
-      shape.variableSlots,
-      valuesShape.valueSlots,
-      valuesShape.valueRows,
-      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
-      aggregateSlots,
-      aggregateDistinct,
-    ]);
-    const bindings = await this.joinRowsToBindings(rows, new Map(), aggregateAliases, aggregateTypes);
-    const firstCount = pgInteger(rows[0]?.a0) ?? 0;
-    return {
-      bindings,
-      count: firstCount,
-      metrics: this.localMetrics(
-        start,
-        firstCount,
-        firstCount,
-        bindings.length,
-        [`PostgresNativeBgpCount(${shape.indexChoices.join('>')})`],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          `XpodRdfExtensionOperator(${capability})`,
-          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
-          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
-          ...(capability === 'aggregate.subject_star_count' ? [`PostgresRdfNativeCustomIndexSubjectStarCount(${subjectStarKey};patterns:${patterns.length})`] : []),
-          `PostgresRdfNativeCustomIndexBgpCount(${patterns.length})`,
-          ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
-          `PostgresRdf3xJoinCount(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
-          ...this.pgCustomIndexInternalFiltersPlan(shape),
-          aggregatePlan(aggregates, false),
-          sql,
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
-  }
-
-  private pgCustomIndexBgpCountAggregateSlot(
-    aggregate: RdfQueryAggregate,
-    variableSlotsByName: Map<string, number>,
-  ): number | undefined {
-    if (aggregate.variable) {
-      if ((aggregate.distinctVariables ?? []).length > 0) {
-        return undefined;
-      }
-      return variableSlotsByName.get(aggregate.variable);
-    }
-    if (!aggregate.distinct) {
-      return -1;
-    }
-    const distinctVariables = aggregate.distinctVariables ?? [];
-    if (distinctVariables.length !== 1) {
-      return undefined;
-    }
-    return variableSlotsByName.get(distinctVariables[0]);
-  }
-
-  private async tryQueryPgCustomIndexBgpGroupCount(
-    query: RdfQuery,
-    patterns: PgCompiledJoinPattern[],
-    aggregates: ReturnType<typeof queryAggregates>,
-    values: PgCompiledValuesSource[],
-    start: number,
-  ): Promise<RdfQueryResult | undefined> {
-    const capability = 'aggregate.bgp_group_count';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
-    return undefined;
-  }
-
-  private async tryQueryPgCustomIndexBgpNumericAggregate(
-    query: RdfQuery,
-    patterns: PgCompiledJoinPattern[],
-    aggregates: ReturnType<typeof queryAggregates>,
-    values: PgCompiledValuesSource[],
-    start: number,
-  ): Promise<RdfQueryResult | undefined> {
-    const capability = 'aggregate.bgp_numeric';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
-    if (values.length > 0) {
-      return undefined;
-    }
-    if (
-      query.patterns.length < 1
-      || query.patterns.length > 8
-      || patterns.length !== query.patterns.length
-      || aggregates.length === 0
-      || query.distinct
-      || (query.groupBy ?? []).length > 8
-    ) {
-      return undefined;
-    }
-    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
-      return undefined;
-    }
-
-    const numericAggregates = aggregates.filter((aggregate) => aggregate.type !== 'count');
-    if (numericAggregates.length === 0) {
-      return undefined;
-    }
-    const numericVariable = numericAggregates[0]?.variable;
-    if (!numericVariable) {
-      return undefined;
-    }
-    if (numericAggregates.some((aggregate) => (
-      aggregate.variable !== numericVariable
-      || aggregate.distinct
-      || aggregate.distinctVariables !== undefined
-    ))) {
-      return undefined;
-    }
-    if (aggregates.some((aggregate) => (
-      aggregate.type === 'count'
-      && (aggregate.distinct || (aggregate.distinctVariables ?? []).length > 0)
-    ))) {
-      return undefined;
-    }
-
-    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
-    const groupBy = query.groupBy ?? [];
-    const aggregateNames = new Set(aggregates.map((aggregate) => aggregate.as));
-    if ((query.select ?? []).some((variableName) => !aggregateNames.has(variableName) && !groupBy.includes(variableName))) {
-      return undefined;
-    }
-
-    const shape = await this.pgCustomIndexBgpJoinShape(patterns, groupBy, {
-      allowedTermFilter: (pattern, key, filter) => (
-        pattern.variables[key] === numericVariable && isOnlyNumericTermFilter(filter)
-      ),
-    });
-    if (!shape) {
-      return undefined;
-    }
-    const numericSlot = shape.variableSlotsByName.get(numericVariable);
-    if (numericSlot === undefined) {
-      return undefined;
-    }
-    if (values.length > 0 && !this.canUsePgAccelerationCapability('join.values.native')) {
-      return undefined;
-    }
-    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
-      return undefined;
-    }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
-    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
-    if (!valuesShape || !filtersShape) {
-      return undefined;
-    }
-    const groupSlots = groupBy.map((variableName) => shape.variableSlotsByName.get(variableName));
-    if (groupSlots.some((slot) => slot === undefined)) {
-      return undefined;
-    }
-
-    const aggregateAliases = new Map<string, string>();
-    const aggregateTypes = new Map<string, 'integer' | 'decimal'>();
-    for (const [index, aggregate] of aggregates.entries()) {
-      aggregateAliases.set(aggregate.as, `a${index}`);
-      aggregateTypes.set(aggregate.as, aggregate.type === 'count' ? 'integer' : 'decimal');
-    }
-
-    const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
-    const constantsParam = 2 + shape.indexNames.length;
-    const variableSlotsParam = constantsParam + 1;
-    const valueSlotsParam = variableSlotsParam + 1;
-    const valueRowsParam = valueSlotsParam + 1;
-    const filterSlotsParam = valueRowsParam + 1;
-    const filterOffsetsParam = filterSlotsParam + 1;
-    const filterValuesParam = filterOffsetsParam + 1;
-    const groupSlotsParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
-    const numericSlotParam = groupSlotsParam + 1;
-    const numericDistinctParam = numericSlotParam + 1;
-    const filterArguments = shape.internalFilters.length > 0
-      ? `,
-        $${filterSlotsParam}::smallint[],
-        $${filterOffsetsParam}::bigint[],
-        $${filterValuesParam}::bigint[]`
-      : '';
-    const groupProjection = groupBy.map((_variableName, index) => `native_numeric.group${index + 1} AS v${index}`);
-    const aggregateProjection = aggregates.map((aggregate, index) => (
-      `native_numeric.${this.pgCustomIndexNumericAggregateColumn(aggregate)} AS a${index}`
-    ));
-    const sql = `
-      SELECT ${[...groupProjection, ...aggregateProjection, 'native_numeric.value_count'].join(', ')}
-      FROM xpod_rdf.bgp_numeric_aggregate(
-        $1::regclass,
-        ARRAY[${indexPlaceholders}]::oid[],
-        $${constantsParam}::bigint[],
-        $${variableSlotsParam}::smallint[],
-        $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[]${filterArguments},
-        $${groupSlotsParam}::smallint[],
-        $${numericSlotParam}::smallint,
-        $${numericDistinctParam}::smallint
-      ) native_numeric
-    `;
-    const rows = await this.requireExecutor().query<Record<string, unknown>>(sql, [
-      RDF_FACTS_TABLE,
-      ...shape.indexNames,
-      shape.constants,
-      shape.variableSlots,
-      valuesShape.valueSlots,
-      valuesShape.valueRows,
-      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
-      groupSlots as number[],
-      numericSlot,
-      0,
-    ]);
-    let bindings = await this.joinRowsToBindings(
-      rows,
-      new Map(groupBy.map((variableName, index) => [variableName, `v${index}`])),
-      aggregateAliases,
-      aggregateTypes,
-    );
-    if ((query.having ?? []).length > 0) {
-      bindings = bindings.filter((binding) => matchesBindingFilters(binding, query.having ?? []));
-    }
-    if ((query.orderBy ?? []).length > 0) {
-      bindings = orderBindingsForQuery(bindings, query.orderBy ?? []);
-    }
-    const offset = Math.max(0, query.offset ?? 0);
-    const pagedBindings = bindings.slice(offset, query.limit === undefined ? undefined : offset + Math.max(0, query.limit));
-    const matchedRows = rows.reduce((total, row) => total + (pgInteger(row.value_count) ?? 0), 0);
-    const firstCount = aggregates[0]?.type === 'count' ? pgInteger(rows[0]?.a0) ?? 0 : undefined;
-    return {
-      bindings: pagedBindings,
-      ...(firstCount !== undefined ? { count: firstCount } : {}),
-      metrics: this.localMetrics(
-        start,
-        matchedRows,
-        matchedRows,
-        pagedBindings.length,
-        [`PostgresNativeBgpNumericAggregate(${shape.indexChoices.join('>')})`],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          `XpodRdfExtensionOperator(${capability})`,
-          ...(values.length > 0 ? ['XpodRdfExtensionOperator(join.values.native)'] : []),
-          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
-          ...(subjectStarKey ? [`PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(${subjectStarKey};patterns:${patterns.length})`] : []),
-          `PostgresRdfNativeCustomIndexBgpNumericAggregate(${patterns.length})`,
-          ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
-          this.postgresRdf3xAggregateMarker(aggregates, groupBy.length > 0),
-          ...this.pgCustomIndexInternalFiltersPlan(shape),
-          aggregatePlan(aggregates, groupBy.length > 0),
-          ...((query.having ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateHaving(${(query.having ?? []).map(describeFilter).join(',')})`] : []),
-          ...((query.orderBy ?? []).length > 0 ? [`PostgresRdfNativeCustomIndexAggregateOrder(${describeQueryOrder(query.orderBy ?? [])})`] : []),
-          ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdfNativeCustomIndexAggregateLimit'] : []),
-          sql,
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
-  }
-
-  private pgCustomIndexNumericAggregateColumn(aggregate: RdfQueryAggregate): string {
-    switch (aggregate.type) {
-      case 'count':
-        return 'value_count';
-      case 'sum':
-        return 'value_sum';
-      case 'avg':
-        return 'value_avg';
-      case 'min':
-        return 'value_min';
-      case 'max':
-        return 'value_max';
-      default: {
-        const exhaustive: never = aggregate.type;
-        throw new Error(`Unsupported native PostgreSQL RDF numeric aggregate: ${exhaustive}`);
-      }
-    }
-  }
-
-  private async tryQueryPgCustomIndexDistinct(
-    query: RdfQuery,
-    patterns: PgCompiledJoinPattern[],
-    values: PgCompiledValuesSource[],
-    project: string[],
-    start: number,
-  ): Promise<RdfQueryResult | undefined> {
-    const capability = 'index.xpod_rdf_perm.distinct_any';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
-    if (
-      !query.distinct
-      || query.patterns.length !== 1
-      || patterns.length !== 1
-      || values.length > 0
-      || project.length !== 1
-      || (query.groupBy ?? []).length > 0
-      || (query.having ?? []).length > 0
-      || (query.orderBy ?? []).length > 0
-    ) {
-      return undefined;
-    }
-
-    const [pattern] = patterns;
-    if (pattern.equalities.length > 0) {
-      return undefined;
-    }
-    const projectVariable = project[0];
-    const projectKey = patternKeyForVariable(pattern.variables, projectVariable);
-    if (!projectKey) {
-      return undefined;
-    }
-
-    const resolved = await this.resolvePattern(pattern.pattern);
-    const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
-    if (!customResolved || !this.canUsePgCustomIndexResolvedPattern(customResolved)) {
-      return undefined;
-    }
-    const fullFilters = this.pgCustomIndexFullFilters(customResolved);
-    if (fullFilters.some((filter) => filter?.length === 0)) {
-      return this.pgCustomIndexDistinctEmptyResult(query, projectVariable, start, capability, 'none');
-    }
-
-    const permutation = this.choosePermutation(customResolved);
-    const prefixFilters = this.pgCustomIndexPrefixFilters(customResolved, permutation);
-    if (prefixFilters.every((filter) => filter === null)) {
-      return undefined;
-    }
-    if (prefixFilters.some((filter) => filter?.length === 0)) {
-      return this.pgCustomIndexDistinctEmptyResult(query, projectVariable, start, capability, permutation.name);
-    }
-
-    const rows = await this.requireExecutor().query<Record<string, number>>(`
-      SELECT native_distinct.value AS v0, native_distinct.row_count
-      FROM xpod_rdf.perm_index_distinct_any(
-        $1::regclass,
-        $2::regclass,
-        $3::integer,
-        $4::bigint[],
-        $5::bigint[],
-        $6::bigint[],
-        $7::bigint[],
-        $8::bigint[],
-        $9::bigint[],
-        $10::bigint[],
-        $11::bigint[],
-        $12::bigint,
-        $13::bigint
-      ) native_distinct
-    `, [
-      RDF_FACTS_TABLE,
-      pgCustomPermutationIndexName(permutation),
-      PG_CUSTOM_INDEX_PROJECT_COLUMN[projectKey],
-      ...prefixFilters,
-      ...fullFilters,
-      query.limit ?? null,
-      query.offset ?? null,
-    ]);
-    const bindings = await this.joinRowsToBindings(rows, new Map([[projectVariable, 'v0']]));
-    const matchedRows = await this.pgCustomIndexCountAny(customResolved, permutation)
-      ?? rows.reduce((total, row) => total + (pgInteger(row.row_count) ?? 0), 0);
-    return {
-      bindings,
-      metrics: this.localMetrics(
-        start,
-        matchedRows,
-        matchedRows,
-        bindings.length,
-        [permutation.name],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          `XpodRdfExtensionOperator(${capability})`,
-          `PostgresRdfNativeCustomIndexDistinctAny(${permutation.name},?${projectVariable})`,
-          `PostgresRdf3xJoinDistinct(?${projectVariable})`,
-          ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdfNativeCustomIndexDistinctLimit'] : []),
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
-  }
-
-  private pgCustomIndexDistinctEmptyResult(
-    query: RdfQuery,
-    projectVariable: string,
-    start: number,
-    capability: string,
-    indexChoice: string,
-  ): RdfQueryResult {
-    return {
-      bindings: [],
-      metrics: this.localMetrics(
-        start,
-        0,
-        0,
-        0,
-        [indexChoice],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          `XpodRdfExtensionOperator(${capability})`,
-          `PostgresRdfNativeCustomIndexDistinctAny(${indexChoice},?${projectVariable})`,
-          `PostgresRdf3xJoinDistinct(?${projectVariable})`,
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
-  }
-
-  private async tryQueryPgCustomIndexBgpJoin(
-    query: RdfQuery,
-    patterns: PgCompiledJoinPattern[],
-    values: PgCompiledValuesSource[],
-    project: string[],
-    start: number,
-  ): Promise<RdfQueryResult | undefined> {
-    if (
-      query.patterns.length < 2
-      || query.patterns.length > 8
-      || patterns.length !== query.patterns.length
-      || values.length > 0
-      || query.distinct
-      || project.length === 0
-      || project.length > 8
-      || (query.groupBy ?? []).length > 0
-      || (query.having ?? []).length > 0
-    ) {
-      return undefined;
-    }
-    const orderBy = query.orderBy ?? [];
-    const usesOrderPage = orderBy.length > 0 && (query.limit !== undefined || query.offset !== undefined);
-    if (orderBy.length > 0 && !usesOrderPage) {
-      return undefined;
-    }
-    if (usesOrderPage && orderBy.some((entry) => !project.includes(entry.variable))) {
-      return undefined;
-    }
-    const canUseOrderPageWrapper = usesOrderPage
-      && this.canUsePgAccelerationCapability('join.required_bgp.order_page.native');
-    const usesOrderPageTopN = usesOrderPage
-      && orderBy.length === 1
-      && this.canUsePgAccelerationCapability('join.required_bgp.order_page.topn.native');
-    if (usesOrderPage && !canUseOrderPageWrapper && !usesOrderPageTopN) {
-      return undefined;
-    }
-
-    const subjectStarKey = rdfSubjectStarJoinKey(patterns);
-    if (!usesOrderPage && !subjectStarKey) {
-      return undefined;
-    }
-    const capability = !usesOrderPage
-      ? 'join.subject_star'
-      : 'join.required_bgp.native';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
-    const operatorCapabilities = [
-      capability,
-      ...(canUseOrderPageWrapper ? ['join.required_bgp.order_page.native'] : []),
-      ...(usesOrderPageTopN ? ['join.required_bgp.order_page.topn.native'] : []),
-      ...(usesOrderPage && subjectStarKey && this.canUsePgAccelerationCapability('join.subject_star') ? ['join.subject_star'] : []),
-    ];
-
-    const shape = await this.pgCustomIndexBgpJoinShape(patterns, project, usesOrderPageTopN
-      ? { preferredLeadingVariables: orderBy.map((entry) => entry.variable) }
-      : {});
-    if (!shape) {
-      return undefined;
-    }
-    if (shape.internalFilters.length > 0) {
-      return undefined;
-    }
-    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
-      return undefined;
-    }
-    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
-    if (!filtersShape) {
-      return undefined;
-    }
-    const orderSlots = usesOrderPage
-      ? orderBy.map((entry) => shape.variableSlotsByName.get(entry.variable))
-      : [];
-    if (orderSlots.some((slot) => slot === undefined)) {
-      return undefined;
-    }
-    const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
-    const constantsParam = 2 + shape.indexNames.length;
-    const variableSlotsParam = constantsParam + 1;
-    const outputSlotsParam = variableSlotsParam + 1;
-    const filterSlotsParam = outputSlotsParam + 1;
-    const filterOffsetsParam = filterSlotsParam + 1;
-    const filterValuesParam = filterOffsetsParam + 1;
-    const limitParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : outputSlotsParam + 1;
-    const offsetParam = limitParam + 1;
-    const filterArguments = shape.internalFilters.length > 0
-      ? `,
-        $${filterSlotsParam}::smallint[],
-        $${filterOffsetsParam}::bigint[],
-        $${filterValuesParam}::bigint[]`
-      : '';
-    const projection = project.map((_variableName, index) => `native_join.v${index + 1} AS v${index}`).join(', ');
-    const nativeSql = usesOrderPageTopN
-      ? this.pgCustomIndexBgpOrderPageTopNSql({
-        projection,
-        indexPlaceholders,
-        constantsParam,
-        variableSlotsParam,
-        outputSlotsParam,
-      })
-      : `
-      SELECT ${projection}
-      FROM xpod_rdf.bgp_join(
-        $1::regclass,
-        ARRAY[${indexPlaceholders}]::oid[],
-        $${constantsParam}::bigint[],
-        $${variableSlotsParam}::smallint[],
-        $${outputSlotsParam}::smallint[]${filterArguments},
-        $${limitParam}::bigint,
-        $${offsetParam}::bigint
-      ) native_join
-    `;
-    const nativeParams = usesOrderPageTopN
-      ? [
-        RDF_FACTS_TABLE,
-        ...shape.indexNames,
-        shape.constants,
-        shape.variableSlots,
-        shape.outputSlots,
-        orderSlots as number[],
-        orderBy.map((entry) => entry.direction === 'desc'),
-        query.limit ?? null,
-        query.offset ?? null,
-        RDF_TERMS_TABLE,
-      ]
-      : [
-        RDF_FACTS_TABLE,
-        ...shape.indexNames,
-        shape.constants,
-        shape.variableSlots,
-        shape.outputSlots,
-        ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
-        usesOrderPage ? null : query.limit ?? null,
-        usesOrderPage ? null : query.offset ?? null,
-      ];
-    const builder = new PgSqlBuilder(nativeParams);
-    const orderClause = usesOrderPage && !usesOrderPageTopN
-      ? this.buildJoinOrderClause(orderBy, new Map(project.map((variableName, index) => [variableName, `ordered.v${index}`])))
-      : { joins: '', orderBy: '' };
-    const pagination = usesOrderPage && !usesOrderPageTopN ? this.buildPagination(query, builder) : { sql: '', paramCount: 0 };
-    const sql = usesOrderPage && !usesOrderPageTopN
-      ? `
-        SELECT ${project.map((_variableName, index) => `ordered.v${index} AS v${index}`).join(', ')}
-        FROM (${nativeSql}) ordered
-        ${orderClause.joins}
-        ${orderClause.orderBy}
-        ${pagination.sql}
-      `
-      : nativeSql;
-    const rows = await this.requireExecutor().query<Record<string, number>>(sql, builder.snapshot());
-    const bindings = await this.joinRowsToBindings(rows, shape.variableAliases);
-    return {
-      bindings,
-      metrics: this.localMetrics(
-        start,
-        rows.length,
-        rows.length,
-        bindings.length,
-        [`PostgresNativeBgp(${shape.indexChoices.join('>')})`],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          ...operatorCapabilities.map((operatorCapability) => `XpodRdfExtensionOperator(${operatorCapability})`),
-          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
-          ...(operatorCapabilities.includes('join.subject_star') ? [`PostgresRdfNativeCustomIndexSubjectStarJoin(${subjectStarKey};patterns:${patterns.length})`] : []),
-          `PostgresRdfNativeCustomIndexBgpJoin(${patterns.length})`,
-          ...(usesOrderPage ? [`PostgresRdfNativeCustomIndexBgpOrderPage(${describeQueryOrder(orderBy)})`] : []),
-          ...(usesOrderPageTopN ? [`PostgresRdfNativeCustomIndexBgpOrderPageTopN(${describeQueryOrder(orderBy)})`] : []),
-          ...rdfSubjectStarJoinPlanMarker('PostgresRdf3xSubjectStarJoin', patterns),
-          `PostgresRdf3xJoin(${patterns.map((entry) => describePatternSource(entry)).join('|')})`,
-          ...this.pgCustomIndexInternalFiltersPlan(shape),
-          ...(query.limit !== undefined || query.offset !== undefined ? ['PostgresRdfNativeCustomIndexBgpLimit'] : []),
-          sql,
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
-  }
-
-  private pgCustomIndexBgpOrderPageTopNSql(options: {
-    projection: string;
-    indexPlaceholders: string;
-    constantsParam: number;
-    variableSlotsParam: number;
-    outputSlotsParam: number;
-  }): string {
-    const orderSlotsParam = options.outputSlotsParam + 1;
-    const orderDescParam = orderSlotsParam + 1;
-    const limitParam = orderDescParam + 1;
-    const offsetParam = limitParam + 1;
-    const termsTableParam = offsetParam + 1;
-    return `
-      SELECT ${options.projection}
-      FROM xpod_rdf.bgp_order_page(
-        $1::regclass,
-        $${termsTableParam}::regclass,
-        ARRAY[${options.indexPlaceholders}]::oid[],
-        $${options.constantsParam}::bigint[],
-        $${options.variableSlotsParam}::smallint[],
-        $${options.outputSlotsParam}::smallint[],
-        $${orderSlotsParam}::smallint[],
-        $${orderDescParam}::boolean[],
-        $${limitParam}::bigint,
-        $${offsetParam}::bigint
-      ) native_join
-    `;
-  }
-
-  private async tryQueryPgCustomIndexValuesJoin(
-    query: RdfQuery,
-    patterns: PgCompiledJoinPattern[],
-    values: PgCompiledValuesSource[],
-    project: string[],
-    start: number,
-  ): Promise<RdfQueryResult | undefined> {
-    const capability = query.limit !== undefined || query.offset !== undefined
-      ? 'join.values.limit.native'
-      : 'join.values.native';
-    if (!this.canUsePgAccelerationCapability(capability)) {
-      return undefined;
-    }
-    if (values.length > 0) {
-      return undefined;
-    }
-    if (
-      query.patterns.length < 1
-      || query.patterns.length > 8
-      || patterns.length !== query.patterns.length
-      || query.distinct
-      || project.length === 0
-      || project.length > 8
-      || (query.groupBy ?? []).length > 0
-      || (query.having ?? []).length > 0
-      || (query.orderBy ?? []).length > 0
-    ) {
-      return undefined;
-    }
-
-    const shape = await this.pgCustomIndexBgpJoinShape(patterns, project);
-    if (!shape) {
-      return undefined;
-    }
-    if (values.length === 0) {
-      return undefined;
-    }
-    if (shape.internalFilters.length > 0 && !this.canUsePgAccelerationCapability('join.slot_filter.native')) {
-      return undefined;
-    }
-    const valuesShape = this.pgCustomIndexValuesShape(values, shape.variableSlotsByName);
-    const filtersShape = this.pgCustomIndexSlotFiltersShape(shape.internalFilters, shape.variableSlotsByName);
-    if (!valuesShape || !filtersShape) {
-      return undefined;
-    }
-    if (valuesShape.valueRows.length === 0) {
-      return {
-        bindings: [],
-        metrics: this.localMetrics(
-          start,
-          0,
-          0,
-          0,
-          [`PostgresNativeValuesJoin(${shape.indexChoices.join('>')})`],
-          [
-            ...this.pgAccelerationActiveMarkersForQuery(query),
-            `XpodRdfExtensionOperator(${capability})`,
-            'PostgresRdfNativeCustomIndexValuesJoin(empty)',
-            ...this.pgCustomIndexInternalFiltersPlan(shape),
-          ],
-          query.filters?.length ?? 0,
-        ),
-      };
-    }
-
-    const indexPlaceholders = shape.indexNames.map((_, index) => `$${index + 2}::regclass::oid`).join(', ');
-    const constantsParam = 2 + shape.indexNames.length;
-    const variableSlotsParam = constantsParam + 1;
-    const outputSlotsParam = variableSlotsParam + 1;
-    const valueSlotsParam = outputSlotsParam + 1;
-    const valueRowsParam = valueSlotsParam + 1;
-    const filterSlotsParam = valueRowsParam + 1;
-    const filterOffsetsParam = filterSlotsParam + 1;
-    const filterValuesParam = filterOffsetsParam + 1;
-    const limitParam = shape.internalFilters.length > 0 ? filterValuesParam + 1 : valueRowsParam + 1;
-    const offsetParam = limitParam + 1;
-    const filterArguments = shape.internalFilters.length > 0
-      ? `,
-        $${filterSlotsParam}::smallint[],
-        $${filterOffsetsParam}::bigint[],
-        $${filterValuesParam}::bigint[]`
-      : '';
-    const projection = project.map((_variableName, index) => `native_join.v${index + 1} AS v${index}`).join(', ');
-    const usesPagination = query.limit !== undefined || query.offset !== undefined;
-    const sql = `
-      SELECT ${projection}
-      FROM xpod_rdf.values_join(
-        $1::regclass,
-        ARRAY[${indexPlaceholders}]::oid[],
-        $${constantsParam}::bigint[],
-        $${variableSlotsParam}::smallint[],
-        $${outputSlotsParam}::smallint[],
-        $${valueSlotsParam}::smallint[],
-        $${valueRowsParam}::bigint[]${filterArguments}
-        ${usesPagination ? `, $${limitParam}::bigint, $${offsetParam}::bigint` : ''}
-      ) native_join
-    `;
-    const rows = await this.requireExecutor().query<Record<string, number>>(sql, [
-      RDF_FACTS_TABLE,
-      ...shape.indexNames,
-      shape.constants,
-      shape.variableSlots,
-      shape.outputSlots,
-      valuesShape.valueSlots,
-      valuesShape.valueRows,
-      ...(shape.internalFilters.length > 0 ? [filtersShape.filterSlots, filtersShape.filterOffsets, filtersShape.filterValues] : []),
-      ...(usesPagination ? [query.limit ?? null, query.offset ?? null] : []),
-    ]);
-    const bindings = await this.joinRowsToBindings(rows, shape.variableAliases);
-    return {
-      bindings,
-      metrics: this.localMetrics(
-        start,
-        rows.length,
-        rows.length,
-        bindings.length,
-        [`PostgresNativeValuesJoin(${shape.indexChoices.join('>')})`],
-        [
-          ...this.pgAccelerationActiveMarkersForQuery(query),
-          `XpodRdfExtensionOperator(${capability})`,
-          ...(shape.internalFilters.length > 0 ? ['XpodRdfExtensionOperator(join.slot_filter.native)'] : []),
-          `PostgresRdfNativeCustomIndexValuesJoin(${patterns.length})`,
-          `Rdf3xJoinTupleValues(${values.map((source) => source.variables.map((variableName) => `?${variableName}`).join(',')).join('|')})`,
-          ...this.pgCustomIndexInternalFiltersPlan(shape),
-          ...(usesPagination ? ['PostgresRdfNativeCustomIndexValuesJoinLimit'] : []),
-          sql,
-        ],
-        query.filters?.length ?? 0,
-      ),
-    };
-  }
-
-  private async pgCustomIndexBgpJoinShape(
-    patterns: PgCompiledJoinPattern[],
-    project: string[],
-    options: PgCustomIndexBgpJoinShapeOptions = {},
-  ): Promise<PgCustomIndexBgpJoinShape | undefined> {
-    const variableSlotsByName = new Map<string, number>();
-    const indexNames: string[] = [];
-    const constants: Array<number | null> = [];
-    const variableSlots: number[] = [];
-    const indexChoices: string[] = [];
-    const internalFilters: PgCompiledSlotFilterSource[] = [];
-
-    const slotFor = (variableName: string): number | undefined => {
-      const existing = variableSlotsByName.get(variableName);
-      if (existing !== undefined) {
-        return existing;
-      }
-      if (variableSlotsByName.size >= 8) {
-        return undefined;
-      }
-      const next = variableSlotsByName.size + 1;
-      variableSlotsByName.set(variableName, next);
-      return next;
-    };
-
-    for (const [patternIndex, pattern] of patterns.entries()) {
-      const resolved = await this.resolvePattern(pattern.pattern);
-      const customResolved = await this.resolvePgCustomIndexGraphPrefix(resolved);
-      if (!customResolved || !this.canUsePgCustomIndexResolvedJoinPattern(customResolved, pattern, options) || patternHasIdSet(customResolved)) {
-        return undefined;
-      }
-      const graphPrefixVariableName = this.pgCustomIndexGraphPrefixVariableName(customResolved, pattern, patternIndex);
-      if (graphPrefixVariableName) {
-        const slot = slotFor(graphPrefixVariableName);
-        if (slot === undefined) {
-          return undefined;
-        }
-        internalFilters.push({
-          variable: graphPrefixVariableName,
-          values: customResolved.graphPrefixIds ?? [],
-        });
-      }
-
-      const preferredLeadingVariables = new Set(options.preferredLeadingVariables ?? []);
-      const preferredKey = TERM_KEYS.find((key) => {
-        const variableName = pattern.variables[key];
-        return variableName !== undefined && preferredLeadingVariables.has(variableName);
-      });
-      const permutation = this.choosePermutation(customResolved, preferredKey);
-      indexNames.push(pgCustomPermutationIndexName(permutation));
-      indexChoices.push(permutation.name);
-      for (const column of permutation.columns) {
-        const key = pgPatternKeyForIndexedColumn(column);
-        constants.push(customResolved.ids[key] ?? null);
-        const variableName = key === 'graph' && graphPrefixVariableName
-          ? graphPrefixVariableName
-          : pattern.variables[key];
-        const slot = variableName ? slotFor(variableName) : 0;
-        if (slot === undefined) {
-          return undefined;
-        }
-        variableSlots.push(slot);
-      }
-    }
-
-    const outputSlots: number[] = [];
-    const variableAliases = new Map<string, string>();
-    for (const [index, variableName] of project.entries()) {
-      const slot = variableSlotsByName.get(variableName);
-      if (slot === undefined) {
-        return undefined;
-      }
-      outputSlots.push(slot);
-      variableAliases.set(variableName, `v${index}`);
-    }
-    return {
-      indexNames,
-      constants,
-      variableSlots,
-      variableSlotsByName,
-      outputSlots,
-      variableAliases,
-      indexChoices,
-      internalFilters,
-    };
-  }
-
-  private async resolvePgCustomIndexGraphPrefix(resolved: PgResolvedPattern): Promise<PgResolvedPattern | undefined> {
-    if (resolved.graphPrefix === undefined || resolved.graphPrefixIds !== undefined) {
-      return resolved;
-    }
-    const graphPrefixIds = await this.pgCustomIndexGraphIdsForPrefix(resolved.graphPrefix);
-    if (graphPrefixIds === undefined) {
-      return undefined;
-    }
-    return {
-      ...resolved,
-      graphPrefixIds,
-    };
-  }
-
-  private async pgCustomIndexGraphIdsForPrefix(prefix: string): Promise<number[] | undefined> {
-    const valueHead = rdfTermValueHead(prefix);
-    const rows = await this.requireExecutor().query<{ id: number | string }>(`
-      SELECT DISTINCT graph_term.id, graph_term.value
-      FROM rdf_terms graph_term
-      JOIN ${RDF_FACTS_TABLE} fact ON fact.graph_id = graph_term.id
-      WHERE graph_term.kind = $1
-        AND graph_term.value_head COLLATE "C" >= $2
-        AND graph_term.value_head COLLATE "C" < $3
-        AND starts_with(graph_term.value, $4)
-      ORDER BY graph_term.value, graph_term.id
-      LIMIT $5
-    `, [
-      'iri',
-      valueHead,
-      `${valueHead}\uffff`,
-      prefix,
-      PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS + 1,
-    ]);
-    if (rows.length > PG_CUSTOM_INDEX_MAX_GRAPH_PREFIX_IDS) {
-      return undefined;
-    }
-    return rows
-      .map((row) => Number(row.id))
-      .filter(Number.isFinite);
-  }
-
-  private pgValuePrefixConditions(alias: string, prefix: string, builder: PgSqlBuilder): string[] {
-    const valueHead = rdfTermValueHead(prefix);
-    return [
-      `${alias}.kind = ${builder.add('iri')}`,
-      `${alias}.value_head COLLATE "C" >= ${builder.add(valueHead)}`,
-      `${alias}.value_head COLLATE "C" < ${builder.add(`${valueHead}\uffff`)}`,
-      `starts_with(${alias}.value, ${builder.add(prefix)})`,
-    ];
-  }
-
-  private pgCustomIndexGraphPrefixVariableName(
-    resolved: PgResolvedPattern,
-    pattern: PgCompiledJoinPattern,
-    patternIndex: number,
-  ): string | undefined {
-    if (resolved.graphPrefix === undefined || resolved.graphPrefixIds === undefined) {
-      return undefined;
-    }
-    if (resolved.ids.graph !== undefined && resolved.graphPrefixIds.includes(resolved.ids.graph)) {
-      return undefined;
-    }
-    return pattern.variables.graph ?? `__xpod_graph_prefix_${patternIndex}`;
-  }
-
-  private pgCustomIndexInternalFiltersPlan(shape: PgCustomIndexBgpJoinShape): string[] {
-    if (shape.internalFilters.length === 0) {
-      return [];
-    }
-    return [
-      `PostgresRdfNativeGraphPrefixSlotFilter(${shape.internalFilters.map((source) => source.values.length).join('x')})`,
-    ];
-  }
-
-  private canUsePgCustomIndexResolvedJoinPattern(
-    resolved: PgResolvedPattern,
-    pattern: PgCompiledJoinPattern,
-    options: PgCustomIndexBgpJoinShapeOptions,
-  ): boolean {
-    return resolved.unresolved === undefined
-      && (resolved.graphPrefix === undefined || resolved.graphPrefixIds !== undefined)
-      && resolved.objectRange === undefined
-      && PATTERN_KEYS.every((key) => {
-        if (resolved.excludedIdSets[key]?.length) {
-          return false;
-        }
-        const filter = resolved.termFilters[key];
-        return !filter || options.allowedTermFilter?.(pattern, key, filter) === true;
-      });
-  }
-
-  private pgCustomIndexValuesShape(
-    values: PgCompiledValuesSource[],
-    variableSlotsByName: Map<string, number>,
-  ): { valueSlots: number[]; valueRows: number[] } | undefined {
-    if (values.length === 0) {
-      return { valueSlots: [], valueRows: [] };
-    }
-    let valueSlots: number[] = [];
-    let rows: number[][] = [[]];
-    for (const source of values) {
-      if (!source || source.variables.length === 0 || source.variables.length > 8) {
-        return undefined;
-      }
-      const sourceSlots = source.variables.map((variableName) => variableSlotsByName.get(variableName));
-      if (sourceSlots.some((slot) => slot === undefined)) {
-        return undefined;
-      }
-      const nextSlots = [...valueSlots];
-      for (const slot of sourceSlots as number[]) {
-        if (!nextSlots.includes(slot)) {
-          nextSlots.push(slot);
-        }
-      }
-      if (nextSlots.length > 8 || source.rows.some((row) => row.length !== source.variables.length)) {
-        return undefined;
-      }
-      if (source.rows.length === 0) {
-        return { valueSlots: nextSlots, valueRows: [] };
-      }
-      if (rows.length * source.rows.length > PG_CUSTOM_INDEX_MAX_VALUE_ROWS) {
-        return undefined;
-      }
-      const nextRows: number[][] = [];
-      for (const existingRow of rows) {
-        for (const sourceRow of source.rows) {
-          const valuesBySlot = new Map<number, number>();
-          valueSlots.forEach((slot, index) => valuesBySlot.set(slot, existingRow[index]));
-          let matched = true;
-          for (const [index, slot] of (sourceSlots as number[]).entries()) {
-            const value = sourceRow[index];
-            const existing = valuesBySlot.get(slot);
-            if (existing !== undefined && existing !== value) {
-              matched = false;
-              break;
-            }
-            valuesBySlot.set(slot, value);
-          }
-          if (matched) {
-            nextRows.push(nextSlots.map((slot) => valuesBySlot.get(slot)!));
-          }
-        }
-      }
-      valueSlots = nextSlots;
-      rows = nextRows;
-    }
-    return {
-      valueSlots,
-      valueRows: valueSlots.length === 0 ? [] : rows.flat(),
-    };
-  }
-
-  private pgCustomIndexSlotFiltersShape(
-    filters: PgCompiledSlotFilterSource[],
-    variableSlotsByName: Map<string, number>,
-  ): { filterSlots: number[]; filterOffsets: number[]; filterValues: number[] } | undefined {
-    if (filters.length === 0) {
-      return { filterSlots: [], filterOffsets: [], filterValues: [] };
-    }
-    const valuesBySlot = new Map<number, Set<number>>();
-    for (const filter of filters) {
-      const slot = variableSlotsByName.get(filter.variable);
-      if (slot === undefined) {
-        return undefined;
-      }
-      const values = new Set(uniqueNumbers(filter.values));
-      const existing = valuesBySlot.get(slot);
-      if (existing) {
-        valuesBySlot.set(slot, new Set([...existing].filter((value) => values.has(value))));
-        continue;
-      }
-      valuesBySlot.set(slot, values);
-    }
-
-    const filterSlots = [...valuesBySlot.keys()].sort((left, right) => left - right);
-    const filterOffsets = [0];
-    const filterValues: number[] = [];
-    for (const slot of filterSlots) {
-      const values = [...(valuesBySlot.get(slot) ?? [])].sort((left, right) => left - right);
-      filterValues.push(...values);
-      filterOffsets.push(filterValues.length);
-    }
-    return { filterSlots, filterOffsets, filterValues };
-  }
-
-  private pgCustomIndexPrefixFilters(resolved: PgResolvedPattern, permutation: PgPermutation): Array<number[] | null> {
-    const filters: Array<number[] | null> = [];
-    let endedPrefix = false;
-    for (const column of permutation.columns) {
-      const key = pgPatternKeyForIndexedColumn(column);
-      const filter = endedPrefix ? null : this.pgCustomIndexIdFilter(resolved, key);
-      if (!filter) {
-        endedPrefix = true;
-      }
-      filters.push(filter);
-    }
-    return filters;
-  }
-
-  private pgCustomIndexFullFilters(resolved: PgResolvedPattern): Array<number[] | null> {
-    return PATTERN_KEYS.map((key) => this.pgCustomIndexIdFilter(resolved, key));
-  }
-
-  private pgCustomIndexIdFilter(resolved: PgResolvedPattern, key: PgPatternKey): number[] | null {
-    const exact = resolved.ids[key];
-    const set = resolved.idSets[key];
-    const graphPrefixSet = key === 'graph' ? resolved.graphPrefixIds : undefined;
-    const mergedSet = set !== undefined && graphPrefixSet !== undefined
-      ? intersectNumbers(set, graphPrefixSet)
-      : set ?? graphPrefixSet;
-    if (exact !== undefined && mergedSet !== undefined) {
-      return mergedSet.includes(exact) ? [exact] : [];
-    }
-    if (exact !== undefined) {
-      return [exact];
-    }
-    if (mergedSet !== undefined) {
-      return uniqueNumbers(mergedSet).sort((left, right) => left - right);
-    }
-    return null;
-  }
-
-  private canUsePgCustomIndexResolvedPattern(resolved: PgResolvedPattern): boolean {
-    return resolved.unresolved === undefined
-      && (resolved.graphPrefix === undefined || resolved.graphPrefixIds !== undefined)
-      && resolved.objectRange === undefined
-      && PATTERN_KEYS.every((key) => !resolved.excludedIdSets[key]?.length && !resolved.termFilters[key]);
   }
 
   private canRdf3xAggregate(
@@ -9509,6 +7762,16 @@ export class PostgresRdfEngine implements RdfEngineLike {
       }
       return true;
     }));
+  }
+
+  private pgValuePrefixConditions(alias: string, prefix: string, builder: PgSqlBuilder): string[] {
+    const valueHead = rdfTermValueHead(prefix);
+    return [
+      `${alias}.kind = ${builder.add('iri')}`,
+      `${alias}.value_head COLLATE "C" >= ${builder.add(valueHead)}`,
+      `${alias}.value_head COLLATE "C" < ${builder.add(`${valueHead}\uffff`)}`,
+      `starts_with(${alias}.value, ${builder.add(prefix)})`,
+    ];
   }
 
   private appendResolvedPatternConditions(
@@ -14381,14 +12644,6 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
-}
-
-function isNativeExtensionOnlyCapability(capability: string): boolean {
-  return NATIVE_EXTENSION_ONLY_CAPABILITIES.includes(capability);
-}
-
-function pgCustomPermutationIndexName(permutation: PgPermutation): string {
-  return `${permutation.indexName}_perm`;
 }
 
 function patternKeyForVariable(variables: Partial<Record<PgPatternKey, string>>, variableName: string): PgPatternKey | undefined {

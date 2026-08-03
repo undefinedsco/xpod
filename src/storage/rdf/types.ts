@@ -49,7 +49,7 @@ export interface RdfQuadIndexOptions {
 }
 
 export type RdfDerivedIndexProfile = 'baseline' | 'rdf3x';
-export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators' | 'pg-custom-index';
+export type RdfPgAccelerationProfile = 'baseline' | 'pg-result-cache' | 'pg-hot-operators';
 export type RdfPgAccelerationProvider = 'engine-sql' | 'sql-abi' | 'extension';
 export type RdfPgAccelerationFallbackReason =
   | 'profile-disabled'
@@ -178,7 +178,6 @@ export interface RdfEngineColdStartStats {
   readyAt: string;
   durationMs: number;
   phases: RdfEngineColdStartPhaseStats[];
-  customIndexDeferred: boolean;
   maintenanceEnabled: boolean;
   ownsTextIndex: boolean;
   ownsVectorIndex: boolean;

@@ -57,6 +57,26 @@ function stringList(value: unknown): string[] {
 vi.setConfig({ testTimeout: 60_000 });
 
 describe('PostgresRdfEngine', () => {
+  it('keeps the product path on ordinary B-tree permutations without CRv2 configuration', async () => {
+    const engineSource = await readFile(
+      path.resolve(__dirname, '../../../src/storage/rdf/PostgresRdfEngine.ts'),
+      'utf8',
+    );
+
+    for (const token of [
+      'index.xpod_rdf_perm',
+      'USING xpod_rdf_perm',
+      'ensurePgCustomIndexes',
+      'deferPgCustomIndexInitialization',
+      "'pg-custom-index'",
+      'perm_index_scan',
+      'perm_index_count',
+      'perm_index_distinct',
+    ]) {
+      expect(engineSource).not.toContain(token);
+    }
+    expect(engineSource).toContain('CREATE INDEX IF NOT EXISTS rdf_quads_spog ON rdf_quads');
+  });
   it('covers shared models resource surfaces in the RDF benchmark definitions', () => {
     const scanCaseNames = new Set(rdfModelsBenchmarkCasesForProfile('default').map((testCase) => testCase.name));
     const queryCaseNames = new Set(rdfModelsQueryBenchmarkCasesForProfile('default').map((testCase) => testCase.name));

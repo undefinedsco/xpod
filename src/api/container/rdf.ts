@@ -23,7 +23,6 @@ export function createApiRdfEngine(config: ApiContainerConfig): RdfEngineLike | 
     connectionString,
     rdfAccelerationProfile: 'pg-hot-operators',
     nativeSparqlEnabled: config.rdfNativeSparqlEnabled,
-    deferPgCustomIndexInitialization: true,
     maintenanceIntervalMs: 0,
     textIndex: {
       driver: 'pg',

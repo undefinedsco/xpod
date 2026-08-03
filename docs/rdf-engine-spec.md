@@ -327,42 +327,29 @@ cloud 的当前路线是把产品级 RDF 查询体验落在 Xpod 自己的 `Soli
 `PostgresRdfEngine` 内：事实源仍是 SolidFS 权威文件和 PostgreSQL facts 表，RDF-3X
 stats、query result cache、planner stats 都是可删除、可重建的 derived space。
 
-公开代码支持这几个 profile；cloud 默认仍只打开 `pg-hot-operators`，`pg-custom-index`
-是部署侧安装 `xpod_rdf` native extension 后才会启用的可选 profile：
+公开代码只保留三个 PostgreSQL profile；cloud 默认使用 `pg-hot-operators`：
 
 | Profile | 含义 | 默认用途 |
 | --- | --- | --- |
-| `baseline` | 只使用 facts 表和 RDF-3X derived stats | local / 测试 / 回退 |
+| `baseline` | 使用事实表、普通 B-tree 六排列和共享 RDF 统计 | local / 测试 / 回退 |
 | `pg-result-cache` | 在 baseline 上启用按 facts version 失效的查询结果缓存 | 重复列表页、上下文查询 |
-| `pg-hot-operators` | 在 baseline + result cache 上标记并启用已验证的 PG SQL fast path | cloud 默认 |
-| `pg-custom-index` | 在 `pg-hot-operators` 上要求 native extension 声明 `index.xpod_rdf_perm`，创建 shadow custom permutation indexes；当 extension 声明 `index.xpod_rdf_perm.scan_any` / `index.xpod_rdf_perm.scan_any.limit` / `index.xpod_rdf_perm.count_any` / `index.xpod_rdf_perm.distinct_any` / `join.required_bgp.native` / `join.required_bgp.order_page.native` / `join.required_bgp.order_page.topn.native` / `join.slot_filter.native` / `join.subject_star` / `join.values.native` / `join.values.limit.native` / `aggregate.bgp_count` / `aggregate.subject_star_count` / `aggregate.bgp_group_count` / `aggregate.bgp_numeric` 时，单 pattern scan / 无显式排序的 limited scan / scalar `COUNT` / 单变量 `DISTINCT` / 受限 required BGP row stream / projected-order ordered-page wrapper / extension-level ordered top-N / graph-prefix slot filter / subject-star row stream / 受限 VALUES BGP / 受限 BGP count / subject-star scalar count / grouped count / grouped numeric aggregate 会调用 native `perm_index_scan_any(...)` / `perm_index_count_any(...)` / `perm_index_distinct_any(...)` / `bgp_join(...)` / `bgp_order_page(...)` / `values_join(...)` / `bgp_count(...)` / `bgp_group_count(...)` / `bgp_numeric_aggregate(...)` | enterprise / 自托管 PG 扩展验证，不作为开源 cloud 默认 |
+| `pg-hot-operators` | 在 baseline + result cache 上启用已验证的 PG SQL fast path | cloud 默认 |
 
-这些 profile 都是开源实现的一部分，不要求额外进程，也不要求用户选择查询 backend。对外
-仍只有 `SolidRdfEngine` 行为契约和现有 `/-/sparql` 协议边界。
+CRv2、`xpod_rdf_perm`、shadow custom indexes 和 `pg-custom-index` profile 已从产品路径删除。
+QLever 通过原子后端读取同一份 PostgreSQL facts、term KV、普通 B-tree 排列和共享统计；
+PostgreSQL SPI 仅用于扩展内部执行原子回调，不构成另一个整查询引擎或 fallback lane。
 
 ```text
 SolidFS / journal
   -> PostgreSQL facts
        rdf_terms
        rdf_quads
-       rdf_quads_* covering indexes
-       rdf3x_stat_*
+       rdf_quads_* ordinary B-tree permutations
+       shared RDF statistics
        rdf_query_result_cache
-  -> PostgresRdfEngine
-       RDF-3X planner stats
-       PG SQL scan / BGP join / aggregate fast paths
-       result cache by normalized query shape + facts data_version
-       optional xpod_rdf capability probe / custom index shadow DDL gate
-       optional native single-pattern scan / limited scan via xpod_rdf.perm_index_scan_any + heap recheck
-       optional native single-pattern COUNT via xpod_rdf.perm_index_count_any
-       optional native single-pattern DISTINCT via xpod_rdf.perm_index_distinct_any
-       optional native exact-id required BGP via xpod_rdf.bgp_join
-       optional native BGP ordered-page wrapper via xpod_rdf.bgp_join + rdf_terms outer order/page
-       optional extension-level ordered top-N via xpod_rdf.bgp_order_page
-       optional graph-prefix slot filters via join.slot_filter.native
-       optional native subject-star BGP/count markers via join.subject_star / aggregate.subject_star_count
-       optional native tuple VALUES BGP via xpod_rdf.values_join
-       optional native BGP count / grouped count via xpod_rdf.bgp_count / bgp_group_count
+  -> RDF3X planner/executor (independent fallback)
+  -> QLever planner/executor (primary when enabled)
+       atomic scans / estimates / text / vector callbacks
 ```
 
 实施顺序保持 benchmark-first：
@@ -393,7 +380,6 @@ space。所有收益都必须通过 models benchmark 和真实 Pod storage profi
 | PG RDF-3X baseline | 覆盖 exact graph / graph prefix、single-pattern scan、BGP join、count / aggregate 等主路径；部署简单 | 仍受 PG btree / SQL executor / JS query layer 开销影响 | cloud/local 默认基础 |
 | PG result cache | 对重复 models 查询、常用列表页、统计页、Agent context 查询降低延迟 | cache invalidation、权限 scope、storage TTL 和 derived space 配额必须严格控制 | 按 profile 启用，绑定 `data_version` |
 | PG SQL hot operators | 让 scan / graph prefix / term-in / required BGP join / count / numeric aggregate 在已验证 fast path 上运行，并通过 metrics 标记 | 仍是 SQL executor 路径，收益依赖 query shape 和 PG stats | cloud 默认 |
-| PG native custom index | 探测 `xpod_rdf` extension 和 `index.xpod_rdf_perm`，满足能力后创建六个 shadow `xpod_rdf_perm` permutation index，并把 `perm_index_stats(regclass)` 投影到 `storageStats().pgAcceleration.customIndexes`；`index.xpod_rdf_perm.scan_any` 已接入单 pattern exact / `$in` leading-prefix scan 并在 heap recheck 后分页，`index.xpod_rdf_perm.scan_any.limit` 已接入无显式排序的 limited scan gate 并用 `PostgresRdfNativeCustomIndexScanAnyLimit(...)` 标记 early-stop 候选，`index.xpod_rdf_perm.count_any` 已接入单 pattern、非 DISTINCT scalar count，`index.xpod_rdf_perm.distinct_any` 已接入单 pattern、单投影变量、exact / `$in` leading-prefix `DISTINCT`，`join.required_bgp.native` 已接入 2..8 pattern、最多 8 变量、无 VALUES/ORDER/GROUP/aggregate/distinct 的 BGP row stream；`join.required_bgp.order_page.topn.native` 已接入单排序变量的 projected-order ordered top-N ABI：ORDER BY 变量必须在 project 中，xpod planner 会优先选择能让排序变量落到常量后的 leading prefix permutation，`bgp_order_page(rdf_quads, rdf_terms, indexes, constants, variableSlots, outputSlots, orderSlots, orderDesc, limit, offset)` 在 extension 内按 `rdf_terms.value` 分批取 term candidate、绑定 order slot 后执行 native BGP early-stop，并用 `PostgresRdfNativeCustomIndexBgpOrderPageTopN(...)` 标记；只有旧 `join.required_bgp.order_page.native` 时继续走 `bgp_join(...)` 行流 + 外层 `rdf_terms` ORDER/LIMIT wrapper；`join.subject_star` 已接入 3..8 pattern 共享同一 subject 的 BGP row stream，使用同一 `bgp_join(...)` ABI并额外标记 `PostgresRdfNativeCustomIndexSubjectStarJoin(...)`，缺能力时回退 generic native BGP；`join.values.native` / `join.values.limit.native` 已接入 1..8 pattern、最多 8 变量、用户 tuple VALUES source 的 required BGP row stream；bounded graph-prefix 会先展开实际 graph ids，再作为 `join.slot_filter.native` slot-level allowed-set 传给 `bgp_join(...)` / `values_join(...)` / native aggregate ABI，避免把 filter 编成 hidden tuple `VALUES` 并引入 `29x29` 这类组合成本；`aggregate.bgp_count` 已接入 2..8 pattern、最多 8 变量、无 GROUP/ORDER/HAVING/pagination 的 `COUNT(*)` / `COUNT(?x)` / `COUNT DISTINCT ?x`，并支持用户 VALUES source 与 graph-prefix slot filter；`aggregate.subject_star_count` 已接入 subject-star scalar count，使用同一 `bgp_count(...)` ABI 并额外标记 `PostgresRdfNativeCustomIndexSubjectStarCount(...)`，缺能力时回退 generic native BGP count；`aggregate.bgp_group_count` 已接入 1..8 pattern、最多 8 变量、GROUP BY 1..8 变量、COUNT / COUNT DISTINCT，HAVING / ORDER / LIMIT 由 xpod 在 native 分组结果上做语义收尾，subject-star shape 会额外标记 `PostgresRdfNativeCustomIndexSubjectStarGroupCount(...)`；`aggregate.bgp_numeric` 已接入 1..8 pattern、GROUP BY 最多 8 变量、单 numeric 变量上的非 DISTINCT `SUM/AVG/MIN/MAX` 与非 DISTINCT `COUNT`，HAVING / ORDER / LIMIT 由 xpod 在 native 分组结果上做语义收尾，subject-star shape 会额外标记 `PostgresRdfNativeCustomIndexSubjectStarNumericAggregate(...)` | 需要部署匹配 PG major/arch 的 extension artifact；native capability 不等于自动 active operator；graph-prefix graph id 展开、用户 VALUES Cartesian rows、top-N 多排序变量/非 projected order 都有上限或 shape gate，超限回退；2026-06-09 真实 PG17 benchmark 证明 exact-graph ordered-page wrapper有 p95 收益，十参数 value-order top-N 从旧 SPI p95 `7410.430ms` 降到 native p95 `5.393ms`，略优于 facts/btree p95 `5.531ms`，但 shared hit blocks 仍高于 baseline（`14,243` vs `124`），所以仍需按 shape/cost gate 使用；多类 graph-prefix / VALUES / count shape 会退化 | 可选，不满足能力时回退；满足能力后仍按 shape/cost gate |
 | Text / vector candidate fusion | 搜索和 Agent context 更好用，可先筛候选再结构化 join | 需要 chunk、embedding、score、rerank 和权限 scope 统一 | 后续 benchmark gate |
 
 粗略判断：
