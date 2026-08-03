@@ -8351,6 +8351,8 @@ describe('PostgresRdfEngine', () => {
     const engine = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:SolidRdfEngine');
     const textIndex = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:PostgresRdfTextIndex');
     const vectorIndex = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:PostgresRdfVectorIndex');
+    const legacyVectorStore = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:VectorStore');
+    const legacyVectorHandler = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:VectorHttpHandler');
     const mixAccessor = cloudConfig['@graph'].find((entry: Record<string, unknown>) => entry['@id'] === 'urn:undefineds:xpod:MixDataAccessor');
 
     expect(engine).toMatchObject({
@@ -8380,12 +8382,15 @@ describe('PostgresRdfEngine', () => {
     expect(vectorIndex).toMatchObject({
       '@type': 'PostgresRdfVectorIndex',
       options_driver: 'pg',
+      options_backend: 'component',
       options_connectionString: {
         '@id': 'urn:solid-server:default:variable:sparqlEndpoint',
         '@type': 'Variable',
       },
       options_defaultMetric: 'cosine',
     });
+    expect(legacyVectorStore).toBeUndefined();
+    expect(legacyVectorHandler).toBeUndefined();
     expect(mixAccessor).toMatchObject({
       '@type': 'MixDataAccessor',
       textSearchIndexingEnabled: true,

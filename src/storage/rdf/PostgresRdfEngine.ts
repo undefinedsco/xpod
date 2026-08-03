@@ -14080,6 +14080,8 @@ function isPostgresRdfVectorIndexOptions(input: RdfVectorIndexInput | undefined)
     || typeof options.database === 'string'
     || typeof options.user === 'string'
     || typeof options.password === 'string'
+    || options.backend === 'pgvector'
+    || options.backend === 'component'
     || options.pool !== undefined
     || typeof options.autoOpen === 'boolean';
 }

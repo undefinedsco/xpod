@@ -999,6 +999,24 @@ describe('PostgresRdfVectorIndex', () => {
 });
 
 describe('PostgresRdfVectorIndex pg backend', () => {
+  it('uses component vectors on PostgreSQL when pgvector is unavailable', async () => {
+    const pool = new RecordingPgPool();
+    const index = new PostgresRdfVectorIndex({ driver: 'pg', backend: 'component', pool });
+
+    await index.open();
+    await index.search({
+      embedding: [1, 0],
+      workspace: 'https://pod.example/alice/',
+      model: 'test-embed',
+      limit: 10,
+    });
+    await index.close();
+
+    expect(pool.statements.some((statement) => statement.includes('CREATE EXTENSION IF NOT EXISTS vector'))).toBe(false);
+    expect(pool.statements.some((statement) => statement.includes('embedding_vector'))).toBe(false);
+    expect(pool.statements.some((statement) => statement.includes('rdf_vector_components'))).toBe(true);
+  });
+
   it('uses pgvector operators instead of component joins for vector search', async () => {
     const pool = new RecordingPgPool();
     const index = new PostgresRdfVectorIndex({ driver: 'pg', pool });

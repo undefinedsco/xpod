@@ -40,6 +40,7 @@ import {
 
 export interface PostgresRdfVectorIndexOptions {
   driver?: 'pglite' | 'pg';
+  backend?: 'pgvector' | 'component';
   dataDir?: string;
   connectionString?: string;
   host?: string;
@@ -735,7 +736,7 @@ export class PostgresRdfVectorIndex implements RdfVectorIndexLike {
   }
 
   private usesPgVectorBackend(): boolean {
-    return this.options.driver === 'pg';
+    return this.options.driver === 'pg' && this.options.backend !== 'component';
   }
 }
 
