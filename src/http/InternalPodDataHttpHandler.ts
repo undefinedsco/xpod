@@ -21,6 +21,7 @@ import {
 export interface InternalPodDataHttpHandlerOptions {
   resourceStore: ResourceStore;
   gatewayAdminProxyAuthSecret?: string;
+  baseUrl?: string;
   basePath?: string;
 }
 
@@ -32,6 +33,7 @@ export class InternalPodDataHttpHandler extends HttpHandler {
   protected readonly logger = getLoggerFor(this);
   private readonly resourceStore: ResourceStore;
   private readonly gatewayAdminProxyAuthSecret?: string;
+  private readonly deploymentBaseUrl?: URL;
   private readonly basePath: string;
   private readonly seenNonces = new Set<string>();
 
@@ -39,6 +41,7 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     super();
     this.resourceStore = options.resourceStore;
     this.gatewayAdminProxyAuthSecret = options.gatewayAdminProxyAuthSecret ?? process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET;
+    this.deploymentBaseUrl = this.parseOptionalUrl(options.baseUrl ?? process.env.CSS_BASE_URL);
     this.basePath = options.basePath ?? '/.internal/pod-data';
   }
 
@@ -94,6 +97,9 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     if (!this.intentMatchesRequest(verification.intent, method as InternalPodDataMethod)) {
       return undefined;
     }
+    if (!this.isHostedOwnerResource(verification.intent)) {
+      return undefined;
+    }
     if (!this.isAllowedAiConnectionResource(verification.intent)) {
       return undefined;
     }
@@ -115,6 +121,29 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       scope === 'ai:credentials:*' ||
       scope === 'ai:*',
     );
+  }
+
+  private isHostedOwnerResource(intent: GatewayAdminProxyIntent): boolean {
+    if (!this.deploymentBaseUrl) {
+      return false;
+    }
+
+    let ownerUrl: URL;
+    let resourceUrl: URL;
+    try {
+      ownerUrl = new URL(intent.ownerWebId);
+      resourceUrl = new URL(intent.resourceUrl);
+    } catch {
+      return false;
+    }
+    if (!this.isInsideDeployment(ownerUrl) || !this.isInsideDeployment(resourceUrl)) {
+      return false;
+    }
+
+    const podRoot = hostedPodRootFromOwner(ownerUrl);
+    return podRoot !== undefined &&
+      resourceUrl.origin === podRoot.origin &&
+      resourceUrl.pathname.startsWith(podRoot.pathname);
   }
 
   private isAllowedAiConnectionResource(intent: GatewayAdminProxyIntent): boolean {
@@ -194,6 +223,23 @@ export class InternalPodDataHttpHandler extends HttpHandler {
   private parseUrl(request: HttpRequest): URL {
     return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   }
+
+  private parseOptionalUrl(value: string | undefined): URL | undefined {
+    if (!value) {
+      return undefined;
+    }
+    try {
+      return new URL(ensureTrailingSlash(value));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private isInsideDeployment(url: URL): boolean {
+    return this.deploymentBaseUrl !== undefined &&
+      url.origin === this.deploymentBaseUrl.origin &&
+      url.pathname.startsWith(this.deploymentBaseUrl.pathname);
+  }
 }
 
 function isHttpNotFound(error: unknown): boolean {
@@ -204,4 +250,22 @@ function isHttpNotFound(error: unknown): boolean {
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function hostedPodRootFromOwner(ownerUrl: URL): URL | undefined {
+  if (ownerUrl.hash !== '#me') {
+    return undefined;
+  }
+  if (!ownerUrl.pathname.endsWith('/profile/card')) {
+    return undefined;
+  }
+  const podPath = ownerUrl.pathname.slice(0, -'profile/card'.length);
+  if (!podPath || !podPath.endsWith('/')) {
+    return undefined;
+  }
+  return new URL(podPath, ownerUrl.origin);
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`;
 }

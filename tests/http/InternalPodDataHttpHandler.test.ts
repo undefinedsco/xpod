@@ -102,6 +102,7 @@ function createHandler(store = createStore()): InternalPodDataHttpHandler {
   return new InternalPodDataHttpHandler({
     resourceStore: store,
     gatewayAdminProxyAuthSecret: SECRET,
+    baseUrl: 'https://pod.example/',
   });
 }
 
@@ -231,6 +232,20 @@ describe('InternalPodDataHttpHandler', () => {
       const response = await handle(handler, createRequest('GET', '/.internal/pod-data', { headers }));
       expect(response.statusCode).toBe(404);
     }
+    expect(store.getRepresentation).not.toHaveBeenCalled();
+  });
+
+  it('rejects remote third-party owners even when the resource matches their model allowlist', async () => {
+    const store = createStore();
+    const handler = createHandler(store);
+    const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        ownerWebId: 'https://remote.example/alice/profile/card#me',
+        resourceUrl: 'https://remote.example/alice/settings/credentials.ttl',
+      }),
+    }));
+
+    expect(response.statusCode).toBe(404);
     expect(store.getRepresentation).not.toHaveBeenCalled();
   });
 });

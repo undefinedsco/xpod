@@ -229,13 +229,18 @@
       "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler",
       "@context": {
         "resourceStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
-        "gatewayAdminProxyAuthSecret": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_gatewayAdminProxyAuthSecret"
+        "gatewayAdminProxyAuthSecret": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_gatewayAdminProxyAuthSecret",
+        "baseUrl": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
       },
       "resourceStore": {
         "@id": "urn:solid-server:default:ResourceStore"
       },
       "gatewayAdminProxyAuthSecret": {
         "@id": "urn:solid-server:default:variable:gatewayAdminProxyAuthSecret",
+        "@type": "Variable"
+      },
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl",
         "@type": "Variable"
       }
     },
