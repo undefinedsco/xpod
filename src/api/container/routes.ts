@@ -119,7 +119,7 @@ function registerSharedRoutes(
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
-  const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
+  const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
@@ -179,7 +179,6 @@ function registerSharedRoutes(
     deployment: config.edition,
     connectService: providerConnectService,
     quotaService: providerQuotaService,
-    servicePrincipal: gatewayInternalPodAccess,
     aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
   });
@@ -194,7 +193,7 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionStatusReader(gatewayInternalPodAccess),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionStatusReader(hostedPodDataAccess),
   });
   registerNetworkSettingsRoutes(server, {
     endpoint: () => resolveNetworkEndpoint(config),

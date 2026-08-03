@@ -126,9 +126,6 @@ describe('AiGatewayManagementHandler', () => {
     registerAiGatewayManagementRoutes(server, {
       repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
-      servicePrincipal: {
-        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
-      },
     });
     const res = response();
 
@@ -138,12 +135,16 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Authentication required' });
   });
 
-  it('returns 503 when the AI Connection service identity is unavailable', async () => {
+  it('returns the AI Connection service-access descriptor from the authenticated owner without internal credentials', async () => {
     const { server, routes } = createServer();
+    const servicePrincipal = {
+      getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+    };
     registerAiGatewayManagementRoutes(server, {
       repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
-    });
+      servicePrincipal,
+    } as any);
     const res = response();
 
     await routes['GET /api/applets/service-access/ai-connection'](request({
@@ -151,8 +152,16 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }), res, {});
 
-    expect(res.statusCode).toBe(503);
-    expect(JSON.parse(res.body)).toEqual({ error: 'AI Connection service identity is unavailable' });
+    expect(res.statusCode).toBe(200);
+    expect(servicePrincipal.getServicePrincipal).not.toHaveBeenCalled();
+    expect(JSON.parse(res.body)).toMatchObject({
+      service: { webId: WEB_ID },
+      resources: expect.arrayContaining([
+        expect.objectContaining({
+          url: 'https://id.example/alice/settings/credentials.ttl',
+        }),
+      ]),
+    });
   });
 
   it('publishes AI Connection service-access resources derived only from the authenticated WebID', async () => {
@@ -164,7 +173,7 @@ describe('AiGatewayManagementHandler', () => {
       repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
       servicePrincipal,
-    });
+    } as any);
     const req = request({
       type: 'solid',
       webId: 'https://pod.example/bob/profile/card#me',
@@ -175,11 +184,11 @@ describe('AiGatewayManagementHandler', () => {
     await routes['GET /api/applets/service-access/ai-connection'](req, res, {});
 
     expect(res.statusCode).toBe(200);
-    expect(servicePrincipal.getServicePrincipal).toHaveBeenCalledTimes(1);
+    expect(servicePrincipal.getServicePrincipal).not.toHaveBeenCalled();
     expect(JSON.parse(res.body)).toMatchObject({
       appletId: 'co.undefineds.ai-connection',
       service: {
-        webId: 'https://id.example/xpod/profile/card#me',
+        webId: 'https://pod.example/bob/profile/card#me',
       },
       resources: expect.arrayContaining([
         expect.objectContaining({
@@ -200,9 +209,6 @@ describe('AiGatewayManagementHandler', () => {
     registerAiGatewayManagementRoutes(server, {
       repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
-      servicePrincipal: {
-        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
-      },
       aiConnectionInvocationKeyIssuer: { issue },
     });
     const auth = {
@@ -231,9 +237,6 @@ describe('AiGatewayManagementHandler', () => {
     registerAiGatewayManagementRoutes(server, {
       repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'local',
-      servicePrincipal: {
-        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
-      },
       aiClientConfiguration: {
         available: true,
         authority: 'local-filesystem',
@@ -263,9 +266,6 @@ describe('AiGatewayManagementHandler', () => {
     registerAiGatewayManagementRoutes(server, {
       repository: new InMemoryGatewayAccessKeyRepository(),
       deployment: 'cloud',
-      servicePrincipal: {
-        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
-      },
     });
     const res = response();
 

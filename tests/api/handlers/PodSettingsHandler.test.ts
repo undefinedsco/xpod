@@ -89,7 +89,8 @@ describe('PodSettingsHandler', () => {
     expect(unauthenticated.statusCode).toBe(401);
 
     const res = response();
-    await routes['GET /api/pod/settings/status'](request({ type: 'solid', webId: WEB_ID }), res, {});
+    const auth = { type: 'solid' as const, webId: WEB_ID, accessToken: 'solid-token' };
+    await routes['GET /api/pod/settings/status'](request(auth), res, {});
 
     expect(podLookupRepository.findByWebId).toHaveBeenCalledWith(WEB_ID);
     expect(podLookupRepository.findByWebId).not.toHaveBeenCalledWith(OTHER_WEB_ID);
@@ -97,6 +98,7 @@ describe('PodSettingsHandler', () => {
     expect(aiReader.read).toHaveBeenCalledWith({
       webId: WEB_ID,
       podUrl: 'https://pod.example/alice/',
+      auth,
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({
@@ -169,14 +171,17 @@ describe('PodSettingsHandler', () => {
     });
     const res = response();
 
-    await routes['GET /api/pod/settings/status'](request({
+    const auth = {
       type: 'solid',
       webId: 'https://id.example/alice/profile/card#me',
-    }), res, {});
+      accessToken: 'split-token',
+    } as const;
+    await routes['GET /api/pod/settings/status'](request(auth), res, {});
 
     expect(aiReader.read).toHaveBeenCalledWith({
       webId: 'https://id.example/alice/profile/card#me',
       podUrl: 'https://storage.example/alice/',
+      auth,
     });
     expect(JSON.parse(res.body)).toMatchObject({
       identity: {
@@ -232,21 +237,27 @@ describe('PodSettingsHandler', () => {
         }),
       }),
     }));
-    const internalPodAccess = {
+    const hostedPodDataAccess = {
       getTrustedFetch: vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch),
     };
-    const reader = new DrizzlePodAiConnectionStatusReader(internalPodAccess, dbFactory);
+    const reader = new DrizzlePodAiConnectionStatusReader(hostedPodDataAccess, dbFactory);
+    const auth = {
+      type: 'solid' as const,
+      webId: 'https://id.example/alice/profile/card#me',
+      accessToken: 'solid-token',
+    };
 
     const status = await reader.read({
       webId: 'https://id.example/alice/profile/card#me',
       podUrl: 'https://storage.example/alice/',
+      auth,
     });
 
     expect(status).toMatchObject({
       status: 'available',
       containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
     });
-    expect(internalPodAccess.getTrustedFetch).toHaveBeenCalledWith('https://id.example/alice/profile/card#me');
+    expect(hostedPodDataAccess.getTrustedFetch).toHaveBeenCalledWith('https://id.example/alice/profile/card#me', auth);
     expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({
       webId: 'https://id.example/alice/profile/card#me',
       podUrl: 'https://storage.example/alice/',

@@ -85,6 +85,9 @@ describe('registerRoutes mode wiring', () => {
       all: vi.fn((path: string, handler: Function, options?: { public?: boolean }) => {
         storeRoute('ALL', path, handler, options);
       }),
+      addResponseHeaders: vi.fn(),
+      addUpgradeHandler: vi.fn(),
+      addShutdownHandler: vi.fn(),
     } as unknown as ApiServer;
   });
 
@@ -143,7 +146,12 @@ describe('registerRoutes mode wiring', () => {
       },
       gatewayAccessKeyRepository: {},
       gatewayInternalPodAccess: {},
-      aiConnectionInvocationKeyIssuer: {},
+      hostedPodDataAccess: {
+        getTrustedFetch: vi.fn(async () => fetch),
+      },
+      aiConnectionInvocationKeyIssuer: {
+        issue: vi.fn(async () => undefined),
+      },
       providerConnectService: {},
       db: {},
       podLookupRepo: {
@@ -272,6 +280,65 @@ describe('registerRoutes mode wiring', () => {
     }));
     expect(routes['GET /api/admin/status']).toBeUndefined();
     expect(routes['GET /api/linx/capabilities']).toBeUndefined();
+  });
+
+  it('wires AI Connection service-access without internal Pod credentials', async () => {
+    const ownerWebId = 'https://id.example/alice/profile/card#me';
+    const getServicePrincipal = vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' }));
+    registerRoutes(createContainer('cloud', {
+      services: {
+        gatewayInternalPodAccess: {
+          getServicePrincipal,
+        },
+      },
+    }));
+    const res = jsonResponse();
+
+    await routes['GET /api/applets/service-access/ai-connection'](solidRequest(ownerWebId), res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(getServicePrincipal).not.toHaveBeenCalled();
+    expect(JSON.parse(res.body)).toMatchObject({
+      service: { webId: ownerWebId },
+      resources: expect.arrayContaining([
+        expect.objectContaining({
+          url: 'https://id.example/alice/settings/credentials.ttl',
+        }),
+      ]),
+    });
+  });
+
+  it('wires Pod settings AI status through hosted Pod access with the logged-in auth', async () => {
+    const ownerWebId = 'https://id.example/alice/profile/card#me';
+    const auth = { type: 'solid' as const, webId: ownerWebId, accessToken: 'solid-token' };
+    const getTrustedFetch = vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch);
+    const legacyGetTrustedFetch = vi.fn(async () => fetch);
+    registerRoutes(createContainer('cloud', {
+      services: {
+        hostedPodDataAccess: { getTrustedFetch },
+        gatewayInternalPodAccess: { getTrustedFetch: legacyGetTrustedFetch },
+        podLookupRepo: {
+          findByWebId: vi.fn(async () => ({
+            podId: 'pod-alice',
+            accountId: 'account-alice',
+            baseUrl: 'https://id.example/alice/',
+            storageUrl: 'https://id.example/alice/',
+            webId: ownerWebId,
+          })),
+        },
+      },
+    }));
+    const res = jsonResponse();
+
+    await routes['GET /api/pod/settings/status']({ ...solidRequest(ownerWebId), auth }, res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(getTrustedFetch).toHaveBeenCalledWith(ownerWebId, auth);
+    expect(legacyGetTrustedFetch).not.toHaveBeenCalled();
+    expect(JSON.parse(res.body)).toMatchObject({
+      identity: { webId: ownerWebId, podUrl: 'https://id.example/alice/' },
+      aiConnection: expect.objectContaining({ status: expect.any(String) }),
+    });
   });
 
   it('registers local-only admin and onboarding routes in local mode', () => {

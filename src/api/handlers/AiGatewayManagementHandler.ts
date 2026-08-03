@@ -37,9 +37,6 @@ export interface AiGatewayManagementHandlerOptions {
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
-  servicePrincipal?: {
-    getServicePrincipal(): Promise<{ webId: string }>;
-  };
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
   now?: () => Date;
@@ -61,14 +58,9 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
-    if (!options.servicePrincipal) {
-      sendJson(response, 503, { error: 'AI Connection service identity is unavailable' });
-      return;
-    }
-    const service = await options.servicePrincipal.getServicePrincipal();
     const descriptor = createAiConnectionServiceAccess({
       ownerWebId: request.auth.webId,
-      serviceWebId: service.webId,
+      serviceWebId: request.auth.webId,
     });
     const invocation = options.aiConnectionInvocationKeyIssuer
       ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
