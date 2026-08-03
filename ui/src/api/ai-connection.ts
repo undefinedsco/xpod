@@ -14,7 +14,6 @@ interface CreateXpodAiConnectionClientInput {
   webId: string;
   podUrl: string;
   authenticatedFetch: typeof fetch;
-  now?: () => Date;
 }
 
 interface AiConnectionInvocation {
@@ -29,7 +28,6 @@ export function createXpodAiConnectionClient({
   webId,
   podUrl,
   authenticatedFetch,
-  now,
 }: CreateXpodAiConnectionClientInput): AiConnectionClient {
   return createAiConnectionClient({
     webId,
