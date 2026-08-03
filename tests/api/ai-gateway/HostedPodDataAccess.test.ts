@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAiConnectionServiceAccess } from '../../../src/api/ai-gateway/service-access/AiConnectionServiceAccess';
 import { HostedPodDataAccess } from '../../../src/api/ai-gateway/pod/HostedPodDataAccess';
 import {
+  AesGatewayKeyLocatorCodec,
+  createGatewayKeyLocator,
+} from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
+import {
   GATEWAY_ADMIN_PROXY_HEADERS,
   verifyGatewayAdminProxyHeaders,
 } from '../../../src/runtime/GatewayAdminProxyAuth';
@@ -13,6 +17,14 @@ const CREDENTIAL_RESOURCE = createAiConnectionServiceAccess({
   ownerWebId: OWNER,
   serviceWebId: OWNER,
 }).resources.find((resource) => resource.id === 'providerCredentials')!.url;
+const GATEWAY_KEY_RESOURCE = createAiConnectionServiceAccess({
+  ownerWebId: OWNER,
+  serviceWebId: OWNER,
+}).resources.find((resource) => resource.id === 'gatewayAccessKeys')!.url;
+const QUOTA_RESOURCE = createAiConnectionServiceAccess({
+  ownerWebId: OWNER,
+  serviceWebId: OWNER,
+}).resources.find((resource) => resource.id === 'quotaSnapshots')!.url;
 
 describe('HostedPodDataAccess', () => {
   it('rejects public CSS base URLs before runtime markers can be sent', () => {
@@ -109,6 +121,51 @@ describe('HostedPodDataAccess', () => {
       .rejects.toThrow('hosted_pod_auth_required');
   });
 
+  it('allows only gateway-key verification pre-auth reads for the gateway key document', async () => {
+    const sent: Request[] = [];
+    const keyId = createGatewayKeyLocator(OWNER, 'cloud', new AesGatewayKeyLocatorCodec('locator-secret'));
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        const request = new Request(input, init);
+        sent.push(request);
+        return new Response('', { status: 404 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, {
+      type: 'gateway-key-verification',
+      owner: OWNER,
+      keyId,
+    });
+    expect(trustedFetch).toBeDefined();
+
+    await trustedFetch!(GATEWAY_KEY_RESOURCE, { method: 'GET' });
+    await expect(trustedFetch!(CREDENTIAL_RESOURCE, { method: 'GET' }))
+      .rejects.toThrow('hosted_pod_gateway_key_verification_resource_forbidden');
+    await expect(trustedFetch!(GATEWAY_KEY_RESOURCE, { method: 'PUT', body: 'payload' }))
+      .rejects.toThrow('hosted_pod_gateway_key_verification_method_forbidden');
+
+    const forwardedHeaders: Record<string, string> = {};
+    sent[0].headers.forEach((value, key) => {
+      forwardedHeaders[key] = value;
+    });
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: forwardedHeaders,
+      secret: SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        method: 'GET',
+        resourceUrl: GATEWAY_KEY_RESOURCE,
+        principalKind: 'gateway-key',
+        scopes: ['ai:gateway-key:verify'],
+      },
+    });
+  });
+
   it('rejects gateway-key callers without sufficient API scope', async () => {
     const access = createAccess();
     const trustedFetch = await access.getTrustedFetch(OWNER, {
@@ -162,7 +219,47 @@ describe('HostedPodDataAccess', () => {
     expect(forwardedBody).toBe('payload');
     expect(await response.text()).toBe('streamed');
   });
+
+  it('signs quota snapshot refresh writes as the verified Solid user principal', async () => {
+    let sent: Request | undefined;
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent = new Request(input, init);
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    expect(trustedFetch).toBeDefined();
+
+    await trustedFetch!(QUOTA_RESOURCE, { method: 'PUT', body: 'quota' });
+
+    expect(sent).toBeDefined();
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent!.headers),
+      secret: SECRET,
+      method: 'PUT',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        method: 'PUT',
+        resourceUrl: QUOTA_RESOURCE,
+        principalKind: 'solid-user',
+        scopes: ['ai:credentials:write'],
+      },
+    });
+  });
 });
+
+function headersRecord(headers: Headers): Record<string, string> {
+  const record: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    record[key] = value;
+  });
+  return record;
+}
 
 function createAccess(overrides: Partial<ConstructorParameters<typeof HostedPodDataAccess>[0]> = {}): HostedPodDataAccess {
   return new HostedPodDataAccess({

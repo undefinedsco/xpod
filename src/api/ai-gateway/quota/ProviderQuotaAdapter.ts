@@ -63,18 +63,21 @@ export interface QuotaSnapshotRepository {
     provider: string;
     credentialIri: string;
     now: Date;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined>;
   findLatest(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
     credentialIri: string;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined>;
   upsert(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
     snapshot: NormalizedQuotaSnapshot;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot>;
 }
 
@@ -86,6 +89,7 @@ export interface ProviderQuotaStatusInput {
   refresh?: boolean;
   now?: Date;
   signal?: AbortSignal;
+  auth?: AuthContext;
 }
 
 export interface ProviderQuotaServiceOptions {
@@ -152,6 +156,7 @@ export class ProviderQuotaService {
       deployment: input.deployment,
       provider,
       credentialIri: input.credentialIri,
+      auth: input.auth,
     });
 
     if (!input.refresh) {
@@ -161,6 +166,7 @@ export class ProviderQuotaService {
         provider,
         credentialIri: credential.credentialIri,
         now,
+        auth: input.auth,
       });
       if (cached) {
         return { ...cached, stale: false };
@@ -170,6 +176,7 @@ export class ProviderQuotaService {
         deployment: input.deployment,
         provider,
         credentialIri: credential.credentialIri,
+        auth: input.auth,
       });
       if (latest) {
         return { ...latest, stale: true };
@@ -199,6 +206,7 @@ export class ProviderQuotaService {
       adapter,
       now,
       signal: input.signal,
+      auth: input.auth,
     }).finally(() => {
       this.inFlightRefreshes.delete(refreshKey);
     });
@@ -216,6 +224,7 @@ export class ProviderQuotaService {
       deployment: input.input.deployment,
       provider: input.provider,
       credentialIri: input.input.credentialIri,
+      auth: input.input.auth,
     });
     const adapter = this.adapters.get(input.provider);
     if (!adapter) {
@@ -229,6 +238,7 @@ export class ProviderQuotaService {
       adapter,
       now: input.now,
       signal: input.input.signal,
+      auth: input.input.auth,
     });
   }
 
@@ -240,6 +250,7 @@ export class ProviderQuotaService {
     adapter: ProviderQuotaAdapter;
     now: Date;
     signal?: AbortSignal;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot> {
     const secret = decodePlaintextCredential(input.credential);
     let snapshot: NormalizedQuotaSnapshot;
@@ -266,6 +277,7 @@ export class ProviderQuotaService {
       deployment: input.deployment,
       provider: input.provider,
       snapshot,
+      auth: input.auth,
     });
   }
 
@@ -274,6 +286,7 @@ export class ProviderQuotaService {
     deployment: GatewayDeployment;
     provider: string;
     credentialIri?: string;
+    auth?: AuthContext;
   }): Promise<QuotaCredentialRecord> {
     const listed = this.credentials.find((candidate) =>
       candidate.webId === input.webId
@@ -288,6 +301,7 @@ export class ProviderQuotaService {
       webId: input.webId,
       deployment: input.deployment,
       provider: input.provider,
+      auth: input.auth,
     });
     if (
       active
@@ -312,6 +326,7 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     provider: string;
     credentialIri: string;
     now: Date;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
     const latest = await this.findLatest(input);
     if (!latest || new Date(latest.expiresAt).getTime() <= input.now.getTime()) {
@@ -325,6 +340,7 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     deployment: GatewayDeployment;
     provider: string;
     credentialIri: string;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
     const row = this.rows
       .filter((candidate) =>
@@ -341,6 +357,7 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     deployment: GatewayDeployment;
     provider: string;
     snapshot: NormalizedQuotaSnapshot;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot> {
     const id = input.snapshot.id ?? buildQuotaSnapshotId({
       owner: input.webId,
@@ -406,8 +423,9 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     provider: string;
     credentialIri: string;
     now: Date;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const row = await aiGatewayRepository.findFreshQuotaSnapshot(db as never, {
       owner: input.webId,
       deployment: input.deployment,
@@ -423,8 +441,9 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     deployment: GatewayDeployment;
     provider: string;
     credentialIri: string;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const row = await aiGatewayRepository.findLatestQuotaSnapshot(db as never, {
       owner: input.webId,
       deployment: input.deployment,
@@ -439,8 +458,9 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     deployment: GatewayDeployment;
     provider: string;
     snapshot: NormalizedQuotaSnapshot;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const snapshot = sanitizeSnapshot({
       ...input.snapshot,
       id: input.snapshot.id ?? buildQuotaSnapshotId({

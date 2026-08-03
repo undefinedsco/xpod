@@ -43,7 +43,15 @@ export interface PodGatewayAccessKeyRepositoryOptions {
 }
 
 export interface InternalPodAccessTokenProvider {
-  getTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch | undefined>;
+  getTrustedFetch(owner: string, auth?: InternalPodAccessAuthContext): Promise<typeof fetch | undefined>;
+}
+
+export type InternalPodAccessAuthContext = AuthContext | GatewayKeyVerificationContext;
+
+export interface GatewayKeyVerificationContext {
+  type: 'gateway-key-verification';
+  owner: string;
+  keyId: string;
 }
 
 export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository {
@@ -79,6 +87,22 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       return undefined;
     }
     const { db, resource } = await this.dbForOwner(locator.owner);
+    const row = await db.findById<GatewayAccessKeyRow>(resource, gatewayAccessKeyStorageId(id));
+    return row ? recordFromRow(row) : undefined;
+  }
+
+  public async findByIdForAuthentication(id: string): Promise<GatewayAccessKeyRecord | undefined> {
+    const locator = this.locatorCodec.decode(id);
+    if (!locator) {
+      return undefined;
+    }
+    const { db, resource } = await this.dbForOwner(locator.owner, {
+      auth: {
+        type: 'gateway-key-verification',
+        owner: locator.owner,
+        keyId: id,
+      },
+    });
     const row = await db.findById<GatewayAccessKeyRow>(resource, gatewayAccessKeyStorageId(id));
     return row ? recordFromRow(row) : undefined;
   }
@@ -125,7 +149,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
 
   private async dbForOwner(
     owner: string,
-    context?: GatewayAccessKeyRepositoryContext,
+    context?: { auth?: InternalPodAccessAuthContext },
   ): Promise<{
     db: GatewayAccessKeyDb;
     resource: GatewayAccessKeyResource;
@@ -138,7 +162,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       : gatewayAccessKeyResource;
     const db = await this.dbFactory({
       owner,
-      auth: context?.auth,
+      auth: isRepositoryAuthContext(context?.auth) ? context.auth : undefined,
       fetch: trustedFetch,
       resource,
       listResource,
@@ -147,7 +171,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     return { db, resource, listResource };
   }
 
-  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+  private async resolveTrustedFetch(owner: string, auth?: InternalPodAccessAuthContext): Promise<typeof fetch> {
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
@@ -183,6 +207,10 @@ function createDefaultGatewayAccessKeyDb(input: {
       },
     },
   ) as unknown as GatewayAccessKeyDb);
+}
+
+function isRepositoryAuthContext(value: InternalPodAccessAuthContext | undefined): value is AuthContext {
+  return value?.type === 'solid' || value?.type === 'node' || value?.type === 'service';
 }
 
 function createGatewayAccessKeyResource(owner: string): GatewayAccessKeyResource {

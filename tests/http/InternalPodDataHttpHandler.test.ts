@@ -273,6 +273,31 @@ describe('InternalPodDataHttpHandler', () => {
     expect(store.getRepresentation).toHaveBeenCalledTimes(4);
   });
 
+  it('accepts gateway-key verification scope only for GET gateway key reads', async () => {
+    const store = createStore();
+    const handler = createHandler(store);
+
+    const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: GATEWAY_KEY_RESOURCE,
+        principalKind: 'gateway-key',
+        scopes: [ 'ai:gateway-key:verify' ],
+      }),
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.bodyText()).toBe(`stored:${GATEWAY_KEY_RESOURCE}`);
+
+    const forbidden = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({
+        resourceUrl: CREDENTIAL_RESOURCE,
+        principalKind: 'gateway-key',
+        scopes: [ 'ai:gateway-key:verify' ],
+      }),
+    }));
+    expect(forbidden.statusCode).toBe(404);
+  });
+
   it('respects GET response backpressure while streaming ResourceStore data', async () => {
     const store = createStore();
     store.getRepresentation.mockResolvedValueOnce(new BasicRepresentation(

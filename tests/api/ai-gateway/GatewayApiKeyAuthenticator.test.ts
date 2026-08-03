@@ -1,10 +1,17 @@
 import type { IncomingMessage } from 'node:http';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { gatewayAccessKeyResource } from '@undefineds.co/models';
 
 import {
   GatewayApiKeyAuthenticator,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
+import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
+import { HostedPodDataAccess } from '../../../src/api/ai-gateway/pod/HostedPodDataAccess';
+import {
+  verifyGatewayAdminProxyHeaders,
+} from '../../../src/runtime/GatewayAdminProxyAuth';
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import {
   createGatewayApiKey,
@@ -14,6 +21,7 @@ import {
 import * as gatewayApiKeyModule from '../../../src/api/ai-gateway/auth/GatewayApiKey';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
+const SECRET = 'hosted-pod-test-secret';
 
 function requestWith(key: string): IncomingMessage {
   return {
@@ -21,6 +29,14 @@ function requestWith(key: string): IncomingMessage {
       authorization: `Bearer ${key}`,
     },
   } as IncomingMessage;
+}
+
+function headersRecord(headers: Headers): Record<string, string> {
+  const record: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    record[key] = value;
+  });
+  return record;
 }
 
 describe('Gateway API keys', () => {
@@ -106,6 +122,74 @@ describe('GatewayApiKeyAuthenticator', () => {
     });
     await expect(repository.findById('gak_active')).resolves.toMatchObject({
       lastUsedAt: new Date('2026-07-23T00:01:00.000Z'),
+    });
+  });
+
+  it('uses a narrow hosted Pod pre-auth read to verify locator-backed keys without internal OIDC credentials', async () => {
+    const codec = new AesGatewayKeyLocatorCodec('locator-secret');
+    const sent: Request[] = [];
+    const repository = new PodGatewayAccessKeyRepository({
+      locatorCodec: codec,
+      internalPodAccess: new HostedPodDataAccess({
+        cssBaseUrl: 'http://127.0.0.1:3000/',
+        gatewayAdminProxyAuthSecret: SECRET,
+        now: () => Date.parse('2026-08-03T00:00:00.000Z'),
+        nonce: () => 'gateway-key-auth-nonce',
+        fetch: vi.fn(async (input, init) => {
+          const request = new Request(input, init);
+          sent.push(request);
+          return new Response('', { status: 404 });
+        }) as typeof fetch,
+      }),
+      dbFactory: async ({ fetch: podFetch }) => ({
+        async init() {},
+        insert: vi.fn() as never,
+        select: vi.fn() as never,
+        async findById(_resource: unknown, id: string) {
+          await podFetch('https://id.example/alice/.data/ai/gateway/access-keys.ttl');
+          return id === gatewayAccessKeyResource.buildId({ id: issued.record.id })
+            ? {
+                ...issued.record,
+                id: gatewayAccessKeyResource.buildId({ id: issued.record.id }),
+                owner: WEB_ID,
+                scopes: ['models:read', 'inference:write'],
+                createdAt: new Date('2026-08-03T00:00:00.000Z'),
+              }
+            : null;
+        },
+        findByIri: vi.fn(async () => null),
+        updateById: vi.fn(async () => null),
+      } as never),
+    });
+    const keyId = repository.createKeyId(WEB_ID, 'cloud');
+    const issued = await createGatewayApiKey({ deployment: 'cloud', keyId });
+    const authenticator = new GatewayApiKeyAuthenticator({
+      repository,
+      deployment: 'cloud',
+      now: () => new Date('2026-08-03T00:01:00.000Z'),
+    });
+
+    const result = await authenticator.authenticate(requestWith(issued.plaintext));
+
+    expect(result).toMatchObject({
+      success: true,
+      context: { webId: WEB_ID, viaGatewayApiKey: true },
+    });
+    expect(sent).toHaveLength(1);
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[0].headers),
+      secret: SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: WEB_ID,
+        method: 'GET',
+        principalKind: 'gateway-key',
+        scopes: ['ai:gateway-key:verify'],
+      },
     });
   });
 

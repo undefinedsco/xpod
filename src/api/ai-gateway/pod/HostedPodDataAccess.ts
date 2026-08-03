@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { createAiConnectionServiceAccess } from '../service-access/AiConnectionServiceAccess';
 import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
-import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
+import type {
+  GatewayKeyVerificationContext,
+  InternalPodAccessAuthContext,
+  InternalPodAccessTokenProvider,
+} from '../auth/PodGatewayAccessKeyRepository';
 import {
   createGatewayAdminProxyHeaders,
   GATEWAY_ADMIN_PROXY_HEADERS,
@@ -44,7 +48,7 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
     this.nonce = options.nonce ?? randomUUID;
   }
 
-  public async getTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch | undefined> {
+  public async getTrustedFetch(owner: string, auth?: InternalPodAccessAuthContext): Promise<typeof fetch | undefined> {
     return async (input, init) => {
       const request = new Request(input, init);
       const method = normalizeMethod(request.method);
@@ -56,7 +60,9 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
         method,
         resourceUrl,
         principalKind: authorization.principalKind,
-        scopes: [method === 'GET' ? 'ai:credentials:read' : 'ai:credentials:write'],
+        scopes: auth?.type === 'gateway-key-verification'
+          ? ['ai:gateway-key:verify']
+          : [method === 'GET' ? 'ai:credentials:read' : 'ai:credentials:write'],
       });
 
       return this.fetch(loopbackUrl, {
@@ -71,7 +77,7 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
 
   private authorize(input: {
     owner: string;
-    auth?: AuthContext;
+    auth?: InternalPodAccessAuthContext;
     method: InternalPodDataMethod;
     resourceUrl: string;
   }): { principalKind: GatewayAdminProxyIntent['principalKind'] } {
@@ -79,6 +85,10 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
 
     if (!input.auth) {
       throw new Error('hosted_pod_auth_required');
+    }
+    if (input.auth.type === 'gateway-key-verification') {
+      this.assertGatewayKeyVerification(input.owner, input.auth, input.method, input.resourceUrl);
+      return { principalKind: 'gateway-key' };
     }
     if (input.auth.type !== 'solid') {
       throw new Error('hosted_pod_solid_principal_required');
@@ -91,6 +101,27 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
       return { principalKind: 'gateway-key' };
     }
     return { principalKind: 'solid-user' };
+  }
+
+  private assertGatewayKeyVerification(
+    owner: string,
+    auth: GatewayKeyVerificationContext,
+    method: InternalPodDataMethod,
+    resourceUrl: string,
+  ): void {
+    if (auth.owner !== owner) {
+      throw new Error('hosted_pod_owner_mismatch');
+    }
+    if (method !== 'GET') {
+      throw new Error('hosted_pod_gateway_key_verification_method_forbidden');
+    }
+    const gatewayKeyResource = createAiConnectionServiceAccess({
+      ownerWebId: owner,
+      serviceWebId: owner,
+    }).resources.find((entry) => entry.id === 'gatewayAccessKeys')?.url;
+    if (resourceUrl !== gatewayKeyResource) {
+      throw new Error('hosted_pod_gateway_key_verification_resource_forbidden');
+    }
   }
 
   private assertGatewayScope(auth: SolidAuthContext, method: InternalPodDataMethod): void {

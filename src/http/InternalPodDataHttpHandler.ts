@@ -133,6 +133,9 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     if (intent.scopes.length === 0) {
       return false;
     }
+    if (intent.scopes.includes('ai:gateway-key:verify')) {
+      return method === 'GET' && this.isGatewayAccessKeyResource(intent);
+    }
     const requiredScope = method === 'GET' ? 'ai:credentials:read' : 'ai:credentials:write';
     return intent.scopes.some((scope) =>
       scope === requiredScope ||
@@ -179,6 +182,19 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       serviceWebId: intent.ownerWebId,
     }).resources.map((resource) => resource.url);
     return allowed.includes(resourceUrl.href);
+  }
+
+  private isGatewayAccessKeyResource(intent: GatewayAdminProxyIntent): boolean {
+    try {
+      return createAiConnectionServiceAccess({
+        ownerWebId: intent.ownerWebId,
+        serviceWebId: intent.ownerWebId,
+      }).resources.some((resource) =>
+        resource.id === 'gatewayAccessKeys' &&
+        resource.url === intent.resourceUrl);
+    } catch {
+      return false;
+    }
   }
 
   private async delegate(

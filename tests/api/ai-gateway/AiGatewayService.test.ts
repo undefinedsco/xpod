@@ -167,6 +167,67 @@ describe('AiGatewayService', () => {
     expect(fixture.store).not.toHaveProperty('rewrapCredential');
   });
 
+  it('keeps gateway auth on failover credential routing after the first route fails', async() => {
+    const registry = createDefaultProviderRegistry();
+    const authSeenByCredentialStore: Array<AuthContext | undefined> = [];
+    const credentials = [
+      credential({
+        id: 'primary',
+        provider: 'openai',
+        models: ['gpt-5'],
+        priority: 10,
+        credentialIri: 'https://pod.example/settings/credentials.ttl#primary',
+      }),
+      credential({
+        id: 'backup',
+        provider: 'openai',
+        models: ['gpt-5'],
+        priority: 50,
+        credentialIri: 'https://pod.example/settings/credentials.ttl#backup',
+      }),
+    ];
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async(input) => {
+        authSeenByCredentialStore.push(input.auth);
+        return credentials;
+      }),
+      recordFailure: vi.fn(async() => {}),
+      recordSuccess: vi.fn(async() => {}),
+    };
+    const runtimeExecute = vi.fn(async function* (input: { apiKey: string }) {
+      if (input.apiKey === 'sk-primary') {
+        throw new Error('primary unavailable before first event');
+      }
+      yield { type: 'response.started', id: 'resp_1' };
+      yield { type: 'text.delta', text: 'ok' };
+      yield { type: 'response.completed', finishReason: 'stop' };
+    });
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+      }),
+      credentials: store,
+      runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+    });
+
+    await expect(service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })).resolves.toMatchObject({ choices: expect.any(Array) });
+
+    expect(authSeenByCredentialStore).toEqual([AUTH, AUTH]);
+    expect(runtimeExecute).toHaveBeenCalledTimes(2);
+    expect(runtimeExecute).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: 'sk-backup' }));
+  });
+
   it('fails closed on legacy encrypted credential rows before provider runtime I/O', async() => {
     const runtimeExecute = vi.fn();
     const fixture = serviceWith([

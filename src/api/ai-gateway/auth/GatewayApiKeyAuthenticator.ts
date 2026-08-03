@@ -32,6 +32,7 @@ export interface GatewayAccessKeyRepository {
   createKeyId?(owner: string, deployment: GatewayDeployment): string;
   create(record: GatewayAccessKeyRecord, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord>;
   findById(id: string): Promise<GatewayAccessKeyRecord | undefined>;
+  findByIdForAuthentication?(id: string): Promise<GatewayAccessKeyRecord | undefined>;
   listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
   revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   touchLastUsed(id: string, lastUsedAt: Date): Promise<void>;
@@ -101,7 +102,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
 
     let record: GatewayAccessKeyRecord | undefined;
     try {
-      record = await this.repository.findById(parsed.keyId);
+      record = await (this.repository.findByIdForAuthentication?.(parsed.keyId) ?? this.repository.findById(parsed.keyId));
     } catch (cause) {
       return infrastructureError(cause);
     }

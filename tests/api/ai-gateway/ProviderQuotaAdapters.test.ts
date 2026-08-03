@@ -24,6 +24,7 @@ import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
+import type { AuthContext } from '../../../src/api/auth/AuthContext';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
@@ -323,6 +324,60 @@ describe('ProviderQuotaAdapters', () => {
     expect(unsupported.status).toBe('unsupported');
     expect(repository.rows).toHaveLength(2);
     expect(repository.rows.map((row) => row.status).sort()).toEqual(['available', 'unsupported']);
+  });
+
+  it('passes Solid auth through credential and quota snapshot Pod reads and writes', async () => {
+    const auth: AuthContext = { type: 'solid', webId: WEB_ID };
+    const kimiCredential = await credential('kimi');
+    const repository = {
+      findFresh: vi.fn(async () => undefined),
+      findLatest: vi.fn(async () => undefined),
+      upsert: vi.fn(async ({ snapshot }) => snapshot),
+    };
+    const credentialRepository = {
+      getActiveCredential: vi.fn(async () => kimiCredential),
+      upsertConnectedCredential: vi.fn(),
+      markReauthRequired: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      credentialRepository,
+      adapters: [
+        {
+          provider: 'kimi',
+          fetch: vi.fn(async () => ({
+            credential: kimiCredential.credentialIri,
+            status: 'available' as const,
+            windows: [],
+            observedAt: '2026-07-23T00:00:00.000Z',
+            expiresAt: '2026-07-23T00:05:00.000Z',
+            source: 'test',
+          })),
+        },
+      ],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      refresh: false,
+      auth,
+    });
+    await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      refresh: true,
+      auth,
+    });
+
+    expect(credentialRepository.getActiveCredential).toHaveBeenCalledWith(expect.objectContaining({ auth }));
+    expect(repository.findFresh).toHaveBeenCalledWith(expect.objectContaining({ auth }));
+    expect(repository.findLatest).toHaveBeenCalledWith(expect.objectContaining({ auth }));
+    expect(repository.upsert).toHaveBeenCalledWith(expect.objectContaining({ auth }));
   });
 
   it('fails closed on mixed plaintext and legacy encrypted quota credential rows before provider fetch', async () => {
@@ -836,6 +891,7 @@ describe('AiGatewayManagementHandler quota routes', () => {
       provider: 'kimi',
       credentialIri: kimiCredential.credentialIri,
       refresh: false,
+      auth: { type: 'solid', webId: WEB_ID },
     }));
 
     const refresh = response();
@@ -847,6 +903,7 @@ describe('AiGatewayManagementHandler quota routes', () => {
     expect(refresh.statusCode).toBe(200);
     expect(quotaService.status).toHaveBeenLastCalledWith(expect.objectContaining({
       refresh: true,
+      auth: { type: 'solid', webId: WEB_ID },
     }));
   });
 

@@ -143,6 +143,7 @@ export class AiGatewayService {
     });
     request.model = route.model;
     const events = this.executeWithCredentialFailover({
+      auth: input.auth,
       principal,
       request,
       route,
@@ -288,6 +289,7 @@ export class AiGatewayService {
   }
 
   private async *executeWithCredentialFailover(input: {
+    auth: AuthContext;
     principal: { webId: string };
     request: GatewayRequest;
     route: ModelRouteResult;
@@ -321,7 +323,7 @@ export class AiGatewayService {
       } catch (error) {
         await this.recordRouteFailure(input.principal.webId, route, error);
         if (!firstClientEventEmitted && this.router.canFailOver(route)) {
-          const nextRoute = await this.findFailoverRoute(input.principal.webId, input.request, route, attempted);
+          const nextRoute = await this.findFailoverRoute(input.auth, input.principal.webId, input.request, route, attempted);
           if (nextRoute) {
             route = nextRoute;
             continue;
@@ -333,6 +335,7 @@ export class AiGatewayService {
   }
 
   private async findFailoverRoute(
+    auth: AuthContext,
     webId: string,
     request: GatewayRequest,
     failedRoute: ModelRouteResult,
@@ -342,6 +345,7 @@ export class AiGatewayService {
       return await this.router.route({
         webId,
         deployment: this.deployment,
+        auth,
         model: `${failedRoute.provider.id}/${failedRoute.model}`,
         conversationId: conversationIdFor(request),
       }, attempted);
