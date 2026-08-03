@@ -141,6 +141,8 @@ describe('production deployment workflow', () => {
     expect(workflow.jobs['deploy-co'].env.PUBLIC_BASE_URL).toBe('https://id.undefineds.co');
     expect(workflow.jobs['deploy-cn'].env.PUBLIC_BASE_URL).toBe('https://id.undefineds.cn');
     expect(runText).toContain('service_url="$PUBLIC_BASE_URL/service/status"');
+    expect(runText.match(/all\(\.status == "running"\)/g)).toHaveLength(2);
+    expect(runText.match(/\(map\(\.name\) \| sort\) == \["api", "css"\]/g)).toHaveLength(2);
     expect(runText).toContain('oidc_url="$PUBLIC_BASE_URL/.well-known/openid-configuration"');
     expect(runText).toContain('dashboard_url="$PUBLIC_BASE_URL/dashboard/"');
     expect(runText).toContain('settings_url="$PUBLIC_BASE_URL/settings/"');

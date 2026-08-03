@@ -233,8 +233,10 @@ jobs:
           protected_settings_url="$PUBLIC_BASE_URL/api/pod/settings/status"
 
           for attempt in $(seq 1 24); do
-            if expected_status "$service_url" 200; then
-              break
+            if status_payload="$(curl --fail --silent --show-error --location --max-time 15 "$service_url")"; then
+              if jq -e 'length == 2 and ((map(.name) | sort) == ["api", "css"]) and all(.status == "running")' <<< "$status_payload" > /dev/null; then
+                break
+              fi
             fi
             if [[ "$attempt" = "24" ]]; then
               exit 1
@@ -467,8 +469,10 @@ jobs:
           protected_settings_url="$PUBLIC_BASE_URL/api/pod/settings/status"
 
           for attempt in $(seq 1 24); do
-            if expected_status "$service_url" 200; then
-              break
+            if status_payload="$(curl --fail --silent --show-error --location --max-time 15 "$service_url")"; then
+              if jq -e 'length == 2 and ((map(.name) | sort) == ["api", "css"]) and all(.status == "running")' <<< "$status_payload" > /dev/null; then
+                break
+              fi
             fi
             if [[ "$attempt" = "24" ]]; then
               exit 1
