@@ -135,7 +135,7 @@ export function registerCommonServices(
 
     gatewayInternalPodAccess: asFunction(({ config }: ApiContainerCradle) => {
       if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
-        throw new Error('XPOD_GATEWAY_INTERNAL_CLIENT_ID and XPOD_GATEWAY_INTERNAL_CLIENT_SECRET are required for Gateway internal Pod access');
+        return undefined;
       }
       return new ClientCredentialsInternalPodAccessTokenProvider({
         tokenEndpoint: config.cssTokenEndpoint,

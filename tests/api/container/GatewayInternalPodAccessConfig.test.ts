@@ -100,13 +100,14 @@ describe('Gateway internal Pod access container config', () => {
     }
   });
 
-  it('fails fast when production gateway Pod access credentials are missing', () => {
+  it('keeps the API container startable when optional delegated Pod access credentials are missing', () => {
     const container = createApiContainer(baseConfig({
       gatewayInternalClientId: undefined,
       gatewayInternalClientSecret: undefined,
     }));
 
-    expect(() => container.resolve('gatewayAccessKeyRepository')).toThrow(/GATEWAY_INTERNAL_CLIENT_ID/);
+    expect(container.resolve('gatewayInternalPodAccess')).toBeUndefined();
+    expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
   });
 
   it('does not silently fall back to rotating service tokens as locator secrets', () => {

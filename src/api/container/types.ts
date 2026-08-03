@@ -235,7 +235,7 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
-  gatewayInternalPodAccess: ClientCredentialsInternalPodAccessTokenProvider;
+  gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
   gatewayAccessKeyRepository: GatewayAccessKeyRepository;
   invocationTokenCodec: InvocationTokenCodec;
   aiConnectionInvocationKeyIssuer: AiConnectionInvocationKeyIssuer;

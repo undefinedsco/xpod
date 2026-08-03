@@ -103,6 +103,25 @@ jobs:
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
 
+      - name: Ensure PostgreSQL vector extension
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+        run: |
+          migration_job="xpod-pgvector-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sed \
+            -e "s#MIGRATION_NAMESPACE#${SEALOS_NAMESPACE}#g" \
+            -e "s#MIGRATION_JOB#${migration_job}#g" \
+            -e "s#MIGRATION_IMAGE_TAG#${IMAGE_TAG}#g" \
+            deploy/sealos/cloud/pgvector-job.yaml > /tmp/xpod-pgvector-job.yaml
+          trap 'kubectl -n "$SEALOS_NAMESPACE" delete job "$migration_job" --ignore-not-found --wait=false' EXIT
+          kubectl apply -f /tmp/xpod-pgvector-job.yaml
+          if ! kubectl -n "$SEALOS_NAMESPACE" wait --for=condition=complete "job/$migration_job" --timeout=300s; then
+            kubectl -n "$SEALOS_NAMESPACE" logs "job/$migration_job" --all-containers=true || true
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" logs "job/$migration_job" --all-containers=true
+
       - name: Apply manifests
         env:
           SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
@@ -228,6 +247,25 @@ jobs:
           sed \
             -e "s#namespace: xpod-cloud#namespace: ${SEALOS_NAMESPACE}#g" \
             deploy/sealos/cloud/service.yaml > /tmp/xpod-service.yaml
+
+      - name: Ensure PostgreSQL vector extension
+        env:
+          SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+          IMAGE_TAG: ${{ steps.image.outputs.image_tag }}
+        run: |
+          migration_job="xpod-pgvector-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          sed \
+            -e "s#MIGRATION_NAMESPACE#${SEALOS_NAMESPACE}#g" \
+            -e "s#MIGRATION_JOB#${migration_job}#g" \
+            -e "s#MIGRATION_IMAGE_TAG#${IMAGE_TAG}#g" \
+            deploy/sealos/cloud/pgvector-job.yaml > /tmp/xpod-pgvector-job.yaml
+          trap 'kubectl -n "$SEALOS_NAMESPACE" delete job "$migration_job" --ignore-not-found --wait=false' EXIT
+          kubectl apply -f /tmp/xpod-pgvector-job.yaml
+          if ! kubectl -n "$SEALOS_NAMESPACE" wait --for=condition=complete "job/$migration_job" --timeout=300s; then
+            kubectl -n "$SEALOS_NAMESPACE" logs "job/$migration_job" --all-containers=true || true
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" logs "job/$migration_job" --all-containers=true
 
       - name: Apply manifests
         env:
