@@ -7,6 +7,7 @@ import {
   normalizeMessagesEndpoint,
   normalizeV1Endpoint,
   parseJsonObject,
+  profileApiKey,
   stringifyJson,
   stripLegacyXpodObject,
 } from './base-adapter';
@@ -70,7 +71,7 @@ abstract class JsonEnvAdapter extends BaseAiClientConfigAdapter {
     const beforeEnv = isObject(before.env) ? before.env : {};
     for (const key of Object.keys(this.envProjection({
       endpoint: 'https://owned.invalid',
-      gatewayKey: 'owned',
+      apiKey: 'owned',
       webId: 'https://owned.invalid/profile#me',
     }))) {
       if (Object.prototype.hasOwnProperty.call(beforeEnv, key) && !looksLikePreviousXpodValue(beforeEnv[key])) {
@@ -101,7 +102,7 @@ export class ClaudeCodeConfigAdapter extends JsonEnvAdapter {
     const settingsPath = path.join(options.homeDir ?? os.homedir(), '.claude', 'settings.json');
     super('claude-code', settingsPath, (profile) => ({
       ANTHROPIC_BASE_URL: normalizeMessagesEndpoint(profile.endpoint),
-      ANTHROPIC_AUTH_TOKEN: profile.gatewayKey,
+      ANTHROPIC_AUTH_TOKEN: profileApiKey(profile),
     }));
   }
 }
@@ -111,7 +112,7 @@ export class CodeBuddyConfigAdapter extends JsonEnvAdapter {
     const settingsPath = path.join(options.homeDir ?? os.homedir(), '.codebuddy', 'settings.json');
     super('codebuddy', settingsPath, (profile) => ({
       CODEBUDDY_BASE_URL: normalizeV1Endpoint(profile.endpoint),
-      CODEBUDDY_API_KEY: profile.gatewayKey,
+      CODEBUDDY_API_KEY: profileApiKey(profile),
     }));
   }
 }

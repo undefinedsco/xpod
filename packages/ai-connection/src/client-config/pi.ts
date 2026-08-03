@@ -6,6 +6,7 @@ import {
   looksLikePreviousXpodValue,
   normalizeV1Endpoint,
   parseJsonObject,
+  profileApiKey,
   stringifyJson,
   stripLegacyXpodObject,
 } from './base-adapter';
@@ -42,7 +43,7 @@ export class PiConfigAdapter extends BaseAiClientConfigAdapter {
     settings.defaultModel = model;
     providers.xpod = {
       baseUrl: normalizeV1Endpoint(profile.endpoint),
-      apiKey: profile.gatewayKey,
+      apiKey: profileApiKey(profile),
       authHeader: true,
       api: 'openai-responses',
       models: [{ id: model, name: model }],
@@ -60,7 +61,7 @@ export class PiConfigAdapter extends BaseAiClientConfigAdapter {
       const xpod = (models.providers as Record<string, unknown> | undefined)?.xpod as
         Record<string, unknown> | undefined;
       const ok = xpod?.baseUrl === normalizeV1Endpoint(profile.endpoint) &&
-        xpod.apiKey === profile.gatewayKey;
+        xpod.apiKey === profileApiKey(profile);
       return ok ? { ok: true } : { ok: false, reason: 'Pi projection differs from the requested connection' };
     } catch (error) {
       return { ok: false, reason: String(error) };

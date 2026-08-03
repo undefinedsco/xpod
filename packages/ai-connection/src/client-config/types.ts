@@ -1,6 +1,6 @@
 export interface AiConnectionClientProfile {
   endpoint: string;
-  gatewayKey: string;
+  apiKey?: string;
   webId: string;
   model?: string;
 }

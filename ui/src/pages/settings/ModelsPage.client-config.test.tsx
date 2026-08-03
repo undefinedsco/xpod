@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
+import { AuthContext, type Controls } from '../../context/AuthContextValue';
 import { createXpodAiClientConfigurationBridge } from '../../api/ai-connection';
 import ModelsPage from './ModelsPage';
 
@@ -33,7 +34,7 @@ describe('ModelsPage coding-client configuration capability', () => {
           }],
           invocation: {
             baseUrl: 'https://pod.example',
-            gatewayKey: 'xpod_inv_v1.client-config-token',
+            token: 'xpod_inv_v1.client-config-token',
             expiresAt: '2099-01-01T00:00:00.000Z',
           },
         });
@@ -53,7 +54,7 @@ describe('ModelsPage coding-client configuration capability', () => {
           });
         }
         if (url.pathname.endsWith('/apply')) {
-          expect(body).toContain('xpod_gw_once');
+          expect(body).toContain('"apiKey":"sk-Y2xpZW50LWlkOmNsaWVudC1zZWNyZXQ="');
           expect(body).not.toContain('sk-provider-secret');
           return json({ applied: true });
         }
@@ -62,10 +63,15 @@ describe('ModelsPage coding-client configuration capability', () => {
         }
         return json({ status: 'notConfigured', message: 'Codex detected' });
       }
-      if (url.pathname === '/api/ai/gateway/keys') {
+      if (url.pathname === '/.account/client-credentials/' && method === 'GET') {
+        return json({ clientCredentials: {} });
+      }
+      if (url.pathname === '/.account/client-credentials/' && method === 'POST') {
         return json({
-          key: 'xpod_gw_once',
-          record: { id: 'gak_1', owner: WEB_ID, scopes: ['models:read', 'inference:write'], createdAt: '2026-07-31T00:00:00.000Z' },
+          id: 'client-id',
+          secret: 'client-secret',
+          resourceUrl: 'https://pod.example/.account/client-credentials/client-id/',
+          webId: WEB_ID,
         }, { status: 201 });
       }
       throw new Error(`Unexpected request ${method} ${url.pathname}`);
@@ -76,12 +82,15 @@ describe('ModelsPage coding-client configuration capability', () => {
     await waitForText(container, 'Codex');
     await act(async () => {
       clickButton(container, '配置', 1);
-      await delay(30);
+      await waitForCall(calls, (call) => call.path.endsWith('/plan'));
     });
     expect(container.textContent).toContain('~/.codex/config.toml');
+    await waitForText(container, '服务访问已授权');
+    await waitForText(container, '应用更改');
+    await waitForEnabledButton(container, '应用更改');
     await act(async () => {
       clickButton(container, '应用更改');
-      await delay(50);
+      await waitForCall(calls, (call) => call.path.endsWith('/apply'));
     });
 
     const plannedClientPath = calls.find((call) => call.path.endsWith('/plan'))?.path.replace(/\/plan$/u, '');
@@ -90,7 +99,9 @@ describe('ModelsPage coding-client configuration capability', () => {
     expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', `${plannedClientPath}/apply`]);
     expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', `${plannedClientPath}/verify`]);
     expect(calls.filter((call) => call.path.startsWith('/api/ai/client-configuration/')).every((call) => call.authorization === 'Bearer xpod_inv_v1.client-config-token')).toBe(true);
-    expect(container.textContent).not.toContain('xpod_gw_once');
+    expect(container.textContent).not.toContain('client-secret');
+    expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', '/.account/client-credentials/']);
+    expect(calls.some((call) => call.path === '/api/ai/gateway/keys')).toBe(false);
     expect(JSON.stringify(calls)).not.toContain('sk-provider-secret');
     await unmount(root);
   });
@@ -108,7 +119,7 @@ describe('ModelsPage coding-client configuration capability', () => {
             mediaType: 'text/turtle',
             access: { read: true, append: true, write: true },
           }],
-          invocation: { gatewayKey: 'xpod_inv_v1.no-filesystem' },
+          invocation: { token: 'xpod_inv_v1.no-filesystem' },
         });
       }
       if (url.pathname === '/api/ai/connections/providers') {
@@ -137,7 +148,7 @@ describe('ModelsPage coding-client configuration capability', () => {
         return json({
           invocation: {
             baseUrl: 'https://pod.example',
-            gatewayKey: 'xpod_inv_v1.client-config-token',
+            token: 'xpod_inv_v1.client-config-token',
           },
         });
       }
@@ -158,7 +169,7 @@ describe('ModelsPage coding-client configuration capability', () => {
     await expect(bridge.apply({
       client: 'codex',
       planId: 'plan-1',
-      gatewayKey: 'xpod_gw_once',
+      apiKey: 'sk-client-credentials',
     })).rejects.toMatchObject({
       code: 'verification_failed_restored',
       status: 502,
@@ -191,13 +202,32 @@ async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <XpodSolidRuntimeContext.Provider value={runtime}>
-        <ModelsPage />
-      </XpodSolidRuntimeContext.Provider>,
+      <AuthContext.Provider value={authContextValue()}>
+        <XpodSolidRuntimeContext.Provider value={runtime}>
+          <ModelsPage />
+        </XpodSolidRuntimeContext.Provider>
+      </AuthContext.Provider>,
     );
     await delay(30);
   });
   return { container, root };
+}
+
+function authContextValue(controls: Controls = {
+  account: {
+    clientCredentials: 'https://pod.example/.account/client-credentials/',
+  },
+}) {
+  return {
+    controls,
+    isInitializing: false,
+    initError: null,
+    idpIndex: 'https://pod.example/.account/',
+    isLoggedIn: true,
+    authenticating: false,
+    hasOidcPending: false,
+    refetchControls: vi.fn(async () => undefined),
+  };
 }
 
 async function unmount(root: Root) {
@@ -252,4 +282,28 @@ function clickButton(container: Element, label: string, index = 0): void {
     throw new Error(`Missing button ${label}\n${container.textContent}`);
   }
   button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+}
+
+async function waitForEnabledButton(
+  container: Element,
+  label: string,
+): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    const button = Array.from(container.querySelectorAll('button'))
+      .find((candidate) => candidate.textContent?.includes(label));
+    if (button && !(button as HTMLButtonElement).disabled) return;
+    await act(async () => { await delay(25); });
+  }
+  throw new Error(`Button did not become enabled: ${label}\n${container.textContent}`);
+}
+
+async function waitForCall<T>(
+  calls: T[],
+  predicate: (call: T) => boolean,
+): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    if (calls.some(predicate)) return;
+    await delay(25);
+  }
+  throw new Error(`Missing expected call: ${JSON.stringify(calls)}`);
 }

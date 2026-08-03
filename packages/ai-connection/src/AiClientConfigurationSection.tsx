@@ -47,7 +47,7 @@ export interface AiClientConfigurationBridge {
   apply(input: {
     client: AiConnectionClientId
     planId: string
-    gatewayKey: string
+    apiKey: string
     confirmation?: {
       token: string
       targetHash: string
@@ -67,19 +67,19 @@ export const AI_CLIENT_LABELS: Record<AiConnectionClientId, string> = {
   codebuddy: 'CodeBuddy',
 }
 
-export interface ManagedGatewayKeyLease {
-  gatewayKey: string
+export interface ManagedClientCredentialLease {
+  apiKey: string
   revoke(): Promise<void>
 }
 
 export function AiClientConfigurationSection({
   bridge,
   endpoint,
-  createGatewayKey,
+  createClientCredential,
 }: {
   bridge?: AiClientConfigurationBridge
   endpoint: string
-  createGatewayKey?: (client: AiConnectionClientId) => Promise<ManagedGatewayKeyLease>
+  createClientCredential?: (client: AiConnectionClientId) => Promise<ManagedClientCredentialLease>
 }) {
   const [statuses, setStatuses] = useState<Partial<Record<AiConnectionClientId, AiClientConfigurationStatus>>>({})
   const [plans, setPlans] = useState<Partial<Record<AiConnectionClientId, AiClientConfigurationDryRun>>>({})
@@ -127,16 +127,16 @@ export function AiClientConfigurationSection({
 
   const apply = async (client: AiConnectionClientId) => {
     const dryRun = plans[client]
-    if (!bridge || !dryRun || !createGatewayKey) return
+    if (!bridge || !dryRun || !createClientCredential) return
     setBusy(client)
-    let lease: ManagedGatewayKeyLease | undefined
+    let lease: ManagedClientCredentialLease | undefined
     let applied = false
     try {
-      lease = await createGatewayKey(client)
+      lease = await createClientCredential(client)
       await bridge.apply({
         client,
         planId: dryRun.planId,
-        gatewayKey: lease.gatewayKey,
+        apiKey: lease.apiKey,
         ...(dryRun.confirmation?.required ? {
           confirmation: {
             token: dryRun.confirmation.token,
@@ -154,7 +154,7 @@ export function AiClientConfigurationSection({
         try {
           await lease.revoke()
         } catch (revokeError) {
-          recoveryMessage = `${recoveryMessage}；自动撤销 Gateway Key 失败：${errorMessage(revokeError)}。请在“高级：Gateway Keys”中手动撤销。`
+          recoveryMessage = `${recoveryMessage}；自动撤销新建 Client Credential 失败：${errorMessage(revokeError)}。请到 Account Developer Access 手动撤销。`
         }
       }
       setStatuses((current) => ({
@@ -189,10 +189,10 @@ export function AiClientConfigurationSection({
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <MonitorCog className="h-4 w-4" />
-          编码客户端
+          Developer Access
         </CardTitle>
         <CardDescription>
-          AI Connection 自动管理客户端访问密钥；Provider 凭证不会离开 Pod。
+          使用 Solid Client Credentials 生成 <code>sk-*</code> API Key；Provider 凭证不会离开 Pod。
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -267,7 +267,7 @@ export function AiClientConfigurationSection({
                       aria-label={confirmation?.required
                         ? `确认并应用 ${AI_CLIENT_LABELS[client]} 配置`
                         : `应用 ${AI_CLIENT_LABELS[client]} 配置`}
-                      disabled={!createGatewayKey || Boolean(busy) || !confirmationSatisfied}
+                      disabled={!createClientCredential || Boolean(busy) || !confirmationSatisfied}
                       onClick={() => void apply(client)}
                     >
                       {confirmation?.required ? '确认并应用' : '应用更改'}

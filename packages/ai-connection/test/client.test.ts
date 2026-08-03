@@ -19,11 +19,11 @@ describe('AI Connection management client', () => {
       authenticatedFetch,
     })
 
-    await client.listGatewayKeys()
+    await client.listProviders()
 
     expect(resolveAiConnectionApiBase(POD_BASE)).toBe('https://pod.example')
     expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/keys',
+      'https://pod.example/api/ai/connections/providers',
       expect.objectContaining({
         method: 'GET',
         credentials: 'omit',
@@ -130,10 +130,10 @@ describe('AI Connection management client', () => {
       authenticatedFetch,
     })
 
-    await expect(client.listGatewayKeys()).rejects.toThrow(
+    await expect(client.listProviders()).rejects.toThrow(
       'AI Connection request failed. Please try again.',
     )
-    await expect(client.listGatewayKeys()).rejects.not.toThrow(/sk-|xpod_|apiKey|token|Bearer|json-secret/)
+    await expect(client.listProviders()).rejects.not.toThrow(/sk-|xpod_|apiKey|token|Bearer|json-secret/)
   })
 
   it('keeps useful allowlisted server codes without exposing raw details', async () => {
@@ -205,64 +205,6 @@ describe('AI Connection management client', () => {
       { id: 'qwen3-max', provider: 'bailian' },
     ])
     expect(JSON.stringify(models)).not.toContain('must-not-escape')
-  })
-
-  it('never exposes deployment or plaintext key fields from subsequent key lists', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      data: [{
-        id: 'key-1',
-        owner: WEB_ID,
-        deployment: 'cloud',
-        key: 'must-not-escape',
-        scopes: ['models:read'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-      }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } }))
-    const client = createAiConnectionClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    const keys = await client.listGatewayKeys()
-
-    expect(keys).toEqual([{
-      id: 'key-1',
-      owner: WEB_ID,
-      scopes: ['models:read'],
-      createdAt: '2026-07-24T00:00:00.000Z',
-    }])
-    expect(JSON.stringify(keys)).not.toMatch(/deployment|must-not-escape/)
-  })
-
-  it('returns a newly-created plaintext key only from the create response', async () => {
-    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
-      key: 'xpod_once_secret',
-      record: {
-        id: 'key-2',
-        owner: WEB_ID,
-        deployment: 'local',
-        scopes: ['models:read', 'inference:write'],
-        createdAt: '2026-07-24T00:00:00.000Z',
-      },
-    }), { status: 201, headers: { 'content-type': 'application/json' } }))
-    const client = createAiConnectionClient({
-      webId: WEB_ID,
-      podBaseUrl: POD_BASE,
-      authenticatedFetch,
-    })
-
-    const created = await client.createGatewayKey({ name: 'Codex' })
-
-    expect(created.plaintext).toBe('xpod_once_secret')
-    expect(created.record).not.toHaveProperty('deployment')
-    expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/gateway/keys',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ name: 'Codex' }),
-      }),
-    )
   })
 
   it('binds provider operations to the fixed provider route and current identity fetch', async () => {

@@ -7,7 +7,9 @@ import {
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
+import type { Controls } from '../context/AuthContextValue';
 import { createServiceAccessGatewayFetch, createXpodAiClientConfigurationBridge } from '../api/ai-connection';
+import { createAccountControlsClientCredentialManager } from '../api/client-credentials';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 
 const aiConnectionExtension = createAiConnectionExtension();
@@ -22,7 +24,10 @@ if (!discoveredAiConnectionApplet) {
 
 const aiConnectionApplet = discoveredAiConnectionApplet;
 
-export function createXpodAiConnectionHost(runtime: XpodSolidRuntimeValue): WebExtensionHost<SolidDatabase> {
+export function createXpodAiConnectionHost(
+  runtime: XpodSolidRuntimeValue,
+  controls?: Controls | null,
+): WebExtensionHost<SolidDatabase> {
   const pod = runtime.currentPod
     ? { status: 'ready' as const, current: runtime.currentPod }
     : runtime.state.status === 'authenticated'
@@ -74,6 +79,10 @@ export function createXpodAiConnectionHost(runtime: XpodSolidRuntimeValue): WebE
           authenticatedFetch: runtime.fetch,
         })
         : unsupportedAiClientConfiguration,
+      aiClientCredentials: createAccountControlsClientCredentialManager(
+        controls?.account?.clientCredentials,
+        runtime.fetch,
+      ),
     },
   };
 }
@@ -99,8 +108,11 @@ const unsupportedAiClientConfiguration = {
   }),
 };
 
-export function useMountedAiConnectionApplet(runtime: XpodSolidRuntimeValue): MountedTwoPaneApplet<AiConnectionController> {
-  const host = useMemo(() => createXpodAiConnectionHost(runtime), [runtime]);
+export function useMountedAiConnectionApplet(
+  runtime: XpodSolidRuntimeValue,
+  controls?: Controls | null,
+): MountedTwoPaneApplet<AiConnectionController> {
+  const host = useMemo(() => createXpodAiConnectionHost(runtime, controls), [runtime, controls]);
   return useMemo(() => {
     const mounted = mountApplet(aiConnectionApplet, host);
     if (mounted.layout !== 'two-pane') {

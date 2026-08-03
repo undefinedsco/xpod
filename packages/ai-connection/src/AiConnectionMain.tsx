@@ -69,6 +69,7 @@ export function AiConnectionMain({ controller }: { controller: AiConnectionContr
         selectedProvider={selectedProvider}
         openExternal={controller.openExternal}
         clientConfigurationBridge={controller.clientConfigurationBridge}
+        clientCredentialManager={controller.clientCredentialManager}
         providerSummaries={providerSummaries}
         providerLoadError={providerLoadError}
         serviceAccessGranted={serviceAccessState === 'granted'}

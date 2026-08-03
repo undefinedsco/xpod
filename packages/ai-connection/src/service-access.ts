@@ -9,7 +9,6 @@ export const AI_CONNECTION_APPLET_ID = 'co.undefineds.ai-connection'
 const KNOWN_RESOURCE_IDS = new Set([
   'providerCredentials',
   'providerDefinitions',
-  'gatewayAccessKeys',
   'quotaSnapshots',
 ])
 

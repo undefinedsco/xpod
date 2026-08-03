@@ -110,11 +110,11 @@ describe('AI Connection controller host.solid integration', () => {
     expect(controller.client?.webId).toBe(WEB_ID)
     expect(controller.client?.apiBase).toBe('https://pod.example')
 
-    await controller.client?.listGatewayKeys()
+    await controller.client?.listProviders()
 
     await waitFor(() => {
       expect(solid.session.fetch).toHaveBeenCalledWith(
-        'https://pod.example/api/ai/gateway/keys',
+        'https://pod.example/api/ai/connections/providers',
         expect.objectContaining({ method: 'GET' }),
       )
     })

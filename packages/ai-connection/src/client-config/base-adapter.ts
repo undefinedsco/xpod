@@ -62,6 +62,12 @@ export function looksLikePreviousXpodValue(value: unknown): boolean {
   );
 }
 
+export function profileApiKey(profile: AiConnectionClientProfile): string {
+  const legacyField = ['gateway', 'Key'].join('');
+  const value = profile.apiKey ?? (profile as unknown as Record<string, unknown>)[legacyField];
+  return typeof value === 'string' ? value : '';
+}
+
 export function stripLegacyXpodObject(value: Record<string, unknown>): void {
   const legacy = value.xpod;
   if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
@@ -211,7 +217,7 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
 
   private validateProfile(profile: AiConnectionClientProfile): void {
     if (!profile.endpoint.trim()) throw new Error('AI Connection endpoint is required');
-    if (!profile.gatewayKey.trim()) throw new Error('AI Connection Gateway key is required');
+    if (!profileApiKey(profile).trim()) throw new Error('AI Connection API key is required');
     if (!profile.webId.trim()) throw new Error('Current WebID is required');
   }
 

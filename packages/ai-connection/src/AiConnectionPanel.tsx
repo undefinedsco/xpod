@@ -15,9 +15,9 @@ import {
   type AiConnectionProvider,
   type AiProviderConnectionSummary,
   type AiQuotaSnapshot,
-  type GatewayKeyRecord,
   normalizeAiConnectionThrownError,
 } from './ai-connection-client'
+import type { AiClientCredentialManager, AiClientCredentialRecord } from '@undefineds.co/extension-sdk/web'
 import {
   PROVIDERS,
   type AiProviderDefinition,
@@ -35,7 +35,7 @@ import {
   AiClientConfigurationSection,
   type AiClientConfigurationBridge,
   type AiConnectionClientId,
-  type ManagedGatewayKeyLease,
+  type ManagedClientCredentialLease,
 } from './AiClientConfigurationSection'
 import {
   AiProviderCard,
@@ -48,6 +48,7 @@ export interface AiConnectionPanelProps {
   client: AiConnectionClient
   openExternal?: (url: string) => void | Promise<void>
   clientConfigurationBridge?: AiClientConfigurationBridge
+  clientCredentialManager?: AiClientCredentialManager
   selectedProvider?: AiConnectionProvider
   providerSummaries?: Partial<Record<AiConnectionProvider, AiProviderConnectionSummary>>
   providerLoadError?: string
@@ -62,18 +63,19 @@ export function AiConnectionPanel({
   client,
   openExternal = openExternalUrl,
   clientConfigurationBridge,
+  clientCredentialManager,
   selectedProvider,
   providerSummaries: providerSummariesInput = EMPTY_PROVIDER_SUMMARIES,
   providerLoadError,
   serviceAccessGranted = false,
   onProviderStateChange,
 }: AiConnectionPanelProps) {
-  const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
-  const [keysLoading, setKeysLoading] = useState(true)
-  const [keyName, setKeyName] = useState('')
-  const [creatingKey, setCreatingKey] = useState(false)
-  const [oneTimeKey, setOneTimeKey] = useState<string>()
-  const [keyError, setKeyError] = useState<string>()
+  const [credentials, setCredentials] = useState<AiClientCredentialRecord[]>([])
+  const [credentialsLoading, setCredentialsLoading] = useState(Boolean(clientCredentialManager))
+  const [credentialName, setCredentialName] = useState('')
+  const [creatingCredential, setCreatingCredential] = useState(false)
+  const [oneTimeCredential, setOneTimeCredential] = useState<{ clientId: string; clientSecret: string; apiKey: string }>()
+  const [credentialError, setCredentialError] = useState<string>()
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
   const [models, setModels] = useState<AiGatewayModel[]>([])
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
@@ -104,29 +106,34 @@ export function AiConnectionPanel({
 
   useEffect(() => {
     let active = true
-    setKeysLoading(true)
-    void client.listGatewayKeys()
-      .then((records) => {
-        if (active) setKeys(records)
-      })
-      .catch((error) => {
-        if (active) setKeyError(errorMessage(error))
-      })
-      .finally(() => {
-        if (active) setKeysLoading(false)
-      })
+    if (clientCredentialManager) {
+      setCredentialsLoading(true)
+      void clientCredentialManager.list()
+        .then((records) => {
+          if (active) setCredentials(records)
+        })
+        .catch((error) => {
+          if (active) setCredentialError(errorMessage(error))
+        })
+        .finally(() => {
+          if (active) setCredentialsLoading(false)
+        })
+    } else {
+      setCredentialsLoading(false)
+      setCredentials([])
+    }
     void client.listModels()
       .then((availableModels) => {
         if (active) setModels(availableModels)
       })
       .catch((error) => {
-        if (active) setKeyError(errorMessage(error))
+        if (active) setCredentialError(errorMessage(error))
       })
     return () => {
       active = false
       pollingGeneration.current += 1
     }
-  }, [client])
+  }, [client, clientCredentialManager])
 
   const setBusy = (provider: AiConnectionProvider, value: boolean) => {
     setBusyProviders((current) => ({ ...current, [provider]: value }))
@@ -262,67 +269,75 @@ export function AiConnectionPanel({
     }
   }
 
-  const createKey = async () => {
-    if (!serviceAccessGranted) return
-    setCreatingKey(true)
-    setKeyError(undefined)
-    setOneTimeKey(undefined)
+  const createCredential = async () => {
+    if (!serviceAccessGranted || !clientCredentialManager) return
+    setCreatingCredential(true)
+    setCredentialError(undefined)
+    setOneTimeCredential(undefined)
     try {
-      const created = await client.createGatewayKey({
-        ...(keyName.trim() ? { name: keyName.trim() } : {}),
+      const created = await clientCredentialManager.create({
+        name: credentialName.trim() || 'AI Connection',
+        webId: client.webId,
       })
-      setOneTimeKey(created.plaintext)
-      setKeys((current) => [created.record, ...current])
-      setKeyName('')
+      setOneTimeCredential({
+        clientId: created.clientId,
+        clientSecret: created.clientSecret,
+        apiKey: created.apiKey,
+      })
+      setCredentials((current) => [
+        created,
+        ...current.filter((record) => record.resourceUrl !== created.resourceUrl),
+      ])
+      setCredentialName('')
     } catch (error) {
-      setKeyError(errorMessage(error))
+      setCredentialError(errorMessage(error))
     } finally {
-      setCreatingKey(false)
+      setCreatingCredential(false)
     }
   }
 
-  const revokeKey = async (keyId: string) => {
-    if (!serviceAccessGranted) return
-    setKeyError(undefined)
+  const revokeCredential = async (credential: AiClientCredentialRecord) => {
+    if (!serviceAccessGranted || !clientCredentialManager) return
+    setCredentialError(undefined)
     try {
-      const record = await client.revokeGatewayKey(keyId)
-      setKeys((current) => current.map((item) => item.id === keyId
-        ? (record ?? { ...item, revokedAt: new Date().toISOString() })
-        : item))
+      await clientCredentialManager.revoke(credential.resourceUrl)
+      setCredentials((current) => current.filter((item) => item.resourceUrl !== credential.resourceUrl))
     } catch (error) {
-      setKeyError(errorMessage(error))
+      setCredentialError(errorMessage(error))
     }
   }
 
-  const copyOneTimeKey = async () => {
-    if (!oneTimeKey) return
-    await navigator.clipboard?.writeText(oneTimeKey)
+  const copyOneTimeApiKey = async () => {
+    if (!oneTimeCredential) return
+    await navigator.clipboard?.writeText(oneTimeCredential.apiKey)
     setCopied(true)
   }
 
-  const createManagedGatewayKey = useCallback(async (
+  const createManagedClientCredential = useCallback(async (
     targetClient: AiConnectionClientId,
-  ): Promise<ManagedGatewayKeyLease> => {
+  ): Promise<ManagedClientCredentialLease> => {
     if (!serviceAccessGranted) {
       throw new Error('AI Connection service access is not granted')
     }
-    const created = await client.createGatewayKey({
+    if (!clientCredentialManager) {
+      throw new Error('Client Credentials are not available in this host')
+    }
+    const created = await clientCredentialManager.create({
       name: `AI Connection · ${AI_CLIENT_LABELS[targetClient]}`,
+      webId: client.webId,
     })
-    setKeys((current) => [
-      created.record,
-      ...current.filter((record) => record.id !== created.record.id),
+    setCredentials((current) => [
+      created,
+      ...current.filter((record) => record.resourceUrl !== created.resourceUrl),
     ])
     return {
-      gatewayKey: created.plaintext,
+      apiKey: created.apiKey,
       revoke: async () => {
-        await client.revokeGatewayKey(created.record.id)
-        setKeys((current) => current.map((record) => record.id === created.record.id
-          ? { ...record, revokedAt: new Date().toISOString() }
-          : record))
+        await clientCredentialManager.revoke(created.resourceUrl)
+        setCredentials((current) => current.filter((record) => record.resourceUrl !== created.resourceUrl))
       },
     }
-  }, [client, serviceAccessGranted])
+  }, [client.webId, clientCredentialManager, serviceAccessGranted])
 
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-6">
@@ -366,49 +381,62 @@ export function AiConnectionPanel({
           <AiClientConfigurationSection
             bridge={clientConfigurationBridge}
             endpoint={client.apiBase}
-            createGatewayKey={createManagedGatewayKey}
+            createClientCredential={createManagedClientCredential}
           />
 
           <details className="border-t border-border/60 pt-4">
             <summary className="cursor-pointer text-sm font-medium text-muted-foreground">
-              高级：Gateway Keys
+              Client Credentials
             </summary>
             <div className="mt-3">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <KeyRound className="h-4 w-4" />
-            Gateway Keys
+            Client Credentials
           </CardTitle>
           <CardDescription>
-            编码客户端只使用 Gateway Key；新密钥明文仅在创建后显示一次。
+            为 Codex、Claude Code、Pi、CodeBuddy 创建 Solid Client Credentials。API Key 为 <code>sk-base64(client_id:client_secret)</code>，只在创建后显示一次。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {!clientCredentialManager ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-muted-foreground">
+              当前 Host 没有提供 account-controls Client Credentials capability。
+              <a className="ml-1 underline" href="/.account/">
+                打开 Account Developer Access
+              </a>
+              {' '}手动创建 API Key。
+            </div>
+          ) : null}
           <div className="flex gap-2">
             <Input
-              aria-label="Gateway Key 名称"
+              aria-label="Client Credential 名称"
               placeholder="名称，例如 Codex"
-              value={keyName}
-              onChange={(event) => setKeyName(event.target.value)}
+              value={credentialName}
+              onChange={(event) => setCredentialName(event.target.value)}
             />
-            <Button onClick={() => void createKey()} disabled={creatingKey || !serviceAccessGranted}>
-              {creatingKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
-              创建 Gateway Key
+            <Button onClick={() => void createCredential()} disabled={creatingCredential || !serviceAccessGranted || !clientCredentialManager}>
+              {creatingCredential ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+              创建 Client Credential
             </Button>
           </div>
 
-          {oneTimeKey ? (
+          {oneTimeCredential ? (
             <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
               <p className="text-sm font-medium">请立即保存；关闭后无法再次查看。</p>
-              <code className="block overflow-x-auto rounded bg-background p-3 text-xs">{oneTimeKey}</code>
+              <div className="space-y-2 rounded bg-background p-3 text-xs">
+                <div><span className="text-muted-foreground">Client ID: </span><code>{oneTimeCredential.clientId}</code></div>
+                <div><span className="text-muted-foreground">Client Secret: </span><code>{oneTimeCredential.clientSecret}</code></div>
+                <div><span className="text-muted-foreground">API Key: </span><code>{oneTimeCredential.apiKey}</code></div>
+              </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => void copyOneTimeKey()}>
+                <Button variant="outline" size="sm" onClick={() => void copyOneTimeApiKey()}>
                   {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-                  {copied ? '已复制' : '复制'}
+                  {copied ? '已复制' : '复制 API Key'}
                 </Button>
                 <Button size="sm" onClick={() => {
-                  setOneTimeKey(undefined)
+                  setOneTimeCredential(undefined)
                   setCopied(false)
                 }}>
                   我已保存，隐藏密钥
@@ -417,31 +445,30 @@ export function AiConnectionPanel({
             </div>
           ) : null}
 
-          {keyError ? <p className="text-sm text-destructive">{keyError}</p> : null}
-          {keysLoading ? (
+          {credentialError ? <p className="text-sm text-destructive">{credentialError}</p> : null}
+          {credentialsLoading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              正在读取 Gateway Keys
+              正在读取 Client Credentials
             </div>
-          ) : keys.length === 0 ? (
-            <p className="text-sm text-muted-foreground">尚未创建 Gateway Key。</p>
+          ) : credentials.length === 0 ? (
+            <p className="text-sm text-muted-foreground">尚未创建 Client Credential。</p>
           ) : (
             <div className="space-y-2">
-              {keys.map((key) => (
-                <div key={key.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+              {credentials.map((credential) => (
+                <div key={credential.resourceUrl} className="flex items-center justify-between gap-3 rounded-lg border p-3">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{key.name || key.id}</div>
+                    <div className="truncate text-sm font-medium">{credential.id}</div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      {key.scopes.join(' · ')}
-                      {key.revokedAt ? ' · 已撤销' : ''}
+                      {credential.webId ?? client.webId}
                     </div>
                   </div>
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label={`撤销 ${key.name || key.id}`}
-                    disabled={Boolean(key.revokedAt) || !serviceAccessGranted}
-                    onClick={() => void revokeKey(key.id)}
+                    aria-label={`撤销 ${credential.id}`}
+                    disabled={!serviceAccessGranted || !clientCredentialManager}
+                    onClick={() => void revokeCredential(credential)}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>

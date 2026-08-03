@@ -6,6 +6,7 @@ import {
   looksLikePreviousXpodValue,
   normalizeV1Endpoint,
   parseJsonObject,
+  profileApiKey,
   stringifyJson,
 } from './base-adapter';
 import type { AiConnectionClientProfile, ClientVerification } from './types';
@@ -54,7 +55,7 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
       '',
     ].join('\n');
     const auth = parseJsonObject(current.get(this.authPath), 'Codex auth.json');
-    auth.OPENAI_API_KEY = profile.gatewayKey;
+    auth.OPENAI_API_KEY = profileApiKey(profile);
     return new Map([
       [this.configPath, `${config}${config ? '\n\n' : ''}${block}`],
       [this.authPath, stringifyJson(auth)],
@@ -67,7 +68,7 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
       const auth = parseJsonObject(await fs.promises.readFile(this.authPath, 'utf8'), 'Codex auth.json');
       const ok = config.includes('model_provider = "xpod"') &&
         config.includes(`base_url = ${JSON.stringify(normalizeV1Endpoint(profile.endpoint))}`) &&
-        auth.OPENAI_API_KEY === profile.gatewayKey;
+        auth.OPENAI_API_KEY === profileApiKey(profile);
       return ok ? { ok: true } : { ok: false, reason: 'Codex projection differs from the requested connection' };
     } catch (error) {
       return { ok: false, reason: String(error) };

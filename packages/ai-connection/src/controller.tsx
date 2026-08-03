@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type {
+  AiClientCredentialManager,
   WebExtensionHost,
   WebExtensionSessionStatus,
   WebExtensionSolidPodStatus,
@@ -57,6 +58,7 @@ export interface AiConnectionController {
   readonly login: () => Promise<void>
   readonly openExternal: (url: string) => Promise<void>
   readonly clientConfigurationBridge?: AiClientConfigurationBridge
+  readonly clientCredentialManager?: AiClientCredentialManager
   readonly selectedProvider: AiConnectionProvider
   readonly searchQuery: string
   readonly providerStates: Partial<Record<AiConnectionProvider, ProviderProductState>>
@@ -110,6 +112,7 @@ export function createAiConnectionController(host: WebExtensionHost): AiConnecti
     login: host.solid.requireLogin,
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
+    clientCredentialManager: host.capabilities.aiClientCredentials,
     get selectedProvider() {
       return selectedProvider
     },

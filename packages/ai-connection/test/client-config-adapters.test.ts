@@ -20,7 +20,7 @@ function tempHome(): string {
 function profile(overrides: Record<string, unknown> = {}) {
   return {
     endpoint: 'https://pod.example/alice/api/ai',
-    gatewayKey: 'xpod-gw-secret',
+    apiKey: 'sk-client-credentials-secret',
     webId: WEB_ID,
     model: 'gpt-5.4',
     ...overrides,
@@ -69,14 +69,14 @@ describe('publishable AI client config adapters', () => {
       expect(codexToml).toContain('command = "keep"')
       expect(codexToml).toContain('model_provider = "xpod"')
       expect(codexToml).toContain('base_url = "https://pod.example/alice/api/ai/v1"')
-      expect(codexAuth).toMatchObject({ legacy: 'keep-me', OPENAI_API_KEY: 'xpod-gw-secret' })
+      expect(codexAuth).toMatchObject({ legacy: 'keep-me', OPENAI_API_KEY: 'sk-client-credentials-secret' })
 
       const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
       expect(claude.model).toBe('opus')
       expect(claude.env).toMatchObject({
         KEEP_ME: 'yes',
         ANTHROPIC_BASE_URL: 'https://pod.example/alice/api/ai',
-        ANTHROPIC_AUTH_TOKEN: 'xpod-gw-secret',
+        ANTHROPIC_AUTH_TOKEN: 'sk-client-credentials-secret',
       })
       expect(claude.env.ANTHROPIC_API_KEY).toBeUndefined()
 
@@ -86,7 +86,7 @@ describe('publishable AI client config adapters', () => {
       expect(piModels.providers.custom.baseUrl).toBe('https://keep.example')
       expect(piModels.providers.xpod).toMatchObject({
         baseUrl: 'https://pod.example/alice/api/ai/v1',
-        apiKey: 'xpod-gw-secret',
+        apiKey: 'sk-client-credentials-secret',
         authHeader: true,
       })
 
@@ -95,7 +95,7 @@ describe('publishable AI client config adapters', () => {
       expect(codebuddy.env).toMatchObject({
         KEEP_ME: 'yes',
         CODEBUDDY_BASE_URL: 'https://pod.example/alice/api/ai/v1',
-        CODEBUDDY_API_KEY: 'xpod-gw-secret',
+        CODEBUDDY_API_KEY: 'sk-client-credentials-secret',
       })
     } finally {
       fs.rmSync(home, { recursive: true, force: true })

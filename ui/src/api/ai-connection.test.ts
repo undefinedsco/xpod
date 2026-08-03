@@ -8,7 +8,7 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
 
 function serviceAccessPayload(overrides: Partial<{
-  gatewayKey: string;
+  token: string;
   expiresAt: string;
 }> = {}) {
   return {
@@ -27,7 +27,7 @@ function serviceAccessPayload(overrides: Partial<{
     ],
     invocation: {
       baseUrl: 'https://pod.example',
-      gatewayKey: overrides.gatewayKey ?? 'xpod_inv_v1.owner-bound-short-token',
+      token: overrides.token ?? 'xpod_inv_v1.owner-bound-short-token',
       expiresAt: overrides.expiresAt ?? '2099-01-01T00:10:00.000Z',
     },
   };
@@ -122,7 +122,7 @@ describe('Xpod AI Connection API client', () => {
     await expect(client.quota('openai')).rejects.toThrow('OpenAI connection is not configured.');
   });
 
-  test('covers provider, connect, quota, model, and Gateway key management paths through the same invocation token', async () => {
+  test('covers provider, connect, quota, and model paths through the same invocation token', async () => {
     const managementCalls: Array<{ url: string; method: string; authorization: string | null; body?: string }> = [];
     const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -146,15 +146,6 @@ describe('Xpod AI Connection API client', () => {
       }
       if (url.endsWith('/v1/models')) {
         return json({ data: [{ id: 'openai/gpt-5', provider: 'openai', object: 'model' }] });
-      }
-      if (url.endsWith('/api/ai/gateway/keys') && method === 'GET') {
-        return json({ data: [{ id: 'gak_1', owner: WEB_ID, scopes: ['models:read'], createdAt: '2026-07-30T00:00:00.000Z' }] });
-      }
-      if (url.endsWith('/api/ai/gateway/keys') && method === 'POST') {
-        return json({ key: 'xpod_gw_once', record: { id: 'gak_2', owner: WEB_ID, scopes: ['models:read'], createdAt: '2026-07-30T00:00:00.000Z' } });
-      }
-      if (url.endsWith('/api/ai/gateway/keys/gak_2') && method === 'DELETE') {
-        return json({ record: { id: 'gak_2', owner: WEB_ID, scopes: ['models:read'], createdAt: '2026-07-30T00:00:00.000Z', revokedAt: '2026-07-30T00:01:00.000Z' } });
       }
       if (url.endsWith('/api/ai/gateway/providers/openai/connect/begin')) {
         return json({ provider: 'openai', mode: 'browserAssistedApiKey', status: 'pending', attemptId: 'attempt_1', state: 's', signature: 'sig' });
@@ -187,9 +178,6 @@ describe('Xpod AI Connection API client', () => {
 
     await client.listProviders();
     await client.listModels();
-    await client.listGatewayKeys();
-    await client.createGatewayKey({ name: 'Codex' });
-    await client.revokeGatewayKey('gak_2');
     const attempt = await client.beginConnect('openai', 'browserAssistedApiKey');
     await client.connectStatus('openai', attempt);
     await client.pollDevice('openai', attempt);
@@ -201,9 +189,6 @@ describe('Xpod AI Connection API client', () => {
     expect(managementCalls.map((call) => [call.method, new URL(call.url).pathname])).toEqual([
       ['GET', '/api/ai/connections/providers'],
       ['GET', '/v1/models'],
-      ['GET', '/api/ai/gateway/keys'],
-      ['POST', '/api/ai/gateway/keys'],
-      ['DELETE', '/api/ai/gateway/keys/gak_2'],
       ['POST', '/api/ai/gateway/providers/openai/connect/begin'],
       ['GET', '/api/ai/gateway/providers/openai/connect/status/attempt_1'],
       ['POST', '/api/ai/gateway/providers/openai/connect/poll'],
@@ -224,7 +209,7 @@ describe('Xpod AI Connection API client', () => {
       if (url.endsWith('/api/applets/service-access/ai-connection')) {
         const issue = calls.filter((call) => call.url.endsWith('/api/applets/service-access/ai-connection')).length;
         return new Response(JSON.stringify(serviceAccessPayload({
-          gatewayKey: `xpod_inv_v1.token-${issue}`,
+          token: `xpod_inv_v1.token-${issue}`,
           expiresAt: issue === 1 ? '2026-07-30T00:00:20.000Z' : '2026-07-30T00:10:00.000Z',
         })), {
           headers: { 'content-type': 'application/json' },
@@ -242,13 +227,13 @@ describe('Xpod AI Connection API client', () => {
     });
 
     await client.listProviders();
-    await client.listGatewayKeys();
+    await client.listModels();
 
     expect(calls.map((call) => [new URL(call.url).pathname, call.authorization])).toEqual([
       ['/api/applets/service-access/ai-connection', null],
       ['/api/ai/connections/providers', 'Bearer xpod_inv_v1.token-1'],
       ['/api/applets/service-access/ai-connection', null],
-      ['/api/ai/gateway/keys', 'Bearer xpod_inv_v1.token-2'],
+      ['/v1/models', 'Bearer xpod_inv_v1.token-2'],
     ]);
   });
 
@@ -261,7 +246,7 @@ describe('Xpod AI Connection API client', () => {
       if (url.endsWith('/api/applets/service-access/ai-connection')) {
         const issue = calls.filter((call) => call.url.endsWith('/api/applets/service-access/ai-connection')).length;
         return new Response(JSON.stringify(serviceAccessPayload({
-          gatewayKey: `xpod_inv_v1.retry-${issue}`,
+          token: `xpod_inv_v1.retry-${issue}`,
         })), {
           headers: { 'content-type': 'application/json' },
         });
@@ -350,12 +335,12 @@ describe('Xpod AI Connection API client', () => {
 
     await expect(Promise.all([
       client.listProviders(),
-      client.listGatewayKeys(),
+      client.listModels(),
     ])).rejects.toThrow('AI Connection request failed. Please try again.');
     failServiceAccess = false;
     await Promise.all([
       client.listProviders(),
-      client.listGatewayKeys(),
+      client.listModels(),
     ]);
 
     expect(calls.filter((call) => call.endsWith('/api/applets/service-access/ai-connection'))).toHaveLength(2);

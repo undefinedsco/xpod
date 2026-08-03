@@ -71,28 +71,12 @@ export interface AiQuotaSnapshot {
   stale?: boolean
 }
 
-export interface GatewayKeyRecord {
-  id: string
-  owner: string
-  scopes: string[]
-  createdAt: string
-  expiresAt?: string
-  lastUsedAt?: string
-  revokedAt?: string
-  name?: string
-}
-
 export interface AiGatewayModel {
   id: string
   provider: AiConnectionProvider
   displayName?: string
   contextWindow?: number
   protocols?: string[]
-}
-
-export interface CreatedGatewayKey {
-  plaintext: string
-  record: GatewayKeyRecord
 }
 
 export interface AiProviderConnectionSummary {
@@ -117,9 +101,6 @@ export interface AiConnectionClient {
   getServiceAccess(): Promise<unknown>
   listProviders(): Promise<AiProviderConnectionSummary[]>
   listModels(): Promise<AiGatewayModel[]>
-  listGatewayKeys(): Promise<GatewayKeyRecord[]>
-  createGatewayKey(input: { name?: string; scopes?: string[]; expiresAt?: string }): Promise<CreatedGatewayKey>
-  revokeGatewayKey(keyId: string): Promise<GatewayKeyRecord | undefined>
   beginConnect(provider: AiConnectionProvider, mode: AiConnectionMode): Promise<AiConnectAttempt>
   connectStatus(provider: AiConnectionProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
   completeApiKey(
@@ -213,37 +194,6 @@ export function createAiConnectionClient({
       return Array.isArray(payload.data)
         ? payload.data.map(parseGatewayModel).filter(isDefined)
         : []
-    },
-
-    async listGatewayKeys() {
-      const payload = await request<{ data?: unknown[] }>('/api/ai/gateway/keys', 'GET')
-      return Array.isArray(payload.data)
-        ? payload.data.map(parseGatewayKeyRecord).filter(isDefined)
-        : []
-    },
-
-    async createGatewayKey(input) {
-      const payload = await request<{ key?: unknown; record?: unknown }>(
-        '/api/ai/gateway/keys',
-        'POST',
-        compactObject(input),
-      )
-      if (typeof payload.key !== 'string' || !payload.key) {
-        throw new Error('AI Connection did not return the one-time Gateway key')
-      }
-      const record = parseGatewayKeyRecord(payload.record)
-      if (!record) {
-        throw new Error('AI Connection returned an invalid Gateway key record')
-      }
-      return { plaintext: payload.key, record }
-    },
-
-    async revokeGatewayKey(keyId) {
-      const payload = await request<{ record?: unknown }>(
-        `/api/ai/gateway/keys/${encodeURIComponent(keyId)}`,
-        'DELETE',
-      )
-      return parseGatewayKeyRecord(payload.record)
     },
 
     async beginConnect(provider, mode) {
@@ -429,27 +379,6 @@ function assertProvider(provider: string): asserts provider is AiConnectionProvi
   if (!(AI_CONNECTION_PROVIDERS as readonly string[]).includes(provider)) {
     throw new Error(`Unsupported AI provider: ${provider}`)
   }
-}
-
-function parseGatewayKeyRecord(value: unknown): GatewayKeyRecord | undefined {
-  if (!isRecord(value)
-    || typeof value.id !== 'string'
-    || typeof value.owner !== 'string'
-    || !Array.isArray(value.scopes)
-    || !value.scopes.every((scope) => typeof scope === 'string')
-    || typeof value.createdAt !== 'string') {
-    return undefined
-  }
-  return compactObject({
-    id: value.id,
-    owner: value.owner,
-    scopes: value.scopes,
-    createdAt: value.createdAt,
-    expiresAt: stringValue(value.expiresAt),
-    lastUsedAt: stringValue(value.lastUsedAt),
-    revokedAt: stringValue(value.revokedAt),
-    name: stringValue(value.name),
-  }) as unknown as GatewayKeyRecord
 }
 
 function parseGatewayModel(value: unknown): AiGatewayModel | undefined {

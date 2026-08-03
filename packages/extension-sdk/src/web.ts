@@ -58,7 +58,7 @@ export interface AiClientConfigurationCapability {
   apply(input: {
     client: AiClientId;
     planId: string;
-    gatewayKey: string;
+    apiKey: string;
     confirmation?: {
       token: string;
       targetHash: string;
@@ -69,6 +69,29 @@ export interface AiClientConfigurationCapability {
     planId: string;
   }): Promise<AiClientConfigurationStatus>;
   restore(client: AiClientId): Promise<AiClientConfigurationStatus>;
+}
+
+export interface AiClientCredentialRecord {
+  id: string;
+  resourceUrl: string;
+  webId?: string;
+}
+
+export interface CreatedAiClientCredential extends AiClientCredentialRecord {
+  clientId: string;
+  clientSecret: string;
+  apiKey: string;
+}
+
+export interface AiClientCredentialManager {
+  readonly available?: boolean;
+  readonly accountUrl?: string;
+  list(): Promise<AiClientCredentialRecord[]>;
+  create(input: {
+    name: string;
+    webId: string;
+  }): Promise<CreatedAiClientCredential>;
+  revoke(resourceUrl: string): Promise<void>;
 }
 
 export type WebExtensionSolidPodStatus =
@@ -142,6 +165,7 @@ export interface WebExtensionNavigationCapability {
 
 export interface WebExtensionHostCapabilities {
   aiClientConfiguration?: AiClientConfigurationCapability;
+  aiClientCredentials?: AiClientCredentialManager;
 }
 
 export interface WebExtensionHost<Database = unknown> {
