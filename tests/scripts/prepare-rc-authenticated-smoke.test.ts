@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadRcSeedAccounts,
   prepareRcAuthenticatedSmoke,
+  trySubmitSolidPassword,
 } from '../../scripts/prepare-rc-authenticated-smoke';
 
 describe('RC authenticated smoke seed preparation', () => {
@@ -18,6 +19,30 @@ describe('RC authenticated smoke seed preparation', () => {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = undefined;
     }
+  });
+
+  it('retries a login form replaced between visibility and password fill', async () => {
+    const emailInput = {
+      isVisible: vi.fn(async () => true),
+      fill: vi.fn(async () => undefined),
+    };
+    const passwordInput = {
+      isVisible: vi.fn(async () => true),
+      fill: vi.fn()
+        .mockRejectedValueOnce(new Error('element was detached'))
+        .mockResolvedValueOnce(undefined),
+      press: vi.fn(async () => undefined),
+    };
+    const page = {
+      locator: vi.fn((selector: string) => ({
+        first: () => selector.includes('password') ? passwordInput : emailInput,
+      })),
+    } as any;
+    const account = { email: 'alice@example.com', password: 'private', podName: 'alice' };
+
+    await expect(trySubmitSolidPassword(page, account)).resolves.toBe(false);
+    await expect(trySubmitSolidPassword(page, account)).resolves.toBe(true);
+    expect(passwordInput.press).toHaveBeenCalledWith('Enter', { timeout: 2_000 });
   });
 
   it('loads only named Alice and Bob accounts from the fixed RC seed config', async () => {

@@ -164,16 +164,9 @@ async function completeSolidOidcLogin(
       return;
     }
 
-    const emailInput = page.locator('input[name="email"], input[type="email"], input#email').first();
-    const passwordInput = page.locator('input[name="password"], input[type="password"], input#password').first();
-    if (
-      await emailInput.isVisible({ timeout: 300 }).catch(() => false)
-      && await passwordInput.isVisible({ timeout: 300 }).catch(() => false)
-    ) {
-      await emailInput.fill(account.email);
-      await passwordInput.fill(account.password);
-      await passwordInput.press('Enter');
-      submittedPassword = true;
+    const passwordSubmission = await trySubmitSolidPassword(page, account);
+    if (passwordSubmission !== undefined) {
+      submittedPassword ||= passwordSubmission;
       await page.waitForTimeout(400);
       continue;
     }
@@ -191,6 +184,29 @@ async function completeSolidOidcLogin(
   }
 
   throw new Error(`OIDC login did not finish for seeded account; submittedPassword=${submittedPassword}; currentOrigin=${new URL(page.url()).origin}`);
+}
+
+export async function trySubmitSolidPassword(
+  page: Page,
+  account: RcSeedAccount,
+): Promise<boolean | undefined> {
+  const emailInput = page.locator('input[name="email"], input[type="email"], input#email').first();
+  const passwordInput = page.locator('input[name="password"], input[type="password"], input#password').first();
+  if (
+    !await emailInput.isVisible({ timeout: 300 }).catch(() => false)
+    || !await passwordInput.isVisible({ timeout: 300 }).catch(() => false)
+  ) {
+    return undefined;
+  }
+
+  try {
+    await emailInput.fill(account.email, { timeout: 2_000 });
+    await passwordInput.fill(account.password, { timeout: 2_000 });
+    await passwordInput.press('Enter', { timeout: 2_000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeSeedAccount(entry: SeedConfigEntry): RcSeedAccount | undefined {
