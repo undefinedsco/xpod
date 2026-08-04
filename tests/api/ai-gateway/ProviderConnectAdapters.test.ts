@@ -835,7 +835,13 @@ describe('ProviderConnectService', () => {
   });
 
   it('uses the production Pod credential repository adapter against models credentialResource fields', async () => {
-    const rows = new Map<string, Record<string, unknown>>();
+    const rows = new Map<string, Record<string, unknown>>([
+      [ 'credentials.ttl#cloud-openai', {
+        id: 'credentials.ttl#cloud-openai',
+        keyVersion: '1',
+        secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'stale-incomplete-value' }),
+      } ],
+    ]);
     let resolvedPodUrl: string | undefined;
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: { getTrustedFetch: async () => fetch },
@@ -853,6 +859,7 @@ describe('ProviderConnectService', () => {
           }),
           select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
           findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+          deleteById: async (_resource: unknown, id: string) => rows.delete(id),
           updateById: async (_resource: unknown, id: string, patch: any) => {
             const row = rows.get(id);
             if (!row) return null;
@@ -899,7 +906,7 @@ describe('ProviderConnectService', () => {
       status: 'active',
       storageMode: 'plaintext-v1',
       secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-pod-backed-secret' }),
-      keyVersion: '1',
+      keyVersion: '2',
     });
     expect(stored).not.toHaveProperty('encryptedSecret');
     expect(stored).not.toHaveProperty('wrappedDataKey');
@@ -911,7 +918,7 @@ describe('ProviderConnectService', () => {
     });
     expect(active).toMatchObject({
       provider: 'openai',
-      version: 1,
+      version: 2,
       storageMode: 'plaintext-v1',
       secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-pod-backed-secret' }),
     });
@@ -944,7 +951,7 @@ describe('ProviderConnectService', () => {
       webId: WEB_ID,
       provider: 'openai',
       deployment: 'cloud',
-    })).resolves.toMatchObject({ status: 'revoked', version: 2 });
+    })).resolves.toMatchObject({ status: 'revoked', version: 3 });
   });
 
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {

@@ -150,6 +150,7 @@ type ConnectedCredentialDb = {
     };
   };
   findById<TRow>(resource: typeof credentialResource, id: string): Promise<TRow | null>;
+  deleteById(resource: typeof credentialResource, id: string): Promise<boolean>;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
     set(patch: unknown): {
@@ -291,6 +292,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       ...record,
       version: nextVersion,
     });
+    if (existing && stringFrom(existing.storageMode) !== PLAINTEXT_CREDENTIAL_STORAGE_MODE) {
+      await db.deleteById(credential, record.id);
+      await db.insert(credential).values(row).execute();
+      return recordFromCredentialRow(row, record.webId);
+    }
     if (existing) {
       const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
       return recordFromCredentialRow(updated ?? row, record.webId);
