@@ -7,7 +7,6 @@ import {
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import type { Controls } from '../context/AuthContextValue';
 import { createXpodAiClientConfigurationBridge } from '../api/ai-connection';
 import { createAccountControlsClientCredentialManager } from '../api/client-credentials';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
@@ -26,7 +25,7 @@ const aiConnectionApplet = discoveredAiConnectionApplet;
 
 export function createXpodAiConnectionHost(
   runtime: XpodSolidRuntimeValue,
-  controls?: Controls | null,
+  clientCredentialsUrl = new URL('/.account/client-credentials/', window.location.origin).toString(),
 ): WebExtensionHost<SolidDatabase> {
   const pod = runtime.currentPod
     ? { status: 'ready' as const, current: runtime.currentPod }
@@ -75,7 +74,7 @@ export function createXpodAiConnectionHost(
         })
         : unsupportedAiClientConfiguration,
       aiClientCredentials: createAccountControlsClientCredentialManager(
-        controls?.account?.clientCredentials,
+        clientCredentialsUrl,
         runtime.webId,
         runtime.fetch,
       ),
@@ -106,9 +105,8 @@ const unsupportedAiClientConfiguration = {
 
 export function useMountedAiConnectionApplet(
   runtime: XpodSolidRuntimeValue,
-  controls?: Controls | null,
 ): MountedTwoPaneApplet<AiConnectionController> {
-  const host = useMemo(() => createXpodAiConnectionHost(runtime, controls), [runtime, controls]);
+  const host = useMemo(() => createXpodAiConnectionHost(runtime), [runtime]);
   return useMemo(() => {
     const mounted = mountApplet(aiConnectionApplet, host);
     if (mounted.layout !== 'two-pane') {
