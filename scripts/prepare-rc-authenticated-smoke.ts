@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type Locator, type Page } from 'playwright';
 
 export interface RcSeedAccount {
   email: string;
@@ -175,7 +175,7 @@ async function completeSolidOidcLogin(
       name: /authorize|allow|approve|consent|continue|submit|yes|log in|login|授权|允许|继续|确认/i,
     }).first();
     if (await action.isVisible({ timeout: 300 }).catch(() => false)) {
-      await action.click();
+      await clickSolidOidcAction(action);
       await page.waitForTimeout(400);
       continue;
     }
@@ -184,6 +184,13 @@ async function completeSolidOidcLogin(
   }
 
   throw new Error(`OIDC login did not finish for seeded account; submittedPassword=${submittedPassword}; currentOrigin=${new URL(page.url()).origin}`);
+}
+
+export async function clickSolidOidcAction(action: Locator): Promise<void> {
+  await action.click({
+    noWaitAfter: true,
+    timeout: 5_000,
+  });
 }
 
 export async function trySubmitSolidPassword(

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  clickSolidOidcAction,
   loadRcSeedAccounts,
   prepareRcAuthenticatedSmoke,
   trySubmitSolidPassword,
@@ -19,6 +20,19 @@ describe('RC authenticated smoke seed preparation', () => {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = undefined;
     }
+  });
+
+  it('does not wait on the obsolete OIDC page after consent redirects to settings', async () => {
+    const action = {
+      click: vi.fn(async () => undefined),
+    } as any;
+
+    await clickSolidOidcAction(action);
+
+    expect(action.click).toHaveBeenCalledWith({
+      noWaitAfter: true,
+      timeout: 5_000,
+    });
   });
 
   it('retries a login form replaced between visibility and password fill', async () => {
