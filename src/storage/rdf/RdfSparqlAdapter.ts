@@ -118,6 +118,12 @@ function nativeQueryShapeRejection(value: unknown, root = true): string | undefi
   if (record.type === 'optional' || record.type === 'union' || record.type === 'minus') {
     return `${String(record.type).toUpperCase()} query shapes require the embedded compatibility path`;
   }
+  if (record.type === 'filter') {
+    const expression = record.expression as Record<string, unknown> | undefined;
+    if (expression?.termType === 'Variable') {
+      return 'Variable effective-boolean-value filters require the embedded compatibility path';
+    }
+  }
   if (record.type === 'operation') {
     const operator = String(record.operator ?? '').toLowerCase();
     if (operator === 'exists' || operator === 'notexists') {
