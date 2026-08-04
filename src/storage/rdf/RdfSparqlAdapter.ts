@@ -54,6 +54,24 @@ import { variable as rdfVar } from './RdfQueryExecutor';
 
 const PATH_JOIN_VARIABLE_PREFIX = '__rdf_path';
 const XPATH_FUNCTION_NS = 'http://www.w3.org/2005/xpath-functions#';
+const XSD_NUMERIC_DATATYPES = new Set([
+  'http://www.w3.org/2001/XMLSchema#decimal',
+  'http://www.w3.org/2001/XMLSchema#double',
+  'http://www.w3.org/2001/XMLSchema#float',
+  'http://www.w3.org/2001/XMLSchema#integer',
+  'http://www.w3.org/2001/XMLSchema#long',
+  'http://www.w3.org/2001/XMLSchema#int',
+  'http://www.w3.org/2001/XMLSchema#short',
+  'http://www.w3.org/2001/XMLSchema#byte',
+  'http://www.w3.org/2001/XMLSchema#nonNegativeInteger',
+  'http://www.w3.org/2001/XMLSchema#positiveInteger',
+  'http://www.w3.org/2001/XMLSchema#unsignedLong',
+  'http://www.w3.org/2001/XMLSchema#unsignedInt',
+  'http://www.w3.org/2001/XMLSchema#unsignedShort',
+  'http://www.w3.org/2001/XMLSchema#unsignedByte',
+  'http://www.w3.org/2001/XMLSchema#nonPositiveInteger',
+  'http://www.w3.org/2001/XMLSchema#negativeInteger',
+]);
 
 function assertNoExternalService(value: unknown): void {
   if (Array.isArray(value)) {
@@ -74,6 +92,58 @@ function assertNoExternalService(value: unknown): void {
   for (const child of Object.values(record)) {
     assertNoExternalService(child);
   }
+}
+
+function nativeQueryShapeRejection(value: unknown, root = true): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const rejection = nativeQueryShapeRejection(item, false);
+      if (rejection) {
+        return rejection;
+      }
+    }
+    return undefined;
+  }
+  if (value === null || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (!root && record.type === 'query') {
+    return 'Subqueries require the embedded compatibility path';
+  }
+  if (record.type === 'optional' || record.type === 'union' || record.type === 'minus') {
+    return `${String(record.type).toUpperCase()} query shapes require the embedded compatibility path`;
+  }
+  if (record.type === 'operation') {
+    const operator = String(record.operator ?? '').toLowerCase();
+    if (operator === 'exists' || operator === 'notexists') {
+      return 'EXISTS query shapes require the embedded compatibility path';
+    }
+    if ([ '>', '>=', '<', '<=' ].includes(operator)) {
+      const args = Array.isArray(record.args) ? record.args : [];
+      const hasNumericLiteral = args.some((arg) => {
+        if (!arg || typeof arg !== 'object') {
+          return typeof arg === 'number';
+        }
+        const term = arg as Record<string, unknown>;
+        const datatype = term.datatype as Record<string, unknown> | undefined;
+        return term.termType === 'Literal'
+          && XSD_NUMERIC_DATATYPES.has(String(datatype?.value ?? ''));
+      });
+      if (hasNumericLiteral) {
+        return 'Numeric range filters require the embedded compatibility path';
+      }
+    }
+  }
+
+  for (const child of Object.values(record)) {
+    const rejection = nativeQueryShapeRejection(child, false);
+    if (rejection) {
+      return rejection;
+    }
+  }
+  return undefined;
 }
 
 interface FixedPathSegment {
@@ -459,6 +529,10 @@ export class RdfSparqlAdapter {
     assertNoExternalService(parsed);
     if (parsed.type !== 'update') {
       this.compileQueryDatasetScope(this.queryFromClause(parsed), basePath);
+      const rejection = nativeQueryShapeRejection(parsed);
+      if (rejection) {
+        throw new UnsupportedSparqlQueryError(rejection);
+      }
     }
   }
 

@@ -387,6 +387,36 @@ describe('SolidRdfSparqlEngine', () => {
     expect(engine.getMetrics().lastPrimary?.plan).toContain('PostgresRdf3xJoin');
   });
 
+  it('bypasses native QLever for query shapes assigned to the RDF3X compatibility path', async () => {
+    const nativeEngine = new NativeSparqlEngineFake({
+      status: 'ok',
+      mediaType: 'application/sparql-results+json',
+      body: JSON.stringify({ head: { vars: [] }, results: { bindings: [] } }),
+    });
+    const fallbackStub = {
+      queryBindings: vi.fn(async () => [{
+        message: namedNode(`${BASE}message`),
+        rank: literal('150', namedNode(XSD_INTEGER)),
+      }]),
+      close: vi.fn(async () => undefined),
+    };
+    engine = new SolidRdfSparqlEngine(
+      nativeEngine as unknown as RdfEngineLike,
+      fallbackStub as never,
+    );
+
+    const results = await arrayFromStream(await engine.queryBindings(`
+      SELECT ?message WHERE {
+        ?message <${UDFS_PRIORITY}> ?rank .
+        FILTER(?rank > 100)
+      }
+    `, BASE));
+
+    expect(results).toHaveLength(1);
+    expect(nativeEngine.calls).toEqual([]);
+    expect(fallbackStub.queryBindings).toHaveBeenCalledOnce();
+  });
+
   it('routes ASK through native SPARQL when the RDF engine exposes it', async () => {
     const nativeEngine = new NativeSparqlEngineFake({
       status: 'ok',

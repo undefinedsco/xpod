@@ -56,6 +56,54 @@ describe('RdfSparqlAdapter', () => {
     expect(missingFallback.message).not.toMatch(/compatibility|fallback/i);
   });
 
+  it('keeps native QLever on verified query shapes and rejects shapes that require the compatibility path', () => {
+    expect(() => adapter.assertServerOwnedNativeQuery(`
+      SELECT ?message WHERE {
+        ?message a <${MESSAGE}> .
+        FILTER(?message != <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_2>)
+      }
+      ORDER BY ?message
+      LIMIT 10
+    `, BASE)).not.toThrow();
+    expect(() => adapter.assertServerOwnedNativeQuery(`
+      SELECT ?message WHERE {
+        VALUES ?message { <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1> }
+        ?message <${HAS_MEMBER}>* ?thread .
+      }
+    `, BASE)).not.toThrow();
+
+    const compatibilityQueries = [
+      `SELECT ?message WHERE {
+        { SELECT ?message WHERE { ?message a <${MESSAGE}> . } }
+      }`,
+      `SELECT ?message WHERE {
+        ?message a <${MESSAGE}> .
+        OPTIONAL { ?message <${CONTENT}> ?content . }
+      }`,
+      `SELECT ?message WHERE {
+        { ?message a <${MESSAGE}> . }
+        UNION
+        { ?message <${CONTENT}> ?content . }
+      }`,
+      `SELECT ?message WHERE {
+        ?message a <${MESSAGE}> .
+        MINUS { ?message <${CONTENT}> ?content . }
+      }`,
+      `SELECT ?message WHERE {
+        ?message a <${MESSAGE}> .
+        FILTER EXISTS { ?message <${CONTENT}> ?content . }
+      }`,
+      `SELECT ?message WHERE {
+        ?message <${CONTENT}> ?rank .
+        FILTER(?rank > 100)
+      }`,
+    ];
+
+    for (const query of compatibilityQueries) {
+      expect(() => adapter.assertServerOwnedNativeQuery(query, BASE)).toThrow(UnsupportedSparqlQueryError);
+    }
+  });
+
   it('compiles SELECT BGP, filters, ordering, and pagination into embedded query shape', () => {
     const compiled = adapter.compile(`
       SELECT ?message ?content WHERE {
