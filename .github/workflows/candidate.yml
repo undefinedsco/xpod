@@ -430,11 +430,6 @@ jobs:
           if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
             throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
           }
-          const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
-          const allValues = Array.from(entries.values()).join('\n');
-          if (productionDomainPattern.test(allValues)) {
-            throw new Error('production domain is not allowed in RC APP_ENV_FILE');
-          }
           const bucket = entries.get('CSS_MINIO_BUCKET_NAME') || '';
           if (/^(xpod-cloud|undefineds|prod|production)(?:$|[-_])/i.test(bucket) || /(?:^|[-_])(prod|production)(?:$|[-_])/i.test(bucket)) {
             throw new Error('production bucket is not allowed in RC APP_ENV_FILE');

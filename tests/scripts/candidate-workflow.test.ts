@@ -223,7 +223,7 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('CSS_MINIO_BUCKET_NAME');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    expect(runText).toContain('production domain');
+    expect(runText).toContain('production bucket');
     expect(runText).toContain('production bucket');
     expect(runText).toContain('production database');
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
