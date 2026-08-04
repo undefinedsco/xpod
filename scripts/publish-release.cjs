@@ -87,14 +87,19 @@ function readNpmDistTag(packageName, tag, registry, npmEnv, options = {}) {
 function ensureNpmDistTag(packageName, version, tag, registry, npmEnv, options = {}) {
   const current = readNpmDistTag(packageName, tag, registry, npmEnv, options);
   if (current !== version) {
-    runFile('npm', [
-      'dist-tag',
-      'add',
-      `${packageName}@${version}`,
-      tag,
-      '--registry',
-      registry,
-    ], npmEnv, options);
+    try {
+      runFile('npm', [
+        'dist-tag',
+        'add',
+        `${packageName}@${version}`,
+        tag,
+        '--registry',
+        registry,
+      ], npmEnv, options);
+    } catch {
+      // npm returns exit code 1 when a concurrently updated tag already points
+      // at this version. The authoritative check below decides success.
+    }
   }
 
   const verified = readNpmDistTag(packageName, tag, registry, npmEnv, options);

@@ -190,6 +190,31 @@ describe('publish-release npm dist-tag handling', () => {
     expect(JSON.stringify(commands)).not.toContain('npm dist-tag add ');
   });
 
+  it('accepts an npm dist-tag race when the final tag already points to the candidate', async () => {
+    const root = await makePackageRepo('1.2.3-rc.9');
+    let viewCount = 0;
+    const baseRunner = createRunner([]);
+
+    expect(() => main([ '--skip-build' ], {
+      cwd: root,
+      env: {
+        XPOD_PUBLISH_TAG: 'next',
+        XPOD_PUBLISH_PLATFORM_PACKAGES: 'false',
+      },
+      readPublishedVersion: () => '1.2.3-rc.9',
+      runFile: (file: string, args: string[]) => {
+        if (file === 'npm' && args[0] === 'view' && args[2] === 'dist-tags.next') {
+          viewCount += 1;
+          return JSON.stringify(viewCount === 1 ? '1.2.3-rc.8' : '1.2.3-rc.9');
+        }
+        if (file === 'npm' && args[0] === 'dist-tag') {
+          throw new Error('next is already set to version 1.2.3-rc.9');
+        }
+        return baseRunner(file, args, {});
+      },
+    })).not.toThrow();
+  });
+
   it('verifies explicit next after a successful npm publish and does not manage tags for stable implicit publishes', async () => {
     const rcRoot = await makePackageRepo('1.2.3-rc.10');
     const rcCommands: Command[] = [];
