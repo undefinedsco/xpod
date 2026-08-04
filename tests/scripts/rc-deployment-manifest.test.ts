@@ -92,16 +92,12 @@ describe('RC Sealos deployment manifest', () => {
       'Certificate/xpod-rc-pods',
       'ConfigMap/xpod-rc-config',
       'Deployment/xpod-rc',
-      'Deployment/xpod-rc-minio',
       'Ingress/xpod-rc-api',
       'Ingress/xpod-rc-id',
       'Ingress/xpod-rc-pods',
       'Issuer/xpod-rc-letsencrypt',
-      'Job/xpod-rc-minio-init',
-      'PersistentVolumeClaim/xpod-rc-minio',
       'Service/xpod-rc',
       'Service/xpod-rc-gateway',
-      'Service/xpod-rc-minio',
     ]);
     expect(objects.every((object) => object.metadata?.namespace === 'xpod-rc')).toBe(true);
 
@@ -144,6 +140,12 @@ describe('RC Sealos deployment manifest', () => {
       expect.objectContaining({ name: 'XPOD_API_BASE_URL', value: 'http://xpod-rc' }),
       expect.objectContaining({ name: 'XPOD_INNGEST_SOURCE', value: 'rc' }),
     ]));
+    expect((xpodContainer.env ?? []).map((entry: any) => entry.name)).not.toEqual(expect.arrayContaining([
+      'CSS_MINIO_ENDPOINT',
+      'CSS_MINIO_BUCKET_NAME',
+      'CSS_MINIO_ACCESS_KEY',
+      'CSS_MINIO_SECRET_KEY',
+    ]));
     expect(xpodContainer.readinessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.livenessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.startupProbe?.httpGet?.path).toBe('/service/status');
@@ -175,9 +177,7 @@ describe('RC Sealos deployment manifest', () => {
       });
     }
     expect(objects.some((object) => object.kind === 'StatefulSet')).toBe(false);
-    expect(findOne(objects, 'PersistentVolumeClaim', 'xpod-rc-minio').spec).toMatchObject({
-      storageClassName: 'openebs-lvmpv-node',
-      resources: { requests: { storage: '5Gi' } },
-    });
+    expect(objects.some((object) => object.kind === 'PersistentVolumeClaim')).toBe(false);
+    expect(objects.some((object) => object.metadata?.name?.startsWith('xpod-rc-minio'))).toBe(false);
   });
 });

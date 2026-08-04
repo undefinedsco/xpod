@@ -19,9 +19,10 @@ namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
 and mounts the fixed Alice/Bob seed separately. RC reuses the physical
 PostgreSQL, Redis, and Inngest, but must select an isolated logical
 database/schema, nonzero Redis DB, and Event Key. Pod blobs are written to the
-RC-owned `xpod-rc-minio` persistent volume and `xpod-rc` bucket; its credentials
-exist only in the Kubernetes `xpod-rc-object-store` Secret. The Inngest Signing
-Key is shared with the shared Inngest instance.
+dedicated Cloudflare R2 bucket `xpod-rc`; its endpoint and credentials come only
+from `APP_ENV_FILE`. The historical `CSS_MINIO_*` names remain for compatibility
+in this release even though the backend is R2. The Inngest Signing Key is shared
+with the shared Inngest instance. Production object storage is not modified.
 
 `CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, ports, edition, and RC source are fixed in
 the manifest. Do not place production hosts or unsupported prefix variables in

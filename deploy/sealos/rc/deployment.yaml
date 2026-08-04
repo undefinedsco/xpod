@@ -64,20 +64,6 @@ spec:
               value: http://xpod-rc
             - name: XPOD_INNGEST_SOURCE
               value: rc
-            - name: CSS_MINIO_ENDPOINT
-              value: http://xpod-rc-minio:9000
-            - name: CSS_MINIO_BUCKET_NAME
-              value: xpod-rc
-            - name: CSS_MINIO_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: xpod-rc-object-store
-                  key: access-key
-            - name: CSS_MINIO_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: xpod-rc-object-store
-                  key: secret-key
           envFrom:
             - configMapRef:
                 name: xpod-rc-config
