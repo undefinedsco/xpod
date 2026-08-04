@@ -28,7 +28,13 @@ describe('CSS route composition', () => {
     const resource = manager.configRegistry.getInstantiatedResource(
       new DataFactory().namedNode(BASE_HTTP_HANDLER),
     );
-    const constructed = resource && manager.configConstructorPool.getRawConfig(resource);
+    if (!resource) throw new Error('Base HTTP handler config was not instantiated');
+    const constructorPool = manager.configConstructorPool as typeof manager.configConstructorPool & {
+      getRawConfig(value: typeof resource): {
+        properties: Record<string, Array<{ list?: Array<{ list?: Array<{ value: string }> }> }>>;
+      };
+    };
+    const constructed = constructorPool.getRawConfig(resource);
     const constructorArguments = constructed?.properties[
       'https://linkedsoftwaredependencies.org/vocabularies/object-oriented#arguments'
     ]?.[0]?.list;

@@ -57,6 +57,7 @@ describe('RC R2 access verification', () => {
       },
     })).catch((caught: unknown) => caught as Error);
 
+    if (!error) throw new Error('Expected RC R2 access verification to fail');
     expect(error.message).toBe('RC R2 bucket xpod-rc is not accessible with the configured credentials');
     expect(error.message).not.toContain('access-secret');
     expect(error.message).not.toContain('secret-secret');
