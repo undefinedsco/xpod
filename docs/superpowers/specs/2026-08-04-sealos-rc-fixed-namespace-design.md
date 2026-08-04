@@ -20,8 +20,6 @@ RC owns these Kubernetes resources:
 
 - `Deployment/xpod-rc`
 - `Service/xpod-rc`
-- `Deployment/xpod-inngest-rc`
-- `Service/xpod-inngest-rc`
 - `ConfigMap/xpod-rc-config`
 - runtime Secret `xpod-rc-secret`
 - seed Secret `xpod-rc-seed`
@@ -29,26 +27,41 @@ RC owns these Kubernetes resources:
 - TLS Secret `xpod-rc-tls`, issued after Ingress creation by the Sealos
   certificate controller
 
-Production resources such as `Service/xpod`, `Deployment/xpod-cloud`, and
-`Deployment/Service xpod-inngest` are never selected, patched, or replaced by
-the RC workflow.
+Production resources such as `Service/xpod` and `Deployment/xpod-cloud` are
+never selected, patched, or replaced by the RC workflow. The existing
+`Deployment/Service xpod-inngest` is a shared data-center service and is reused
+by both Xpod instances.
 
 ## Internal routing
 
-RC components use only RC service names:
+RC uses its own Xpod service name:
 
-- Xpod calls Inngest at `http://xpod-inngest-rc:8288`.
-- Inngest registers the SDK endpoint at `http://xpod-rc/api/inngest`.
-- Inngest receives `XPOD_API_BASE_URL=http://xpod-rc`.
+- RC Xpod calls the shared Inngest at `http://xpod-inngest:8288`.
+- The shared Inngest polls both `http://xpod/api/inngest` and
+  `http://xpod-rc/api/inngest`; `--sdk-url` is a repeatable CLI option.
+- RC sets `XPOD_INNGEST_SOURCE=rc`; production uses the stable default
+  `production`.
+- The source participates in the Inngest app ID, function ID, event names, and
+  event payload. It is an origin marker, not an Inngest namespace or
+  environment abstraction.
+- RC app/function/event identities cannot overwrite or trigger production
+  identities even though both use the same Inngest service and keys.
 - The RC Ingress routes `rc.id.undefineds.co` to `Service/xpod-rc`.
 
-Selectors and pod labels use `app: xpod-rc` and `app: xpod-inngest-rc`, so no
-RC Service can select production pods.
+The shared Inngest Deployment receives the second SDK URL as an additive,
+stable configuration change. The candidate workflow verifies both URLs are
+present before RC acceptance; it does not dynamically add/remove the URL or
+scale/recreate the shared Inngest service. When RC Xpod is scaled to zero, the
+poller may report that the RC endpoint is unavailable, but production app
+registration and execution remain unchanged.
+
+Selectors and pod labels use `app: xpod-rc`, so the RC Service cannot select
+production pods.
 
 ## Shared and isolated infrastructure
 
-RC reuses the data center's physical PostgreSQL, Redis, MinIO, ingress
-controller, and Kubernetes cluster. Its `APP_ENV_FILE` must still select an
+RC reuses the data center's physical PostgreSQL, Redis, MinIO, Inngest,
+ingress controller, and Kubernetes cluster. Its `APP_ENV_FILE` must still select an
 independent PostgreSQL logical database or schema, nonzero dedicated Redis DB,
 and independent MinIO bucket. The candidate workflow rejects production domain
 and production-equivalent data values before deployment.
@@ -76,13 +89,15 @@ Sealos certificate controller creates that Secret after the Ingress exists.
   Kubernetes diagnostics.
 - Any rendered `Namespace` object, production resource name, production
   selector, or production internal service address is a test failure.
-- Scale-to-zero affects only `xpod-rc` and `xpod-inngest-rc`.
+- Scale-to-zero affects only `xpod-rc`; the shared Inngest remains available to
+  production.
 
 ## Verification
 
 Manifest tests render both the placeholder overlay and a custom assigned
 namespace, then assert exact object names, selectors, internal addresses,
-Ingress backend, and absence of Namespace resources. Workflow tests assert the
+source-specific Inngest identities, Ingress backend, and absence of Namespace
+resources. Workflow tests assert the
 prepublish DNS/kubeconfig gate, post-deploy TLS gate, RC-only rollout/diagnostic/
 scale targets, and no production resource mutations. The existing full build,
 package tests, lite integration suite, full Docker integration suite, and real
