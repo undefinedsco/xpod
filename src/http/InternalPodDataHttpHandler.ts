@@ -66,13 +66,13 @@ export class InternalPodDataHttpHandler extends HttpHandler {
   }
 
   public override async canHandle({ request }: HttpHandlerInput): Promise<void> {
-    if (this.parseUrl(request).pathname !== this.basePath) {
+    if (this.requestPathname(request) !== this.basePath) {
       throw new NotImplementedHttpError('Not an internal Pod data request.');
     }
   }
 
   public override async handle({ request, response }: HttpHandlerInput): Promise<void> {
-    if (this.parseUrl(request).pathname !== this.basePath) {
+    if (this.requestPathname(request) !== this.basePath) {
       throw new NotImplementedHttpError('Not an internal Pod data request.');
     }
 
@@ -255,8 +255,17 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     response.end('Not Found');
   }
 
-  private parseUrl(request: HttpRequest): URL {
-    return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  private requestPathname(request: HttpRequest): string | undefined {
+    const requestUrl = request.url ?? '/';
+    try {
+      // Route ownership is path-based. Do not let an untrusted or proxy-shaped
+      // Host header make URL parsing throw and silently skip this first handler.
+      return requestUrl.startsWith('/')
+        ? new URL(requestUrl, 'http://xpod.internal').pathname
+        : new URL(requestUrl).pathname;
+    } catch {
+      return undefined;
+    }
   }
 
   private parseOptionalUrl(value: string | undefined): URL | undefined {

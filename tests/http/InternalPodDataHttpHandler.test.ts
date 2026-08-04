@@ -190,6 +190,15 @@ describe('InternalPodDataHttpHandler', () => {
     await expect(handler.canHandle({ request } as any)).rejects.toBeInstanceOf(NotImplementedHttpError);
   });
 
+  it('claims the reserved internal path without depending on the forwarded Host header', async () => {
+    const handler = createHandler();
+    const request = createRequest('GET', '/.internal/pod-data', {
+      headers: { host: '[malformed-forwarded-host' },
+    });
+
+    await expect(handler.canHandle({ request } as any)).resolves.toBeUndefined();
+  });
+
   it.each([
     ['missing marker', {}],
     ['forged marker', signedHeaders({ secret: 'wrong-secret' })],
