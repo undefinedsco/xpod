@@ -125,6 +125,9 @@ function CapabilityProbe() {
           ? runtime.aiClientConfiguration.authority
           : runtime.aiClientConfiguration?.manualInstructions ?? 'no-capability'}
       </span>
+      <span data-testid="client-credentials-url">
+        {runtime.accountClientCredentialsUrl ?? 'no-client-credentials-url'}
+      </span>
     </div>
   );
 }
@@ -590,6 +593,48 @@ describe('Xpod Solid runtime', () => {
 
     expect(container.querySelector('[data-testid="capability"]')?.textContent).toContain('manual');
     await unmount(root);
+  });
+
+  test('discovers account Client Credentials controls without a second auth provider', async () => {
+    const accountFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('/.account/');
+      expect(init?.credentials).toBe('include');
+      return new Response(JSON.stringify({
+        controls: {
+          account: {
+            clientCredentials: 'https://id.example/.account/account/alice/client-credentials/',
+          },
+        },
+      }), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = accountFetch;
+    const runtimeFetch = mock(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/ai/client-configuration/capability') {
+        return new Response(JSON.stringify({ available: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(
+        '<https://id.example/alice#me> <http://www.w3.org/ns/solid/terms#storage> <https://pod.example/alice/> .',
+        { headers: { 'content-type': 'text/turtle' } },
+      );
+    }) as typeof fetch;
+    const runtime = runtimeCoreWithCapabilityFetch(runtimeFetch, 'https://id.example/alice#me');
+
+    try {
+      const { container, root } = await renderWithRoot(
+        <XpodSolidRuntimeProvider value={runtime}>
+          <CapabilityProbe />
+        </XpodSolidRuntimeProvider>,
+      );
+
+      expect(container.querySelector('[data-testid="client-credentials-url"]')?.textContent)
+        .toBe('https://id.example/.account/account/alice/client-credentials/');
+      await unmount(root);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

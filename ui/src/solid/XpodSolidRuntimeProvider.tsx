@@ -2,6 +2,7 @@ import { SolidRuntimeProvider, type OpenPodRuntime } from '@undefineds.co/solid-
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
+import { storedAccountTokenHeaders } from '../utils/account-session';
 import {
   getXpodSolidRuntimeValue,
   initializedRuntimes,
@@ -29,6 +30,7 @@ export function XpodSolidRuntimeProvider({
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
   const [aiClientConfiguration, setAiClientConfiguration] =
     useState<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>>();
+  const [accountClientCredentialsUrl, setAccountClientCredentialsUrl] = useState<string>();
 
   useEffect(() => {
     return runtime.session.subscribe((nextSnapshot) => {
@@ -37,6 +39,7 @@ export function XpodSolidRuntimeProvider({
       if (nextSnapshot.status !== 'authenticated') {
         setCurrentPod(undefined);
         setPodError(undefined);
+        setAccountClientCredentialsUrl(undefined);
         runtime.pod.clear();
       } else if (nextSnapshot.webId !== snapshot.webId) {
         setAiClientConfiguration(undefined);
@@ -95,6 +98,9 @@ export function XpodSolidRuntimeProvider({
   useEffect(() => {
     if (!authenticatedWebId) return;
     let cancelled = false;
+    void discoverAccountClientCredentialsUrl(fetch).then((url) => {
+      if (!cancelled) setAccountClientCredentialsUrl(url);
+    });
     void discoverAiClientConfigurationCapability(runtime.session.fetch).then((capability) => {
       if (!cancelled && runtime.session.getSnapshot().status === 'authenticated' &&
         runtime.session.getSnapshot().webId === authenticatedWebId) {
@@ -126,6 +132,7 @@ export function XpodSolidRuntimeProvider({
       issuer: state.issuer,
       currentPod,
       aiClientConfiguration,
+      accountClientCredentialsUrl,
       login: async (issuer: string) => {
         const oidcIssuer = normalizeXpodOidcIssuer(issuer);
         if (!oidcIssuer) {
@@ -145,7 +152,7 @@ export function XpodSolidRuntimeProvider({
         await runtime.session.logout();
       },
     };
-  }, [aiClientConfiguration, currentPod, issuer, podError, runtime, snapshot]);
+  }, [accountClientCredentialsUrl, aiClientConfiguration, currentPod, issuer, podError, runtime, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: runtime.session, pod: runtime.pod, currentPod }}>
@@ -154,6 +161,22 @@ export function XpodSolidRuntimeProvider({
       </XpodSolidRuntimeContext.Provider>
     </SolidRuntimeProvider>
   );
+}
+
+async function discoverAccountClientCredentialsUrl(fetchImpl: typeof fetch): Promise<string | undefined> {
+  try {
+    const response = await fetchImpl('/.account/', {
+      credentials: 'include',
+      headers: storedAccountTokenHeaders({ accept: 'application/json' }),
+    });
+    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) return undefined;
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || !isRecord(payload.controls) || !isRecord(payload.controls.account)) return undefined;
+    const value = payload.controls.account.clientCredentials;
+    return typeof value === 'string' && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function solidOidcCallbackUrl(location: Pick<Location, 'origin' | 'pathname'>): string {

@@ -5,7 +5,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
-import { AuthContext, type Controls } from '../../context/AuthContextValue';
 import { createXpodAiClientConfigurationBridge } from '../../api/ai-connection';
 import ModelsPage from './ModelsPage';
 
@@ -204,32 +203,13 @@ async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <AuthContext.Provider value={authContextValue()}>
-        <XpodSolidRuntimeContext.Provider value={runtime}>
-          <ModelsPage />
-        </XpodSolidRuntimeContext.Provider>
-      </AuthContext.Provider>,
+      <XpodSolidRuntimeContext.Provider value={runtime}>
+        <ModelsPage />
+      </XpodSolidRuntimeContext.Provider>,
     );
     await delay(30);
   });
   return { container, root };
-}
-
-function authContextValue(controls: Controls = {
-  account: {
-    clientCredentials: 'https://pod.example/.account/account/alice/client-credentials/',
-  },
-}) {
-  return {
-    controls,
-    isInitializing: false,
-    initError: null,
-    idpIndex: 'https://pod.example/.account/',
-    isLoggedIn: true,
-    authenticating: false,
-    hasOidcPending: false,
-    refetchControls: vi.fn(async () => undefined),
-  };
 }
 
 async function unmount(root: Root) {
@@ -254,6 +234,7 @@ function runtimeWith(fetchImpl: typeof fetch, clientConfigAvailable = false): Xp
     aiClientConfiguration: clientConfigAvailable
       ? { available: true, authority: 'local-filesystem' }
       : undefined,
+    accountClientCredentialsUrl: 'https://pod.example/.account/account/alice/client-credentials/',
     login: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
   } as XpodSolidRuntimeValue;
