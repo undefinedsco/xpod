@@ -10,6 +10,7 @@ import {
   decodePlaintextCredential,
   encodePlaintextCredential,
   PLAINTEXT_CREDENTIAL_STORAGE_MODE,
+  UnsupportedCredentialStorageModeError,
 } from '../credentials/PlaintextCredentialPayload';
 import type { GatewayDeployment } from '../auth/InvocationTokenCodec';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
@@ -254,7 +255,16 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       }),
     )).filter((row): row is Record<string, unknown> => row !== null);
     return rows
-      .map((row) => recordFromCredentialRow(row, input.webId))
+      .flatMap((row) => {
+        try {
+          return [recordFromCredentialRow(row, input.webId)];
+        } catch (error) {
+          if (error instanceof UnsupportedCredentialStorageModeError) {
+            return [];
+          }
+          throw error;
+        }
+      })
       .filter((record) => record.webId === input.webId)
       .filter((record) => record.deployment === input.deployment)
       .filter((record) => record.status === 'active')

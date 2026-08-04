@@ -881,6 +881,10 @@ describe('ProviderConnectService', () => {
       randomBytes: () => Buffer.alloc(32, 13),
       now: () => new Date('2026-07-23T00:00:00.000Z'),
     });
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual([]);
     const begun = await adapter.begin({
       webId: WEB_ID,
       deployment: 'cloud',
