@@ -254,6 +254,8 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('set -a');
     expect(runText).toContain('${RUNNER_TEMP}/rc-authenticated-smoke.env');
     expect(runText).toContain('bun scripts/accept-xpod-settings.ts --allow-incomplete');
+    expect(runText).toContain('xpod-light-settings-acceptance.md');
+    expect(runText).toContain('cat "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.md"');
     expect(runText).toContain('node scripts/assert-rc-authenticated-smoke.cjs');
     expect(runText).toContain('xpod-light-settings-acceptance.json');
     expect(runText).not.toContain('RC_AUTHENTICATED_SMOKE_COMMAND');

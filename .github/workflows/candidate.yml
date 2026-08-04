@@ -626,7 +626,14 @@ jobs:
           set -a
           . "${RUNNER_TEMP}/rc-authenticated-smoke.env"
           set +a
+          set +e
           bun scripts/accept-xpod-settings.ts --allow-incomplete --output-dir "${RUNNER_TEMP}/acceptance"
+          acceptance_status=$?
+          set -e
+          cat "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.md"
+          if [ "$acceptance_status" -ne 0 ]; then
+            exit "$acceptance_status"
+          fi
           node scripts/assert-rc-authenticated-smoke.cjs "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.json"
           printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
 
