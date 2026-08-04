@@ -787,7 +787,15 @@ function renderMarkdown(report: AcceptanceReport): string {
     lines.push(`- Commands: ${item.commands.join(' ; ')}`);
     lines.push(`- Evidence: ${item.evidence.join(' ; ')}`);
     if (item.gate?.kind === 'command' && item.gate.env) lines.push(`- Gate env: ${JSON.stringify(item.gate.env)}`);
-    if (item.commandResult) lines.push(`- Command result: exit=${item.commandResult.exitCode}, durationMs=${item.commandResult.durationMs}`);
+    if (item.commandResult) {
+      lines.push(`- Command result: exit=${item.commandResult.exitCode}, durationMs=${item.commandResult.durationMs}`);
+      if (item.status === 'fail' && item.commandResult.stdout.trim()) {
+        lines.push('', 'Command stdout:', '', '```text', item.commandResult.stdout.trim(), '```');
+      }
+      if (item.status === 'fail' && item.commandResult.stderr.trim()) {
+        lines.push('', 'Command stderr:', '', '```text', item.commandResult.stderr.trim(), '```');
+      }
+    }
     if (item.artifact) lines.push(`- Artifact: ${item.artifact.schema}, generatedAt=${item.artifact.generatedAt}`);
     lines.push('');
   }

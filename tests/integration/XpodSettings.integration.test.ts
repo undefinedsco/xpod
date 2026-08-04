@@ -109,6 +109,41 @@ describe('Xpod settings product acceptance harness', () => {
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
   });
 
+  it('renders redacted command output for failed acceptance gates', async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-failure-evidence-'));
+    const secret = 'sk-failed-gate-secret';
+    const report = await runAcceptance({
+      env: {
+        XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: secret,
+      },
+      now: '2026-08-01T00:00:00.000Z',
+      executeCommand: async (command) => ({
+        command: command.command,
+        exitCode: 1,
+        durationMs: 12,
+        stdout: `assertion failed for ${secret}`,
+        stderr: `response contained ${secret}`,
+      }),
+    });
+
+    const { markdownPath } = await writeAcceptanceEvidence(report, {
+      outputDir: tempRoot,
+      extraRedactionValues: [secret],
+    });
+    const markdown = await readFile(markdownPath, 'utf8');
+
+    expect(markdown).toContain('Command stdout:');
+    expect(markdown).toContain('assertion failed for [redacted]');
+    expect(markdown).toContain('Command stderr:');
+    expect(markdown).toContain('response contained [redacted]');
+    expect(markdown).not.toContain(secret);
+  });
+
   it('uses the selected runAcceptance env for the default command executor', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-selected-env-'));
     const shimDir = path.join(tempRoot, 'bin');
