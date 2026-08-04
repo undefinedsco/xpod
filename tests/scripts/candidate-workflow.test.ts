@@ -318,6 +318,9 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('public-service');
     expect(runText).toContain('deployed-digest');
     expect(runText).toContain('127.0.0.1:3000/service/status');
+    expect(runText).not.toContain("jsonpath='{.items[0].metadata.name}'");
+    expect(runText).toContain('containerStatus?.ready');
+    expect(runText).toContain('metadata.deletionTimestamp');
     expect(runText).not.toContain("image: 'passed'");
   });
 });

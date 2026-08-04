@@ -359,7 +359,21 @@ jobs:
             echo "::error::deployment image digest mismatch"
             exit 1
           fi
-          pod_name="$(kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-rc -o jsonpath='{.items[0].metadata.name}')"
+          pod_name="$(kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-rc -o json | node -e '
+            const input = [];
+            process.stdin.on("data", (chunk) => input.push(chunk));
+            process.stdin.on("end", () => {
+              const digest = process.argv[1];
+              const pods = JSON.parse(Buffer.concat(input)).items || [];
+              const pod = pods.find(({ metadata, status }) => {
+                const containerStatus = status?.containerStatuses?.find(({ name }) => name === "xpod");
+                return !metadata.deletionTimestamp && status?.phase === "Running" &&
+                  containerStatus?.ready === true && containerStatus.imageID?.includes(digest);
+              });
+              if (!pod) process.exit(1);
+              process.stdout.write(pod.metadata.name);
+            });
+          ' "${{ needs.build_image.outputs.digest }}")"
           pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.containerStatuses[?(@.name=="xpod")].imageID}')"
           if [[ "$pod_image_id" != *"${{ needs.build_image.outputs.digest }}"* ]]; then
             echo "::error::ready pod imageID digest mismatch"
