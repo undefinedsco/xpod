@@ -281,6 +281,20 @@ describe('InternalPodDataHttpHandler', () => {
     expect(store.getRepresentation).toHaveBeenCalledTimes(3);
   });
 
+  it('represents a missing allowlisted AI document as an empty Turtle graph', async () => {
+    const store = createStore();
+    store.getRepresentation.mockRejectedValueOnce({ statusCode: 404 });
+    const handler = createHandler(store);
+
+    const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({ nonce: 'missing-ai-document' }),
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.getHeader('content-type')).toBe('text/turtle');
+    expect(response.bodyText()).toBe('');
+  });
+
   it('rejects removed gateway-key verification pre-auth scope', async () => {
     const store = createStore();
     const handler = createHandler(store);

@@ -2,9 +2,7 @@ import type { ServerResponse } from 'node:http';
 import { drizzle, eq } from '@undefineds.co/drizzle-solid';
 import {
   credentialResource,
-  indexedFileResource,
   type CredentialRow,
-  type IndexedFileRow,
 } from '@undefineds.co/models';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
@@ -165,14 +163,10 @@ export class DrizzlePodAiConnectionStatusReader implements PodAiConnectionStatus
 
     try {
       const db = await this.dbFactory({ webId, podUrl, fetch: trustedFetch });
-      await db.init?.(credentialResource, indexedFileResource);
+      await db.init?.(credentialResource);
 
       const credentialRows = await db.select().from(credentialResource).where(eq(credentialResource.status, 'active')).execute() as CredentialRow[];
-      const indexedRows = await db.select().from(indexedFileResource).execute() as IndexedFileRow[];
-      const lastSyncAt = latestIso([
-        ...credentialRows.map((row) => row.lastUsedAt ?? row.lastRefreshAt),
-        ...indexedRows.map((row) => row.indexedAt),
-      ]);
+      const lastSyncAt = latestIso(credentialRows.map((row) => row.lastUsedAt ?? row.lastRefreshAt));
 
       return {
         status: 'available',
@@ -209,7 +203,6 @@ function createAiConnectionStatusDb(input: {
     podUrl: input.podUrl,
     schema: {
       credential: credentialResource,
-      indexedFile: indexedFileResource,
     },
   }) as unknown as AiConnectionStatusDb);
 }

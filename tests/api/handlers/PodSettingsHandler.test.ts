@@ -228,13 +228,15 @@ describe('PodSettingsHandler', () => {
   });
 
   it('uses the resolved Pod URL as drizzle podUrl and AI container base in split deployments', async () => {
+    const init = vi.fn(async () => undefined);
+    const from = vi.fn((_resource: unknown) => ({
+      where: () => ({ execute: async () => [] }),
+      execute: async () => [],
+    }));
     const dbFactory = vi.fn(async () => ({
-      init: vi.fn(async () => undefined),
+      init,
       select: () => ({
-        from: (resource: unknown) => ({
-          where: () => ({ execute: async () => [] }),
-          execute: async () => [],
-        }),
+        from,
       }),
     }));
     const hostedPodDataAccess = {
@@ -262,5 +264,8 @@ describe('PodSettingsHandler', () => {
       webId: 'https://id.example/alice/profile/card#me',
       podUrl: 'https://storage.example/alice/',
     }));
+    expect(init).toHaveBeenCalledTimes(1);
+    expect(init.mock.calls[0]).toHaveLength(1);
+    expect(from).toHaveBeenCalledTimes(1);
   });
 });

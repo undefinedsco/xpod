@@ -86,7 +86,11 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       await this.delegate(request, response, intent);
     } catch (error: unknown) {
       if (isHttpNotFound(error)) {
-        this.writeNotFound(response);
+        if (intent.method === 'GET') {
+          this.writeEmptyGraph(response);
+        } else {
+          this.writeNotFound(response);
+        }
         return;
       }
       throw error;
@@ -253,6 +257,13 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     response.statusCode = 404;
     response.setHeader('Cache-Control', 'no-store');
     response.end('Not Found');
+  }
+
+  private writeEmptyGraph(response: HttpResponse): void {
+    response.statusCode = 200;
+    response.setHeader('Content-Type', 'text/turtle');
+    response.setHeader('Cache-Control', 'no-store');
+    response.end();
   }
 
   private requestPathname(request: HttpRequest): string | undefined {
