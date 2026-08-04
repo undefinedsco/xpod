@@ -29,7 +29,7 @@ test.describe('Xpod settings product acceptance', () => {
 
       await openModule(alice, '/settings/models', 'Models');
       await completeApiKeyThroughUi(alice, testApiKey!);
-      await alice.reload({ waitUntil: 'networkidle' });
+      await alice.reload({ waitUntil: 'domcontentloaded' });
       await expect(alice.locator('body')).not.toContainText(testApiKey!);
       await expect(alice.locator('body')).toContainText(/openai|configured|connected|api key/i);
 
@@ -98,11 +98,11 @@ test.describe('Xpod settings product acceptance', () => {
       await detailTrigger.focus();
       await expect(detailTrigger).toBeFocused();
       await detailTrigger.press('Enter');
-      await page.waitForLoadState('networkidle');
+      await page.waitForLoadState('domcontentloaded');
       await expect(page.locator('main')).toBeVisible();
       await page.screenshot({ path: path.join(screenshotDir, 'narrow-stack-detail.png'), fullPage: true });
 
-      await page.goBack({ waitUntil: 'networkidle' });
+      await page.goBack({ waitUntil: 'domcontentloaded' });
       await expect(page.locator('main')).toHaveCount(1);
       await expect(search.or(page.getByRole('searchbox').first())).toBeVisible();
     } finally {
@@ -117,7 +117,7 @@ async function authenticatedPage(browser: Browser, storageStatePath: string): Pr
 }
 
 async function openModule(page: Page, route: string, label: string): Promise<void> {
-  await page.goto(new URL(route, baseUrl!).toString(), { waitUntil: 'networkidle' });
+  await page.goto(new URL(route, baseUrl!).toString(), { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('link', { name: label, exact: true }).first()).toBeVisible();
 }
 
