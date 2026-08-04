@@ -27,7 +27,7 @@ test.describe('Xpod settings product acceptance', () => {
       const bobBefore = await readPodAiConnectionStatus(bob);
       expect(aliceBefore.webId).not.toBe(bobBefore.webId);
 
-      await openModule(alice, '/dashboard/models', 'Models');
+      await openModule(alice, '/settings/models', 'Models');
       await completeApiKeyThroughUi(alice, testApiKey!);
       await alice.reload({ waitUntil: 'networkidle' });
       await expect(alice.locator('body')).not.toContainText(testApiKey!);
@@ -37,7 +37,7 @@ test.describe('Xpod settings product acceptance', () => {
       expect(aliceAfter.webId).toBe(aliceBefore.webId);
       expect(aliceAfter.configuredProviders).toBe(aliceBefore.configuredProviders + 1);
 
-      await openModule(bob, '/dashboard/models', 'Models');
+      await openModule(bob, '/settings/models', 'Models');
       await expect(bob.locator('body')).not.toContainText(testApiKey!);
       await expect(bob.locator('body')).not.toContainText(/Alice OpenAI acceptance|acceptance-openai/i);
       const bobAfter = await readPodAiConnectionStatus(bob);
@@ -60,7 +60,7 @@ test.describe('Xpod settings product acceptance', () => {
       try {
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         for (const module of [
-          { label: 'Models', path: '/dashboard/models', expected: /openai|anthropic|kimi|bailian|deepseek|gateway/i },
+          { label: 'Models', path: '/settings/models', expected: /openai|anthropic|kimi|bailian|deepseek|gateway/i },
           { label: 'Pod', path: '/dashboard/pod', expected: /webid|pod|issuer|storage|providers/i },
           { label: 'Network', path: '/dashboard/network', expected: /endpoint|addresses|capabilities|unsupported|supported/i },
           { label: 'Services', path: '/dashboard/services', expected: /runtime|solid|gateway|storage|logs|rdf/i },
@@ -86,7 +86,7 @@ test.describe('Xpod settings product acceptance', () => {
     const page = await authenticatedPage(browser, aliceState!);
     try {
       await page.setViewportSize({ width: 390, height: 844 });
-      await openModule(page, '/dashboard/models', 'Models');
+      await openModule(page, '/settings/models', 'Models');
 
       const search = page.getByRole('searchbox').or(page.getByPlaceholder(/search/i)).first();
       await expect(search).toBeVisible();
@@ -118,7 +118,7 @@ async function authenticatedPage(browser: Browser, storageStatePath: string): Pr
 
 async function openModule(page: Page, route: string, label: string): Promise<void> {
   await page.goto(new URL(route, baseUrl!).toString(), { waitUntil: 'networkidle' });
-  await expect(page.getByRole('link', { name: label }).or(page.getByText(label).first())).toBeVisible();
+  await expect(page.getByRole('link', { name: label, exact: true }).first()).toBeVisible();
 }
 
 async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void> {
@@ -131,7 +131,7 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
 }
 
 async function cleanupApiKeyThroughUi(page: Page): Promise<void> {
-  await openModule(page, '/dashboard/models', 'Models');
+  await openModule(page, '/settings/models', 'Models');
   await page.getByText(/openai/i).first().click();
   await page.getByRole('button', { name: /delete|disconnect|revoke|remove/i }).first().click();
   await page.getByRole('button', { name: /confirm|delete|disconnect|revoke|remove/i }).first().click();
