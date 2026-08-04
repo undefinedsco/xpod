@@ -16,6 +16,7 @@ describe('CSS route composition', () => {
       configPath: path.resolve('config/cloud.json'),
       runtimeRoot,
       authMode: 'acp',
+      externalOidcIssuer: 'https://id-rc.undefineds.co/',
     });
     const manager = await ComponentsManager.build({
       mainModulePath: process.cwd(),

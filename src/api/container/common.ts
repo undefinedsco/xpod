@@ -76,7 +76,7 @@ function resolveCssServiceBaseUrl(): string {
 }
 
 function resolveHostedPodCssBaseUrl(): string {
-  return process.env.CSS_INTERNAL_URL ?? 'http://localhost:3000/';
+  return `http://127.0.0.1:${process.env.XPOD_MAIN_PORT ?? '3000'}/`;
 }
 
 function resolveAiConnectionBaseUrl(config: ApiContainerCradle['config']): string {

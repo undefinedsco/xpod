@@ -104,16 +104,31 @@ describe('loadConfigFromEnv', () => {
 
     const hostedPodDataAccess = container.resolve('hostedPodDataAccess') as any;
 
-    expect(hostedPodDataAccess.cssBaseUrl.href).toBe('http://localhost:3000/');
+    expect(hostedPodDataAccess.cssBaseUrl.href).toBe('http://127.0.0.1:3000/');
   });
 
-  it('fails closed when CSS_INTERNAL_URL is not loopback', () => {
-    process.env.CSS_INTERNAL_URL = 'https://pod.example/';
+  it('routes hosted Pod access through the loopback Gateway instead of the CSS child port', () => {
+    process.env.CSS_INTERNAL_URL = 'http://localhost:6501/';
+    process.env.XPOD_MAIN_PORT = '6500';
     const container = createApiContainer(baseConfig({
       gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
     }));
 
-    expect(() => container.resolve('hostedPodDataAccess')).toThrow('hosted_pod_css_loopback_required');
+    const hostedPodDataAccess = container.resolve('hostedPodDataAccess') as any;
+
+    expect(hostedPodDataAccess.cssBaseUrl.href).toBe('http://127.0.0.1:6500/');
+  });
+
+  it('does not expose hosted Pod access to a non-loopback CSS_INTERNAL_URL', () => {
+    process.env.CSS_INTERNAL_URL = 'https://pod.example/';
+    process.env.XPOD_MAIN_PORT = '6500';
+    const container = createApiContainer(baseConfig({
+      gatewayAdminProxyAuthSecret: 'admin-proxy-secret',
+    }));
+
+    const hostedPodDataAccess = container.resolve('hostedPodDataAccess') as any;
+
+    expect(hostedPodDataAccess.cssBaseUrl.href).toBe('http://127.0.0.1:6500/');
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {
