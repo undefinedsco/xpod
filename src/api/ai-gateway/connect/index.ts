@@ -303,8 +303,19 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       version: nextVersion,
     });
     if (existing && stringFrom(existing.storageMode) !== PLAINTEXT_CREDENTIAL_STORAGE_MODE) {
-      await db.deleteById(credential, record.id);
-      await db.insert(credential).values(row).execute();
+      try {
+        const deleted = await db.deleteById(credential, record.id);
+        if (!deleted) {
+          throw new Error('exact credential resource was not deleted');
+        }
+      } catch (error) {
+        throw credentialPersistenceError('replace-delete', error);
+      }
+      try {
+        await db.insert(credential).values(row).execute();
+      } catch (error) {
+        throw credentialPersistenceError('replace-insert', error);
+      }
       return recordFromCredentialRow(row, record.webId);
     }
     if (existing) {
@@ -1255,6 +1266,10 @@ function providerFromRelation(value: string): string | undefined {
   const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
   const provider = fileName.replace(/\.ttl$/u, '');
   return provider ? normalizeProvider(provider) : undefined;
+}
+
+function credentialPersistenceError(stage: string, cause: unknown): Error {
+  return new Error(`credential_persistence_failed:${stage}`, { cause });
 }
 
 function isPodResourceNotFound(error: unknown): boolean {
