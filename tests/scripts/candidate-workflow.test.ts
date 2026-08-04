@@ -229,6 +229,7 @@ describe('release candidate workflow', () => {
       expect(runText).toContain(key);
     }
     expect(runText).toContain('RC object-store bucket must be xpod-rc');
+    expect(runText).toContain('bun scripts/verify-rc-r2-access.ts --env-file "$env_file"');
     expect(runText).toContain('delete deployment/xpod-rc-minio service/xpod-rc-minio job/xpod-rc-minio-init pvc/xpod-rc-minio secret/xpod-rc-object-store --ignore-not-found');
     expect(runText).not.toContain('create secret generic xpod-rc-object-store');
     expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');

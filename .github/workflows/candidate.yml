@@ -471,6 +471,7 @@ jobs:
             throw new Error('RC object-store endpoint must use Cloudflare R2 over HTTPS');
           }
           NODE
+          bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
           printf '\nCSS_SEED_CONFIG=/app/config/seeds/rc.json\n' >> "$env_file"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
