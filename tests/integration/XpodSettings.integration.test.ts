@@ -102,7 +102,7 @@ describe('Xpod settings product acceptance harness', () => {
       gate: expect.objectContaining({
         kind: 'command',
         command: expect.arrayContaining(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts']),
-        timeoutMs: expect.any(Number),
+        timeoutMs: 240_000,
       }),
       commandResult: expect.objectContaining({ exitCode: 7, stderr: '[redacted]' }),
     });

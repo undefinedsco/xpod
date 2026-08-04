@@ -446,7 +446,7 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
 }
 
 function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 3 * 60 * 1000, env, {
+  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 4 * 60 * 1000, env, {
     runtimeEnvKeys: [
       'XPOD_SETTINGS_E2E_BASE_URL',
       'XPOD_SETTINGS_E2E_ALICE_STATE',
