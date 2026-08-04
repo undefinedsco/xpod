@@ -71,15 +71,25 @@ jobs:
             exit 1
           fi
           node - <<'NODE'
-          const { resolve4, resolve6 } = require('node:dns').promises;
+          const { Resolver } = require('node:dns').promises;
           const hosts = [
             'id-rc.undefineds.co',
             'pods-rc.undefineds.co',
             'api-rc.undefineds.co',
           ];
+          const resolvers = [ undefined, [ '1.1.1.1', '8.8.8.8' ] ].map((servers) => {
+            const resolver = new Resolver();
+            if (servers) resolver.setServers(servers);
+            return resolver;
+          });
           Promise.all(hosts.map(async (host) => {
-            const addresses = await Promise.any([ resolve4(host), resolve6(host) ]);
-            if (!addresses.length) throw new Error(`${host}: empty DNS result`);
+            for (const resolver of resolvers) {
+              try {
+                const addresses = await resolver.resolve4(host);
+                if (addresses.length) return;
+              } catch {}
+            }
+            throw new Error(`${host}: empty DNS result`);
           })).catch((error) => {
             console.error(`::error::all RC hosts must resolve before artifacts are published: ${error.message}`);
             process.exit(1);
