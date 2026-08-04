@@ -438,6 +438,7 @@ jobs:
             entries.get('CSS_IDENTITY_DB_URL') || '',
             entries.get('CSS_SPARQL_ENDPOINT') || '',
           ].join('\n');
+          const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
           if (/(?:prod|production|xpod-cloud)/i.test(databaseValues) || productionDomainPattern.test(databaseValues)) {
             throw new Error('production database is not allowed in RC APP_ENV_FILE');
           }
