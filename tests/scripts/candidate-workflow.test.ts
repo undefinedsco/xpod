@@ -220,11 +220,11 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('RC Redis DB must use a non-default database index');
     expect(runText).toContain('RC Redis URL must include an explicit nonzero DB index');
     expect(runText).toContain('production Redis is not allowed in RC APP_ENV_FILE');
-    expect(runText).toContain('CSS_MINIO_BUCKET_NAME');
+    expect(runText).toContain('xpod-rc-object-store');
     expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
     expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
-    expect(runText).toContain('production bucket');
-    expect(runText).toContain('production bucket');
+    expect(runText).toContain('production database');
+    expect(runText).toContain('xpod-rc-minio');
     expect(runText).toContain('production database');
     expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
     expect(runText).not.toMatch(/grep .*APP_ENV_FILE/);

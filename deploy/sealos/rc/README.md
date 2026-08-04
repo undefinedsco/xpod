@@ -17,9 +17,11 @@ for the existing unified Nginx Gateway. The Gateway routes each host to
 The candidate workflow renders this placeholder overlay into the assigned
 namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
 and mounts the fixed Alice/Bob seed separately. RC reuses the physical
-PostgreSQL, Redis, object store, and Inngest, but must select an isolated
-logical database/schema, nonzero Redis DB, object bucket, and Event Key. The
-Inngest Signing Key is shared with the shared Inngest instance.
+PostgreSQL, Redis, and Inngest, but must select an isolated logical
+database/schema, nonzero Redis DB, and Event Key. Pod blobs are written to the
+RC-owned `xpod-rc-minio` persistent volume and `xpod-rc` bucket; its credentials
+exist only in the Kubernetes `xpod-rc-object-store` Secret. The Inngest Signing
+Key is shared with the shared Inngest instance.
 
 `CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, ports, edition, and RC source are fixed in
 the manifest. Do not place production hosts or unsupported prefix variables in

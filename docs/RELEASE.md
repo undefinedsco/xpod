@@ -77,20 +77,17 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 - `CSS_SPARQL_ENDPOINT`
 - `CSS_IDENTITY_DB_URL`
 - `CSS_REDIS_CLIENT`
-- `CSS_MINIO_ENDPOINT`
-- `CSS_MINIO_ACCESS_KEY`
-- `CSS_MINIO_SECRET_KEY`
-- `CSS_MINIO_BUCKET_NAME`
 - `XPOD_INNGEST_EVENT_KEY`
 - `XPOD_INNGEST_SIGNING_KEY`
 
-候选 workflow 会拒绝生产域名、生产 bucket、生产数据库名称或
+候选 workflow 会拒绝生产数据库名称或
 `xpod-cloud`/`prod`/`production` 风格值。`CSS_REDIS_CLIENT` 必须显式指向
 独立 Redis DB，格式上应类似 `CSS_REDIS_CLIENT=.../<nonzero>`；候选 workflow
 会拒绝缺少 DB index、使用 Redis DB 0 或包含 production marker 的 Redis URL。
 不要通过 `XPOD_REDIS_PREFIX` 或 `XPOD_OBJECT_PREFIX` 试图隔离 RC；当前代码
-不读取这些变量，隔离必须由 nonzero Redis DB index、数据库/schema principal
-和 bucket 完成。
+不读取这些变量。RC 对象存储由 overlay 内置的独立 MinIO、PVC 和 Kubernetes
+Secret 提供；隔离由 nonzero Redis DB index、数据库/schema principal 和独立
+对象存储共同完成。
 
 ## 操作命令
 

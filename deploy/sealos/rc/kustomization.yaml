@@ -4,5 +4,6 @@ namespace: xpod-rc
 resources:
   - configmap.yaml
   - deployment.yaml
+  - object-store.yaml
   - service.yaml
   - ingress.yaml

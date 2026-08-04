@@ -404,10 +404,6 @@ jobs:
             'CSS_SPARQL_ENDPOINT',
             'CSS_IDENTITY_DB_URL',
             'CSS_REDIS_CLIENT',
-            'CSS_MINIO_ENDPOINT',
-            'CSS_MINIO_ACCESS_KEY',
-            'CSS_MINIO_SECRET_KEY',
-            'CSS_MINIO_BUCKET_NAME',
             'XPOD_INNGEST_EVENT_KEY',
             'XPOD_INNGEST_SIGNING_KEY',
           ];
@@ -429,10 +425,6 @@ jobs:
           const accountKeys = seed.map((entry) => `${entry?.email || ''} ${entry?.pods?.map?.((pod) => pod?.name).join(' ') || ''}`.toLowerCase());
           if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
             throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
-          }
-          const bucket = entries.get('CSS_MINIO_BUCKET_NAME') || '';
-          if (/^(xpod-cloud|undefineds|prod|production)(?:$|[-_])/i.test(bucket) || /(?:^|[-_])(prod|production)(?:$|[-_])/i.test(bucket)) {
-            throw new Error('production bucket is not allowed in RC APP_ENV_FILE');
           }
           const databaseValues = [
             entries.get('CSS_IDENTITY_DB_URL') || '',
@@ -475,6 +467,12 @@ jobs:
           kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-seed \
             --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
             --dry-run=client -o yaml | kubectl apply -f -
+          if ! kubectl -n "$SEALOS_NAMESPACE" get secret xpod-rc-object-store >/dev/null 2>&1; then
+            object_store_secret="$(openssl rand -base64 32 | tr -d '\n')"
+            kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-object-store \
+              --from-literal=access-key=xpodrc \
+              --from-literal=secret-key="$object_store_secret"
+          fi
 
       - name: Deploy RC image by digest
         run: |
@@ -489,6 +487,8 @@ jobs:
             | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
             | kubectl apply -f -
           kubectl apply -f "$rendered_manifest"
+          kubectl rollout status deployment/xpod-rc-minio -n "$SEALOS_NAMESPACE" --timeout=300s
+          kubectl -n "$SEALOS_NAMESPACE" wait --for=condition=complete job/xpod-rc-minio-init --timeout=300s
           kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc --type=strategic -p "$(node - <<'NODE'
           process.stdout.write(JSON.stringify({
             spec: {

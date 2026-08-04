@@ -89,11 +89,15 @@ describe('RC Sealos deployment manifest', () => {
     expect(objects.map((object) => `${object.kind}/${object.metadata?.name}`).sort()).toEqual([
       'ConfigMap/xpod-rc-config',
       'Deployment/xpod-rc',
+      'Deployment/xpod-rc-minio',
       'Ingress/xpod-rc-api',
       'Ingress/xpod-rc-id',
       'Ingress/xpod-rc-pods',
+      'Job/xpod-rc-minio-init',
+      'PersistentVolumeClaim/xpod-rc-minio',
       'Service/xpod-rc',
       'Service/xpod-rc-gateway',
+      'Service/xpod-rc-minio',
     ]);
     expect(objects.every((object) => object.metadata?.namespace === 'xpod-rc')).toBe(true);
 
@@ -166,6 +170,10 @@ describe('RC Sealos deployment manifest', () => {
         http: { paths: [{ backend: { service: { name: 'xpod-rc-gateway', port: { name: port } } } }] },
       });
     }
-    expect(objects.some((object) => object.kind === 'StatefulSet' || object.kind === 'PersistentVolumeClaim')).toBe(false);
+    expect(objects.some((object) => object.kind === 'StatefulSet')).toBe(false);
+    expect(findOne(objects, 'PersistentVolumeClaim', 'xpod-rc-minio').spec).toMatchObject({
+      storageClassName: 'openebs-lvmpv-node',
+      resources: { requests: { storage: '5Gi' } },
+    });
   });
 });
