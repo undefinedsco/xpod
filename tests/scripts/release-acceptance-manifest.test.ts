@@ -26,8 +26,6 @@ function validInput(overrides = {}) {
     sourceSha: fullSha,
     sourceBranch: 'release/0.3.68',
     imageDigest,
-    npmPackage: '@undefineds.co/xpod',
-    npmVersion: '0.3.68-rc.42',
     endpoint: 'https://id-rc.undefineds.co',
     acceptedAt,
     checks: {
@@ -141,19 +139,17 @@ describe('release acceptance manifest', () => {
     ]));
   });
 
-  it('rejects tag, target, branch, candidate, package, and npm version mismatches', () => {
+  it('rejects tag, target, branch, and candidate mismatches', () => {
     const cases = [
       [ 'targetVersion', validManifest({ targetVersion: '0.3.69' }), expected() ],
       [ 'targetVersion', validManifest(), expected({ tag: '0.3.68' }) ],
       [ 'sourceBranch', validManifest({ sourceBranch: 'main' }), expected() ],
-      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.69-rc.1', npmVersion: '0.3.69-rc.1' }), expected() ],
-      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-beta.1', npmVersion: '0.3.68-beta.1' }), expected() ],
-      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.0', npmVersion: '0.3.68-rc.0' }), expected() ],
-      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.01', npmVersion: '0.3.68-rc.01' }), expected() ],
-      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.1.0', npmVersion: '0.3.68-rc.1.0' }), expected() ],
-      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.1.01', npmVersion: '0.3.68-rc.1.01' }), expected() ],
-      [ 'npmPackage', validManifest({ npmPackage: '@undefineds.co/other' }), expected() ],
-      [ 'npmVersion', validManifest({ npmVersion: '0.3.68-rc.41' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.69-rc.1' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-beta.1' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.0' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.01' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.1.0' }), expected() ],
+      [ 'candidateVersion', validManifest({ candidateVersion: '0.3.68-rc.1.01' }), expected() ],
     ] as const;
 
     for (const [ pathName, manifest, expectedInput ] of cases) {
@@ -296,8 +292,6 @@ describe('release acceptance manifest', () => {
       '--source-sha', fullSha,
       '--source-branch', 'release/0.3.68',
       '--image-digest', imageDigest,
-      '--npm-package', '@undefineds.co/xpod',
-      '--npm-version', '0.3.68-rc.42',
       '--endpoint', 'https://id-rc.undefineds.co',
       '--accepted-at', acceptedAt,
       '--checks-file', checksPath,
@@ -351,8 +345,6 @@ describe('release acceptance manifest', () => {
       '--source-sha', fullSha,
       '--source-branch', 'release/0.3.68',
       '--image-digest', imageDigest,
-      '--npm-package', '@undefineds.co/xpod',
-      '--npm-version', '0.3.68-rc.42',
       '--endpoint', 'https://id-rc.undefineds.co',
       '--accepted-at', acceptedAt,
       '--checks-file', checksPath,
@@ -372,8 +364,6 @@ describe('release acceptance manifest', () => {
       '--source-sha', 'not-a-sha',
       '--source-branch', 'main',
       '--image-digest', 'latest',
-      '--npm-package', '@undefineds.co/other',
-      '--npm-version', '0.3.69-rc.42',
       '--endpoint', 'https://example.com',
       '--accepted-at', 'not-a-date',
       '--checks-file', checksPath,
@@ -391,8 +381,6 @@ describe('release acceptance manifest', () => {
       '--source-sha', 'not-a-sha',
       '--source-branch', 'main',
       '--image-digest', 'latest',
-      '--npm-package', '@undefineds.co/other',
-      '--npm-version', '0.3.69-rc.42',
       '--endpoint', 'https://example.com',
       '--accepted-at', 'not-a-date',
       '--checks-file', checksPath,

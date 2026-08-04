@@ -102,200 +102,8 @@ jobs:
           kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
           kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
 
-  prepublish_npm_tarball:
-    name: prepublish npm tarball (${{ matrix.os }} / node${{ matrix.node-version }})
-    needs: [metadata, rc_prerequisites]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
-    env:
-      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
-      REF_NAME: ${{ github.ref_name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node-version: [22, 24, 25]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Apply candidate root version
-        run: |
-          node scripts/release-candidate.cjs \
-            --branch "$REF_NAME" \
-            --run-number "${{ github.run_number }}" \
-            --run-attempt "${{ github.run_attempt }}" \
-            --sha "${{ github.sha }}" \
-            --apply-root-version
-
-      - name: Check platform package versions
-        run: bun run check:platform-package-version
-
-      - name: Build package
-        run: bun run build
-
-      - name: Pack npm tarball
-        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
-
-      - name: Verify npm tarball contents
-        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
-
-      - name: Install tarball in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
-
-      - name: Consumer runtime smoke
-        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
-
-  prepublish_bun_tarball:
-    name: prepublish bun tarball (${{ matrix.os }} / node${{ matrix.node-version }})
-    needs: [metadata, rc_prerequisites]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
-    env:
-      XPOD_INSTALL_REGISTRY: ${{ vars.XPOD_INSTALL_REGISTRY }}
-      REF_NAME: ${{ github.ref_name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node-version: [22, 24, 25]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Apply candidate root version
-        run: |
-          node scripts/release-candidate.cjs \
-            --branch "$REF_NAME" \
-            --run-number "${{ github.run_number }}" \
-            --run-attempt "${{ github.run_attempt }}" \
-            --sha "${{ github.sha }}" \
-            --apply-root-version
-
-      - name: Check platform package versions
-        run: bun run check:platform-package-version
-
-      - name: Build package
-        run: bun run build
-
-      - name: Pack npm tarball
-        run: node scripts/run-npm-pack.cjs .test-data/npm-pack .test-data/npm-cache
-
-      - name: Verify npm tarball contents
-        run: node scripts/check-pack-json.cjs .test-data/npm-pack/pack.json
-
-      - name: Install tarball with Bun in clean consumer workspace
-        run: node scripts/package-smoke-install.cjs .test-data/npm-pack/pack.json "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
-
-      - name: Consumer runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
-
-  publish_npm_next:
-    needs: [metadata, prepublish_npm_tarball, prepublish_bun_tarball]
-    runs-on: ubuntu-latest
-    outputs:
-      candidate-version: ${{ needs.metadata.outputs.candidate }}
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      XPOD_PUBLISH_REGISTRY: https://registry.npmjs.org
-      XPOD_PUBLISH_PLATFORM_PACKAGES: 'false'
-      XPOD_PUBLISH_TAG: next
-      REF_NAME: ${{ github.ref_name }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-
-      - run: bun install --frozen-lockfile
-
-      - name: Apply candidate root version
-        run: |
-          node scripts/release-candidate.cjs \
-            --branch "$REF_NAME" \
-            --run-number "${{ github.run_number }}" \
-            --run-attempt "${{ github.run_attempt }}" \
-            --sha "${{ github.sha }}" \
-            --apply-root-version
-
-      - name: Build package
-        run: bun run build
-
-      - name: Publish release candidate to npm next
-        run: node scripts/publish-release.cjs --skip-build
-
-  verify_npm_node:
-    needs: publish_npm_next
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Wait for npm package
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}"
-
-      - name: Install published package in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}" "${{ runner.temp }}/xpod-package-smoke" .test-data/npm-cache
-
-      - name: Published runtime smoke
-        run: node scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke"
-
-  verify_npm_bun:
-    needs: publish_npm_next
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.8
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Wait for npm package
-        run: node scripts/wait-for-npm-package.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}"
-
-      - name: Install published package with Bun in clean workspace
-        run: node scripts/package-smoke-install.cjs "@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}" "${{ runner.temp }}/xpod-package-smoke-bun" .test-data/bun-cache bun
-
-      - name: Published runtime smoke under Bun
-        run: bun scripts/package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun"
-
   build_image:
-    needs: [metadata, prepublish_npm_tarball, prepublish_bun_tarball]
+    needs: [metadata, rc_prerequisites]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -334,7 +142,7 @@ jobs:
             ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
 
   deploy_and_accept:
-    needs: [metadata, publish_npm_next, verify_npm_node, verify_npm_bun, build_image]
+    needs: [metadata, build_image]
     runs-on: ubuntu-latest
     environment: rc
     env:
@@ -657,8 +465,6 @@ jobs:
           const path = require('node:path');
           const temp = process.env.RUNNER_TEMP;
           const checks = {
-            'npm-node': 'passed',
-            'npm-bun': 'passed',
             ...JSON.parse(fs.readFileSync(path.join(temp, 'deployment-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
@@ -672,8 +478,6 @@ jobs:
             --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
             --source-branch "$REF_NAME" \
             --image-digest "${{ needs.build_image.outputs.digest }}" \
-            --npm-package "@undefineds.co/xpod" \
-            --npm-version "${{ needs.publish_npm_next.outputs.candidate-version }}" \
             --endpoint "https://id-rc.undefineds.co" \
             --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
             --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"

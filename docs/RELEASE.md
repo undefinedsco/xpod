@@ -10,7 +10,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
    `release/0.3.68`。
 2. 每个推送到 `release/<version>` 的 commit 都触发
    `.github/workflows/candidate.yml`，生成一个新的 RC。
-3. RC workflow 会发布 `@undefineds.co/xpod` 到 npm `next`。首次运行格式为 `0.3.68-rc.<run-number>`；rerun 格式为 `0.3.68-rc.<run-number>.<run-attempt>`。例如 `0.3.68-rc.41`，rerun 示例为 `0.3.68-rc.41.2`。RC 不发布平台子包，也不移动 npm `latest`。
+3. RC 不发布 npm，只生成服务候选版本标识。首次运行格式为 `0.3.68-rc.<run-number>`；rerun 格式为 `0.3.68-rc.<run-number>.<run-attempt>`。例如 `0.3.68-rc.41`，rerun 示例为 `0.3.68-rc.41.2`。
 4. 同一次 RC workflow 构建一个 GHCR 镜像，打 `sha-<full-sha>` 和 RC
    版本 tag，并记录 canonical digest，例如
    `ghcr.io/undefinedsco/xpod@sha256:<64-hex>`。
@@ -19,7 +19,7 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 6. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
 7. 只在接受的 exact commit 上创建 stable tag，例如 `v0.3.68`。
 8. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
-   artifact，校验 stable tag、release branch、npm version、required
+   artifact，校验 stable tag、release branch、required
    checks 和 accepted digest 后，才发布 npm `latest`、把 accepted digest
    重新标记为 stable/latest 容器 tag，并调用生产部署。
 
@@ -98,8 +98,8 @@ git switch -c release/0.3.68
 git push -u origin release/0.3.68
 ```
 
-正常修复继续推送普通 commit。每个 commit 都发布新的 RC，旧 RC 不需要回滚
-npm `next`，因为 npm 版本不可变。
+正常修复继续推送普通 commit。每个 commit 都只构建并部署新的服务 RC，不会
+创建 npm 版本或移动任何 npm dist-tag。
 
 接受某个 RC 后，在 exact commit 上打 stable tag：
 
@@ -124,8 +124,8 @@ stable promotion 校验以下内容：
 - artifact 的 source SHA、source branch、target version、candidate version
   和 endpoint 与当前 tag 匹配；
 - image digest 是 `sha256:<64-lowercase-hex>`；
-- required checks 全部通过，包括 `image`、`npm-node`、`npm-bun`、
-  `service-status`、`oidc`、`dashboard`、`protected-route`、
+- required checks 全部通过，包括 `image`、`service-status`、`oidc`、
+  `dashboard`、`protected-route`、
   `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
   `authenticated-pod`。
 
@@ -161,8 +161,9 @@ RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进�
 
 stable release workflow 在 promotion guard 通过后执行三件事：
 
-1. 从 exact commit 构建并发布 npm stable version；如果该版本已存在，会先
-   验证 registry 中的版本号并保证 npm `latest` 指向目标版本。
+1. 从 exact commit 构建、验证并发布 npm stable version；这是发布流程中
+   第一次触碰 npm。如果该版本已存在，会先验证 registry 中的版本号并保证
+   npm `latest` 指向目标版本。
 2. 使用 `docker buildx imagetools create` 将 accepted digest 标记为
    `ghcr.io/undefinedsco/xpod:<version>` 和 `ghcr.io/undefinedsco/xpod:latest`，
    不重新构建镜像。

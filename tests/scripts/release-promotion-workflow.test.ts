@@ -91,6 +91,8 @@ describe('stable release promotion workflow', () => {
     expect(runText).toContain('node scripts/release-acceptance-manifest.cjs validate');
     expect(runText).toContain('--tag "$TAG_NAME"');
     expect(runText).toContain('--source-sha "$TAG_SHA"');
+    expect(runText).not.toContain('--required-check npm-node');
+    expect(runText).not.toContain('--required-check npm-bun');
     expect(runText).not.toContain('stable npm version already exists');
     expect(runText).not.toContain('registry_url="https://registry.npmjs.org/@undefineds.co%2fxpod/${VERSION}"');
     expect(runText).not.toContain('npm_status=');

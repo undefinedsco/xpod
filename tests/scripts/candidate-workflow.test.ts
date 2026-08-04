@@ -51,7 +51,6 @@ describe('release candidate workflow', () => {
       contents: 'read',
       packages: 'write',
     });
-    expect(workflow.jobs.publish_npm_next.permissions).toBeUndefined();
     expect(workflow.jobs.deploy_and_accept.permissions).toBeUndefined();
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
       if (jobName !== 'build_image') {
@@ -87,28 +86,25 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('--json');
   });
 
-  it('blocks publishing on release-equivalent Node and Bun prepublish matrices without continue-on-error', async () => {
+  it('keeps RC service delivery independent from npm packaging and publishing', async () => {
     const workflow = await loadWorkflow();
-    const nodeJob = workflow.jobs.prepublish_npm_tarball;
-    const bunJob = workflow.jobs.prepublish_bun_tarball;
 
-    expect(nodeJob.needs).toContain('metadata');
-    expect(nodeJob.needs).toContain('rc_prerequisites');
-    expect(nodeJob['continue-on-error']).toBeUndefined();
-    expect(nodeJob.strategy.matrix.os).toEqual(expect.arrayContaining([ 'ubuntu-latest', 'macos-latest' ]));
-    expect(nodeJob.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
-    expect(jobRunText(workflow, 'prepublish_npm_tarball')).toContain('--apply-root-version');
-    expect(jobRunText(workflow, 'prepublish_npm_tarball')).toContain('bun run build');
-    expect(jobRunText(workflow, 'prepublish_npm_tarball')).toContain('node scripts/run-npm-pack.cjs');
-    expect(jobRunText(workflow, 'prepublish_npm_tarball')).toContain('node scripts/package-smoke-install.cjs');
-    expect(jobRunText(workflow, 'prepublish_npm_tarball')).toContain('node scripts/package-consumer-smoke.cjs');
+    for (const jobName of [
+      'prepublish_npm_tarball',
+      'prepublish_bun_tarball',
+      'publish_npm_next',
+      'verify_npm_node',
+      'verify_npm_bun',
+    ]) {
+      expect(workflow.jobs[jobName], jobName).toBeUndefined();
+    }
 
-    expect(bunJob.needs).toContain('metadata');
-    expect(bunJob.needs).toContain('rc_prerequisites');
-    expect(bunJob['continue-on-error']).toBeUndefined();
-    expect(bunJob.strategy.matrix.os).toEqual(expect.arrayContaining([ 'ubuntu-latest', 'macos-latest' ]));
-    expect(bunJob.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
-    expect(jobRunText(workflow, 'prepublish_bun_tarball')).toContain('bun scripts/package-consumer-smoke.cjs');
+    const text = await readFile(workflowPath, 'utf8');
+    expect(text).not.toContain('NPM_TOKEN');
+    expect(text).not.toContain('publish-release.cjs');
+    expect(text).not.toContain('npm publish');
+    expect(text).not.toContain('XPOD_PUBLISH_TAG');
+    expect(text).not.toContain('@undefineds.co/xpod@');
   });
 
   it('checks all RC DNS names and assigned namespace access before publishing artifacts', async () => {
@@ -127,29 +123,13 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain('get secret xpod-rc-tls');
   });
 
-  it('publishes npm with tag next and verifies published Node and Bun consumers before acceptance', async () => {
-    const workflow = await loadWorkflow();
-    const publish = workflow.jobs.publish_npm_next;
-
-    expect(publish.needs).toEqual(expect.arrayContaining([ 'prepublish_npm_tarball', 'prepublish_bun_tarball' ]));
-    expect(publish.env.XPOD_PUBLISH_TAG).toBe('next');
-    expect(publish.env.NODE_AUTH_TOKEN).toBe('${{ secrets.NPM_TOKEN }}');
-    expect(jobRunText(workflow, 'publish_npm_next')).toContain('node scripts/publish-release.cjs --skip-build');
-
-    expect(workflow.jobs.verify_npm_node.needs).toBe('publish_npm_next');
-    expect(workflow.jobs.verify_npm_bun.needs).toBe('publish_npm_next');
-    expect(jobRunText(workflow, 'verify_npm_node')).toContain('@undefineds.co/xpod@${{ needs.publish_npm_next.outputs.candidate-version }}');
-    expect(jobRunText(workflow, 'verify_npm_node')).toContain('node scripts/package-consumer-smoke.cjs');
-    expect(jobRunText(workflow, 'verify_npm_bun')).toContain('bun scripts/package-consumer-smoke.cjs');
-  });
-
   it('builds exactly one GHCR image with immutable sha and candidate tags and exposes the canonical digest', async () => {
     const workflow = await loadWorkflow();
     const build = workflow.jobs.build_image;
     const runText = jobRunText(workflow, 'build_image');
     const actionStep = build.steps.find((step: any) => step.uses === 'docker/build-push-action@v6');
 
-    expect(build.needs).toEqual(expect.arrayContaining([ 'prepublish_npm_tarball', 'prepublish_bun_tarball' ]));
+    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites' ]);
     expect(build.outputs.digest).toContain('digest');
     expect(actionStep.with.push).toBe(true);
     expect(actionStep.with.tags).toContain('sha-${{ needs.metadata.outputs.sourceSha }}');
@@ -158,17 +138,13 @@ describe('release candidate workflow', () => {
     expect(runText).not.toContain(':latest');
   });
 
-  it('deploys only after published consumers and image build, uses rc environment secrets, and deploys by digest', async () => {
+  it('deploys after the image build, uses rc environment secrets, and deploys by digest', async () => {
     const workflow = await loadWorkflow();
     const deploy = workflow.jobs.deploy_and_accept;
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.environment).toBe('rc');
-    expect(deploy.needs).toEqual(expect.arrayContaining([
-      'build_image',
-      'verify_npm_node',
-      'verify_npm_bun',
-    ]));
+    expect(deploy.needs).toEqual([ 'metadata', 'build_image' ]);
     expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
     expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
@@ -287,8 +263,6 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [
       'image',
-      'npm-node',
-      'npm-bun',
       'service-status',
       'oidc',
       'dashboard',
@@ -301,6 +275,10 @@ describe('release candidate workflow', () => {
     ]) {
       expect(runText).toContain(check);
     }
+    expect(runText).not.toContain('npm-node');
+    expect(runText).not.toContain('npm-bun');
+    expect(runText).not.toContain('--npm-package');
+    expect(runText).not.toContain('--npm-version');
     expect(upload.with.name).toBe('release-acceptance-${{ github.sha }}');
     expect(upload.if).toBe('success()');
 

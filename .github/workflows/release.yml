@@ -94,8 +94,6 @@ jobs:
             --tag "$TAG_NAME" \
             --source-sha "$TAG_SHA" \
             --required-check image \
-            --required-check npm-node \
-            --required-check npm-bun \
             --required-check service-status \
             --required-check oidc \
             --required-check dashboard \

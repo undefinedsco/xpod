@@ -15,7 +15,7 @@ describe('release lifecycle documentation', () => {
 
     for (const expected of [
       'release/<version>',
-      'npm `next`',
+      'RC 不发布 npm',
       '0.3.68-rc.',
       'https://id-rc.undefineds.co',
       'https://pods-rc.undefineds.co',
@@ -64,6 +64,7 @@ describe('release lifecycle documentation', () => {
     expect(text).not.toContain('npm version patch');
     expect(text).not.toContain('npm version minor');
     expect(text).not.toContain('npm version major');
+    expect(text).not.toContain('发布 `@undefineds.co/xpod` 到 npm `next`');
   });
 
   it('locks exact RC version, artifact, and required environment variable wording', async () => {

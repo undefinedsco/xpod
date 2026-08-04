@@ -8,8 +8,6 @@ const ALLOWED_TOP_LEVEL_FIELDS = [
   'sourceSha',
   'sourceBranch',
   'imageDigest',
-  'npmPackage',
-  'npmVersion',
   'endpoint',
   'acceptedAt',
   'checks',
@@ -31,8 +29,6 @@ function createManifest(input) {
     sourceSha: input.sourceSha,
     sourceBranch: input.sourceBranch,
     imageDigest: input.imageDigest,
-    npmPackage: input.npmPackage,
-    npmVersion: input.npmVersion,
     endpoint: input.endpoint,
     acceptedAt: input.acceptedAt,
     checks: { ...input.checks },
@@ -156,8 +152,6 @@ function validateManifest(manifest, expected) {
   validateRequiredString(manifest, errors, 'sourceSha');
   validateRequiredString(manifest, errors, 'sourceBranch');
   validateRequiredString(manifest, errors, 'imageDigest');
-  validateRequiredString(manifest, errors, 'npmPackage');
-  validateRequiredString(manifest, errors, 'npmVersion');
   validateRequiredString(manifest, errors, 'endpoint');
 
   if (targetVersion && manifest.targetVersion !== targetVersion) {
@@ -178,14 +172,6 @@ function validateManifest(manifest, expected) {
 
   if (targetVersion && !new RegExp(`^${escapeRegExp(targetVersion)}-rc\\.[1-9]\\d*(?:\\.[1-9]\\d*)?$`).test(manifest.candidateVersion)) {
     addError(errors, 'candidateVersion', 'candidateVersion must be an rc for the target version');
-  }
-
-  if (manifest.npmPackage !== '@undefineds.co/xpod') {
-    addError(errors, 'npmPackage', 'npmPackage must be @undefineds.co/xpod');
-  }
-
-  if (manifest.npmVersion !== manifest.candidateVersion) {
-    addError(errors, 'npmVersion', 'npmVersion must equal candidateVersion');
   }
 
   if (manifest.endpoint !== 'https://id-rc.undefineds.co') {
@@ -266,14 +252,6 @@ function parseCreateArgs(argv) {
         break;
       case '--image-digest':
         args.imageDigest = readOptionValue(argv, i, arg);
-        i += 1;
-        break;
-      case '--npm-package':
-        args.npmPackage = readOptionValue(argv, i, arg);
-        i += 1;
-        break;
-      case '--npm-version':
-        args.npmVersion = readOptionValue(argv, i, arg);
         i += 1;
         break;
       case '--endpoint':
