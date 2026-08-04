@@ -49,14 +49,15 @@ export function XpodSolidRuntimeProvider({
       return;
     }
     initializedRuntimes.add(runtime);
-    if (!isSolidOidcCallback(window.location)) {
+    const startedFromOidcCallback = isSolidOidcCallback(window.location);
+    if (!startedFromOidcCallback) {
       persistSolidReturnTo(window.location.href);
     }
     void runtime.session.initialize({ restorePreviousSession: true }).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
       setIssuer(runtime.getIssuer());
       if (nextSnapshot.status === 'authenticated') {
-        restoreSolidReturnTo(window.location);
+        restoreSolidReturnTo(window.location, startedFromOidcCallback);
       }
     });
   }, [runtime]);
@@ -174,8 +175,11 @@ function isSolidOidcCallback(location: Pick<Location, 'pathname' | 'search'>): b
   return params.has('code') && params.has('state');
 }
 
-function restoreSolidReturnTo(location: Pick<Location, 'origin' | 'pathname' | 'search'>): void {
-  if (!isSolidOidcCallback(location)) return;
+function restoreSolidReturnTo(
+  location: Pick<Location, 'origin' | 'pathname' | 'search'>,
+  startedFromOidcCallback = false,
+): void {
+  if (!startedFromOidcCallback && !isSolidOidcCallback(location)) return;
   try {
     const stored = window.sessionStorage.getItem(XPOD_SOLID_RETURN_TO_STORAGE_KEY);
     if (!stored) return;

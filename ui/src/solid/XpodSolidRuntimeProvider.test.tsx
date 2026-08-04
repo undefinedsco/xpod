@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'bun:test';
 import { JSDOM } from 'jsdom';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
@@ -247,6 +247,52 @@ describe('Xpod Solid runtime', () => {
 
     expect(window.location.href).toBe('https://app.example/dashboard/network');
     expect(window.sessionStorage.getItem('xpod.solid.returnTo')).toBeNull();
+    await unmount(root);
+  });
+
+  test('restores a deep link when Inrupt removes legacy callback query parameters before initialize resolves', async () => {
+    const session = new FakeSession();
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      window.history.replaceState(null, '', '/dashboard/models');
+      session.authenticate();
+      return session.info;
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+
+    const { root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={value}>
+        <RuntimeProbe />
+      </XpodSolidRuntimeProvider>,
+      'https://app.example/dashboard/models?code=legacy&state=state-2',
+      () => window.sessionStorage.setItem('xpod.solid.returnTo', 'https://app.example/dashboard/network'),
+    );
+
+    expect(window.location.href).toBe('https://app.example/dashboard/network');
+    expect(window.sessionStorage.getItem('xpod.solid.returnTo')).toBeNull();
+    await unmount(root);
+  });
+
+  test('restores the fixed callback under the production StrictMode mount cycle', async () => {
+    const session = new FakeSession();
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      window.history.replaceState(null, '', '/settings/auth/callback');
+      session.authenticate();
+      return session.info;
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+
+    const { root } = await renderWithRoot(
+      <StrictMode>
+        <XpodSolidRuntimeProvider value={value}>
+          <RuntimeProbe />
+        </XpodSolidRuntimeProvider>
+      </StrictMode>,
+      'https://app.example/settings/auth/callback?code=fixed&state=state-3',
+      () => window.sessionStorage.setItem('xpod.solid.returnTo', 'https://app.example/settings/models'),
+    );
+
+    expect(window.location.href).toBe('https://app.example/settings/models');
+    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
     await unmount(root);
   });
 

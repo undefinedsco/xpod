@@ -183,7 +183,17 @@ async function completeSolidOidcLogin(
     await page.waitForTimeout(300);
   }
 
-  throw new Error(`OIDC login did not finish for seeded account; submittedPassword=${submittedPassword}; currentOrigin=${new URL(page.url()).origin}`);
+  const current = new URL(page.url());
+  const mainVisible = await page.locator('main').isVisible({ timeout: 300 }).catch(() => false);
+  const authBoundaryVisible = await page.locator('[data-auth-boundary="surface"]').isVisible({ timeout: 300 }).catch(() => false);
+  throw new Error([
+    'OIDC login did not finish for seeded account',
+    `submittedPassword=${submittedPassword}`,
+    `currentOrigin=${current.origin}`,
+    `currentPath=${current.pathname}`,
+    `mainVisible=${mainVisible}`,
+    `authBoundaryVisible=${authBoundaryVisible}`,
+  ].join('; '));
 }
 
 export async function clickSolidOidcAction(action: Locator): Promise<void> {
