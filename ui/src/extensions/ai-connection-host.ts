@@ -25,7 +25,8 @@ const aiConnectionApplet = discoveredAiConnectionApplet;
 
 export function createXpodAiConnectionHost(
   runtime: XpodSolidRuntimeValue,
-  clientCredentialsUrl = new URL('/.account/client-credentials/', window.location.origin).toString(),
+  clientCredentialsUrl?: string,
+  accountFetch: typeof fetch = fetch,
 ): WebExtensionHost<SolidDatabase> {
   const pod = runtime.currentPod
     ? { status: 'ready' as const, current: runtime.currentPod }
@@ -76,7 +77,7 @@ export function createXpodAiConnectionHost(
       aiClientCredentials: createAccountControlsClientCredentialManager(
         clientCredentialsUrl,
         runtime.webId,
-        runtime.fetch,
+        accountFetch,
       ),
     },
   };
@@ -105,8 +106,12 @@ const unsupportedAiClientConfiguration = {
 
 export function useMountedAiConnectionApplet(
   runtime: XpodSolidRuntimeValue,
+  clientCredentialsUrl?: string,
 ): MountedTwoPaneApplet<AiConnectionController> {
-  const host = useMemo(() => createXpodAiConnectionHost(runtime), [runtime]);
+  const host = useMemo(
+    () => createXpodAiConnectionHost(runtime, clientCredentialsUrl),
+    [clientCredentialsUrl, runtime],
+  );
   return useMemo(() => {
     const mounted = mountApplet(aiConnectionApplet, host);
     if (mounted.layout !== 'two-pane') {

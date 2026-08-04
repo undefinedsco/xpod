@@ -25,6 +25,11 @@ describe('settings routes', () => {
     expect(routeElementFor('/services')).toBeTruthy();
   });
 
+  test('keeps the Solid OIDC callback route stable while session restoration completes', () => {
+    expect(routeElementFor('/auth/callback')).toBeTruthy();
+    expect(redirectTargetFor('/auth/callback')).toBeNull();
+  });
+
   test('does not own Dashboard observability routes', () => {
     expect(redirectTargetFor('/logs')).toBe('/models');
     expect(redirectTargetFor('/rdf')).toBe('/models');

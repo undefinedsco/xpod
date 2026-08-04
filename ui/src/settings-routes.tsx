@@ -22,6 +22,7 @@ export const settingsRoutes: RouteObject[] = [
     children: [
       { index: true, element: <Navigate to="/models" replace /> },
       { path: 'models', element: guardedRoute(lazyRoute(<ModelsPage />)) },
+      { path: 'auth/callback', element: <div role="status" className="p-6 text-sm text-muted-foreground">Completing Solid login...</div> },
       { path: 'pod', element: guardedRoute(lazyRoute(<PodPage view="settings" />)) },
       {
         path: 'network',

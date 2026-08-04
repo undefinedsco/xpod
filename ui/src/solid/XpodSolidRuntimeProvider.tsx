@@ -13,6 +13,8 @@ import {
   type XpodSolidRuntimeValue,
 } from './XpodSolidRuntime';
 
+export const XPOD_SOLID_RETURN_TO_STORAGE_KEY = 'xpod.solid.returnTo';
+
 export function XpodSolidRuntimeProvider({
   children,
   value,
@@ -47,9 +49,15 @@ export function XpodSolidRuntimeProvider({
       return;
     }
     initializedRuntimes.add(runtime);
+    if (!isSolidOidcCallback(window.location)) {
+      persistSolidReturnTo(window.location.href);
+    }
     void runtime.session.initialize({ restorePreviousSession: true }).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
       setIssuer(runtime.getIssuer());
+      if (nextSnapshot.status === 'authenticated') {
+        restoreSolidReturnTo(window.location);
+      }
     });
   }, [runtime]);
 
@@ -124,9 +132,10 @@ export function XpodSolidRuntimeProvider({
         }
         runtime.setIssuer(oidcIssuer);
         setIssuer(oidcIssuer);
+        persistSolidReturnTo(window.location.href);
         await runtime.session.login({
           oidcIssuer,
-          redirectUrl: window.location.href,
+          redirectUrl: solidOidcCallbackUrl(window.location),
         });
       },
       logout: async () => {
@@ -144,6 +153,40 @@ export function XpodSolidRuntimeProvider({
       </XpodSolidRuntimeContext.Provider>
     </SolidRuntimeProvider>
   );
+}
+
+function solidOidcCallbackUrl(location: Pick<Location, 'origin' | 'pathname'>): string {
+  const productRoot = location.pathname.startsWith('/dashboard') ? '/dashboard' : '/settings';
+  return new URL(`${productRoot}/auth/callback`, location.origin).toString();
+}
+
+function persistSolidReturnTo(url: string): void {
+  try {
+    window.sessionStorage.setItem(XPOD_SOLID_RETURN_TO_STORAGE_KEY, url);
+  } catch {
+    // Login still works when browser storage is unavailable.
+  }
+}
+
+function isSolidOidcCallback(location: Pick<Location, 'pathname' | 'search'>): boolean {
+  if (location.pathname.endsWith('/auth/callback')) return true;
+  const params = new URLSearchParams(location.search);
+  return params.has('code') && params.has('state');
+}
+
+function restoreSolidReturnTo(location: Pick<Location, 'origin' | 'pathname' | 'search'>): void {
+  if (!isSolidOidcCallback(location)) return;
+  try {
+    const stored = window.sessionStorage.getItem(XPOD_SOLID_RETURN_TO_STORAGE_KEY);
+    if (!stored) return;
+    const target = new URL(stored, location.origin);
+    if (target.origin !== location.origin || !/^\/(?:settings|dashboard)(?:\/|$)/u.test(target.pathname)) return;
+    window.sessionStorage.removeItem(XPOD_SOLID_RETURN_TO_STORAGE_KEY);
+    window.history.replaceState(null, '', `${target.pathname}${target.search}${target.hash}`);
+    window.dispatchEvent(new window.PopStateEvent('popstate'));
+  } catch {
+    // Keep the authenticated callback page when stored navigation is unavailable or invalid.
+  }
 }
 
 async function discoverAiClientConfigurationCapability(

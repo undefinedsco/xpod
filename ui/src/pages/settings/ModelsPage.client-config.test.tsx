@@ -63,10 +63,10 @@ describe('ModelsPage coding-client configuration capability', () => {
         }
         return json({ status: 'notConfigured', message: 'Codex detected' });
       }
-      if (url.pathname === '/.account/client-credentials/' && method === 'GET') {
+      if (url.pathname === '/.account/account/alice/client-credentials/' && method === 'GET') {
         return json({ clientCredentials: {} });
       }
-      if (url.pathname === '/.account/client-credentials/' && method === 'POST') {
+      if (url.pathname === '/.account/account/alice/client-credentials/' && method === 'POST') {
         return json({
           id: 'client-id',
           secret: 'client-secret',
@@ -100,7 +100,8 @@ describe('ModelsPage coding-client configuration capability', () => {
     expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', `${plannedClientPath}/verify`]);
     expect(calls.filter((call) => call.path.startsWith('/api/ai/client-configuration/')).every((call) => call.authorization === 'Bearer xpod_inv_v1.client-config-token')).toBe(true);
     expect(container.textContent).not.toContain('client-secret');
-    expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', '/.account/client-credentials/']);
+    expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', '/.account/account/alice/client-credentials/']);
+    expect(calls.some((call) => call.path === '/.account/client-credentials/')).toBe(false);
     expect(calls.some((call) => call.path === '/api/ai/gateway/keys')).toBe(false);
     expect(JSON.stringify(calls)).not.toContain('sk-provider-secret');
     await unmount(root);
@@ -197,6 +198,7 @@ function installDom() {
 
 async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
   installDom();
+  globalThis.fetch = runtime.fetch;
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -215,7 +217,7 @@ async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
 
 function authContextValue(controls: Controls = {
   account: {
-    clientCredentials: 'https://pod.example/.account/client-credentials/',
+    clientCredentials: 'https://pod.example/.account/account/alice/client-credentials/',
   },
 }) {
   return {

@@ -422,6 +422,7 @@ describe('Xpod settings product acceptance harness', () => {
 
   it('keeps the Playwright real-host spec mandatory once its environment gate is enabled', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
+    const harness = await readFile(path.resolve('scripts/accept-xpod-settings.ts'), 'utf8');
 
     expect(spec).toContain('XPOD_SETTINGS_E2E_BASE_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_STATE');
@@ -440,6 +441,7 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('bobBefore.configuredProviders');
     expect(spec).toContain('assertSdkGeometryContract');
     expect(spec).not.toContain('if (await firstNavigable.count())');
+    expect(harness).toContain("'--workers=1'");
   });
 
   it('keeps acceptance provenance endpoint behind an explicit runtime environment gate', async () => {
@@ -618,6 +620,22 @@ describe('Xpod settings product acceptance harness', () => {
     expect(result.timedOut).toBe(true);
     expect(result.exitCode).not.toBe(0);
     expect(result.durationMs).toBeGreaterThanOrEqual(40);
+  });
+
+  it('retains complete Playwright JSON for contract validation while bounding report diagnostics', async () => {
+    const payload = JSON.stringify({
+      stats: { expected: 1, unexpected: 0, flaky: 0, skipped: 0 },
+      suites: [{ title: 'large-output', padding: 'x'.repeat(8_000) }],
+    });
+    const result = await executeGateCommand({
+      kind: 'command',
+      command: [process.execPath, '-e', `process.stdout.write(${JSON.stringify(payload)})`],
+      timeoutMs: 5_000,
+      resultContract: { kind: 'playwright-json', minExecuted: 1 },
+    });
+
+    expect(result.stdout.length).toBeLessThanOrEqual(4_000);
+    expect(JSON.parse(result.contractStdout ?? '')).toMatchObject({ stats: { expected: 1 } });
   });
 
   it('rejects OAuth evidence symlinks and paths outside the acceptance evidence root unless explicitly audited', async () => {

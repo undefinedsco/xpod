@@ -129,6 +129,11 @@ describe('dashboard routes', () => {
     expect(redirectTargetFor('/services')).toBe('/overview');
   });
 
+  test('keeps the Solid OIDC callback route stable while session restoration completes', () => {
+    expect(routeElementFor('/auth/callback')).toBeTruthy();
+    expect(redirectTargetFor('/auth/callback')).toBeNull();
+  });
+
   test('normalizes anonymous dashboard redirects before settings auth guard', async () => {
     const cases = [
       ['/', '/overview'],

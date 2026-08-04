@@ -27,7 +27,7 @@ const unsafeIssuerCases = [
 class FakeSession implements SolidSessionAdapter {
   readonly fetch = mock(async () => new Response('ok'));
   readonly handleIncomingRedirect = mock(async () => this.info);
-  readonly login = mock(async (options: { oidcIssuer?: string }) => {
+  readonly login = mock(async (options: { oidcIssuer?: string; redirectUrl?: string }) => {
     this.loginOptions.push(options);
   });
   readonly logout = mock(async () => {
@@ -35,7 +35,7 @@ class FakeSession implements SolidSessionAdapter {
     this.emit('logout');
   });
   info: SolidSessionAdapter['info'] & { issuer?: string } = { isLoggedIn: false };
-  loginOptions: { oidcIssuer?: string }[] = [];
+  loginOptions: { oidcIssuer?: string; redirectUrl?: string }[] = [];
   private readonly listeners = new Map<string, Set<Listener>>();
 
   readonly events = {
@@ -65,9 +65,9 @@ class FakeSession implements SolidSessionAdapter {
   }
 }
 
-function installDom() {
+function installDom(url = 'https://app.example/dashboard/models') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'https://app.example/dashboard/models',
+    url,
   });
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
@@ -77,8 +77,9 @@ function installDom() {
   return dom;
 }
 
-async function renderWithRoot(element: React.ReactNode) {
-  installDom();
+async function renderWithRoot(element: React.ReactNode, url?: string, setup?: () => void) {
+  installDom(url);
+  setup?.();
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -185,7 +186,7 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('trims login issuer, exposes authenticated fetch, and logs out without raw token storage', async () => {
+  test('uses a fixed OIDC callback while preserving the current product route as returnTo', async () => {
     const session = new FakeSession();
     session.handleIncomingRedirect.mockImplementation(async () => {
       session.authenticate();
@@ -213,10 +214,39 @@ describe('Xpod Solid runtime', () => {
       logoutButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    expect(session.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(session.loginOptions).toEqual([expect.objectContaining({
+      oidcIssuer: 'https://issuer.example/',
+      redirectUrl: 'https://app.example/dashboard/auth/callback',
+    })]);
+    expect(window.sessionStorage.getItem('xpod.solid.returnTo')).toBe('https://app.example/dashboard/models');
     expect(session.fetch).toHaveBeenCalledWith('/resource');
     expect(localStorageSet).not.toHaveBeenCalled();
     expect(container.textContent).toContain('anonymous');
+    await unmount(root);
+  });
+
+  test('restores the preserved deep link after the fixed OIDC callback is authenticated', async () => {
+    const session = new FakeSession();
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      session.authenticate();
+      return session.info;
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+
+    const { root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={value}>
+        <RuntimeProbe />
+      </XpodSolidRuntimeProvider>,
+      'https://app.example/dashboard/auth/callback?code=returned&state=state-1',
+      () => window.sessionStorage.setItem('xpod.solid.returnTo', 'https://app.example/dashboard/network'),
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(window.location.href).toBe('https://app.example/dashboard/network');
+    expect(window.sessionStorage.getItem('xpod.solid.returnTo')).toBeNull();
     await unmount(root);
   });
 

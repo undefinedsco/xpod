@@ -23,6 +23,7 @@ export const dashboardRoutes: RouteObject[] = [
     element: <XpodDashboardLayout />,
     children: [
       { index: true, element: <Navigate to="/overview" replace /> },
+      { path: 'auth/callback', element: <div role="status" className="p-6 text-sm text-muted-foreground">Completing Solid login...</div> },
       {
         path: 'overview',
         element: guardedRoute(lazyRoute(<ServicesPage product="dashboard" />)),

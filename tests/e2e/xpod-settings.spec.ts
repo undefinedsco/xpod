@@ -61,9 +61,9 @@ test.describe('Xpod settings product acceptance', () => {
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         for (const module of [
           { label: 'Models', path: '/settings/models', expected: /openai|anthropic|kimi|bailian|deepseek|gateway/i },
-          { label: 'Pod', path: '/dashboard/pod', expected: /webid|pod|issuer|storage|providers/i },
+          { label: 'Pod', path: '/settings/pod', expected: /webid|pod|issuer|storage|providers/i },
           { label: 'Network', path: '/dashboard/network', expected: /endpoint|addresses|capabilities|unsupported|supported/i },
-          { label: 'Services', path: '/dashboard/services', expected: /runtime|solid|gateway|storage|logs|rdf/i },
+          { label: 'Services', path: '/settings/services', expected: /runtime|solid|gateway|storage|logs|rdf/i },
         ]) {
           await openModule(page, module.path, module.label);
           await expect(page.locator('main')).toHaveCount(1);
@@ -118,6 +118,7 @@ async function authenticatedPage(browser: Browser, storageStatePath: string): Pr
 
 async function openModule(page: Page, route: string, label: string): Promise<void> {
   await page.goto(new URL(route, baseUrl!).toString(), { waitUntil: 'domcontentloaded' });
+  await expect.poll(() => new URL(page.url()).pathname).toBe(route);
   await expect(page.getByRole('link', { name: label, exact: true }).first()).toBeVisible();
 }
 
@@ -126,8 +127,14 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
   await page.getByRole('button', { name: /api key|connect|configure|add/i }).first().click();
   await page.getByLabel(/api key|key/i).or(page.locator('input[type="password"], input[name*="key" i]').first()).fill(apiKey);
   await page.getByLabel(/label|name/i).or(page.locator('input[name*="label" i], input[name*="name" i]').first()).fill('Alice OpenAI acceptance');
+  const saveResponsePromise = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/connect/complete-api-key'
+    && response.request().method() === 'POST'
+  ));
   await page.getByRole('button', { name: /save|connect|submit|done/i }).first().click();
-  await expect(page.locator('body')).toContainText(/connected|configured|saved|openai/i);
+  const saveResponse = await saveResponsePromise;
+  expect(saveResponse.ok()).toBe(true);
+  await expect(page.locator('body')).toContainText(/connected|configured|saved|已连接|已配置|已保存/i);
 }
 
 async function cleanupApiKeyThroughUi(page: Page): Promise<void> {
@@ -142,7 +149,7 @@ async function readPodAiConnectionStatus(page: Page): Promise<{ webId: string; c
   const responsePromise = page.waitForResponse((response) => (
     response.url().endsWith('/api/pod/settings/status') && response.request().method() === 'GET'
   ));
-  await openModule(page, '/dashboard/pod', 'Pod');
+  await openModule(page, '/settings/pod', 'Pod');
   const response = await responsePromise;
   expect(response.status()).toBe(200);
   const payload = await response.json() as {

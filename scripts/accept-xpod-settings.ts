@@ -44,6 +44,7 @@ export interface CommandResult {
   signal?: NodeJS.Signals | null;
   durationMs: number;
   stdout: string;
+  contractStdout?: string;
   stderr: string;
   timedOut?: boolean;
 }
@@ -446,7 +447,7 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
 }
 
 function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 4 * 60 * 1000, env, {
+  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json', '--workers=1'], 4 * 60 * 1000, env, {
     runtimeEnvKeys: [
       'XPOD_SETTINGS_E2E_BASE_URL',
       'XPOD_SETTINGS_E2E_ALICE_STATE',
@@ -657,6 +658,7 @@ export async function executeGateCommand(
         signal,
         durationMs: Date.now() - started,
         stdout: stdout.slice(-4_000),
+        contractStdout: gate.resultContract ? stdout : undefined,
         stderr: stderr.slice(-4_000),
         timedOut,
       });
@@ -681,7 +683,10 @@ function commandFailureReason(gate: GateCommand, result: CommandResult): string 
   if (result.timedOut) return `Command timed out after ${gate.timeoutMs}ms.`;
   if (result.exitCode !== 0) return `Command exited with ${result.exitCode ?? result.signal ?? 'unknown'}.`;
   if (gate.resultContract?.kind === 'playwright-json') {
-    return validatePlaywrightJsonResult(result.stdout, gate.resultContract.minExecuted);
+    return validatePlaywrightJsonResult(
+      result.contractStdout ?? result.stdout,
+      gate.resultContract.minExecuted,
+    );
   }
   return undefined;
 }
