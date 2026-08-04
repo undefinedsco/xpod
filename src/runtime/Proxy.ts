@@ -6,9 +6,11 @@ import { nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 import type { RuntimeHost, RuntimeListenEndpoint } from './host/types';
 import {
   createGatewayAdminProxyHeaders,
+  GATEWAY_ADMIN_PROXY_HEADERS,
   GATEWAY_ADMIN_PROXY_LOOPBACK_HEADER,
   isLoopbackRemoteAddress,
   stripGatewayAdminProxyHeaders,
+  verifyGatewayAdminProxyHeaders,
 } from './GatewayAdminProxyAuth';
 
 type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
@@ -141,7 +143,11 @@ export class GatewayProxy {
     const origin = req.headers.origin;
     const originalRemoteAddress = this.clientRemoteAddressResolver?.(req) ?? req.socket.remoteAddress;
     const originalClientLoopback = isLoopbackRemoteAddress(originalRemoteAddress);
+    const internalPodProxyHeaders = this.verifiedInternalPodProxyHeaders(req, originalClientLoopback);
     stripGatewayAdminProxyHeaders(req.headers);
+    if (internalPodProxyHeaders) {
+      Object.assign(req.headers, internalPodProxyHeaders);
+    }
 
     // Store public host for routing before any CSS canonical-host rewrites.
     // External gateways pass the original domain through X-Forwarded-Host;
@@ -256,6 +262,30 @@ export class GatewayProxy {
       method: req.method,
       url: req.url,
       originalClientLoopback,
+    }));
+  }
+
+  private verifiedInternalPodProxyHeaders(
+    req: http.IncomingMessage,
+    originalClientLoopback: boolean,
+  ): http.IncomingHttpHeaders | undefined {
+    if (!originalClientLoopback || req.url !== '/.internal/pod-data') {
+      return undefined;
+    }
+
+    const verification = verifyGatewayAdminProxyHeaders({
+      headers: req.headers,
+      secret: this.internalAdminAuthSecret,
+      method: req.method,
+      url: req.url,
+    });
+    if (!verification.valid || !verification.originalClientLoopback || !verification.intent || !verification.nonce) {
+      return undefined;
+    }
+
+    return Object.fromEntries(GATEWAY_ADMIN_PROXY_HEADERS.flatMap((header) => {
+      const value = req.headers[header];
+      return value === undefined ? [] : [[header, value]];
     }));
   }
 
