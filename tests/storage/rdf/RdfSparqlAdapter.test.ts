@@ -68,7 +68,7 @@ describe('RdfSparqlAdapter', () => {
     expect(() => adapter.assertServerOwnedNativeQuery(`
       SELECT ?message WHERE {
         VALUES ?message { <${BASE}.data/chat/default/2026/05/18/messages.ttl#msg_1> }
-        ?message <${HAS_MEMBER}>* ?thread .
+        ?message <${HAS_MEMBER}> ?thread .
       }
     `, BASE)).not.toThrow();
 
@@ -104,6 +104,9 @@ describe('RdfSparqlAdapter', () => {
       `SELECT ?message WHERE {
         ?message <${CONTENT}> ?flag .
         FILTER(?flag)
+      }`,
+      `SELECT ?message WHERE {
+        ?message <${HAS_MEMBER}>* ?thread .
       }`,
     ];
 
