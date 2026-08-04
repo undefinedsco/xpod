@@ -753,7 +753,9 @@ describe('ProviderConnectService', () => {
       accountLabel: 'Alice',
       version: 3,
       reauthRequired: true,
-    }) : undefined);
+    }) : provider === 'deepseek'
+      ? Promise.reject(new UnsupportedCredentialStorageModeError('missing'))
+      : undefined);
     const service = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),
       adapters: [],

@@ -1031,17 +1031,24 @@ export class ProviderConnectService {
     auth?: AuthContext;
   }): Promise<ProviderConnectionSummary[]> {
     return Promise.all(this.registry.listProviders().map(async (descriptor) => {
-      const credential = this.credentialRepository?.getCredential
-        ? await this.credentialRepository.getCredential({
-          ...input,
-          provider: descriptor.id,
-        })
-        : await this.credentialRepository?.getActiveCredential({
-          ...input,
-          provider: descriptor.id,
-        });
-      const active = credential?.status === 'active';
-      const reauthRequired = active && credential.reauthRequired === true;
+      let credential: ConnectCredentialRecord | undefined;
+      try {
+        credential = this.credentialRepository?.getCredential
+          ? await this.credentialRepository.getCredential({
+            ...input,
+            provider: descriptor.id,
+          })
+          : await this.credentialRepository?.getActiveCredential({
+            ...input,
+            provider: descriptor.id,
+          });
+      } catch (error) {
+        if (!(error instanceof UnsupportedCredentialStorageModeError)) {
+          throw error;
+        }
+      }
+      const activeCredential = credential?.status === 'active' ? credential : undefined;
+      const reauthRequired = activeCredential?.reauthRequired === true;
       const modes = Array.from(new Set([
         ...descriptor.authModes.filter((mode) => mode !== 'connectUnsupported'),
         ...(descriptor.connect?.apiKeyManagementSupported ? ['apiKey'] : []),
@@ -1050,15 +1057,15 @@ export class ProviderConnectService {
         provider: descriptor.id,
         status: reauthRequired
           ? 'reauthRequired' as const
-          : active
+          : activeCredential
             ? 'connected' as const
             : 'disconnected' as const,
-        authMode: active ? credential.authMode : undefined,
-        accountLabel: active ? credential.accountLabel : undefined,
-        expiresAt: active ? credential.expiresAt?.toISOString() : undefined,
+        authMode: activeCredential?.authMode,
+        accountLabel: activeCredential?.accountLabel,
+        expiresAt: activeCredential?.expiresAt?.toISOString(),
         reauthRequired: reauthRequired || undefined,
-        credentialIri: active ? credential.credentialIri : undefined,
-        version: active ? credential.version : undefined,
+        credentialIri: activeCredential?.credentialIri,
+        version: activeCredential?.version,
         connect: {
           modes,
           configured: descriptor.connect?.configured !== false,
