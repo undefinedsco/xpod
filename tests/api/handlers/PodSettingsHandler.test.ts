@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import {
-  DrizzlePodAiConnectionStatusReader,
+  ProviderConnectPodAiConnectionStatusReader,
   registerPodSettingsRoutes,
 } from '../../../src/api/handlers/PodSettingsHandler';
 
@@ -227,22 +227,13 @@ describe('PodSettingsHandler', () => {
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('secret');
   });
 
-  it('uses the resolved Pod URL as drizzle podUrl and AI container base in split deployments', async () => {
-    const init = vi.fn(async () => undefined);
-    const from = vi.fn((_resource: unknown) => ({
-      where: () => ({ execute: async () => [] }),
-      execute: async () => [],
-    }));
-    const dbFactory = vi.fn(async () => ({
-      init,
-      select: () => ({
-        from,
-      }),
-    }));
-    const hostedPodDataAccess = {
-      getTrustedFetch: vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch),
-    };
-    const reader = new DrizzlePodAiConnectionStatusReader(hostedPodDataAccess, dbFactory);
+  it('uses Provider Connect exact-resource enumeration instead of unsupported document collection scans', async () => {
+    const listProviders = vi.fn(async () => [
+      { provider: 'openai', status: 'connected' as const, connect: { modes: ['apiKey'], configured: true } },
+      { provider: 'kimi', status: 'reauthRequired' as const, connect: { modes: ['deviceCodeOAuth'], configured: true } },
+      { provider: 'deepseek', status: 'disconnected' as const, connect: { modes: ['apiKey'], configured: true } },
+    ]);
+    const reader = new ProviderConnectPodAiConnectionStatusReader({ listProviders }, 'cloud');
     const auth = {
       type: 'solid' as const,
       webId: 'https://id.example/alice/profile/card#me',
@@ -258,14 +249,13 @@ describe('PodSettingsHandler', () => {
     expect(status).toMatchObject({
       status: 'available',
       containerUrl: 'https://storage.example/alice/settings/credentials.ttl',
+      configuredProviders: 2,
+      source: 'drizzle-solid',
     });
-    expect(hostedPodDataAccess.getTrustedFetch).toHaveBeenCalledWith('https://id.example/alice/profile/card#me', auth);
-    expect(dbFactory).toHaveBeenCalledWith(expect.objectContaining({
+    expect(listProviders).toHaveBeenCalledWith({
       webId: 'https://id.example/alice/profile/card#me',
-      podUrl: 'https://storage.example/alice/',
-    }));
-    expect(init).toHaveBeenCalledTimes(1);
-    expect(init.mock.calls[0]).toHaveLength(1);
-    expect(from).toHaveBeenCalledTimes(1);
+      deployment: 'cloud',
+      auth,
+    });
   });
 });

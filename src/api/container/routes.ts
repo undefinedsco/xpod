@@ -28,7 +28,7 @@ import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
 import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
-import { DrizzlePodAiConnectionStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
+import { ProviderConnectPodAiConnectionStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
 import {
   createAddressReaders,
   createCertificateCapability,
@@ -191,7 +191,7 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionStatusReader(hostedPodDataAccess),
+    aiConnectionStatusReader: new ProviderConnectPodAiConnectionStatusReader(providerConnectService, config.edition),
   });
   registerNetworkSettingsRoutes(server, {
     endpoint: () => resolveNetworkEndpoint(config),

@@ -1,16 +1,12 @@
 import type { ServerResponse } from 'node:http';
-import { drizzle, eq } from '@undefineds.co/drizzle-solid';
-import {
-  credentialResource,
-  type CredentialRow,
-} from '@undefineds.co/models';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import type { PodLookupRepository, PodLookupResult } from '../../identity/drizzle/PodLookupRepository';
 import type { UsageRepository, PodUsageRecord } from '../../storage/quota/UsageRepository';
 import type { AuthContext } from '../auth/AuthContext';
-import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { GatewayDeployment } from '../ai-gateway/auth/InvocationTokenCodec';
+import type { ProviderConnectionSummary } from '../ai-gateway/connect';
 
 export interface PodSettingsStatus {
   identity: {
@@ -142,86 +138,42 @@ async function readStorageStatus(
   };
 }
 
-export class DrizzlePodAiConnectionStatusReader implements PodAiConnectionStatusReader {
+type ProviderConnectStatusSource = {
+  listProviders(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    auth?: AuthContext;
+  }): Promise<ProviderConnectionSummary[]>;
+};
+
+export class ProviderConnectPodAiConnectionStatusReader implements PodAiConnectionStatusReader {
   public constructor(
-    private readonly internalPodAccess?: InternalPodAccessTokenProvider,
-    private readonly dbFactory: (input: {
-      webId: string;
-      podUrl: string;
-      fetch: typeof fetch;
-    }) => Promise<AiConnectionStatusDb> = createAiConnectionStatusDb,
+    private readonly connectService: ProviderConnectStatusSource,
+    private readonly deployment: GatewayDeployment,
   ) {}
 
   public async read({ webId, podUrl, auth }: { webId: string; podUrl?: string; auth?: AuthContext }): Promise<PodAiConnectionStatus> {
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(webId, auth);
-    if (!trustedFetch) {
-      return { status: 'unsupported', reason: 'not_configured' };
-    }
     if (!podUrl) {
       return { status: 'unsupported', reason: 'pod_not_found' };
     }
 
     try {
-      const db = await this.dbFactory({ webId, podUrl, fetch: trustedFetch });
-      await db.init?.(credentialResource);
-
-      const credentialRows = await db.select().from(credentialResource).where(eq(credentialResource.status, 'active')).execute() as CredentialRow[];
-      const lastSyncAt = latestIso(credentialRows.map((row) => row.lastUsedAt ?? row.lastRefreshAt));
+      const providers = await this.connectService.listProviders({
+        webId,
+        deployment: this.deployment,
+        auth,
+      });
 
       return {
         status: 'available',
         containerUrl: new URL('settings/credentials.ttl', podUrl).toString(),
-        configuredProviders: credentialRows.length,
-        lastSyncAt,
+        configuredProviders: providers.filter((provider) => provider.status !== 'disconnected').length,
         source: 'drizzle-solid',
       };
     } catch {
       return { status: 'error', reason: 'ai_connection_unavailable' };
     }
   }
-}
-
-type AiConnectionStatusDb = {
-  init?: (...resources: unknown[]) => Promise<void>;
-  select(): {
-    from(resource: unknown): {
-      where(condition: unknown): { execute(): Promise<unknown[]> };
-      execute(): Promise<unknown[]>;
-    };
-  };
-};
-
-function createAiConnectionStatusDb(input: {
-  webId: string;
-  podUrl: string;
-  fetch: typeof fetch;
-}): Promise<AiConnectionStatusDb> {
-  return Promise.resolve(drizzle({
-    fetch: input.fetch,
-    info: { webId: input.webId, isLoggedIn: true },
-  } as any, {
-    podUrl: input.podUrl,
-    schema: {
-      credential: credentialResource,
-    },
-  }) as unknown as AiConnectionStatusDb);
-}
-
-function latestIso(values: unknown[]): string | undefined {
-  const timestamps = values
-    .map((value) => {
-      if (value instanceof Date) return value.getTime();
-      if (typeof value === 'string' || typeof value === 'number') {
-        const parsed = Date.parse(String(value));
-        return Number.isFinite(parsed) ? parsed : undefined;
-      }
-      return undefined;
-    })
-    .filter((value): value is number => value !== undefined);
-  if (timestamps.length === 0) {
-    return undefined;
-  }
-  return new Date(Math.max(...timestamps)).toISOString();
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
