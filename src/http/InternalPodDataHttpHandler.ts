@@ -96,9 +96,11 @@ export class InternalPodDataHttpHandler extends HttpHandler {
   private verifyRequest(request: HttpRequest): GatewayAdminProxyIntent | undefined {
     const method = request.method?.toUpperCase();
     if (!ALLOWED_METHODS.has(method ?? '')) {
+      this.logRejectedRequest('method_not_allowed');
       return undefined;
     }
     if (!isLoopbackRemoteAddress(request.socket.remoteAddress)) {
+      this.logRejectedRequest('non_loopback_transport');
       return undefined;
     }
 
@@ -109,21 +111,30 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       url: request.url,
     });
     if (!verification.valid || !verification.originalClientLoopback || !verification.intent || !verification.nonce) {
+      this.logRejectedRequest(verification.reason ?? 'invalid_runtime_marker');
       return undefined;
     }
     if (!this.intentMatchesRequest(verification.intent, method as InternalPodDataMethod)) {
+      this.logRejectedRequest('intent_mismatch');
       return undefined;
     }
     if (!this.isHostedOwnerResource(verification.intent)) {
+      this.logRejectedRequest('owner_resource_outside_deployment');
       return undefined;
     }
     if (!this.isAllowedAiConnectionResource(verification.intent)) {
+      this.logRejectedRequest('resource_not_allowed');
       return undefined;
     }
     if (!this.seenNonces.consume(verification.nonce)) {
+      this.logRejectedRequest('nonce_rejected');
       return undefined;
     }
     return verification.intent;
+  }
+
+  private logRejectedRequest(reason: string): void {
+    this.logger.warn(`Rejected internal Pod data request: ${reason}`);
   }
 
   private intentMatchesRequest(intent: GatewayAdminProxyIntent, method: InternalPodDataMethod): boolean {
