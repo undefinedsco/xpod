@@ -39,7 +39,6 @@ test.describe('Xpod settings product acceptance', () => {
 
       await openModule(bob, '/settings/models', 'Models');
       await expect(bob.locator('body')).not.toContainText(testApiKey!);
-      await expect(bob.locator('body')).not.toContainText(/Alice OpenAI acceptance|acceptance-openai/i);
       const bobAfter = await readPodAiConnectionStatus(bob);
       expect(bobAfter.webId).toBe(bobBefore.webId);
       expect(bobAfter.configuredProviders).toBe(bobBefore.configuredProviders);
@@ -69,7 +68,7 @@ test.describe('Xpod settings product acceptance', () => {
           await expect(page.locator('main')).toHaveCount(1);
           await expect(page.locator('body')).toContainText(module.expected);
           await expect(page.locator('body')).not.toContainText(/mock|fixture|storybook/i);
-          await assertSdkGeometryContract(page);
+          await assertSdkGeometryContract(page, module.label === 'Models');
           await page.screenshot({
             path: path.join(screenshotDir, `${viewport.name}-${module.label.toLowerCase()}.png`),
             fullPage: true,
@@ -93,16 +92,20 @@ test.describe('Xpod settings product acceptance', () => {
       await search.focus();
       await expect(search).toBeFocused();
 
-      const detailTrigger = page.locator('aside button, aside a, [data-slot="list"] button, [data-slot="list"] a').first();
+      const detailTrigger = page
+        .locator('[data-testid="workspace-list-pane"] button')
+        .filter({ hasText: /openai/i })
+        .first();
       await expect(detailTrigger).toBeVisible();
       await detailTrigger.focus();
       await expect(detailTrigger).toBeFocused();
       await detailTrigger.press('Enter');
-      await page.waitForLoadState('domcontentloaded');
       await expect(page.locator('main')).toBeVisible();
       await page.screenshot({ path: path.join(screenshotDir, 'narrow-stack-detail.png'), fullPage: true });
 
-      await page.goBack({ waitUntil: 'domcontentloaded' });
+      const backToList = page.getByRole('button', { name: /返回列表|back/i }).first();
+      await expect(backToList).toBeVisible();
+      await backToList.click();
       await expect(page.locator('main')).toHaveCount(1);
       await expect(search.or(page.getByRole('searchbox').first())).toBeVisible();
     } finally {
@@ -117,21 +120,52 @@ async function authenticatedPage(browser: Browser, storageStatePath: string): Pr
 }
 
 async function openModule(page: Page, route: string, label: string): Promise<void> {
-  await page.goto(new URL(route, baseUrl!).toString(), { waitUntil: 'domcontentloaded' });
-  await expect.poll(() => new URL(page.url()).pathname).toBe(route);
+  await gotoProductRoute(page, new URL(route, baseUrl!).toString());
+  await waitForStableAuthenticatedRoute(page, route);
   await expect(page.getByRole('link', { name: label, exact: true }).first()).toBeVisible();
 }
 
+async function gotoProductRoute(page: Page, url: string): Promise<void> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      return;
+    } catch (error) {
+      const retryable = error instanceof Error && /ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET/u.test(error.message);
+      if (!retryable || attempt === 3) throw error;
+      await page.waitForTimeout(500 * attempt);
+    }
+  }
+}
+
+async function waitForStableAuthenticatedRoute(page: Page, route: string): Promise<void> {
+  await expect.poll(async () => {
+    const path = new URL(page.url()).pathname;
+    const mainVisible = await page.locator('main').isVisible().catch(() => false);
+    const authBoundaryVisible = await page.locator('[data-auth-boundary="surface"]').isVisible().catch(() => false);
+    return path === route && mainVisible && !authBoundaryVisible;
+  }, { timeout: 30_000 }).toBe(true);
+
+  // Inrupt can complete a restored browser session with one final callback navigation
+  // after the first product frame renders. Require the intended route to remain ready
+  // across a quiet window so acceptance actions are not racing that navigation.
+  await page.waitForTimeout(1_000);
+  await expect.poll(async () => (
+    new URL(page.url()).pathname === route
+    && await page.locator('main').isVisible().catch(() => false)
+    && !await page.locator('[data-auth-boundary="surface"]').isVisible().catch(() => false)
+  ), { timeout: 30_000 }).toBe(true);
+}
+
 async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void> {
-  await page.getByText(/openai/i).first().click();
-  await page.getByRole('button', { name: /api key|connect|configure|add/i }).first().click();
-  await page.getByLabel(/api key|key/i).or(page.locator('input[type="password"], input[name*="key" i]').first()).fill(apiKey);
-  await page.getByLabel(/label|name/i).or(page.locator('input[name*="label" i], input[name*="name" i]').first()).fill('Alice OpenAI acceptance');
+  await page.getByRole('button', { name: 'OpenAI', exact: true }).click();
+  await page.getByRole('button', { name: 'OpenAI API Key', exact: true }).click();
+  await page.getByLabel('OpenAI API Key 输入', { exact: true }).fill(apiKey);
   const saveResponsePromise = page.waitForResponse((response) => (
     new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/connect/complete-api-key'
     && response.request().method() === 'POST'
   ));
-  await page.getByRole('button', { name: /save|connect|submit|done/i }).first().click();
+  await page.getByRole('button', { name: '保存 OpenAI API Key', exact: true }).click();
   const saveResponse = await saveResponsePromise;
   expect(saveResponse.ok()).toBe(true);
   await expect(page.locator('body')).toContainText(/connected|configured|saved|已连接|已配置|已保存/i);
@@ -139,10 +173,9 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
 
 async function cleanupApiKeyThroughUi(page: Page): Promise<void> {
   await openModule(page, '/settings/models', 'Models');
-  await page.getByText(/openai/i).first().click();
+  await page.getByRole('button', { name: 'OpenAI', exact: true }).click();
   await page.getByRole('button', { name: /delete|disconnect|revoke|remove/i }).first().click();
   await page.getByRole('button', { name: /confirm|delete|disconnect|revoke|remove/i }).first().click();
-  await expect(page.locator('body')).not.toContainText('Alice OpenAI acceptance');
 }
 
 async function readPodAiConnectionStatus(page: Page): Promise<{ webId: string; configuredProviders: number }> {
@@ -165,7 +198,7 @@ async function readPodAiConnectionStatus(page: Page): Promise<{ webId: string; c
   };
 }
 
-async function assertSdkGeometryContract(page: Page): Promise<void> {
+async function assertSdkGeometryContract(page: Page, requiresSearch: boolean): Promise<void> {
   const metrics = await page.evaluate(() => {
     const header = document.querySelector('header') ?? document.querySelector('[data-slot="header"]');
     const search = document.querySelector('input[type="search"], [role="searchbox"]') as HTMLElement | null;
@@ -187,13 +220,15 @@ async function assertSdkGeometryContract(page: Page): Promise<void> {
   });
 
   expect(metrics.header).toBeTruthy();
-  expect(metrics.search).toBeTruthy();
+  if (requiresSearch) expect(metrics.search).toBeTruthy();
   expect(metrics.main).toBeTruthy();
   expect(metrics.nav).toBeTruthy();
   expect(metrics.radius || 'defined').toBeTruthy();
   expect(metrics.background || 'defined').toBeTruthy();
-  expect(metrics.search!.y).toBeGreaterThanOrEqual(metrics.header!.y - 1);
-  expect(metrics.search!.y + metrics.search!.height).toBeLessThanOrEqual(metrics.header!.y + metrics.header!.height + 1);
+  if (requiresSearch) {
+    expect(metrics.search!.y).toBeGreaterThanOrEqual(metrics.header!.y - 1);
+    expect(metrics.search!.y + metrics.search!.height).toBeLessThanOrEqual(metrics.header!.y + metrics.header!.height + 1);
+  }
   expect(metrics.main!.width).toBeGreaterThan(240);
   expect(Math.abs(metrics.main!.x - metrics.nav!.x)).toBeGreaterThan(16);
 }

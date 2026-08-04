@@ -444,6 +444,16 @@ describe('Xpod settings product acceptance harness', () => {
     expect(harness).toContain("'--workers=1'");
   });
 
+  it('enables provider Connect in RC and production runtime configuration', async () => {
+    const rcConfig = await readFile(path.resolve('deploy/sealos/rc/configmap.yaml'), 'utf8');
+    const cloudConfig = await readFile(path.resolve('deploy/sealos/cloud/configmap.yaml'), 'utf8');
+
+    for (const manifest of [rcConfig, cloudConfig]) {
+      expect(manifest).toContain('XPOD_AI_GATEWAY_CONNECT_ENABLED');
+      expect(manifest).toMatch(/XPOD_AI_GATEWAY_CONNECT_ENABLED[\s\S]{0,40}["']?true["']?/u);
+    }
+  });
+
   it('keeps acceptance provenance endpoint behind an explicit runtime environment gate', async () => {
     const routes = await readFile(path.resolve('src/api/container/routes.ts'), 'utf8');
     const chatHandler = await readFile(path.resolve('src/api/handlers/ChatHandler.ts'), 'utf8');
