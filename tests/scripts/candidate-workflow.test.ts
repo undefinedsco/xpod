@@ -223,6 +223,7 @@ describe('release candidate workflow', () => {
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
+    expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
     expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.co');
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
     expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBeUndefined();

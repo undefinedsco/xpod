@@ -106,6 +106,8 @@ describe('Xpod settings product acceptance harness', () => {
       }),
       commandResult: expect.objectContaining({ exitCode: 7, stderr: '[redacted]' }),
     });
+    expect(item?.gate?.kind === 'command' ? item.gate.command.join(' ') : '')
+      .toContain('--grep SDK geometry|narrow stack');
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
   });
 

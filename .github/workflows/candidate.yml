@@ -152,6 +152,7 @@ jobs:
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
+      XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
       XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
       REF_NAME: ${{ github.ref_name }}
     steps:

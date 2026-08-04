@@ -1,31 +1,32 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 
-const REQUIRED_REQUIREMENT_ID = 'solid-pod-isolation';
+const REQUIRED_REQUIREMENT_IDS = [ 'solid-pod-isolation', 'browser-visual' ];
 
 function assertRcAuthenticatedSmoke(report) {
   if (!report || typeof report !== 'object' || !Array.isArray(report.items)) {
     throw new Error('acceptance report items are required');
   }
 
-  const item = report.items.find((candidate) => candidate?.requirementId === REQUIRED_REQUIREMENT_ID);
-  if (!item) {
-    throw new Error(`${REQUIRED_REQUIREMENT_ID} item is required`);
-  }
-  if (item.status !== 'pass') {
-    throw new Error(`${REQUIRED_REQUIREMENT_ID} must be pass, got ${item.status ?? '(missing)'}`);
-  }
-  if (!item.commandResult || typeof item.commandResult !== 'object') {
-    throw new Error(`${REQUIRED_REQUIREMENT_ID} commandResult is required`);
-  }
-  if (item.commandResult.exitCode !== 0) {
-    throw new Error(`${REQUIRED_REQUIREMENT_ID} commandResult.exitCode must be 0`);
-  }
-  if (item.commandResult.timedOut === true) {
-    throw new Error(`${REQUIRED_REQUIREMENT_ID} command must not time out`);
-  }
-
-  return item;
+  return REQUIRED_REQUIREMENT_IDS.map((requirementId) => {
+    const item = report.items.find((candidate) => candidate?.requirementId === requirementId);
+    if (!item) {
+      throw new Error(`${requirementId} item is required`);
+    }
+    if (item.status !== 'pass') {
+      throw new Error(`${requirementId} must be pass, got ${item.status ?? '(missing)'}`);
+    }
+    if (!item.commandResult || typeof item.commandResult !== 'object') {
+      throw new Error(`${requirementId} commandResult is required`);
+    }
+    if (item.commandResult.exitCode !== 0) {
+      throw new Error(`${requirementId} commandResult.exitCode must be 0`);
+    }
+    if (item.commandResult.timedOut === true) {
+      throw new Error(`${requirementId} command must not time out`);
+    }
+    return item;
+  });
 }
 
 function main(argv = process.argv.slice(2)) {
@@ -35,7 +36,7 @@ function main(argv = process.argv.slice(2)) {
   }
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
   assertRcAuthenticatedSmoke(report);
-  console.log(`${REQUIRED_REQUIREMENT_ID} passed`);
+  console.log(`${REQUIRED_REQUIREMENT_IDS.join(', ')} passed`);
 }
 
 if (require.main === module) {
@@ -48,6 +49,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  REQUIRED_REQUIREMENT_ID,
+  REQUIRED_REQUIREMENT_IDS,
   assertRcAuthenticatedSmoke,
 };

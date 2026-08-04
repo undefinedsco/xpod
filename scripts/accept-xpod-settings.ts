@@ -348,7 +348,9 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
       commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
       evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload and verifies A/B Pod provider counts through the protected drizzle-solid-backed Pod status API when the real-host gate is complete.'],
-      gate: runRealPod && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+      gate: runRealPod && hasRealHostEnv(env)
+        ? playwrightGate(env, 'persists Alice API-key credential')
+        : undefined,
     },
     {
       requirementId: 'browser-visual',
@@ -360,7 +362,9 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
         : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true plus real Xpod host, A/B auth states, A Pod URL and test API key; UI fetch interception with canned JSON is not allowed.',
       commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_ALICE_POD_URL=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
       evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots and asserts SDK geometry contracts.'],
-      gate: runVisual && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+      gate: runVisual && hasRealHostEnv(env)
+        ? playwrightGate(env, 'SDK geometry|narrow stack')
+        : undefined,
     },
     fixtureItem('connect-quota', [
       'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
@@ -446,8 +450,12 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
   };
 }
 
-function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json', '--workers=1'], 4 * 60 * 1000, env, {
+function playwrightGate(env: Record<string, string | undefined>, grep: string): GateCommand {
+  return shellGate([
+    'bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts',
+    '--grep', grep,
+    '--reporter=json', '--workers=1',
+  ], 4 * 60 * 1000, env, {
     runtimeEnvKeys: [
       'XPOD_SETTINGS_E2E_BASE_URL',
       'XPOD_SETTINGS_E2E_ALICE_STATE',
