@@ -22,6 +22,7 @@ test.describe('Xpod settings product acceptance', () => {
     test.setTimeout(180_000);
     const alice = await authenticatedPage(browser, aliceState!);
     const bob = await authenticatedPage(browser, bobState!);
+    let cleanupNeeded = false;
     try {
       const aliceBefore = await readPodAiConnectionStatus(alice);
       const bobBefore = await readPodAiConnectionStatus(bob);
@@ -29,6 +30,7 @@ test.describe('Xpod settings product acceptance', () => {
 
       await openModule(alice, '/settings/models', 'Models');
       await completeApiKeyThroughUi(alice, testApiKey!);
+      cleanupNeeded = true;
       await alice.reload({ waitUntil: 'domcontentloaded' });
       await expect(alice.locator('body')).not.toContainText(testApiKey!);
       await expect(alice.locator('body')).toContainText(/openai|configured|connected|api key/i);
@@ -43,7 +45,7 @@ test.describe('Xpod settings product acceptance', () => {
       expect(bobAfter.webId).toBe(bobBefore.webId);
       expect(bobAfter.configuredProviders).toBe(bobBefore.configuredProviders);
     } finally {
-      await cleanupApiKeyThroughUi(alice).catch(() => undefined);
+      if (cleanupNeeded) await cleanupApiKeyThroughUi(alice).catch(() => undefined);
       await alice.context().close();
       await bob.context().close();
     }

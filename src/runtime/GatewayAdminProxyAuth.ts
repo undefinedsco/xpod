@@ -43,7 +43,7 @@ export interface GatewayAdminProxyMarkerVerification {
 
 export interface GatewayAdminProxyIntent {
   ownerWebId: string;
-  method: 'GET' | 'PUT' | 'PATCH' | 'DELETE';
+  method: 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
   resourceUrl: string;
   principalKind: 'solid-user';
   scopes: string[];
@@ -182,7 +182,7 @@ function parseGatewayAdminProxyIntent(value: string | undefined): GatewayAdminPr
     const parsed = JSON.parse(value) as Partial<GatewayAdminProxyIntent>;
     if (typeof parsed.ownerWebId !== 'string' ||
       typeof parsed.resourceUrl !== 'string' ||
-      (parsed.method !== 'GET' && parsed.method !== 'PUT' && parsed.method !== 'PATCH' && parsed.method !== 'DELETE') ||
+      (parsed.method !== 'GET' && parsed.method !== 'HEAD' && parsed.method !== 'PUT' && parsed.method !== 'PATCH' && parsed.method !== 'DELETE') ||
       parsed.principalKind !== 'solid-user' ||
       !Array.isArray(parsed.scopes) ||
       !parsed.scopes.every((scope) => typeof scope === 'string')) {

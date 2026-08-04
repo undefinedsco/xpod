@@ -95,6 +95,37 @@ describe('HostedPodDataAccess', () => {
     });
   });
 
+  it('forwards drizzle-solid HEAD probes with read-only credentials scope', async () => {
+    let sent: Request | undefined;
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent = new Request(input, init);
+        return new Response(null, { status: 200 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await trustedFetch!(CREDENTIAL_RESOURCE, { method: 'HEAD' });
+
+    expect(sent?.method).toBe('HEAD');
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent!.headers),
+      secret: SECRET,
+      method: 'HEAD',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        method: 'HEAD',
+        resourceUrl: CREDENTIAL_RESOURCE,
+        principalKind: 'solid-user',
+        scopes: ['ai:credentials:read'],
+      },
+    });
+  });
+
   it('rejects Solid callers that do not own the requested hosted Pod', async () => {
     const access = createAccess();
     const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: BOB });

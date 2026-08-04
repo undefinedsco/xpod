@@ -22,7 +22,7 @@ export interface HostedPodDataAccessOptions {
   nonce?: () => string;
 }
 
-type InternalPodDataMethod = 'GET' | 'PUT' | 'PATCH' | 'DELETE';
+type InternalPodDataMethod = 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
 
 const INTERNAL_POD_DATA_PATH = '/.internal/pod-data';
 const STRIPPED_CALLER_HEADERS = new Set([
@@ -61,7 +61,7 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
         method,
         resourceUrl,
         principalKind: authorization.principalKind,
-        scopes: [method === 'GET' ? 'ai:credentials:read' : 'ai:credentials:write'],
+        scopes: [method === 'GET' || method === 'HEAD' ? 'ai:credentials:read' : 'ai:credentials:write'],
       });
 
       return this.fetch(loopbackUrl, {
@@ -151,7 +151,7 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
 
 function normalizeMethod(method: string | undefined): InternalPodDataMethod {
   const upper = (method ?? 'GET').toUpperCase();
-  if (upper === 'GET' || upper === 'PUT' || upper === 'PATCH' || upper === 'DELETE') {
+  if (upper === 'GET' || upper === 'HEAD' || upper === 'PUT' || upper === 'PATCH' || upper === 'DELETE') {
     return upper;
   }
   throw new Error('hosted_pod_method_not_allowed');

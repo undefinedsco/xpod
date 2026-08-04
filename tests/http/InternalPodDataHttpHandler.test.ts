@@ -137,7 +137,7 @@ function createHandler(
 }
 
 function signedHeaders(input: {
-  method?: 'GET' | 'PUT' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
   path?: string;
   ownerWebId?: string;
   resourceUrl?: string;
@@ -279,6 +279,35 @@ describe('InternalPodDataHttpHandler', () => {
     }
 
     expect(store.getRepresentation).toHaveBeenCalledTimes(3);
+  });
+
+  it('serves signed HEAD probes as read-only existence checks without a response body', async () => {
+    const store = createStore();
+    const handler = createHandler(store);
+
+    const response = await handle(handler, createRequest('HEAD', '/.internal/pod-data', {
+      headers: signedHeaders({ method: 'HEAD', nonce: 'head-existing' }),
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.bodyText()).toBe('');
+    expect(store.getRepresentation).toHaveBeenCalledWith(
+      { path: CREDENTIAL_RESOURCE },
+      { type: { 'text/turtle': 1, '*/*': 0.1 } },
+    );
+  });
+
+  it('returns 404 for a signed HEAD probe when the allowlisted document does not exist', async () => {
+    const store = createStore();
+    store.getRepresentation.mockRejectedValueOnce({ statusCode: 404 });
+    const handler = createHandler(store);
+
+    const response = await handle(handler, createRequest('HEAD', '/.internal/pod-data', {
+      headers: signedHeaders({ method: 'HEAD', nonce: 'head-missing' }),
+    }));
+
+    expect(response.statusCode).toBe(404);
+    expect(response.bodyText()).toBe('Not Found');
   });
 
   it('represents a missing allowlisted AI document as an empty Turtle graph', async () => {

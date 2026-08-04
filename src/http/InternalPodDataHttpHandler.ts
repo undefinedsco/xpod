@@ -35,9 +35,9 @@ interface InternalPodDataHttpHandlerNonceOptions {
   now?: () => number;
 }
 
-type InternalPodDataMethod = 'GET' | 'PUT' | 'PATCH' | 'DELETE';
+type InternalPodDataMethod = 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
 
-const ALLOWED_METHODS = new Set([ 'GET', 'PUT', 'PATCH', 'DELETE' ]);
+const ALLOWED_METHODS = new Set([ 'GET', 'HEAD', 'PUT', 'PATCH', 'DELETE' ]);
 const DEFAULT_NONCE_TTL_MS = 120_000;
 const DEFAULT_NONCE_MAX_ENTRIES = 10_000;
 
@@ -148,7 +148,7 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     if (intent.scopes.length === 0) {
       return false;
     }
-    const requiredScope = method === 'GET' ? 'ai:credentials:read' : 'ai:credentials:write';
+    const requiredScope = method === 'GET' || method === 'HEAD' ? 'ai:credentials:read' : 'ai:credentials:write';
     return intent.scopes.some((scope) =>
       scope === requiredScope ||
       scope === 'ai:credentials:*' ||
@@ -210,6 +210,16 @@ export class InternalPodDataHttpHandler extends HttpHandler {
         response.statusCode = 200;
         response.setHeader('Content-Type', representation.metadata.contentType ?? 'text/turtle');
         await this.pipeRepresentation(representation, response);
+        return;
+      }
+      case 'HEAD': {
+        const representation = await this.resourceStore.getRepresentation(identifier, {
+          type: { 'text/turtle': 1, '*/*': 0.1 },
+        });
+        response.statusCode = 200;
+        response.setHeader('Content-Type', representation.metadata.contentType ?? 'text/turtle');
+        (representation.data as Readable).destroy();
+        response.end();
         return;
       }
       case 'PUT': {
