@@ -249,9 +249,6 @@ function main(argv = process.argv.slice(2), options = {}) {
   console.log(`[publish:release] ${dryRun ? 'dry-run complete' : 'publish complete'}`);
   console.log(`[publish:release] registry: ${publishRegistry}`);
   if (publishTag) {
-    if (!dryRun && explicitPublishTag) {
-      ensureNpmDistTag(packageJson.name, packageJson.version, publishTag, publishRegistry, npmEnv, { ...options, cwd: repoRoot, env });
-    }
     console.log(`[publish:release] dist-tag: ${publishTag}`);
   }
 }

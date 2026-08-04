@@ -215,7 +215,7 @@ describe('publish-release npm dist-tag handling', () => {
     })).not.toThrow();
   });
 
-  it('verifies explicit next after a successful npm publish and does not manage tags for stable implicit publishes', async () => {
+  it('relies on npm publish --tag after a successful publish and does not manage tags for stable implicit publishes', async () => {
     const rcRoot = await makePackageRepo('1.2.3-rc.10');
     const rcCommands: Command[] = [];
 
@@ -230,9 +230,8 @@ describe('publish-release npm dist-tag handling', () => {
     });
 
     const publishIndex = rcCommands.findIndex((command) => command.file === 'npm' && command.args[0] === 'publish');
-    const tagAddIndex = rcCommands.findIndex((command) => command.file === 'npm' && command.args[0] === 'dist-tag');
     expect(publishIndex).toBeGreaterThan(-1);
-    expect(tagAddIndex).toBeGreaterThan(publishIndex);
+    expect(rcCommands.some((command) => command.file === 'npm' && command.args[0] === 'dist-tag')).toBe(false);
 
     const stableRoot = await makePackageRepo('1.2.3');
     const stableCommands: Command[] = [];
