@@ -97,6 +97,10 @@ describe('RdfSparqlAdapter', () => {
         ?message <${CONTENT}> ?rank .
         FILTER(?rank > 100)
       }`,
+      `SELECT ?message ?rank WHERE {
+        ?message <${CONTENT}> ?rank .
+      }
+      ORDER BY DESC(?rank) ?message`,
     ];
 
     for (const query of compatibilityQueries) {

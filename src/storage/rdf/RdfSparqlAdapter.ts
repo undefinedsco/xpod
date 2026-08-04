@@ -112,6 +112,9 @@ function nativeQueryShapeRejection(value: unknown, root = true): string | undefi
   if (!root && record.type === 'query') {
     return 'Subqueries require the embedded compatibility path';
   }
+  if (record.type === 'query' && Array.isArray(record.order) && record.order.length > 1) {
+    return 'Multi-column ORDER BY requires the embedded compatibility path';
+  }
   if (record.type === 'optional' || record.type === 'union' || record.type === 'minus') {
     return `${String(record.type).toUpperCase()} query shapes require the embedded compatibility path`;
   }
