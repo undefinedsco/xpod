@@ -52,6 +52,8 @@ spec:
               value: https://id-rc.undefineds.co
             - name: CSS_ALLOWED_HOSTS
               value: id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co
+            - name: XPOD_PUBLIC_API_URL
+              value: https://api-rc.undefineds.co
             - name: XPOD_EDGE_NODES_ENABLED
               value: "false"
             - name: XPOD_INNGEST_ENABLED

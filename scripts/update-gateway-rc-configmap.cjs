@@ -62,10 +62,17 @@ function renderServer(host, port, upstream) {
 
   location / {
     proxy_pass ${upstream};
+    proxy_http_version 1.1;
     proxy_buffering off;
     proxy_request_buffering off;
     proxy_read_timeout 600s;
     proxy_send_timeout 600s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-Port 443;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
   }
 }`;
 }

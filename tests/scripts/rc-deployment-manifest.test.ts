@@ -127,6 +127,7 @@ describe('RC Sealos deployment manifest', () => {
       CSS_LOGGING_LEVEL: 'info',
       CSS_BASE_URL: 'https://id-rc.undefineds.co',
       CSS_ALLOWED_HOSTS: 'id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co',
+      XPOD_PUBLIC_API_URL: 'https://api-rc.undefineds.co',
       XPOD_EDGE_NODES_ENABLED: 'false',
     });
     expect(xpodContainer.envFrom).toEqual([

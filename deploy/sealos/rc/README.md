@@ -24,6 +24,8 @@ from `APP_ENV_FILE`. The historical `CSS_MINIO_*` names remain for compatibility
 in this release even though the backend is R2. The Inngest Signing Key is shared
 with the shared Inngest instance. Production object storage is not modified.
 
-`CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, ports, edition, and RC source are fixed in
-the manifest. Do not place production hosts or unsupported prefix variables in
-`APP_ENV_FILE`.
+`CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, `XPOD_PUBLIC_API_URL`, ports, edition, and
+RC source are fixed in the manifest. The managed Gateway block also preserves
+the public Host and HTTPS forwarding headers so OIDC/DPoP URL verification sees
+the same origin as the browser. Do not place production hosts or unsupported
+prefix variables in `APP_ENV_FILE`.
