@@ -169,7 +169,8 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
   ));
   await page.getByRole('button', { name: '保存 OpenAI API Key', exact: true }).click();
   const saveResponse = await saveResponsePromise;
-  expect(saveResponse.ok()).toBe(true);
+  const saveResponseBody = await saveResponse.text();
+  expect(saveResponse.ok(), `save failed with HTTP ${saveResponse.status()}: ${saveResponseBody}`).toBe(true);
   await expect(page.locator('body')).toContainText(/connected|configured|saved|已连接|已配置|已保存/i);
 }
 

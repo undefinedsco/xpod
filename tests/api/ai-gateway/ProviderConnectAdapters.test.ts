@@ -836,28 +836,32 @@ describe('ProviderConnectService', () => {
 
   it('uses the production Pod credential repository adapter against models credentialResource fields', async () => {
     const rows = new Map<string, Record<string, unknown>>();
+    let resolvedPodUrl: string | undefined;
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: { getTrustedFetch: async () => fetch },
-      dbFactory: async () => ({
-        init: vi.fn(),
-        insert: () => ({
-          values: (value: any) => ({
-            execute: async () => {
-              rows.set(value.id, jsonClone(value));
-              return [jsonClone(value)];
-            },
+      dbFactory: async ({ podUrl }) => {
+        resolvedPodUrl = podUrl;
+        return ({
+          init: vi.fn(),
+          insert: () => ({
+            values: (value: any) => ({
+              execute: async () => {
+                rows.set(value.id, jsonClone(value));
+                return [jsonClone(value)];
+              },
+            }),
           }),
-        }),
-        select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
-        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
-        updateById: async (_resource: unknown, id: string, patch: any) => {
-          const row = rows.get(id);
-          if (!row) return null;
-          Object.assign(row, patch);
-          return jsonClone(row);
-        },
-        update: vi.fn() as any,
-      } as any),
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
+          findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+          updateById: async (_resource: unknown, id: string, patch: any) => {
+            const row = rows.get(id);
+            if (!row) return null;
+            Object.assign(row, patch);
+            return jsonClone(row);
+          },
+          update: vi.fn() as any,
+        } as any);
+      },
     });
     const attempts = new InMemoryConnectAttemptStore();
     const adapter = new BrowserAssistedApiKeyConnectAdapter({
@@ -887,6 +891,7 @@ describe('ProviderConnectService', () => {
     });
 
     const stored = [...rows.values()][0];
+    expect(resolvedPodUrl).toBe('https://id.example/alice/');
     expect(stored).toMatchObject({
       id: 'credentials.ttl#cloud-openai',
       provider: 'openai.ttl',

@@ -165,6 +165,7 @@ export interface PodConnectedCredentialRepositoryOptions {
   providerIds?: string[];
   dbFactory?: (input: {
     owner: string;
+    podUrl: string;
     auth?: AuthContext;
     fetch: typeof fetch;
     credential?: typeof credentialResource;
@@ -345,7 +346,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const credential = alias(this.credentialTemplate, 'credential');
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
-    const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
+    const podUrl = podUrlFromHostedWebId(owner);
+    const db = await this.dbFactory({ owner, podUrl, auth, fetch: trustedFetch, credential, aiProvider });
     await db.init?.(credential, aiProvider);
     return { db, credential };
   }
@@ -1131,6 +1133,7 @@ function token(randomBytes: (bytes: number) => Buffer): string {
 
 function createDefaultConnectedCredentialDb(input: {
   owner: string;
+  podUrl: string;
   auth?: AuthContext;
   fetch: typeof fetch;
   credential?: typeof credentialResource;
@@ -1141,15 +1144,28 @@ function createDefaultConnectedCredentialDb(input: {
   return Promise.resolve(drizzle(
     {
       fetch: input.fetch,
-      info: { webId: input.owner, isLoggedIn: true },
+      info: { webId: input.owner, podUrl: input.podUrl, isLoggedIn: true },
     } as any,
     {
       schema: {
         credential,
         aiProvider,
       },
+      podUrl: input.podUrl,
     },
   ) as unknown as ConnectedCredentialDb);
+}
+
+function podUrlFromHostedWebId(webId: string): string {
+  const ownerUrl = new URL(webId);
+  if (ownerUrl.hash !== '#me' || !ownerUrl.pathname.endsWith('/profile/card')) {
+    throw new Error('hosted_pod_owner_url_invalid');
+  }
+  const podPath = ownerUrl.pathname.slice(0, -'profile/card'.length);
+  if (!podPath || !podPath.endsWith('/')) {
+    throw new Error('hosted_pod_owner_url_invalid');
+  }
+  return new URL(podPath, ownerUrl.origin).href;
 }
 
 function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string, unknown> {
