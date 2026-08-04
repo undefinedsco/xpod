@@ -28,7 +28,7 @@ function validInput(overrides = {}) {
     imageDigest,
     npmPackage: '@undefineds.co/xpod',
     npmVersion: '0.3.68-rc.42',
-    endpoint: 'https://rc.id.undefineds.co',
+    endpoint: 'https://id-rc.undefineds.co',
     acceptedAt,
     checks: {
       'build:ts': 'passed',
@@ -298,7 +298,7 @@ describe('release acceptance manifest', () => {
       '--image-digest', imageDigest,
       '--npm-package', '@undefineds.co/xpod',
       '--npm-version', '0.3.68-rc.42',
-      '--endpoint', 'https://rc.id.undefineds.co',
+      '--endpoint', 'https://id-rc.undefineds.co',
       '--accepted-at', acceptedAt,
       '--checks-file', checksPath,
     ], {
@@ -353,7 +353,7 @@ describe('release acceptance manifest', () => {
       '--image-digest', imageDigest,
       '--npm-package', '@undefineds.co/xpod',
       '--npm-version', '0.3.68-rc.42',
-      '--endpoint', 'https://rc.id.undefineds.co',
+      '--endpoint', 'https://id-rc.undefineds.co',
       '--accepted-at', acceptedAt,
       '--checks-file', checksPath,
     ])).rejects.toMatchObject({

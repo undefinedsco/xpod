@@ -1,39 +1,26 @@
 # Xpod RC Sealos overlay
 
-This overlay renders one RC Xpod instance and its fixed
-`rc.id.undefineds.co` Ingress in the `xpod-rc` namespace. It intentionally
-does not deploy physical PostgreSQL, Redis, or object storage resources.
+This overlay deploys only RC-owned resources into the Sealos-assigned CO
+namespace. It never creates a Namespace or a private Inngest instance.
 
-Before a release branch is pushed, DNS must resolve `rc.id.undefineds.co` to
-the Sealos ingress address and a TLS Secret named `xpod-rc-tls` whose certificate
-covers that host must already exist in the selected RC namespace. A
-`*.id.undefineds.co` certificate covers the RC host; `*.undefineds.co` does not.
+Public entry points mirror production roles:
 
-Apply the namespace before creating the runtime Secret from an operator-owned
-env file:
+- `id-rc.undefineds.co` for OIDC, WebID, dashboard, and settings
+- `pods-rc.undefineds.co` for the hosted Pod entry point
+- `api-rc.undefineds.co` for authenticated APIs
 
-```bash
-kubectl apply -f deploy/sealos/rc/namespace.yaml
-kubectl create secret generic xpod-rc-secret \
-  --namespace xpod-rc \
-  --from-env-file="$APP_ENV_FILE"
-```
+All three Ingresses target `Service/xpod-rc-gateway`, a stable selector alias
+for the existing unified Nginx Gateway. The Gateway routes each host to
+`Service/xpod-rc`; it must be updated with
+`scripts/update-gateway-rc-configmap.cjs` before public acceptance.
 
-Do not copy the production `APP_ENV_FILE`. The candidate workflow gate must
-reject production domain, bucket, and database values before deployment.
+The candidate workflow renders this placeholder overlay into the assigned
+namespace, creates `xpod-rc-secret` from the RC Environment's `APP_ENV_FILE`,
+and mounts the fixed Alice/Bob seed separately. RC reuses the physical
+PostgreSQL, Redis, object store, and Inngest, but must select an isolated
+logical database/schema, nonzero Redis DB, object bucket, and Event Key. The
+Inngest Signing Key is shared with the shared Inngest instance.
 
-`APP_ENV_FILE` may only use existing supported Xpod/CSS configuration keys.
-It must provide isolated values for these categories:
-
-- `CSS_SPARQL_ENDPOINT` and `CSS_IDENTITY_DB_URL` for the RC database or schema principal
-- `CSS_REDIS_CLIENT` for the RC Redis database URL
-- `CSS_MINIO_ENDPOINT`, `CSS_MINIO_ACCESS_KEY`, `CSS_MINIO_SECRET_KEY`, and `CSS_MINIO_BUCKET_NAME` for the RC object bucket
-- `XPOD_INNGEST_EVENT_KEY` and `XPOD_INNGEST_SIGNING_KEY` for the RC Inngest instance
-- Any deployment-specific AI, DNS, or email keys already supported by `config/cloud.json`
-
-Do not use unsupported prefix variables such as `XPOD_REDIS_PREFIX` or
-`XPOD_OBJECT_PREFIX`; this repository does not read them.
-
-The overlay pins RC runtime invariants such as `CSS_BASE_URL`,
-`CSS_ALLOWED_HOSTS`, `CSS_BASE_STORAGE_DOMAIN`, `XPOD_EDITION`, ports, and edge
-node mode directly on the Xpod container so Secret values cannot override them.
+`CSS_BASE_URL`, `CSS_ALLOWED_HOSTS`, ports, edition, and RC source are fixed in
+the manifest. Do not place production hosts or unsupported prefix variables in
+`APP_ENV_FILE`.

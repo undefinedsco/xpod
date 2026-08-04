@@ -49,13 +49,11 @@ spec:
             - name: CSS_LOGGING_LEVEL
               value: info
             - name: CSS_BASE_URL
-              value: https://rc.id.undefineds.co
+              value: https://id-rc.undefineds.co
             - name: CSS_ALLOWED_HOSTS
-              value: rc.id.undefineds.co
-            - name: CSS_BASE_STORAGE_DOMAIN
-              value: rc.id.undefineds.co
+              value: id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co
             - name: XPOD_EDGE_NODES_ENABLED
-              value: "true"
+              value: "false"
             - name: XPOD_INNGEST_ENABLED
               value: "true"
             - name: XPOD_INNGEST_MODE
@@ -63,7 +61,9 @@ spec:
             - name: XPOD_INNGEST_BASE_URL
               value: http://xpod-inngest:8288
             - name: XPOD_API_BASE_URL
-              value: http://xpod
+              value: http://xpod-rc
+            - name: XPOD_INNGEST_SOURCE
+              value: rc
           envFrom:
             - configMapRef:
                 name: xpod-rc-config

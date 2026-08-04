@@ -88,7 +88,7 @@ function replaceSecretName(overlayDir, secretName) {
   }
 }
 
-function assertNoRcResidue(manifest) {
+function assertNoRcResidue(manifest, secretName) {
   const objects = YAML.parseAllDocuments(manifest)
     .map((document) => document.toJSON())
     .filter(Boolean);
@@ -98,7 +98,7 @@ function assertNoRcResidue(manifest) {
   if (objects.some((object) => object.metadata?.namespace === 'xpod-rc')) {
     throw new Error('rendered manifest must not contain metadata.namespace xpod-rc');
   }
-  if (manifest.includes('xpod-rc-secret')) {
+  if (secretName !== 'xpod-rc-secret' && manifest.includes('xpod-rc-secret')) {
     throw new Error('rendered manifest must not contain xpod-rc-secret');
   }
 }
@@ -116,7 +116,7 @@ function renderRcManifests(input) {
       encoding: 'utf8',
       stdio: [ 'ignore', 'pipe', 'pipe' ],
     });
-    assertNoRcResidue(manifest);
+    assertNoRcResidue(manifest, secretName);
     fs.mkdirSync(path.dirname(input.output), { recursive: true });
     fs.writeFileSync(input.output, manifest);
     return manifest;

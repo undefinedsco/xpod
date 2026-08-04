@@ -111,7 +111,7 @@ describe('release candidate workflow', () => {
     expect(jobRunText(workflow, 'prepublish_bun_tarball')).toContain('bun scripts/package-consumer-smoke.cjs');
   });
 
-  it('checks RC DNS and namespace TLS before publishing artifacts', async () => {
+  it('checks all RC DNS names and assigned namespace access before publishing artifacts', async () => {
     const workflow = await loadWorkflow();
     const preflight = workflow.jobs.rc_prerequisites;
     const runText = jobRunText(workflow, 'rc_prerequisites');
@@ -120,10 +120,11 @@ describe('release candidate workflow', () => {
     expect(preflight.environment).toBe('rc');
     expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
-    expect(runText).toContain("resolve4('rc.id.undefineds.co')");
-    expect(runText).toContain('get secret xpod-rc-tls');
-    expect(runText).toContain('tls.crt');
-    expect(runText).toContain('rc.id.undefineds.co');
+    expect(runText).toContain('id-rc.undefineds.co');
+    expect(runText).toContain('pods-rc.undefineds.co');
+    expect(runText).toContain('api-rc.undefineds.co');
+    expect(runText).toContain('auth can-i create deployments');
+    expect(runText).not.toContain('get secret xpod-rc-tls');
   });
 
   it('publishes npm with tag next and verifies published Node and Bun consumers before acceptance', async () => {
@@ -182,16 +183,27 @@ describe('release candidate workflow', () => {
     expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME"');
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
-    expect(runText).toContain('kubectl rollout status deployment/xpod-inngest');
-    expect(runText).toContain('https://rc.id.undefineds.co/service/status');
+    expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
+    expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
+    expect(runText).toContain('https://id-rc.undefineds.co/service/status');
+    expect(runText).toContain('https://pods-rc.undefineds.co');
+    expect(runText).toContain('https://api-rc.undefineds.co');
     expect(runText).toContain('/.well-known/openid-configuration');
-    expect(runText).toContain('https://rc.id.undefineds.co/dashboard/');
+    expect(runText).toContain('https://id-rc.undefineds.co/dashboard/');
     expect(runText).toContain('/settings/');
     expect(runText).toContain('dashboard.html');
     expect(runText).toContain('settings.html');
     expect(runText).toContain('dashboard did not return HTML');
     expect(runText).toContain('settings did not return HTML');
-    expect(runText).toContain('https://rc.id.undefineds.co/api/pod/settings/status');
+    expect(runText).toContain('https://api-rc.undefineds.co/api/pod/settings/status');
+    for (const pair of [
+      [ 'xpod-rc-id-tls', 'id-rc.undefineds.co' ],
+      [ 'xpod-rc-pods-tls', 'pods-rc.undefineds.co' ],
+      [ 'xpod-rc-api-tls', 'api-rc.undefineds.co' ],
+    ]) {
+      expect(runText).toContain(pair[0]);
+      expect(runText).toContain(pair[1]);
+    }
     expect(runText).toContain('401');
     expect(runText).not.toContain('/settings/api/providers');
     expect(runText).not.toContain('https://id.undefineds.co');
@@ -224,7 +236,7 @@ describe('release candidate workflow', () => {
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
-    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://rc.id.undefineds.co');
+    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.co');
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
     expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBeUndefined();
     expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBeUndefined();
@@ -289,7 +301,7 @@ describe('release candidate workflow', () => {
     expect(cleanup.if).toContain('always()');
     expect(cleanup.if).toContain("vars.XPOD_RC_SCALE_TO_ZERO == 'true'");
     expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
-    expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-inngest --replicas=0');
+    expect(cleanup.run).not.toContain('deployment/xpod-inngest');
   });
 
   it('does not contain production deployment shortcuts, mutable latest tags, or continue-on-error release gates', async () => {
@@ -301,6 +313,7 @@ describe('release candidate workflow', () => {
     expect(text).not.toContain('deploy/sealos/cloud');
     expect(text).not.toContain('environment: production');
     expect(allRunText(workflow)).not.toContain('https://id.undefineds.co');
+    expect(allRunText(workflow)).not.toContain('https://rc.id.undefineds.co');
   });
 
   it('binds deployment acceptance to the exact digest and direct pod health before public checks', async () => {

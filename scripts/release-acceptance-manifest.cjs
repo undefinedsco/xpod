@@ -188,7 +188,7 @@ function validateManifest(manifest, expected) {
     addError(errors, 'npmVersion', 'npmVersion must equal candidateVersion');
   }
 
-  if (manifest.endpoint !== 'https://rc.id.undefineds.co') {
+  if (manifest.endpoint !== 'https://id-rc.undefineds.co') {
     addError(errors, 'endpoint', 'endpoint must match the release candidate endpoint');
   }
 

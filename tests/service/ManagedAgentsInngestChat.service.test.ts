@@ -353,6 +353,102 @@ describe('Managed Agents Inngest Chat backend', () => {
     registerProviderMock.mockClear();
   });
 
+  it('isolates an RC backend from production Inngest identities and events', async () => {
+    const driver = new WorkspaceAgentDriver();
+    const inngestClient = new RecordingInngestClient();
+    const backend = new InngestRunExecutionBackend({
+      client: inngestClient as any,
+      source: 'rc',
+      runtimeDriver: driver,
+      durableDelivery: true,
+      executeInline: false,
+    });
+    const input: RunExecutionInput = {
+      runId: 'chat/default/2026/08/04/runs.ttl#run_rc',
+      threadId: 'thread_rc',
+      prompt: 'run in rc',
+      conversation: [],
+      config: {
+        workspace: workspaceRef,
+        runner: { type: 'codex', protocol: 'acp' },
+      },
+    };
+
+    for await (const _event of backend.start(input)) {
+      // Durable-only execution deliberately emits no streaming events.
+    }
+
+    expect((backend.agentRunFunction as any).options).toMatchObject({
+      id: 'xpod-agent-run-rc',
+      triggers: [
+        { event: 'xpod/rc/run.requested' },
+        { event: 'xpod/rc/run.continue_requested' },
+      ],
+    });
+    expect(inngestClient.sent).toEqual([
+      expect.objectContaining({
+        id: `rc:run:${input.runId}`,
+        name: 'xpod/rc/run.requested',
+        data: expect.objectContaining({
+          source: 'rc',
+          executionKey: `rc:run:${input.runId}`,
+        }),
+      }),
+    ]);
+  });
+
+  it('keeps production Inngest names stable while marking the payload source', async () => {
+    const driver = new WorkspaceAgentDriver();
+    const inngestClient = new RecordingInngestClient();
+    const backend = new InngestRunExecutionBackend({
+      client: inngestClient as any,
+      runtimeDriver: driver,
+      durableDelivery: true,
+      executeInline: false,
+    });
+    const input: RunExecutionInput = {
+      runId: 'chat/default/2026/08/04/runs.ttl#run_production',
+      threadId: 'thread_production',
+      prompt: 'run in production',
+      conversation: [],
+      config: {
+        workspace: workspaceRef,
+        runner: { type: 'codex', protocol: 'acp' },
+      },
+    };
+
+    for await (const _event of backend.start(input)) {
+      // Durable-only execution deliberately emits no streaming events.
+    }
+
+    expect((backend.agentRunFunction as any).options).toMatchObject({
+      id: 'xpod-agent-run',
+      triggers: [
+        { event: 'xpod/run.requested' },
+        { event: 'xpod/run.continue_requested' },
+      ],
+    });
+    expect(inngestClient.sent).toEqual([
+      expect.objectContaining({
+        id: `run:${input.runId}`,
+        name: 'xpod/run.requested',
+        data: expect.objectContaining({ source: 'production' }),
+      }),
+    ]);
+  });
+
+  it('uses a source-specific app id when constructing the RC Inngest client', () => {
+    const backend = new InngestRunExecutionBackend({
+      source: 'rc',
+      eventKey: 'event-key',
+      signingKey: 'signing-key',
+      durableDelivery: true,
+      executeInline: false,
+    });
+
+    expect((backend.getClient() as any).id).toBe('xpod-managed-agents-rc');
+  });
+
   it('routes a workspace agent chat through Inngest before executing the runtime driver', async () => {
     const store = new InMemoryStore<StoreContext>();
     const driver = new WorkspaceAgentDriver();

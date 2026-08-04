@@ -88,22 +88,21 @@ describe('RC Sealos deployment manifest', () => {
 
     expect(objects.map((object) => `${object.kind}/${object.metadata?.name}`).sort()).toEqual([
       'ConfigMap/xpod-rc-config',
-      'Deployment/xpod-inngest',
       'Deployment/xpod-rc',
-      'Ingress/xpod-rc',
-      'Namespace/xpod-rc',
-      'Service/xpod',
-      'Service/xpod-inngest',
+      'Ingress/xpod-rc-api',
+      'Ingress/xpod-rc-id',
+      'Ingress/xpod-rc-pods',
+      'Service/xpod-rc',
+      'Service/xpod-rc-gateway',
     ]);
-    expect(objects.every((object) => object.kind === 'Namespace' || object.metadata?.namespace === 'xpod-rc')).toBe(true);
+    expect(objects.every((object) => object.metadata?.namespace === 'xpod-rc')).toBe(true);
 
     const configMap = findOne(objects, 'ConfigMap', 'xpod-rc-config');
     expect(configMap.data).toMatchObject({
       NODE_ENV: 'production',
       XPOD_EDITION: 'cloud',
-      CSS_BASE_URL: 'https://rc.id.undefineds.co',
-      CSS_ALLOWED_HOSTS: 'rc.id.undefineds.co',
-      CSS_BASE_STORAGE_DOMAIN: 'rc.id.undefineds.co',
+      CSS_BASE_URL: 'https://id-rc.undefineds.co',
+      CSS_ALLOWED_HOSTS: 'id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co',
     });
 
     const deployments = objects.filter((object) => object.kind === 'Deployment');
@@ -122,10 +121,9 @@ describe('RC Sealos deployment manifest', () => {
       CSS_PORT: '6300',
       API_PORT: '6301',
       CSS_LOGGING_LEVEL: 'info',
-      CSS_BASE_URL: 'https://rc.id.undefineds.co',
-      CSS_ALLOWED_HOSTS: 'rc.id.undefineds.co',
-      CSS_BASE_STORAGE_DOMAIN: 'rc.id.undefineds.co',
-      XPOD_EDGE_NODES_ENABLED: 'true',
+      CSS_BASE_URL: 'https://id-rc.undefineds.co',
+      CSS_ALLOWED_HOSTS: 'id-rc.undefineds.co,pods-rc.undefineds.co,api-rc.undefineds.co',
+      XPOD_EDGE_NODES_ENABLED: 'false',
     });
     expect(xpodContainer.envFrom).toEqual([
       { configMapRef: { name: 'xpod-rc-config', optional: true }},
@@ -135,50 +133,39 @@ describe('RC Sealos deployment manifest', () => {
       expect.objectContaining({ name: 'XPOD_INNGEST_ENABLED', value: 'true' }),
       expect.objectContaining({ name: 'XPOD_INNGEST_MODE', value: 'managed' }),
       expect.objectContaining({ name: 'XPOD_INNGEST_BASE_URL', value: 'http://xpod-inngest:8288' }),
-      expect.objectContaining({ name: 'XPOD_API_BASE_URL', value: 'http://xpod' }),
+      expect.objectContaining({ name: 'XPOD_API_BASE_URL', value: 'http://xpod-rc' }),
+      expect.objectContaining({ name: 'XPOD_INNGEST_SOURCE', value: 'rc' }),
     ]));
     expect(xpodContainer.readinessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.livenessProbe?.httpGet?.path).toBe('/service/status');
     expect(xpodContainer.startupProbe?.httpGet?.path).toBe('/service/status');
 
-    const xpodService = findOne(objects, 'Service', 'xpod');
+    const xpodService = findOne(objects, 'Service', 'xpod-rc');
     expect(xpodService.spec?.selector).toEqual({ app: 'xpod-rc' });
     expect(xpodService.spec?.selector).toEqual(xpodDeployment.spec?.template?.metadata?.labels);
     expectDeploymentSelectorsMatchTemplate(xpodDeployment);
     expectPodSecurityBaseline(xpodDeployment);
 
-    const inngestDeployment = findOne(objects, 'Deployment', 'xpod-inngest');
-    const inngestContainer = inngestDeployment.spec?.template?.spec?.containers?.find((container: any) => container.name === 'inngest');
-    expect(inngestContainer?.envFrom).toEqual([
-      { secretRef: { name: 'xpod-rc-secret' }},
-    ]);
-    expect(inngestContainer?.args).toEqual(expect.arrayContaining([
-      '--postgres-uri',
-      '$(CSS_IDENTITY_DB_URL)',
-      '--redis-uri',
-      '$(CSS_REDIS_CLIENT)',
+    const gatewayService = findOne(objects, 'Service', 'xpod-rc-gateway');
+    expect(gatewayService.spec?.selector).toEqual({ app: 'gateway' });
+    expect(gatewayService.spec?.ports).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'api', port: 8081, targetPort: 8081 }),
+      expect.objectContaining({ name: 'id', port: 8082, targetPort: 8082 }),
+      expect.objectContaining({ name: 'pods', port: 8083, targetPort: 8083 }),
     ]));
-    const inngestService = findOne(objects, 'Service', 'xpod-inngest');
-    expect(inngestService.spec?.selector).toEqual({ app: 'xpod-inngest' });
-    expect(inngestService.spec?.selector).toEqual(inngestDeployment.spec?.template?.metadata?.labels);
-    expectDeploymentSelectorsMatchTemplate(inngestDeployment);
-    expectPodSecurityBaseline(inngestDeployment);
 
-    const ingress = findOne(objects, 'Ingress', 'xpod-rc');
-    expect(ingress.metadata?.namespace).toBe('xpod-rc');
-    expect(ingress.spec?.tls).toEqual([{ hosts: ['rc.id.undefineds.co'], secretName: 'xpod-rc-tls' }]);
-    expect(ingress.spec?.rules).toEqual([{
-      host: 'rc.id.undefineds.co',
-      http: {
-        paths: [{
-          path: '/',
-          pathType: 'Prefix',
-          backend: { service: { name: 'xpod', port: { name: 'http' } } },
-        }],
-      },
-    }]);
-    expect(JSON.stringify(ingress)).not.toContain('xpod-cloud');
-    expect(JSON.stringify(ingress)).not.toContain('xpod-cloud-tls');
+    for (const [ name, host, secretName, port ] of [
+      [ 'xpod-rc-id', 'id-rc.undefineds.co', 'xpod-rc-id-tls', 'id' ],
+      [ 'xpod-rc-pods', 'pods-rc.undefineds.co', 'xpod-rc-pods-tls', 'pods' ],
+      [ 'xpod-rc-api', 'api-rc.undefineds.co', 'xpod-rc-api-tls', 'api' ],
+    ]) {
+      const ingress = findOne(objects, 'Ingress', name);
+      expect(ingress.spec?.tls).toEqual([{ hosts: [ host ], secretName }]);
+      expect(ingress.spec?.rules?.[0]).toMatchObject({
+        host,
+        http: { paths: [{ backend: { service: { name: 'xpod-rc-gateway', port: { name: port } } } }] },
+      });
+    }
     expect(objects.some((object) => object.kind === 'StatefulSet' || object.kind === 'PersistentVolumeClaim')).toBe(false);
   });
 });

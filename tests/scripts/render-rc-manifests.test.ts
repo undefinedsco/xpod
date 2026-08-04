@@ -44,10 +44,14 @@ describe('RC manifest renderer', () => {
     expect(manifest).toContain('namespace: custom-rc');
     expect(manifest).toContain('name: custom-secret');
     expect(manifest).toContain('secretRef:');
-    const ingress = objects.find((object) => object.kind === 'Ingress' && object.metadata?.name === 'xpod-rc');
-    expect(ingress?.metadata?.namespace).toBe('custom-rc');
-    expect(ingress?.spec?.rules?.[0]?.host).toBe('rc.id.undefineds.co');
-    expect(ingress?.spec?.tls?.[0]?.secretName).toBe('xpod-rc-tls');
+    const ingresses = objects.filter((object) => object.kind === 'Ingress');
+    expect(ingresses.map((ingress) => ingress.metadata?.name).sort()).toEqual([
+      'xpod-rc-api', 'xpod-rc-id', 'xpod-rc-pods',
+    ]);
+    expect(ingresses.every((ingress) => ingress.metadata?.namespace === 'custom-rc')).toBe(true);
+    expect(ingresses.map((ingress) => ingress.spec?.rules?.[0]?.host).sort()).toEqual([
+      'api-rc.undefineds.co', 'id-rc.undefineds.co', 'pods-rc.undefineds.co',
+    ]);
   });
 
   it('rejects unsafe Kubernetes names before rendering', async () => {
@@ -60,5 +64,11 @@ describe('RC manifest renderer', () => {
     ], { cwd: repoRoot })).rejects.toMatchObject({
       stderr: expect.stringContaining('valid Kubernetes name'),
     });
+  });
+
+  it('accepts the documented xpod-rc-secret runtime name in an assigned namespace', async () => {
+    const manifest = await render('assigned-ns', 'xpod-rc-secret');
+    expect(manifest).toContain('namespace: assigned-ns');
+    expect(manifest).toContain('name: xpod-rc-secret');
   });
 });

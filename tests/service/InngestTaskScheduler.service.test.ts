@@ -46,6 +46,60 @@ async function createTaskAuthBinding(
 }
 
 describe('Inngest Task scheduler', () => {
+  it('isolates RC task functions, events, request ids, and payloads from production', async () => {
+    const store = new InMemoryStore<StoreContext>();
+    const inngestClient = new RecordingInngestClient();
+    const runBackend = new InngestRunExecutionBackend({
+      client: inngestClient as any,
+      source: 'rc',
+      durableDelivery: true,
+      executeInline: false,
+    });
+    const scheduler = new InngestTaskScheduler({
+      backend: runBackend,
+      taskService: new TaskService({ store, executionBackend: runBackend }),
+      durableDelivery: true,
+      executeInline: false,
+    });
+    const context = { userId: 'rc-user' };
+
+    await scheduler.materializeDueTasks(context, { now: 100, limit: 5 });
+    await scheduler.materializeEventTasks({
+      eventName: 'deploy.completed',
+      context,
+    });
+
+    expect((scheduler.materializeDueRunsFunction as any).options).toMatchObject({
+      id: 'xpod-task-materialize-due-runs-rc',
+      triggers: [
+        { cron: '*/1 * * * *' },
+        { event: 'xpod/rc/task.materialize_due' },
+      ],
+    });
+    expect((scheduler.eventTaskFunction as any).options).toMatchObject({
+      id: 'xpod-task-event-rc',
+      triggers: [{ event: 'xpod/rc/task.event' }],
+    });
+    expect(inngestClient.sent).toEqual([
+      expect.objectContaining({
+        id: expect.stringMatching(/^rc:task-due_/),
+        name: 'xpod/rc/task.materialize_due',
+        data: expect.objectContaining({
+          source: 'rc',
+          requestId: expect.stringMatching(/^rc:task-due_/),
+        }),
+      }),
+      expect.objectContaining({
+        id: expect.stringMatching(/^rc:task-event_/),
+        name: 'xpod/rc/task.event',
+        data: expect.objectContaining({
+          source: 'rc',
+          requestId: expect.stringMatching(/^rc:task-event_/),
+        }),
+      }),
+    ]);
+  });
+
   it('sends an Inngest due event before materializing due Tasks into Runs', async () => {
     const store = new InMemoryStore<StoreContext>();
     const runtimeDriver = new RecordingRunBackend();

@@ -17,7 +17,9 @@ describe('release lifecycle documentation', () => {
       'release/<version>',
       'npm `next`',
       '0.3.68-rc.',
-      'https://rc.id.undefineds.co',
+      'https://id-rc.undefineds.co',
+      'https://pods-rc.undefineds.co',
+      'https://api-rc.undefineds.co',
       'GitHub Environment `rc`',
       '`KUBE_CONFIG_DATA`',
       '`APP_ENV_FILE`',
@@ -78,11 +80,12 @@ describe('release lifecycle documentation', () => {
     expect(text).toContain('artifact 内文件是 `release-acceptance.json`');
     expect(text).not.toContain('release-acceptance-${GITHUB_SHA}.json');
 
-    expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，推荐值 `xpod-rc` |');
+    expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必填变量，填写 kubeconfig 的固定 namespace，例如 `ns-1yl0rye9` |');
     expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |');
     expect(text).toContain('| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |');
     expect(text).not.toContain('| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |');
     expect(text).not.toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |');
     expect(text).not.toContain('默认在 namespace `xpod-rc`');
+    expect(text).not.toContain('推荐值 `xpod-rc`');
   });
 });
