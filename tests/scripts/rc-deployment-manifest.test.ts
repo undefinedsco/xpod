@@ -87,12 +87,16 @@ describe('RC Sealos deployment manifest', () => {
     expect(manifest).not.toMatch(/your-password|your-project-ref|sk-[A-Za-z0-9_-]+/);
 
     expect(objects.map((object) => `${object.kind}/${object.metadata?.name}`).sort()).toEqual([
+      'Certificate/xpod-rc-api',
+      'Certificate/xpod-rc-id',
+      'Certificate/xpod-rc-pods',
       'ConfigMap/xpod-rc-config',
       'Deployment/xpod-rc',
       'Deployment/xpod-rc-minio',
       'Ingress/xpod-rc-api',
       'Ingress/xpod-rc-id',
       'Ingress/xpod-rc-pods',
+      'Issuer/xpod-rc-letsencrypt',
       'Job/xpod-rc-minio-init',
       'PersistentVolumeClaim/xpod-rc-minio',
       'Service/xpod-rc',
