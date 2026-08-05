@@ -198,8 +198,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
     const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const id = aiRuntimeRepository.credentialId(input);
-    const row = await db.findById<Record<string, unknown>>(credential, id);
+    const match = await this.findCredentialRow(db, credential, input);
+    const row = match?.row;
     const record = row ? recordFromCredentialRow(row, input.webId) : undefined;
     if (!record) {
       return undefined;
@@ -241,17 +241,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const { db, credential } = await this.dbForOwner(input.webId, input.auth);
     const rows = (await Promise.all(
       this.providerIds.map(async (provider) => {
-        try {
-          return await db.findById<Record<string, unknown>>(
-            credential,
-            aiRuntimeRepository.credentialId({ deployment: input.deployment, provider }),
-          );
-        } catch (error) {
-          if (isPodResourceNotFound(error)) {
-            return null;
-          }
-          throw error;
-        }
+        const match = await this.findCredentialRow(db, credential, {
+          deployment: input.deployment,
+          provider,
+        });
+        return match?.row ?? null;
       }),
     )).filter((row): row is Record<string, unknown> => row !== null);
     return rows
@@ -292,7 +286,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     context?: { auth?: AuthContext },
   ): Promise<ConnectCredentialRecord> {
     const { db, credential } = await this.dbForOwner(record.webId, context?.auth);
-    const existing = await db.findById<Record<string, unknown>>(credential, record.id);
+    const match = await this.findCredentialRow(db, credential, record);
+    const existing = match?.row;
+    const existingId = match?.id ?? record.id;
     const existingVersion = existing ? versionFromRow(existing) : 0;
     const replacesUnsupportedRecord = Boolean(existing)
       && stringFrom(existing?.storageMode) !== PLAINTEXT_CREDENTIAL_STORAGE_MODE;
@@ -306,9 +302,21 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       ...record,
       version: nextVersion,
     });
+    if (existing && (existingId !== record.id || isLegacyCredentialId(existingId))) {
+      const { id: _canonicalId, ...patch } = row;
+      try {
+        const updated = await db.updateById<Record<string, unknown>>(credential, existingId, patch);
+        if (!updated) {
+          throw new Error('legacy credential resource was not updated');
+        }
+        return recordFromCredentialRow(updated, record.webId);
+      } catch (error) {
+        throw credentialPersistenceError('legacy-update', error);
+      }
+    }
     if (existing) {
       try {
-        const deleted = await db.deleteById(credential, record.id);
+        const deleted = await db.deleteById(credential, existingId);
         if (!deleted) {
           throw new Error('exact credential resource was not deleted');
         }
@@ -344,8 +352,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
     const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const id = aiRuntimeRepository.credentialId(input);
-    const existing = await db.findById<Record<string, unknown>>(credential, id);
+    const match = await this.findCredentialRow(db, credential, input);
+    const id = match?.id ?? aiRuntimeRepository.credentialId(input);
+    const existing = match?.row;
     if (!existing) {
       return undefined;
     }
@@ -363,8 +372,9 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
 
   public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
     const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const id = aiRuntimeRepository.credentialId(input);
-    const existing = await db.findById<Record<string, unknown>>(credential, id);
+    const match = await this.findCredentialRow(db, credential, input);
+    const id = match?.id ?? aiRuntimeRepository.credentialId(input);
+    const existing = match?.row;
     if (!existing) {
       return undefined;
     }
@@ -386,6 +396,26 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const db = await this.dbFactory({ owner, podUrl, auth, fetch: trustedFetch, credential, aiProvider });
     await db.init?.(credential, aiProvider);
     return { db, credential };
+  }
+
+  private async findCredentialRow(
+    db: ConnectedCredentialDb,
+    credential: typeof credentialResource,
+    input: { deployment: GatewayDeployment; provider: string },
+  ): Promise<{ id: string; row: Record<string, unknown> } | undefined> {
+    for (const id of credentialIdCandidates(input)) {
+      try {
+        const row = await db.findById<Record<string, unknown>>(credential, id);
+        if (row) {
+          return { id, row };
+        }
+      } catch (error) {
+        if (!isPodResourceNotFound(error)) {
+          throw error;
+        }
+      }
+    }
+    return undefined;
   }
 
   private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
@@ -1271,6 +1301,10 @@ function providerFromRelation(value: string): string | undefined {
   if (!value) {
     return undefined;
   }
+  const fragmentIndex = value.lastIndexOf('#');
+  if (fragmentIndex >= 0 && fragmentIndex < value.length - 1) {
+    return normalizeProvider(value.slice(fragmentIndex + 1));
+  }
   const withoutFragment = value.split('#', 1)[0] ?? value;
   const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
   const provider = fileName.replace(/\.ttl$/u, '');
@@ -1344,8 +1378,47 @@ function versionFromRow(row: Record<string, unknown>): number {
 }
 
 function providerFromCredentialId(id: string): string {
-  const match = /\/([^/#]+)\.ttl#/u.exec(id);
-  return match?.[1] ?? '';
+  const key = credentialIdKey(id);
+  if (!key) {
+    return '';
+  }
+  const match = /^(?:local|cloud)-([a-z0-9][a-z0-9-]*)$/u.exec(key);
+  if (!match) {
+    return '';
+  }
+  const provider = match[1].replace(/^local-cloud-/u, '');
+  return provider ? normalizeProvider(provider) : '';
+}
+
+function credentialIdCandidates(input: {
+  deployment: GatewayDeployment;
+  provider: string;
+}): string[] {
+  const canonical = aiRuntimeRepository.credentialId(input);
+  const legacyCommentedEdition = aiRuntimeRepository.credentialId({
+    deployment: `${input.deployment}-local-cloud` as GatewayDeployment,
+    provider: input.provider,
+  });
+  return canonical === legacyCommentedEdition
+    ? [canonical]
+    : [canonical, legacyCommentedEdition];
+}
+
+function isLegacyCredentialId(id: string): boolean {
+  const key = credentialIdKey(id);
+  return key ? /^(?:local|cloud)-local-cloud-[a-z0-9][a-z0-9-]*$/u.test(key) : false;
+}
+
+function credentialIdKey(id: string): string | undefined {
+  const fragmentIndex = id.lastIndexOf('#');
+  if (fragmentIndex < 0) {
+    return undefined;
+  }
+  const resourcePath = id.slice(0, fragmentIndex);
+  if (resourcePath !== 'credentials.ttl' && !resourcePath.endsWith('/credentials.ttl')) {
+    return undefined;
+  }
+  return id.slice(fragmentIndex + 1) || undefined;
 }
 
 function deploymentFromCredentialId(id: string): GatewayDeployment {

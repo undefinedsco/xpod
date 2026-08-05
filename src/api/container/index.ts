@@ -55,6 +55,14 @@ function normalizeOptionalBaseUrl(value: string | undefined): string | undefined
   return url.toString().replace(/\/$/u, '');
 }
 
+function resolveEdition(value: string | undefined): 'cloud' | 'local' {
+  const edition = (value ?? 'local').replace(/\s+#.*$/u, '').trim();
+  if (edition === 'cloud' || edition === 'local') {
+    return edition;
+  }
+  throw new Error('XPOD_EDITION must be either "local" or "cloud"');
+}
+
 /**
  * 创建 API 容器
  */
@@ -90,7 +98,7 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
  * 从环境变量读取配置
  */
 export function loadConfigFromEnv(): ApiContainerConfig {
-  const edition = (process.env.XPOD_EDITION ?? 'local') as 'cloud' | 'local';
+  const edition = resolveEdition(process.env.XPOD_EDITION);
   const rootDir = process.env.CSS_ROOT_FILE_PATH || './data';
   const localSetupPath = resolveLocalSetupPath(process.env.XPOD_LOCAL_SETUP_PATH, rootDir);
   const localSetupProviderId = resolveLocalSetupProviderId(process.env.XPOD_PROVIDER_ID);

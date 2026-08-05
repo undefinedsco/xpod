@@ -33,6 +33,20 @@ describe('loadConfigFromEnv', () => {
     process.env = { ...originalEnv };
   });
 
+  it('normalizes an inline comment accidentally included in XPOD_EDITION', () => {
+    process.env.XPOD_EDITION = 'local                    # local or cloud';
+    process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
+
+    expect(loadConfigFromEnv().edition).toBe('local');
+  });
+
+  it('rejects an unsupported XPOD_EDITION instead of leaking it into credential ids', () => {
+    process.env.XPOD_EDITION = 'preview';
+    process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
+
+    expect(() => loadConfigFromEnv()).toThrow(/XPOD_EDITION.*local.*cloud/i);
+  });
+
   it('defaults local Cloud API endpoint to api.undefineds.co', () => {
     delete process.env.XPOD_CLOUD_API_ENDPOINT;
     delete process.env.XPOD_NODE_TOKEN;

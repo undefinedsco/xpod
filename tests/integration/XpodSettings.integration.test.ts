@@ -111,6 +111,26 @@ describe('Xpod settings product acceptance harness', () => {
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
   });
 
+  it('preserves the selected runtime PATH for the Docker regression gate', () => {
+    const plan = buildAcceptancePlan({
+      env: {
+        PATH: '/opt/node22/bin:/usr/bin',
+        XPOD_ACCEPTANCE_RUN_DOCKER: 'true',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+    });
+
+    const gate = plan.items.find((item) => item.requirementId === 'docker-full-regression')?.gate;
+
+    expect(gate).toMatchObject({
+      kind: 'command',
+      command: [ 'bash', '-c', 'docker info && bun run test:integration' ],
+    });
+    expect(buildGateRuntimeEnv(gate as any, {
+      PATH: '/opt/node22/bin:/usr/bin',
+    })).toMatchObject({ PATH: '/opt/node22/bin:/usr/bin' });
+  });
+
   it('renders redacted command output for failed acceptance gates', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-failure-evidence-'));
     const secret = 'sk-failed-gate-secret';

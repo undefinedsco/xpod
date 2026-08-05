@@ -862,7 +862,8 @@ describe('ProviderConnectService', () => {
           }),
           select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()] }) }) }),
           findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
-          deleteById: async (_resource: unknown, id: string) => rows.delete(id),
+          deleteById: async (_resource: unknown, id: string) =>
+            id === 'credentials.ttl#local-local-cloud-openai' ? false : rows.delete(id),
           updateById: async (_resource: unknown, id: string, patch: any) => {
             const row = rows.get(id);
             if (!row) return null;
@@ -935,6 +936,21 @@ describe('ProviderConnectService', () => {
     })).resolves.toEqual([
       expect.objectContaining({ provider: 'openai', enabled: true, health: 'healthy' }),
     ]);
+    const hydrated = rows.get('credentials.ttl#cloud-openai')!;
+    hydrated.provider = 'https://id.example/alice/settings/providers.ttl#openai';
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual([
+      expect.objectContaining({ provider: 'openai', enabled: true, health: 'healthy' }),
+    ]);
+    delete hydrated.provider;
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual([
+      expect.objectContaining({ provider: 'openai', enabled: true, health: 'healthy' }),
+    ]);
     rows.set('credentials.ttl#cloud-deepseek', {
       id: 'credentials.ttl#cloud-deepseek',
       provider: 'deepseek.ttl',
@@ -959,6 +975,52 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       deployment: 'cloud',
     })).resolves.toMatchObject({ status: 'revoked', version: 3 });
+
+    rows.set('credentials.ttl#local-local-cloud-openai', {
+      id: 'credentials.ttl#local-local-cloud-openai',
+      provider: 'openai.ttl',
+      authMode: 'apiKey',
+      service: 'ai',
+      status: 'active',
+      storageMode: 'plaintext-v1',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-legacy-local' }),
+      keyVersion: '4',
+    });
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'local',
+    })).resolves.toEqual([
+      expect.objectContaining({ provider: 'openai', version: 4 }),
+    ]);
+    await expect(repository.upsertConnectedCredential({
+      id: 'credentials.ttl#local-openai',
+      credentialIri: `${WEB_ID.split('/profile/', 1)[0]}/settings/credentials.ttl#local-openai`,
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'local',
+      authMode: 'apiKey',
+      storageMode: 'plaintext-v1',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-migrated-local' }),
+      status: 'active',
+      expectedVersion: 4,
+    })).resolves.toMatchObject({ id: 'credentials.ttl#local-local-cloud-openai', version: 5 });
+    expect(rows.get('credentials.ttl#local-local-cloud-openai')).toMatchObject({
+      keyVersion: '5',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-migrated-local' }),
+    });
+    expect(rows.has('credentials.ttl#local-openai')).toBe(false);
+    await expect(repository.upsertConnectedCredential({
+      id: 'credentials.ttl#local-local-cloud-openai',
+      credentialIri: `${WEB_ID.split('/profile/', 1)[0]}/settings/credentials.ttl#local-openai`,
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'local',
+      authMode: 'apiKey',
+      storageMode: 'plaintext-v1',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-legacy-local-updated-again' }),
+      status: 'active',
+      expectedVersion: 5,
+    })).resolves.toMatchObject({ id: 'credentials.ttl#local-local-cloud-openai', version: 6 });
   });
 
   it('replaces a revoked exact Pod credential instead of partially updating it', async () => {

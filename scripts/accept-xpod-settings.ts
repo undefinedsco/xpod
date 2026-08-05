@@ -391,7 +391,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       reason: runDocker ? 'Docker gate is enabled and must execute docker info plus bun run test:integration.' : 'Requires XPOD_ACCEPTANCE_RUN_DOCKER=true.',
       commands: ['docker info', 'bun run test:integration'],
       evidence: ['Full Docker-backed regression is complete only when both commands exit 0.'],
-      gate: runDocker ? shellGate(['bash', '-lc', 'docker info && bun run test:integration'], 30 * 60 * 1000, env) : undefined,
+      gate: runDocker ? shellGate(['bash', '-c', 'docker info && bun run test:integration'], 30 * 60 * 1000, env) : undefined,
     },
     {
       requirementId: 'real-codex',
