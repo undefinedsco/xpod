@@ -226,6 +226,82 @@ describe('PostgresDerivedIndexJournal', () => {
     await journal.close();
   });
 
+  it('reconciles stale checkpoints owned by a temporarily inactive consumer', async () => {
+    const executor = new PgliteRdfSqlExecutor(new PGlite());
+    const oldDeliveries: ResourceChangeEvent[] = [];
+    const firstProcess = createJournal({
+      executor,
+      resolvePodScope: () => 'alice',
+      pollIntervalMs: 10,
+      consumers: [eventConsumer('old-v1', oldDeliveries)],
+    });
+    await firstProcess.open();
+    await firstProcess.recordResourceChange(event('/alice/gone.md'));
+    await waitUntil(() => oldDeliveries.length === 1, 2_000);
+    await firstProcess.close();
+
+    const currentDeliveries: ResourceChangeEvent[] = [];
+    const currentProcess = createJournal({
+      executor,
+      pollIntervalMs: 10,
+      consumers: [eventConsumer('current-v1', currentDeliveries)],
+    });
+    await currentProcess.open();
+    await waitUntil(() => currentDeliveries.length === 1, 2_000);
+    await executor.exec(`
+      DELETE FROM derived_index_resource_checkpoints
+      WHERE consumer_id = 'current-v1'
+        AND pod_scope_id = 'alice'
+        AND resource_path = '/alice/gone.md'
+    `);
+    await currentProcess.reconcilePod('alice', []);
+    await waitUntil(() => currentDeliveries.length === 2, 2_000);
+    expect(currentDeliveries.at(-1)).toMatchObject({ path: '/alice/gone.md', action: 'delete' });
+    await currentProcess.close();
+
+    const resumedDeliveries: ResourceChangeEvent[] = [];
+    const resumedProcess = createJournal({
+      executor,
+      pollIntervalMs: 10,
+      consumers: [eventConsumer('old-v1', resumedDeliveries)],
+    });
+    await resumedProcess.open();
+    await waitUntil(() => resumedDeliveries.length === 1, 2_000);
+    expect(resumedDeliveries).toMatchObject([{ path: '/alice/gone.md', action: 'delete' }]);
+    await resumedProcess.close();
+  });
+
+  it('counts pending deliveries for registered consumers that are not active in this process', async () => {
+    const executor = new PgliteRdfSqlExecutor(new PGlite());
+    const failing: DurableResourceChangeConsumer = {
+      consumerId: 'old-v1',
+      onResourceChanged: async () => { throw new Error('offline'); },
+    };
+    const firstProcess = createJournal({
+      executor,
+      resolvePodScope: () => 'alice',
+      retryDelayMs: 60_000,
+      pollIntervalMs: 10,
+      consumers: [failing],
+    });
+    await firstProcess.open();
+    await firstProcess.recordResourceChange(event('/alice/pending.md'));
+    await waitUntilAsync(async () => await firstProcess.pendingCount('alice', 'old-v1') === 1, 2_000);
+    await firstProcess.close();
+
+    const delivered: string[] = [];
+    const currentProcess = createJournal({
+      executor,
+      pollIntervalMs: 10,
+      consumers: [consumer('current-v1', delivered)],
+    });
+    await currentProcess.open();
+    await waitUntil(() => delivered.length === 1, 2_000);
+    expect(await currentProcess.pendingCount('alice', 'current-v1')).toBe(0);
+    expect(await currentProcess.pendingCount('alice')).toBe(1);
+    await currentProcess.close();
+  });
+
   it('delivers changes in sequence within each Pod', async () => {
     const db = new PGlite();
     const journal = createJournal({
@@ -377,7 +453,8 @@ describe('PostgresDerivedIndexJournal', () => {
 
     await waitUntil(() => delivered.length === 1, 2_000);
     expect(delivered).toEqual(['/alice/recover.md']);
-    expect(await journal.pendingCount('alice')).toBe(0);
+    expect(await journal.pendingCount('alice', 'recovery-v1')).toBe(0);
+    expect(await journal.pendingCount('alice')).toBe(1);
     await journal.close();
   });
 

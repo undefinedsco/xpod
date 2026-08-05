@@ -325,29 +325,27 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
         timestamp: Date.now(),
       });
     }
-    const missing = await this.executor.query<{ resource_path: string }>(`
-      SELECT DISTINCT resource_path
+    const missing = await this.executor.query<{ resource_path: string; last_event_id: number | string }>(`
+      SELECT resource_path, MAX(last_event_id) AS last_event_id
       FROM derived_index_resource_checkpoints
       WHERE pod_scope_id = $1
-        AND consumer_id = ANY($2::text[])
         AND deleted_at IS NULL
-        AND NOT (resource_path = ANY($3::text[]))
+        AND NOT (resource_path = ANY($2::text[]))
+      GROUP BY resource_path
       ORDER BY resource_path
-    `, [podScopeId, [...this.activeConsumerIds], authorityPaths]);
-    for (const { resource_path: resourcePath } of missing) {
-      const pending = await this.executor.query<{ pending: boolean }>(`
+    `, [podScopeId, authorityPaths]);
+    for (const { resource_path: resourcePath, last_event_id: lastEventId } of missing) {
+      const covered = await this.executor.query<{ covered: boolean }>(`
         SELECT EXISTS (
           SELECT 1
           FROM derived_index_change_journal event
-          JOIN derived_index_event_deliveries delivery ON delivery.event_id = event.id
           WHERE event.pod_scope_id = $1
             AND event.resource_path = $2
             AND event.action = 'delete'
-            AND delivery.consumer_id = ANY($3::text[])
-            AND delivery.stage <> 'done'
-        ) AS pending
-      `, [podScopeId, resourcePath, [...this.activeConsumerIds]]);
-      if (pending[0]?.pending) continue;
+            AND event.id > $3
+        ) AS covered
+      `, [podScopeId, resourcePath, lastEventId]);
+      if (covered[0]?.covered) continue;
       await this.append(podScopeId, {
         path: resourcePath,
         action: 'delete',
@@ -389,11 +387,8 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
       JOIN derived_index_change_journal event ON event.id = delivery.event_id
       WHERE delivery.stage <> 'done'
         AND ($1::text IS NULL OR event.pod_scope_id = $1)
-        AND (
-          ($2::text IS NOT NULL AND delivery.consumer_id = $2)
-          OR ($2::text IS NULL AND delivery.consumer_id = ANY($3::text[]))
-        )
-    `, [podScopeId ?? null, consumerId ?? null, [...this.activeConsumerIds]]);
+        AND ($2::text IS NULL OR delivery.consumer_id = $2)
+    `, [podScopeId ?? null, consumerId ?? null]);
     return Number(rows[0]?.count ?? 0);
   }
 
