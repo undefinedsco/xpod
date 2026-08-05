@@ -42,6 +42,13 @@ describe('GatewayProxy response headers', () => {
         return;
       }
 
+      if (req.url === '/with-link') {
+        res.statusCode = 200;
+        res.setHeader('Link', '</.notifications/StreamingHTTPChannel2023/>; rel="http://www.w3.org/ns/solid/terms#updatesViaStreamingHttp2023"');
+        res.end('ok');
+        return;
+      }
+
       res.statusCode = 200;
       res.end('ok');
     });
@@ -72,6 +79,22 @@ describe('GatewayProxy response headers', () => {
         resolve();
       });
     });
+  });
+
+  it('keeps Solid responses on standard notification channels without multiplex advertisement', async () => {
+    const res = await fetch(`http://127.0.0.1:${proxyPort}/with-link`);
+
+    const link = res.headers.get('link') ?? '';
+    expect(link).toContain('updatesViaStreamingHttp2023');
+    // Key browser features ride standard Solid protocols; the gateway does
+    // not steer live queries onto a proprietary wire format.
+    expect(link).not.toContain('urn:xpod:notifications:v1');
+  });
+
+  it('does not advertise the multiplex descriptor on HEAD responses', async () => {
+    const res = await fetch(`http://127.0.0.1:${proxyPort}/missing`, { method: 'HEAD' });
+
+    expect(res.headers.get('link') ?? '').not.toContain('urn:xpod:notifications:v1');
   });
 
   it('sanitizes HEAD proxy responses for fetch clients', async () => {

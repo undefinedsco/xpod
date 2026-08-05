@@ -104,8 +104,8 @@ export class GatewayProxy {
     this.server.on('upgrade', (req, socket, head) => {
       const url = req.url ?? '/';
 
-      // Route /ws/* WebSocket connections to API server
-      if (url.startsWith('/ws/') && this.targets.api) {
+      // Route /ws/* and device notification WebSocket connections to API server
+      if ((url.startsWith('/ws/') || url.startsWith('/v1/notifications/ws')) && this.targets.api) {
         this.proxy.ws(req, socket, head, { target: this.toProxyTarget(this.targets.api) as any });
       } else if (this.targets.css) {
         this.proxy.ws(req, socket, head, { target: this.toProxyTarget(this.targets.css) as any });
