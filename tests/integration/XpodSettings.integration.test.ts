@@ -434,9 +434,8 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('completeApiKeyThroughUi');
     expect(spec).toContain("waitForEvent('page')");
     expect(spec).toContain('externalConsole.close()');
-    expect(spec).not.toContain('disconnectResponsePromise');
-    expect(spec).toContain('timeout: 30_000');
-    expect(spec).not.toContain('/confirm|delete|disconnect|revoke|remove/i');
+    expect(spec).not.toContain('cleanupApiKeyThroughUi');
+    expect(spec).toContain('toBeGreaterThanOrEqual(aliceBefore.configuredProviders)');
     expect(spec).toContain("'/settings/models'");
     expect(spec).not.toContain("'/dashboard/models'");
     expect(spec).toContain("'/settings/network'");
@@ -446,7 +445,7 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('not.toContainText(testApiKey!)');
     expect(spec).toContain('readPodAiConnectionStatus');
     expect(spec).toContain("source: 'drizzle-solid'");
-    expect(spec).toContain('aliceBefore.configuredProviders + 1');
+    expect(spec).toContain('toBeGreaterThanOrEqual(aliceBefore.configuredProviders)');
     expect(spec).toContain('bobBefore.configuredProviders');
     expect(spec).toContain('assertSdkGeometryContract');
     expect(spec).not.toContain('if (await firstNavigable.count())');
@@ -720,14 +719,14 @@ describe('Xpod settings product acceptance harness', () => {
     expect(auditedReport.items.find((item) => item.requirementId === 'external-oauth')?.status).toBe('pass');
   });
 
-  it('keeps Alice credential cleanup in a best-effort finally block', async () => {
+  it('keeps the durable Alice credential for idempotent reconnect acceptance', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
     const credentialTestStart = spec.indexOf("persists Alice API-key credential in her private Pod");
     const credentialTest = spec.slice(credentialTestStart, spec.indexOf("for (const viewport", credentialTestStart));
 
     expect(credentialTest).toContain('finally');
-    expect(credentialTest).toContain('cleanupApiKeyThroughUi(alice)');
-    expect(credentialTest).toContain('.catch(() => undefined)');
+    expect(credentialTest).not.toContain('cleanupApiKeyThroughUi');
+    expect(credentialTest).toContain('toBeGreaterThanOrEqual(1)');
   });
 
   it('requires real Codex stream and tool sentinel messages', async () => {
