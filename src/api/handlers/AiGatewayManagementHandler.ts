@@ -4,11 +4,18 @@ import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
 import type { SolidAuthContext } from '../auth/AuthContext';
 import type { GatewayDeployment } from '../ai-gateway/auth/InvocationTokenCodec';
+import { GatewayProtocolError } from '../ai-gateway/errors';
 import type {
   CompleteApiKeyInput,
   ConnectBeginInput,
   ProviderConnectService,
 } from '../ai-gateway/connect';
+import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
+import {
+  createDefaultProviderRegistry,
+  normalizeProviderId,
+  type ProviderRegistry,
+} from '../ai-gateway/providers/ProviderRegistry';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { createAiConnectionServiceAccess } from '../ai-gateway/service-access/AiConnectionServiceAccess';
 import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
@@ -21,11 +28,33 @@ export interface AiGatewayManagementHandlerOptions {
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
+  providerModelSelectionService?: Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
+  modelSelectionService?: Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
+  selectionService?: Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
+  providerRegistry?: ProviderRegistry;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issueClientConfiguration'>;
   now?: () => Date;
   jsonBodyLimitBytes?: number;
 }
+
+const MAX_SELECTED_MODELS = 100;
+const MAX_MODEL_ID_LENGTH = 256;
+const MAX_SELECTION_VERSION_LENGTH = 256;
+const SAFE_MODEL_ERROR_CLASSIFICATIONS = new Set([
+  'authentication',
+  'authorization',
+  'invalid_response',
+  'network_error',
+  'not_configured',
+  'pagination_cursor_missing',
+  'pagination_cursor_repeated',
+  'pagination_limit',
+  'provider_error',
+  'rate_limited',
+  'unsafe_base_url',
+  'upstream_unavailable',
+]);
 
 export function registerAiGatewayManagementRoutes(
   server: ApiServer,
@@ -221,6 +250,89 @@ export function registerAiGatewayManagementRoutes(
     sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
   });
 
+  server.post('/api/ai/gateway/providers/:provider/models/discover', async (request, response, params) => {
+    if (!authorizeProviderModels(request, response)) {
+      return;
+    }
+    if (!knownModelProvider(params.provider, options, response)) {
+      return;
+    }
+    const selectionService = requireModelSelectionService(options, response);
+    if (!selectionService) {
+      return;
+    }
+    try {
+      const catalog = await selectionService.discover({
+        webId: request.auth.webId,
+        provider: params.provider,
+        deployment: options.deployment,
+        auth: request.auth,
+      });
+      sendJson(response, 200, catalog);
+    } catch (error) {
+      sendModelSelectionError(response, error);
+    }
+  });
+
+  server.get('/api/ai/gateway/providers/:provider/models', async (request, response, params) => {
+    if (!authorizeProviderModels(request, response)) {
+      return;
+    }
+    if (!knownModelProvider(params.provider, options, response)) {
+      return;
+    }
+    const selectionService = requireModelSelectionService(options, response);
+    if (!selectionService) {
+      return;
+    }
+    try {
+      const catalog = await selectionService.getCatalog({
+        webId: request.auth.webId,
+        provider: params.provider,
+        deployment: options.deployment,
+        auth: request.auth,
+      });
+      sendJson(response, 200, catalog);
+    } catch (error) {
+      sendModelSelectionError(response, error);
+    }
+  });
+
+  server.put('/api/ai/gateway/providers/:provider/models/selection', async (request, response, params) => {
+    if (!authorizeProviderModels(request, response)) {
+      return;
+    }
+    if (!knownModelProvider(params.provider, options, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const selectionInput = parseModelSelectionBody(body, response);
+    if (!selectionInput) {
+      return;
+    }
+    const selectionService = requireModelSelectionService(options, response);
+    if (!selectionService) {
+      return;
+    }
+    try {
+      const catalog = await selectionService.replaceSelection({
+        webId: request.auth.webId,
+        provider: params.provider,
+        modelIds: selectionInput.modelIds,
+        defaultModel: selectionInput.defaultModel,
+        expectedVersion: selectionInput.expectedVersion,
+        deployment: options.deployment,
+        auth: request.auth,
+      });
+      sendJson(response, 200, catalog);
+    } catch (error) {
+      sendModelSelectionError(response, error);
+    }
+  });
+
   server.get('/api/ai/gateway/providers/:provider/connect/callback', async (_request, response) => {
     // This endpoint is intentionally public only for signed one-time OAuth callbacks.
     // Browser-assisted API key completion is never accepted here because API keys
@@ -345,6 +457,15 @@ function authorizeProviderQuota(
   });
 }
 
+function authorizeProviderModels(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+): request is AuthenticatedRequest & { auth: Extract<NonNullable<AuthenticatedRequest['auth']>, { type: 'solid' }> } {
+  return authorizeCurrentSolidManagement(request, response, {
+    nonSolidPrincipalError: 'Provider model management requires the current Solid identity',
+  });
+}
+
 function requireConnectService(
   options: AiGatewayManagementHandlerOptions,
   response: ServerResponse,
@@ -365,6 +486,217 @@ function requireQuotaService(
     return undefined;
   }
   return options.quotaService;
+}
+
+type ProviderModelSelectionServicePort = Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
+
+function requireModelSelectionService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderModelSelectionServicePort | undefined {
+  const service = options.providerModelSelectionService
+    ?? options.modelSelectionService
+    ?? options.selectionService;
+  if (!service) {
+    sendJson(response, 503, { error: 'AI provider model selection service is not configured' });
+    return undefined;
+  }
+  return service;
+}
+
+function knownModelProvider(
+  provider: string,
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): boolean {
+  const registry = options.providerRegistry ?? createDefaultProviderRegistry();
+  try {
+    registry.requireProvider(provider);
+    return true;
+  } catch {
+    sendModelSelectionError(response, new GatewayProtocolError('provider_not_configured', {
+      code: 'invalid_request',
+      status: 400,
+      details: { provider: normalizeProviderId(provider), classification: 'not_configured' },
+    }));
+    return false;
+  }
+}
+
+function parseModelSelectionBody(
+  body: Record<string, unknown>,
+  response: ServerResponse,
+): { modelIds: string[]; defaultModel?: string; expectedVersion: string } | undefined {
+  if (!Array.isArray(body.modelIds)) {
+    sendJson(response, 400, { error: 'modelIds must be an array of strings' });
+    return undefined;
+  }
+  if (body.modelIds.length > MAX_SELECTED_MODELS) {
+    sendJson(response, 400, { error: `modelIds must contain at most ${MAX_SELECTED_MODELS} models` });
+    return undefined;
+  }
+  const modelIds: string[] = [];
+  const seen = new Set<string>();
+  for (const value of body.modelIds) {
+    if (typeof value !== 'string') {
+      sendJson(response, 400, { error: 'modelIds must contain only strings' });
+      return undefined;
+    }
+    const modelId = value.trim();
+    if (!modelId || modelId.length > MAX_MODEL_ID_LENGTH) {
+      sendJson(response, 400, { error: `modelIds entries must be 1-${MAX_MODEL_ID_LENGTH} characters` });
+      return undefined;
+    }
+    const dedupeKey = canonicalModelId(modelId);
+    if (!seen.has(dedupeKey)) {
+      seen.add(dedupeKey);
+      modelIds.push(modelId);
+    }
+  }
+
+  const expectedVersion = normalizeOptionalString(body.expectedVersion);
+  if (!expectedVersion || expectedVersion.length > MAX_SELECTION_VERSION_LENGTH) {
+    sendJson(response, 400, { error: `expectedVersion must be 1-${MAX_SELECTION_VERSION_LENGTH} characters` });
+    return undefined;
+  }
+
+  let defaultModel: string | undefined;
+  if (body.defaultModel !== undefined) {
+    if (typeof body.defaultModel !== 'string') {
+      sendJson(response, 400, { error: 'defaultModel must be a string' });
+      return undefined;
+    }
+    defaultModel = body.defaultModel.trim();
+    if (!defaultModel || defaultModel.length > MAX_MODEL_ID_LENGTH) {
+      sendJson(response, 400, { error: `defaultModel must be 1-${MAX_MODEL_ID_LENGTH} characters` });
+      return undefined;
+    }
+  }
+
+  return { modelIds, ...(defaultModel ? { defaultModel } : {}), expectedVersion };
+}
+
+function canonicalModelId(modelId: string): string {
+  const fragmentIndex = modelId.lastIndexOf('#');
+  return fragmentIndex >= 0 ? modelId.slice(fragmentIndex + 1) : modelId;
+}
+
+function sendModelSelectionError(response: ServerResponse, error: unknown): void {
+  const normalized = normalizeModelSelectionError(error);
+  sendJson(response, normalized.status, {
+    error: {
+      code: normalized.code,
+      message: normalized.message,
+      status: normalized.status,
+      ...(normalized.details ? { details: normalized.details } : {}),
+    },
+  });
+}
+
+function normalizeModelSelectionError(error: unknown): {
+  code: 'invalid_request' | 'credential_unavailable' | 'provider_error' | 'internal_error';
+  message: string;
+  status: 400 | 401 | 409 | 429 | 502;
+  details?: Record<string, unknown>;
+} {
+  if (!(error instanceof GatewayProtocolError)) {
+    return {
+      code: 'provider_error',
+      message: 'Provider model discovery failed',
+      status: 502,
+    };
+  }
+
+  const details = safeModelErrorDetails(error.details);
+  const status = modelSelectionErrorStatus(error, details);
+  const code = error.code === 'credential_unavailable'
+    ? 'credential_unavailable'
+    : error.code === 'provider_error'
+      ? 'provider_error'
+      : error.code === 'internal_error'
+        ? 'internal_error'
+        : 'invalid_request';
+  return {
+    code,
+    message: safeModelErrorMessage(error, details),
+    status,
+    ...(Object.keys(details).length ? { details } : {}),
+  };
+}
+
+function modelSelectionErrorStatus(
+  error: GatewayProtocolError,
+  details: Record<string, unknown>,
+): 400 | 401 | 409 | 429 | 502 {
+  if (details.reauthRequired === true || error.code === 'credential_unavailable') {
+    return 401;
+  }
+  if (error.status === 409) {
+    return 409;
+  }
+  if (error.status === 429) {
+    return 429;
+  }
+  if (error.status === 400) {
+    return 400;
+  }
+  if (error.status === 401) {
+    return 401;
+  }
+  return 502;
+}
+
+function safeModelErrorMessage(error: GatewayProtocolError, details: Record<string, unknown>): string {
+  const stableMessages = new Set([
+    'active_credential_required',
+    'model_catalog_not_ready',
+    'model_not_in_discovered_catalog',
+    'model_selection_default_not_picked',
+    'model_selection_version_conflict',
+    'provider_not_configured',
+    'provider_required',
+  ]);
+  if (stableMessages.has(error.message)) {
+    return error.message;
+  }
+  if (details.classification === 'unsafe_base_url') {
+    return 'provider_endpoint_not_allowed';
+  }
+  if (details.classification === 'not_configured') {
+    return 'provider_not_configured';
+  }
+  if (error.code === 'provider_error') {
+    return 'Provider model discovery failed';
+  }
+  return 'AI model selection request failed';
+}
+
+function safeModelErrorDetails(details: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!details) {
+    return {};
+  }
+  const safe: Record<string, unknown> = {};
+  if (typeof details.provider === 'string' && /^[a-z0-9_-]{1,64}$/iu.test(details.provider)) {
+    safe.provider = details.provider;
+  }
+  if (typeof details.providerStatusCode === 'number'
+    && Number.isInteger(details.providerStatusCode)
+    && details.providerStatusCode >= 400
+    && details.providerStatusCode <= 599) {
+    safe.providerStatusCode = details.providerStatusCode;
+  }
+  if (typeof details.retryAfter === 'string' && details.retryAfter.length <= 64) {
+    safe.retryAfter = details.retryAfter;
+  }
+  if (typeof details.reauthRequired === 'boolean') {
+    safe.reauthRequired = details.reauthRequired;
+  } else if (details.requiresReauth === true) {
+    safe.reauthRequired = true;
+  }
+  if (typeof details.classification === 'string' && SAFE_MODEL_ERROR_CLASSIFICATIONS.has(details.classification)) {
+    safe.classification = details.classification;
+  }
+  return safe;
 }
 
 function sendQuotaError(response: ServerResponse, error: unknown): void {

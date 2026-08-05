@@ -50,6 +50,9 @@ import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConne
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import type { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
+import type { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
+import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
+import type { PodCredentialRepository } from '../ai-gateway/connect';
 
 /**
  * 容器配置
@@ -242,7 +245,9 @@ export interface ApiContainerCradle {
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;
   gatewayProviderRegistry: GatewayProviderRegistry;
-  gatewayCredentialStore: GatewayCredentialStore;
+  gatewayCredentialStore: GatewayCredentialStore & PodCredentialRepository;
+  podModelSelectionRepository: PodModelSelectionRepository;
+  providerModelSelectionService: ProviderModelSelectionService;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;
   gatewaySessionAffinityStore: SessionAffinityStore;
   aiGatewayService: AiGatewayService;

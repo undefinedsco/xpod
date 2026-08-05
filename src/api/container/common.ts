@@ -32,6 +32,9 @@ import {
 } from '../ai-gateway/connect';
 import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import { createProviderModelDiscoveryAdapters } from '../ai-gateway/models/ProviderModelDiscoveryAdapters';
+import { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
+import { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
 import { InMemorySessionAffinityStore } from '../ai-gateway/routing/InMemorySessionAffinityStore';
 import { RedisSessionAffinityStore } from '../ai-gateway/routing/RedisSessionAffinityStore';
@@ -250,6 +253,25 @@ export function registerCommonServices(
     gatewayCredentialStore: asFunction(({ hostedPodDataAccess }: ApiContainerCradle) => {
       return new PodConnectedCredentialRepository({
         internalPodAccess: hostedPodDataAccess,
+      });
+    }).singleton(),
+
+    podModelSelectionRepository: asFunction(({ hostedPodDataAccess }: ApiContainerCradle) => {
+      return new PodModelSelectionRepository({
+        internalPodAccess: hostedPodDataAccess,
+      });
+    }).singleton(),
+
+    providerModelSelectionService: asFunction(({
+      gatewayCredentialStore,
+      gatewayProviderRegistry,
+      podModelSelectionRepository,
+    }: ApiContainerCradle) => {
+      return new ProviderModelSelectionService({
+        credentialRepository: gatewayCredentialStore,
+        selectionRepository: podModelSelectionRepository,
+        providerRegistry: gatewayProviderRegistry,
+        discoveryRegistry: createProviderModelDiscoveryAdapters({ registry: gatewayProviderRegistry }),
       });
     }).singleton(),
 

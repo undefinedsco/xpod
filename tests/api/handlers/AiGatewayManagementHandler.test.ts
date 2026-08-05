@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ApiServer } from '../../../src/api/ApiServer';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { registerAiGatewayManagementRoutes } from '../../../src/api/handlers/AiGatewayManagementHandler';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 
@@ -14,6 +15,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
     server: {
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
+      put: vi.fn((path: string, handler: Function) => { routes[`PUT ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
     } as unknown as ApiServer,
   };
@@ -23,9 +25,10 @@ function request(
   auth: AuthenticatedRequest['auth'],
   body?: unknown,
   url = '/',
+  method?: string,
 ): AuthenticatedRequest {
   const req = new PassThrough() as PassThrough & AuthenticatedRequest;
-  req.method = body === undefined ? 'GET' : 'POST';
+  req.method = method ?? (body === undefined ? 'GET' : 'POST');
   req.url = url;
   req.headers = {};
   req.auth = auth;
@@ -157,5 +160,244 @@ describe('AiGatewayManagementHandler', () => {
       stage: 'replace-delete',
     });
     expect(res.body).not.toContain('sk-must-not-leak');
+  });
+
+  it('discovers models for the current Solid WebID and never trusts a body WebID', async () => {
+    const { server, routes } = createServer();
+    const discover = vi.fn(async () => ({
+      provider: 'openai',
+      version: 'selection-v1',
+      status: 'ready',
+      fetchedAt: '2026-08-05T00:00:00.000Z',
+      models: [{ id: 'gpt-5', modelType: 'chat', selected: true, availability: 'available' }],
+    }));
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelSelectionService: { discover } as never,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID, viaApiKey: true };
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/models/discover'](
+      request(auth, { webId: 'https://id.example/attacker/profile/card#me' }, '/api/ai/gateway/providers/openai/models/discover'),
+      res,
+      { provider: 'openai' },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).models[0].id).toBe('gpt-5');
+    expect(discover).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      auth,
+    });
+  });
+
+  it('gets cached or durable model state without triggering provider discovery', async () => {
+    const { server, routes } = createServer();
+    const discover = vi.fn();
+    const getCatalog = vi.fn(async () => ({
+      provider: 'openai',
+      version: 'selection-v1',
+      status: 'notFetched',
+      models: [],
+    }));
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      modelSelectionService: { discover, getCatalog } as never,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+    const res = response();
+
+    await routes['GET /api/ai/gateway/providers/:provider/models'](
+      request(auth, undefined, '/api/ai/gateway/providers/openai/models'),
+      res,
+      { provider: 'openai' },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ provider: 'openai', status: 'notFetched' });
+    expect(getCatalog).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'local',
+      auth,
+    });
+    expect(discover).not.toHaveBeenCalled();
+  });
+
+  it('bounds and normalizes a model selection body before saving', async () => {
+    const { server, routes } = createServer();
+    const replaceSelection = vi.fn(async () => ({
+      provider: 'openai',
+      version: 'selection-v2',
+      status: 'ready',
+      models: [],
+    }));
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelSelectionService: { replaceSelection } as never,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+    const res = response();
+
+    await routes['PUT /api/ai/gateway/providers/:provider/models/selection'](
+      request(auth, {
+        webId: 'https://id.example/attacker/profile/card#me',
+        modelIds: [' gpt-5 ', 'openai.ttl#gpt-5', 'gpt-4.1'],
+        defaultModel: ' gpt-5 ',
+        expectedVersion: 'selection-v1',
+      }, '/api/ai/gateway/providers/openai/models/selection', 'PUT'),
+      res,
+      { provider: 'openai' },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(replaceSelection).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      provider: 'openai',
+      modelIds: ['gpt-5', 'gpt-4.1'],
+      defaultModel: 'gpt-5',
+      expectedVersion: 'selection-v1',
+      deployment: 'cloud',
+      auth,
+    });
+  });
+
+  it('requires expectedVersion and rejects unknown providers before service calls', async () => {
+    const { server, routes } = createServer();
+    const replaceSelection = vi.fn();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelSelectionService: { replaceSelection } as never,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+
+    const missingVersion = response();
+    await routes['PUT /api/ai/gateway/providers/:provider/models/selection'](
+      request(auth, { modelIds: ['gpt-5'] }, undefined, 'PUT'),
+      missingVersion,
+      { provider: 'openai' },
+    );
+    expect(missingVersion.statusCode).toBe(400);
+    expect(replaceSelection).not.toHaveBeenCalled();
+
+    const unknownProvider = response();
+    await routes['PUT /api/ai/gateway/providers/:provider/models/selection'](
+      request(auth, { modelIds: ['gpt-5'], expectedVersion: 'selection-v1' }, undefined, 'PUT'),
+      unknownProvider,
+      { provider: 'not-a-provider' },
+    );
+    expect(unknownProvider.statusCode).toBe(400);
+    expect(replaceSelection).not.toHaveBeenCalled();
+  });
+
+  it('rejects oversized or overlong selection bodies before calling the service', async () => {
+    const { server, routes } = createServer();
+    const replaceSelection = vi.fn();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelSelectionService: { replaceSelection } as never,
+      jsonBodyLimitBytes: 64,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+
+    const oversized = response();
+    await routes['PUT /api/ai/gateway/providers/:provider/models/selection'](
+      request(auth, { modelIds: ['gpt-5'], expectedVersion: 'selection-v1', extra: 'x'.repeat(100) }, undefined, 'PUT'),
+      oversized,
+      { provider: 'openai' },
+    );
+    expect(oversized.statusCode).toBe(413);
+
+    const longHarness = createServer();
+    registerAiGatewayManagementRoutes(longHarness.server, {
+      deployment: 'cloud',
+      modelSelectionService: { replaceSelection } as never,
+    });
+    const longModelId = response();
+    await longHarness.routes['PUT /api/ai/gateway/providers/:provider/models/selection'](
+      request(auth, { modelIds: ['x'.repeat(257)], expectedVersion: 'selection-v1' }, undefined, 'PUT'),
+      longModelId,
+      { provider: 'openai' },
+    );
+    expect(longModelId.statusCode).toBe(400);
+    expect(replaceSelection).not.toHaveBeenCalled();
+  });
+
+  it('maps provider errors to safe stable responses with retry and reauth metadata', async () => {
+    const { server, routes } = createServer();
+    const secret = 'sk-provider-body-must-not-leak';
+    const discover = vi.fn(async () => {
+      throw new GatewayProtocolError(`provider response ${secret}`, {
+        code: 'provider_error',
+        status: 429,
+        details: {
+          provider: 'openai',
+          providerStatusCode: 429,
+          retryAfter: '30',
+          secret,
+        },
+      });
+    });
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelSelectionService: { discover } as never,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/models/discover'](
+      request({ type: 'solid', webId: WEB_ID }),
+      res,
+      { provider: 'openai' },
+    );
+
+    const body = JSON.parse(res.body);
+    expect(res.statusCode).toBe(429);
+    expect(body.error).toMatchObject({ code: 'provider_error', status: 429 });
+    expect(body.error.details).toMatchObject({ provider: 'openai', retryAfter: '30' });
+    expect(body.error.details).not.toHaveProperty('secret');
+    expect(res.body).not.toContain(secret);
+  });
+
+  it('maps credential, conflict, and generic discovery errors without leaking bodies', async () => {
+    const { server, routes } = createServer();
+    const discover = vi.fn();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      modelSelectionService: { discover } as never,
+    });
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+
+    discover.mockRejectedValueOnce(new GatewayProtocolError('active_credential_required', {
+      code: 'credential_unavailable',
+      status: 401,
+      details: { provider: 'openai', reauthRequired: true },
+    }));
+    const credentialResponse = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/discover'](
+      request(auth), credentialResponse, { provider: 'openai' },
+    );
+    expect(credentialResponse.statusCode).toBe(401);
+    expect(JSON.parse(credentialResponse.body).error.details).toMatchObject({ reauthRequired: true });
+
+    discover.mockRejectedValueOnce(new GatewayProtocolError('model_selection_version_conflict', {
+      code: 'invalid_request',
+      status: 409,
+    }));
+    const conflictResponse = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/discover'](
+      request(auth), conflictResponse, { provider: 'openai' },
+    );
+    expect(conflictResponse.statusCode).toBe(409);
+
+    discover.mockRejectedValueOnce(new Error('upstream body contains sk-hidden-error'));
+    const genericResponse = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/discover'](
+      request(auth), genericResponse, { provider: 'openai' },
+    );
+    expect(genericResponse.statusCode).toBe(502);
+    expect(genericResponse.body).not.toContain('sk-hidden-error');
   });
 });
