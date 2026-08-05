@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { encodePlaintextCredential } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import {
   ProviderModelSelectionService,
   type ProviderModelCatalog,
@@ -151,6 +152,133 @@ describe('ProviderModelSelectionService', () => {
     ]);
     expect(harness.selectionRepository.reconcileAvailability).not.toHaveBeenCalled();
     expect(JSON.stringify(catalog)).not.toContain(secret);
+
+    const retry = await harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    });
+    expect(retry).toMatchObject({
+      provider: 'openai',
+      status: 'statusUnknown',
+      version: 'selection-v4',
+      models: catalog.models,
+    });
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache a transient failure and retries the provider on the next discovery', async () => {
+    let calls = 0;
+    const harness = createHarness({
+      adapterDiscover: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error('temporary upstream outage');
+        }
+        return [{ id: 'gpt-5', modelType: 'chat' }];
+      },
+    });
+
+    await expect(harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    })).resolves.toMatchObject({ status: 'statusUnknown' });
+    await expect(harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    })).resolves.toMatchObject({ status: 'ready' });
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    {
+      name: 'reauthentication metadata',
+      error: new GatewayProtocolError('provider auth failed', {
+        code: 'provider_error',
+        status: 401,
+        details: { provider: 'openai', providerStatusCode: 401, reauthRequired: true },
+      }),
+    },
+    {
+      name: 'rate-limit metadata',
+      error: new GatewayProtocolError('provider rate limited', {
+        code: 'provider_error',
+        status: 429,
+        details: { provider: 'openai', providerStatusCode: 429, retryAfter: '30' },
+      }),
+    },
+    {
+      name: 'unsafe endpoint classification',
+      error: new GatewayProtocolError('provider endpoint is not allowed', {
+        code: 'invalid_request',
+        status: 400,
+        details: { provider: 'openai', classification: 'unsafe_base_url' },
+      }),
+    },
+    {
+      name: 'unconfigured provider classification',
+      error: new GatewayProtocolError('provider is not configured', {
+        code: 'invalid_request',
+        status: 400,
+        details: { provider: 'openai', classification: 'not_configured' },
+      }),
+    },
+  ])('rethrows adapter $name errors with stable metadata', async ({ error }) => {
+    const harness = createHarness({ adapterDiscover: async () => { throw error; } });
+
+    await expect(harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    })).rejects.toBe(error);
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(1);
+    await expect(harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    })).rejects.toBe(error);
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(2);
+  });
+
+  it('rethrows abort errors and does not cache the cancellation', async () => {
+    const abortError = new Error('request cancelled');
+    abortError.name = 'AbortError';
+    const abortedController = new AbortController();
+    abortedController.abort(abortError);
+    const retryController = new AbortController();
+    let calls = 0;
+    const harness = createHarness({
+      adapterDiscover: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw abortError;
+        }
+        return [{ id: 'gpt-5', modelType: 'chat' }];
+      },
+    });
+
+    await expect(harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+      signal: abortedController.signal,
+    })).rejects.toBe(abortError);
+    await expect(harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+      signal: retryController.signal,
+    })).resolves.toMatchObject({ status: 'ready' });
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(2);
   });
 
   it('rejects model ids outside the latest discovered catalog before atomic replacement', async () => {
@@ -281,5 +409,29 @@ describe('ProviderModelSelectionService', () => {
       auth: AUTH_ALICE,
     }));
     expect(next).toMatchObject({ status: 'ready', version: 'selection-v2' });
+  });
+
+  it('rejects a default model that is not part of the requested selection', async () => {
+    const harness = createHarness();
+    const catalog = await harness.service.discover({
+      webId: ALICE,
+      provider: 'openai',
+      deployment: 'local',
+      auth: AUTH_ALICE,
+    });
+
+    await expect(harness.service.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      modelIds: ['gpt-5'],
+      defaultModel: 'gpt-4.1',
+      expectedVersion: catalog.version,
+      auth: AUTH_ALICE,
+    })).rejects.toMatchObject({
+      message: 'model_selection_default_not_picked',
+      code: 'invalid_request',
+      status: 400,
+    });
+    expect(harness.selectionRepository.replaceSelection).not.toHaveBeenCalled();
   });
 });

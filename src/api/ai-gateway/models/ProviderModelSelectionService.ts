@@ -197,6 +197,12 @@ export class ProviderModelSelectionService {
         details: { provider: normalizedProvider },
       });
     }
+    if (
+      input.defaultModel !== undefined
+      && !input.modelIds.some((modelId) => modelIdentity(modelId) === modelIdentity(input.defaultModel!))
+    ) {
+      throw modelSelectionDefaultNotPickedError(normalizedProvider, input.defaultModel);
+    }
 
     const availableById = new Map(
       cached.catalog.models
@@ -280,10 +286,16 @@ export class ProviderModelSelectionService {
         secret,
         signal: input.signal,
       });
-    } catch {
-      const statusUnknown = buildUnknownCatalog(normalizedProvider, durable, this.timestamp());
-      this.cacheCatalog(input.webId, normalizedProvider, input.deployment, statusUnknown);
-      return statusUnknown;
+    } catch (error) {
+      // Provider errors carry stable status/re-auth/retry metadata and must
+      // reach the caller unchanged. Cancellation is also not a discovery
+      // status: preserve the original abort/timeout reason for the caller.
+      if (error instanceof GatewayProtocolError || isCancellationError(error, input.signal)) {
+        throw error;
+      }
+      // A transient provider/network failure is visible for this response,
+      // but never cached; the next request must retry discovery.
+      return buildUnknownCatalog(normalizedProvider, durable, this.timestamp());
     }
 
     const reconciled = await this.selectionRepository.reconcileAvailability({
@@ -470,4 +482,25 @@ function modelNotInCatalogError(provider: string, modelId: string): GatewayProto
     status: 400,
     details: { provider, modelId },
   });
+}
+
+function modelSelectionDefaultNotPickedError(provider: string, defaultModel: string): GatewayProtocolError {
+  return new GatewayProtocolError('model_selection_default_not_picked', {
+    code: 'invalid_request',
+    status: 400,
+    details: { provider, defaultModel },
+  });
+}
+
+function isCancellationError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'name' in error
+    && ((error as { name?: unknown }).name === 'AbortError'
+      || (error as { name?: unknown }).name === 'TimeoutError'),
+  );
 }
