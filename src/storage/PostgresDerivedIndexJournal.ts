@@ -294,11 +294,7 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
       };
       try {
         await listener.onResourceChanged(event);
-        await this.executor.exec(`
-          UPDATE derived_index_event_deliveries
-          SET stage = 'done', lease_until = NULL, last_error = NULL
-          WHERE consumer_id = $1 AND event_id = $2
-        `, [consumerId, row.id]);
+        await this.completeDelivery(consumerId, row);
         delivered += 1;
       } catch (error) {
         await this.executor.exec(`
@@ -314,7 +310,9 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
   }
 
   public async reconcilePod(podScopeId: string, resourcePaths: Iterable<string>): Promise<void> {
-    for (const resourcePath of resourcePaths) {
+    await this.open();
+    const authorityPaths = [...new Set(resourcePaths)];
+    for (const resourcePath of authorityPaths) {
       await this.append(podScopeId, {
         path: resourcePath,
         action: 'update',
@@ -322,6 +320,60 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
         timestamp: Date.now(),
       });
     }
+    const missing = await this.executor.query<{ resource_path: string }>(`
+      SELECT DISTINCT resource_path
+      FROM derived_index_resource_checkpoints
+      WHERE pod_scope_id = $1
+        AND consumer_id = ANY($2::text[])
+        AND deleted_at IS NULL
+        AND NOT (resource_path = ANY($3::text[]))
+      ORDER BY resource_path
+    `, [podScopeId, [...this.activeConsumerIds], authorityPaths]);
+    for (const { resource_path: resourcePath } of missing) {
+      const pending = await this.executor.query<{ pending: boolean }>(`
+        SELECT EXISTS (
+          SELECT 1
+          FROM derived_index_change_journal event
+          JOIN derived_index_event_deliveries delivery ON delivery.event_id = event.id
+          WHERE event.pod_scope_id = $1
+            AND event.resource_path = $2
+            AND event.action = 'delete'
+            AND delivery.consumer_id = ANY($3::text[])
+            AND delivery.stage <> 'done'
+        ) AS pending
+      `, [podScopeId, resourcePath, [...this.activeConsumerIds]]);
+      if (pending[0]?.pending) continue;
+      await this.append(podScopeId, {
+        path: resourcePath,
+        action: 'delete',
+        isContainer: resourcePath.endsWith('/'),
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  private async completeDelivery(consumerId: string, row: JournalRow): Promise<void> {
+    const completedAt = Date.now();
+    await this.executor.transaction(async (tx) => {
+      await tx.exec(`
+        UPDATE derived_index_event_deliveries
+        SET stage = 'done', lease_until = NULL, last_error = NULL
+        WHERE consumer_id = $1 AND event_id = $2
+      `, [consumerId, row.id]);
+      await tx.exec(`
+        INSERT INTO derived_index_resource_checkpoints
+          (consumer_id, pod_scope_id, resource_path, last_event_id,
+           last_action, updated_at, deleted_at)
+        VALUES ($1, $2, $3, $4, $5::text, $6::bigint,
+                CASE WHEN $5::text = 'delete' THEN $6::bigint ELSE NULL::bigint END)
+        ON CONFLICT (consumer_id, pod_scope_id, resource_path) DO UPDATE
+        SET last_event_id = EXCLUDED.last_event_id,
+            last_action = EXCLUDED.last_action,
+            updated_at = EXCLUDED.updated_at,
+            deleted_at = EXCLUDED.deleted_at
+        WHERE derived_index_resource_checkpoints.last_event_id < EXCLUDED.last_event_id
+      `, [consumerId, row.pod_scope_id, row.resource_path, row.id, row.action, completedAt]);
+    });
   }
 
   public async pendingCount(podScopeId?: string, consumerId?: string): Promise<number> {

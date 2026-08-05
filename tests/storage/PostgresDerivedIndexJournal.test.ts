@@ -148,6 +148,74 @@ describe('PostgresDerivedIndexJournal', () => {
     await journal.close();
   });
 
+  it('advances only the successful consumer checkpoint', async () => {
+    const executor = new PgliteRdfSqlExecutor(new PGlite());
+    const fts: string[] = [];
+    const vec: string[] = [];
+    const alwaysFailingVector: DurableResourceChangeConsumer = {
+      consumerId: 'vec-v1',
+      onResourceChanged: async (change) => {
+        vec.push(change.path);
+        throw new Error('vector unavailable');
+      },
+    };
+    const journal = createJournal({
+      executor,
+      resolvePodScope: () => 'alice',
+      retryDelayMs: 60_000,
+      pollIntervalMs: 10,
+      consumers: [consumer('fts-v1', fts), alwaysFailingVector],
+    });
+    await journal.open();
+    await journal.recordResourceChange(event('/alice/a.md'));
+    await waitUntil(() => fts.length === 1 && vec.length === 1, 2_000);
+
+    expect(await checkpoint(executor, 'fts-v1', 'alice', '/alice/a.md')).toMatchObject({
+      last_action: 'update',
+      deleted_at: null,
+    });
+    expect(await checkpoint(executor, 'vec-v1', 'alice', '/alice/a.md')).toBeUndefined();
+    await journal.close();
+  });
+
+  it('reconciles repair updates and missing-resource deletes without repeating tombstones', async () => {
+    const executor = new PgliteRdfSqlExecutor(new PGlite());
+    const delivered: ResourceChangeEvent[] = [];
+    const journal = createJournal({
+      executor,
+      resolvePodScope: () => 'alice',
+      pollIntervalMs: 10,
+      consumers: [eventConsumer('search-v1', delivered)],
+    });
+    await journal.open();
+    await journal.recordResourceChange(event('/alice/keep.md'));
+    await journal.recordResourceChange(event('/alice/gone.md'));
+    await waitUntil(() => delivered.length === 2, 2_000);
+
+    delivered.length = 0;
+    await journal.reconcilePod('alice', ['/alice/keep.md', '/alice/new.md']);
+    await waitUntil(() => delivered.length === 3, 2_000);
+    expect(delivered.map(({ path, action }) => [path, action])).toEqual([
+      ['/alice/keep.md', 'update'],
+      ['/alice/new.md', 'update'],
+      ['/alice/gone.md', 'delete'],
+    ]);
+    expect(await checkpoint(executor, 'search-v1', 'alice', '/alice/gone.md')).toMatchObject({
+      last_action: 'delete',
+    });
+    expect((await checkpoint(executor, 'search-v1', 'alice', '/alice/gone.md'))?.deleted_at)
+      .not.toBeNull();
+
+    delivered.length = 0;
+    await journal.reconcilePod('alice', ['/alice/keep.md', '/alice/new.md']);
+    await waitUntil(() => delivered.length === 2, 2_000);
+    expect(delivered.map(({ path, action }) => [path, action])).toEqual([
+      ['/alice/keep.md', 'update'],
+      ['/alice/new.md', 'update'],
+    ]);
+    await journal.close();
+  });
+
   it('delivers changes in sequence within each Pod', async () => {
     const db = new PGlite();
     const journal = createJournal({
@@ -366,6 +434,16 @@ function consumer(
   };
 }
 
+function eventConsumer(
+  consumerId: string,
+  delivered: ResourceChangeEvent[],
+): DurableResourceChangeConsumer {
+  return {
+    consumerId,
+    onResourceChanged: async (change) => { delivered.push(change); },
+  };
+}
+
 async function createLegacyJournalSchema(executor: PostgresRdfSqlExecutor): Promise<void> {
   await executor.exec(`
     CREATE TABLE derived_index_change_journal (
@@ -396,6 +474,20 @@ async function deliveryStages(
     ORDER BY event.id
   `, [consumerId]);
   return rows.map((row) => [row.resource_path, row.stage]);
+}
+
+async function checkpoint(
+  executor: PostgresRdfSqlExecutor,
+  consumerId: string,
+  podScopeId: string,
+  resourcePath: string,
+): Promise<{ last_action: string; deleted_at: number | string | null } | undefined> {
+  const rows = await executor.query<{ last_action: string; deleted_at: number | string | null }>(`
+    SELECT last_action, deleted_at
+    FROM derived_index_resource_checkpoints
+    WHERE consumer_id = $1 AND pod_scope_id = $2 AND resource_path = $3
+  `, [consumerId, podScopeId, resourcePath]);
+  return rows[0];
 }
 
 function createJournal(options: PostgresDerivedIndexJournalOptions): PostgresDerivedIndexJournal {
