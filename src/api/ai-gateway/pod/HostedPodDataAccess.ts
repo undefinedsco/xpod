@@ -68,13 +68,14 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
         scopes: [isReadOnlyMethod(method, resourceUrl, owner) ? 'ai:credentials:read' : 'ai:credentials:write'],
         ...(body ? { bodyDigest: body.digest } : {}),
       });
+      const forwardedBody = method === 'POST' ? body?.bytes : request.body;
 
       return this.fetch(loopbackUrl, {
         method,
         headers,
-        body: request.body,
+        body: forwardedBody,
         signal: init?.signal ?? request.signal,
-        ...(request.body ? { duplex: 'half' } : {}),
+        ...(forwardedBody ? { duplex: 'half' } : {}),
       } as RequestInit);
     };
   }
@@ -182,6 +183,7 @@ function normalizeMethod(method: string | undefined): InternalPodDataMethod {
 interface RequestBody {
   query: string;
   digest: string;
+  bytes: Uint8Array;
 }
 
 async function readRequestBody(request: Request): Promise<RequestBody | undefined> {
@@ -209,6 +211,7 @@ async function readRequestBody(request: Request): Promise<RequestBody | undefine
   return {
     query,
     digest: createHash('sha256').update(bytes).digest('hex'),
+    bytes,
   };
 }
 
