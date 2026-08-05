@@ -81,35 +81,20 @@ describe('GatewayProxy response headers', () => {
     });
   });
 
-  it('advertises the device notification descriptor on CSS-routed GET responses', async () => {
-    const res = await fetch(`http://127.0.0.1:${proxyPort}/some-resource`);
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get('link')).toContain('</v1/notifications/ws>; rel="urn:xpod:notifications:v1"');
-  });
-
-  it('advertises the device notification descriptor on CSS-routed HEAD responses', async () => {
-    const res = await fetch(`http://127.0.0.1:${proxyPort}/missing`, { method: 'HEAD' });
-
-    expect(res.headers.get('link')).toContain('</v1/notifications/ws>; rel="urn:xpod:notifications:v1"');
-  });
-
-  it('preserves upstream Link values when advertising the descriptor', async () => {
+  it('keeps Solid responses on standard notification channels without multiplex advertisement', async () => {
     const res = await fetch(`http://127.0.0.1:${proxyPort}/with-link`);
 
     const link = res.headers.get('link') ?? '';
     expect(link).toContain('updatesViaStreamingHttp2023');
-    expect(link).toContain('</v1/notifications/ws>; rel="urn:xpod:notifications:v1"');
+    // Browser clients must stay on the standard Solid notification protocol;
+    // the gateway never advertises the proprietary multiplex descriptor.
+    expect(link).not.toContain('urn:xpod:notifications:v1');
   });
 
-  it('does not advertise the descriptor on mutation responses', async () => {
-    const res = await fetch(`http://127.0.0.1:${proxyPort}/pod/some-resource.txt`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'text/plain' },
-      body: 'mutation responses stay quiet',
-    });
+  it('does not advertise the multiplex descriptor on HEAD responses', async () => {
+    const res = await fetch(`http://127.0.0.1:${proxyPort}/missing`, { method: 'HEAD' });
 
-    expect(res.headers.get('link')).toBeNull();
+    expect(res.headers.get('link') ?? '').not.toContain('urn:xpod:notifications:v1');
   });
 
   it('sanitizes HEAD proxy responses for fetch clients', async () => {
