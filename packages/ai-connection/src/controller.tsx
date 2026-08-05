@@ -8,6 +8,7 @@ import type {
 import {
   AI_CONNECTION_PROVIDERS,
   createAiConnectionClient,
+  connectionStateFromSummary,
   normalizeAiConnectionThrownError,
   type AiConnectionClient,
   type AiConnectionProvider,
@@ -343,9 +344,10 @@ export function useServiceAccessState(controller: AiConnectionController): Servi
 function productStateFromSummary(
   summary?: AiProviderConnectionSummary,
 ): ProviderProductState {
-  if (!summary || summary.status === 'disconnected') return 'unconfigured'
-  if (summary.status === 'reauthRequired') return 'attention'
-  return summary.authMode === 'browserAssistedApiKey' ? 'configured' : 'connected'
+  const connectionState = connectionStateFromSummary(summary)
+  if (!connectionState || connectionState === 'disconnected') return 'unconfigured'
+  if (connectionState === 'reauthRequired') return 'attention'
+  return connectionState
 }
 
 function durableSummaryFromProductState(

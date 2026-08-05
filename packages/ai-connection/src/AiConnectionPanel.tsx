@@ -17,6 +17,7 @@ import {
   type AiProviderModel,
   type AiProviderModelCatalog,
   type AiQuotaSnapshot,
+  connectionStateFromSummary,
   normalizeAiConnectionThrownError,
 } from './ai-connection-client'
 import type { AiClientCredentialManager, AiClientCredentialRecord } from '@undefineds.co/extension-sdk/web'
@@ -116,9 +117,7 @@ export function AiConnectionPanel({
     setConnectionStates(Object.fromEntries(
       Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
         summary.provider,
-        summary.status === 'connected' && summary.authMode === 'browserAssistedApiKey'
-          ? 'configured'
-          : summary.status,
+        panelConnectionStateFromSummary(summary),
       ]),
     ))
   }, [providerSummarySignature])
@@ -172,7 +171,7 @@ export function AiConnectionPanel({
   // connected provider starts with discovery (rather than a redundant durable
   // read) before the local state effect has run.
   const connectionStateForProvider = useCallback((provider: AiConnectionProvider): ProviderConnectionState => {
-    const summaryState = connectionStateFromSummary(providerSummariesInput[provider])
+    const summaryState = panelConnectionStateFromSummary(providerSummariesInput[provider])
     if (providerSummaryChanged) return summaryState ?? 'unknown'
     return connectionStates[provider] ?? summaryState ?? 'unknown'
   }, [connectionStates, providerSummariesInput, providerSummaryChanged])
@@ -726,14 +725,17 @@ function sameModelSelection(models: AiProviderModel[], selectedIds: string[]): b
   return persisted.length === draft.length && persisted.every((id, index) => id === draft[index])
 }
 
-function connectionStateFromSummary(
+function panelConnectionStateFromSummary(
+  summary: AiProviderConnectionSummary,
+): ProviderConnectionState
+function panelConnectionStateFromSummary(
+  summary?: AiProviderConnectionSummary,
+): ProviderConnectionState | undefined
+function panelConnectionStateFromSummary(
   summary?: AiProviderConnectionSummary,
 ): ProviderConnectionState | undefined {
-  if (!summary) return undefined
-  if (summary.status === 'connected') {
-    return summary.authMode === 'browserAssistedApiKey' ? 'configured' : 'connected'
-  }
-  return summary.status
+  return connectionStateFromSummary(summary)
+    ?? (summary?.status as ProviderConnectionState | undefined)
 }
 
 function summarizeProviderConnectionStates(

@@ -123,6 +123,30 @@ export interface AiProviderConnectionSummary {
   }
 }
 
+export type AiConnectionSummaryState =
+  | 'configured'
+  | 'connected'
+  | 'disconnected'
+  | 'reauthRequired'
+
+export function connectionStateFromSummary(
+  summary: AiProviderConnectionSummary,
+): AiConnectionSummaryState
+export function connectionStateFromSummary(
+  summary?: AiProviderConnectionSummary,
+): AiConnectionSummaryState | undefined
+export function connectionStateFromSummary(
+  summary?: AiProviderConnectionSummary,
+): AiConnectionSummaryState | undefined {
+  if (!summary) return undefined
+  if (summary.status === 'disconnected') return 'disconnected'
+  if (summary.status === 'reauthRequired') return 'reauthRequired'
+  if (summary.status !== 'connected') return undefined
+  return summary.authMode === 'apiKey' || summary.authMode === 'browserAssistedApiKey'
+    ? 'configured'
+    : 'connected'
+}
+
 export interface AiConnectionClient {
   readonly webId: string
   readonly apiBase: string

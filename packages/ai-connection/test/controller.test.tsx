@@ -120,6 +120,54 @@ describe('AI Connection controller host.solid integration', () => {
     })
   })
 
+  it('reloads persisted API-key connections as configured and device OAuth as connected', async () => {
+    const summaries = [
+      { provider: 'openai', status: 'connected', authMode: 'apiKey' },
+      { provider: 'anthropic', status: 'connected', authMode: 'apiKey' },
+      { provider: 'kimi', status: 'connected', authMode: 'deviceCodeOAuth' },
+      { provider: 'bailian', status: 'connected', authMode: 'apiKey' },
+      { provider: 'deepseek', status: 'connected', authMode: 'apiKey' },
+    ].map((summary) => ({
+      ...summary,
+      connect: {
+        modes: summary.authMode === 'deviceCodeOAuth'
+          ? ['deviceCodeOAuth' as const]
+          : ['browserAssistedApiKey' as const],
+        configured: true,
+      },
+    }))
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/ai/connections/providers')) {
+        return new Response(JSON.stringify({ data: summaries }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error(`Unexpected request: ${String(input)}`)
+    }) as unknown as typeof fetch
+    const controller = createAiConnectionController(hostFromSolid(solidCapability({
+      session: {
+        fetch: fetcher,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    })))
+
+    await controller.loadProviders()
+
+    expect(controller.providerStates).toEqual({
+      openai: 'configured',
+      anthropic: 'configured',
+      kimi: 'connected',
+      bailian: 'configured',
+      deepseek: 'configured',
+    })
+
+    render(<AiConnectionList controller={controller} />)
+    expect(screen.getAllByText('已配置')).toHaveLength(4)
+    expect(screen.getAllByText('已连接')).toHaveLength(1)
+  })
+
   it('routes typed provider model discovery through the host-owned Solid fetcher', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(init?.method).toBe('POST')
