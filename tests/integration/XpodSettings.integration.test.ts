@@ -434,6 +434,8 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('completeApiKeyThroughUi');
     expect(spec).toContain("waitForEvent('page')");
     expect(spec).toContain('externalConsole.close()');
+    expect(spec).toContain("response.request().method() === 'DELETE'");
+    expect(spec).not.toContain('/confirm|delete|disconnect|revoke|remove/i');
     expect(spec).toContain("'/settings/models'");
     expect(spec).not.toContain("'/dashboard/models'");
     expect(spec).toContain("'/settings/network'");

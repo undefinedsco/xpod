@@ -186,8 +186,14 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
 async function cleanupApiKeyThroughUi(page: Page): Promise<void> {
   await openModule(page, '/settings/models', 'Models');
   await page.getByRole('button', { name: 'OpenAI', exact: true }).click();
-  await page.getByRole('button', { name: /delete|disconnect|revoke|remove/i }).first().click();
-  await page.getByRole('button', { name: /confirm|delete|disconnect|revoke|remove/i }).first().click();
+  const disconnectResponsePromise = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/connect'
+    && response.request().method() === 'DELETE'
+  ));
+  await page.getByRole('button', { name: /移除配置|断开连接|disconnect|remove/i }).first().click();
+  const disconnectResponse = await disconnectResponsePromise;
+  expect(disconnectResponse.ok(), `disconnect failed with HTTP ${disconnectResponse.status()}`).toBe(true);
+  await expect(page.getByRole('status').filter({ hasText: /未设置|disconnected/i }).first()).toBeVisible();
 }
 
 async function readPodAiConnectionStatus(page: Page): Promise<{ webId: string; configuredProviders: number }> {

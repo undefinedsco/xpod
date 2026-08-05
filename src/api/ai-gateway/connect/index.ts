@@ -306,7 +306,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       ...record,
       version: nextVersion,
     });
-    if (existing && replacesUnsupportedRecord) {
+    if (existing) {
       try {
         const deleted = await db.deleteById(credential, record.id);
         if (!deleted) {
@@ -318,17 +318,14 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       try {
         await db.insert(credential).values(row).execute();
       } catch (error) {
+        try {
+          await db.insert(credential).values(existing).execute();
+        } catch (rollbackError) {
+          throw credentialPersistenceError('replace-insert-rollback', rollbackError);
+        }
         throw credentialPersistenceError('replace-insert', error);
       }
       return recordFromCredentialRow(row, record.webId);
-    }
-    if (existing) {
-      try {
-        const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
-        return recordFromCredentialRow(updated ?? row, record.webId);
-      } catch (error) {
-        throw credentialPersistenceError('update', error);
-      }
     }
     try {
       await db.insert(credential).values(row).execute();

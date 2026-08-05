@@ -961,24 +961,38 @@ describe('ProviderConnectService', () => {
     })).resolves.toMatchObject({ status: 'revoked', version: 3 });
   });
 
-  it('identifies an exact Pod update failure without exposing its cause', async () => {
+  it('replaces a revoked exact Pod credential instead of partially updating it', async () => {
+    const rows = new Map<string, Record<string, unknown>>([
+      ['credentials.ttl#cloud-openai', {
+        id: 'credentials.ttl#cloud-openai',
+        provider: 'openai.ttl',
+        authMode: 'apiKey',
+        service: 'ai',
+        status: 'revoked',
+        storageMode: 'plaintext-v1',
+        secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-old' }),
+        keyVersion: '2',
+      }],
+    ]);
+    const updateById = vi.fn(async () => {
+      throw new Error('partial updates must not be used for reconnect');
+    });
+    const deleteById = vi.fn(async (_resource, id: string) => rows.delete(id));
+    const insert = vi.fn(() => ({
+      values: (row: Record<string, unknown>) => ({
+        execute: async () => {
+          rows.set(String(row.id), row);
+        },
+      }),
+    }));
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: { getTrustedFetch: async () => fetch },
       dbFactory: async () => ({
         init: vi.fn(),
-        findById: async () => ({
-          id: 'credentials.ttl#cloud-openai',
-          provider: 'openai.ttl',
-          authMode: 'apiKey',
-          service: 'ai',
-          status: 'revoked',
-          storageMode: 'plaintext-v1',
-          secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-old' }),
-          keyVersion: '2',
-        }),
-        updateById: async () => {
-          throw new Error('upstream contained sk-must-not-leak');
-        },
+        findById: async (_resource, id: string) => rows.get(id) ?? null,
+        updateById,
+        deleteById,
+        insert,
       } as any),
     });
 
@@ -994,8 +1008,70 @@ describe('ProviderConnectService', () => {
       status: 'active',
     });
 
-    await expect(save).rejects.toThrow(/^credential_persistence_failed:update$/u);
-    await expect(save).rejects.not.toThrow(/sk-must-not-leak/u);
+    await expect(save).resolves.toMatchObject({
+      status: 'active',
+      version: 3,
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-new' }),
+    });
+    expect(deleteById).toHaveBeenCalledOnce();
+    expect(insert).toHaveBeenCalledOnce();
+    expect(updateById).not.toHaveBeenCalled();
+    expect(rows.get('credentials.ttl#cloud-openai')).toMatchObject({
+      status: 'active',
+      keyVersion: '3',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-new' }),
+    });
+  });
+
+  it('restores the previous exact Pod credential when replacement insertion fails', async () => {
+    const previous = {
+      id: 'credentials.ttl#cloud-openai',
+      provider: 'openai.ttl',
+      authMode: 'apiKey',
+      service: 'ai',
+      status: 'active',
+      storageMode: 'plaintext-v1',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-previous' }),
+      keyVersion: '4',
+    };
+    const rows = new Map<string, Record<string, unknown>>([[previous.id, previous]]);
+    let insertAttempt = 0;
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        findById: async (_resource, id: string) => rows.get(id) ?? null,
+        deleteById: async (_resource, id: string) => rows.delete(id),
+        insert: () => ({
+          values: (row: Record<string, unknown>) => ({
+            execute: async () => {
+              insertAttempt += 1;
+              if (insertAttempt === 1) {
+                throw new Error('upstream contained sk-new-must-not-leak');
+              }
+              rows.set(String(row.id), row);
+            },
+          }),
+        }),
+      } as any),
+    });
+
+    const save = repository.upsertConnectedCredential({
+      id: previous.id,
+      credentialIri: 'https://id.example/alice/settings/credentials.ttl#cloud-openai',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      storageMode: 'plaintext-v1',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-new' }),
+      status: 'active',
+      expectedVersion: 4,
+    });
+
+    await expect(save).rejects.toThrow(/^credential_persistence_failed:replace-insert$/u);
+    await expect(save).rejects.not.toThrow(/sk-new-must-not-leak/u);
+    expect(rows.get(previous.id)).toEqual(previous);
   });
 
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
