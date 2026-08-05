@@ -107,6 +107,13 @@ export const DEFAULT_MODEL_SELECTION_PROVIDERS = [
   'deepseek',
 ] as const;
 
+interface ModelSelectionLockState {
+  tail: Promise<void>;
+  references: number;
+}
+
+const modelSelectionLocks = new Map<string, ModelSelectionLockState>();
+
 /**
  * The selected-model adapter deliberately uses only the shared ai-config
  * resources. Selection state is represented by aiModel rows: unpicked rows
@@ -133,6 +140,10 @@ export class PodModelSelectionRepository {
   }
 
   public async replaceSelection(input: ReplaceSelectionInput): Promise<PodModelSelection> {
+    return withModelSelectionLock(selectionLockKey(input.webId, input.provider), () => this.replaceSelectionLocked(input));
+  }
+
+  private async replaceSelectionLocked(input: ReplaceSelectionInput): Promise<PodModelSelection> {
     const db = await this.dbForOwner(input.webId, input.auth);
     const context = await this.readSelection(db, input.webId, input.provider);
     if (input.expectedVersion !== undefined && input.expectedVersion !== context.selection.version) {
@@ -242,7 +253,7 @@ export class PodModelSelectionRepository {
       webId: context.webId,
     });
     await cleanupRemovedModels(db, deletes);
-    return this.listSelection(input);
+    return (await this.readSelection(db, input.webId, input.provider)).selection;
   }
 
   public async reconcileAvailability(input: ReconcileAvailabilityInput): Promise<PodModelSelection> {
@@ -473,6 +484,29 @@ function normalizeProvider(value: string): string {
   return normalized;
 }
 
+function selectionLockKey(webId: string, provider: string): string {
+  return `${webId}\u0000${normalizeProvider(provider)}`;
+}
+
+async function withModelSelectionLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const state = modelSelectionLocks.get(key) ?? { tail: Promise.resolve(), references: 0 };
+  modelSelectionLocks.set(key, state);
+  state.references += 1;
+  const previous = state.tail;
+  let release!: () => void;
+  state.tail = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    state.references -= 1;
+    if (state.references === 0 && modelSelectionLocks.get(key) === state) {
+      modelSelectionLocks.delete(key);
+    }
+  }
+}
+
 function assertAuthOwner(owner: string, auth?: AuthContext): void {
   if (!auth) {
     return;
@@ -592,18 +626,62 @@ function buildModelResourceId(rawValue: string, providerResourceId: string, webI
   if (!raw) {
     throw new Error('model_selection_model_required');
   }
-  const relative = webId ? toPodRelative(raw, webId) : toBaseRelative(raw);
-  if (relative.includes('#')) {
-    const [document, fragment] = relative.split('#', 2);
-    const providerDocument = document === providerResourceId || document.endsWith(`/${providerResourceId}`)
-      ? providerResourceId
-      : document;
-    if (providerDocument !== providerResourceId || !fragment) {
+  const fragmentIndex = raw.indexOf('#');
+  if (fragmentIndex < 0) {
+    if (
+      raw.startsWith('/')
+      || raw.startsWith('//')
+      || raw.includes('/')
+      || raw.includes('?')
+      || raw.includes('\\')
+      || raw === providerResourceId
+      || raw.endsWith('.ttl')
+      || /^[a-z][a-z0-9+.-]*:/iu.test(raw)
+    ) {
+      throw new Error('model_selection_model_invalid_iri');
+    }
+    return aiModelResource.buildId({ id: raw, isProvidedBy: providerResourceId });
+  }
+
+  const document = raw.slice(0, fragmentIndex);
+  const fragment = raw.slice(fragmentIndex + 1);
+  if (!document || !fragment || fragment.includes('#')) {
+    throw new Error('model_selection_model_provider_mismatch');
+  }
+  if (raw.startsWith('//')) {
+    throw new Error('model_selection_model_invalid_iri');
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(document)) {
+    if (!webId) {
+      throw new Error('model_selection_model_provider_mismatch');
+    }
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new Error('model_selection_model_invalid_iri');
+    }
+    const podBase = new URL(`${resolvePodBaseUrl(webId).replace(/\/$/u, '')}/`);
+    const expectedPath = `${podBase.pathname.replace(/\/$/u, '')}/settings/providers/${providerResourceId}`;
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:')
+      || url.origin !== podBase.origin
+      || url.pathname !== expectedPath
+      || url.search
+      || url.username
+      || url.password
+      || url.hash !== `#${fragment}`
+    ) {
       throw new Error('model_selection_model_provider_mismatch');
     }
     return aiModelResource.buildId({ id: `${providerResourceId}#${fragment}` });
   }
-  return aiModelResource.buildId({ id: relative, isProvidedBy: providerResourceId });
+
+  if (document !== providerResourceId || document.includes('/') || document.includes('?') || document.includes('\\')) {
+    throw new Error('model_selection_model_provider_mismatch');
+  }
+  return aiModelResource.buildId({ id: `${providerResourceId}#${fragment}` });
 }
 
 function modelIdFromRelation(value: unknown, providerResourceId: string, webId: string): string | undefined {
@@ -660,17 +738,6 @@ function toPodRelative(value: string, webId: string): string {
     throw new Error('model_selection_model_invalid_iri');
   }
   return `${url.pathname.slice(base.pathname.length).replace(/^\/+/, '')}${url.hash}`;
-}
-
-function toBaseRelative(value: string): string {
-  const raw = value.trim();
-  if (!raw || raw.startsWith('//') || raw.includes('?') || raw.includes('\\') || /(?:^|\/)\.\.?(?:\/|$)/u.test(raw)) {
-    throw new Error('model_selection_model_invalid_iri');
-  }
-  if (/^[a-z][a-z0-9+.-]*:/iu.test(raw)) {
-    throw new Error('model_selection_model_invalid_iri');
-  }
-  return raw.replace(/^\/+/, '');
 }
 
 function normalizeModelType(value: unknown): string {

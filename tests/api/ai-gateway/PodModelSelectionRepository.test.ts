@@ -5,6 +5,7 @@ import {
   ModelSelectionBlockedError,
   PodModelSelectionRepository,
   type PodModelSelectionDb,
+  type PodModelSelection,
   type PodSelectedModel,
 } from '../../../src/api/ai-gateway/models/PodModelSelectionRepository';
 
@@ -22,6 +23,10 @@ interface FakePod {
   models: Map<string, Row>;
 }
 
+interface HarnessHooks {
+  beforeWrite?: () => Promise<void>;
+}
+
 function makePod(): FakePod {
   return { providers: new Map(), models: new Map() };
 }
@@ -30,7 +35,7 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function createHarness(initial: Record<string, FakePod> = {}) {
+function createHarness(initial: Record<string, FakePod> = {}, hooks: HarnessHooks = {}) {
   const pods = new Map(Object.entries(initial));
   const calls: Array<{ op: string; resource?: unknown; id?: string; value?: Row; where?: unknown }> = [];
   const fail = { operation: undefined as string | undefined };
@@ -70,6 +75,7 @@ function createHarness(initial: Record<string, FakePod> = {}) {
             return {
               async execute() {
                 calls.push({ op: 'insert', resource, value: clone(value as Row) });
+                await hooks.beforeWrite?.();
                 if (fail.operation === 'insert') {
                   fail.operation = undefined;
                   throw new Error('insert_failed');
@@ -305,6 +311,53 @@ describe('PodModelSelectionRepository', () => {
     expect(harness.calls.filter((call) => ['insert', 'updateById', 'deleteById'].includes(call.op))).toHaveLength(0);
   });
 
+  it('serializes same-provider replacements so one expected version can commit', async () => {
+    let releaseFirstWrite!: () => void;
+    let firstWriteStarted!: () => void;
+    const firstWrite = new Promise<void>((resolve) => { firstWriteStarted = resolve; });
+    const firstWriteRelease = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+    let blockedFirstWrite = true;
+    const harness = createHarness({}, {
+      beforeWrite: async () => {
+        if (!blockedFirstWrite) {
+          return;
+        }
+        blockedFirstWrite = false;
+        firstWriteStarted();
+        await firstWriteRelease;
+      },
+    });
+    const before = await harness.repository.listSelection({ webId: ALICE, provider: 'openai', auth: auth(ALICE) });
+
+    const first = harness.repository.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      models: [model('first')],
+      expectedVersion: before.version,
+      auth: auth(ALICE),
+    });
+    await firstWrite;
+    const second = harness.repository.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      models: [model('second')],
+      expectedVersion: before.version,
+      auth: auth(ALICE),
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    releaseFirstWrite();
+
+    const results = await Promise.allSettled([first, second]);
+    const fulfilled = results.filter((result): result is PromiseFulfilledResult<PodModelSelection> => result.status === 'fulfilled');
+    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toMatchObject({ message: 'model_selection_version_conflict' });
+    expect([...harness.pods.get(ALICE)!.models.keys()]).toEqual([`${fulfilled[0].value.models[0].id}`]);
+    await expect(harness.repository.listSelection({ webId: ALICE, provider: 'openai', auth: auth(ALICE) }))
+      .resolves.toEqual(fulfilled[0].value);
+  });
+
   it('rolls back partial mutations when an exact upsert fails', async () => {
     const pod = makePod();
     pod.models.set('openai.ttl#old', {
@@ -358,9 +411,36 @@ describe('PodModelSelectionRepository', () => {
       .not.toContainEqual(expect.objectContaining({ id: 'openai.ttl#old' }));
   });
 
+  it('accepts the canonical absolute provider model resource id', async () => {
+    const harness = createHarness();
+
+    const selection = await harness.repository.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      models: [model('https://pod.example/alice/settings/providers/openai.ttl#gpt-5')],
+      auth: auth(ALICE),
+    });
+
+    expect(selection.models).toEqual([
+      expect.objectContaining({ id: 'openai.ttl#gpt-5' }),
+    ]);
+  });
+
   it.each([
     ['foreign absolute URL', 'https://pod.example/bob/settings/providers/openai.ttl#gpt-5'],
+    ['same-Pod private path', 'https://pod.example/alice/private/openai.ttl#gpt-5'],
+    ['same-Pod private document', 'https://pod.example/alice/private/openai.ttl'],
+    ['private relative path', 'private/openai.ttl#gpt-5'],
+    ['private relative document', 'private/openai.ttl'],
+    ['nested provider suffix', 'https://pod.example/alice/foo/settings/providers/openai.ttl#gpt-5'],
+    ['nested provider document', 'https://pod.example/alice/foo/settings/providers/openai.ttl'],
+    ['nested relative provider suffix', 'foo/settings/providers/openai.ttl#gpt-5'],
+    ['nested relative provider document', 'foo/settings/providers/openai.ttl'],
+    ['wrong relative provider path', 'settings/providers/openai.ttl#gpt-5'],
+    ['wrong relative provider document', 'settings/providers/openai.ttl'],
+    ['nested provider suffix', 'openai.ttl/nested#gpt-5'],
     ['protocol-relative URL', '//pod.example/alice/settings/providers/openai.ttl#gpt-5'],
+    ['protocol-relative document', '//pod.example/alice/settings/providers/openai.ttl'],
     ['javascript URL', 'javascript:alert(1)'],
     ['malformed URL', 'https://[broken/openai.ttl#gpt-5'],
   ])('rejects %s model ids before mutating the owner Pod', async (_name, id) => {
