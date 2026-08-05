@@ -197,6 +197,10 @@ describe('stable release promotion workflow', () => {
       'promote_image',
     ]));
     expect(deploy.uses).toBe('./.github/workflows/deploy.yml');
+    expect(deploy.permissions).toEqual({
+      contents: 'read',
+      packages: 'read',
+    });
     expect(deploy.with).toEqual({
       version: '${{ needs.promotion_guard.outputs.version }}',
       'image-digest': '${{ needs.promotion_guard.outputs.image_digest }}',

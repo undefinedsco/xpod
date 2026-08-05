@@ -350,6 +350,9 @@ jobs:
       - verify_npm_consumer_node
       - verify_npm_consumer_bun
       - promote_image
+    permissions:
+      contents: read
+      packages: read
     uses: ./.github/workflows/deploy.yml
     with:
       version: ${{ needs.promotion_guard.outputs.version }}
