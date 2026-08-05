@@ -28,6 +28,16 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<v
   }
 }
 
+async function waitUntilAsync(predicate: () => Promise<boolean>, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!await predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`async condition was not met within ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('PostgresDerivedIndexJournal', () => {
   it('rejects empty and duplicate configured consumer IDs', () => {
     const db = new PGlite();
@@ -401,14 +411,38 @@ describe('PostgresDerivedIndexJournal', () => {
     const journal = createJournal({
       executor,
       resolvePodScope: () => 'https://pod.example/alice/',
+      consumers: [listener],
+      pollIntervalMs: 10,
     });
     await journal.open();
     await journal.recordResourceChange(event('https://pod.example/alice/doc.md'));
-    expect(await journal.replayPending(listener)).toMatchObject({ delivered: 1, failed: 0 });
-    expect((await textIndex.search({ query: 'postgres retrieval', workspace: 'https://pod.example/alice/' }))[0]?.source)
-      .toBe('https://pod.example/alice/doc.md');
-    expect((await vectorIndex.search({ embedding: [1, 0], workspace: 'https://pod.example/alice/' }))[0]?.source)
-      .toBe('https://pod.example/alice/doc.md');
+    await waitUntilAsync(async () => (
+      (await textIndex.search({ query: 'postgres retrieval', workspace: 'https://pod.example/alice/' }))[0]?.source
+        === 'https://pod.example/alice/doc.md'
+      && (await vectorIndex.search({ embedding: [1, 0], workspace: 'https://pod.example/alice/' }))[0]?.source
+        === 'https://pod.example/alice/doc.md'
+    ), 5_000);
+
+    await journal.reconcilePod('https://pod.example/alice/', []);
+    await waitUntilAsync(async () => (
+      (await textIndex.search({ query: 'postgres retrieval', workspace: 'https://pod.example/alice/' })).length === 0
+      && (await vectorIndex.search({ embedding: [1, 0], workspace: 'https://pod.example/alice/' })).length === 0
+    ), 5_000);
+    expect(await journal.pendingCount('https://pod.example/alice/', listener.consumerId)).toBe(0);
+    await journal.close();
+
+    const restarted = createJournal({ executor, consumers: [listener], pollIntervalMs: 10 });
+    await restarted.open();
+    expect(await restarted.pendingCount('https://pod.example/alice/', listener.consumerId)).toBe(0);
+    const tombstone = await checkpoint(
+      executor,
+      listener.consumerId,
+      'https://pod.example/alice/',
+      'https://pod.example/alice/doc.md',
+    );
+    expect(tombstone).toMatchObject({ last_action: 'delete' });
+    expect(tombstone?.deleted_at).not.toBeNull();
+    await restarted.close();
     await pool.end();
   });
 });
