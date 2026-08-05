@@ -376,6 +376,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
       TAG_NAME: ${{ github.ref_name }}
       RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
       ACCEPTED_IMAGE_DIGEST: ${{ needs.promotion_guard.outputs.image_digest }}
@@ -389,7 +390,13 @@ jobs:
             printf 'Promoted accepted release candidate `%s`.\n\n' "$CANDIDATE_VERSION"
             printf 'Container digest: `%s`\n' "$ACCEPTED_IMAGE_DIGEST"
           } > "$notes_file"
-          gh release create "$TAG_NAME" \
-            --verify-tag \
-            --title "Xpod ${RELEASE_VERSION}" \
-            --notes-file "$notes_file"
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --title "Xpod ${RELEASE_VERSION}" \
+              --notes-file "$notes_file"
+          else
+            gh release create "$TAG_NAME" \
+              --verify-tag \
+              --title "Xpod ${RELEASE_VERSION}" \
+              --notes-file "$notes_file"
+          fi

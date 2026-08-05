@@ -213,6 +213,9 @@ describe('stable release promotion workflow', () => {
     expect(release.permissions).toEqual({
       contents: 'write',
     });
+    expect(release.env.GH_REPO).toBe('${{ github.repository }}');
+    expect(jobRunText(workflow, 'create_github_release')).toContain('gh release view "$TAG_NAME"');
+    expect(jobRunText(workflow, 'create_github_release')).toContain('gh release edit "$TAG_NAME"');
     expect(jobRunText(workflow, 'create_github_release')).toContain('gh release create "$TAG_NAME"');
     expect(jobRunText(workflow, 'create_github_release')).toContain('--verify-tag');
   });
