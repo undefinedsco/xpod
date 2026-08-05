@@ -4,6 +4,7 @@ export type GatewayErrorCode =
   | 'unsupported_protocol_event'
   | 'service_access_missing'
   | 'credential_unavailable'
+  | 'model_not_available'
   | 'provider_error'
   | 'internal_error';
 

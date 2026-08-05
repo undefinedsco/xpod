@@ -112,6 +112,15 @@ describe('AI credential container config', () => {
     expect(raw.resolve('providerModelSelectionService')).toBe(service);
   });
 
+  it('injects the shared Pod model selection repository into Gateway routing', () => {
+    const container = createApiContainer(baseConfig());
+    const raw = container as any;
+    const repository = raw.resolve('podModelSelectionRepository');
+    const gateway = raw.resolve('aiGatewayService');
+
+    expect(gateway.router.selectionRepository).toBe(repository);
+  });
+
   it('does not use rotating service tokens as invocation or affinity secrets', () => {
     const container = createApiContainer(baseConfig({
       serviceToken: 'rotating-service-token',

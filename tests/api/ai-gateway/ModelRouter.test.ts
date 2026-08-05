@@ -9,6 +9,7 @@ import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routin
 import {
   ModelRouter,
   type GatewayCredentialCandidate,
+  type GatewayModelSelection,
 } from '../../../src/api/ai-gateway/routing/ModelRouter';
 import { RedisSessionAffinityStore } from '../../../src/api/ai-gateway/routing/RedisSessionAffinityStore';
 
@@ -42,12 +43,16 @@ function router(input: {
   registry?: ProviderRegistry;
   defaultProvider?: string;
   defaultModel?: string;
+  selections?: GatewayModelSelection[];
   now?: Date;
 } = {}): ModelRouter {
   return new ModelRouter({
     registry: input.registry ?? createDefaultProviderRegistry(),
     affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
     credentials: async() => input.credentials ?? [],
+    ...(input.selections
+      ? { selectionRepository: { listActiveSelections: async() => input.selections ?? [] } }
+      : {}),
     defaultProvider: input.defaultProvider,
     defaultModel: input.defaultModel,
     now: () => input.now ?? new Date('2026-07-23T00:00:00.000Z'),
@@ -143,6 +148,111 @@ describe('ProviderRegistry', () => {
 });
 
 describe('ModelRouter', () => {
+  it('routes only active Pod picks and rejects unpicked models with a stable model error', async () => {
+    const modelRouter = router({
+      selections: [{
+        provider: 'openai',
+        models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+        version: 'sha256:openai',
+      }],
+      credentials: [
+        credential({ id: 'cred_openai', provider: 'openai', models: ['gpt-4.1'] }),
+      ],
+    });
+
+    await expect(modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' })).resolves.toEqual([
+      expect.objectContaining({ id: 'gpt-5', owned_by: 'openai' }),
+    ]);
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).resolves.toMatchObject({ provider: { id: 'openai' }, model: 'gpt-5' });
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-4.1',
+    })).rejects.toMatchObject({ code: 'model_not_available', status: 404 });
+  });
+
+  it('uses the selected Pod default and preserves provider ownership for colliding model ids', async () => {
+    const registry = new ProviderRegistry([
+      {
+        id: 'openai',
+        label: 'OpenAI',
+        authModes: ['apiKey'],
+        protocols: ['chatCompletions'],
+        defaultBaseUrl: 'https://api.openai.com/v1',
+        safeBaseUrls: ['https://api.openai.com/v1'],
+        capabilities: {},
+        models: [{ id: 'shared-model' }],
+      },
+      {
+        id: 'anthropic',
+        label: 'Anthropic',
+        authModes: ['apiKey'],
+        protocols: ['anthropic'],
+        defaultBaseUrl: 'https://api.anthropic.com/v1',
+        safeBaseUrls: ['https://api.anthropic.com/v1'],
+        capabilities: {},
+        models: [{ id: 'shared-model' }],
+      },
+    ]);
+    const modelRouter = router({
+      registry,
+      selections: [
+        {
+          provider: 'openai',
+          models: [{ id: 'openai.ttl#shared-model', modelType: 'chat', status: 'active' }],
+          defaultModel: 'openai.ttl#shared-model',
+          version: 'sha256:openai',
+        },
+        {
+          provider: 'anthropic',
+          models: [{ id: 'anthropic.ttl#shared-model', modelType: 'chat', status: 'active' }],
+          version: 'sha256:anthropic',
+        },
+      ],
+      credentials: [
+        credential({ id: 'cred_openai', provider: 'openai', models: [] }),
+        credential({ id: 'cred_anthropic', provider: 'anthropic', models: [] }),
+      ],
+    });
+
+    await expect(modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' })).resolves.toEqual([
+      expect.objectContaining({ id: 'shared-model', owned_by: 'openai' }),
+      expect.objectContaining({ id: 'shared-model', owned_by: 'anthropic' }),
+    ]);
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'openai/shared-model',
+    })).resolves.toMatchObject({ provider: { id: 'openai' }, model: 'shared-model' });
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'anthropic/shared-model',
+    })).resolves.toMatchObject({ provider: { id: 'anthropic' }, model: 'shared-model' });
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toMatchObject({ provider: { id: 'openai' }, model: 'shared-model' });
+  });
+
+  it('returns no visible models when a provider is connected but has no Pod picks', async () => {
+    const modelRouter = router({
+      selections: [],
+      credentials: [credential({ id: 'cred_openai', provider: 'openai', models: [] })],
+    });
+
+    await expect(modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' })).resolves.toEqual([]);
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).rejects.toMatchObject({ code: 'model_not_available', status: 404 });
+  });
+
   it('routes by alias before explicit provider/model and exact model matches', async () => {
     const registry = createDefaultProviderRegistry({
       aliases: {

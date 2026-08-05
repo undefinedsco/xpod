@@ -296,10 +296,12 @@ export function registerCommonServices(
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
       const gatewayRuntimeRegistry = cradle.gatewayRuntimeRegistry;
       const gatewaySessionAffinityStore = cradle.gatewaySessionAffinityStore;
+      const podModelSelectionRepository = cradle.podModelSelectionRepository;
       const router = new ModelRouter({
         registry: gatewayProviderRegistry,
         affinityStore: gatewaySessionAffinityStore,
         credentials: gatewayCredentialStore.listCredentials.bind(gatewayCredentialStore),
+        selectionRepository: podModelSelectionRepository,
       });
       return new AiGatewayService({
         deployment: config.edition,

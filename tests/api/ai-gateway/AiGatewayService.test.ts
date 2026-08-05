@@ -9,6 +9,7 @@ import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/provi
 import type { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
 import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
+import type { GatewayModelSelection } from '../../../src/api/ai-gateway/routing/ModelRouter';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
@@ -46,7 +47,11 @@ function credential(input: Partial<StoredGatewayCredential> & {
   };
 }
 
-function serviceWith(credentials: StoredGatewayCredential[], now = new Date('2026-07-23T00:00:00.000Z')): {
+function serviceWith(
+  credentials: StoredGatewayCredential[],
+  now = new Date('2026-07-23T00:00:00.000Z'),
+  selections?: GatewayModelSelection[],
+): {
   service: AiGatewayService;
   store: GatewayCredentialStore;
 } {
@@ -75,6 +80,9 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
         registry,
         affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
         credentials: store.listCredentials,
+        ...(selections
+          ? { selectionRepository: { listActiveSelections: async() => selections } }
+          : {}),
         now: () => now,
       }),
       credentials: store,
@@ -85,6 +93,98 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
 }
 
 describe('AiGatewayService', () => {
+  it('returns an empty model projection for a connected provider with no durable picks', async () => {
+    const { service } = serviceWith([
+      credential({ id: 'connected_openai', provider: 'openai', models: [] }),
+    ], undefined, []);
+
+    await expect(service.listModels(AUTH)).resolves.toEqual([]);
+  });
+
+  it('projects only active selected models whose credentials are usable', async () => {
+    const { service } = serviceWith([
+      // Legacy credential metadata is intentionally stale; Pod picks are the
+      // authoritative model boundary for the Gateway projection.
+      credential({ id: 'healthy', provider: 'openai', models: ['gpt-4.1'] }),
+      credential({ id: 'reauth', provider: 'openai', health: 'reauthRequired', models: ['gpt-4.1'] }),
+      credential({ id: 'quota', provider: 'openai', quota: { status: 'exhausted' }, models: ['gpt-4.1'] }),
+      credential({
+        id: 'cooling',
+        provider: 'openai',
+        cooldownUntil: new Date('2026-07-23T00:05:00.000Z'),
+        models: ['gpt-4.1'],
+      }),
+    ], undefined, [{
+      provider: 'openai',
+      models: [
+        { id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' },
+        { id: 'openai.ttl#gpt-4.1', modelType: 'chat', status: 'inactive' },
+      ],
+      version: 'sha256:openai',
+    }]);
+
+    await expect(service.listModels(AUTH)).resolves.toEqual([
+      expect.objectContaining({ id: 'gpt-5', owned_by: 'openai' }),
+    ]);
+  });
+
+  it('rejects an explicit unpicked model before provider runtime I/O', async () => {
+    const fixture = serviceWith([
+      credential({ id: 'healthy', provider: 'openai', models: [] }),
+    ], undefined, [{
+      provider: 'openai',
+      models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+      version: 'sha256:openai',
+    }]);
+    const runtime = vi.fn();
+    (fixture.service as any).runtimes.get = vi.fn(() => ({ execute: runtime }));
+
+    await expect(fixture.service.execute({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-4.1',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })).rejects.toMatchObject({ code: 'model_not_available', status: 404 });
+    expect(runtime).not.toHaveBeenCalled();
+  });
+
+  it('keeps durable model visibility isolated by WebID', async () => {
+    const otherAuth: AuthContext = { type: 'solid', webId: 'https://id.example/bob/profile/card#me', viaApiKey: true };
+    const selections: GatewayModelSelection[] = [{
+      provider: 'openai',
+      models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+      version: 'sha256:openai',
+    }];
+    const registry = createDefaultProviderRegistry();
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async(input) => input.webId === AUTH.webId
+        ? [credential({ id: 'alice', provider: 'openai', models: [] })]
+        : [credential({ id: 'bob', provider: 'openai', models: [] })]),
+    };
+    const selectionRepository = {
+      listActiveSelections: vi.fn(async(input: { webId: string }) => input.webId === AUTH.webId ? selections : []),
+    };
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+        selectionRepository,
+      }),
+      credentials: store,
+      runtimes: { get: vi.fn() } as unknown as ProviderRuntimeRegistry,
+    });
+
+    await expect(service.listModels(AUTH)).resolves.toHaveLength(1);
+    await expect(service.listModels(otherAuth)).resolves.toEqual([]);
+    expect(selectionRepository.listActiveSelections).toHaveBeenCalledWith(expect.objectContaining({ webId: AUTH.webId }));
+    expect(selectionRepository.listActiveSelections).toHaveBeenCalledWith(expect.objectContaining({ webId: otherAuth.webId }));
+  });
+
   it('lists the union of active credential model allowlists without exposing inactive credentials', async () => {
     const registryOnlyOpenAiModel = 'gpt-4.1';
     const { service } = serviceWith([
