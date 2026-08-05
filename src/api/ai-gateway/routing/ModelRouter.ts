@@ -436,7 +436,7 @@ export class ModelRouter {
       if (explicit) {
         const visible = visibleTargets.find((target) =>
           target.providerId === explicit.providerId
-          && sameModel(target.model, explicit.model));
+          && this.visibleTargetMatches(target, explicit.model));
         if (!visible && this.selectionRepository) {
           throw modelNotAvailableError(requestedModel);
         }
@@ -447,7 +447,7 @@ export class ModelRouter {
         };
       }
 
-      const exactMatches = visibleTargets.filter((target) => sameModel(target.model, requestedModel));
+      const exactMatches = visibleTargets.filter((target) => this.visibleTargetMatches(target, requestedModel));
       const exact = exactMatches.find((target) => target.selectionDefault) ?? exactMatches[0];
       if (exact) {
         return {
@@ -482,6 +482,14 @@ export class ModelRouter {
       status: 400,
       details: { model: input.model },
     });
+  }
+
+  private visibleTargetMatches(target: VisibleModelTarget, requestedModel: string): boolean {
+    if (sameModel(target.model, requestedModel)) {
+      return true;
+    }
+    const descriptor = this.registry.getProvider(target.providerId)?.models.find((model) => sameModel(model.id, target.model));
+    return Boolean(descriptor?.aliases?.some((alias) => sameModel(alias, requestedModel)));
   }
 
   private parseExplicitProviderModel(model: string): { providerId: string; model: string } | undefined {
