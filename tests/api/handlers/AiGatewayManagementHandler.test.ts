@@ -382,10 +382,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(credentialResponse.statusCode).toBe(401);
     expect(JSON.parse(credentialResponse.body).error.details).toMatchObject({ reauthRequired: true });
 
-    discover.mockRejectedValueOnce(new GatewayProtocolError('model_selection_version_conflict', {
-      code: 'invalid_request',
-      status: 409,
-    }));
+    discover.mockRejectedValueOnce(new Error('model_selection_version_conflict'));
     const conflictResponse = response();
     await routes['POST /api/ai/gateway/providers/:provider/models/discover'](
       request(auth), conflictResponse, { provider: 'openai' },

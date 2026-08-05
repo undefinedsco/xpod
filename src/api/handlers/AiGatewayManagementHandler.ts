@@ -605,6 +605,38 @@ function normalizeModelSelectionError(error: unknown): {
   details?: Record<string, unknown>;
 } {
   if (!(error instanceof GatewayProtocolError)) {
+    if (error instanceof Error) {
+      const stablePlainErrors: Record<string, {
+        code: 'invalid_request' | 'credential_unavailable' | 'provider_error' | 'internal_error';
+        message: string;
+        status: 400 | 401 | 409 | 429 | 502;
+      }> = {
+        active_credential_required: {
+          code: 'credential_unavailable',
+          message: 'active_credential_required',
+          status: 401,
+        },
+        model_not_in_discovered_catalog: {
+          code: 'invalid_request',
+          message: 'model_not_in_discovered_catalog',
+          status: 400,
+        },
+        model_selection_default_not_picked: {
+          code: 'invalid_request',
+          message: 'model_selection_default_not_picked',
+          status: 400,
+        },
+        model_selection_version_conflict: {
+          code: 'invalid_request',
+          message: 'model_selection_version_conflict',
+          status: 409,
+        },
+      };
+      const stable = stablePlainErrors[error.message];
+      if (stable) {
+        return stable;
+      }
+    }
     return {
       code: 'provider_error',
       message: 'Provider model discovery failed',
