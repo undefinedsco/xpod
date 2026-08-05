@@ -101,6 +101,13 @@ describe('packaged applet SDK consumption', () => {
     }
   });
 
+  it('bundles the renamed AI connections workspace package into release tarballs', async () => {
+    const packScript = await readRepoFile('scripts/run-npm-pack.cjs');
+
+    expect(packScript).toContain("'@undefineds.co/ai-connections'");
+    expect(packScript).not.toContain("'@undefineds.co/ai-connection'");
+  });
+
   consumerIntegrationIt('resolves public ESM exports when XPOD_APPLET_PACKAGE_TARBALL_DIR or XPOD_APPLET_PACKAGE_REGISTRY_URL is configured', async () => {
     const manifest = await readJson('ui/package.json');
     for (const [packageName] of Object.entries(packageSpecs)) {

@@ -7,7 +7,7 @@ const { execFileSync } = require('node:child_process');
 const DRIZZLE_SOLID_PACKAGE = '@undefineds.co/drizzle-solid';
 const EXTENSIONS_PACKAGE = '@undefineds.co/extensions';
 const WORKSPACE_PACKAGES = [
-  '@undefineds.co/ai-connection',
+  '@undefineds.co/ai-connections',
   '@undefineds.co/extension-sdk',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',
