@@ -50,6 +50,7 @@ import { MixDataAccessor } from '../storage/accessors/MixDataAccessor';
 import { createBandwidthThrottleTransform } from '../util/stream/BandwidthThrottleTransform';
 
 const ALLOWED_METHODS = [ 'GET', 'POST', 'OPTIONS' ];
+const MODEL_COLLECTION_SUFFIX = '/settings/providers/-/sparql';
 
 interface QueryRequest {
   basePath: string;
@@ -72,6 +73,16 @@ interface SubgraphSparqlHttpHandlerOptions {
   defaultAccountBandwidthLimitBps?: number | null;
 }
 
+export interface TrustedSubgraphSparqlHandler {
+  handleTrustedInternalSelect(input: {
+    ownerWebId: string;
+    endpointUrl: string;
+    query: string;
+    request: HttpRequest;
+    response: HttpResponse;
+  }): Promise<void>;
+}
+
 type UsageContext = {
   accountId: string;
   podId: string;
@@ -85,6 +96,13 @@ interface SparqlErrorResponse {
     hint?: string;
     correction?: SparqlCorrection;
   };
+}
+
+interface TrustedModelCollectionTarget {
+  basePath: string;
+  baseUrl: string;
+  origin: string;
+  query: string;
 }
 
 interface UpdateAccessPlan {
@@ -272,6 +290,43 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     }
   }
 
+  /**
+   * Execute the model collection SELECT after InternalPodDataHttpHandler has
+   * verified the signed owner intent. This is deliberately not reachable from
+   * the normal HTTP routing path and performs its own exact owner/endpoint
+   * validation before bypassing caller credentials.
+   */
+  public async handleTrustedInternalSelect(input: Parameters<TrustedSubgraphSparqlHandler['handleTrustedInternalSelect']>[0]): Promise<void> {
+    const target = trustedModelCollectionTarget(input.ownerWebId, input.endpointUrl);
+    if (!target) {
+      throw new BadRequestHttpError('Trusted model collection endpoint is outside the owner Pod.');
+    }
+    const query = input.query.trim();
+    if (!query || (target.query && query !== target.query)) {
+      throw new BadRequestHttpError('A trusted model collection query is required.');
+    }
+    const parsed = new Parser({ baseIRI: target.baseUrl }).parse(query);
+    if (parsed.type !== 'query' || parsed.queryType !== 'SELECT') {
+      throw new BadRequestHttpError('Trusted model collection access only supports SELECT queries.');
+    }
+    const context = await this.resolveUsageContext(target.basePath);
+    await this.recordBandwidth(context, Buffer.byteLength(query, 'utf8'), 0);
+    await this.executeSelect(
+      input.request,
+      {
+        basePath: target.basePath,
+        baseUrl: target.baseUrl,
+        query,
+        origin: target.origin,
+        method: 'GET',
+        ingressBytes: Buffer.byteLength(query, 'utf8'),
+      },
+      input.response,
+      context,
+      true,
+    );
+  }
+
   private sendErrorResponse(
     request: HttpRequest,
     response: HttpResponse,
@@ -295,8 +350,26 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     return values.some(value => typeof value === 'string' && /\bapplication\/json\b/i.test(value));
   }
 
-  private async executeSelect(request: HttpRequest, { query, basePath, baseUrl }: QueryRequest, response: HttpResponse, context: UsageContext | undefined): Promise<void> {
-    const accessScope = await this.resolveReadAccessScope(baseUrl, request);
+  private async executeSelect(
+    request: HttpRequest,
+    { query, basePath, baseUrl }: QueryRequest,
+    response: HttpResponse,
+    context: UsageContext | undefined,
+    trusted = false,
+  ): Promise<void> {
+    // Trusted internal requests bypass user credentials and ACL lookups, but they
+    // still need an owner-scoped RDF access boundary.  Without this scope the
+    // query engine can federate across the whole quadstore and return model IRIs
+    // from another Pod; the caller would then try to fetch those foreign
+    // documents through the owner-locked bridge.
+    const accessScope = trusted
+      ? {
+        basePath: baseUrl,
+        mode: 'read' as const,
+        principal: `trusted:${baseUrl}`,
+        version: `trusted-owner:${baseUrl}`,
+      }
+      : await this.resolveReadAccessScope(baseUrl, request);
 
     let vars: string[] = [];
     const results: Record<string, unknown>[] = [];
@@ -1168,4 +1241,44 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const lower = url.toLowerCase();
     return lower.startsWith('sqlite:') || lower.endsWith('.sqlite') || lower.endsWith('.db');
   }
+}
+
+function trustedModelCollectionTarget(ownerWebId: string, endpointUrl: string): TrustedModelCollectionTarget | undefined {
+  let owner: URL;
+  let endpoint: URL;
+  try {
+    owner = new URL(ownerWebId);
+    endpoint = new URL(endpointUrl);
+  } catch {
+    return undefined;
+  }
+  if (owner.protocol !== 'http:' && owner.protocol !== 'https:') {
+    return undefined;
+  }
+  if (owner.hash !== '#me' || !owner.pathname.endsWith('/profile/card')) {
+    return undefined;
+  }
+  const podPath = owner.pathname.slice(0, -'profile/card'.length);
+  if (!podPath || !podPath.endsWith('/')) {
+    return undefined;
+  }
+  const podRoot = new URL(podPath, owner.origin);
+  if (endpoint.origin !== podRoot.origin || endpoint.username || endpoint.password || endpoint.hash) {
+    return undefined;
+  }
+  if (endpoint.pathname !== `${podRoot.pathname}${MODEL_COLLECTION_SUFFIX.slice(1)}`) {
+    return undefined;
+  }
+  const keys = Array.from(endpoint.searchParams.keys());
+  if (keys.length > 0 && (keys.length !== 1 || keys[0] !== 'query' || !endpoint.searchParams.get('query')?.trim())) {
+    return undefined;
+  }
+  const basePath = endpoint.pathname.slice(0, -'/-/sparql'.length);
+  const normalizedBasePath = basePath.endsWith('/') ? basePath : `${basePath}/`;
+  return {
+    basePath: normalizedBasePath,
+    baseUrl: `${endpoint.origin}${normalizedBasePath}`,
+    origin: endpoint.origin,
+    query: endpoint.searchParams.get('query')?.trim() ?? '',
+  };
 }

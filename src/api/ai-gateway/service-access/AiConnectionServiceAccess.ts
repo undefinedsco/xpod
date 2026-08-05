@@ -17,7 +17,7 @@ export interface AiConnectionServiceAccessDescriptor {
 }
 
 export interface AiConnectionServiceAccessResource {
-  id: 'providerCredentials' | 'providerDefinitions' | 'quotaSnapshots';
+  id: 'providerCredentials' | 'providerDefinitions' | 'quotaSnapshots' | `providerDocument:${string}`;
   url: string;
   mediaType: 'text/turtle';
   access: {
@@ -28,6 +28,16 @@ export interface AiConnectionServiceAccessResource {
     controlWrite?: never;
   };
 }
+
+/** Provider documents used by the shared AI model resources. Keep this list
+ * explicit: service access must never turn into a wildcard Pod path grant. */
+export const AI_CONNECTION_MODEL_PROVIDER_IDS = [
+  'openai',
+  'anthropic',
+  'kimi',
+  'bailian',
+  'deepseek',
+] as const;
 
 interface PodResourceLocator {
   config?: {
@@ -55,6 +65,10 @@ export function createAiConnectionServiceAccess(input: {
     resources: [
       ['providerCredentials', resourceUrl(input.ownerWebId, credentialResource)],
       ['providerDefinitions', resourceUrl(input.ownerWebId, aiProviderResource)],
+      ...AI_CONNECTION_MODEL_PROVIDER_IDS.map((provider) => [
+        `providerDocument:${provider}`,
+        resourceUrl(input.ownerWebId, aiProviderResource, `${provider}.ttl`),
+      ] as const),
       ['quotaSnapshots', resourceUrl(input.ownerWebId, quotaSnapshotResource)],
     ].map(([id, url]) => ({
       id,
@@ -65,13 +79,13 @@ export function createAiConnectionServiceAccess(input: {
   };
 }
 
-function resourceUrl(ownerWebId: string, resource: PodResourceLocator): string {
+function resourceUrl(ownerWebId: string, resource: PodResourceLocator, id = '__service_access__'): string {
   const podRoot = `${resolvePodBaseUrl(ownerWebId).replace(/\/$/u, '')}/`;
   const resourcePath = declaredResourceBases.get(resource as object);
   if (!resourcePath) {
     throw new Error('AI Connection resource is missing an immutable declared base');
   }
-  const documentPath = resource.buildId({ id: '__service_access__' }).split('#')[0];
+  const documentPath = resource.buildId({ id }).split('#')[0];
   return new URL(`${resourcePath}/${documentPath}`.replace(/^\/+/u, ''), podRoot).href;
 }
 

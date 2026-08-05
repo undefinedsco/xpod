@@ -241,6 +241,99 @@ describe('SubgraphSparqlHttpHandler', () => {
     });
   });
 
+  describe('trusted internal model collection bridge', () => {
+    it('executes a validated owner SELECT without invoking external credentials authorization', async () => {
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: ['id'] }),
+      });
+      const owner = 'http://localhost:3000/alice/profile/card#me';
+      const query = 'SELECT ?id WHERE { ?id ?p ?o }';
+      const endpoint = `http://localhost:3000/alice/settings/providers/-/sparql?query=${encodeURIComponent(query)}`;
+      const response = createMockResponse();
+
+      await handler.handleTrustedInternalSelect({
+        ownerWebId: owner,
+        endpointUrl: endpoint,
+        query,
+        request: createMockRequest('/.internal/pod-data'),
+        response,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.bodyText()).toContain('bindings');
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+      expect(mockAuthorizer.handleSafe).not.toHaveBeenCalled();
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/settings/providers/',
+        {
+          basePath: 'http://localhost:3000/alice/settings/providers/',
+          mode: 'read',
+          principal: 'trusted:http://localhost:3000/alice/settings/providers/',
+          version: 'trusted-owner:http://localhost:3000/alice/settings/providers/',
+        },
+      );
+    });
+
+    it('accepts an owner-locked endpoint without a query string for POST delegation', async () => {
+      mockQueryEngine.queryBindings.mockResolvedValue({
+        [Symbol.asyncIterator]: () => ({
+          next: () => Promise.resolve({ done: true }),
+        }),
+        metadata: () => Promise.resolve({ variables: ['id'] }),
+      });
+      const query = 'SELECT ?id WHERE { ?id ?p ?o }';
+      const response = createMockResponse();
+
+      await handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: 'http://localhost:3000/alice/settings/providers/-/sparql',
+        query,
+        request: createMockRequest('/.internal/pod-data', 'POST'),
+        response,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockQueryEngine.queryBindings).toHaveBeenCalledWith(
+        query,
+        'http://localhost:3000/alice/settings/providers/',
+        expect.objectContaining({
+          basePath: 'http://localhost:3000/alice/settings/providers/',
+          mode: 'read',
+        }),
+      );
+    });
+
+    it.each([
+      'http://localhost:3000/bob/settings/providers/-/sparql?query=SELECT%20%2A%20WHERE%20%7B%7D',
+      'http://localhost:3000/alice/settings/providers/secret/-/sparql?query=SELECT%20%2A%20WHERE%20%7B%7D',
+      'http://localhost:3000/alice/settings/providers/-/sparql?query=SELECT%20%2A%20WHERE%20%7B%7D&format=json',
+    ])('rejects trusted endpoint outside exact owner collection: %s', async (endpoint) => {
+      await expect(handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: endpoint,
+        query: 'SELECT * WHERE {}',
+        request: createMockRequest('/.internal/pod-data'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+      expect(mockCredentialsExtractor.handleSafe).not.toHaveBeenCalled();
+    });
+
+    it('rejects a query that does not match the signed endpoint query', async () => {
+      const endpointQuery = 'SELECT * WHERE {}';
+      await expect(handler.handleTrustedInternalSelect({
+        ownerWebId: 'http://localhost:3000/alice/profile/card#me',
+        endpointUrl: `http://localhost:3000/alice/settings/providers/-/sparql?query=${encodeURIComponent(endpointQuery)}`,
+        query: 'SELECT ?id WHERE { ?id ?p ?o }',
+        request: createMockRequest('/.internal/pod-data'),
+        response: createMockResponse(),
+      })).rejects.toThrow();
+    });
+  });
+
   describe('permission mapping', () => {
     it('routes an authorized update through the configured RDF file authority', async () => {
       const updateAuthority = {

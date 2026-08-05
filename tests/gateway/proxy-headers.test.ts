@@ -1,4 +1,5 @@
 import http from 'http';
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getFreePort, GatewayProxy } from '../../src/runtime';
 import {
@@ -136,6 +137,79 @@ describe('GatewayProxy response headers', () => {
       method: 'GET',
       url: '/.internal/pod-data',
     })).toMatchObject({ valid: true, originalClientLoopback: true, intent });
+  });
+
+  it('binds POST internal Pod markers to a SHA-256 body digest', async () => {
+    const body = 'query=SELECT+%2A+WHERE+%7B%7D';
+    const digest = createHash('sha256').update(body).digest('hex');
+    const intent = {
+      ownerWebId: 'https://id.example/alice/profile/card#me',
+      method: 'POST' as const,
+      resourceUrl: 'https://id.example/alice/settings/providers/-/sparql',
+      principalKind: 'solid-user' as const,
+      scopes: ['ai:credentials:read'],
+      bodyDigest: digest,
+    };
+    const marker = createGatewayAdminProxyHeaders({
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      originalClientLoopback: true,
+      nonce: 'post-body-nonce',
+      intent,
+    });
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/.internal/pod-data`, {
+      method: 'POST',
+      headers: {
+        ...(marker as Record<string, string>),
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    const verifiedPost = verifyGatewayAdminProxyHeaders({
+      headers: latestUpstreamHeaders,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+    });
+    expect(verifiedPost).toMatchObject({ valid: true, intent });
+
+    const tamperedHeaders = {
+      ...latestUpstreamHeaders,
+      'x-xpod-admin-proxy-intent': JSON.stringify({ ...intent, bodyDigest: 'b'.repeat(64) }),
+    };
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: tamperedHeaders,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+    })).toMatchObject({ valid: false, reason: 'bad_signature' });
+  });
+
+  it('rejects a signed POST marker without a body digest', () => {
+    const marker = createGatewayAdminProxyHeaders({
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      originalClientLoopback: true,
+      intent: {
+        ownerWebId: 'https://id.example/alice/profile/card#me',
+        method: 'POST',
+        resourceUrl: 'https://id.example/alice/settings/providers/-/sparql',
+        principalKind: 'solid-user',
+        scopes: ['ai:credentials:read'],
+      },
+    });
+
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: marker,
+      secret: INTERNAL_PROXY_SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+    })).toMatchObject({ valid: false, reason: 'invalid_intent' });
   });
 
   it('strips an invalid internal Pod marker even from a loopback request', async () => {

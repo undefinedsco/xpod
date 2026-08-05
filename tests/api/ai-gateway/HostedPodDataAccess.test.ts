@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { createAiConnectionServiceAccess } from '../../../src/api/ai-gateway/service-access/AiConnectionServiceAccess';
 import { HostedPodDataAccess } from '../../../src/api/ai-gateway/pod/HostedPodDataAccess';
 import {
@@ -17,6 +18,9 @@ const QUOTA_RESOURCE = createAiConnectionServiceAccess({
   ownerWebId: OWNER,
   serviceWebId: OWNER,
 }).resources.find((resource) => resource.id === 'quotaSnapshots')!.url;
+const MODEL_QUERY = 'SELECT ?id WHERE { ?id ?predicate ?value }';
+const MODEL_SPARQL_RESOURCE = `https://pod.example/alice/settings/providers/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`;
+const MODEL_SPARQL_POST_RESOURCE = 'https://pod.example/alice/settings/providers/-/sparql';
 
 describe('HostedPodDataAccess', () => {
   it('rejects public CSS base URLs before runtime markers can be sent', () => {
@@ -194,6 +198,140 @@ describe('HostedPodDataAccess', () => {
     await expect(trustedFetch!('https://pod.example/alice/private/other.ttl'))
       .rejects.toThrow('hosted_pod_resource_not_allowed');
     expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+
+  it('allows only the owner Pod model collection GET with one encoded query parameter', async () => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response('model results', { status: 200 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    const response = await trustedFetch!(MODEL_SPARQL_RESOURCE, { method: 'GET' });
+
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(1);
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[0].headers),
+      secret: SECRET,
+      method: 'GET',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        resourceUrl: MODEL_SPARQL_RESOURCE,
+        method: 'GET',
+      },
+    });
+  });
+
+  it('allows owner model collection POST bodies and signs their exact digest', async () => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response('model results', { status: 200 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    const body = new URLSearchParams({ query: MODEL_QUERY }).toString();
+
+    const response = await trustedFetch!(MODEL_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].method).toBe('POST');
+    expect(await sent[0].clone().text()).toBe(body);
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[0].headers),
+      secret: SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: {
+        ownerWebId: OWNER,
+        resourceUrl: MODEL_SPARQL_POST_RESOURCE,
+        method: 'POST',
+        bodyDigest: createHash('sha256').update(body).digest('hex'),
+      },
+    });
+  });
+
+  it('also accepts raw application/sparql-query POST bodies', async () => {
+    const sent: Request[] = [];
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        sent.push(new Request(input, init));
+        return new Response('model results', { status: 200 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await trustedFetch!(MODEL_SPARQL_POST_RESOURCE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/sparql-query' },
+      body: MODEL_QUERY,
+    });
+
+    expect(await sent[0].clone().text()).toBe(MODEL_QUERY);
+    expect(verifyGatewayAdminProxyHeaders({
+      headers: headersRecord(sent[0].headers),
+      secret: SECRET,
+      method: 'POST',
+      url: '/.internal/pod-data',
+      now: Date.parse('2026-08-03T00:00:00.000Z'),
+    })).toMatchObject({
+      valid: true,
+      intent: { bodyDigest: createHash('sha256').update(MODEL_QUERY).digest('hex') },
+    });
+  });
+
+  it.each([
+    ['cross-owner endpoint', `https://pod.example/bob/settings/providers/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`],
+    ['extra query parameter', `${MODEL_SPARQL_RESOURCE}&format=json`],
+    ['duplicate query parameter', `${MODEL_SPARQL_RESOURCE}&query=${encodeURIComponent(MODEL_QUERY)}`],
+    ['fragment', `${MODEL_SPARQL_RESOURCE}#fragment`],
+    ['arbitrary provider path', 'https://pod.example/alice/settings/providers/secret.ttl'],
+  ])('rejects %s from the hosted model collection capability', async (_name, resourceUrl) => {
+    const upstreamFetch = vi.fn(fetch);
+    const access = createAccess({ fetch: upstreamFetch as typeof fetch });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!(resourceUrl)).rejects.toThrow(/hosted_pod_(?:remote_resource|resource_not_allowed)/u);
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-GET methods on the model collection capability', async () => {
+    const access = createAccess();
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!(MODEL_SPARQL_RESOURCE, { method: 'HEAD' }))
+      .rejects.toThrow('hosted_pod_resource_not_allowed');
+  });
+
+  it.each([
+    ['POST query URL', MODEL_SPARQL_RESOURCE, 'query=SELECT'],
+    ['POST extra form field', MODEL_SPARQL_POST_RESOURCE, `${new URLSearchParams({ query: MODEL_QUERY }).toString()}&format=json`],
+  ])('rejects malformed model collection %s bodies', async (_name, resource, body) => {
+    const access = createAccess();
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await expect(trustedFetch!(resource, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body,
+    })).rejects.toThrow('hosted_pod_resource_not_allowed');
   });
 
   it('preserves request and response bodies through the loopback channel', async () => {

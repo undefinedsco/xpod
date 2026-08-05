@@ -11,6 +11,8 @@ import type { InternalPodAccessTokenProvider } from '../pod/HostedPodDataAccess'
 
 export type PodSelectedModelStatus = 'active' | 'inactive';
 
+const REMOVED_MODEL_STATUS = 'removed';
+
 export interface PodSelectedModel {
   /** Base-relative id of the AI model resource (for example, openai.ttl#gpt-5). */
   id: string;
@@ -137,7 +139,7 @@ export class PodModelSelectionRepository {
       throw new Error('model_selection_version_conflict');
     }
 
-    const requested = normalizeRequestedModels(input.models, context.providerId, context.providerResourceId);
+    const requested = normalizeRequestedModels(input.models, context.providerId, context.providerResourceId, context.webId);
     const defaultModelId = input.defaultModel === undefined
       ? undefined
       : buildModelResourceId(input.defaultModel, context.providerResourceId, context.webId);
@@ -181,7 +183,7 @@ export class PodModelSelectionRepository {
     );
     let providerMutation: ProviderMutation | undefined;
     if (defaultModelId !== undefined) {
-      const defaultIri = aiModelResource.buildIri(context.webId, { id: defaultModelId });
+      const defaultIri = buildModelResourceIri(context.webId, defaultModelId);
       if (providerBefore) {
         providerMutation = {
           kind: 'update',
@@ -201,6 +203,17 @@ export class PodModelSelectionRepository {
     }
 
     const operation = async (tx: PodModelSelectionDb): Promise<void> => {
+      // Mark omitted rows as removed before any destructive cleanup. This is
+      // the logical commit point; physical deletion happens only afterwards.
+      for (const deleted of deletes) {
+        const marked = await tx.updateById(aiModelResource, deleted.id, {
+          status: REMOVED_MODEL_STATUS,
+          updatedAt: now,
+        });
+        if (!marked) {
+          throw new Error('model_selection_exact_remove_failed');
+        }
+      }
       for (const upsert of upserts) {
         if (upsert.existing) {
           const updated = await tx.updateById(aiModelResource, upsert.id, upsert.patch);
@@ -209,12 +222,6 @@ export class PodModelSelectionRepository {
           }
         } else {
           await tx.insert(aiModelResource).values(upsert.patch).execute();
-        }
-      }
-      for (const deleted of deletes) {
-        const didDelete = await tx.deleteById(aiModelResource, deleted.id);
-        if (!didDelete) {
-          throw new Error('model_selection_exact_delete_failed');
         }
       }
       if (providerMutation?.kind === 'update') {
@@ -234,6 +241,7 @@ export class PodModelSelectionRepository {
       providerMutation,
       webId: context.webId,
     });
+    await cleanupRemovedModels(db, deletes);
     return this.listSelection(input);
   }
 
@@ -307,7 +315,7 @@ export class PodModelSelectionRepository {
   ): Promise<SelectionContext> {
     const providerId = normalizeProvider(provider);
     const providerResourceId = aiProviderResource.buildId({ id: providerId });
-    const providerIri = aiProviderResource.buildIri(webId, { id: providerResourceId });
+    const providerIri = buildProviderResourceIri(webId, providerResourceId);
     const query = db.select().from(aiModelResource);
     if (!query || typeof query.where !== 'function') {
       throw new ModelSelectionBlockedError(
@@ -323,7 +331,9 @@ export class PodModelSelectionRepository {
         error,
       );
     }
-    const modelRows = rows.filter((row) => relationMatches(row.isProvidedBy, providerIri, webId));
+    const modelRows = rows
+      .filter((row) => row.status !== REMOVED_MODEL_STATUS)
+      .filter((row) => relationMatches(row.isProvidedBy, providerIri, webId));
     const providerRow = await this.findProvider(db, providerResourceId);
     const models = modelRows
       .map((row) => selectedModelFromRow(row, providerResourceId, webId))
@@ -358,6 +368,7 @@ export class PodModelSelectionRepository {
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<PodModelSelectionDb> {
+    assertOwnerWebId(owner);
     assertAuthOwner(owner, auth);
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
@@ -456,7 +467,7 @@ interface MutationSnapshot {
 
 function normalizeProvider(value: string): string {
   const normalized = value.trim().toLowerCase();
-  if (!normalized) {
+  if (!normalized || !/^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u.test(normalized)) {
     throw new Error('model_selection_provider_required');
   }
   return normalized;
@@ -474,6 +485,23 @@ function assertAuthOwner(owner: string, auth?: AuthContext): void {
   }
 }
 
+function assertOwnerWebId(owner: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(owner);
+  } catch {
+    throw new Error('pod_model_selection_owner_invalid');
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+      parsed.hash !== '#me' ||
+      parsed.search ||
+      parsed.username ||
+      parsed.password ||
+      !parsed.pathname.endsWith('/profile/card')) {
+    throw new Error('pod_model_selection_owner_invalid');
+  }
+}
+
 function dedupeProviders(values: readonly string[]): readonly string[] {
   return Array.from(new Set(values.map(normalizeProvider)));
 }
@@ -482,11 +510,12 @@ function normalizeRequestedModels(
   models: readonly PodSelectedModelInput[],
   _providerId: string,
   providerResourceId: string,
+  webId: string,
 ): Map<string, NormalizedSelectedModel> {
   const normalized = new Map<string, NormalizedSelectedModel>();
   for (const input of models) {
     const model = typeof input === 'string' ? { id: input, modelType: 'chat' as const } : input;
-    const id = buildModelResourceId(model.id, providerResourceId);
+    const id = buildModelResourceId(model.id, providerResourceId, webId);
     if (!id) {
       throw new Error('model_selection_model_required');
     }
@@ -563,7 +592,7 @@ function buildModelResourceId(rawValue: string, providerResourceId: string, webI
   if (!raw) {
     throw new Error('model_selection_model_required');
   }
-  const relative = webId ? toPodRelative(raw, webId) : raw.replace(/^\/+/u, '');
+  const relative = webId ? toPodRelative(raw, webId) : toBaseRelative(raw);
   if (relative.includes('#')) {
     const [document, fragment] = relative.split('#', 2);
     const providerDocument = document === providerResourceId || document.endsWith(`/${providerResourceId}`)
@@ -592,28 +621,56 @@ function relationMatches(value: unknown, expectedIri: string, webId: string): bo
   if (typeof value !== 'string' || !value.trim()) {
     return false;
   }
-  const raw = value.trim();
-  if (raw === expectedIri) {
-    return true;
-  }
   try {
-    return new URL(raw, `${resolvePodBaseUrl(webId).replace(/\/$/u, '')}/`).href === expectedIri;
+    const raw = value.trim();
+    if (raw === expectedIri) {
+      return true;
+    }
+    const relative = toPodRelative(raw, webId);
+    const podBase = `${resolvePodBaseUrl(webId).replace(/\/$/u, '')}/`;
+    return new URL(relative, podBase).href === expectedIri;
   } catch {
     return false;
   }
 }
 
 function toPodRelative(value: string, webId: string): string {
-  const podBase = `${resolvePodBaseUrl(webId).replace(/\/$/u, '')}/`;
-  try {
-    const url = new URL(value, podBase);
-    if (url.origin === new URL(podBase).origin && url.pathname.startsWith(new URL(podBase).pathname)) {
-      return `${url.pathname.slice(new URL(podBase).pathname.length).replace(/^\/+/, '')}${url.hash}`;
-    }
-  } catch {
-    // Resource helpers will reject malformed ids below.
+  const raw = value.trim();
+  if (!raw || raw.startsWith('//') || raw.includes('?') || raw.includes('\\') || /(?:^|\/)\.\.?(?:\/|$)/u.test(raw)) {
+    throw new Error('model_selection_model_invalid_iri');
   }
-  return value.replace(/^\/+/, '');
+  const podBase = `${resolvePodBaseUrl(webId).replace(/\/$/u, '')}/`;
+  const base = new URL(podBase);
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/iu.test(raw);
+  if (!hasScheme && !raw.startsWith('/')) {
+    return raw.replace(/^\/+/, '');
+  }
+  let url: URL;
+  try {
+    url = new URL(raw, podBase);
+  } catch {
+    throw new Error('model_selection_model_invalid_iri');
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.origin !== base.origin ||
+      !url.pathname.startsWith(base.pathname) ||
+      url.search ||
+      url.username ||
+      url.password) {
+    throw new Error('model_selection_model_invalid_iri');
+  }
+  return `${url.pathname.slice(base.pathname.length).replace(/^\/+/, '')}${url.hash}`;
+}
+
+function toBaseRelative(value: string): string {
+  const raw = value.trim();
+  if (!raw || raw.startsWith('//') || raw.includes('?') || raw.includes('\\') || /(?:^|\/)\.\.?(?:\/|$)/u.test(raw)) {
+    throw new Error('model_selection_model_invalid_iri');
+  }
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(raw)) {
+    throw new Error('model_selection_model_invalid_iri');
+  }
+  return raw.replace(/^\/+/, '');
 }
 
 function normalizeModelType(value: unknown): string {
@@ -666,30 +723,58 @@ function isMissingResourceError(error: unknown): boolean {
 async function rollbackMutation(db: PodModelSelectionDb, snapshot: MutationSnapshot): Promise<void> {
   for (const upsert of snapshot.modelUpserts) {
     if (upsert.existing) {
-      const original = withoutIdentity(upsert.existing);
+      const current = await db.findById<Record<string, unknown>>(aiModelResource, upsert.id);
+      if (!current) {
+        throw new Error(`rollback_model_missing:${upsert.id}`);
+      }
+      const restored = await db.updateById(
+        aiModelResource,
+        upsert.id,
+        knownModelFields(upsert.existing),
+      );
+      if (!restored) {
+        throw new Error(`rollback_model_update_failed:${upsert.id}`);
+      }
+    } else {
       const current = await db.findById<Record<string, unknown>>(aiModelResource, upsert.id);
       if (current) {
         const deleted = await db.deleteById(aiModelResource, upsert.id);
         if (!deleted) {
           throw new Error(`rollback_model_delete_failed:${upsert.id}`);
         }
-        await db.insert(aiModelResource).values({ id: upsert.id, ...original }).execute();
-      } else {
-        await db.insert(aiModelResource).values({ id: upsert.id, ...original }).execute();
       }
-    } else {
-      await db.deleteById(aiModelResource, upsert.id).catch(() => undefined);
     }
   }
   for (const deleted of snapshot.modelDeletes) {
     const current = await db.findById<Record<string, unknown>>(aiModelResource, deleted.id);
     if (!current) {
-      await db.insert(aiModelResource).values(deleted.row).execute();
+      throw new Error(`rollback_model_missing:${deleted.id}`);
+    }
+    const restored = await db.updateById(
+      aiModelResource,
+      deleted.id,
+      knownModelFields(deleted.row),
+    );
+    if (!restored) {
+      throw new Error(`rollback_model_update_failed:${deleted.id}`);
     }
   }
   if (snapshot.providerMutation) {
     const providerId = snapshot.providerMutation.id;
     if (snapshot.providerBefore) {
+      const current = await db.findById<Record<string, unknown>>(aiProviderResource, providerId);
+      if (!current) {
+        throw new Error(`rollback_provider_missing:${providerId}`);
+      }
+      const restored = await db.updateById(
+        aiProviderResource,
+        providerId,
+        knownProviderFields(snapshot.providerBefore),
+      );
+      if (!restored) {
+        throw new Error(`rollback_provider_update_failed:${providerId}`);
+      }
+    } else {
       const current = await db.findById<Record<string, unknown>>(aiProviderResource, providerId);
       if (current) {
         const deleted = await db.deleteById(aiProviderResource, providerId);
@@ -697,21 +782,38 @@ async function rollbackMutation(db: PodModelSelectionDb, snapshot: MutationSnaps
           throw new Error(`rollback_provider_delete_failed:${providerId}`);
         }
       }
-      await db.insert(aiProviderResource).values({
-        id: providerId,
-        ...withoutIdentity(snapshot.providerBefore),
-      }).execute();
-    } else {
-      await db.deleteById(aiProviderResource, providerId).catch(() => undefined);
     }
   }
 }
 
-function withoutIdentity(row: Record<string, unknown>): Record<string, unknown> {
-  const copy = { ...row };
-  delete copy.id;
-  delete copy['@id'];
-  return copy;
+function knownModelFields(row: Record<string, unknown>): Record<string, unknown> {
+  return restoreFields(row, [ 'isProvidedBy', 'modelType', 'status', 'displayName', 'createdAt', 'updatedAt' ]);
+}
+
+function knownProviderFields(row: Record<string, unknown>): Record<string, unknown> {
+  return restoreFields(row, [ 'defaultModel', 'createdAt', 'updatedAt' ]);
+}
+
+function restoreFields(row: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  for (const field of fields) {
+    patch[field] = Object.prototype.hasOwnProperty.call(row, field) ? row[field] : null;
+  }
+  return patch;
+}
+
+async function cleanupRemovedModels(
+  db: PodModelSelectionDb,
+  deleted: Array<{ id: string; row: Record<string, unknown> }>,
+): Promise<void> {
+  for (const item of deleted) {
+    try {
+      await db.deleteById(aiModelResource, item.id);
+    } catch {
+      // The logical removal has already committed. Leaving a hidden tombstone
+      // is safe and lets a later maintenance pass retry physical cleanup.
+    }
+  }
 }
 
 function errorMessage(error: unknown): string {
@@ -725,7 +827,7 @@ function createDefaultModelSelectionDb(input: {
   aiProvider: typeof aiProviderResource;
   aiModel: typeof aiModelResource;
 }): Promise<PodModelSelectionDb> {
-  return Promise.resolve(drizzle(
+  const rawDb = drizzle(
     {
       fetch: input.fetch,
       info: { webId: input.owner, podUrl: input.podUrl, isLoggedIn: true },
@@ -737,5 +839,129 @@ function createDefaultModelSelectionDb(input: {
       },
       podUrl: input.podUrl,
     },
-  ) as unknown as PodModelSelectionDb);
+  ) as unknown as PodModelSelectionDb;
+  return Promise.resolve(wrapModelSelectionDb(rawDb, input.aiModel));
+}
+
+let modelCollectionEndpointTail: Promise<void> = Promise.resolve();
+
+const MODEL_RESOURCE_BASE = '/settings/providers/';
+
+/**
+ * drizzle-solid mutates shared schema resources while registering a database
+ * (the absolute Pod base is written back to the table).  The model schemas are
+ * process-wide exports, so restore their relative base before every serialized
+ * operation; otherwise a later owner's provider IRI and LDP target can retain
+ * the previous owner's Pod URL.
+ */
+function resetSharedModelResourceState(): void {
+  aiProviderResource.setBase(MODEL_RESOURCE_BASE);
+  aiModelResource.setBase(MODEL_RESOURCE_BASE);
+  const setProviderEndpoint = (aiProviderResource as typeof aiProviderResource & {
+    setSparqlEndpoint?: (endpoint: string | undefined) => void;
+  }).setSparqlEndpoint;
+  const setModelEndpoint = (aiModelResource as typeof aiModelResource & {
+    setSparqlEndpoint?: (endpoint: string | undefined) => void;
+  }).setSparqlEndpoint;
+  setProviderEndpoint?.call(aiProviderResource, undefined);
+  setModelEndpoint?.call(aiModelResource, undefined);
+}
+
+function wrapModelSelectionDb(db: PodModelSelectionDb, modelResource: typeof aiModelResource): PodModelSelectionDb {
+  const wrapped: PodModelSelectionDb = {
+    init: db.init ? (...resources) => withModelEndpointLock(() => db.init!(...resources)) : undefined,
+    select: () => {
+      const query = db.select();
+      return {
+        from: (resource: typeof aiModelResource) => {
+          const from = query.from(resource);
+          if (resource !== modelResource) {
+            return from;
+          }
+          return {
+            where: (condition: unknown) => {
+              const where = from.where(condition);
+              return {
+                execute: () => withModelCollectionEndpoint(modelResource, () => where.execute()),
+              };
+            },
+          };
+        },
+      };
+    },
+    findById: async <T = Record<string, unknown>>(
+      resource: typeof aiProviderResource | typeof aiModelResource,
+      id: string,
+    ) => withModelEndpointLock(
+      () => db.findById<T>(resource, id),
+    ),
+    insert: (resource) => {
+      const insert = db.insert(resource);
+      return {
+        values: (value: Record<string, unknown>) => {
+          const values = insert.values(value);
+          return {
+            execute: () => withModelEndpointLock(() => values.execute()),
+          };
+        },
+      };
+    },
+    updateById: async <T = Record<string, unknown>>(
+      resource: typeof aiProviderResource | typeof aiModelResource,
+      id: string,
+      patch: Record<string, unknown>,
+    ) => withModelEndpointLock(
+      () => db.updateById<T>(resource, id, patch),
+    ),
+    deleteById: (
+      resource: typeof aiProviderResource | typeof aiModelResource,
+      id: string,
+    ) => withModelEndpointLock(() => db.deleteById(resource, id)),
+    ...(db.transaction ? { transaction: db.transaction.bind(db) } : {}),
+  };
+  return wrapped;
+}
+
+async function withModelCollectionEndpoint<T>(resource: typeof aiModelResource, operation: () => Promise<T>): Promise<T> {
+  return withModelEndpointLock(async() => {
+    const getEndpoint = (resource as typeof aiModelResource & {
+      getSparqlEndpoint?: () => string | undefined;
+    }).getSparqlEndpoint;
+    const setEndpoint = (resource as typeof aiModelResource & {
+      setSparqlEndpoint?: (endpoint: string) => void;
+    }).setSparqlEndpoint;
+    const previousEndpoint = typeof getEndpoint === 'function' ? getEndpoint.call(resource) : undefined;
+    if (typeof setEndpoint === 'function' && typeof getEndpoint === 'function') {
+      setEndpoint.call(resource, previousEndpoint ?? '/settings/providers/-/sparql');
+    }
+    try {
+      return await operation();
+    } finally {
+      if (typeof setEndpoint === 'function') {
+        setEndpoint.call(resource, previousEndpoint as string);
+      }
+    }
+  });
+}
+
+async function withModelEndpointLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previousTail = modelCollectionEndpointTail;
+  let release!: () => void;
+  modelCollectionEndpointTail = new Promise<void>((resolve) => { release = resolve; });
+  await previousTail;
+  resetSharedModelResourceState();
+  try {
+    return await operation();
+  } finally {
+    resetSharedModelResourceState();
+    release();
+  }
+}
+
+function buildProviderResourceIri(webId: string, resourceId: string): string {
+  return new URL(resourceId, `${resolvePodBaseUrl(webId)}/settings/providers/`).href;
+}
+
+function buildModelResourceIri(webId: string, resourceId: string): string {
+  return new URL(resourceId, `${resolvePodBaseUrl(webId)}/settings/providers/`).href;
 }

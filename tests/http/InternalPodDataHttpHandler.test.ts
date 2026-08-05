@@ -1,4 +1,5 @@
 import { PassThrough, Readable, Writable } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import {
   BasicRepresentation,
@@ -19,6 +20,8 @@ const OWNER = 'https://pod.example/alice/profile/card#me';
 const CREDENTIAL_RESOURCE = 'https://pod.example/alice/settings/credentials.ttl';
 const PROVIDER_RESOURCE = 'https://pod.example/alice/settings/providers/__service_access__.ttl';
 const QUOTA_RESOURCE = 'https://pod.example/alice/.data/ai/gateway/quota.ttl';
+const MODEL_QUERY = 'SELECT ?id WHERE { ?id ?predicate ?value }';
+const MODEL_SPARQL_RESOURCE = `https://pod.example/alice/settings/providers/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`;
 const SECRET_BODY = '{"secretPayload":{"apiKey":"sk-test-canary"}}';
 
 type TestOnlyInternalPodDataOptions = ConstructorParameters<typeof InternalPodDataHttpHandler>[0] & {
@@ -137,7 +140,7 @@ function createHandler(
 }
 
 function signedHeaders(input: {
-  method?: 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   path?: string;
   ownerWebId?: string;
   resourceUrl?: string;
@@ -146,6 +149,7 @@ function signedHeaders(input: {
   nonce?: string;
   issuedAt?: number;
   secret?: string;
+  bodyDigest?: string;
 } = {}): Record<string, string> {
   return createGatewayAdminProxyHeaders({
     secret: input.secret ?? SECRET,
@@ -159,6 +163,7 @@ function signedHeaders(input: {
       resourceUrl: input.resourceUrl ?? CREDENTIAL_RESOURCE,
       principalKind: input.principalKind ?? 'solid-user',
       scopes: input.scopes ?? [ 'ai:credentials:read' ],
+      ...(input.bodyDigest ? { bodyDigest: input.bodyDigest } : {}),
     },
     nonce: input.nonce ?? `nonce-${Math.random()}`,
   }) as Record<string, string>;
@@ -279,6 +284,112 @@ describe('InternalPodDataHttpHandler', () => {
     }
 
     expect(store.getRepresentation).toHaveBeenCalledTimes(3);
+  });
+
+  it('delegates the exact owner model collection query to the trusted SPARQL handler', async () => {
+    const store = createStore();
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(async ({ response }: { response: HttpResponse }) => {
+        response.statusCode = 200;
+        response.setHeader('content-type', 'application/sparql-results+json');
+        response.end('{"head":{"vars":["id"]},"results":{"bindings":[]}}');
+      }),
+    };
+    const handler = createHandler(store, { sparqlHandler: trustedSparqlHandler as any });
+
+    const response = await handle(handler, createRequest('GET', '/.internal/pod-data', {
+      headers: signedHeaders({ resourceUrl: MODEL_SPARQL_RESOURCE, nonce: 'model-query' }),
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(response.getHeader('content-type')).toBe('application/sparql-results+json');
+    expect(response.bodyText()).toContain('bindings');
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).toHaveBeenCalledWith(expect.objectContaining({
+      ownerWebId: OWNER,
+      endpointUrl: MODEL_SPARQL_RESOURCE,
+      query: MODEL_QUERY,
+    }));
+    expect(store.getRepresentation).not.toHaveBeenCalled();
+  });
+
+  it('delegates a signed owner model collection POST with the exact body digest', async () => {
+    const store = createStore();
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(async ({ response }: { response: HttpResponse }) => {
+        response.statusCode = 200;
+        response.setHeader('content-type', 'application/sparql-results+json');
+        response.end('{"head":{"vars":["id"]},"results":{"bindings":[]}}');
+      }),
+    };
+    const handler = createHandler(store, { sparqlHandler: trustedSparqlHandler as any });
+    const body = new URLSearchParams({ query: MODEL_QUERY }).toString();
+    const digest = createHash('sha256').update(body).digest('hex');
+
+    const response = await handle(handler, createRequest('POST', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'POST',
+          resourceUrl: 'https://pod.example/alice/settings/providers/-/sparql',
+          bodyDigest: digest,
+          nonce: 'model-post-query',
+        }),
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    }));
+
+    expect(response.statusCode).toBe(200);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).toHaveBeenCalledWith(expect.objectContaining({
+      ownerWebId: OWNER,
+      endpointUrl: 'https://pod.example/alice/settings/providers/-/sparql',
+      query: MODEL_QUERY,
+    }));
+    expect(store.getRepresentation).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when a signed model POST body digest does not match', async () => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler as any });
+    const body = new URLSearchParams({ query: MODEL_QUERY }).toString();
+
+    const response = await handle(handler, createRequest('POST', '/.internal/pod-data', {
+      headers: {
+        ...signedHeaders({
+          method: 'POST',
+          resourceUrl: 'https://pod.example/alice/settings/providers/-/sparql',
+          bodyDigest: 'a'.repeat(64),
+          nonce: 'model-post-tampered',
+        }),
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body,
+    }));
+
+    expect(response.statusCode).toBe(404);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing query', 'https://pod.example/alice/settings/providers/-/sparql'],
+    ['extra query parameter', `${MODEL_SPARQL_RESOURCE}&format=json`],
+    ['fragment', `${MODEL_SPARQL_RESOURCE}#fragment`],
+    ['foreign collection', `https://pod.example/bob/settings/providers/-/sparql?query=${encodeURIComponent(MODEL_QUERY)}`],
+    ['POST query URL', MODEL_SPARQL_RESOURCE],
+  ])('returns 404 for %s on the trusted model collection capability', async (_name, resourceUrl) => {
+    const trustedSparqlHandler = {
+      handleTrustedInternalSelect: vi.fn(),
+    };
+    const handler = createHandler(createStore(), { sparqlHandler: trustedSparqlHandler as any });
+
+    const method = _name === 'POST query URL' ? 'POST' : 'GET';
+    const response = await handle(handler, createRequest(method, '/.internal/pod-data', {
+      headers: signedHeaders({ method, resourceUrl, nonce: `invalid-model-query-${_name}` }),
+    }));
+
+    expect(response.statusCode).toBe(404);
+    expect(trustedSparqlHandler.handleTrustedInternalSelect).not.toHaveBeenCalled();
   });
 
   it('serves signed HEAD probes as read-only existence checks without a response body', async () => {

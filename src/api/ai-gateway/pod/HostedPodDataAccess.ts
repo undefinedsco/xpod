@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import { createAiConnectionServiceAccess } from '../service-access/AiConnectionServiceAccess';
 import type { AuthContext, SolidAuthContext } from '../../auth/AuthContext';
@@ -22,7 +23,9 @@ export interface HostedPodDataAccessOptions {
   nonce?: () => string;
 }
 
-type InternalPodDataMethod = 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
+type InternalPodDataMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+const MODEL_QUERY_MAX_BODY_BYTES = 256 * 1024;
 
 const INTERNAL_POD_DATA_PATH = '/.internal/pod-data';
 const STRIPPED_CALLER_HEADERS = new Set([
@@ -54,14 +57,16 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
       const request = new Request(input, init);
       const method = normalizeMethod(request.method);
       const resourceUrl = normalizeResourceUrl(request.url);
-      const authorization = this.authorize({ owner, auth, method, resourceUrl });
+      const body = method === 'POST' ? await readRequestBody(request) : undefined;
+      const authorization = this.authorize({ owner, auth, method, resourceUrl, body });
       const loopbackUrl = new URL(INTERNAL_POD_DATA_PATH, this.cssBaseUrl);
       const headers = this.headersForLoopback(request.headers, {
         ownerWebId: owner,
         method,
         resourceUrl,
         principalKind: authorization.principalKind,
-        scopes: [method === 'GET' || method === 'HEAD' ? 'ai:credentials:read' : 'ai:credentials:write'],
+        scopes: [isReadOnlyMethod(method, resourceUrl, owner) ? 'ai:credentials:read' : 'ai:credentials:write'],
+        ...(body ? { bodyDigest: body.digest } : {}),
       });
 
       return this.fetch(loopbackUrl, {
@@ -79,8 +84,9 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
     auth?: InternalPodAccessAuthContext;
     method: InternalPodDataMethod;
     resourceUrl: string;
+    body?: RequestBody;
   }): { principalKind: GatewayAdminProxyIntent['principalKind'] } {
-    this.assertHostedAllowedResource(input.owner, input.resourceUrl);
+    this.assertHostedAllowedResource(input.owner, input.resourceUrl, input.method, input.body);
 
     if (!input.auth) {
       throw new Error('hosted_pod_auth_required');
@@ -94,12 +100,23 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
     return { principalKind: 'solid-user' };
   }
 
-  private assertHostedAllowedResource(owner: string, resourceUrl: string): void {
+  private assertHostedAllowedResource(owner: string, resourceUrl: string, method: InternalPodDataMethod, body?: RequestBody): void {
     const resource = parseUrl(resourceUrl, 'hosted_pod_resource_url_invalid');
     const ownerUrl = parseUrl(owner, 'hosted_pod_owner_url_invalid');
     const podRoot = hostedPodRootFromOwner(ownerUrl);
     if (!podRoot || resource.origin !== podRoot.origin || !resource.pathname.startsWith(podRoot.pathname)) {
       throw new Error('hosted_pod_remote_resource');
+    }
+    const modelCollectionPath = `${podRoot.pathname}settings/providers/-/sparql`;
+    if (resource.pathname === modelCollectionPath) {
+      if (resource.hash || (method === 'GET' && !hasExactlyOneModelQuery(resource)) ||
+        (method === 'POST' && (resource.search || !body?.query))) {
+        throw new Error('hosted_pod_resource_not_allowed');
+      }
+      if (method !== 'GET' && method !== 'POST') {
+        throw new Error('hosted_pod_resource_not_allowed');
+      }
+      return;
     }
     if (resource.hash || resource.search) {
       throw new Error('hosted_pod_resource_not_allowed');
@@ -149,12 +166,67 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
   }
 }
 
+function hasExactlyOneModelQuery(resource: URL): boolean {
+  const keys = Array.from(resource.searchParams.keys());
+  return keys.length === 1 && keys[0] === 'query' && resource.searchParams.get('query')?.trim().length !== 0;
+}
+
 function normalizeMethod(method: string | undefined): InternalPodDataMethod {
   const upper = (method ?? 'GET').toUpperCase();
-  if (upper === 'GET' || upper === 'HEAD' || upper === 'PUT' || upper === 'PATCH' || upper === 'DELETE') {
+  if (upper === 'GET' || upper === 'HEAD' || upper === 'POST' || upper === 'PUT' || upper === 'PATCH' || upper === 'DELETE') {
     return upper;
   }
   throw new Error('hosted_pod_method_not_allowed');
+}
+
+interface RequestBody {
+  query: string;
+  digest: string;
+}
+
+async function readRequestBody(request: Request): Promise<RequestBody | undefined> {
+  if (!request.body) {
+    return undefined;
+  }
+  const bytes = new Uint8Array(await request.clone().arrayBuffer());
+  if (bytes.byteLength === 0 || bytes.byteLength > MODEL_QUERY_MAX_BODY_BYTES) {
+    return undefined;
+  }
+  const contentType = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+  let query: string | undefined;
+  if (contentType === 'application/sparql-query') {
+    query = new TextDecoder().decode(bytes).trim();
+  } else if (contentType === 'application/x-www-form-urlencoded') {
+    const params = new URLSearchParams(new TextDecoder().decode(bytes));
+    const keys = Array.from(params.keys());
+    if (keys.length === 1 && keys[0] === 'query') {
+      query = params.get('query')?.trim();
+    }
+  }
+  if (!query) {
+    return undefined;
+  }
+  return {
+    query,
+    digest: createHash('sha256').update(bytes).digest('hex'),
+  };
+}
+
+function isReadOnlyMethod(method: InternalPodDataMethod, resourceUrl: string, ownerWebId: string): boolean {
+  if (method === 'GET' || method === 'HEAD') {
+    return true;
+  }
+  if (method !== 'POST') {
+    return false;
+  }
+  try {
+    const resource = new URL(resourceUrl);
+    const owner = new URL(ownerWebId);
+    const rootPath = hostedPodRootFromOwner(owner)?.pathname;
+    return rootPath !== undefined && resource.pathname === `${rootPath}settings/providers/-/sparql`;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeResourceUrl(value: string): string {

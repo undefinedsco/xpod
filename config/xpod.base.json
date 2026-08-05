@@ -230,6 +230,7 @@
       "@context": {
         "resourceStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
         "patchBodyParser": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser",
+        "sparqlHandler": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_sparqlHandler",
         "baseUrl": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
       },
       "resourceStore": {
@@ -237,6 +238,9 @@
       },
       "patchBodyParser": {
         "@id": "urn:solid-server:default:PatchBodyParser"
+      },
+      "sparqlHandler": {
+        "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
       },
       "baseUrl": {
         "@id": "urn:solid-server:default:variable:baseUrl",

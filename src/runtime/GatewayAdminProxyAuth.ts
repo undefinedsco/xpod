@@ -43,10 +43,12 @@ export interface GatewayAdminProxyMarkerVerification {
 
 export interface GatewayAdminProxyIntent {
   ownerWebId: string;
-  method: 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   resourceUrl: string;
   principalKind: 'solid-user';
   scopes: string[];
+  /** SHA-256 hex digest of a POST body. Required for POST intents. */
+  bodyDigest?: string;
 }
 
 export function createGatewayAdminProxyHeaders(input: GatewayAdminProxyMarkerInput): OutgoingHttpHeaders {
@@ -171,6 +173,7 @@ export function canonicalGatewayAdminProxyIntent(intent: GatewayAdminProxyIntent
     resourceUrl: intent.resourceUrl,
     principalKind: intent.principalKind,
     scopes: [...intent.scopes].sort(),
+    ...(intent.bodyDigest ? { bodyDigest: intent.bodyDigest } : {}),
   });
 }
 
@@ -182,10 +185,12 @@ function parseGatewayAdminProxyIntent(value: string | undefined): GatewayAdminPr
     const parsed = JSON.parse(value) as Partial<GatewayAdminProxyIntent>;
     if (typeof parsed.ownerWebId !== 'string' ||
       typeof parsed.resourceUrl !== 'string' ||
-      (parsed.method !== 'GET' && parsed.method !== 'HEAD' && parsed.method !== 'PUT' && parsed.method !== 'PATCH' && parsed.method !== 'DELETE') ||
+      (parsed.method !== 'GET' && parsed.method !== 'HEAD' && parsed.method !== 'POST' && parsed.method !== 'PUT' && parsed.method !== 'PATCH' && parsed.method !== 'DELETE') ||
       parsed.principalKind !== 'solid-user' ||
       !Array.isArray(parsed.scopes) ||
-      !parsed.scopes.every((scope) => typeof scope === 'string')) {
+      !parsed.scopes.every((scope) => typeof scope === 'string') ||
+      (parsed.bodyDigest !== undefined && !isSha256Hex(parsed.bodyDigest)) ||
+      (parsed.method === 'POST' && !isSha256Hex(parsed.bodyDigest))) {
       return undefined;
     }
     return {
@@ -194,10 +199,15 @@ function parseGatewayAdminProxyIntent(value: string | undefined): GatewayAdminPr
       resourceUrl: parsed.resourceUrl,
       principalKind: parsed.principalKind,
       scopes: parsed.scopes,
+      ...(parsed.bodyDigest ? { bodyDigest: parsed.bodyDigest } : {}),
     };
   } catch {
     return undefined;
   }
+}
+
+function isSha256Hex(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
 }
 
 function safeEqual(actual: string, expected: string): boolean {

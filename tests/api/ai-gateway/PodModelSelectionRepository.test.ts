@@ -98,7 +98,13 @@ function createHarness(initial: Record<string, FakePod> = {}) {
         if (!current) {
           return null;
         }
-        Object.assign(current, clone(patch as Row));
+        for (const [key, value] of Object.entries(clone(patch as Row))) {
+          if (value === null) {
+            delete current[key];
+          } else {
+            current[key] = value;
+          }
+        }
         return clone(current) as T;
       },
       async deleteById(resource: unknown, id: string) {
@@ -306,6 +312,7 @@ describe('PodModelSelectionRepository', () => {
       isProvidedBy: 'https://pod.example/alice/settings/providers/openai.ttl',
       modelType: 'chat',
       status: 'active',
+      unknownPredicate: 'must-survive-rollback',
     });
     const harness = createHarness({ [ALICE]: pod });
     const before = await harness.repository.listSelection({ webId: ALICE, provider: 'openai', auth: auth(ALICE) });
@@ -322,6 +329,50 @@ describe('PodModelSelectionRepository', () => {
     expect([...pod.models.keys()]).toEqual(['openai.ttl#old']);
     expect(pod.models.get('openai.ttl#old')).toMatchObject({ status: 'active' });
     expect(pod.models.get('openai.ttl#old')).not.toHaveProperty('displayName', 'renamed');
+    expect(pod.models.get('openai.ttl#old')).toHaveProperty('unknownPredicate', 'must-survive-rollback');
+    expect(harness.calls.filter((call) => call.op === 'deleteById' && call.resource === aiModelResource)).toHaveLength(0);
+  });
+
+  it('keeps logically removed rows hidden when cleanup deletion fails after commit', async () => {
+    const pod = makePod();
+    pod.models.set('openai.ttl#old', {
+      id: 'openai.ttl#old',
+      isProvidedBy: 'https://pod.example/alice/settings/providers/openai.ttl',
+      modelType: 'chat',
+      status: 'active',
+    });
+    const harness = createHarness({ [ALICE]: pod });
+    const before = await harness.repository.listSelection({ webId: ALICE, provider: 'openai', auth: auth(ALICE) });
+    harness.fail.operation = 'deleteById';
+
+    await expect(harness.repository.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      models: [model('new')],
+      expectedVersion: before.version,
+      auth: auth(ALICE),
+    })).resolves.toMatchObject({ models: [expect.objectContaining({ id: 'openai.ttl#new' })] });
+
+    expect(pod.models.get('openai.ttl#old')).toMatchObject({ status: 'removed' });
+    expect((await harness.repository.listSelection({ webId: ALICE, provider: 'openai', auth: auth(ALICE) })).models)
+      .not.toContainEqual(expect.objectContaining({ id: 'openai.ttl#old' }));
+  });
+
+  it.each([
+    ['foreign absolute URL', 'https://pod.example/bob/settings/providers/openai.ttl#gpt-5'],
+    ['protocol-relative URL', '//pod.example/alice/settings/providers/openai.ttl#gpt-5'],
+    ['javascript URL', 'javascript:alert(1)'],
+    ['malformed URL', 'https://[broken/openai.ttl#gpt-5'],
+  ])('rejects %s model ids before mutating the owner Pod', async (_name, id) => {
+    const harness = createHarness();
+
+    await expect(harness.repository.replaceSelection({
+      webId: ALICE,
+      provider: 'openai',
+      models: [model(id)],
+      auth: auth(ALICE),
+    })).rejects.toThrow(/model_selection_model_(?:invalid_iri|provider_mismatch)/u);
+    expect(harness.calls.filter((call) => ['insert', 'updateById', 'deleteById'].includes(call.op))).toHaveLength(0);
   });
 
   it('does not allow a caller authenticated as another WebID to access the Pod', async () => {

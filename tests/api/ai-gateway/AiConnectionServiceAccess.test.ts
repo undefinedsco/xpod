@@ -18,6 +18,11 @@ describe('createAiConnectionServiceAccess', () => {
     expect(descriptor.resources.map((resource) => resource.url)).toEqual([
       'https://pod.example/alice/settings/credentials.ttl',
       'https://pod.example/alice/settings/providers/__service_access__.ttl',
+      'https://pod.example/alice/settings/providers/openai.ttl',
+      'https://pod.example/alice/settings/providers/anthropic.ttl',
+      'https://pod.example/alice/settings/providers/kimi.ttl',
+      'https://pod.example/alice/settings/providers/bailian.ttl',
+      'https://pod.example/alice/settings/providers/deepseek.ttl',
       'https://pod.example/alice/.data/ai/gateway/quota.ttl',
     ]);
     expect(descriptor.resources.every((resource) =>

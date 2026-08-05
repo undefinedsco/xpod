@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { getLoggerFor } from 'global-logger-factory';
 import {
@@ -25,8 +26,21 @@ export interface InternalPodDataHttpHandlerOptions {
   resourceStore: ResourceStore;
   gatewayAdminProxyAuthSecret?: string;
   patchBodyParser?: BodyParser;
+  sparqlHandler?: InternalPodDataTrustedSparqlHandler;
   baseUrl?: string;
   basePath?: string;
+}
+
+/** Narrow trusted bridge used only after the signed internal intent has been
+ * validated. The implementation must re-check the owner/collection boundary. */
+export interface InternalPodDataTrustedSparqlHandler {
+  handleTrustedInternalSelect(input: {
+    ownerWebId: string;
+    endpointUrl: string;
+    query: string;
+    request: HttpRequest;
+    response: HttpResponse;
+  }): Promise<void>;
 }
 
 interface InternalPodDataHttpHandlerNonceOptions {
@@ -35,17 +49,19 @@ interface InternalPodDataHttpHandlerNonceOptions {
   now?: () => number;
 }
 
-type InternalPodDataMethod = 'GET' | 'HEAD' | 'PUT' | 'PATCH' | 'DELETE';
+type InternalPodDataMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
-const ALLOWED_METHODS = new Set([ 'GET', 'HEAD', 'PUT', 'PATCH', 'DELETE' ]);
+const ALLOWED_METHODS = new Set([ 'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE' ]);
 const DEFAULT_NONCE_TTL_MS = 120_000;
 const DEFAULT_NONCE_MAX_ENTRIES = 10_000;
+const MODEL_QUERY_MAX_BODY_BYTES = 256 * 1024;
 
 export class InternalPodDataHttpHandler extends HttpHandler {
   protected readonly logger = getLoggerFor(this);
   private readonly resourceStore: ResourceStore;
   private readonly gatewayAdminProxyAuthSecret?: string;
   private readonly patchBodyParser?: BodyParser;
+  private readonly sparqlHandler?: InternalPodDataTrustedSparqlHandler;
   private readonly deploymentBaseUrl?: URL;
   private readonly basePath: string;
   private readonly seenNonces: BoundedTtlNonceCache;
@@ -55,6 +71,7 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     this.resourceStore = options.resourceStore;
     this.gatewayAdminProxyAuthSecret = options.gatewayAdminProxyAuthSecret ?? process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET;
     this.patchBodyParser = options.patchBodyParser;
+    this.sparqlHandler = options.sparqlHandler;
     this.deploymentBaseUrl = this.parseOptionalUrl(options.baseUrl ?? process.env.CSS_BASE_URL);
     this.basePath = options.basePath ?? '/.internal/pod-data';
     const nonceOptions = options as InternalPodDataHttpHandlerOptions & InternalPodDataHttpHandlerNonceOptions;
@@ -148,7 +165,10 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     if (intent.scopes.length === 0) {
       return false;
     }
-    const requiredScope = method === 'GET' || method === 'HEAD' ? 'ai:credentials:read' : 'ai:credentials:write';
+    const requiredScope = method === 'GET' || method === 'HEAD' ||
+      (method === 'POST' && this.isModelCollectionResource(intent.resourceUrl, intent.ownerWebId))
+      ? 'ai:credentials:read'
+      : 'ai:credentials:write';
     return intent.scopes.some((scope) =>
       scope === requiredScope ||
       scope === 'ai:credentials:*' ||
@@ -186,6 +206,13 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     } catch {
       return false;
     }
+    const modelQuery = modelCollectionQueryForOwner(intent.ownerWebId, resourceUrl);
+    if (modelQuery !== undefined) {
+      return intent.method === 'GET';
+    }
+    if (this.isModelCollectionResource(intent.resourceUrl, intent.ownerWebId)) {
+      return intent.method === 'POST' && !resourceUrl.search && !resourceUrl.hash;
+    }
     if (resourceUrl.hash || resourceUrl.search) {
       return false;
     }
@@ -201,6 +228,29 @@ export class InternalPodDataHttpHandler extends HttpHandler {
     response: HttpResponse,
     intent: GatewayAdminProxyIntent,
   ): Promise<void> {
+    const resourceUrl = new URL(intent.resourceUrl);
+    const modelQuery = await modelCollectionQueryForRequest(request, intent.ownerWebId, resourceUrl, intent.method);
+    if (modelQuery !== undefined) {
+      if (!this.sparqlHandler) {
+        throw new NotImplementedHttpError('Internal model collection SPARQL delegation is not configured.');
+      }
+      if (intent.method === 'POST' && intent.bodyDigest !== modelQuery.bodyDigest) {
+        this.writeNotFound(response);
+        return;
+      }
+      await this.sparqlHandler.handleTrustedInternalSelect({
+        ownerWebId: intent.ownerWebId,
+        endpointUrl: intent.resourceUrl,
+        query: modelQuery.query,
+        request,
+        response,
+      });
+      return;
+    }
+    if (this.isModelCollectionResource(intent.resourceUrl, intent.ownerWebId)) {
+      this.writeNotFound(response);
+      return;
+    }
     const identifier = { path: intent.resourceUrl };
     switch (intent.method) {
       case 'GET': {
@@ -305,6 +355,19 @@ export class InternalPodDataHttpHandler extends HttpHandler {
       url.origin === this.deploymentBaseUrl.origin &&
       url.pathname.startsWith(this.deploymentBaseUrl.pathname);
   }
+
+  private isModelCollectionResource(resourceUrl: string, ownerWebId: string): boolean {
+    try {
+      const resource = new URL(resourceUrl);
+      const owner = new URL(ownerWebId);
+      const podRoot = hostedPodRootFromOwner(owner);
+      return podRoot !== undefined &&
+        resource.origin === podRoot.origin &&
+        resource.pathname === `${podRoot.pathname}settings/providers/-/sparql`;
+    } catch {
+      return false;
+    }
+  }
 }
 
 function isHttpNotFound(error: unknown): boolean {
@@ -329,6 +392,100 @@ function hostedPodRootFromOwner(ownerUrl: URL): URL | undefined {
     return undefined;
   }
   return new URL(podPath, ownerUrl.origin);
+}
+
+interface ModelCollectionQuery {
+  query: string;
+  bodyDigest?: string;
+}
+
+async function modelCollectionQueryForRequest(
+  request: HttpRequest,
+  ownerWebId: string,
+  resourceUrl: URL,
+  method: InternalPodDataMethod,
+): Promise<ModelCollectionQuery | undefined> {
+  const queryFromUrl = modelCollectionQueryForOwner(ownerWebId, resourceUrl);
+  if (queryFromUrl !== undefined) {
+    return method === 'GET' ? { query: queryFromUrl } : undefined;
+  }
+  if (method !== 'POST' || !isModelCollectionPath(ownerWebId, resourceUrl) || resourceUrl.search || resourceUrl.hash) {
+    return undefined;
+  }
+  const body = await readRequestBody(request);
+  if (!body) {
+    return undefined;
+  }
+  const contentType = firstHeader(request.headers['content-type'])?.split(';', 1)[0].trim().toLowerCase();
+  let query: string | undefined;
+  if (contentType === 'application/sparql-query') {
+    query = body.toString('utf8').trim();
+  } else if (contentType === 'application/x-www-form-urlencoded') {
+    const params = new URLSearchParams(body.toString('utf8'));
+    const keys = Array.from(params.keys());
+    if (keys.length === 1 && keys[0] === 'query') {
+      query = params.get('query')?.trim();
+    }
+  }
+  if (!query) {
+    return undefined;
+  }
+  return {
+    query,
+    bodyDigest: createHash('sha256').update(body).digest('hex'),
+  };
+}
+
+function modelCollectionQueryForOwner(ownerWebId: string, resourceUrl: URL): string | undefined {
+  let ownerUrl: URL;
+  try {
+    ownerUrl = new URL(ownerWebId);
+  } catch {
+    return undefined;
+  }
+  const podRoot = hostedPodRootFromOwner(ownerUrl);
+  if (!podRoot || resourceUrl.origin !== podRoot.origin) {
+    return undefined;
+  }
+  if (resourceUrl.pathname !== `${podRoot.pathname}settings/providers/-/sparql` || resourceUrl.hash) {
+    return undefined;
+  }
+  const keys = Array.from(resourceUrl.searchParams.keys());
+  if (keys.length !== 1 || keys[0] !== 'query') {
+    return undefined;
+  }
+  const query = resourceUrl.searchParams.get('query')?.trim();
+  return query ? query : undefined;
+}
+
+function isModelCollectionPath(ownerWebId: string, resourceUrl: URL): boolean {
+  let ownerUrl: URL;
+  try {
+    ownerUrl = new URL(ownerWebId);
+  } catch {
+    return false;
+  }
+  const podRoot = hostedPodRootFromOwner(ownerUrl);
+  return podRoot !== undefined &&
+    resourceUrl.origin === podRoot.origin &&
+    resourceUrl.pathname === `${podRoot.pathname}settings/providers/-/sparql`;
+}
+
+async function readRequestBody(request: HttpRequest): Promise<Buffer | undefined> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request as unknown as AsyncIterable<Buffer | string>) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > MODEL_QUERY_MAX_BODY_BYTES) {
+      return undefined;
+    }
+    chunks.push(buffer);
+  }
+  if (size === 0) {
+    return undefined;
+  }
+  return Buffer.concat(chunks, size);
 }
 
 function ensureTrailingSlash(value: string): string {
