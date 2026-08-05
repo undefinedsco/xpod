@@ -328,4 +328,39 @@ describe('publishable AI client config adapters', () => {
       fs.rmSync(home, { recursive: true, force: true })
     }
   })
+
+  it('only replaces root-level Codex model keys and preserves models inside profile tables through plan/apply/restore', async () => {
+    const home = tempHome()
+    try {
+      const dir = path.join(home, '.codex')
+      fs.mkdirSync(dir, { recursive: true })
+      const original = [
+        'model_provider = "openai"',
+        'model = "root-model"',
+        '',
+        '[profiles.coder]',
+        'model_provider = "profile-provider"',
+        'model = "profile-model"',
+        '',
+        '[mcp_servers.keep_me]',
+        'command = "keep"',
+        '',
+      ].join('\n')
+      fs.writeFileSync(path.join(dir, 'config.toml'), original)
+      const adapter = new CodexConfigAdapter({ homeDir: home })
+
+      const plan = await adapter.plan(profile({ model: 'gpt-5.4' }))
+      const projected = plan.writes.find((write) => write.path.endsWith('.codex/config.toml'))?.content ?? ''
+      expect(projected).not.toContain('model_provider = "openai"')
+      expect(projected).not.toContain('model = "root-model"')
+      expect(projected).toContain('model_provider = "profile-provider"')
+      expect(projected).toContain('model = "profile-model"')
+
+      await adapter.apply(plan)
+      await adapter.restore(WEB_ID)
+      expect(fs.readFileSync(path.join(dir, 'config.toml'), 'utf8')).toBe(original)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
 })
