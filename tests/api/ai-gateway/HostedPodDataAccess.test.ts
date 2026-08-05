@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { createAiConnectionServiceAccess } from '../../../src/api/ai-gateway/service-access/AiConnectionServiceAccess';
-import { HostedPodDataAccess } from '../../../src/api/ai-gateway/pod/HostedPodDataAccess';
+import {
+  HostedPodDataAccess,
+  HOSTED_POD_RAW_BODY_MAX_BYTES,
+} from '../../../src/api/ai-gateway/pod/HostedPodDataAccess';
 import {
   GATEWAY_ADMIN_PROXY_HEADERS,
   verifyGatewayAdminProxyHeaders,
@@ -420,6 +423,74 @@ describe('HostedPodDataAccess', () => {
     } as RequestInit & { duplex: 'half' });
 
     expect(forwardedBody).toBe(chunks.join(''));
+  });
+
+  it('accepts a PUT stream exactly at the bounded raw RDF body limit', async () => {
+    let forwardedBody: Uint8Array | undefined;
+    const upstreamFetch = vi.fn(async (input, init) => {
+      forwardedBody = new Uint8Array(await new Request(input, init).arrayBuffer());
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const access = createAccess({ fetch: upstreamFetch });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    const firstChunk = new Uint8Array(HOSTED_POD_RAW_BODY_MAX_BYTES - 1).fill(65);
+    const chunks = [firstChunk, new Uint8Array([66])];
+    let chunkIndex = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[chunkIndex++];
+        if (chunk) {
+          controller.enqueue(chunk);
+        } else {
+          controller.close();
+        }
+      },
+    });
+
+    await trustedFetch!(CREDENTIAL_RESOURCE, {
+      method: 'PUT',
+      body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+
+    expect(upstreamFetch).toHaveBeenCalledTimes(1);
+    expect(forwardedBody).toHaveLength(HOSTED_POD_RAW_BODY_MAX_BYTES);
+    expect(forwardedBody?.[0]).toBe(65);
+    expect(forwardedBody?.[HOSTED_POD_RAW_BODY_MAX_BYTES - 1]).toBe(66);
+  });
+
+  it.each(['PUT', 'PATCH'])('fails closed before forwarding an oversized %s stream body', async (method) => {
+    const upstreamFetch = vi.fn(fetch);
+    const access = createAccess({ fetch: upstreamFetch as typeof fetch });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    const chunks = [
+      new Uint8Array(HOSTED_POD_RAW_BODY_MAX_BYTES - 1),
+      new Uint8Array(2),
+    ];
+    let chunkIndex = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[chunkIndex++];
+        if (chunk) {
+          controller.enqueue(chunk);
+        } else {
+          controller.close();
+        }
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await expect(trustedFetch!(CREDENTIAL_RESOURCE, {
+      method,
+      body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' })).rejects.toThrow('hosted_pod_body_too_large');
+
+    expect(cancelled).toBe(true);
+    expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
   it('signs quota snapshot refresh writes as the verified Solid user principal', async () => {

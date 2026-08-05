@@ -453,6 +453,13 @@ function sendConnectError(response: ServerResponse, error: unknown): void {
     sendJson(response, 403, { error: 'connect_disabled' });
     return;
   }
+  if (message === 'credential_version_conflict' || message === 'version_conflict') {
+    sendJson(response, 409, {
+      error: 'credential_version_conflict',
+      details: { reason: 'stale_credential' },
+    });
+    return;
+  }
   if (message === 'Provider does not support API key Connect completion'
     || message === 'Provider does not support device-code polling'
     || message === 'Provider does not support Connect status'

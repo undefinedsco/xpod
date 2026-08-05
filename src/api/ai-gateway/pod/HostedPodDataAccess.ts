@@ -26,6 +26,7 @@ export interface HostedPodDataAccessOptions {
 type InternalPodDataMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 const MODEL_QUERY_MAX_BODY_BYTES = 256 * 1024;
+export const HOSTED_POD_RAW_BODY_MAX_BYTES = 1024 * 1024;
 
 const INTERNAL_POD_DATA_PATH = '/.internal/pod-data';
 const STRIPPED_CALLER_HEADERS = new Set([
@@ -191,19 +192,54 @@ interface RequestBody {
   bytes: Uint8Array;
 }
 
-async function readRequestBytes(request: Request): Promise<Uint8Array | undefined> {
-  if (!request.body) {
+async function readRequestBytes(
+  request: Request,
+  maxBytes = HOSTED_POD_RAW_BODY_MAX_BYTES,
+): Promise<Uint8Array | undefined> {
+  const body = request.body;
+  if (!body) {
     return undefined;
   }
-  return new Uint8Array(await request.clone().arrayBuffer());
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      if (chunk.byteLength > maxBytes - totalBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the stable size error even if the source cannot cancel cleanly.
+        }
+        throw new Error('hosted_pod_body_too_large');
+      }
+      chunks.push(chunk);
+      totalBytes += chunk.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 async function readRequestBody(request: Request): Promise<RequestBody | undefined> {
-  const bytes = await readRequestBytes(request);
+  const bytes = await readRequestBytes(request, MODEL_QUERY_MAX_BODY_BYTES);
   if (!bytes) {
     return undefined;
   }
-  if (bytes.byteLength === 0 || bytes.byteLength > MODEL_QUERY_MAX_BODY_BYTES) {
+  if (bytes.byteLength === 0) {
     return undefined;
   }
   const contentType = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();

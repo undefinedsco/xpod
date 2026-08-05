@@ -154,6 +154,37 @@ describe('AiGatewayManagementHandler', () => {
     }));
   });
 
+  it.each(['credential_version_conflict', 'version_conflict'])('maps stale expectedCredentialVersion (%s) to a safe conflict response', async (errorCode) => {
+    const { server, routes } = createServer();
+    const begin = vi.fn(async (input: { expectedCredentialVersion?: number }) => {
+      expect(input.expectedCredentialVersion).toBe(3);
+      throw new Error(errorCode);
+    });
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      connectService: { begin } as never,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](
+      request(
+        { type: 'solid', webId: WEB_ID },
+        { mode: 'browserAssistedApiKey', expectedCredentialVersion: 3 },
+        '/api/ai/gateway/providers/openai/connect/begin',
+        'POST',
+      ),
+      res,
+      { provider: 'openai' },
+    );
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'credential_version_conflict',
+      details: { reason: 'stale_credential' },
+    });
+    expect(res.body).not.toContain(errorCode === 'version_conflict' ? 'version_conflict:' : 'Error');
+  });
+
   it('passes the authenticated Solid context into quota reads', async () => {
     const { server, routes } = createServer();
     const status = vi.fn(async () => ({ status: 'available', stale: false }));

@@ -1193,16 +1193,19 @@ export class ProviderConnectService {
     input: RefreshInput,
     remainingAttempts: number,
   ): Promise<ConnectCredentialRecord | undefined> {
-    const adapter = this.requireAdapter(input.provider, 'deviceCodeOAuth');
-    if (!adapter.refresh) {
-      throw new Error('Provider does not support refresh');
-    }
     if (!this.credentialRepository) {
       throw new Error('PodCredentialRepository is required for provider refresh');
     }
     const current = await this.credentialRepository.getActiveCredential(input);
     if (!current) {
       throw new Error('Active provider credential not found');
+    }
+    if (current.authMode === 'apiKey') {
+      return current;
+    }
+    const adapter = this.requireAdapter(input.provider, 'deviceCodeOAuth');
+    if (!adapter.refresh) {
+      throw new Error('Provider does not support refresh');
     }
     const secret = decodePlaintextCredential(current);
     try {

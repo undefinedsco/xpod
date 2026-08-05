@@ -992,6 +992,60 @@ describe('ProviderConnectService', () => {
     expect(JSON.stringify(repository.rows.at(-1))).toContain('refreshed-refresh');
   });
 
+  it('does not route Kimi API-key credentials through the device OAuth refresh adapter', async () => {
+    const repository = new RecordingCredentialRepository();
+    await repository.upsertConnectedCredential({
+      id: aiRuntimeRepository.credentialId({ deployment: 'cloud', provider: 'kimi' }),
+      credentialIri: 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-kimi',
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      storageMode: 'plaintext-v1',
+      secretPayload: encodePlaintextCredential({ type: 'apiKey', apiKey: 'sk-kimi-api-key' }),
+      status: 'active',
+    });
+    const oauthFetch = vi.fn(async () => Response.json({
+      access_token: 'must-not-be-requested',
+      refresh_token: 'must-not-be-requested',
+      expires_in: 3600,
+    }));
+    const apiKeyAdapter = new BrowserAssistedApiKeyConnectAdapter({
+      provider: 'kimi',
+      consoleUrl: 'https://kimi.moonshot.cn/api-keys',
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      deployment: 'cloud',
+      signingSecret: 'connect-signing-secret',
+    });
+    const deviceAdapter = new KimiDeviceCodeConnectAdapter({
+      fetch: oauthFetch as typeof fetch,
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      deployment: 'cloud',
+      clientId: 'xpod-kimi-device-client',
+      signingSecret: 'connect-signing-secret',
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({ connect: { kimi: { configured: true } } }),
+      adapters: [apiKeyAdapter, deviceAdapter],
+      credentialRepository: repository,
+    });
+
+    await expect(service.refresh({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+    })).resolves.toMatchObject({
+      provider: 'kimi',
+      authMode: 'apiKey',
+      status: 'active',
+      version: 1,
+    });
+    expect(oauthFetch).not.toHaveBeenCalled();
+    expect(repository.rows[0]).not.toHaveProperty('reauthRequired');
+  });
+
   it('uses the production Pod credential repository adapter against models credentialResource fields', async () => {
     const rows = new Map<string, Record<string, unknown>>([
       [ 'credentials.ttl#cloud-openai', {
