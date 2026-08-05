@@ -15,13 +15,19 @@ interface JournalRow {
   occurred_at: number | string;
 }
 
+export interface DurableResourceChangeConsumer extends ResourceChangeListener {
+  readonly consumerId: string;
+}
+
+export const LEGACY_DERIVED_INDEX_CONSUMER_ID = 'legacy-resource-change-listener-v1';
+
 export interface PostgresDerivedIndexJournalOptions {
   executor?: PostgresRdfSqlExecutor;
   connectionString?: string;
   resolvePodScope?: (event: ResourceChangeEvent) => string | Promise<string>;
   retryDelayMs?: number;
   leaseMs?: number;
-  consumers?: ResourceChangeListener[];
+  consumers?: DurableResourceChangeConsumer[];
   pollIntervalMs?: number;
 }
 
@@ -47,7 +53,7 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
     resolvePodScope?: (event: ResourceChangeEvent) => string | Promise<string>,
     retryDelayMs = 1_000,
     leaseMs = 60_000,
-    consumers: ResourceChangeListener[] = [],
+    consumers: DurableResourceChangeConsumer[] = [],
     pollIntervalMs = 1_000,
   ) {
     const resolvedOptions: PostgresDerivedIndexJournalOptions = {
@@ -62,6 +68,16 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
     this.options = resolvedOptions;
     if (!resolvedOptions.executor && !resolvedOptions.connectionString) {
       throw new Error('PostgresDerivedIndexJournal requires executor or connectionString');
+    }
+    const consumerIds = new Set<string>();
+    for (const consumer of consumers) {
+      if (!consumer.consumerId.trim()) {
+        throw new Error('Derived-index consumer requires a non-empty consumerId');
+      }
+      if (consumerIds.has(consumer.consumerId)) {
+        throw new Error(`Duplicate derived-index consumerId: ${consumer.consumerId}`);
+      }
+      consumerIds.add(consumer.consumerId);
     }
     this.executor = resolvedOptions.executor
       ?? new PgPoolRdfSqlExecutor(getSharedPool({ connectionString: resolvedOptions.connectionString }));

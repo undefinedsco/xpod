@@ -30,6 +30,7 @@ export interface RdfDerivedIndexingListenerOptions {
 
 /** Rebuilds the exact PG text/vector derivations consumed by QLever. */
 export class RdfDerivedIndexingListener implements ResourceChangeListener {
+  public readonly consumerId: string;
   private readonly options: RdfDerivedIndexingListenerOptions & {
     rdfEngine: RdfDerivedIndexEngine;
     resourceStore: ResourceStore;
@@ -45,10 +46,12 @@ export class RdfDerivedIndexingListener implements ResourceChangeListener {
     resolveCredential?: (podScope: string) => Promise<AiCredential | null>,
     defaultModel = 'text-embedding-004',
     supportedExtensions: string[] = ['.txt', '.md', '.html', '.json', '.ttl', '.jsonld'],
+    consumerId = 'rdf-fts-vec-v1',
   ) {
     this.options = { rdfEngine, resourceStore, embeddingService, sparqlEngine, resolveCredential, defaultModel };
     this.defaultModel = defaultModel;
     this.supportedExtensions = new Set(supportedExtensions);
+    this.consumerId = consumerId;
   }
 
   public async onResourceChanged(event: ResourceChangeEvent): Promise<void> {

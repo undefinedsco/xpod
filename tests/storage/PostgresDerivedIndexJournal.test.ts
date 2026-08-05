@@ -3,9 +3,10 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { Pool } from 'pg';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { ResourceChangeEvent, ResourceChangeListener } from '../../src/storage/ObservableResourceStore';
 import {
+  type DurableResourceChangeConsumer,
   PostgresDerivedIndexJournal,
   type PostgresDerivedIndexJournalOptions,
 } from '../../src/storage/PostgresDerivedIndexJournal';
@@ -15,7 +16,29 @@ import { PostgresRdfTextIndex } from '../../src/storage/rdf/PostgresRdfTextIndex
 import { PostgresRdfVectorIndex } from '../../src/storage/rdf/PostgresRdfVectorIndex';
 import { RdfDerivedIndexingListener } from '../../src/storage/RdfDerivedIndexingListener';
 
+async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error(`condition was not met within ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('PostgresDerivedIndexJournal', () => {
+  it('rejects empty and duplicate configured consumer IDs', () => {
+    const db = new PGlite();
+    expect(() => createJournal({
+      executor: new PgliteRdfSqlExecutor(db),
+      consumers: [consumer('', [])],
+    })).toThrow('non-empty consumerId');
+    expect(() => createJournal({
+      executor: new PgliteRdfSqlExecutor(db),
+      consumers: [consumer('search-v1', []), consumer('search-v1', [])],
+    })).toThrow('Duplicate derived-index consumerId: search-v1');
+  });
+
   it('delivers changes in sequence within each Pod', async () => {
     const db = new PGlite();
     const journal = createJournal({
@@ -158,10 +181,11 @@ describe('PostgresDerivedIndexJournal', () => {
       executor,
       resolvePodScope: () => 'alice',
       pollIntervalMs: 10,
-      consumers: [{ onResourceChanged: async (change) => { delivered.push(change.path); } }],
+      consumers: [consumer('recovery-v1', delivered)],
     });
 
-    await vi.waitFor(() => expect(delivered).toEqual(['/alice/recover.md']), { timeout: 2_000 });
+    await waitUntil(() => delivered.length === 1, 2_000);
+    expect(delivered).toEqual(['/alice/recover.md']);
     expect(await journal.pendingCount('alice')).toBe(0);
     await journal.close();
   });
@@ -210,6 +234,24 @@ describe('PostgresDerivedIndexJournal', () => {
 
 function event(path: string): ResourceChangeEvent {
   return { path, action: 'update', isContainer: false, timestamp: Date.now() };
+}
+
+function consumer(
+  consumerId: string,
+  delivered: string[],
+  options: { failOnce?: boolean } = {},
+): DurableResourceChangeConsumer {
+  let shouldFail = options.failOnce ?? false;
+  return {
+    consumerId,
+    onResourceChanged: async (change) => {
+      delivered.push(change.path);
+      if (shouldFail) {
+        shouldFail = false;
+        throw new Error(`${consumerId} unavailable`);
+      }
+    },
+  };
 }
 
 function createJournal(options: PostgresDerivedIndexJournalOptions): PostgresDerivedIndexJournal {
