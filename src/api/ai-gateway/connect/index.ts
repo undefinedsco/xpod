@@ -294,7 +294,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const { db, credential } = await this.dbForOwner(record.webId, context?.auth);
     const existing = await db.findById<Record<string, unknown>>(credential, record.id);
     const existingVersion = existing ? versionFromRow(existing) : 0;
-    if (record.expectedVersion !== undefined && record.expectedVersion !== existingVersion) {
+    const replacesUnsupportedRecord = Boolean(existing)
+      && stringFrom(existing?.storageMode) !== PLAINTEXT_CREDENTIAL_STORAGE_MODE;
+    if (!replacesUnsupportedRecord
+      && record.expectedVersion !== undefined
+      && record.expectedVersion !== existingVersion) {
       throw new Error('credential_version_conflict');
     }
     const nextVersion = existingVersion + 1;
@@ -302,7 +306,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       ...record,
       version: nextVersion,
     });
-    if (existing && stringFrom(existing.storageMode) !== PLAINTEXT_CREDENTIAL_STORAGE_MODE) {
+    if (existing && replacesUnsupportedRecord) {
       try {
         const deleted = await db.deleteById(credential, record.id);
         if (!deleted) {

@@ -215,6 +215,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       deployment: 'cloud',
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
+      expectedCredentialVersion: 0,
     });
 
     expect(begun.mode).toBe('browserAssistedApiKey');
