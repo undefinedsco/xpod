@@ -76,6 +76,8 @@ export interface PollDeviceInput {
   attemptId: string;
   state: string;
   signature: string;
+  /** Selects the adapter when a provider exposes both device-code and API-key flows. */
+  mode?: ConnectMode;
   auth?: AuthContext;
 }
 
@@ -439,6 +441,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
 
 export interface ProviderConnectAdapter {
   readonly provider: string;
+  readonly supportedModes?: readonly ConnectMode[];
   begin(input: ConnectBeginInput): Promise<ConnectBeginResult>;
   status?(input: PollDeviceInput): Promise<ConnectBeginResult>;
   completeApiKey?(input: CompleteApiKeyInput): Promise<ConnectBeginResult>;
@@ -595,6 +598,7 @@ export interface BrowserAssistedApiKeyConnectAdapterOptions {
 
 export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapter {
   public readonly provider: string;
+  public readonly supportedModes: readonly ConnectMode[] = ['browserAssistedApiKey'];
   private readonly consoleUrl: string;
   protected readonly attempts: InMemoryConnectAttemptStore;
   protected readonly credentialRepository: PodCredentialRepository;
@@ -633,6 +637,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       signature: attempt.signature,
       expiresAt: expiresAt.toISOString(),
       authorizationUrl: url.toString(),
+      apiKeyManagementSupported: true,
     };
   }
 
@@ -776,6 +781,7 @@ export interface KimiDeviceCodeConnectAdapterOptions extends Omit<BrowserAssiste
 }
 
 export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAdapter {
+  public override readonly supportedModes: readonly ConnectMode[] = ['deviceCodeOAuth'];
   private readonly fetchImpl: typeof fetch;
   private readonly clientId: string;
   private readonly deviceAuthorizationEndpoint: string;
@@ -1008,21 +1014,17 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
   }
 }
 
-export class DeepSeekConnectAdapter implements ProviderConnectAdapter {
-  public readonly provider = 'deepseek';
+export type DeepSeekConnectAdapterOptions = Omit<BrowserAssistedApiKeyConnectAdapterOptions, 'provider' | 'consoleUrl'> & {
+  consoleUrl?: string;
+};
 
-  public async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
-    if (normalizeProvider(input.provider) !== this.provider) {
-      throw new Error('Connect provider mismatch');
-    }
-    return {
-      mode: 'connectUnsupported',
-      status: 'unsupported',
+export class DeepSeekConnectAdapter extends BrowserAssistedApiKeyConnectAdapter {
+  public constructor(options: DeepSeekConnectAdapterOptions) {
+    super({
+      ...options,
       provider: 'deepseek',
-      deployment: input.deployment,
-      apiKeyManagementSupported: true,
-      message: 'DeepSeek does not expose a supported third-party browser Connect flow; use authenticated API key management.',
-    };
+      consoleUrl: options.consoleUrl ?? 'https://platform.deepseek.com/api_keys',
+    });
   }
 }
 
@@ -1030,6 +1032,7 @@ export interface ProviderConnectServiceOptions {
   registry: ProviderRegistry;
   adapters: ProviderConnectAdapter[];
   credentialRepository?: PodCredentialRepository;
+  connectEnabled?: boolean;
 }
 
 export interface ProviderConnectionSummary {
@@ -1044,6 +1047,8 @@ export interface ProviderConnectionSummary {
   connect: {
     modes: string[];
     configured: boolean;
+    apiKeyManagementSupported?: boolean;
+    disabled?: boolean;
     message?: string;
   };
 }
@@ -1051,32 +1056,42 @@ export interface ProviderConnectionSummary {
 export class ProviderConnectService {
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
-  private readonly adapters = new Map<string, ProviderConnectAdapter>();
+  private readonly adapters = new Map<string, ProviderConnectAdapter[]>();
+  private readonly connectEnabled: boolean;
 
   public constructor(options: ProviderConnectServiceOptions) {
     this.registry = options.registry;
     this.credentialRepository = options.credentialRepository;
+    this.connectEnabled = options.connectEnabled ?? true;
     for (const adapter of options.adapters) {
-      this.adapters.set(normalizeProvider(adapter.provider), adapter);
+      const provider = normalizeProvider(adapter.provider);
+      const candidates = this.adapters.get(provider) ?? [];
+      candidates.push(adapter);
+      this.adapters.set(provider, candidates);
     }
   }
 
-  public begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
+  public async begin(input: ConnectBeginInput): Promise<ConnectBeginResult> {
+    if (!this.connectEnabled) {
+      throw new Error('connect_disabled');
+    }
     const descriptor = this.registry.requireProvider(input.provider);
-    if (descriptor.connect?.mode !== input.requestedMode) {
+    const isApiKeyManagement = input.requestedMode === 'browserAssistedApiKey'
+      && descriptor.connect?.apiKeyManagementSupported === true;
+    if (!isApiKeyManagement && descriptor.connect?.mode !== input.requestedMode) {
       throw new Error('Requested Connect mode does not match provider capability');
     }
-    if (descriptor.connect?.configured === false) {
-      return Promise.resolve({
+    if (descriptor.connect?.configured === false && !isApiKeyManagement) {
+      return {
         mode: descriptor.connect.mode,
         status: 'unsupported',
         provider: normalizeProvider(input.provider),
         deployment: input.deployment,
         apiKeyManagementSupported: descriptor.connect.apiKeyManagementSupported,
         message: descriptor.connect.notes?.join(' '),
-      });
+      };
     }
-    return this.requireAdapter(input.provider).begin(input);
+    return this.requireAdapter(input.provider, input.requestedMode).begin(input);
   }
 
   public async listProviders(input: {
@@ -1122,7 +1137,9 @@ export class ProviderConnectService {
         version: activeCredential?.version,
         connect: {
           modes,
-          configured: descriptor.connect?.configured !== false,
+          configured: this.connectEnabled && descriptor.connect?.configured !== false,
+          apiKeyManagementSupported: descriptor.connect?.apiKeyManagementSupported,
+          disabled: !this.connectEnabled,
           message: descriptor.connect?.notes?.join(' ') || undefined,
         },
       };
@@ -1130,7 +1147,10 @@ export class ProviderConnectService {
   }
 
   public completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
-    const adapter = this.requireAdapter(input.provider);
+    if (!this.connectEnabled) {
+      return Promise.reject(new Error('connect_disabled'));
+    }
+    const adapter = this.requireAdapter(input.provider, 'browserAssistedApiKey');
     if (!adapter.completeApiKey) {
       throw new Error('Provider does not support API key Connect completion');
     }
@@ -1138,7 +1158,10 @@ export class ProviderConnectService {
   }
 
   public pollDevice(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const adapter = this.requireAdapter(input.provider);
+    if (!this.connectEnabled) {
+      return Promise.reject(new Error('connect_disabled'));
+    }
+    const adapter = this.requireAdapter(input.provider, 'deviceCodeOAuth');
     if (!adapter.pollDevice) {
       throw new Error('Provider does not support device-code polling');
     }
@@ -1146,7 +1169,13 @@ export class ProviderConnectService {
   }
 
   public status(input: PollDeviceInput): Promise<ConnectBeginResult> {
-    const adapter = this.requireAdapter(input.provider);
+    if (!this.connectEnabled) {
+      return Promise.reject(new Error('connect_disabled'));
+    }
+    const adapter = input.mode
+      ? this.requireAdapter(input.provider, input.mode)
+      : this.findAdapter(input.provider, 'deviceCodeOAuth')
+        ?? this.requireAdapter(input.provider, 'browserAssistedApiKey');
     if (!adapter.status) {
       throw new Error('Provider does not support Connect status');
     }
@@ -1154,6 +1183,9 @@ export class ProviderConnectService {
   }
 
   public refresh(input: RefreshInput): Promise<ConnectCredentialRecord | undefined> {
+    if (!this.connectEnabled) {
+      return Promise.reject(new Error('connect_disabled'));
+    }
     return this.refreshWithRetry(input, 2);
   }
 
@@ -1161,7 +1193,7 @@ export class ProviderConnectService {
     input: RefreshInput,
     remainingAttempts: number,
   ): Promise<ConnectCredentialRecord | undefined> {
-    const adapter = this.requireAdapter(input.provider);
+    const adapter = this.requireAdapter(input.provider, 'deviceCodeOAuth');
     if (!adapter.refresh) {
       throw new Error('Provider does not support refresh');
     }
@@ -1188,19 +1220,32 @@ export class ProviderConnectService {
   }
 
   public disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
-    const adapter = this.requireAdapter(input.provider);
+    if (!this.connectEnabled) {
+      return Promise.reject(new Error('connect_disabled'));
+    }
+    const adapter = this.findAdapter(input.provider, 'browserAssistedApiKey')
+      ?? this.requireAdapter(input.provider, 'deviceCodeOAuth');
     if (!adapter.disconnect) {
       throw new Error('Provider does not support disconnect');
     }
     return adapter.disconnect(input);
   }
 
-  private requireAdapter(provider: string): ProviderConnectAdapter {
-    const adapter = this.adapters.get(normalizeProvider(provider));
+  private requireAdapter(provider: string, mode?: ConnectMode): ProviderConnectAdapter {
+    const adapter = this.findAdapter(provider, mode);
     if (!adapter) {
       throw new Error(`No Connect adapter registered for ${provider}`);
     }
     return adapter;
+  }
+
+  private findAdapter(provider: string, mode?: ConnectMode): ProviderConnectAdapter | undefined {
+    const candidates = this.adapters.get(normalizeProvider(provider)) ?? [];
+    if (!mode) {
+      return candidates[0];
+    }
+    return candidates.find((candidate) => candidate.supportedModes?.includes(mode))
+      ?? candidates.find((candidate) => !candidate.supportedModes);
   }
 }
 

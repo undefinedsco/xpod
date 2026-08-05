@@ -28,7 +28,7 @@ export const PROVIDERS: AiProviderDefinition[] = [
   { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台' },
   { id: 'kimi', name: 'Kimi', browserMode: 'deviceCodeOAuth', browserLabel: '浏览器鉴权' },
   { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台' },
-  { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '浏览器鉴权不支持' },
+  { id: 'deepseek', name: 'DeepSeek', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台' },
 ]
 
 export type ProviderProductState =

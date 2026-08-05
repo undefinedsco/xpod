@@ -124,8 +124,9 @@ describe('Provider Connect capabilities', () => {
       remoteRevocationSupported: false,
     });
     expect(registry.requireProvider('deepseek').connect).toMatchObject({
-      mode: 'connectUnsupported',
+      mode: 'browserAssistedApiKey',
       apiKeyManagementSupported: true,
+      configured: true,
     });
     for (const provider of ['openai', 'anthropic', 'bailian']) {
       expect(registry.requireProvider(provider).authModes).not.toContain('oauth');
@@ -714,11 +715,18 @@ describe('ProviderConnectService', () => {
     });
   });
 
-  it('routes DeepSeek begin to connectUnsupported while keeping authenticated API key management separate', async () => {
+  it('routes DeepSeek manual API-key Connect through the authenticated Pod management flow', async () => {
+    const repository = new RecordingCredentialRepository();
+    const attempts = new InMemoryConnectAttemptStore();
     const service = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),
       adapters: [
-        new DeepSeekConnectAdapter(),
+        new DeepSeekConnectAdapter({
+          attempts,
+          credentialRepository: repository,
+          deployment: 'local',
+          signingSecret: 'connect-signing-secret',
+        }),
       ],
     });
 
@@ -726,12 +734,159 @@ describe('ProviderConnectService', () => {
       webId: WEB_ID,
       deployment: 'local',
       provider: 'deepseek',
-      requestedMode: 'connectUnsupported',
+      requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({
-      mode: 'connectUnsupported',
-      status: 'unsupported',
+      mode: 'browserAssistedApiKey',
+      status: 'pending',
       apiKeyManagementSupported: true,
     });
+  });
+
+  it('selects separate API-key and device-code adapters for Kimi without provider-map overwrite', async () => {
+    const repository = new RecordingCredentialRepository();
+    const attempts = new InMemoryConnectAttemptStore();
+    const deviceFetch = vi.fn(async () => Response.json({
+      device_code: 'device-code',
+      user_code: 'USER-CODE',
+      verification_uri_complete: 'https://auth.kimi.com/device/complete',
+      expires_in: 300,
+      interval: 5,
+    }));
+    const apiKeyAdapter = new BrowserAssistedApiKeyConnectAdapter({
+      provider: 'kimi',
+      consoleUrl: 'https://kimi.moonshot.cn/api-keys',
+      attempts,
+      credentialRepository: repository,
+      deployment: 'local',
+      signingSecret: 'connect-signing-secret',
+    });
+    const deviceAdapter = new KimiDeviceCodeConnectAdapter({
+      fetch: deviceFetch as typeof fetch,
+      attempts,
+      credentialRepository: repository,
+      deployment: 'local',
+      clientId: 'xpod-kimi-device-client',
+      signingSecret: 'connect-signing-secret',
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({ connect: { kimi: { configured: true } } }),
+      adapters: [apiKeyAdapter, deviceAdapter],
+    });
+
+    await expect(service.begin({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'kimi',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({
+      mode: 'browserAssistedApiKey',
+      authorizationUrl: expect.stringContaining('kimi.moonshot.cn/api-keys'),
+    });
+    await expect(service.begin({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'kimi',
+      requestedMode: 'deviceCodeOAuth',
+    })).resolves.toMatchObject({
+      mode: 'deviceCodeOAuth',
+      userCode: 'USER-CODE',
+    });
+    expect(deviceFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to a browser adapter for status when a provider has no device flow', async () => {
+    const repository = new RecordingCredentialRepository();
+    const adapter = new BrowserAssistedApiKeyConnectAdapter({
+      provider: 'openai',
+      consoleUrl: 'https://platform.openai.com/api-keys',
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      deployment: 'local',
+      signingSecret: 'connect-signing-secret',
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [adapter],
+    });
+
+    const begun = await service.begin({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    });
+    const attempt = requireConnectAttempt(begun);
+
+    await expect(service.status({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+      ...attempt,
+    })).resolves.toMatchObject({
+      mode: 'browserAssistedApiKey',
+      status: 'pending',
+    });
+  });
+
+  it('disconnects through a device-code adapter when no browser adapter is registered', async () => {
+    const repository = new RecordingCredentialRepository();
+    await repository.upsertConnectedCredential({
+      id: aiRuntimeRepository.credentialId({ deployment: 'local', provider: 'kimi' }),
+      credentialIri: 'https://id.example/alice/settings/ai/credentials/kimi.ttl#local-kimi',
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'local',
+      authMode: 'deviceCodeOAuth',
+      storageMode: 'plaintext-v1',
+      secretPayload: encodePlaintextCredential({ type: 'deviceCodeOAuth', refreshToken: 'refresh' }),
+      status: 'active',
+    });
+    const adapter = new KimiDeviceCodeConnectAdapter({
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      deployment: 'local',
+      clientId: 'xpod-kimi-device-client',
+      signingSecret: 'connect-signing-secret',
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({ connect: { kimi: { configured: true } } }),
+      adapters: [adapter],
+      credentialRepository: repository,
+    });
+
+    await expect(service.disconnect({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'kimi',
+    })).resolves.toMatchObject({
+      provider: 'kimi',
+      status: 'revoked',
+    });
+  });
+
+  it('reports global Connect disablement and rejects mutation with a stable error', async () => {
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry({
+        connect: Object.fromEntries(
+          ['openai', 'anthropic', 'kimi', 'bailian', 'deepseek'].map((provider) => [provider, {
+            configured: false,
+            notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'],
+          }]),
+        ),
+      }),
+      adapters: [],
+      connectEnabled: false,
+    });
+
+    await expect(service.begin({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    })).rejects.toThrow('connect_disabled');
+    const listed = await service.listProviders({ webId: WEB_ID, deployment: 'local' });
+    expect(listed.every((provider) => provider.connect.disabled === true)).toBe(true);
+    expect(listed.every((provider) => provider.connect.configured === false)).toBe(true);
   });
 
   it('summarizes one effective connection per provider for the current identity', async () => {

@@ -162,6 +162,32 @@ describe('AiGatewayManagementHandler', () => {
     expect(res.body).not.toContain('sk-must-not-leak');
   });
 
+  it('maps a globally disabled Connect completion to a stable 4xx response', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'local',
+      connectService: {
+        completeApiKey: vi.fn(async () => {
+          throw new Error('connect_disabled');
+        }),
+      } as never,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/complete-api-key'](
+      request(
+        { type: 'solid', webId: WEB_ID },
+        { attemptId: 'attempt', state: 'state', signature: 'signature', apiKey: 'sk-must-not-leak' },
+      ),
+      res,
+      { provider: 'openai' },
+    );
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'connect_disabled' });
+    expect(res.body).not.toContain('sk-must-not-leak');
+  });
+
   it('discovers models for the current Solid WebID and never trusts a body WebID', async () => {
     const { server, routes } = createServer();
     const discover = vi.fn(async () => ({

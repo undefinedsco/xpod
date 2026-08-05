@@ -117,6 +117,8 @@ export interface AiProviderConnectionSummary {
   connect: {
     modes: AiConnectionMode[]
     configured: boolean
+    apiKeyManagementSupported?: boolean
+    disabled?: boolean
     message?: string
   }
 }
@@ -134,7 +136,7 @@ export interface AiConnectionClient {
     selection: AiProviderModelSelectionInput,
   ): Promise<AiProviderModelCatalog>
   beginConnect(provider: AiConnectionProvider, mode: AiConnectionMode): Promise<AiConnectAttempt>
-  connectStatus(provider: AiConnectionProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
+  connectStatus(provider: AiConnectionProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature' | 'mode'>): Promise<AiConnectAttempt>
   completeApiKey(
     provider: AiConnectionProvider,
     attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>,
@@ -279,6 +281,7 @@ export function createAiConnectionClient({
       const query = new URLSearchParams({
         state: attempt.state ?? '',
         signature: attempt.signature ?? '',
+        ...(attempt.mode ? { mode: attempt.mode } : {}),
       })
       return requestConnect(
         provider,
@@ -406,9 +409,17 @@ function messageForSafeErrorCode(
         ? `${providerLabel(provider)} connection is not configured.`
         : 'AI provider connection is not configured.'
     case 'unsupported':
+    case 'connect_unsupported':
+    case 'connect_mode_unsupported':
       return provider
         ? `${providerLabel(provider)} does not support this operation.`
         : 'This AI Connection operation is not supported.'
+    case 'connect_disabled':
+      return 'AI Connection 管理功能已由此 Xpod 部署禁用。'
+    case 'connect_not_configured':
+      return provider
+        ? `${providerLabel(provider)} connection is not configured.`
+        : 'AI provider connection is not configured.'
     case 'service_identity_unavailable':
       return 'AI Connection service identity is unavailable'
     case 'unauthorized':
@@ -558,6 +569,12 @@ function parseProviderSummary(value: unknown): AiProviderConnectionSummary | und
     connect: compactObject({
       modes: [...value.connect.modes],
       configured: value.connect.configured,
+      apiKeyManagementSupported: typeof value.connect.apiKeyManagementSupported === 'boolean'
+        ? value.connect.apiKeyManagementSupported
+        : undefined,
+      disabled: typeof value.connect.disabled === 'boolean'
+        ? value.connect.disabled
+        : undefined,
       message: stringValue(value.connect.message),
     }),
   }) as unknown as AiProviderConnectionSummary

@@ -45,6 +45,7 @@ export function AiProviderCard({
   apiKey,
   busy,
   disabled = false,
+  connectDisabled = false,
   error,
   quota,
   models,
@@ -74,6 +75,7 @@ export function AiProviderCard({
   apiKey: string
   busy: boolean
   disabled?: boolean
+  connectDisabled?: boolean
   error?: string
   quota?: AiQuotaSnapshot
   models: AiGatewayModel[]
@@ -96,6 +98,7 @@ export function AiProviderCard({
   onSaveModels?: () => void
   onRetryModels?: () => void
 }) {
+  const controlsDisabled = disabled || connectDisabled
   const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
@@ -150,11 +153,11 @@ export function AiProviderCard({
         <div className="flex flex-wrap gap-2">
           {isConnected ? (
             <>
-              <Button variant="outline" size="sm" disabled={busy || disabled} onClick={onBeginBrowser}>
+              <Button variant="outline" size="sm" disabled={busy || controlsDisabled} onClick={onBeginBrowser}>
                 {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCw className="mr-2 h-4 w-4" />}
                 重新连接
               </Button>
-              <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
+              <Button variant="ghost" size="sm" disabled={busy || controlsDisabled} onClick={onDisconnect}>
                 <LogOut className="mr-2 h-4 w-4" />
                 断开连接
               </Button>
@@ -165,13 +168,13 @@ export function AiProviderCard({
                 variant="outline"
                 size="sm"
                 aria-label="更新 API Key"
-                disabled={busy || disabled}
+                disabled={busy || controlsDisabled}
                 onClick={onBeginApiKey}
               >
                 <KeyRound className="mr-2 h-4 w-4" />
                 更新 API Key
               </Button>
-              <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
+              <Button variant="ghost" size="sm" disabled={busy || controlsDisabled} onClick={onDisconnect}>
                 移除配置
               </Button>
             </>
@@ -180,7 +183,7 @@ export function AiProviderCard({
               <Button
                 variant="outline"
                 size="sm"
-                disabled={busy || disabled || definition.browserMode === 'connectUnsupported'}
+                disabled={busy || controlsDisabled || definition.browserMode === 'connectUnsupported'}
                 onClick={onBeginBrowser}
               >
                 {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
@@ -190,7 +193,7 @@ export function AiProviderCard({
                 variant="outline"
                 size="sm"
                 aria-label={`${definition.name} API Key`}
-                disabled={busy || disabled}
+                disabled={busy || controlsDisabled}
                 onClick={onBeginApiKey}
               >
                 <KeyRound className="mr-2 h-4 w-4" />
@@ -199,6 +202,12 @@ export function AiProviderCard({
             </>
           )}
         </div>
+
+        {connectDisabled ? (
+          <p className="mt-3 text-sm text-muted-foreground" role="status">
+            AI Connection 管理功能已由此 Xpod 部署禁用。
+          </p>
+        ) : null}
 
         {apiKeyAttempt ? (
           <div className="mt-4 space-y-2">
@@ -213,7 +222,7 @@ export function AiProviderCard({
             <Button
               size="sm"
               aria-label={`保存 ${definition.name} API Key`}
-              disabled={!apiKey.trim() || busy || disabled}
+              disabled={!apiKey.trim() || busy || controlsDisabled}
               onClick={onSaveApiKey}
             >
               保存 API Key
@@ -228,7 +237,7 @@ export function AiProviderCard({
           providerName={definition.name}
           quota={quota}
           busy={busy}
-          disabled={disabled}
+          disabled={controlsDisabled}
           onRefresh={onRefreshQuota}
         />
       </section>
@@ -248,7 +257,7 @@ export function AiProviderCard({
                 size="sm"
                 aria-label="刷新模型"
                 onClick={onRetryModels}
-                disabled={disabled || modelLoading || modelSaving}
+                disabled={controlsDisabled || modelLoading || modelSaving}
               >
                 {modelLoading ? '读取中…' : '刷新模型'}
               </Button>
@@ -257,7 +266,7 @@ export function AiProviderCard({
             {modelCatalog && modelDirty && onSaveModels ? (
               <Button
                 size="sm"
-                disabled={modelSaving || disabled || modelAdditionsBlocked}
+                disabled={modelSaving || controlsDisabled || modelAdditionsBlocked}
                 onClick={onSaveModels}
               >
                 {modelSaving ? '保存中…' : '保存模型'}
@@ -276,7 +285,7 @@ export function AiProviderCard({
           <div className="mt-3 space-y-2" role="alert">
             <p className="text-sm text-destructive">{modelError}</p>
             {onRetryModels ? (
-              <Button variant="outline" size="sm" aria-label="重试读取模型" onClick={onRetryModels} disabled={disabled}>
+                <Button variant="outline" size="sm" aria-label="重试读取模型" onClick={onRetryModels} disabled={controlsDisabled}>
                 重新读取模型
               </Button>
             ) : null}
@@ -327,7 +336,7 @@ export function AiProviderCard({
                             className="mt-1 h-4 w-4 rounded border-input accent-primary"
                             aria-label={`${model.displayName ?? model.id} (${model.id})`}
                             checked={selected}
-                            disabled={!canSelect || disabled || modelSaving}
+                            disabled={!canSelect || controlsDisabled || modelSaving}
                             onChange={() => onToggleModel?.(model)}
                           />
                           <span className="min-w-0 flex-1">

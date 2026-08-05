@@ -115,17 +115,21 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.begin({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      requestedMode: mode,
-      expectedCredentialVersion: typeof body.expectedCredentialVersion === 'number'
-        ? body.expectedCredentialVersion
-        : undefined,
-      auth: request.auth,
-    } satisfies ConnectBeginInput);
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.begin({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        requestedMode: mode,
+        expectedCredentialVersion: typeof body.expectedCredentialVersion === 'number'
+          ? body.expectedCredentialVersion
+          : undefined,
+        auth: request.auth,
+      } satisfies ConnectBeginInput);
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendConnectError(response, error);
+    }
   });
 
   server.get('/api/ai/gateway/providers/:provider/connect/status/:attemptId', async (request, response, params) => {
@@ -137,16 +141,21 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.status({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      attemptId: decodeURIComponent(params.attemptId),
-      state: url.searchParams.get('state') ?? '',
-      signature: url.searchParams.get('signature') ?? '',
-      auth: request.auth,
-    });
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.status({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        attemptId: decodeURIComponent(params.attemptId),
+        state: url.searchParams.get('state') ?? '',
+        signature: url.searchParams.get('signature') ?? '',
+        mode: parseConnectMode(url.searchParams.get('mode')),
+        auth: request.auth,
+      });
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendConnectError(response, error);
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/complete-api-key', async (request, response, params) => {
@@ -182,7 +191,8 @@ export function registerAiGatewayManagementRoutes(
     } catch (error) {
       const stage = credentialPersistenceFailureStage(error);
       if (!stage) {
-        throw error;
+        sendConnectError(response, error);
+        return;
       }
       sendJson(response, 500, { error: 'credential_persistence_failed', stage });
     }
@@ -200,16 +210,20 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.pollDevice({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      attemptId: stringBody(body.attemptId),
-      state: stringBody(body.state),
-      signature: stringBody(body.signature),
-      auth: request.auth,
-    });
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.pollDevice({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        attemptId: stringBody(body.attemptId),
+        state: stringBody(body.state),
+        signature: stringBody(body.signature),
+        auth: request.auth,
+      });
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendConnectError(response, error);
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/refresh', async (request, response, params) => {
@@ -224,13 +238,17 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const record = await connectService.refresh({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      auth: request.auth,
-    });
-    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    try {
+      const record = await connectService.refresh({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        auth: request.auth,
+      });
+      sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    } catch (error) {
+      sendConnectError(response, error);
+    }
   });
 
   server.delete('/api/ai/gateway/providers/:provider/connect', async (request, response, params) => {
@@ -241,13 +259,17 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const record = await connectService.disconnect({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      auth: request.auth,
-    });
-    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    try {
+      const record = await connectService.disconnect({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        auth: request.auth,
+      });
+      sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    } catch (error) {
+      sendConnectError(response, error);
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/models/discover', async (request, response, params) => {
@@ -415,6 +437,43 @@ function credentialPersistenceFailureStage(error: unknown): string | undefined {
   }
   const match = /^credential_persistence_failed:([a-z][a-z0-9-]*)$/u.exec(error.message);
   return match?.[1];
+}
+
+function parseConnectMode(value: string | null): ConnectBeginInput['requestedMode'] | undefined {
+  return value === 'browserAssistedApiKey'
+    || value === 'deviceCodeOAuth'
+    || value === 'connectUnsupported'
+    ? value
+    : undefined;
+}
+
+function sendConnectError(response: ServerResponse, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'connect_disabled') {
+    sendJson(response, 403, { error: 'connect_disabled' });
+    return;
+  }
+  if (message === 'Provider does not support API key Connect completion'
+    || message === 'Provider does not support device-code polling'
+    || message === 'Provider does not support Connect status'
+    || message === 'Provider does not support refresh'
+    || message === 'Provider does not support disconnect') {
+    sendJson(response, 400, { error: 'connect_unsupported' });
+    return;
+  }
+  if (message === 'Requested Connect mode does not match provider capability') {
+    sendJson(response, 400, { error: 'connect_mode_unsupported' });
+    return;
+  }
+  if (message.startsWith('No Connect adapter registered for ')) {
+    sendJson(response, 400, { error: 'connect_not_configured' });
+    return;
+  }
+  if (/^(?:Connect attempt|Invalid Connect attempt|Connect provider|Connect deployment|Unsupported Connect mode)/u.test(message)) {
+    sendJson(response, 400, { error: 'connect_attempt_invalid' });
+    return;
+  }
+  sendJson(response, 500, { error: 'AI provider Connect failed' });
 }
 
 function authorizeManagementCaller(

@@ -502,6 +502,7 @@ export function AiConnectionPanel({
               apiKey={apiKeyInputs[definition.id] ?? ''}
               busy={Boolean(busyProviders[definition.id])}
               disabled={!serviceAccessGranted}
+              connectDisabled={providerSummariesInput[definition.id]?.connect.disabled}
               error={providerErrors[definition.id]}
               quota={quotas[definition.id]}
               models={models.filter((model) => model.provider === definition.id)}

@@ -78,6 +78,17 @@ describe('loadConfigFromEnv', () => {
     expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
   });
 
+  it('enables AI Connection by default and only disables it with an explicit false value', () => {
+    process.env.XPOD_EDITION = 'local';
+    process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
+    delete process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED;
+
+    expect(loadConfigFromEnv().aiGatewayConnectEnabled).toBe(true);
+
+    process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED = 'false';
+    expect(loadConfigFromEnv().aiGatewayConnectEnabled).toBe(false);
+  });
+
   it('constructs disabled provider Connect without delegated service credentials', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: false,
@@ -88,7 +99,7 @@ describe('loadConfigFromEnv', () => {
       deployment: 'local',
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
-    })).resolves.toMatchObject({ status: 'unsupported' });
+    })).rejects.toThrow('connect_disabled');
   });
 
   it('injects one singleton hosted Pod data adapter into active AI Connection Pod paths', () => {

@@ -25,6 +25,7 @@ import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import {
   BrowserAssistedApiKeyConnectAdapter,
+  DeepSeekConnectAdapter,
   InMemoryConnectAttemptStore,
   KimiDeviceCodeConnectAdapter,
   PodConnectedCredentialRepository,
@@ -183,6 +184,7 @@ export function registerCommonServices(
             },
           }),
           adapters: [],
+          connectEnabled: false,
         });
       }
       const signingSecret = config.aiGatewayConnectSigningSecret ?? randomSecret();
@@ -209,6 +211,20 @@ export function registerCommonServices(
         new BrowserAssistedApiKeyConnectAdapter({
           provider: 'bailian',
           consoleUrl: 'https://bailian.console.aliyun.com/',
+          attempts,
+          credentialRepository,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'kimi',
+          consoleUrl: 'https://kimi.moonshot.cn/api-keys',
+          attempts,
+          credentialRepository,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new DeepSeekConnectAdapter({
           attempts,
           credentialRepository,
           deployment: config.edition,

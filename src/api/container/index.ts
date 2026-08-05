@@ -148,7 +148,9 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     aiConnectionPreviousInvocationSecrets: parsePreviousInvocationSecrets(process.env.XPOD_AI_CONNECTION_PREVIOUS_INVOCATION_SECRETS),
     aiGatewaySessionAffinitySecret: process.env.XPOD_AI_GATEWAY_SESSION_AFFINITY_SECRET,
     gatewayAdminProxyAuthSecret: process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET,
-    aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
+    // Connections are part of the product surface by default; operators can
+    // explicitly disable the management flow for a locked-down deployment.
+    aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED !== 'false',
     secretCellCredentialVaultFactory,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
     aiGatewayKimiClientId: process.env.XPOD_AI_GATEWAY_KIMI_CLIENT_ID,

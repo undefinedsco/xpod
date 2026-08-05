@@ -200,6 +200,24 @@ describe('AI Connection settings', () => {
     expect(screen.getByText('已配置')).toBeTruthy()
   })
 
+  it('opens the DeepSeek official console for its browser-assisted API-key flow', async () => {
+    const current = client()
+    const openExternal = vi.fn()
+    render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="deepseek"
+        openExternal={openExternal}
+        serviceAccessGranted
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '打开官方控制台' }))
+
+    await waitFor(() => expect(current.beginConnect).toHaveBeenCalledWith('deepseek', 'browserAssistedApiKey'))
+    expect(openExternal).toHaveBeenCalledWith('https://provider.example/keys')
+  })
+
   it('recovers visibly when a browser-assisted connection expires before API Key entry', async () => {
     const current = client({
       beginConnect: vi.fn(async (provider, mode) => ({
