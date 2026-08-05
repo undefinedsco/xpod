@@ -123,7 +123,10 @@ their current pending-count behavior.
 3. Registration inserts missing deliveries for all retained events with
    `ON CONFLICT DO NOTHING`.
 4. `recordResourceChange()` inserts one immutable event and one pending delivery
-   for every registered consumer in the same PostgreSQL transaction.
+   for every consumer active in the current journal process in the same
+   PostgreSQL transaction. Persisted but currently unconfigured consumers do not
+   accumulate new pending rows; registration backfills retained history when
+   they return.
 5. Existing `rdf_sources` bootstrap inserts events through the same transaction
    helper, so every registered consumer receives bootstrap work.
 
@@ -163,7 +166,8 @@ current resource set for that Pod:
    `delete` event.
 4. Do not append another delete when the newest checkpoint is already a
    tombstone.
-5. Create delivery rows for every registered consumer as part of each append.
+5. Create delivery rows for every consumer active in the current process as
+   part of each append.
 
 The authority snapshot must be supplied by the caller; the journal does not
 scan Solid resources itself. Reconciliation is Pod-scoped and does not infer

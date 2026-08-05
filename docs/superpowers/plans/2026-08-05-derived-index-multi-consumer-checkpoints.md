@@ -409,12 +409,12 @@ Expected: FAIL because `replayConsumer()` and per-consumer claims do not exist.
 
 - [ ] **Step 3: Make event insertion and delivery fan-out one transaction**
 
-Replace `append()` with a transaction that returns the event ID and executes:
+Replace `append()` with a transaction that returns the event ID and executes one
+idempotent delivery insert for each consumer active in the current process:
 
 ```sql
 INSERT INTO derived_index_event_deliveries (consumer_id, event_id)
-SELECT consumer_id, $1
-FROM derived_index_consumers
+VALUES ($1, $2)
 ON CONFLICT (consumer_id, event_id) DO NOTHING;
 ```
 

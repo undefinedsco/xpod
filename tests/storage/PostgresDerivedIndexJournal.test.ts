@@ -85,6 +85,69 @@ describe('PostgresDerivedIndexJournal', () => {
     await second.close();
   });
 
+  it('does not repeat a completed consumer when another consumer retries', async () => {
+    const executor = new PgliteRdfSqlExecutor(new PGlite());
+    const fts: string[] = [];
+    const vec: string[] = [];
+    const journal = createJournal({
+      executor,
+      resolvePodScope: () => 'alice',
+      retryDelayMs: 0,
+      pollIntervalMs: 10,
+      consumers: [
+        consumer('fts-v1', fts),
+        consumer('vec-v1', vec, { failOnce: true }),
+      ],
+    });
+    await journal.open();
+    await journal.recordResourceChange(event('/alice/a.md'));
+    await waitUntil(() => vec.length === 2, 2_000);
+
+    expect(fts).toEqual(['/alice/a.md']);
+    expect(vec).toEqual(['/alice/a.md', '/alice/a.md']);
+    expect(await deliveryStages(executor, 'fts-v1')).toEqual([
+      ['/alice/a.md', 'done'],
+    ]);
+    expect(await deliveryStages(executor, 'vec-v1')).toEqual([
+      ['/alice/a.md', 'done'],
+    ]);
+    await journal.close();
+  });
+
+  it('orders independently by consumer and Pod', async () => {
+    const executor = new PgliteRdfSqlExecutor(new PGlite());
+    const fts: string[] = [];
+    const vec: string[] = [];
+    const failingFts: DurableResourceChangeConsumer = {
+      consumerId: 'fts-v1',
+      onResourceChanged: async (change) => {
+        fts.push(change.path);
+        if (change.path === '/alice/1') throw new Error('alice FTS unavailable');
+      },
+    };
+    const journal = createJournal({
+      executor,
+      resolvePodScope: (change) => change.path.split('/')[1]!,
+      retryDelayMs: 60_000,
+      pollIntervalMs: 10,
+      consumers: [failingFts, consumer('vec-v1', vec)],
+    });
+    await journal.open();
+    await journal.recordResourceChange(event('/alice/1'));
+    await journal.recordResourceChange(event('/alice/2'));
+    await journal.recordResourceChange(event('/bob/1'));
+    await waitUntil(() => fts.includes('/bob/1') && vec.length === 3, 2_000);
+
+    expect(fts).toEqual(['/alice/1', '/bob/1']);
+    expect(vec).toEqual(['/alice/1', '/alice/2', '/bob/1']);
+    expect(await deliveryStages(executor, 'fts-v1')).toEqual([
+      ['/alice/1', 'pending'],
+      ['/alice/2', 'pending'],
+      ['/bob/1', 'done'],
+    ]);
+    await journal.close();
+  });
+
   it('delivers changes in sequence within each Pod', async () => {
     const db = new PGlite();
     const journal = createJournal({
@@ -216,10 +279,13 @@ describe('PostgresDerivedIndexJournal', () => {
     await firstProcess.open();
     await firstProcess.recordResourceChange(event('/alice/recover.md'));
     await executor.exec(`
-      UPDATE derived_index_change_journal
+      UPDATE derived_index_event_deliveries delivery
       SET stage = 'processing', lease_until = 0
-      WHERE resource_path = '/alice/recover.md'
-    `);
+      FROM derived_index_change_journal event
+      WHERE event.id = delivery.event_id
+        AND delivery.consumer_id = $1
+        AND event.resource_path = '/alice/recover.md'
+    `, [LEGACY_DERIVED_INDEX_CONSUMER_ID]);
     await firstProcess.close();
 
     const delivered: string[] = [];

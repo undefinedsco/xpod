@@ -9,6 +9,7 @@ import { getSharedPool, releaseSharedPool } from './database/PostgresPoolManager
 
 interface JournalRow {
   id: number | string;
+  pod_scope_id: string;
   resource_path: string;
   action: ResourceChangeEvent['action'];
   is_container: boolean;
@@ -43,8 +44,10 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
   private readonly leaseMs: number;
   private readonly executor: PostgresRdfSqlExecutor;
   private readonly ownsSharedPool: boolean;
+  private readonly consumers: Map<string, DurableResourceChangeConsumer>;
+  private readonly activeConsumerIds: Set<string>;
   private opening?: Promise<void>;
-  private replaying?: Promise<void>;
+  private readonly replaying = new Map<string, Promise<void>>();
   private readonly pollTimer?: ReturnType<typeof setInterval>;
 
   public constructor(
@@ -79,6 +82,10 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
       }
       consumerIds.add(consumer.consumerId);
     }
+    this.consumers = new Map(consumers.map((consumer) => [consumer.consumerId, consumer]));
+    this.activeConsumerIds = new Set(
+      consumers.length > 0 ? consumers.map((consumer) => consumer.consumerId) : [LEGACY_DERIVED_INDEX_CONSUMER_ID],
+    );
     this.executor = resolvedOptions.executor
       ?? new PgPoolRdfSqlExecutor(getSharedPool({ connectionString: resolvedOptions.connectionString }));
     this.ownsSharedPool = !resolvedOptions.executor;
@@ -232,19 +239,52 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
   }
 
   private async append(podScopeId: string, event: ResourceChangeEvent): Promise<void> {
-    await this.executor.exec(`
-      INSERT INTO derived_index_change_journal
-        (pod_scope_id, resource_path, action, is_container, occurred_at)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [podScopeId, event.path, event.action, event.isContainer, event.timestamp]);
+    await this.executor.transaction(async (tx) => {
+      const inserted = await tx.query<{ id: number | string }>(`
+        INSERT INTO derived_index_change_journal
+          (pod_scope_id, resource_path, action, is_container, occurred_at)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
+      `, [podScopeId, event.path, event.action, event.isContainer, event.timestamp]);
+      const eventId = inserted[0]?.id;
+      if (eventId === undefined) {
+        throw new Error(`Failed to append derived-index event: ${event.path}`);
+      }
+      for (const consumerId of this.activeConsumerIds) {
+        await tx.exec(`
+          INSERT INTO derived_index_event_deliveries (consumer_id, event_id)
+          VALUES ($1, $2)
+          ON CONFLICT (consumer_id, event_id) DO NOTHING
+        `, [consumerId, eventId]);
+      }
+    });
   }
 
   public async replayPending(listener: ResourceChangeListener, limit = 100): Promise<DerivedIndexReplayResult> {
     await this.open();
+    this.activeConsumerIds.add(LEGACY_DERIVED_INDEX_CONSUMER_ID);
+    await this.registerConsumer(LEGACY_DERIVED_INDEX_CONSUMER_ID, true);
+    return this.replayDelivery(LEGACY_DERIVED_INDEX_CONSUMER_ID, listener, limit);
+  }
+
+  public async replayConsumer(consumerId: string, limit = 100): Promise<DerivedIndexReplayResult> {
+    await this.open();
+    const consumer = this.consumers.get(consumerId);
+    if (!consumer) {
+      throw new Error(`Unknown derived-index consumerId: ${consumerId}`);
+    }
+    return this.replayDelivery(consumerId, consumer, limit);
+  }
+
+  private async replayDelivery(
+    consumerId: string,
+    listener: ResourceChangeListener,
+    limit: number,
+  ): Promise<DerivedIndexReplayResult> {
     let delivered = 0;
     let failed = 0;
     for (let index = 0; index < limit; index += 1) {
-      const row = await this.claimNext();
+      const row = await this.claimNext(consumerId);
       if (!row) break;
       const event: ResourceChangeEvent = {
         path: row.resource_path,
@@ -255,18 +295,18 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
       try {
         await listener.onResourceChanged(event);
         await this.executor.exec(`
-          UPDATE derived_index_change_journal
+          UPDATE derived_index_event_deliveries
           SET stage = 'done', lease_until = NULL, last_error = NULL
-          WHERE id = $1
-        `, [row.id]);
+          WHERE consumer_id = $1 AND event_id = $2
+        `, [consumerId, row.id]);
         delivered += 1;
       } catch (error) {
         await this.executor.exec(`
-          UPDATE derived_index_change_journal
+          UPDATE derived_index_event_deliveries
           SET stage = 'pending', attempts = attempts + 1,
-              available_at = $2, lease_until = NULL, last_error = $3
-          WHERE id = $1
-        `, [row.id, Date.now() + this.retryDelayMs, errorMessage(error)]);
+              available_at = $3, lease_until = NULL, last_error = $4
+          WHERE consumer_id = $1 AND event_id = $2
+        `, [consumerId, row.id, Date.now() + this.retryDelayMs, errorMessage(error)]);
         failed += 1;
       }
     }
@@ -284,72 +324,80 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
     }
   }
 
-  public async pendingCount(podScopeId?: string): Promise<number> {
+  public async pendingCount(podScopeId?: string, consumerId?: string): Promise<number> {
     await this.open();
     const rows = await this.executor.query<{ count: number | string }>(`
-      SELECT COUNT(*) AS count
-      FROM derived_index_change_journal
-      WHERE stage <> 'done' AND ($1::text IS NULL OR pod_scope_id = $1)
-    `, [podScopeId ?? null]);
+      SELECT COUNT(DISTINCT delivery.event_id) AS count
+      FROM derived_index_event_deliveries delivery
+      JOIN derived_index_change_journal event ON event.id = delivery.event_id
+      WHERE delivery.stage <> 'done'
+        AND ($1::text IS NULL OR event.pod_scope_id = $1)
+        AND (
+          ($2::text IS NOT NULL AND delivery.consumer_id = $2)
+          OR ($2::text IS NULL AND delivery.consumer_id = ANY($3::text[]))
+        )
+    `, [podScopeId ?? null, consumerId ?? null, [...this.activeConsumerIds]]);
     return Number(rows[0]?.count ?? 0);
   }
 
-  private async claimNext(): Promise<JournalRow | undefined> {
+  private async claimNext(consumerId: string): Promise<JournalRow | undefined> {
     return this.executor.transaction(async (tx) => {
       const now = Date.now();
       await tx.exec(`
-        UPDATE derived_index_change_journal
+        UPDATE derived_index_event_deliveries
         SET stage = 'pending', lease_until = NULL
-        WHERE stage = 'processing' AND lease_until < $1
-      `, [now]);
+        WHERE consumer_id = $1 AND stage = 'processing' AND lease_until < $2
+      `, [consumerId, now]);
       const rows = await tx.query<JournalRow>(`
-        SELECT event.id, event.resource_path, event.action,
+        SELECT event.id, event.pod_scope_id, event.resource_path, event.action,
                event.is_container, event.occurred_at
-        FROM derived_index_change_journal event
-        WHERE event.stage = 'pending'
-          AND event.available_at <= $1
+        FROM derived_index_event_deliveries delivery
+        JOIN derived_index_change_journal event ON event.id = delivery.event_id
+        WHERE delivery.consumer_id = $1
+          AND delivery.stage = 'pending'
+          AND delivery.available_at <= $2
           AND NOT EXISTS (
-            SELECT 1 FROM derived_index_change_journal earlier
-            WHERE earlier.pod_scope_id = event.pod_scope_id
-              AND earlier.id < event.id
-              AND earlier.stage <> 'done'
+            SELECT 1
+            FROM derived_index_event_deliveries earlier_delivery
+            JOIN derived_index_change_journal earlier_event
+              ON earlier_event.id = earlier_delivery.event_id
+            WHERE earlier_delivery.consumer_id = delivery.consumer_id
+              AND earlier_event.pod_scope_id = event.pod_scope_id
+              AND earlier_event.id < event.id
+              AND earlier_delivery.stage <> 'done'
           )
         ORDER BY event.id
         LIMIT 1
         FOR UPDATE SKIP LOCKED
-      `, [now]);
+      `, [consumerId, now]);
       const row = rows[0];
       if (!row) return undefined;
       await tx.exec(`
-        UPDATE derived_index_change_journal
-        SET stage = 'processing', lease_until = $2
-        WHERE id = $1
-      `, [row.id, now + this.leaseMs]);
+        UPDATE derived_index_event_deliveries
+        SET stage = 'processing', lease_until = $3
+        WHERE consumer_id = $1 AND event_id = $2
+      `, [consumerId, row.id, now + this.leaseMs]);
       return row;
     });
   }
 
   public async close(): Promise<void> {
     if (this.pollTimer) clearInterval(this.pollTimer);
-    await this.replaying;
+    await Promise.all(this.replaying.values());
     if (this.ownsSharedPool && this.options.connectionString) {
       releaseSharedPool({ connectionString: this.options.connectionString });
     }
   }
 
   private scheduleReplay(): void {
-    if (!this.options.consumers?.length || this.replaying) return;
-    const listener: ResourceChangeListener = {
-      onResourceChanged: async (event) => {
-        for (const consumer of this.options.consumers!) {
-          await consumer.onResourceChanged(event);
-        }
-      },
-    };
-    this.replaying = this.replayPending(listener)
-      .then(() => undefined)
-      .catch(() => undefined)
-      .finally(() => { this.replaying = undefined; });
+    for (const consumerId of this.consumers.keys()) {
+      if (this.replaying.has(consumerId)) continue;
+      const replay = this.replayConsumer(consumerId)
+        .then(() => undefined)
+        .catch(() => undefined)
+        .finally(() => { this.replaying.delete(consumerId); });
+      this.replaying.set(consumerId, replay);
+    }
   }
 }
 
