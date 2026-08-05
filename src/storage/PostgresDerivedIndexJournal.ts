@@ -117,6 +117,32 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS derived_index_consumers (
+        consumer_id TEXT PRIMARY KEY,
+        created_at BIGINT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS derived_index_event_deliveries (
+        consumer_id TEXT NOT NULL REFERENCES derived_index_consumers(consumer_id),
+        event_id BIGINT NOT NULL REFERENCES derived_index_change_journal(id) ON DELETE CASCADE,
+        stage TEXT NOT NULL DEFAULT 'pending' CHECK (stage IN ('pending', 'processing', 'done')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        available_at BIGINT NOT NULL DEFAULT 0,
+        lease_until BIGINT,
+        last_error TEXT,
+        PRIMARY KEY (consumer_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS derived_index_event_deliveries_pending
+        ON derived_index_event_deliveries (consumer_id, stage, available_at, event_id);
+      CREATE TABLE IF NOT EXISTS derived_index_resource_checkpoints (
+        consumer_id TEXT NOT NULL REFERENCES derived_index_consumers(consumer_id),
+        pod_scope_id TEXT NOT NULL,
+        resource_path TEXT NOT NULL,
+        last_event_id BIGINT NOT NULL REFERENCES derived_index_change_journal(id),
+        last_action TEXT NOT NULL CHECK (last_action IN ('create', 'update', 'delete')),
+        updated_at BIGINT NOT NULL,
+        deleted_at BIGINT,
+        PRIMARY KEY (consumer_id, pod_scope_id, resource_path)
+      );
     `);
     await this.executor.transaction(async (tx) => {
       const sourceTable = await tx.query<{ relation: string | null }>(`
@@ -138,6 +164,60 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
         FROM rdf_sources
         ORDER BY id
       `);
+    });
+    const configuredConsumers = this.options.consumers ?? [];
+    if (configuredConsumers.length === 0) {
+      await this.registerConsumer(LEGACY_DERIVED_INDEX_CONSUMER_ID, true);
+    } else {
+      for (const consumer of configuredConsumers) {
+        await this.registerConsumer(consumer.consumerId, false);
+      }
+    }
+  }
+
+  private async registerConsumer(consumerId: string, legacy: boolean): Promise<void> {
+    await this.executor.transaction(async (tx) => {
+      const now = Date.now();
+      await tx.exec(`
+        INSERT INTO derived_index_consumers (consumer_id, created_at)
+        VALUES ($1, $2)
+        ON CONFLICT (consumer_id) DO NOTHING
+      `, [consumerId, now]);
+      await tx.exec(`
+        INSERT INTO derived_index_event_deliveries
+          (consumer_id, event_id, stage, attempts, available_at, lease_until, last_error)
+        SELECT $1, id,
+               CASE WHEN $2::boolean AND stage = 'done' THEN 'done' ELSE 'pending' END,
+               CASE WHEN $2::boolean THEN attempts ELSE 0 END,
+               CASE WHEN $2::boolean THEN available_at ELSE 0 END,
+               NULL,
+               CASE WHEN $2::boolean THEN last_error ELSE NULL END
+        FROM derived_index_change_journal
+        ON CONFLICT (consumer_id, event_id) DO NOTHING
+      `, [consumerId, legacy]);
+      if (legacy) {
+        await tx.exec(`
+          INSERT INTO derived_index_resource_checkpoints
+            (consumer_id, pod_scope_id, resource_path, last_event_id,
+             last_action, updated_at, deleted_at)
+          SELECT $1, latest.pod_scope_id, latest.resource_path, latest.id,
+                 latest.action, latest.occurred_at,
+                 CASE WHEN latest.action = 'delete' THEN latest.occurred_at ELSE NULL END
+          FROM (
+            SELECT DISTINCT ON (pod_scope_id, resource_path)
+                   id, pod_scope_id, resource_path, action, occurred_at
+            FROM derived_index_change_journal
+            WHERE stage = 'done'
+            ORDER BY pod_scope_id, resource_path, id DESC
+          ) latest
+          ON CONFLICT (consumer_id, pod_scope_id, resource_path) DO UPDATE
+          SET last_event_id = EXCLUDED.last_event_id,
+              last_action = EXCLUDED.last_action,
+              updated_at = EXCLUDED.updated_at,
+              deleted_at = EXCLUDED.deleted_at
+          WHERE derived_index_resource_checkpoints.last_event_id < EXCLUDED.last_event_id
+        `, [consumerId]);
+      }
     });
   }
 
