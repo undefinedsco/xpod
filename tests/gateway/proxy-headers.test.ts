@@ -86,8 +86,8 @@ describe('GatewayProxy response headers', () => {
 
     const link = res.headers.get('link') ?? '';
     expect(link).toContain('updatesViaStreamingHttp2023');
-    // Browser clients must stay on the standard Solid notification protocol;
-    // the gateway never advertises the proprietary multiplex descriptor.
+    // Key browser features ride standard Solid protocols; the gateway does
+    // not steer live queries onto a proprietary wire format.
     expect(link).not.toContain('urn:xpod:notifications:v1');
   });
 

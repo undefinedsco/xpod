@@ -122,11 +122,12 @@ describe('Device notification multiplex through the gateway', () => {
     }
   };
 
-  it('does not advertise the multiplex descriptor on Solid resource responses', async () => {
+  it('keeps Solid resource responses on standard notification protocols', async () => {
     const response = await fetch(`${gatewayBase}pod/resource.ttl`, { method: 'HEAD' });
 
-    // Browser live queries stay on standard Solid notification channels; the
-    // multiplex WebSocket below serves the device notification gateway only.
+    // Live queries are a key browser feature and ride standard Solid
+    // channels; the multiplex WebSocket below serves the device notification
+    // gateway, not browser synchronization.
     expect(response.headers.get('link') ?? '').not.toContain('urn:xpod:notifications:v1');
     expect(response.headers.get('x-xpod-notifications')).toBeNull();
   });
