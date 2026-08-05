@@ -153,9 +153,9 @@ abstract class BaseProviderModelDiscoveryAdapter implements ProviderModelDiscove
       }
       if (seenCursors.has(page.nextCursor)) {
         // A provider returning the same cursor would otherwise loop forever.
-        // The models collected so far are still a deterministic prefix of the
-        // catalog, so return them rather than issuing an unsafe extra request.
-        break;
+        // Returning a partial catalog would make selection state look complete,
+        // so fail the discovery while keeping the provider body out of errors.
+        throw discoveryError(this.provider, 502, 'pagination_cursor_repeated');
       }
       seenCursors.add(page.nextCursor);
       if (pageCount >= this.maxPages) {
@@ -212,6 +212,11 @@ abstract class BaseProviderModelDiscoveryAdapter implements ProviderModelDiscove
         signal,
       });
     } catch (error) {
+      if (signal?.aborted) {
+        // Preserve the caller's cancellation reason (including TimeoutError or
+        // a custom AbortController reason) instead of turning it into a 502.
+        throw error;
+      }
       if (isAbortError(error)) {
         throw error;
       }
@@ -342,58 +347,50 @@ function normalizeModelRow(row: unknown): DiscoveredProviderModel | undefined {
 }
 
 function inferModelType(record: Record<string, unknown>, id: string): DiscoveredProviderModel['modelType'] {
-  const signals = [
-    record.modelType,
-    record.model_type,
-    record.type,
-    record.category,
-    record.modality,
-    record.modalities,
-    capabilityTypeSignals(record.capabilities),
-  ];
-  const signalText = signals
-    .flatMap((value) => flattenSignal(value))
-    .join(' ')
-    .toLowerCase();
-  const text = `${signalText} ${id.toLowerCase()}`;
-  if (/(?:embedding|embed)/u.test(text)) {
+  const explicit = explicitModelType(record);
+  if (explicit) {
+    return explicit;
+  }
+
+  const normalizedId = id.toLowerCase();
+  if (/(?:embedding|embed)/u.test(normalizedId)) {
     return 'embedding';
   }
-  if (/(?:image|dall-e|stable[-_ ]?diffusion|flux)/u.test(text)) {
+  if (/(?:dall[-_ ]?e|stable[-_ ]?diffusion|flux|imagen|midjourney|image[-_ ]?(?:generation|gen))/u.test(normalizedId)) {
     return 'image';
   }
-  if (/(?:audio|whisper|speech|tts)/u.test(text)) {
+  if (/(?:whisper|tts|speech|musicgen|audio[-_ ]?(?:generation|gen))/u.test(normalizedId)) {
     return 'audio';
   }
-  if (/(?:chat|completion|conversation|text-generation|instruct|reason|coder|gpt|claude|kimi|qwen|deepseek|llama|mistral|gemini)/u.test(text)) {
+  if (/(?:chat|completion|conversation|text[-_ ]?generation|instruct|reason|coder|gpt|claude|kimi|qwen|deepseek|llama|mistral|gemini)/u.test(normalizedId)) {
     return 'chat';
   }
   return 'other';
 }
 
-function capabilityTypeSignals(value: unknown): string[] {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return [];
+function explicitModelType(record: Record<string, unknown>): DiscoveredProviderModel['modelType'] | undefined {
+  for (const value of [record.modelType, record.model_type, record.type, record.object, record.category]) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (!normalized || normalized === 'model') {
+      continue;
+    }
+    if (/(?:embedding|embed)/u.test(normalized)) {
+      return 'embedding';
+    }
+    if (/(?:image|dall[-_ ]?e|stable[-_ ]?diffusion|flux|imagen)/u.test(normalized)) {
+      return 'image';
+    }
+    if (/(?:audio|whisper|speech|tts)/u.test(normalized)) {
+      return 'audio';
+    }
+    if (/(?:chat|completion|conversation|text[-_ ]?generation|instruct|reason|coder)/u.test(normalized)) {
+      return 'chat';
+    }
   }
-  return Object.entries(value as Record<string, unknown>)
-    .filter(([key, enabled]) => enabled === true && /^(?:chat|embedding|image|audio)$/u.test(key.toLowerCase()))
-    .map(([key]) => key);
-}
-
-function flattenSignal(value: unknown): string[] {
-  if (typeof value === 'string') {
-    return [value];
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return [String(value)];
-  }
-  if (Array.isArray(value)) {
-    return value.flatMap((item) => flattenSignal(item));
-  }
-  if (value && typeof value === 'object') {
-    return Object.entries(value).flatMap(([key, item]) => [key, ...flattenSignal(item)]);
-  }
-  return [];
+  return undefined;
 }
 
 function tokenFromSecret(secret: ProviderSecret): string | undefined {

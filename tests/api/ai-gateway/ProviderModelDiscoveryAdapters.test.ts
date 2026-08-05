@@ -117,7 +117,7 @@ describe('ProviderModelDiscoveryAdapters', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('follows cursor pagination, deduplicates IDs, and stops a repeated cursor loop', async () => {
+  it('follows cursor pagination, deduplicates IDs, and rejects a repeated cursor loop', async () => {
     const urls: string[] = [];
     const fetch = jsonFetch((url) => {
       urls.push(url);
@@ -133,7 +133,7 @@ describe('ProviderModelDiscoveryAdapters', () => {
       }
       return {
         body: {
-          data: [{ id: 'gpt-4.1' }, { id: 'gpt-5' }],
+          data: [{ id: 'gpt-4.1' }, { id: 'gpt-5', description: 'provider-secret' }],
           has_more: true,
           last_id: 'page-2',
         },
@@ -141,13 +141,18 @@ describe('ProviderModelDiscoveryAdapters', () => {
     });
     const adapter = createProviderModelDiscoveryAdapters({ fetch }).get('openai');
 
-    await expect(adapter.discover({
+    const error = await adapter.discover({
       baseUrl: BASE_URLS.openai,
       secret: SECRETS.openai,
-    })).resolves.toEqual([
-      { id: 'gpt-5', modelType: 'chat' },
-      { id: 'gpt-4.1', modelType: 'chat' },
-    ]);
+    }).catch((caught: unknown) => caught as Error);
+    expect(error).toMatchObject({
+      code: 'provider_error',
+      status: 502,
+      details: {
+        classification: 'pagination_cursor_repeated',
+      },
+    });
+    expect(error.message).not.toContain('provider-secret');
     expect(urls).toEqual([
       `${BASE_URLS.openai}/models`,
       `${BASE_URLS.openai}/models?after=page-2`,
@@ -239,6 +244,68 @@ describe('ProviderModelDiscoveryAdapters', () => {
       { id: 'claude-sonnet-4-5-20250929', modelType: 'chat' },
       { id: 'vendor-proprietary-v1', modelType: 'other' },
     ]);
+  });
+
+  it('keeps multimodal chat models as chat and gives explicit output type precedence', async () => {
+    const fetch = jsonFetch(() => ({
+      body: {
+        data: [
+          {
+            id: 'vendor-vision-chat',
+            object: 'model',
+            modalities: ['text', 'image', 'audio'],
+            capabilities: { image: true, audio: true },
+          },
+          {
+            id: 'vendor-image-chat',
+            type: 'chat',
+            modalities: ['text', 'image'],
+          },
+          { id: 'vendor-image-generation', type: 'image', modalities: ['text', 'image'] },
+          { id: 'vendor-audio-generation', modelType: 'audio' },
+        ],
+      },
+    }));
+    const models = await createProviderModelDiscoveryAdapters({ fetch }).get('openai').discover({
+      baseUrl: BASE_URLS.openai,
+      secret: SECRETS.openai,
+    });
+
+    expect(models).toEqual([
+      { id: 'vendor-vision-chat', modelType: 'chat' },
+      { id: 'vendor-image-chat', modelType: 'chat' },
+      { id: 'vendor-image-generation', modelType: 'image' },
+      { id: 'vendor-audio-generation', modelType: 'audio' },
+    ]);
+  });
+
+  it.each([
+    ['DOM AbortError', () => new DOMException('The operation was aborted', 'AbortError')],
+    ['TimeoutError', () => Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' })],
+  ])('preserves %s rejection when the discovery signal is already aborted', async (_label, createError) => {
+    const controller = new AbortController();
+    controller.abort();
+    const rejection = createError();
+    const fetch = vi.fn().mockRejectedValue(rejection) as unknown as typeof globalThis.fetch;
+
+    await expect(createProviderModelDiscoveryAdapters({ fetch }).get('openai').discover({
+      baseUrl: BASE_URLS.openai,
+      secret: SECRETS.openai,
+      signal: controller.signal,
+    })).rejects.toBe(rejection);
+  });
+
+  it('preserves a custom AbortController reason from a cancelled discovery request', async () => {
+    const controller = new AbortController();
+    const rejection = new Error('caller cancelled discovery');
+    controller.abort(rejection);
+    const fetch = vi.fn().mockRejectedValue(rejection) as unknown as typeof globalThis.fetch;
+
+    await expect(createProviderModelDiscoveryAdapters({ fetch }).get('anthropic').discover({
+      baseUrl: BASE_URLS.anthropic,
+      secret: SECRETS.anthropic,
+      signal: controller.signal,
+    })).rejects.toBe(rejection);
   });
 
   it.each([401, 403])('marks HTTP %s as reauth-required without exposing provider body', async (status) => {
