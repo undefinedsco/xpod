@@ -323,10 +323,18 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       return recordFromCredentialRow(row, record.webId);
     }
     if (existing) {
-      const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
-      return recordFromCredentialRow(updated ?? row, record.webId);
+      try {
+        const updated = await db.updateById<Record<string, unknown>>(credential, record.id, row);
+        return recordFromCredentialRow(updated ?? row, record.webId);
+      } catch (error) {
+        throw credentialPersistenceError('update', error);
+      }
     }
-    await db.insert(credential).values(row).execute();
+    try {
+      await db.insert(credential).values(row).execute();
+    } catch (error) {
+      throw credentialPersistenceError('insert', error);
+    }
     return recordFromCredentialRow(row, record.webId);
   }
 

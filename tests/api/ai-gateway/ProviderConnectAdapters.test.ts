@@ -961,6 +961,43 @@ describe('ProviderConnectService', () => {
     })).resolves.toMatchObject({ status: 'revoked', version: 3 });
   });
 
+  it('identifies an exact Pod update failure without exposing its cause', async () => {
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        findById: async () => ({
+          id: 'credentials.ttl#cloud-openai',
+          provider: 'openai.ttl',
+          authMode: 'apiKey',
+          service: 'ai',
+          status: 'revoked',
+          storageMode: 'plaintext-v1',
+          secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-old' }),
+          keyVersion: '2',
+        }),
+        updateById: async () => {
+          throw new Error('upstream contained sk-must-not-leak');
+        },
+      } as any),
+    });
+
+    const save = repository.upsertConnectedCredential({
+      id: 'credentials.ttl#cloud-openai',
+      credentialIri: 'https://id.example/alice/settings/credentials.ttl#cloud-openai',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      storageMode: 'plaintext-v1',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-new' }),
+      status: 'active',
+    });
+
+    await expect(save).rejects.toThrow(/^credential_persistence_failed:update$/u);
+    await expect(save).rejects.not.toThrow(/sk-must-not-leak/u);
+  });
+
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const ownerMismatch = new Error('Gateway internal Pod token WebID does not match requested owner');
