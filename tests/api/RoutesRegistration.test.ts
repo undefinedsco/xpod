@@ -152,6 +152,13 @@ describe('registerRoutes mode wiring', () => {
         issueClientConfiguration: vi.fn(async () => undefined),
       },
       providerConnectService: {},
+      providerModelSelectionService: {
+        discover: vi.fn(),
+        replaceSelection: vi.fn(),
+        getCatalog: vi.fn(),
+      },
+      gatewayProviderRegistry: {},
+      providerQuotaService: {},
       db: {},
       podLookupRepo: {
         findByWebId: vi.fn(async () => undefined),
@@ -313,6 +320,12 @@ describe('registerRoutes mode wiring', () => {
       services: {
         hostedPodDataAccess: { getTrustedFetch },
         gatewayInternalPodAccess: { getTrustedFetch: legacyGetTrustedFetch },
+        providerConnectService: {
+          listProviders: vi.fn(async ({ webId, auth }: { webId: string; auth: unknown }) => {
+            await getTrustedFetch(webId, auth as never);
+            return [];
+          }),
+        },
         podLookupRepo: {
           findByWebId: vi.fn(async () => ({
             podId: 'pod-alice',
