@@ -227,12 +227,18 @@ jobs:
       - name: Ensure npm latest dist-tag
         run: |
           set -euo pipefail
-          latest_version="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
-          latest_version="${latest_version%\"}"
-          latest_version="${latest_version#\"}"
-          if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
-            exit 0
-          fi
+          latest_version=""
+          for attempt in $(seq 1 12); do
+            latest_version="$(npm view "@undefineds.co/xpod" dist-tags.latest --json --registry "$XPOD_PUBLISH_REGISTRY")"
+            latest_version="${latest_version%\"}"
+            latest_version="${latest_version#\"}"
+            if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 12 ]]; then
+              sleep 5
+            fi
+          done
           if [[ -n "$latest_version" && "$latest_version" != "null" ]]; then
             echo "::error::npm latest dist-tag points to unexpected version"
             exit 1

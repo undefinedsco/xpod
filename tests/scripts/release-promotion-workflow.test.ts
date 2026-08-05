@@ -107,6 +107,7 @@ describe('stable release promotion workflow', () => {
     const publishRunText = jobRunText(workflow, 'publish_npm_latest');
     const publishStep = publish.steps.find((step: any) => step.name === 'Publish stable package to npm latest');
     const latestGuardRun = publish.steps.find((step: any) => step.name === 'Guard npm latest before publish')?.run ?? '';
+    const ensureLatestRun = publish.steps.find((step: any) => step.name === 'Ensure npm latest dist-tag')?.run ?? '';
 
     expect(publish.needs).toBe('promotion_guard');
     expect(publish.env).toMatchObject({
@@ -140,6 +141,8 @@ describe('stable release promotion workflow', () => {
     expect(publishRunText).toContain('npm dist-tag add "@undefineds.co/xpod@$RELEASE_VERSION" latest');
     expect(publishRunText).toContain('npm latest dist-tag points to unexpected version');
     expect(publishRunText).toContain('npm latest dist-tag did not verify');
+    expect(ensureLatestRun).toContain('for attempt in $(seq 1 12)');
+    expect(ensureLatestRun).toContain('sleep 5');
 
     for (const jobName of [ 'verify_npm_consumer_node', 'verify_npm_consumer_bun' ]) {
       const job = workflow.jobs[jobName];
