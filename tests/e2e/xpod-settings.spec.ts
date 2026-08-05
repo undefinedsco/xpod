@@ -83,15 +83,12 @@ test.describe('Xpod settings product acceptance', () => {
 
       await test.step('Pick only gpt-5 and persist it through the authenticated API', async () => {
         const checkbox = alice.getByRole('checkbox', { name: /gpt-5 \(gpt-5\)/i }).first();
-        if (!(await checkbox.isChecked())) await checkbox.check();
-        const saveResponsePromise = alice.waitForResponse((response) => (
-          new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/models/selection'
-          && response.request().method() === 'PUT'
-        ));
-        await alice.getByRole('button', { name: '保存模型', exact: true }).click();
-        const saveResponse = await saveResponsePromise;
-        expect(saveResponse.ok(), `model selection save failed: ${saveResponse.status()}`).toBe(true);
-        await expect(alice.getByText('已保存', { exact: true })).toBeVisible();
+        if (await checkbox.isChecked()) {
+          await checkbox.uncheck();
+          await saveSelectedModels(alice);
+        }
+        await checkbox.check();
+        await saveSelectedModels(alice);
       });
 
       await test.step('remove gpt-5 upstream, force refresh and retain the selected row as unavailable', async () => {
@@ -261,6 +258,18 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
   const saveResponseBody = await saveResponse.text();
   expect(saveResponse.ok(), `save failed with HTTP ${saveResponse.status()}: ${saveResponseBody}`).toBe(true);
   await expect(page.locator('body')).toContainText(/connected|configured|saved|已连接|已配置|已保存/i);
+}
+
+async function saveSelectedModels(page: Page): Promise<void> {
+  const saveResponsePromise = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/models/selection'
+    && response.request().method() === 'PUT'
+  ));
+  await expect(page.getByRole('button', { name: '保存模型', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '保存模型', exact: true }).click();
+  const saveResponse = await saveResponsePromise;
+  expect(saveResponse.ok(), `model selection save failed: ${saveResponse.status()}`).toBe(true);
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible();
 }
 
 function reloadModelsResponse(page: Page): Promise<import('@playwright/test').Response> {
