@@ -1023,6 +1023,61 @@ describe('ProviderConnectService', () => {
     })).resolves.toMatchObject({ id: 'credentials.ttl#local-local-cloud-openai', version: 6 });
   });
 
+  it('ignores malformed credential IDs instead of probing them or deriving providers from unrelated paths', async () => {
+    const rows = new Map<string, Record<string, unknown>>([
+      [ 'credentials.ttl#local-preview-openai', {
+        id: 'credentials.ttl#local-preview-openai',
+        authMode: 'apiKey',
+        status: 'active',
+        storageMode: 'plaintext-v1',
+        secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-malformed-fragment' }),
+        keyVersion: '1',
+      } ],
+      [ 'other.ttl#local-openai', {
+        id: 'other.ttl#local-openai',
+        authMode: 'apiKey',
+        status: 'active',
+        storageMode: 'plaintext-v1',
+        secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'sk-unrelated-path' }),
+        keyVersion: '1',
+      } ],
+    ]);
+    const probedIds: string[] = [];
+    const repository = new PodConnectedCredentialRepository({
+      providerIds: [ 'openai' ],
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        findById: async (_resource: unknown, id: string) => {
+          probedIds.push(id);
+          return jsonClone(rows.get(id) ?? null);
+        },
+        insert: vi.fn() as any,
+        updateById: vi.fn(async () => null),
+        deleteById: vi.fn(async () => false),
+      } as any),
+    });
+
+    await expect(repository.getCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'local',
+    })).resolves.toBeUndefined();
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'local',
+    })).resolves.toEqual([]);
+
+    expect(probedIds).toEqual([
+      'credentials.ttl#local-openai',
+      'credentials.ttl#local-local-cloud-openai',
+      'credentials.ttl#local-openai',
+      'credentials.ttl#local-local-cloud-openai',
+    ]);
+    expect(probedIds).not.toContain('credentials.ttl#local-preview-openai');
+    expect(probedIds).not.toContain('other.ttl#local-openai');
+  });
+
   it('replaces a revoked exact Pod credential instead of partially updating it', async () => {
     const rows = new Map<string, Record<string, unknown>>([
       ['credentials.ttl#cloud-openai', {
