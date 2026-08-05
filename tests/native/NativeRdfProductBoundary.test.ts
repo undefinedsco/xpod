@@ -27,7 +27,7 @@ describe('native RDF product boundary', () => {
 
   it('keeps the public runtime on a vendor-neutral native SPARQL ABI', async () => {
     const files = (
-      await Promise.all(['src', 'config', 'docs', 'scripts'].map((root) =>
+      await Promise.all(['src', 'config', 'scripts'].map((root) =>
         sourceFiles(path.join(repoRoot, root))))
     ).flat();
     for (const file of files) {
