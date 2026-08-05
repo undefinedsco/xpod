@@ -41,6 +41,7 @@ import {
 } from './AiClientConfigurationSection'
 import {
   AiProviderCard,
+  isProviderModelSelectionReady,
   type ProviderConnectionState,
 } from './AiProviderCard'
 
@@ -88,7 +89,6 @@ export function AiConnectionPanel({
   const [modelErrors, setModelErrors] = useState<Record<string, string | undefined>>({})
   const [modelSaveNotices, setModelSaveNotices] = useState<Record<string, boolean>>({})
   const modelLoadGeneration = useRef(0)
-  const loadedModelProviders = useRef(new Set<AiConnectionProvider>())
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
   const [busyProviders, setBusyProviders] = useState<Record<string, boolean>>({})
@@ -104,6 +104,14 @@ export function AiConnectionPanel({
     onProviderStateChange?.(provider, productStateFromConnection(state))
   }, [onProviderStateChange])
 
+  const providerSummarySignature = summarizeProviderConnectionStates(providerSummariesInput)
+  const previousProviderSummarySignature = useRef<string | undefined>(undefined)
+  const providerSummaryChanged = previousProviderSummarySignature.current !== providerSummarySignature
+
+  useEffect(() => {
+    previousProviderSummarySignature.current = providerSummarySignature
+  }, [providerSummarySignature])
+
   useEffect(() => {
     setConnectionStates(Object.fromEntries(
       Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
@@ -113,7 +121,7 @@ export function AiConnectionPanel({
           : summary.status,
       ]),
     ))
-  }, [providerSummariesInput])
+  }, [providerSummarySignature])
 
   const applyModelCatalog = useCallback((provider: AiConnectionProvider, catalog: AiProviderModelCatalog) => {
     setModelCatalogs((current) => ({ ...current, [provider]: catalog }))
@@ -139,7 +147,6 @@ export function AiConnectionPanel({
       }
       if (generation !== modelLoadGeneration.current) return
       applyModelCatalog(provider, catalog)
-      loadedModelProviders.current.add(provider)
     } catch (error) {
       if (generation !== modelLoadGeneration.current) return
       setModelErrors((current) => ({ ...current, [provider]: errorMessage(error) }))
@@ -164,16 +171,23 @@ export function AiConnectionPanel({
   // panel. Use that durable state as the initial source of truth so an already
   // connected provider starts with discovery (rather than a redundant durable
   // read) before the local state effect has run.
-  const selectedConnectionState = connectionStates[selectedDefinition]
-    ?? connectionStateFromSummary(providerSummariesInput[selectedDefinition])
+  const connectionStateForProvider = useCallback((provider: AiConnectionProvider): ProviderConnectionState => {
+    const summaryState = connectionStateFromSummary(providerSummariesInput[provider])
+    if (providerSummaryChanged) return summaryState ?? 'unknown'
+    return connectionStates[provider] ?? summaryState ?? 'unknown'
+  }, [connectionStates, providerSummariesInput, providerSummaryChanged])
+
+  const selectedConnectionState = connectionStateForProvider(selectedDefinition)
 
   useEffect(() => {
     if (!serviceAccessGranted) return
     const connected = selectedConnectionState === 'connected' || selectedConnectionState === 'configured'
     if (connected) {
       void loadProviderModels(selectedDefinition, true)
-    } else if (!loadedModelProviders.current.has(selectedDefinition)) {
-      loadedModelProviders.current.add(selectedDefinition)
+    } else {
+      // A catalog obtained while connected must not be treated as a durable
+      // source after the credential becomes stale. Keep the selected rows in
+      // the catalog for removal, but let the next reconnect discover again.
       void loadProviderModels(selectedDefinition, false)
     }
   }, [loadProviderModels, selectedConnectionState, selectedDefinition, serviceAccessGranted])
@@ -218,11 +232,19 @@ export function AiConnectionPanel({
   }
 
   const toggleModel = (provider: AiConnectionProvider, model: AiProviderModel) => {
+    const catalog = modelCatalogs[provider]
+    const connectionState = connectionStateForProvider(provider)
     setModelSaveNotices((current) => ({ ...current, [provider]: false }))
     setModelDrafts((current) => {
       const selected = new Set(current[provider] ?? [])
       if (selected.has(model.id)) selected.delete(model.id)
-      else if (model.availability === 'available') selected.add(model.id)
+      else if (
+        catalog?.status !== 'statusUnknown'
+        && isProviderModelSelectionReady(connectionState)
+        && model.availability === 'available'
+      ) {
+        selected.add(model.id)
+      }
       return { ...current, [provider]: Array.from(selected) }
     })
   }
@@ -230,6 +252,24 @@ export function AiConnectionPanel({
   const saveModels = async (provider: AiConnectionProvider) => {
     const catalog = modelCatalogs[provider]
     if (!catalog || !serviceAccessGranted) return
+    const connectionState = connectionStateForProvider(provider)
+    const persistedIds = new Set(catalog.models.filter((model) => model.selected).map((model) => model.id))
+    const draftIds = modelDrafts[provider] ?? []
+    const selectedAvailableIds = catalog.models
+      .filter((model) => draftIds.includes(model.id))
+      .map((model) => model.id)
+    const additions = selectedAvailableIds.filter((id) => !persistedIds.has(id))
+    if (additions.length > 0 && (
+      catalog.status === 'statusUnknown'
+      || !isProviderModelSelectionReady(connectionState)
+      || additions.some((id) => catalog.models.find((model) => model.id === id)?.availability !== 'available')
+    )) {
+      setModelErrors((current) => ({
+        ...current,
+        [provider]: '请先重新连接后再添加模型。',
+      }))
+      return
+    }
     setModelSaving((current) => ({ ...current, [provider]: true }))
     setModelErrors((current) => ({ ...current, [provider]: undefined }))
     try {
@@ -456,7 +496,7 @@ export function AiConnectionPanel({
             <AiProviderCard
               key={definition.id}
               definition={definition}
-              status={connectionStates[definition.id] ?? 'unknown'}
+              status={connectionStateForProvider(definition.id)}
               accountLabel={providerSummariesInput[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
               apiKey={apiKeyInputs[definition.id] ?? ''}
@@ -490,7 +530,7 @@ export function AiConnectionPanel({
               onSaveModels={() => void saveModels(definition.id)}
               onRetryModels={() => void loadProviderModels(
                 definition.id,
-                connectionStates[definition.id] === 'connected' || connectionStates[definition.id] === 'configured',
+                isProviderModelSelectionReady(connectionStateForProvider(definition.id)),
               )}
             />
           ))}
@@ -693,4 +733,19 @@ function connectionStateFromSummary(
     return summary.authMode === 'browserAssistedApiKey' ? 'configured' : 'connected'
   }
   return summary.status
+}
+
+function summarizeProviderConnectionStates(
+  summaries: Partial<Record<AiConnectionProvider, AiProviderConnectionSummary>>,
+): string {
+  return Object.values(summaries)
+    .filter(isDefined)
+    .sort((left, right) => left.provider.localeCompare(right.provider))
+    .map((summary) => [
+      summary.provider,
+      summary.status,
+      summary.authMode ?? '',
+      summary.connect.configured ? 'configured' : 'not-configured',
+    ].join(':'))
+    .join('|')
 }

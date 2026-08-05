@@ -166,6 +166,29 @@ describe('AI Connection management client', () => {
     expect(messages.join(' ')).not.toMatch(/sk-|token|Bearer|provider-secret/)
   })
 
+  it('turns a stale model-catalog response into an explicit reconnect message', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: {
+        code: 'model_catalog_not_ready',
+        message: 'provider secret must not escape',
+      },
+    }), { status: 409, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(client.replaceModelSelection('openai', {
+      modelIds: [],
+      expectedVersion: 'sha256:stale',
+    })).rejects.toThrow('请先重新连接后再保存模型选择。')
+    await expect(client.replaceModelSelection('openai', {
+      modelIds: [],
+      expectedVersion: 'sha256:stale',
+    })).rejects.not.toThrow(/provider secret/)
+  })
+
   it('normalizes only attributable models from the current-identity model catalog', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       data: [

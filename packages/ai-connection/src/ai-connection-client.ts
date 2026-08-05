@@ -386,6 +386,9 @@ function errorCodeFromPayload(payload: unknown): string | undefined {
   if (!isRecord(payload)) return undefined
   if (typeof payload.code === 'string') return payload.code
   if (typeof payload.errorCode === 'string') return payload.errorCode
+  if (isRecord(payload.error) && typeof payload.error.code === 'string') {
+    return payload.error.code
+  }
   if (typeof payload.error === 'string' && /^[a-z][a-z0-9_:-]{0,80}$/i.test(payload.error)) {
     return payload.error
   }
@@ -417,6 +420,8 @@ function messageForSafeErrorCode(
       return 'AI Connection is rate limited. Please try again later.'
     case 'service_unavailable':
       return 'AI Connection service is unavailable.'
+    case 'model_catalog_not_ready':
+      return '请先重新连接后再保存模型选择。'
     default:
       return undefined
   }

@@ -390,6 +390,332 @@ describe('AI Connection settings', () => {
     expect(document.body.textContent).not.toContain('sk-provider-secret')
   })
 
+  it.each([
+    ['disconnected', 'disconnected' as const],
+    ['reauth required', 'reauthRequired' as const],
+    ['failed', 'failed' as const],
+    ['unknown', 'unknown' as const],
+  ])('does not allow stale ready catalogs to add models when the Provider is %s', async (_label, status) => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [
+        {
+          id: 'picked-model',
+          displayName: 'Picked model',
+          modelType: 'chat' as const,
+          selected: true,
+          availability: 'available' as const,
+        },
+        {
+          id: 'new-model',
+          displayName: 'New model',
+          modelType: 'chat' as const,
+          selected: false,
+          availability: 'available' as const,
+        },
+      ],
+    }
+    const current = client({
+      discoverModels: vi.fn(async () => catalog),
+      getProviderModels: vi.fn(async () => catalog),
+    })
+    const { rerender } = render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            authMode: 'deviceCodeOAuth',
+            connect: { modes: ['deviceCodeOAuth'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    await screen.findByRole('checkbox', { name: /New model/ })
+    rerender(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status,
+            connect: { modes: ['deviceCodeOAuth'], configured: false },
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() => expect((screen.getByRole('checkbox', { name: /New model/ }) as HTMLInputElement).disabled).toBe(true))
+    expect((screen.getByRole('checkbox', { name: /Picked model/ }) as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('blocks save additions when connection state changes before durable refresh completes', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [{
+        id: 'new-model',
+        displayName: 'New model',
+        modelType: 'chat' as const,
+        selected: false,
+        availability: 'available' as const,
+      }],
+    }
+    const getProviderModels = vi.fn(() => new Promise<never>(() => undefined))
+    const replaceModelSelection = vi.fn(async () => catalog)
+    const current = client({
+      discoverModels: vi.fn(async () => catalog),
+      getProviderModels,
+      replaceModelSelection,
+    })
+    const connectedSummary = {
+      provider: 'openai' as const,
+      status: 'connected' as const,
+      connect: { modes: ['deviceCodeOAuth'] as const, configured: true },
+    }
+    const { rerender } = render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{ openai: connectedSummary }}
+      />,
+    )
+
+    const checkbox = await screen.findByRole('checkbox', { name: /New model/ })
+    fireEvent.click(checkbox)
+    expect(screen.getByRole('button', { name: '保存模型' })).toBeTruthy()
+
+    rerender(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'disconnected',
+            connect: { modes: ['deviceCodeOAuth'], configured: false },
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() => expect((screen.getByRole('button', { name: '保存模型' }) as HTMLButtonElement).disabled).toBe(true))
+    expect(screen.getByText('请先重新连接后再添加模型。')).toBeTruthy()
+    expect(replaceModelSelection).not.toHaveBeenCalled()
+    expect(getProviderModels).toHaveBeenCalledWith('openai')
+  })
+
+  it('keeps a status-unknown selected model removable but blocks new picks', async () => {
+    const current = client({
+      discoverModels: vi.fn(async () => ({
+        provider: 'openai' as const,
+        version: 'sha256:unknown',
+        status: 'statusUnknown' as const,
+        models: [
+          {
+            id: 'picked-model',
+            displayName: 'Picked model',
+            modelType: 'chat' as const,
+            selected: true,
+            availability: 'statusUnknown' as const,
+          },
+          {
+            id: 'new-model',
+            displayName: 'New model',
+            modelType: 'chat' as const,
+            selected: false,
+            availability: 'available' as const,
+          },
+        ],
+      })),
+    })
+    render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            connect: { modes: ['deviceCodeOAuth'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    expect(await screen.findByText('供应商目录暂时无法确认；已选模型保持不变。')).toBeTruthy()
+    expect((screen.getByRole('checkbox', { name: /New model/ }) as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByRole('checkbox', { name: /Picked model/ }) as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('does not pretend a disconnected cancellation was saved when the server needs reconnect', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:durable',
+      status: 'notFetched' as const,
+      models: [{
+        id: 'picked-model',
+        displayName: 'Picked model',
+        modelType: 'chat' as const,
+        selected: true,
+        availability: 'statusUnknown' as const,
+      }],
+    }
+    const current = client({
+      getProviderModels: vi.fn(async () => catalog),
+      replaceModelSelection: vi.fn(async () => {
+        throw new Error('model_catalog_not_ready')
+      }),
+    })
+    render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'disconnected',
+            connect: { modes: ['deviceCodeOAuth'], configured: false },
+          },
+        }}
+      />,
+    )
+
+    const checkbox = await screen.findByRole('checkbox', { name: /Picked model/ }) as HTMLInputElement
+    expect(checkbox.disabled).toBe(false)
+    fireEvent.click(checkbox)
+    fireEvent.click(screen.getByRole('button', { name: '保存模型' }))
+
+    await waitFor(() => expect(current.replaceModelSelection).toHaveBeenCalledWith('openai', {
+      modelIds: [],
+      expectedVersion: 'sha256:durable',
+    }))
+    expect(await screen.findByText('请先重新连接后再保存模型选择。')).toBeTruthy()
+    expect(screen.queryByText('已保存')).toBeNull()
+  })
+
+  it('re-runs discovery after a disconnected Provider reconnects', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [{
+        id: 'picked-model',
+        displayName: 'Picked model',
+        modelType: 'chat' as const,
+        selected: true,
+        availability: 'available' as const,
+      }],
+    }
+    const discoverModels = vi.fn(async () => catalog)
+    const current = client({ discoverModels })
+    const connectedSummary = {
+      provider: 'openai' as const,
+      status: 'connected' as const,
+      connect: { modes: ['deviceCodeOAuth'] as const, configured: true },
+    }
+    const { rerender } = render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{ openai: connectedSummary }}
+      />,
+    )
+
+    await waitFor(() => expect(discoverModels).toHaveBeenCalledTimes(1))
+    rerender(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'disconnected',
+            connect: { modes: ['deviceCodeOAuth'], configured: false },
+          },
+        }}
+      />,
+    )
+    rerender(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{ openai: connectedSummary }}
+      />,
+    )
+
+    await waitFor(() => expect(discoverModels).toHaveBeenCalledTimes(2))
+  })
+
+  it('uses the latest disconnected summary before effects refresh a stale ready catalog', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [{
+        id: 'new-model',
+        displayName: 'New model',
+        modelType: 'chat' as const,
+        selected: false,
+        availability: 'available' as const,
+      }],
+    }
+    const getProviderModels = vi.fn(() => new Promise<never>(() => undefined))
+    const current = client({
+      discoverModels: vi.fn(async () => catalog),
+      getProviderModels,
+    })
+    const connectedSummary = {
+      provider: 'openai' as const,
+      status: 'connected' as const,
+      authMode: 'deviceCodeOAuth',
+      connect: { modes: ['deviceCodeOAuth'] as const, configured: true },
+    }
+    const { rerender } = render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{ openai: connectedSummary }}
+      />,
+    )
+
+    await screen.findByRole('checkbox', { name: /New model/ })
+    rerender(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'disconnected',
+            connect: { modes: ['deviceCodeOAuth'], configured: false },
+          },
+        }}
+      />,
+    )
+
+    expect(screen.getByText('未设置')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '保存模型' })).toBeNull()
+  })
+
   it('keeps selected unavailable models visible and gives discovery failures an inline retry', async () => {
     const durableCatalog = {
       provider: 'openai' as const,

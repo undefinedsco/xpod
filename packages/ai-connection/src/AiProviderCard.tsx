@@ -31,6 +31,12 @@ export type ProviderConnectionState =
   | 'reauthRequired'
   | 'failed'
 
+export function isProviderModelSelectionReady(
+  status?: ProviderConnectionState,
+): boolean {
+  return status === 'connected' || status === 'configured'
+}
+
 export function AiProviderCard({
   definition,
   status,
@@ -95,6 +101,14 @@ export function AiProviderCard({
   const isConnected = status === 'connected'
   const pickerModels = modelCatalog?.models ?? []
   const selectedModelIdSet = new Set(selectedModelIds ?? pickerModels.filter((model) => model.selected).map((model) => model.id))
+  const persistedModelIdSet = new Set(pickerModels.filter((model) => model.selected).map((model) => model.id))
+  const hasNewModelSelections = [...selectedModelIdSet].some((id) => !persistedModelIdSet.has(id))
+  const modelAdditionsBlocked = Boolean(
+    modelCatalog
+    && modelDirty
+    && hasNewModelSelections
+    && !isProviderModelSelectionReady(status),
+  )
   const filteredPickerModels = modelSearch?.trim()
     ? pickerModels.filter((model) => `${model.displayName ?? ''} ${model.id}`.toLowerCase().includes(modelSearch.trim().toLowerCase()))
     : pickerModels
@@ -232,7 +246,7 @@ export function AiProviderCard({
             {modelCatalog && modelDirty && onSaveModels ? (
               <Button
                 size="sm"
-                disabled={modelSaving || disabled}
+                disabled={modelSaving || disabled || modelAdditionsBlocked}
                 onClick={onSaveModels}
               >
                 {modelSaving ? '保存中…' : '保存模型'}
@@ -240,6 +254,12 @@ export function AiProviderCard({
             ) : null}
           </div>
         </div>
+
+        {modelAdditionsBlocked ? (
+          <p className="mt-3 text-sm text-destructive" role="alert">
+            请先重新连接后再添加模型。
+          </p>
+        ) : null}
 
         {modelError ? (
           <div className="mt-3 space-y-2" role="alert">
@@ -281,7 +301,14 @@ export function AiProviderCard({
                   <ul className="divide-y divide-border/50 rounded-md border text-sm">
                     {filteredPickerModels.map((model) => {
                       const selected = selectedModelIdSet.has(model.id)
-                      const canSelect = (modelCatalog.status !== 'statusUnknown' && model.availability === 'available') || selected
+                      const canSelect = (
+                        selected
+                        || (
+                          modelCatalog.status !== 'statusUnknown'
+                          && isProviderModelSelectionReady(status)
+                          && model.availability === 'available'
+                        )
+                      )
                       return (
                         <li key={model.id} className="flex items-start gap-3 px-3 py-2.5">
                           <input
