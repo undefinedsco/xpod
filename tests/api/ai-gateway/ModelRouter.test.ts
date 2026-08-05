@@ -130,8 +130,8 @@ describe('ProviderRegistry', () => {
       protocols: ['anthropic', 'chatCompletions'],
     });
     expect(registry.requireProvider('deepseek')).toMatchObject({
-      authModes: ['connectUnsupported', 'apiKey'],
-      connect: { mode: 'connectUnsupported' },
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: { mode: 'browserAssistedApiKey' },
       protocols: ['chatCompletions'],
       safeBaseUrls: ['https://api.deepseek.com/v1'],
     });
