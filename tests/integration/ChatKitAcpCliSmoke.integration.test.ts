@@ -85,7 +85,7 @@ async function runSmoke(runner: RunnerType): Promise<{
             enabled: true,
           },
           aiConnection: {
-            baseUrl: process.env.AI_CONNECTION_BASE_URL,
+            baseUrl: process.env.AI_CONNECTIONS_BASE_URL,
             model: process.env.DEFAULT_MODEL ?? 'linx',
           },
         }),
@@ -97,8 +97,8 @@ async function runSmoke(runner: RunnerType): Promise<{
     userId: 'u1',
     ...(runner === 'codebuddy' ? {} : {
       aiConnection: {
-        baseUrl: process.env.AI_CONNECTION_BASE_URL,
-        gatewayKey: process.env.AI_CONNECTION_API_KEY,
+        baseUrl: process.env.AI_CONNECTIONS_BASE_URL,
+        gatewayKey: process.env.AI_CONNECTIONS_API_KEY,
         model: process.env.DEFAULT_MODEL ?? 'linx',
       },
     }),
@@ -148,7 +148,7 @@ async function runSmoke(runner: RunnerType): Promise<{
     }
   }
   expect(persistedRunJson.join('\n')).not.toContain('gatewayKey');
-  expect(persistedRunJson.join('\n')).not.toContain(process.env.AI_CONNECTION_API_KEY ?? '__missing__');
+  expect(persistedRunJson.join('\n')).not.toContain(process.env.AI_CONNECTIONS_API_KEY ?? '__missing__');
 
   return { sawAnyEvent, sawAssistantDone, assistantText, sawAuthRequired, runtimeError };
 }
@@ -181,10 +181,10 @@ describe('ChatKit + ACP CLI smoke', () => {
       expect(r.assistantText.trim().length).toBeGreaterThan(0);
     }, 180_000);
 
-    it('claude-code-acp works (requires AI_CONNECTION_API_KEY)', async () => {
+    it('claude-code-acp works (requires AI_CONNECTIONS_API_KEY)', async () => {
       if (!isTty()) return;
       if (!hasLocalBin('claude-code-acp') && !hasCommand('claude-code-acp')) return;
-      if (!process.env.AI_CONNECTION_API_KEY?.trim() || !process.env.AI_CONNECTION_BASE_URL?.trim()) return;
+      if (!process.env.AI_CONNECTIONS_API_KEY?.trim() || !process.env.AI_CONNECTIONS_BASE_URL?.trim()) return;
 
       const r = await runSmoke('claude');
       if (!r.sawAnyEvent) return;
@@ -200,10 +200,10 @@ describe('ChatKit + ACP CLI smoke', () => {
       expect(r.assistantText.trim().length).toBeGreaterThan(0);
     }, 180_000);
 
-    it('codex-acp works (requires AI_CONNECTION_API_KEY)', async () => {
+    it('codex-acp works (requires AI_CONNECTIONS_API_KEY)', async () => {
       if (!isTty()) return;
       if (!hasLocalBin('codex-acp') && !hasCommand('codex-acp')) return;
-      if (!process.env.AI_CONNECTION_API_KEY?.trim() || !process.env.AI_CONNECTION_BASE_URL?.trim()) return;
+      if (!process.env.AI_CONNECTIONS_API_KEY?.trim() || !process.env.AI_CONNECTIONS_BASE_URL?.trim()) return;
 
       const r = await runSmoke('codex');
       if (!r.sawAnyEvent) return;

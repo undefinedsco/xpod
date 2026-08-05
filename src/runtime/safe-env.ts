@@ -1,6 +1,6 @@
 export const AMBIENT_AI_PROVIDER_ENV_KEYS = [
-  'AI_CONNECTION_API_KEY',
-  'AI_CONNECTION_BASE_URL',
+  'AI_CONNECTIONS_API_KEY',
+  'AI_CONNECTIONS_BASE_URL',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
   'OPENAI_API_BASE',
@@ -27,7 +27,7 @@ const AMBIENT_AI_PROVIDER_ENV_KEY_PATTERNS = [
   /^ANTHROPIC_DEFAULT_[A-Z0-9_]*MODEL$/u,
 ] as const;
 
-export interface AiConnectionRuntimeConfig {
+export interface AiConnectionsRuntimeConfig {
   baseUrl: string;
   apiKey: string;
   model?: string;
@@ -50,14 +50,14 @@ function isAmbientAiProviderEnvKey(key: string): boolean {
     AMBIENT_AI_PROVIDER_ENV_KEY_PATTERNS.some((pattern) => pattern.test(key));
 }
 
-export function requireAiConnectionRuntimeConfig(
+export function requireAiConnectionsRuntimeConfig(
   input: {
     baseUrl?: string;
     apiKey?: string;
     model?: string;
   },
   context: string,
-): AiConnectionRuntimeConfig {
+): AiConnectionsRuntimeConfig {
   const baseUrl = input.baseUrl?.trim();
   if (!baseUrl) {
     throw new Error(`${context} requires AI Connection baseUrl`);
@@ -74,16 +74,16 @@ export function requireAiConnectionRuntimeConfig(
   };
 }
 
-export function projectAiConnectionEnv(config: AiConnectionRuntimeConfig): Record<string, string> {
+export function projectAiConnectionsEnv(config: AiConnectionsRuntimeConfig): Record<string, string> {
   return {
-    AI_CONNECTION_BASE_URL: config.baseUrl,
-    AI_CONNECTION_API_KEY: config.apiKey,
+    AI_CONNECTIONS_BASE_URL: config.baseUrl,
+    AI_CONNECTIONS_API_KEY: config.apiKey,
   };
 }
 
-export function projectOpenAiCompatibleEnv(config: AiConnectionRuntimeConfig): Record<string, string> {
+export function projectOpenAiCompatibleEnv(config: AiConnectionsRuntimeConfig): Record<string, string> {
   return {
-    ...projectAiConnectionEnv(config),
+    ...projectAiConnectionsEnv(config),
     OPENAI_BASE_URL: config.baseUrl,
     OPENAI_API_BASE: config.baseUrl,
     OPENAI_API_KEY: config.apiKey,
@@ -95,11 +95,11 @@ export function projectOpenAiCompatibleEnv(config: AiConnectionRuntimeConfig): R
   };
 }
 
-export function projectAnthropicCompatibleEnv(config: AiConnectionRuntimeConfig): Record<string, string> {
+export function projectAnthropicCompatibleEnv(config: AiConnectionsRuntimeConfig): Record<string, string> {
   const baseUrl = normalizeMessagesCompatibleBaseUrl(config.baseUrl);
   const isOpenRouterLike = baseUrl.includes('openrouter.ai');
   return {
-    ...projectAiConnectionEnv(config),
+    ...projectAiConnectionsEnv(config),
     ANTHROPIC_BASE_URL: baseUrl,
     ...(isOpenRouterLike
       ? { ANTHROPIC_AUTH_TOKEN: config.apiKey }

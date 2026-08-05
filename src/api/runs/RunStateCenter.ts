@@ -23,7 +23,7 @@ import {
 import {
   deepScrubGatewayKey,
   toPersistedAgentRuntimeConfig,
-  withInvocationAiConnection,
+  withInvocationAiConnections,
   type AgentRuntimeConfig,
   type RunnerProtocol,
   type RunnerType,
@@ -130,7 +130,7 @@ export class RunStateCenter<TContext = StoreContext> {
       throw new Error('Invalid thread runtime: workspace reference is required');
     }
 
-    return withInvocationAiConnection({
+    return withInvocationAiConnections({
       ...runtime,
       workspace,
       runner: {
@@ -831,7 +831,7 @@ export class RunStateCenter<TContext = StoreContext> {
   private resolveRuntimeConfigForContinuation(run: RunRecordData, context: TContext): AgentRuntimeConfig {
     const runtimeConfig = run.metadata?.runtimeConfig;
     if (runtimeConfig && typeof runtimeConfig === 'object') {
-      return withInvocationAiConnection(runtimeConfig as AgentRuntimeConfig, context);
+      return withInvocationAiConnections(runtimeConfig as AgentRuntimeConfig, context);
     }
     if (!isWorkspaceRef(run.workspace)) {
       throw new Error('Run workspace reference is required');

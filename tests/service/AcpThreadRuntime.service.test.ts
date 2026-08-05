@@ -56,7 +56,7 @@ describe('ACP Thread Runtime', () => {
             argv: [ 'node', agentPath ],
           },
           agentConfig: testAgentConfig(),
-          aiConnection: testAiConnection(),
+          aiConnection: testAiConnections(),
         },
       })
     ) {
@@ -87,7 +87,7 @@ describe('ACP Thread Runtime', () => {
             argv: [ 'node', agentPath ],
           },
           agentConfig: testAgentConfig(),
-          aiConnection: testAiConnection(),
+          aiConnection: testAiConnections(),
         },
       })
     ) {
@@ -158,8 +158,8 @@ describe('ACP Thread Runtime', () => {
     const serializedEnv = JSON.stringify(env);
     const sanitizedProcessEnv = sanitizeRuntimeEnv(process.env);
 
-    expect(env.AI_CONNECTION_BASE_URL).toBe('http://127.0.0.1:3000/v1');
-    expect(env.AI_CONNECTION_API_KEY).toBe('gateway-key');
+    expect(env.AI_CONNECTIONS_BASE_URL).toBe('http://127.0.0.1:3000/v1');
+    expect(env.AI_CONNECTIONS_API_KEY).toBe('gateway-key');
     expect(env.OPENAI_BASE_URL).toBe('http://127.0.0.1:3000/v1');
     expect(env.OPENAI_API_BASE).toBe('http://127.0.0.1:3000/v1');
     expect(env.OPENAI_API_KEY).toBe('gateway-key');
@@ -270,7 +270,7 @@ describe('ACP Thread Runtime', () => {
     };
   }
 
-  function testAiConnection() {
+  function testAiConnections() {
     return {
       baseUrl: 'http://127.0.0.1:3000/v1',
       gatewayKey: 'gateway-key',

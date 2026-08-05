@@ -19,7 +19,7 @@
     "@inrupt/solid-client-authn-browser": "^3.1.1",
     "@openai/chatkit-react": "^1.4.1",
     "@radix-ui/react-select": "^2.2.6",
-    "@undefineds.co/ai-connection": "^0.1.0",
+    "@undefineds.co/ai-connections": "^0.1.0",
     "@undefineds.co/drizzle-solid": "0.3.18",
     "@undefineds.co/extension-sdk": "^0.1.0",
     "@undefineds.co/shared-ui": "^0.1.0",

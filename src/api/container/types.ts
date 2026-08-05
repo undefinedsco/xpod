@@ -47,7 +47,7 @@ import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiG
 import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
 import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
-import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
@@ -238,7 +238,7 @@ export interface ApiContainerCradle {
   gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
   gatewayAccessKeyRepository: GatewayAccessKeyRepository;
   invocationTokenCodec: InvocationTokenCodec;
-  aiConnectionInvocationKeyIssuer: AiConnectionInvocationKeyIssuer;
+  aiConnectionInvocationKeyIssuer: AiConnectionsInvocationKeyIssuer;
   aiClientConfigurationService?: AiClientConfigurationService;
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;

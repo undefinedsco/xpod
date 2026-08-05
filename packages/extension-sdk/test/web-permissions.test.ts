@@ -10,7 +10,7 @@ import type {
 describe('WebExtensionSolidCapability permissions', () => {
   it('lets a WebExtensionHost carry host-owned Solid permission brokering', async () => {
     const request: SolidServiceAccessRequest = {
-      appletId: 'ai-connection',
+      appletId: 'ai-connections',
       service: {
         webId: 'https://xpod.example/service#agent',
         label: 'Xpod AI Gateway',
@@ -53,7 +53,7 @@ describe('WebExtensionSolidCapability permissions', () => {
 
     expect(host.solid.permissions).toBe(permissions);
     expect(permissions.ensureAgentAccess).toHaveBeenCalledWith({
-      appletId: 'ai-connection',
+      appletId: 'ai-connections',
       service: {
         webId: 'https://xpod.example/service#agent',
         label: 'Xpod AI Gateway',

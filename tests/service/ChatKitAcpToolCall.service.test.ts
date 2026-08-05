@@ -59,7 +59,7 @@ describe('ChatKitService + ACP tool call', () => {
           gatewayKey: 'acp-tool-fixture-invocation',
         }),
       },
-      requireAiConnectionInvocationKeyIssuer: true,
+      requireAiConnectionsInvocationKeyIssuer: true,
     });
 
     const agentPath = path.join(process.cwd(), 'tests/fixtures/acp-tool-agent.js');

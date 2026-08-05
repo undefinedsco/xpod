@@ -2,8 +2,8 @@
  * DefaultAgent manual/local integration test.
  *
  * Requirements:
- * - AI_CONNECTION_BASE_URL (Xpod /v1 gateway endpoint)
- * - AI_CONNECTION_API_KEY (Xpod-issued gateway key, not raw provider secret)
+ * - AI_CONNECTIONS_BASE_URL (Xpod /v1 gateway endpoint)
+ * - AI_CONNECTIONS_API_KEY (Xpod-issued gateway key, not raw provider secret)
  * - Claude Code CLI installed (or set CLAUDE_CODE_PATH)
  *
  * Notes:
@@ -20,8 +20,8 @@ const claudeCodePath = process.env.CLAUDE_CODE_PATH || '/Users/ganlu/.local/bin/
 
 const shouldSkip =
   process.env.XPOD_RUN_INTEGRATION_TESTS !== 'true' ||
-  !process.env.AI_CONNECTION_BASE_URL ||
-  !process.env.AI_CONNECTION_API_KEY ||
+  !process.env.AI_CONNECTIONS_BASE_URL ||
+  !process.env.AI_CONNECTIONS_API_KEY ||
   !fs.existsSync(claudeCodePath);
 
 describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
@@ -44,7 +44,7 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
     console.log('Default Agent manual test config:');
     console.log(`  Claude Code: ${testConfig.claudeCodePath}`);
     console.log(`  Pod URL: ${testConfig.podBaseUrl}`);
-    console.log(`  AI Connection: ${process.env.AI_CONNECTION_BASE_URL}`);
+    console.log(`  AI Connection: ${process.env.AI_CONNECTIONS_BASE_URL}`);
   });
 
   afterAll(() => {
@@ -70,8 +70,8 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
           timeout: testConfig.timeout,
           maxTurns: 2,
           connection: {
-            baseUrl: process.env.AI_CONNECTION_BASE_URL!,
-            gatewayKey: process.env.AI_CONNECTION_API_KEY!,
+            baseUrl: process.env.AI_CONNECTIONS_BASE_URL!,
+            gatewayKey: process.env.AI_CONNECTIONS_API_KEY!,
           },
         },
       );
@@ -98,8 +98,8 @@ describe.skipIf(shouldSkip)('DefaultAgent Manual Integration', () => {
           timeout: testConfig.timeout,
           maxTurns: 2,
           connection: {
-            baseUrl: process.env.AI_CONNECTION_BASE_URL!,
-            gatewayKey: process.env.AI_CONNECTION_API_KEY!,
+            baseUrl: process.env.AI_CONNECTIONS_BASE_URL!,
+            gatewayKey: process.env.AI_CONNECTIONS_API_KEY!,
           },
         },
       );

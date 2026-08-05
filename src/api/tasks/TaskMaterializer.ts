@@ -30,7 +30,7 @@ import {
   type RunStore,
 } from '../runs/store';
 import {
-  withInvocationAiConnection,
+  withInvocationAiConnections,
   type AgentRuntimeConfig,
   type RunnerProtocol,
   type RunnerType,
@@ -38,7 +38,7 @@ import {
 import { isWorkspaceRef } from '../workspace/types';
 import { TaskStatus, TaskTriggerKind } from './schema';
 import { resolveTaskResource as expandTaskResource, resolveTaskUrn, type TaskRecordData } from './store';
-import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 
 export interface MaterializedTaskRun {
   task: TaskRecordData;
@@ -51,8 +51,8 @@ export interface TaskMaterializerOptions<TContext = StoreContext> {
   executionBackend?: RunExecutionBackend;
   executeRuns?: boolean;
   contextRetriever?: RunContextRetriever<TContext>;
-  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
-  requireAiConnectionInvocationKeyIssuer?: boolean;
+  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
+  requireAiConnectionsInvocationKeyIssuer?: boolean;
 }
 
 export class TaskMaterializer<TContext = StoreContext> {
@@ -60,8 +60,8 @@ export class TaskMaterializer<TContext = StoreContext> {
   private readonly executionBackend: RunExecutionBackend;
   private readonly executeRuns: boolean;
   private readonly contextRetriever?: RunContextRetriever<TContext>;
-  private readonly aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
-  private readonly requireAiConnectionInvocationKeyIssuer: boolean;
+  private readonly aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
+  private readonly requireAiConnectionsInvocationKeyIssuer: boolean;
 
   public constructor(options: TaskMaterializerOptions<TContext>) {
     this.store = options.store;
@@ -69,7 +69,7 @@ export class TaskMaterializer<TContext = StoreContext> {
     this.executeRuns = options.executeRuns ?? true;
     this.contextRetriever = options.contextRetriever;
     this.aiConnectionInvocationKeyIssuer = options.aiConnectionInvocationKeyIssuer;
-    this.requireAiConnectionInvocationKeyIssuer = options.requireAiConnectionInvocationKeyIssuer ?? false;
+    this.requireAiConnectionsInvocationKeyIssuer = options.requireAiConnectionsInvocationKeyIssuer ?? false;
   }
 
   public async materialize(input: {
@@ -110,7 +110,7 @@ export class TaskMaterializer<TContext = StoreContext> {
     }
 
     if (this.executeRuns) {
-      const executionContext = await this.withInvocationAiConnection(context);
+      const executionContext = await this.withInvocationAiConnections(context);
       const assistant = await this.executeRun({ task, thread, run, userMessage, context: executionContext });
       if (task.triggerKind === TaskTriggerKind.ONCE) {
         task.status = run.status === RunStatus.COMPLETED ? TaskStatus.COMPLETED : TaskStatus.FAILED;
@@ -133,9 +133,9 @@ export class TaskMaterializer<TContext = StoreContext> {
     return { task, run };
   }
 
-  private async withInvocationAiConnection(context: TContext): Promise<TContext> {
+  private async withInvocationAiConnections(context: TContext): Promise<TContext> {
     if (!this.aiConnectionInvocationKeyIssuer) {
-      if (this.requireAiConnectionInvocationKeyIssuer) {
+      if (this.requireAiConnectionsInvocationKeyIssuer) {
         throw new Error('AI Connection invocation key issuer is required');
       }
       return context;
@@ -154,7 +154,7 @@ export class TaskMaterializer<TContext = StoreContext> {
     context: TContext;
   }): Promise<ThreadItem | undefined> {
     const { task, thread, run, userMessage, context } = input;
-    const runtimeConfig = withInvocationAiConnection(this.buildRuntimeConfig(task), context);
+    const runtimeConfig = withInvocationAiConnections(this.buildRuntimeConfig(task), context);
     const threadRef = this.threadRefFromTask(task);
     const assistantItem = await this.createAssistantMessage(thread, context);
     await this.store.addThreadItem(threadRef, assistantItem, context);

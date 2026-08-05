@@ -25,8 +25,8 @@ import type {
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
-import { createAiConnectionServiceAccess } from '../ai-gateway/service-access/AiConnectionServiceAccess';
-import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
+import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
   type AiClientConfigurationCapabilityDescriptor,
   unavailableAiClientConfigurationCapability,
@@ -41,7 +41,7 @@ export interface AiGatewayManagementHandlerOptions {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
-  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
+  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
   now?: () => Date;
   keyId?: (owner: string) => string;
   jsonBodyLimitBytes?: number;
@@ -57,7 +57,7 @@ export function registerAiGatewayManagementRoutes(
   ));
   const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 64 * 1024;
 
-  server.get('/api/applets/service-access/ai-connection', async (request, response) => {
+  server.get('/api/applets/service-access/ai-connections', async (request, response) => {
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
@@ -66,7 +66,7 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     const service = await options.servicePrincipal.getServicePrincipal();
-    const descriptor = createAiConnectionServiceAccess({
+    const descriptor = createAiConnectionsServiceAccess({
       ownerWebId: request.auth.webId,
       serviceWebId: service.webId,
     });

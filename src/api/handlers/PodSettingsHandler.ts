@@ -19,7 +19,7 @@ export interface PodSettingsStatus {
     podUrl?: string;
   };
   storage: PodStorageStatus;
-  aiConnection: PodAiConnectionStatus;
+  aiConnection: PodAiConnectionsStatus;
   generatedAt: string;
 }
 
@@ -42,7 +42,7 @@ export type PodStorageStatus =
     reason: string;
   };
 
-export type PodAiConnectionStatus =
+export type PodAiConnectionsStatus =
   | {
     status: 'available';
     containerUrl?: string;
@@ -55,14 +55,14 @@ export type PodAiConnectionStatus =
     reason: string;
   };
 
-export interface PodAiConnectionStatusReader {
-  read(input: { webId: string; podUrl?: string }): Promise<PodAiConnectionStatus>;
+export interface PodAiConnectionsStatusReader {
+  read(input: { webId: string; podUrl?: string }): Promise<PodAiConnectionsStatus>;
 }
 
 export interface PodSettingsHandlerOptions {
   podLookupRepository: Pick<PodLookupRepository, 'findByWebId'>;
   usageRepo: Pick<UsageRepository, 'getPodUsage'>;
-  aiConnectionStatusReader?: PodAiConnectionStatusReader;
+  aiConnectionStatusReader?: PodAiConnectionsStatusReader;
   now?: () => Date;
   logger?: Pick<ReturnType<typeof getLoggerFor>, 'warn' | 'error'>;
 }
@@ -87,7 +87,7 @@ export function registerPodSettingsRoutes(server: ApiServer, options: PodSetting
       const [storage, aiConnection] = await Promise.all([
         readStorageStatus(options.usageRepo, pod),
         aiConnectionStatusReader.read({ webId, podUrl }).catch((error: unknown) => {
-          const reason = safeAiConnectionFailureReason(error);
+          const reason = safeAiConnectionsFailureReason(error);
           logger.warn(`Failed to read Pod AI Connection status: ${reason}`);
           return { status: 'error', reason } as const;
         }),
@@ -143,17 +143,17 @@ async function readStorageStatus(
   };
 }
 
-export class DrizzlePodAiConnectionStatusReader implements PodAiConnectionStatusReader {
+export class DrizzlePodAiConnectionsStatusReader implements PodAiConnectionsStatusReader {
   public constructor(
     private readonly internalPodAccess?: InternalPodAccessTokenProvider,
     private readonly dbFactory: (input: {
       webId: string;
       podUrl: string;
       fetch: typeof fetch;
-    }) => Promise<AiConnectionStatusDb> = createAiConnectionStatusDb,
+    }) => Promise<AiConnectionsStatusDb> = createAiConnectionsStatusDb,
   ) {}
 
-  public async read({ webId, podUrl }: { webId: string; podUrl?: string }): Promise<PodAiConnectionStatus> {
+  public async read({ webId, podUrl }: { webId: string; podUrl?: string }): Promise<PodAiConnectionsStatus> {
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(webId);
     if (!trustedFetch) {
       return { status: 'unsupported', reason: 'not_configured' };
@@ -186,7 +186,7 @@ export class DrizzlePodAiConnectionStatusReader implements PodAiConnectionStatus
   }
 }
 
-type AiConnectionStatusDb = {
+type AiConnectionsStatusDb = {
   init?: (...resources: unknown[]) => Promise<void>;
   select(): {
     from(resource: unknown): {
@@ -196,11 +196,11 @@ type AiConnectionStatusDb = {
   };
 };
 
-function createAiConnectionStatusDb(input: {
+function createAiConnectionsStatusDb(input: {
   webId: string;
   podUrl: string;
   fetch: typeof fetch;
-}): Promise<AiConnectionStatusDb> {
+}): Promise<AiConnectionsStatusDb> {
   return Promise.resolve(drizzle({
     fetch: input.fetch,
     info: { webId: input.webId, isLoggedIn: true },
@@ -210,7 +210,7 @@ function createAiConnectionStatusDb(input: {
       credential: credentialResource,
       indexedFile: indexedFileResource,
     },
-  }) as unknown as AiConnectionStatusDb);
+  }) as unknown as AiConnectionsStatusDb);
 }
 
 function latestIso(values: unknown[]): string | undefined {
@@ -240,7 +240,7 @@ function safeLogError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function safeAiConnectionFailureReason(error: unknown): string {
+function safeAiConnectionsFailureReason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   for (const reason of [
     'service_access_missing',

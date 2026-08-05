@@ -74,7 +74,7 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
 
 function serviceAccessPayload() {
   return {
-    appletId: 'co.undefineds.ai-connection',
+    appletId: 'co.undefineds.ai-connections',
     service: {
       webId: 'https://pod.example/service/profile/card#me',
       label: 'Xpod AI Connection',
@@ -97,7 +97,7 @@ describe('ModelsPage AI Connection host', () => {
   test('mounts AI Connection into aligned list and main header slots', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/api/applets/service-access/ai-connection')) {
+      if (url.endsWith('/api/applets/service-access/ai-connections')) {
         return new Response(JSON.stringify(serviceAccessPayload()), {
           headers: { 'content-type': 'application/json' },
         });

@@ -119,7 +119,7 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
               {error}
             </div>
           ) : null}
-          <AiConnectionCard aiConnection={status?.aiConnection} loading={loading && !status} />
+          <AiConnectionsCard aiConnection={status?.aiConnection} loading={loading && !status} />
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -243,7 +243,7 @@ export function PodUsageCard({
   );
 }
 
-function AiConnectionCard({
+function AiConnectionsCard({
   aiConnection,
   loading,
 }: {

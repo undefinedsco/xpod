@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import {
-  DrizzlePodAiConnectionStatusReader,
+  DrizzlePodAiConnectionsStatusReader,
   registerPodSettingsRoutes,
 } from '../../../src/api/handlers/PodSettingsHandler';
 
@@ -235,7 +235,7 @@ describe('PodSettingsHandler', () => {
     const internalPodAccess = {
       getTrustedFetch: vi.fn(async () => (async () => new Response('', { status: 404 })) as typeof fetch),
     };
-    const reader = new DrizzlePodAiConnectionStatusReader(internalPodAccess, dbFactory);
+    const reader = new DrizzlePodAiConnectionsStatusReader(internalPodAccess, dbFactory);
 
     const status = await reader.read({
       webId: 'https://id.example/alice/profile/card#me',

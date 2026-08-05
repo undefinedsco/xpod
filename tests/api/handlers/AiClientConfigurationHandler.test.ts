@@ -199,7 +199,7 @@ describe('AiClientConfigurationHandler', () => {
     });
     expect(body).not.toHaveProperty('error');
     expect(JSON.stringify(body)).not.toContain(GATEWAY_KEY);
-    expect(await readCodexConfig(tmpDir)).not.toContain('xpod-ai-connection');
+    expect(await readCodexConfig(tmpDir)).not.toContain('xpod-ai-connections');
     await expectUnrelatedPreserved(tmpDir, 'codex');
   });
 
@@ -600,7 +600,7 @@ async function mutateUnrelatedAfterApply(home: string, client: AiClientId): Prom
 
 async function expectClientRestoredWithoutLosingUserChange(home: string, client: AiClientId): Promise<void> {
   const content = await clientContent(home, client);
-  expect(content).not.toContain('xpod-ai-connection');
+  expect(content).not.toContain('xpod-ai-connections');
   expect(content).not.toContain(GATEWAY_KEY);
   const userEditedContent = client === 'pi'
     ? await fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8')
@@ -628,10 +628,10 @@ async function seedOldManagedProjection(home: string, client: AiClientId): Promi
     await fs.writeFile(path.join(home, '.codex', 'config.toml'), [
       'model_provider = "xpod"',
       'model = "legacy-model"',
-      '# >>> xpod-ai-connection managed',
+      '# >>> xpod-ai-connections managed',
       '[model_providers.xpod]',
       'base_url = "https://old-xpod.example/v1"',
-      '# <<< xpod-ai-connection managed',
+      '# <<< xpod-ai-connections managed',
       '',
     ].join('\n'));
     await fs.writeFile(path.join(home, '.codex', 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'old-xpod-secret' }, null, 2));

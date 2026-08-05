@@ -21,7 +21,7 @@ import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuth
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorCodec';
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
-import { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import {
@@ -76,7 +76,7 @@ function resolveCssServiceBaseUrl(): string {
   return 'http://localhost:3000/';
 }
 
-function resolveAiConnectionBaseUrl(config: ApiContainerCradle['config']): string {
+function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
   const origin = config.publicUrl
     ?? process.env.XPOD_PUBLIC_URL
     ?? process.env.CSS_BASE_URL
@@ -84,8 +84,8 @@ function resolveAiConnectionBaseUrl(config: ApiContainerCradle['config']): strin
   return new URL('/v1', origin.endsWith('/') ? origin : `${origin}/`).toString().replace(/\/$/u, '');
 }
 
-function resolveAiConnectionAudience(config: ApiContainerCradle['config']): string {
-  return new URL(resolveAiConnectionBaseUrl(config)).origin;
+function resolveAiConnectionsAudience(config: ApiContainerCradle['config']): string {
+  return new URL(resolveAiConnectionsBaseUrl(config)).origin;
 }
 
 /**
@@ -174,11 +174,11 @@ export function registerCommonServices(
     }).singleton(),
 
     aiConnectionInvocationKeyIssuer: asFunction(({ config, invocationTokenCodec }: ApiContainerCradle) => {
-      return new AiConnectionInvocationKeyIssuer({
+      return new AiConnectionsInvocationKeyIssuer({
         codec: invocationTokenCodec,
         deployment: config.edition,
-        baseUrl: resolveAiConnectionBaseUrl(config),
-        audience: resolveAiConnectionAudience(config),
+        baseUrl: resolveAiConnectionsBaseUrl(config),
+        audience: resolveAiConnectionsAudience(config),
       });
     }).singleton(),
 
@@ -369,7 +369,7 @@ export function registerCommonServices(
         repository: gatewayAccessKeyRepository,
         invocationTokenCodec,
         deployment: config.edition,
-        invocationTokenAudience: resolveAiConnectionAudience(config),
+        invocationTokenAudience: resolveAiConnectionsAudience(config),
       });
 
       return new MultiAuthenticator({
@@ -485,7 +485,7 @@ export function registerCommonServices(
         runExecutionBackend,
         contextRetriever: runContextRetriever,
         aiConnectionInvocationKeyIssuer,
-        requireAiConnectionInvocationKeyIssuer: true,
+        requireAiConnectionsInvocationKeyIssuer: true,
       });
     }).singleton(),
 
@@ -495,7 +495,7 @@ export function registerCommonServices(
         executionBackend: runExecutionBackend,
         contextRetriever: runContextRetriever,
         aiConnectionInvocationKeyIssuer,
-        requireAiConnectionInvocationKeyIssuer: true,
+        requireAiConnectionsInvocationKeyIssuer: true,
       });
     }).singleton(),
 
