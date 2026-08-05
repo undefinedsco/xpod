@@ -69,10 +69,6 @@ jobs:
   bun-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      XPOD_GATEWAY_LOCATOR_SECRET: ci-only-gateway-locator-secret
-      XPOD_SECRET_CELL_KEY_ID: ci-only-secret-cell
-      XPOD_SECRET_CELL_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
     steps:
       - uses: actions/checkout@v4
 
