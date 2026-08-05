@@ -8,8 +8,11 @@ const aliceState = env.XPOD_SETTINGS_E2E_ALICE_STATE;
 const bobState = env.XPOD_SETTINGS_E2E_BOB_STATE;
 const alicePodUrl = env.XPOD_SETTINGS_E2E_ALICE_POD_URL;
 const testApiKey = env.XPOD_SETTINGS_E2E_TEST_API_KEY;
+const providerFixtureUrl = env.XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL;
+const providerFixtureControlToken = env.XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_CONTROL_TOKEN;
 const screenshotDir = path.resolve('.test-data/acceptance/screenshots');
 const hasRequiredEnvironment = Boolean(baseUrl && aliceState && bobState && alicePodUrl && testApiKey);
+const hasModelDiscoveryEnvironment = Boolean(hasRequiredEnvironment && providerFixtureUrl);
 
 test.describe('Xpod settings product acceptance', () => {
   test.skip(!hasRequiredEnvironment, 'Set XPOD_SETTINGS_E2E_BASE_URL, XPOD_SETTINGS_E2E_ALICE_STATE, XPOD_SETTINGS_E2E_BOB_STATE, XPOD_SETTINGS_E2E_ALICE_POD_URL and XPOD_SETTINGS_E2E_TEST_API_KEY.');
@@ -51,6 +54,85 @@ test.describe('Xpod settings product acceptance', () => {
         expect(bobAfter.webId).toBe(bobBefore.webId);
         expect(bobAfter.configuredProviders).toBe(bobBefore.configuredProviders);
       });
+    } finally {
+      await alice.context().close();
+      await bob.context().close();
+    }
+  });
+
+  test('model discovery and stale models: Picks persist without crossing WebID boundaries', async ({ browser }) => {
+    test.skip(!hasModelDiscoveryEnvironment, 'Set the real Xpod auth environment plus XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL.');
+    test.setTimeout(180_000);
+    const alice = await authenticatedPage(browser, aliceState!);
+    const bob = await authenticatedPage(browser, bobState!);
+    try {
+      const aliceBefore = await readPodAiConnectionStatus(alice);
+      const bobBefore = await readPodAiConnectionStatus(bob);
+      expect(aliceBefore.webId).not.toBe(bobBefore.webId);
+      await setFixtureModels(['gpt-5', 'gpt-5-mini']);
+      await resetFixtureAuthTouches();
+
+      await test.step('connect Alice and wait for live provider discovery', async () => {
+        const descriptorResponse = waitForServiceAccessDescriptor(alice);
+        await openModule(alice, '/settings/models', 'Models');
+        const descriptor = await readServiceAccessDescriptor(await descriptorResponse);
+        expectServiceAccessOwner(descriptor, aliceBefore.webId);
+        await completeApiKeyThroughUi(alice, testApiKey!);
+        await expect(alice.getByRole('checkbox', { name: /gpt-5 \(gpt-5\)/i }).first()).toBeVisible({ timeout: 30_000 });
+      });
+
+      await test.step('Pick only gpt-5 and persist it through the authenticated API', async () => {
+        const checkbox = alice.getByRole('checkbox', { name: /gpt-5 \(gpt-5\)/i }).first();
+        if (!(await checkbox.isChecked())) await checkbox.check();
+        const saveResponsePromise = alice.waitForResponse((response) => (
+          new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/models/selection'
+          && response.request().method() === 'PUT'
+        ));
+        await alice.getByRole('button', { name: '保存模型', exact: true }).click();
+        const saveResponse = await saveResponsePromise;
+        expect(saveResponse.ok(), `model selection save failed: ${saveResponse.status()}`).toBe(true);
+        await expect(alice.getByText('已保存', { exact: true })).toBeVisible();
+      });
+
+      await test.step('remove gpt-5 upstream, force refresh and retain the selected row as unavailable', async () => {
+        await removeFixtureModel('gpt-5');
+        const refreshModelsButton = alice.getByRole('button', { name: '刷新模型', exact: true });
+        await expect(refreshModelsButton).toBeVisible();
+        const discoverResponse = alice.waitForResponse((response) => (
+          new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/models/discover'
+          && response.request().method() === 'POST'
+        ));
+        await refreshModelsButton.click();
+        const discovery = await discoverResponse;
+        expect(discovery.ok(), `forced discovery failed: ${discovery.status()}`).toBe(true);
+        const catalog = await discovery.json() as { models?: Array<{ id?: string; availability?: string; selected?: boolean }> };
+        expect(catalog.models).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: expect.stringMatching(/(?:^|#)gpt-5$/u), availability: 'unavailable', selected: true }),
+        ]));
+        await expect(alice.getByText('供应商已不可用', { exact: true })).toBeVisible();
+
+        const modelsResponse = reloadModelsResponse(alice);
+        await alice.reload({ waitUntil: 'domcontentloaded' });
+        await waitForStableAuthenticatedRoute(alice, '/settings/models');
+        expect(await readModelsResponse(await modelsResponse)).toEqual([]);
+      });
+
+      await test.step('prove Bob remains isolated and receives no Alice-picked model', async () => {
+        const modelsResponse = reloadModelsResponse(bob);
+        const descriptorResponse = waitForServiceAccessDescriptor(bob);
+        await openModule(bob, '/settings/models', 'Models');
+        const descriptor = await readServiceAccessDescriptor(await descriptorResponse);
+        expectServiceAccessOwner(descriptor, bobBefore.webId);
+        expect(descriptor.service?.webId).not.toBe(aliceBefore.webId);
+        const models = await readModelsResponse(await modelsResponse);
+        expect(models).toEqual([]);
+        await expect(bob.getByRole('checkbox', { name: /gpt-5 \(gpt-5\)/i })).toHaveCount(0);
+      });
+
+      const fixtureSnapshot = await readFixtureSnapshot();
+      expect(fixtureSnapshot.authorizationTouched).toBe(true);
+      expect(fixtureSnapshot.authorizationRequestCount).toBeGreaterThan(0);
+      expect(JSON.stringify(fixtureSnapshot)).not.toContain(testApiKey!);
     } finally {
       await alice.context().close();
       await bob.context().close();
@@ -162,7 +244,11 @@ async function waitForStableAuthenticatedRoute(page: Page, route: string): Promi
 async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void> {
   await page.getByRole('button', { name: 'OpenAI', exact: true }).click();
   const externalConsolePromise = page.context().waitForEvent('page');
-  await page.getByRole('button', { name: 'OpenAI API Key', exact: true }).click();
+  const apiKeyButton = page.getByRole('button', { name: 'OpenAI API Key', exact: true }).or(
+    page.getByRole('button', { name: '更新 API Key', exact: true }),
+  ).or(page.getByRole('button', { name: '配置 API Key', exact: true })).first();
+  await expect(apiKeyButton).toBeVisible();
+  await apiKeyButton.click();
   const externalConsole = await externalConsolePromise;
   await externalConsole.close();
   await page.getByLabel('OpenAI API Key 输入', { exact: true }).fill(apiKey);
@@ -175,6 +261,95 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
   const saveResponseBody = await saveResponse.text();
   expect(saveResponse.ok(), `save failed with HTTP ${saveResponse.status()}: ${saveResponseBody}`).toBe(true);
   await expect(page.locator('body')).toContainText(/connected|configured|saved|已连接|已配置|已保存/i);
+}
+
+function reloadModelsResponse(page: Page): Promise<import('@playwright/test').Response> {
+  return page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/v1/models'
+    && response.request().method() === 'GET'
+  ));
+}
+
+async function readModelsResponse(response: import('@playwright/test').Response): Promise<string[]> {
+  expect(response.ok(), `Gateway /v1/models failed: ${response.status()}`).toBe(true);
+  const payload = await response.json() as { data?: Array<{ id?: unknown }> };
+  return Array.isArray(payload.data)
+    ? payload.data.map((model) => model.id).filter((id): id is string => typeof id === 'string')
+    : [];
+}
+
+async function fixtureControl(pathname: string, init?: RequestInit): Promise<any> {
+  const headers = new Headers(init?.headers);
+  if (providerFixtureControlToken) headers.set('x-xpod-fixture-token', providerFixtureControlToken);
+  const response = await fetch(`${providerFixtureUrl!.replace(/\/$/u, '')}${pathname}`, {
+    ...init,
+    headers,
+  });
+  const body = await response.json().catch(() => ({}));
+  expect(response.ok, `provider fixture control failed: ${response.status} ${JSON.stringify(body)}`).toBe(true);
+  return body;
+}
+
+async function setFixtureModels(modelIds: string[]): Promise<void> {
+  await fixtureControl('/models', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ models: modelIds }),
+  });
+}
+
+async function removeFixtureModel(id: string): Promise<void> {
+  await fixtureControl('/models/remove', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+}
+
+async function resetFixtureAuthTouches(): Promise<void> {
+  await fixtureControl('/auth/reset', { method: 'POST' });
+}
+
+async function readFixtureSnapshot(): Promise<{
+  authorizationTouched?: boolean;
+  authorizationRequestCount?: number;
+  [key: string]: unknown;
+}> {
+  return await fixtureControl('/status') as {
+    authorizationTouched?: boolean;
+    authorizationRequestCount?: number;
+    [key: string]: unknown;
+  };
+}
+
+function waitForServiceAccessDescriptor(page: Page): Promise<import('@playwright/test').Response> {
+  return page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/applets/service-access/ai-connection'
+    && response.request().method() === 'GET'
+  ));
+}
+
+async function readServiceAccessDescriptor(response: import('@playwright/test').Response): Promise<{
+  service?: { webId?: unknown };
+  resources?: Array<{ url?: unknown }>;
+}> {
+  expect(response.ok(), `service access descriptor failed: ${response.status()}`).toBe(true);
+  return await response.json() as {
+    service?: { webId?: unknown };
+    resources?: Array<{ url?: unknown }>;
+  };
+}
+
+function expectServiceAccessOwner(
+  descriptor: { service?: { webId?: unknown }; resources?: Array<{ url?: unknown }> },
+  webId: string,
+): void {
+  expect(descriptor.service?.webId).toBe(webId);
+  const ownerSegment = new URL(webId).pathname.split('/').filter(Boolean)[0];
+  expect(ownerSegment).toBeTruthy();
+  expect(descriptor.resources?.map((resource) => resource.url)).toEqual(expect.arrayContaining([
+    expect.stringContaining(`/${ownerSegment}/settings/providers/openai.ttl`),
+  ]));
 }
 
 async function readPodAiConnectionStatus(page: Page): Promise<{ webId: string; configuredProviders: number }> {

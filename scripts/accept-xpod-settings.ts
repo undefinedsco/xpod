@@ -129,6 +129,11 @@ export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
     source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 1-2',
   },
   {
+    id: 'model-discovery-pick',
+    title: 'Live provider model discovery, Pod Pick persistence and stale model projection',
+    source: 'docs/superpowers/plans/2026-08-05-ai-connection-model-pick.md Task 8',
+  },
+  {
     id: 'browser-visual',
     title: 'Models, Pod, Network and Services work at desktop and narrow widths',
     source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 3',
@@ -176,6 +181,7 @@ const DEFAULT_ACCEPTANCE_EVIDENCE_ROOT = path.resolve('.test-data/acceptance');
 const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_REAL_XPOD',
   'XPOD_ACCEPTANCE_RUN_VISUAL',
+  'XPOD_ACCEPTANCE_RUN_MODEL_DISCOVERY_PICK',
   'XPOD_ACCEPTANCE_RUN_DOCKER',
   'XPOD_ACCEPTANCE_RUN_CODEX',
   'XPOD_ACCEPTANCE_EXTERNAL_OAUTH',
@@ -185,6 +191,8 @@ const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_SETTINGS_E2E_BOB_STATE',
   'XPOD_SETTINGS_E2E_ALICE_POD_URL',
   'XPOD_SETTINGS_E2E_TEST_API_KEY',
+  'XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL',
+  'XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_CONTROL_TOKEN',
   'XPOD_ACCEPTANCE_XPOD_BASE_URL',
   'XPOD_ACCEPTANCE_MODEL',
   'XPOD_ACCEPTANCE_API_KEY',
@@ -332,6 +340,7 @@ export async function writeAcceptanceEvidence(report: AcceptanceReport, options:
 function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
   const baseUrl = env.XPOD_SETTINGS_E2E_BASE_URL ?? env.XPOD_ACCEPTANCE_XPOD_BASE_URL ?? env.XPOD_ACCEPTANCE_BASE_URL;
   const runVisual = env.XPOD_ACCEPTANCE_RUN_VISUAL === 'true';
+  const runModelDiscoveryPick = env.XPOD_ACCEPTANCE_RUN_MODEL_DISCOVERY_PICK === 'true';
   const runRealPod = env.XPOD_ACCEPTANCE_REAL_XPOD === 'true';
   const runDocker = env.XPOD_ACCEPTANCE_RUN_DOCKER === 'true';
   const runCodex = env.XPOD_ACCEPTANCE_RUN_CODEX === 'true';
@@ -350,6 +359,20 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload and verifies A/B Pod provider counts through the protected drizzle-solid-backed Pod status API when the real-host gate is complete.'],
       gate: runRealPod && hasRealHostEnv(env)
         ? playwrightGate(env, 'persists Alice API-key credential')
+        : undefined,
+    },
+    {
+      requirementId: 'model-discovery-pick',
+      title: requirementTitle('model-discovery-pick'),
+      mandatory: true,
+      status: runModelDiscoveryPick && hasModelDiscoveryPickEnv(env) ? 'skip' : 'not_complete',
+      reason: runModelDiscoveryPick
+        ? missingModelDiscoveryPickReason(env)
+        : 'Requires XPOD_ACCEPTANCE_RUN_MODEL_DISCOVERY_PICK=true plus real Xpod A/B auth states, Alice Pod URL, test API key and the mutable provider fixture URL.',
+      commands: ['XPOD_ACCEPTANCE_RUN_MODEL_DISCOVERY_PICK=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_ALICE_POD_URL=... XPOD_SETTINGS_E2E_TEST_API_KEY=... XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL=... bunx playwright test tests/e2e/xpod-settings.spec.ts --grep "model discovery|stale models" --reporter=json --workers=1'],
+      evidence: ['tests/e2e/xpod-settings.spec.ts uses a real authenticated Xpod stack and mutable OpenAI-compatible fixture to prove Alice Pick persistence, Bob isolation, active-only /v1/models projection and unavailable retention.'],
+      gate: runModelDiscoveryPick && hasModelDiscoveryPickEnv(env)
+        ? playwrightGate(env, 'model discovery|stale models')
         : undefined,
     },
     {
@@ -462,6 +485,8 @@ function playwrightGate(env: Record<string, string | undefined>, grep: string): 
       'XPOD_SETTINGS_E2E_BOB_STATE',
       'XPOD_SETTINGS_E2E_ALICE_POD_URL',
       'XPOD_SETTINGS_E2E_TEST_API_KEY',
+      'XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL',
+      'XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_CONTROL_TOKEN',
     ],
     resultContract: {
       kind: 'playwright-json',
@@ -504,6 +529,18 @@ function hasRealHostEnv(env: Record<string, string | undefined>): boolean {
     env.XPOD_SETTINGS_E2E_ALICE_POD_URL &&
     env.XPOD_SETTINGS_E2E_TEST_API_KEY
   );
+}
+
+function hasModelDiscoveryPickEnv(env: Record<string, string | undefined>): boolean {
+  return hasRealHostEnv(env) && Boolean(env.XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL);
+}
+
+function missingModelDiscoveryPickReason(env: Record<string, string | undefined>): string {
+  if (!hasRealHostEnv(env)) return missingRealHostReason(env);
+  if (!env.XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL) {
+    return 'XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL is required for the mutable provider catalog fixture.';
+  }
+  return 'Model discovery/Pick gate is enabled and must execute the real Xpod Playwright flow.';
 }
 
 function missingRealHostReason(env: Record<string, string | undefined>): string {

@@ -16,6 +16,7 @@ import {
   validateRealCodexProvenance,
   writeAcceptanceEvidence,
 } from '../../scripts/accept-xpod-settings';
+import { startProviderModelCatalogServer } from '../fixtures/provider-model-catalog-server';
 
 describe('Xpod settings product acceptance harness', () => {
   let tempRoot: string | undefined;
@@ -24,6 +25,36 @@ describe('Xpod settings product acceptance harness', () => {
     if (tempRoot) {
       await rm(tempRoot, { recursive: true, force: true });
       tempRoot = undefined;
+    }
+  });
+
+  it('uses a mutable OpenAI-compatible catalog fixture without retaining credential values', async () => {
+    const fixture = await startProviderModelCatalogServer({
+      host: '127.0.0.1',
+      models: ['gpt-5', 'gpt-5-mini'],
+    });
+    const secret = 'sk-fixture-secret-must-not-be-retained';
+    try {
+      const response = await fetch(`${fixture.baseUrl}/models`, {
+        headers: { Authorization: `Bearer ${secret}` },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        object: 'list',
+        data: [
+          expect.objectContaining({ id: 'gpt-5' }),
+          expect.objectContaining({ id: 'gpt-5-mini' }),
+        ],
+      });
+      const touched = await fixture.snapshot();
+      expect(touched).toMatchObject({ authorizationTouched: true, requestCount: 1 });
+      expect(JSON.stringify(touched)).not.toContain(secret);
+
+      await fixture.removeModel('gpt-5');
+      const stale = await fetch(`${fixture.baseUrl}/models`);
+      expect((await stale.json()).data.map((model: { id: string }) => model.id)).toEqual(['gpt-5-mini']);
+    } finally {
+      await fixture.close();
     }
   });
 
@@ -38,6 +69,7 @@ describe('Xpod settings product acceptance harness', () => {
     expect(plan.items.every((item) => item.commands.length > 0 || item.evidence.length > 0)).toBe(true);
     expect(plan.items.filter((item) => item.status === 'not_complete').map((item) => item.requirementId)).toEqual([
       'solid-pod-isolation',
+      'model-discovery-pick',
       'browser-visual',
       'docker-full-regression',
       'real-codex',
@@ -48,7 +80,7 @@ describe('Xpod settings product acceptance harness', () => {
     expect(plan.summary).toMatchObject({
       pass: expect.any(Number),
       skip: expect.any(Number),
-      notComplete: 5,
+      notComplete: 6,
       fail: 0,
       healthy: false,
       complete: false,
@@ -109,6 +141,35 @@ describe('Xpod settings product acceptance harness', () => {
     expect(item?.gate?.kind === 'command' ? item.gate.command.join(' ') : '')
       .toContain('--grep SDK geometry|narrow stack');
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
+  });
+
+  it('keeps model discovery/Pick as a distinct real-host gate', () => {
+    const plan = buildAcceptancePlan({
+      env: {
+        XPOD_ACCEPTANCE_RUN_MODEL_DISCOVERY_PICK: 'true',
+        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
+        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
+        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
+        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
+        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-model-pick-test-key',
+        XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL: 'http://127.0.0.1:48111/__xpod_fixture',
+      },
+      now: '2026-08-01T00:00:00.000Z',
+    });
+    const item = plan.items.find((candidate) => candidate.requirementId === 'model-discovery-pick');
+
+    expect(item).toMatchObject({
+      status: 'skip',
+      gate: expect.objectContaining({
+        kind: 'command',
+        command: expect.arrayContaining(['--grep', 'model discovery|stale models']),
+      }),
+    });
+    expect(item?.gate?.kind === 'command' ? item.gate.runtimeEnvKeys : []).toEqual(expect.arrayContaining([
+      'XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL',
+    ]));
+    expect(item?.gate?.kind === 'command' ? item.gate.command.join(' ') : '')
+      .not.toContain('--grep SDK geometry');
   });
 
   it('preserves the selected runtime PATH for the Docker regression gate', () => {
@@ -451,6 +512,10 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('XPOD_SETTINGS_E2E_BOB_STATE');
     expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
+    expect(spec).toContain('XPOD_SETTINGS_E2E_PROVIDER_FIXTURE_URL');
+    expect(spec).toContain('model discovery and stale models');
+    expect(spec).toContain('/v1/models');
+    expect(spec).toContain('供应商已不可用');
     expect(spec).toContain('completeApiKeyThroughUi');
     expect(spec).toContain("waitForEvent('page')");
     expect(spec).toContain('externalConsole.close()');
@@ -470,6 +535,8 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('assertSdkGeometryContract');
     expect(spec).not.toContain('if (await firstNavigable.count())');
     expect(harness).toContain("'--workers=1'");
+    expect(harness).toContain("'model-discovery-pick'");
+    expect(harness).toContain('XPOD_ACCEPTANCE_RUN_MODEL_DISCOVERY_PICK');
   });
 
   it('enables provider Connect in RC and production runtime configuration', async () => {
