@@ -236,9 +236,9 @@ export interface ApiContainerCradle {
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
   gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
-  gatewayAccessKeyRepository: GatewayAccessKeyRepository;
-  invocationTokenCodec: InvocationTokenCodec;
-  aiConnectionInvocationKeyIssuer: AiConnectionsInvocationKeyIssuer;
+  gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
+  invocationTokenCodec?: InvocationTokenCodec;
+  aiConnectionInvocationKeyIssuer?: AiConnectionsInvocationKeyIssuer;
   aiClientConfigurationService?: AiClientConfigurationService;
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;
@@ -246,7 +246,7 @@ export interface ApiContainerCradle {
   gatewayCredentialStore: GatewayCredentialStore;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;
   gatewaySessionAffinityStore: SessionAffinityStore;
-  aiGatewayService: AiGatewayService;
+  aiGatewayService?: AiGatewayService;
 
   // 业务服务
   chatService: VercelChatService;

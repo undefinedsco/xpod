@@ -146,7 +146,7 @@ export function registerCommonServices(
 
     gatewayAccessKeyRepository: asFunction(({ config, gatewayInternalPodAccess }: ApiContainerCradle) => {
       if (!config.gatewayLocatorSecret) {
-        throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for Gateway API key locator encryption');
+        return undefined;
       }
       return new PodGatewayAccessKeyRepository({
         locatorCodec: new AesGatewayKeyLocatorCodec({
@@ -162,7 +162,7 @@ export function registerCommonServices(
 
     invocationTokenCodec: asFunction(({ config }: ApiContainerCradle) => {
       if (!config.gatewayLocatorSecret) {
-        throw new Error('XPOD_GATEWAY_LOCATOR_SECRET is required for invocation token encryption');
+        return undefined;
       }
       return new AesInvocationTokenCodec({
         active: {
@@ -173,9 +173,13 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    aiConnectionInvocationKeyIssuer: asFunction(({ config, invocationTokenCodec }: ApiContainerCradle) => {
+    aiConnectionInvocationKeyIssuer: asFunction((cradle: ApiContainerCradle) => {
+      const { config } = cradle;
+      if (!config.gatewayLocatorSecret) {
+        return undefined;
+      }
       return new AiConnectionsInvocationKeyIssuer({
-        codec: invocationTokenCodec,
+        codec: cradle.invocationTokenCodec!,
         deployment: config.edition,
         baseUrl: resolveAiConnectionsBaseUrl(config),
         audience: resolveAiConnectionsAudience(config),
@@ -301,8 +305,8 @@ export function registerCommonServices(
 
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway inference requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
+      if (!config.secretCellCredentialVaultFactory || !config.gatewayLocatorSecret) {
+        return undefined;
       }
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
@@ -365,17 +369,25 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
-      const gatewayApiKeyAuthenticator = new GatewayApiKeyAuthenticator({
-        repository: gatewayAccessKeyRepository,
-        invocationTokenCodec,
-        deployment: config.edition,
-        invocationTokenAudience: resolveAiConnectionsAudience(config),
-      });
+      const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository && invocationTokenCodec
+        ? new GatewayApiKeyAuthenticator({
+          repository: gatewayAccessKeyRepository,
+          invocationTokenCodec,
+          deployment: config.edition,
+          invocationTokenAudience: resolveAiConnectionsAudience(config),
+        })
+        : undefined;
 
       return new MultiAuthenticator({
         // Order: Solid DPoP → Service Token → Node Token → Gateway Key → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
-        authenticators: [solidAuthenticator, serviceTokenAuthenticator, nodeTokenAuthenticator, gatewayApiKeyAuthenticator, clientCredAuthenticator],
+        authenticators: [
+          solidAuthenticator,
+          serviceTokenAuthenticator,
+          nodeTokenAuthenticator,
+          ...(gatewayApiKeyAuthenticator ? [gatewayApiKeyAuthenticator] : []),
+          clientCredAuthenticator,
+        ],
       });
     }).singleton(),
 
