@@ -51,41 +51,35 @@ test.describe('Xpod settings product acceptance', () => {
     }
   });
 
-  for (const viewport of [
-    { name: 'desktop', width: 1440, height: 960 },
-    { name: 'narrow', width: 390, height: 844 },
-  ]) {
-    test(`shows real Models, Pod, Network and Services data with SDK geometry at ${viewport.name} width`, async ({ browser }) => {
-      test.setTimeout(180_000);
-      const page = await authenticatedPage(browser, aliceState!);
-      try {
+  test('shows real Models, Pod, Network and Services data with SDK geometry and the narrow stack contract', async ({ browser }) => {
+    test.setTimeout(180_000);
+    const page = await authenticatedPage(browser, aliceState!);
+    try {
+      for (const viewport of [
+        { name: 'desktop', width: 1440, height: 960 },
+        { name: 'narrow', width: 390, height: 844 },
+      ]) {
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         for (const module of [
           { label: 'Models', path: '/settings/models', expected: /openai|anthropic|kimi|bailian|deepseek|gateway/i },
           { label: 'Pod', path: '/settings/pod', expected: /webid|pod|issuer|storage|providers/i },
-          { label: 'Network', path: '/dashboard/network', expected: /endpoint|addresses|capabilities|unsupported|supported/i },
+          { label: 'Network', path: '/settings/network', expected: /endpoint|addresses|capabilities|unsupported|supported/i },
           { label: 'Services', path: '/settings/services', expected: /runtime|solid|gateway|storage|logs|rdf/i },
         ]) {
-          await openModule(page, module.path, module.label);
-          await expect(page.locator('main')).toHaveCount(1);
-          await expect(page.locator('body')).toContainText(module.expected);
-          await expect(page.locator('body')).not.toContainText(/mock|fixture|storybook/i);
-          await assertSdkGeometryContract(page, module.label === 'Models');
-          await page.screenshot({
-            path: path.join(screenshotDir, `${viewport.name}-${module.label.toLowerCase()}.png`),
-            fullPage: true,
+          await test.step(`${viewport.name}:${module.label}`, async () => {
+            await openModule(page, module.path, module.label);
+            await expect(page.locator('main')).toHaveCount(1);
+            await expect(page.locator('body')).toContainText(module.expected);
+            await expect(page.locator('body')).not.toContainText(/mock|fixture|storybook/i);
+            await assertSdkGeometryContract(page, module.label === 'Models');
+            await page.screenshot({
+              path: path.join(screenshotDir, `${viewport.name}-${module.label.toLowerCase()}.png`),
+              fullPage: true,
+            });
           });
         }
-      } finally {
-        await page.context().close();
       }
-    });
-  }
 
-  test('keeps narrow stack detail, back navigation and focus contract mandatory', async ({ browser }) => {
-    test.setTimeout(180_000);
-    const page = await authenticatedPage(browser, aliceState!);
-    try {
       await page.setViewportSize({ width: 390, height: 844 });
       await openModule(page, '/settings/models', 'Models');
 
