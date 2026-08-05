@@ -1485,10 +1485,13 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       '/tmp/query.rq',
       '--fixture-sha256',
       'a'.repeat(64),
+      '--operation-timeout-ms',
+      '180000',
     ])).toEqual({
       mode: 'query',
       query: '/tmp/query.rq',
       fixtureSha256: 'a'.repeat(64),
+      operationTimeoutMs: 180_000,
     });
     expect(benchmark.parseRdf3xParityArgs([
       '--prepare-fixture',
@@ -1959,8 +1962,8 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
         calls.push({ connectionString });
         return 'a'.repeat(64);
       },
-      async executeRdf3xQuery(connectionString, query) {
-        calls.push({ executeConnectionString: connectionString, query });
+      async executeRdf3xQuery(connectionString, query, operationTimeoutMs) {
+        calls.push({ executeConnectionString: connectionString, operationTimeoutMs, query });
         return {
           head: { vars: [ 'value', 'iri' ] },
           results: {
@@ -1984,6 +1987,7 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       { connectionString: expect.stringContaining('postgres://example.test/seeded') },
       {
         executeConnectionString: expect.stringContaining('postgres://example.test/seeded'),
+        operationTimeoutMs: 30_000,
         query: 'SELECT ?value ?iri WHERE { ?s ?p ?value }',
       },
     ]);

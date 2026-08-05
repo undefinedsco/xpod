@@ -113,7 +113,7 @@ export interface BenchmarkCliOptions {
 
 export type Rdf3xParityCliOptions =
   | { mode: 'contract' }
-  | { mode: 'query'; query: string; fixtureSha256: string }
+  | { mode: 'query'; query: string; fixtureSha256: string; operationTimeoutMs?: number }
   | { mode: 'prepare'; facts: string; fixtureSha256: string };
 
 export interface SparqlJsonTerm {
@@ -159,6 +159,7 @@ export interface Rdf3xParityRuntime {
   executeRdf3xQuery?: (
     connectionString: string,
     query: string,
+    operationTimeoutMs: number,
   ) => Promise<SparqlJsonBindingsBody>;
 }
 
@@ -2016,6 +2017,7 @@ export function parseRdf3xParityArgs(
   let facts: string | undefined;
   let query: string | undefined;
   let fixtureSha256: string | undefined;
+  let operationTimeoutMs = DEFAULT_OPERATION_TIMEOUT_MS;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === '--contract') {
@@ -2047,6 +2049,17 @@ export function parseRdf3xParityArgs(
     }
     if (argument.startsWith('--fixture-sha256=')) {
       fixtureSha256 = argument.slice('--fixture-sha256='.length);
+      continue;
+    }
+    if (argument === '--operation-timeout-ms') {
+      operationTimeoutMs = Number(requiredFollowingParityValue(args, index, 'operation-timeout-ms'));
+      assertPositiveInteger(operationTimeoutMs, 'operation-timeout-ms');
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--operation-timeout-ms=')) {
+      operationTimeoutMs = Number(argument.slice('--operation-timeout-ms='.length));
+      assertPositiveInteger(operationTimeoutMs, 'operation-timeout-ms');
       continue;
     }
     throw new Error(`Unknown RDF3X parity option --${optionName(argument)}`);
@@ -2084,6 +2097,7 @@ export function parseRdf3xParityArgs(
     mode: 'query',
     query: assertRdf3xParityPath(query, 'query'),
     fixtureSha256: assertRdf3xParitySha256(fixtureSha256),
+    operationTimeoutMs,
   };
 }
 
@@ -2125,7 +2139,8 @@ export async function runRdf3xParityQuery(
   }
 
   const startedAt = now();
-  const body = await executeQuery(connectionString, query);
+  const operationTimeoutMs = options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS;
+  const body = await executeQuery(connectionString, query, operationTimeoutMs);
   return rdf3xParityEnvelope(
     'query',
     now() - startedAt,
@@ -2452,13 +2467,14 @@ export function parseRdf3xParityNQuads(input: string): Quad[] {
 async function executeRdf3xParityProductQuery(
   connectionUrl: string,
   query: string,
+  operationTimeoutMs: number,
 ): Promise<SparqlJsonBindingsBody> {
   const store = new PostgresRdfEngine(buildRdf3xParityQueryEngineOptions(connectionUrl));
   try {
     await store.open();
     const sparql = new SolidRdfSparqlEngine(store);
     const stream = await sparql.queryBindings(query, RDF3X_PARITY_BASE_PATH, undefined, {
-      timeoutMs: DEFAULT_OPERATION_TIMEOUT_MS,
+      timeoutMs: operationTimeoutMs,
     });
     return await materializeRdf3xParityBindingsBody(stream);
   } finally {
