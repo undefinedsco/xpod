@@ -282,7 +282,11 @@ export class AiGatewayService {
         conversationId: conversationIdFor(request),
       }, attempted);
     } catch (error) {
-      if (error instanceof GatewayProtocolError && error.code === 'credential_unavailable') {
+      if (error instanceof GatewayProtocolError && (
+        error.code === 'credential_unavailable'
+        || error.code === 'model_not_available'
+        || error.code === 'no_model_available'
+      )) {
         return undefined;
       }
       throw error;

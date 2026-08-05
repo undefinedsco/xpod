@@ -5,6 +5,7 @@ import {
   encodePlaintextCredential,
   UnsupportedCredentialStorageModeError,
 } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
@@ -370,6 +371,90 @@ describe('AiGatewayService', () => {
     expect(authSeenByCredentialStore).toEqual([AUTH, AUTH]);
     expect(runtimeExecute).toHaveBeenCalledTimes(2);
     expect(runtimeExecute).toHaveBeenLastCalledWith(expect.objectContaining({ apiKey: 'sk-backup' }));
+  });
+
+  it('preserves a 429 provider error when cooldown leaves no failover route', async() => {
+    const fixture = serviceWith([
+      credential({ id: 'only', provider: 'openai', models: [] }),
+    ], undefined, [{
+      provider: 'openai',
+      models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+      version: 'sha256:openai',
+    }]);
+    const providerError = new GatewayProtocolError('Provider request failed with status 429', {
+      code: 'provider_error',
+      status: 429,
+      details: { provider: 'openai', providerStatusCode: 429, retryAfter: '9' },
+    });
+    const runtimeExecute = vi.fn(async function* () {
+      throw providerError;
+    });
+    (fixture.service as any).runtimes.get = vi.fn(() => ({ execute: runtimeExecute }));
+
+    await expect(fixture.service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })).rejects.toBe(providerError);
+    expect(providerError.details).toMatchObject({ retryAfter: '9' });
+    expect(fixture.store.recordFailure).toHaveBeenCalledWith(expect.objectContaining({
+      status: 429,
+      errorCode: 'provider_error',
+    }));
+  });
+
+  it('preserves a non-429 provider error when model visibility disappears during failover', async() => {
+    const registry = createDefaultProviderRegistry();
+    const credentials = [credential({ id: 'only', provider: 'openai', models: [] })];
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async() => credentials),
+      recordFailure: vi.fn(async() => {}),
+      recordSuccess: vi.fn(async() => {}),
+    };
+    let selectionReads = 0;
+    const selectionRepository = {
+      listActiveSelections: vi.fn(async() => selectionReads++ === 0 ? [{
+        provider: 'openai',
+        models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' as const }],
+        version: 'sha256:openai',
+      }] : []),
+    };
+    const router = new ModelRouter({
+      registry,
+      affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+      credentials: store.listCredentials,
+      selectionRepository,
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+    const providerError = new GatewayProtocolError('Provider request failed with status 503', {
+      code: 'provider_error',
+      status: 503,
+      details: { provider: 'openai', providerStatusCode: 503 },
+    });
+    const runtimeExecute = vi.fn(async function* () {
+      throw providerError;
+    });
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router,
+      credentials: store,
+      runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await expect(service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })).rejects.toBe(providerError);
+    expect(selectionRepository.listActiveSelections).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed on legacy encrypted credential rows before provider runtime I/O', async() => {
