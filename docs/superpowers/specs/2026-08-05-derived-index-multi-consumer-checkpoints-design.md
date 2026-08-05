@@ -103,16 +103,23 @@ permits an explicit ID for a separately configured future generation.
 `replayPending(listener)` remains supported as the compatibility entry point.
 It uses the reserved consumer ID `legacy-resource-change-listener-v1`, preserving
 existing callers while moving them onto the same delivery/checkpoint mechanism.
+The legacy consumer is registered on `open()` only when there are no configured
+durable consumers. When configured consumers exist, calling `replayPending()`
+registers the legacy consumer lazily and backfills its retained history before
+claiming work. This prevents an unused compatibility consumer from leaving every
+production event permanently pending.
 
 `pendingCount(podScopeId?, consumerId?)` counts non-complete delivery rows. With
 no consumer ID it counts distinct events that remain incomplete for at least
-one registered consumer. The reserved legacy consumer is always registered, so
-events recorded before an explicit replay remain observable by existing callers.
+one registered consumer. A journal with no configured consumers registers the
+legacy consumer before accepting events, so existing manual replay callers keep
+their current pending-count behavior.
 
 ## Recording and Registration Flow
 
 1. `open()` creates the three new tables and indexes idempotently.
-2. It registers the reserved legacy consumer and every configured consumer.
+2. It registers every configured consumer, or the reserved legacy consumer when
+   the configured set is empty.
 3. Registration inserts missing deliveries for all retained events with
    `ON CONFLICT DO NOTHING`.
 4. `recordResourceChange()` inserts one immutable event and one pending delivery
@@ -167,11 +174,13 @@ Pod identity from resource strings.
 Opening an existing database is non-destructive:
 
 - existing events are retained;
-- the legacy consumer is registered;
-- each existing event receives a legacy delivery;
-- an event whose old stage is `done` seeds a `done` legacy delivery and its
-  checkpoint;
-- `pending` and expired `processing` events seed pending legacy deliveries;
+- when no configured consumer exists, the legacy consumer is registered and
+  each existing event receives a legacy delivery;
+- when `replayPending()` is first invoked beside configured consumers, it
+  registers the legacy consumer lazily and backfills retained events;
+- for legacy migration, an old event whose stage is `done` seeds a `done`
+  delivery and checkpoint, while `pending` and expired `processing` events seed
+  pending deliveries;
 - configured new consumers receive pending deliveries for all retained events.
 
 The old event-level stage fields remain readable during this release but no
