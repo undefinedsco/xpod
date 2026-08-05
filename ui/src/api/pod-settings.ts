@@ -4,7 +4,7 @@ export interface PodSettingsStatus {
     podUrl?: string;
   };
   storage: PodStorageStatus;
-  aiConnection: PodAiConnectionStatus;
+  aiConnection: PodAiConnectionsStatus;
   generatedAt?: string;
 }
 
@@ -27,7 +27,7 @@ export type PodStorageStatus =
     reason?: string;
   };
 
-export type PodAiConnectionStatus =
+export type PodAiConnectionsStatus =
   | {
     status: 'available';
     containerUrl?: string;

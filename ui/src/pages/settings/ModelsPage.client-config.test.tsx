@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
-import { createXpodAiClientConfigurationBridge } from '../../api/ai-connection';
+import { createXpodAiClientConfigurationBridge } from '../../api/ai-connections';
 import ModelsPage from './ModelsPage';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,9 +21,9 @@ describe('ModelsPage coding-client configuration capability', () => {
       const method = init?.method ?? 'GET';
       const body = typeof init?.body === 'string' ? init.body : undefined;
       calls.push({ path: url.pathname, method, authorization: new Headers(init?.headers).get('authorization'), body });
-      if (url.pathname === '/api/applets/service-access/ai-connection') {
+      if (url.pathname === '/api/applets/service-access/ai-connections') {
         return json({
-          appletId: 'co.undefineds.ai-connection',
+          appletId: 'co.undefineds.ai-connections',
           service: { webId: 'https://pod.example/service#me', label: 'Xpod AI Connection' },
           resources: [{
             id: 'providerCredentials',
@@ -98,9 +98,9 @@ describe('ModelsPage coding-client configuration capability', () => {
   it('shows the manual unavailable state when the host has no filesystem capability', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
-      if (url.pathname === '/api/applets/service-access/ai-connection') {
+      if (url.pathname === '/api/applets/service-access/ai-connections') {
         return json({
-          appletId: 'co.undefineds.ai-connection',
+          appletId: 'co.undefineds.ai-connections',
           service: { webId: 'https://pod.example/service#me', label: 'Xpod AI Connection' },
           resources: [{
             id: 'providerCredentials',
@@ -133,7 +133,7 @@ describe('ModelsPage coding-client configuration capability', () => {
   it('preserves structured client-config errors for failed-and-restored recovery UI', async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
-      if (url.pathname === '/api/applets/service-access/ai-connection') {
+      if (url.pathname === '/api/applets/service-access/ai-connections') {
         return json({
           invocation: {
             baseUrl: 'https://pod.example',

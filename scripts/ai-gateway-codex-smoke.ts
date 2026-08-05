@@ -130,7 +130,7 @@ async function runResponsesStream(options: SmokeOptions, signal: AbortSignal): P
               type: 'input_text',
               text: [
                 `Run id: ${requestId}.`,
-                `Call the ${TOOL_NAME} function with {"query":"xpod-ai-connection-smoke"}, then answer with one short sentence.`,
+                `Call the ${TOOL_NAME} function with {"query":"xpod-ai-connections-smoke"}, then answer with one short sentence.`,
               ].join(' '),
             },
           ],
@@ -257,11 +257,11 @@ function parseArgs(argv: string[]): ParsedArgs & { help?: boolean } {
 }
 
 async function resolveOptions(args: ParsedArgs): Promise<SmokeOptions> {
-  const baseUrl = args.baseUrl ?? process.env.AI_CONNECTION_BASE_URL;
-  const model = args.model ?? process.env.AI_CONNECTION_MODEL ?? process.env.DEFAULT_MODEL;
+  const baseUrl = args.baseUrl ?? process.env.AI_CONNECTIONS_BASE_URL;
+  const model = args.model ?? process.env.AI_CONNECTIONS_MODEL ?? process.env.DEFAULT_MODEL;
   const apiKey = await readApiKey(args);
-  if (!baseUrl) throw new Error('Missing --base-url or AI_CONNECTION_BASE_URL');
-  if (!model) throw new Error('Missing --model, AI_CONNECTION_MODEL, or DEFAULT_MODEL');
+  if (!baseUrl) throw new Error('Missing --base-url or AI_CONNECTIONS_BASE_URL');
+  if (!model) throw new Error('Missing --model, AI_CONNECTIONS_MODEL, or DEFAULT_MODEL');
   if (!apiKey) throw new Error('Missing API key. Use --api-key-env NAME or --api-key-stdin.');
   if (args.timeoutMs !== undefined && (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0)) {
     throw new Error('--timeout-ms must be a positive number');
@@ -270,7 +270,7 @@ async function resolveOptions(args: ParsedArgs): Promise<SmokeOptions> {
     baseUrl,
     model,
     apiKey,
-    expectedWebId: args.expectedWebId ?? process.env.AI_CONNECTION_EXPECTED_WEB_ID,
+    expectedWebId: args.expectedWebId ?? process.env.AI_CONNECTIONS_EXPECTED_WEB_ID,
     timeoutMs: args.timeoutMs ?? 120_000,
   };
 }
@@ -283,7 +283,7 @@ async function readApiKey(args: ParsedArgs): Promise<string | undefined> {
     }
     return Buffer.concat(chunks).toString('utf8').trim();
   }
-  const envName = args.apiKeyEnv ?? 'AI_CONNECTION_API_KEY';
+  const envName = args.apiKeyEnv ?? 'AI_CONNECTIONS_API_KEY';
   return process.env[envName]?.trim();
 }
 
@@ -316,8 +316,8 @@ function requireValue(argv: string[], index: number, flag: string): string {
 
 function printUsage(): void {
   console.log(`Usage:
-  bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-env AI_CONNECTION_API_KEY
-  printf '%s' "$AI_CONNECTION_API_KEY" | bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
+  bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-env AI_CONNECTIONS_API_KEY
+  printf '%s' "$AI_CONNECTIONS_API_KEY" | bun scripts/ai-gateway-codex-smoke.ts --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
   printf '%s' "$XPOD_ACCEPTANCE_GATEWAY_KEY" | bun scripts/ai-gateway-codex-smoke.ts --real-codex-cli --base-url http://localhost:3000 --model gpt-5 --api-key-stdin
   bun scripts/ai-gateway-codex-smoke.ts --fixture-codex-cli
 
@@ -403,7 +403,7 @@ async function runRealCodexCliSmoke(args: ParsedArgs): Promise<void> {
     provenance: {
       ...provenance,
       model: options.model,
-      gatewayKeySource: args.apiKeyStdin ? 'stdin' : `env:${args.apiKeyEnv ?? 'AI_CONNECTION_API_KEY'}`,
+      gatewayKeySource: args.apiKeyStdin ? 'stdin' : `env:${args.apiKeyEnv ?? 'AI_CONNECTIONS_API_KEY'}`,
       artifactHash: 'sha256:pending',
     },
     redaction: {
@@ -463,7 +463,7 @@ async function runFixtureCodexCliSmoke(args: ParsedArgs): Promise<void> {
   const timeoutMs = args.timeoutMs ?? 120_000;
   const reportRoot = path.resolve(args.reportDir ?? '.test-data/ai-gateway-codex');
   fs.mkdirSync(reportRoot, { recursive: true });
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-ai-connection-codex-'));
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-ai-connections-codex-'));
   const codexHome = path.join(tempRoot, 'codex-home');
   const workspace = path.join(tempRoot, 'workspace');
   fs.mkdirSync(codexHome, { recursive: true });

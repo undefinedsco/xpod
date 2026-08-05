@@ -34,12 +34,12 @@ function auth(webId: string): AuthContext {
 function encryptedSecret(webId: string, provider: string, id: string): EncryptedCredentialSecret {
   return {
     algorithm: 'AES-256-GCM',
-    aadPurpose: 'xpod-ai-connection-test',
+    aadPurpose: 'xpod-ai-connections-test',
     aadVersion: 'v1',
     ciphertext: `ciphertext-for-${id}`,
     nonce: `nonce-for-${id}`,
     webId,
-    credentialIri: `https://pod.example/${encodeURIComponent(webId)}/settings/ai-connection.ttl#${id}`,
+    credentialIri: `https://pod.example/${encodeURIComponent(webId)}/settings/ai-connections.ttl#${id}`,
     provider,
     dekWrapAlgorithm: 'xpod-secret-cell-root-hkdf-aes-256-gcm',
     keyId: 'test-root-v1',
@@ -56,7 +56,7 @@ function credential(input: {
   const provider = input.provider ?? 'openai';
   return {
     id: input.id,
-    credentialIri: `https://pod.example/${encodeURIComponent(input.webId)}/settings/ai-connection.ttl#${input.id}`,
+    credentialIri: `https://pod.example/${encodeURIComponent(input.webId)}/settings/ai-connections.ttl#${input.id}`,
     provider,
     authMode: 'apiKey',
     enabled: true,

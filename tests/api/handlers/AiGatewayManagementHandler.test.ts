@@ -6,7 +6,7 @@ import { InMemoryGatewayAccessKeyRepository } from '../ai-gateway/InMemoryGatewa
 import { AesGatewayKeyLocatorCodec } from '../../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import { PodGatewayAccessKeyRepository } from '../../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { GatewayApiKeyAuthenticator } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
-import { AiConnectionInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import { AiConnectionsInvocationKeyIssuer } from '../../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { createGatewayApiKey } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
 import {
@@ -129,7 +129,7 @@ function invocationHarness(input: {
     now: () => now,
     requiredScopes: input.scopes ?? ['models:read', 'inference:write'],
   });
-  const issuer = new AiConnectionInvocationKeyIssuer({
+  const issuer = new AiConnectionsInvocationKeyIssuer({
     codec,
     deployment,
     baseUrl: 'https://pod.example/v1',
@@ -152,7 +152,7 @@ describe('AiGatewayManagementHandler', () => {
     });
     const res = response();
 
-    await routes['GET /api/applets/service-access/ai-connection'](request(undefined), res, {});
+    await routes['GET /api/applets/service-access/ai-connections'](request(undefined), res, {});
 
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body)).toEqual({ error: 'Authentication required' });
@@ -166,7 +166,7 @@ describe('AiGatewayManagementHandler', () => {
     });
     const res = response();
 
-    await routes['GET /api/applets/service-access/ai-connection'](request({
+    await routes['GET /api/applets/service-access/ai-connections'](request({
       type: 'solid',
       webId: WEB_ID,
     }), res, {});
@@ -189,15 +189,15 @@ describe('AiGatewayManagementHandler', () => {
       type: 'solid',
       webId: 'https://pod.example/bob/profile/card#me',
     });
-    req.url = '/api/applets/service-access/ai-connection?resource=https%3A%2F%2Fevil.example%2Fcredentials.ttl';
+    req.url = '/api/applets/service-access/ai-connections?resource=https%3A%2F%2Fevil.example%2Fcredentials.ttl';
     const res = response();
 
-    await routes['GET /api/applets/service-access/ai-connection'](req, res, {});
+    await routes['GET /api/applets/service-access/ai-connections'](req, res, {});
 
     expect(res.statusCode).toBe(200);
     expect(servicePrincipal.getServicePrincipal).toHaveBeenCalledTimes(1);
     expect(JSON.parse(res.body)).toMatchObject({
-      appletId: 'co.undefineds.ai-connection',
+      appletId: 'co.undefineds.ai-connections',
       service: {
         webId: 'https://id.example/xpod/profile/card#me',
       },
@@ -233,7 +233,7 @@ describe('AiGatewayManagementHandler', () => {
     };
     const res = response();
 
-    await routes['GET /api/applets/service-access/ai-connection'](request(auth), res, {});
+    await routes['GET /api/applets/service-access/ai-connections'](request(auth), res, {});
 
     expect(issue).toHaveBeenCalledWith({ auth });
     expect(JSON.parse(res.body)).toMatchObject({
@@ -262,7 +262,7 @@ describe('AiGatewayManagementHandler', () => {
     });
     const res = response();
 
-    await routes['GET /api/applets/service-access/ai-connection'](request({
+    await routes['GET /api/applets/service-access/ai-connections'](request({
       type: 'solid',
       webId: WEB_ID,
     }), res, {});
@@ -289,7 +289,7 @@ describe('AiGatewayManagementHandler', () => {
     });
     const res = response();
 
-    await routes['GET /api/applets/service-access/ai-connection'](request({
+    await routes['GET /api/applets/service-access/ai-connections'](request({
       type: 'solid',
       webId: WEB_ID,
     }), res, {});

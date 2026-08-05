@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ResolvedAgentConfig } from '../../../agents/config/types';
 import type { McpServerConfig } from '../../../agents/types';
-import { requireAiConnectionRuntimeConfig } from '../../../runtime/safe-env';
+import { requireAiConnectionsRuntimeConfig } from '../../../runtime/safe-env';
 
 export interface CodexRuntimeProjection {
   codexHome: string;
@@ -30,7 +30,7 @@ export class CodexRuntimeProjector {
   public constructor(private readonly filesystem: CodexRuntimeFileSystemPort = fs) {}
 
   public project(options: CodexRuntimeProjection): void {
-    const connection = requireAiConnectionRuntimeConfig(options, 'Codex runtime projection');
+    const connection = requireAiConnectionsRuntimeConfig(options, 'Codex runtime projection');
     this.ensureRequiredDir(options.codexHome, 'Codex home');
     this.writeConfigAndAuth({
       ...options,

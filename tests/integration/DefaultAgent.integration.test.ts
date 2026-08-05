@@ -1,7 +1,7 @@
 /**
  * DefaultAgent availability smoke tests.
  *
- * Real DefaultAgent E2E (needs AI_CONNECTION_API_KEY and local Claude CLI)
+ * Real DefaultAgent E2E (needs AI_CONNECTIONS_API_KEY and local Claude CLI)
  * moved to tests/manual/DefaultAgent.manual.test.ts.
  */
 

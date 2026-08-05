@@ -43,7 +43,7 @@ describe('Task service Run materialization', () => {
       store,
       executionBackend: backend,
       aiConnectionInvocationKeyIssuer: invocationKeyIssuer,
-      requireAiConnectionInvocationKeyIssuer: true,
+      requireAiConnectionsInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'u1',

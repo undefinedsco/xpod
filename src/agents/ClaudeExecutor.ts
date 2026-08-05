@@ -30,7 +30,7 @@ import type {
 } from './types';
 import {
   projectAnthropicCompatibleEnv,
-  requireAiConnectionRuntimeConfig,
+  requireAiConnectionsRuntimeConfig,
   sanitizeRuntimeEnv,
 } from '../runtime/safe-env';
 
@@ -72,15 +72,15 @@ export class ClaudeExecutor extends BaseAgentExecutor {
    * 获取环境变量配置
    */
   private getEnvConfig(): Record<string, string | undefined> {
-    const connection = this.requireAiConnection();
+    const connection = this.requireAiConnections();
     return {
       ...sanitizeRuntimeEnv(process.env),
       ...projectAnthropicCompatibleEnv(connection),
     };
   }
 
-  private requireAiConnection() {
-    return requireAiConnectionRuntimeConfig({
+  private requireAiConnections() {
+    return requireAiConnectionsRuntimeConfig({
       baseUrl: this.aiConnection?.baseUrl,
       apiKey: this.aiConnection?.gatewayKey,
       model: this.aiConnection?.model,

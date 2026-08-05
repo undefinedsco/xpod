@@ -136,7 +136,7 @@ describe('ChatKitHandler Integration', () => {
       enableAgentRuntime: true,
       runExecutionBackend: backend,
       aiConnectionInvocationKeyIssuer: issuer,
-      requireAiConnectionInvocationKeyIssuer: true,
+      requireAiConnectionsInvocationKeyIssuer: true,
     });
     registerChatKitRoutes(runtimeServer, { chatKitService: service });
     await runtimeServer.start();
@@ -222,7 +222,7 @@ describe('ChatKitHandler Integration', () => {
       enableAgentRuntime: true,
       runExecutionBackend: backend,
       aiConnectionInvocationKeyIssuer: issuer,
-      requireAiConnectionInvocationKeyIssuer: true,
+      requireAiConnectionsInvocationKeyIssuer: true,
     });
     registerChatKitRoutes(runtimeServer, { chatKitService: service });
     await runtimeServer.start();

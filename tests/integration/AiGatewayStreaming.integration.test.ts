@@ -20,12 +20,12 @@ const WEB_ID = 'https://id.example/alice/profile/card#me';
 function encrypted(provider: string): EncryptedCredentialSecret {
   return {
     algorithm: 'AES-256-GCM',
-    aadPurpose: 'xpod-ai-connection-test',
+    aadPurpose: 'xpod-ai-connections-test',
     aadVersion: 'v1',
     ciphertext: 'ciphertext',
     nonce: 'nonce',
     webId: WEB_ID,
-    credentialIri: `https://pod.example/settings/ai-connection.ttl#${provider}`,
+    credentialIri: `https://pod.example/settings/ai-connections.ttl#${provider}`,
     provider,
     dekWrapAlgorithm: 'test',
     keyId: 'test',
@@ -135,7 +135,7 @@ function createFixture(options: {
   const store: GatewayCredentialStore = {
     listCredentials: vi.fn(async() => [{
       id: 'cred_openai',
-      credentialIri: 'https://pod.example/settings/ai-connection.ttl#openai',
+      credentialIri: 'https://pod.example/settings/ai-connections.ttl#openai',
       provider: 'openai',
       authMode: 'apiKey' as const,
       enabled: true,

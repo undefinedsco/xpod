@@ -314,8 +314,8 @@ describe('ClaudeExecutor', () => {
 
   it('should project only scoped AI Connection credentials into Claude SDK env', async () => {
     const ambientProviderEnv = {
-      AI_CONNECTION_API_KEY: 'ambient-ai-connection-key',
-      AI_CONNECTION_BASE_URL: 'https://ambient-ai-connection.example/v1',
+      AI_CONNECTIONS_API_KEY: 'ambient-ai-connections-key',
+      AI_CONNECTIONS_BASE_URL: 'https://ambient-ai-connections.example/v1',
       OPENAI_API_KEY: 'ambient-openai-key',
       OPENAI_BASE_URL: 'https://ambient-openai.example/v1',
       OPENAI_API_BASE: 'https://ambient-openai-api-base.example/v1',
@@ -354,8 +354,8 @@ describe('ClaudeExecutor', () => {
       expect(queryOptions.env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBeUndefined();
       expect(queryOptions.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
       expect(queryOptions.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeUndefined();
-      expect(queryOptions.env.AI_CONNECTION_API_KEY).toBe('gateway-key');
-      expect(queryOptions.env.AI_CONNECTION_BASE_URL).toBe('http://127.0.0.1:3000/v1');
+      expect(queryOptions.env.AI_CONNECTIONS_API_KEY).toBe('gateway-key');
+      expect(queryOptions.env.AI_CONNECTIONS_BASE_URL).toBe('http://127.0.0.1:3000/v1');
       expect(queryOptions.env.OPENAI_API_KEY).toBeUndefined();
       expect(queryOptions.env.OPENAI_BASE_URL).toBeUndefined();
       expect(queryOptions.env.OPENAI_API_BASE).toBeUndefined();

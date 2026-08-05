@@ -70,12 +70,12 @@ export function toPersistedAgentRuntimeConfig(config: AgentRuntimeConfig): Persi
   return deepScrubGatewayKey(config) as PersistedAgentRuntimeConfig;
 }
 
-export function withInvocationAiConnection<TContext>(
+export function withInvocationAiConnections<TContext>(
   config: AgentRuntimeConfig | PersistedAgentRuntimeConfig,
   context: TContext | undefined,
 ): AgentRuntimeConfig {
   const persisted = toPersistedAgentRuntimeConfig(config as AgentRuntimeConfig);
-  const invocation = readInvocationAiConnection(context);
+  const invocation = readInvocationAiConnections(context);
   return {
     ...persisted,
     ...(invocation ? {
@@ -104,7 +104,7 @@ export function deepScrubGatewayKey<T>(value: T): T {
   return output as T;
 }
 
-function readInvocationAiConnection<TContext>(context: TContext | undefined): AIConnectionInvocationConfig | undefined {
+function readInvocationAiConnections<TContext>(context: TContext | undefined): AIConnectionInvocationConfig | undefined {
   if (!context || typeof context !== 'object') {
     return undefined;
   }

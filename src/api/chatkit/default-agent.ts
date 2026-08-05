@@ -10,7 +10,7 @@
 import { getLoggerFor } from 'global-logger-factory';
 import {
   projectAnthropicCompatibleEnv,
-  requireAiConnectionRuntimeConfig,
+  requireAiConnectionsRuntimeConfig,
   sanitizeRuntimeEnv,
 } from '../../runtime/safe-env';
 
@@ -83,12 +83,12 @@ export interface DefaultAgentConfig {
   /** Claude Code 可执行文件路径 */
   claudeCodePath?: string;
   /** AI Connection invocation endpoint/key */
-  connection?: DefaultAgentAiConnection;
+  connection?: DefaultAgentAiConnections;
   /** 模型 */
   model?: string;
 }
 
-export interface DefaultAgentAiConnection {
+export interface DefaultAgentAiConnections {
   /** Xpod AI Connection endpoint, usually the current /v1 gateway URL */
   baseUrl: string;
   /** Xpod-issued gateway key for this invocation */
@@ -126,7 +126,7 @@ export interface DefaultAgentResponse {
 export interface DefaultAgentRunOptions {
   timeout?: number;
   maxTurns?: number;
-  connection?: DefaultAgentAiConnection;
+  connection?: DefaultAgentAiConnections;
   model?: string;
 }
 
@@ -134,7 +134,7 @@ export interface DefaultAgentRunOptions {
  * 获取 Default Agent 配置
  */
 export function getDefaultAgentConfig(input: {
-  connection?: DefaultAgentAiConnection;
+  connection?: DefaultAgentAiConnections;
   model?: string;
 } = {}): DefaultAgentConfig {
   return {
@@ -148,7 +148,7 @@ export function getDefaultAgentConfig(input: {
  * 检查 Default Agent 是否可用
  */
 export function isDefaultAgentAvailable(input: {
-  connection?: DefaultAgentAiConnection;
+  connection?: DefaultAgentAiConnections;
 } = {}): boolean {
   return Boolean(input.connection?.baseUrl?.trim() && input.connection?.gatewayKey?.trim());
 }
@@ -234,7 +234,7 @@ curl -s -X PUT \\
 
 
 function buildClaudeEnv(config: DefaultAgentConfig, context: DefaultAgentContext): NodeJS.ProcessEnv {
-  const connection = requireAiConnectionRuntimeConfig({
+  const connection = requireAiConnectionsRuntimeConfig({
     baseUrl: config.connection?.baseUrl,
     apiKey: config.connection?.gatewayKey,
     model: config.model,

@@ -16,7 +16,7 @@ const packageSpecs = {
   '@undefineds.co/solid-sdk': '^0.1.0',
   '@undefineds.co/shared-ui': '^0.1.0',
   '@undefineds.co/extension-sdk': '^0.1.0',
-  '@undefineds.co/ai-connection': '^0.1.0',
+  '@undefineds.co/ai-connections': '^0.1.0',
 } as const;
 
 async function readJson(relativePath: string) {
@@ -135,10 +135,10 @@ describe('packaged applet SDK consumption', () => {
         "import { createRoot } from 'react-dom/client';",
         "import { AppLayout, AuthBoundary, TwoPaneLayout } from '@undefineds.co/extension-sdk/react';",
         "import { defineAppletLayout } from '@undefineds.co/extension-sdk';",
-        "import { createAiConnectionExtension } from '@undefineds.co/ai-connection';",
+        "import { createAiConnectionsExtension } from '@undefineds.co/ai-connections';",
         "import { SolidRuntimeProvider } from '@undefineds.co/solid-sdk/react';",
         '',
-        'const extension = createAiConnectionExtension();',
+        'const extension = createAiConnectionsExtension();',
         'const layout = defineAppletLayout({ type: "single-pane", render: () => null });',
         'const authBoundary = createElement(AuthBoundary, { state: { status: "authenticated" }, login: () => undefined, children: "ok" });',
         'const appLayout = createElement(AppLayout, { navigation: null, children: authBoundary });',
@@ -181,8 +181,8 @@ function packageNameFromTarball(tarball: string): string {
   if (filename.startsWith('undefineds.co-extension-sdk-')) {
     return '@undefineds.co/extension-sdk';
   }
-  if (filename.startsWith('undefineds.co-ai-connection-')) {
-    return '@undefineds.co/ai-connection';
+  if (filename.startsWith('undefineds.co-ai-connections-')) {
+    return '@undefineds.co/ai-connections';
   }
   throw new Error(`Unknown applet SDK tarball name: ${filename}`);
 }

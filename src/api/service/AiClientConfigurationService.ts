@@ -8,9 +8,9 @@ import {
   PiConfigAdapter,
   type AiClientConfigAdapter,
   AiClientConfigPlan,
-  AiConnectionClientProfile,
+  AiConnectionsClientProfile,
   ConfigWrite,
-} from '@undefineds.co/ai-connection/client-config';
+} from '@undefineds.co/ai-connections/client-config';
 
 export type AiClientId = 'codex' | 'claude-code' | 'pi' | 'codebuddy';
 
@@ -90,7 +90,7 @@ export interface VerifyInput {
 interface StoredPlan {
   planId: string;
   client: AiClientId;
-  profile: AiConnectionClientProfile;
+  profile: AiConnectionsClientProfile;
   nativePlan: AiClientConfigPlan;
   targets: PlannedTarget[];
   backupDir: string;
@@ -412,7 +412,7 @@ function isReplacementSensitive(client: AiClientId): boolean {
 }
 
 function isStateWrite(write: ConfigWrite): boolean {
-  return path.basename(write.path).startsWith('.xpod-ai-connection-');
+  return path.basename(write.path).startsWith('.xpod-ai-connections-');
 }
 
 async function readOptional(filePath: string): Promise<string | undefined> {

@@ -3,13 +3,13 @@ import { deriveAppletRouteId, validateExtensionManifest } from '../src/manifest'
 import { createMockWebExtensionHost } from '../src/testing';
 
 const validManifest = {
-  extensionId: 'https://undefineds.co/extensions/ai-connection',
+  extensionId: 'https://undefineds.co/extensions/ai-connections',
   name: 'AI Connection',
   version: '0.1.0',
   sdkVersion: '1',
   contributes: {
     applets: [{
-      appId: 'https://undefineds.co/applets/ai-connection',
+      appId: 'https://undefineds.co/applets/ai-connections',
       name: 'AI Connection',
       entry: './applet.js',
       commands: [],
@@ -22,7 +22,7 @@ const validManifest = {
 
 describe('validateExtensionManifest', () => {
   it('derives a safe Host route id from stable Applet identity', () => {
-    expect(deriveAppletRouteId(validManifest.contributes.applets[0])).toBe('ai-connection');
+    expect(deriveAppletRouteId(validManifest.contributes.applets[0])).toBe('ai-connections');
     expect(() => deriveAppletRouteId({
       ...validManifest.contributes.applets[0],
       appId: 'https://example.test/applets/Not%20Safe',

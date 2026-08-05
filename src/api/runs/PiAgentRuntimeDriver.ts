@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import type { WorkspaceRef } from '../workspace/types';
 import { GitWorktreeService } from '../chatkit/runtime/GitWorktreeService';
 import { SandboxFactory } from '../../terminal/sandbox';
-import { requireAiConnectionRuntimeConfig, sanitizeRuntimeEnv } from '../../runtime/safe-env';
+import { requireAiConnectionsRuntimeConfig, sanitizeRuntimeEnv } from '../../runtime/safe-env';
 import { CompositeSolidFsSyncer, LocalSolidFS, PodSolidFsHydrator, PodSolidFsSyncer, SolidFsNotFoundError, WorkspaceJournaledSolidFsSyncer, type MaterializedWorkspace, type SolidFS, type SolidFsProjection, type SolidFsSyncer } from '../../solidfs';
 import { RdfSearchIndexingSolidFsSyncer } from '../service/RdfSearchIndexingSolidFsSyncer';
 import type { RdfSearchIndexingService } from '../service/RdfSearchIndexingService';
@@ -375,7 +375,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     baseUrl: string;
     model: PiModel;
   } {
-    const connection = requireAiConnectionRuntimeConfig({
+    const connection = requireAiConnectionsRuntimeConfig({
       baseUrl: config.aiConnection?.baseUrl,
       apiKey: config.aiConnection?.gatewayKey,
       model: config.aiConnection?.model ?? config.agentConfig?.model ?? 'linx',

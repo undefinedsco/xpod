@@ -8,7 +8,7 @@ import { PACKAGE_ROOT } from '../../../runtime';
 import {
   projectAnthropicCompatibleEnv,
   projectOpenAiCompatibleEnv,
-  requireAiConnectionRuntimeConfig,
+  requireAiConnectionsRuntimeConfig,
 } from '../../../runtime/safe-env';
 import { GitWorktreeService } from './GitWorktreeService';
 import { AcpRunner } from './AcpRunner';
@@ -335,7 +335,7 @@ export class AcpAgentRuntime {
       return undefined;
     }
 
-    const connection = requireAiConnectionRuntimeConfig({
+    const connection = requireAiConnectionsRuntimeConfig({
       baseUrl: aiConnection?.baseUrl,
       apiKey: aiConnection?.gatewayKey,
       model: aiConnection?.model ?? agentConfig?.model,

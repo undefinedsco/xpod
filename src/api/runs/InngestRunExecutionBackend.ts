@@ -5,7 +5,7 @@ import type { AgentRuntimeEvent } from './AgentRuntimeTypes';
 import { ManagedRunWorker, type ManagedRunStore } from './ManagedRunWorker';
 import { PiAgentRuntimeDriver } from './PiAgentRuntimeDriver';
 import type { RunContextRetriever, RunExecutionBackend, RunExecutionInput } from './RunExecutionBackend';
-import type { AiConnectionInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionInvocationKeyIssuer';
+import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 
 export const XPOD_RUN_REQUESTED_EVENT = 'xpod/run.requested';
 export const XPOD_RUN_CONTINUE_REQUESTED_EVENT = 'xpod/run.continue_requested';
@@ -36,7 +36,7 @@ export interface InngestRunExecutionBackendOptions {
   contextRetriever?: RunContextRetriever<StoreContext>;
   contextResolver?: (data: XpodRunRequestedEventData) => StoreContext | Promise<StoreContext | undefined> | undefined;
   contextRecorder?: (context: StoreContext | undefined) => void;
-  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
+  aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
   durableDelivery?: boolean;
   /**
    * When true, execute the registered Inngest handler in-process after sending
@@ -77,7 +77,7 @@ export class InngestRunExecutionBackend implements RunExecutionBackend {
   private readonly managedRunWorker?: ManagedRunWorker<StoreContext>;
   private readonly contextResolver?: InngestRunExecutionBackendOptions['contextResolver'];
   private readonly contextRecorder?: InngestRunExecutionBackendOptions['contextRecorder'];
-  private readonly aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issue'>;
+  private readonly aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue'>;
   private readonly executeInline: boolean;
   private readonly durableDelivery: boolean;
   private readonly pendingRuns = new Map<string, PendingRun>();

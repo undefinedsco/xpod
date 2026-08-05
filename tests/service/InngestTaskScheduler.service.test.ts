@@ -201,7 +201,7 @@ describe('Inngest Task scheduler', () => {
       store,
       executionBackend: runBackend,
       aiConnectionInvocationKeyIssuer: invocationKeyIssuer,
-      requireAiConnectionInvocationKeyIssuer: true,
+      requireAiConnectionsInvocationKeyIssuer: true,
     });
     const context = {
       userId: 'alice',
