@@ -28,9 +28,9 @@ export interface AiGatewayManagementHandlerOptions {
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
-  providerModelSelectionService?: Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
-  modelSelectionService?: Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
-  selectionService?: Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
+  providerModelSelectionService?: ProviderModelSelectionServicePort;
+  modelSelectionService?: ProviderModelSelectionServicePort;
+  selectionService?: ProviderModelSelectionServicePort;
   providerRegistry?: ProviderRegistry;
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionInvocationKeyIssuer, 'issueClientConfiguration'>;
@@ -286,12 +286,21 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     try {
-      const catalog = await selectionService.getCatalog({
+      const catalogInput = {
         webId: request.auth.webId,
         provider: params.provider,
         deployment: options.deployment,
         auth: request.auth,
-      });
+      };
+      const catalog = selectionService.getCatalog
+        ? await selectionService.getCatalog(catalogInput)
+        : selectionService.listCatalog
+          ? await selectionService.listCatalog(catalogInput)
+          : undefined;
+      if (!catalog) {
+        sendJson(response, 503, { error: 'AI provider model selection service is not configured' });
+        return;
+      }
       sendJson(response, 200, catalog);
     } catch (error) {
       sendModelSelectionError(response, error);
@@ -493,7 +502,8 @@ function requireQuotaService(
   return options.quotaService;
 }
 
-type ProviderModelSelectionServicePort = Pick<ProviderModelSelectionService, 'discover' | 'getCatalog' | 'replaceSelection'>;
+type ProviderModelSelectionServicePort = Pick<ProviderModelSelectionService, 'discover' | 'replaceSelection'>
+  & Partial<Pick<ProviderModelSelectionService, 'getCatalog' | 'listCatalog'>>;
 
 function requireModelSelectionService(
   options: AiGatewayManagementHandlerOptions,
