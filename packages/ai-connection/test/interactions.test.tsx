@@ -20,6 +20,29 @@ function client(overrides: Partial<AiConnectionClient> = {}): AiConnectionClient
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => []),
     listModels: vi.fn(async () => []),
+    discoverModels: vi.fn(async (provider) => ({
+      provider,
+      version: 'sha256:empty',
+      status: 'notFetched' as const,
+      models: [],
+    })),
+    getProviderModels: vi.fn(async (provider) => ({
+      provider,
+      version: 'sha256:empty',
+      status: 'notFetched' as const,
+      models: [],
+    })),
+    replaceModelSelection: vi.fn(async (provider, selection) => ({
+      provider,
+      version: selection.expectedVersion ?? 'sha256:empty',
+      status: 'ready' as const,
+      models: selection.modelIds.map((id) => ({
+        id,
+        modelType: 'chat' as const,
+        selected: true,
+        availability: 'available' as const,
+      })),
+    })),
     beginConnect: vi.fn(async (provider, mode) => ({
       provider,
       mode,
@@ -246,6 +269,167 @@ describe('AI Connection settings', () => {
     expect(await screen.findByText('GPT-5.4')).toBeTruthy()
     expect(screen.queryByText('Claude Sonnet 4.5')).toBeNull()
     expect(current.listModels).toHaveBeenCalledOnce()
+  })
+
+  it('auto-discovers connected models and saves a searchable selection with its version', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      fetchedAt: '2026-08-05T00:00:00.000Z',
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [
+        { id: 'gpt-5', displayName: 'GPT-5', modelType: 'chat' as const, selected: false, availability: 'available' as const },
+        { id: 'gpt-4.1', displayName: 'GPT-4.1', modelType: 'chat' as const, selected: true, availability: 'available' as const },
+      ],
+    }
+    const current = client({
+      getProviderModels: vi.fn(async () => catalog),
+      discoverModels: vi.fn(async () => catalog),
+      replaceModelSelection: vi.fn(async (_provider, selection) => ({
+        ...catalog,
+        version: 'sha256:saved',
+        models: catalog.models.map((model) => ({ ...model, selected: selection.modelIds.includes(model.id) })),
+      })),
+    })
+    render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            connect: { modes: ['browserAssistedApiKey'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai'))
+    const search = await screen.findByRole('searchbox', { name: '搜索模型' })
+    fireEvent.change(search, { target: { value: 'gpt-5' } })
+    const checkbox = screen.getByRole('checkbox', { name: /GPT-5/ }) as HTMLInputElement
+    expect(checkbox.checked).toBe(false)
+    fireEvent.click(checkbox)
+    expect(screen.getByText('已选 2 个')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '保存模型' }))
+
+    await waitFor(() => expect(current.replaceModelSelection).toHaveBeenCalledWith('openai', {
+      modelIds: ['gpt-5', 'gpt-4.1'],
+      expectedVersion: 'sha256:catalog',
+    }))
+    expect(await screen.findByText('已保存')).toBeTruthy()
+  })
+
+  it('uses discovery directly when the selected Provider is already connected', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [{
+        id: 'gpt-5',
+        displayName: 'GPT-5',
+        modelType: 'chat' as const,
+        selected: true,
+        availability: 'available' as const,
+      }],
+    }
+    const getProviderModels = vi.fn(async () => catalog)
+    const discoverModels = vi.fn(async () => catalog)
+    const current = client({ getProviderModels, discoverModels })
+
+    render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            authMode: 'deviceCodeOAuth',
+            connect: { modes: ['deviceCodeOAuth'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() => expect(discoverModels).toHaveBeenCalledWith('openai'))
+    expect(getProviderModels).not.toHaveBeenCalled()
+  })
+
+  it('discovers models after an API-key connection completes', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [{
+        id: 'gpt-5',
+        displayName: 'GPT-5',
+        modelType: 'chat' as const,
+        selected: false,
+        availability: 'available' as const,
+      }],
+    }
+    const current = client({
+      discoverModels: vi.fn(async () => catalog),
+      getProviderModels: vi.fn(async () => ({ ...catalog, status: 'notFetched' as const, models: [] })),
+    })
+    render(<AiConnectionPanel client={current} selectedProvider="openai" serviceAccessGranted />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
+    await waitFor(() => expect(current.beginConnect).toHaveBeenCalledWith('openai', 'browserAssistedApiKey'))
+    fireEvent.change(await screen.findByLabelText('OpenAI API Key 输入'), {
+      target: { value: 'sk-provider-secret' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
+
+    await waitFor(() => expect(current.completeApiKey).toHaveBeenCalled())
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai'))
+    expect(document.body.textContent).not.toContain('sk-provider-secret')
+  })
+
+  it('keeps selected unavailable models visible and gives discovery failures an inline retry', async () => {
+    const durableCatalog = {
+      provider: 'openai' as const,
+      version: 'sha256:durable',
+      status: 'notFetched' as const,
+      models: [{
+        id: 'retired-model',
+        displayName: 'Retired model',
+        modelType: 'chat' as const,
+        selected: true,
+        availability: 'unavailable' as const,
+      }],
+    }
+    const current = client({
+      getProviderModels: vi.fn(async () => durableCatalog),
+      discoverModels: vi.fn()
+        .mockRejectedValueOnce(new Error('provider secret should not render'))
+        .mockResolvedValueOnce({ ...durableCatalog, status: 'ready' as const }),
+    })
+    render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            connect: { modes: ['browserAssistedApiKey'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    expect(await screen.findByText('Retired model')).toBeTruthy()
+    expect(screen.getByText('供应商已不可用')).toBeTruthy()
+    expect((await screen.findByRole('alert')).textContent).toContain('AI Connection request failed. Please try again.')
+    fireEvent.click(screen.getByRole('button', { name: '重试读取模型' }))
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledTimes(2))
+    expect(document.body.textContent).not.toContain('provider secret')
   })
 
   it('displays a created Client Credential once and removes it when acknowledged', async () => {

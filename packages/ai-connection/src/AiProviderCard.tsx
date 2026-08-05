@@ -6,6 +6,8 @@ import {
 import type {
   AiConnectAttempt,
   AiGatewayModel,
+  AiProviderModel,
+  AiProviderModelCatalog,
   AiQuotaSnapshot,
 } from './ai-connection-client'
 import {
@@ -40,12 +42,24 @@ export function AiProviderCard({
   error,
   quota,
   models,
+  modelCatalog,
+  modelLoading = false,
+  modelSaving = false,
+  modelError,
+  modelSearch = '',
+  selectedModelIds,
+  modelDirty = false,
+  modelSaved = false,
   onApiKeyChange,
   onBeginApiKey,
   onBeginBrowser,
   onSaveApiKey,
   onDisconnect,
   onRefreshQuota,
+  onModelSearch,
+  onToggleModel,
+  onSaveModels,
+  onRetryModels,
 }: {
   definition: AiProviderDefinition
   status: ProviderConnectionState
@@ -57,16 +71,33 @@ export function AiProviderCard({
   error?: string
   quota?: AiQuotaSnapshot
   models: AiGatewayModel[]
+  modelCatalog?: AiProviderModelCatalog
+  modelLoading?: boolean
+  modelSaving?: boolean
+  modelError?: string
+  modelSearch?: string
+  selectedModelIds?: string[]
+  modelDirty?: boolean
+  modelSaved?: boolean
   onApiKeyChange: (value: string) => void
   onBeginApiKey: () => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
   onDisconnect: () => void
   onRefreshQuota: () => void
+  onModelSearch?: (value: string) => void
+  onToggleModel?: (model: AiProviderModel) => void
+  onSaveModels?: () => void
+  onRetryModels?: () => void
 }) {
   const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
+  const pickerModels = modelCatalog?.models ?? []
+  const selectedModelIdSet = new Set(selectedModelIds ?? pickerModels.filter((model) => model.selected).map((model) => model.id))
+  const filteredPickerModels = modelSearch?.trim()
+    ? pickerModels.filter((model) => `${model.displayName ?? ''} ${model.id}`.toLowerCase().includes(modelSearch.trim().toLowerCase()))
+    : pickerModels
 
   return (
     <div>
@@ -189,8 +220,115 @@ export function AiProviderCard({
       </section>
 
       <section className="border-t border-border/60 py-5">
-        <h3 className="text-sm font-medium">可用模型</h3>
-        {models.length === 0 ? (
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-medium">模型选择</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {modelCatalog ? `已选 ${selectedModelIdSet.size} 个` : '从供应商目录中选择模型'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {modelSaved ? <span className="text-xs text-muted-foreground" role="status">已保存</span> : null}
+            {modelCatalog && modelDirty && onSaveModels ? (
+              <Button
+                size="sm"
+                disabled={modelSaving || disabled}
+                onClick={onSaveModels}
+              >
+                {modelSaving ? '保存中…' : '保存模型'}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+
+        {modelError ? (
+          <div className="mt-3 space-y-2" role="alert">
+            <p className="text-sm text-destructive">{modelError}</p>
+            {onRetryModels ? (
+              <Button variant="outline" size="sm" aria-label="重试读取模型" onClick={onRetryModels} disabled={disabled}>
+                重新读取模型
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {modelLoading ? (
+          <div className="mt-3 space-y-2" role="status" aria-busy="true">
+            <div className="h-9 animate-pulse rounded-md bg-muted" />
+            <div className="h-10 animate-pulse rounded-md bg-muted" />
+            <span className="sr-only">正在读取供应商模型</span>
+          </div>
+        ) : modelCatalog ? (
+          <>
+            {modelCatalog.status === 'statusUnknown' ? (
+              <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                供应商目录暂时无法确认；已选模型保持不变。
+              </p>
+            ) : null}
+            {pickerModels.length > 0 ? (
+              <div className="mt-3 space-y-3">
+                <Input
+                  type="search"
+                  role="searchbox"
+                  aria-label="搜索模型"
+                  placeholder="搜索模型"
+                  value={modelSearch ?? ''}
+                  onChange={(event) => onModelSearch?.(event.target.value)}
+                />
+                {filteredPickerModels.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">没有匹配的模型</p>
+                ) : (
+                  <ul className="divide-y divide-border/50 rounded-md border text-sm">
+                    {filteredPickerModels.map((model) => {
+                      const selected = selectedModelIdSet.has(model.id)
+                      const canSelect = (modelCatalog.status !== 'statusUnknown' && model.availability === 'available') || selected
+                      return (
+                        <li key={model.id} className="flex items-start gap-3 px-3 py-2.5">
+                          <input
+                            type="checkbox"
+                            className="mt-1 h-4 w-4 rounded border-input accent-primary"
+                            aria-label={`${model.displayName ?? model.id} (${model.id})`}
+                            checked={selected}
+                            disabled={!canSelect || disabled || modelSaving}
+                            onChange={() => onToggleModel?.(model)}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span>{model.displayName ?? model.id}</span>
+                              {model.availability === 'unavailable' ? (
+                                <Badge variant="secondary">供应商已不可用</Badge>
+                              ) : model.availability === 'statusUnknown' ? (
+                                <Badge variant="secondary">状态暂不可确认</Badge>
+                              ) : null}
+                            </span>
+                            <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">
+                              {model.id}
+                            </span>
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            ) : modelCatalog.status === 'notFetched' && models.length > 0 ? (
+              <ul className="mt-3 divide-y divide-border/50 text-sm">
+                {models.map((model) => (
+                  <li key={model.id} className="flex items-center justify-between gap-4 py-2.5">
+                    <span>{model.displayName ?? model.id}</span>
+                    {model.displayName ? (
+                      <span className="truncate font-mono text-xs text-muted-foreground">
+                        {model.id}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-xs text-muted-foreground">供应商暂未返回可选模型。</p>
+            )}
+          </>
+        ) : models.length === 0 ? (
           <p className="mt-2 text-xs text-muted-foreground">当前身份暂无可用模型</p>
         ) : (
           <ul className="mt-3 divide-y divide-border/50 text-sm">

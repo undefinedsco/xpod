@@ -79,6 +79,32 @@ export interface AiGatewayModel {
   protocols?: string[]
 }
 
+export type AiProviderModelType = 'chat' | 'embedding' | 'image' | 'audio' | 'other'
+export type AiProviderModelAvailability = 'available' | 'unavailable' | 'statusUnknown'
+export type AiProviderModelCatalogStatus = 'ready' | 'notFetched' | 'statusUnknown'
+
+export interface AiProviderModel {
+  id: string
+  displayName?: string
+  modelType: AiProviderModelType
+  selected: boolean
+  availability: AiProviderModelAvailability
+}
+
+export interface AiProviderModelCatalog {
+  provider: AiConnectionProvider
+  fetchedAt?: string
+  version: string
+  status: AiProviderModelCatalogStatus
+  models: AiProviderModel[]
+}
+
+export interface AiProviderModelSelectionInput {
+  modelIds: string[]
+  defaultModel?: string
+  expectedVersion?: string
+}
+
 export interface AiProviderConnectionSummary {
   provider: AiConnectionProvider
   status: 'connected' | 'disconnected' | 'reauthRequired'
@@ -101,6 +127,12 @@ export interface AiConnectionClient {
   getServiceAccess(): Promise<unknown>
   listProviders(): Promise<AiProviderConnectionSummary[]>
   listModels(): Promise<AiGatewayModel[]>
+  discoverModels(provider: AiConnectionProvider): Promise<AiProviderModelCatalog>
+  getProviderModels(provider: AiConnectionProvider): Promise<AiProviderModelCatalog>
+  replaceModelSelection(
+    provider: AiConnectionProvider,
+    selection: AiProviderModelSelectionInput,
+  ): Promise<AiProviderModelCatalog>
   beginConnect(provider: AiConnectionProvider, mode: AiConnectionMode): Promise<AiConnectAttempt>
   connectStatus(provider: AiConnectionProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
   completeApiKey(
@@ -139,7 +171,7 @@ export function createAiConnectionClient({
 
   const request = async <T>(
     path: string,
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     body?: Record<string, unknown>,
     context: { provider?: AiConnectionProvider } = {},
   ): Promise<T> => {
@@ -173,6 +205,20 @@ export function createAiConnectionClient({
     const payload = await request<unknown>(`${providerPath(provider)}${path}`, method, body, { provider })
     return parseConnectAttempt(payload, provider)
   }
+  const requestModelCatalog = async (
+    provider: AiConnectionProvider,
+    suffix: '/models' | '/models/discover' | '/models/selection',
+    method: 'GET' | 'POST' | 'PUT',
+    body?: Record<string, unknown>,
+  ): Promise<AiProviderModelCatalog> => {
+    const payload = await request<unknown>(
+      `${providerPath(provider)}${suffix}`,
+      method,
+      body,
+      { provider },
+    )
+    return parseProviderModelCatalog(payload, provider)
+  }
 
   return {
     webId,
@@ -194,6 +240,27 @@ export function createAiConnectionClient({
       return Array.isArray(payload.data)
         ? payload.data.map(parseGatewayModel).filter(isDefined)
         : []
+    },
+
+    discoverModels(provider) {
+      return requestModelCatalog(provider, '/models/discover', 'POST')
+    },
+
+    getProviderModels(provider) {
+      return requestModelCatalog(provider, '/models', 'GET')
+    },
+
+    replaceModelSelection(provider, selection) {
+      return requestModelCatalog(
+        provider,
+        '/models/selection',
+        'PUT',
+        compactObject({
+          modelIds: selection.modelIds,
+          defaultModel: selection.defaultModel,
+          expectedVersion: selection.expectedVersion,
+        }),
+      )
     },
 
     async beginConnect(provider, mode) {
@@ -401,6 +468,42 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
   }) as unknown as AiGatewayModel
 }
 
+function parseProviderModelCatalog(
+  value: unknown,
+  expectedProvider: AiConnectionProvider,
+): AiProviderModelCatalog {
+  if (!isRecord(value)
+    || value.provider !== expectedProvider
+    || typeof value.version !== 'string'
+    || !isProviderModelCatalogStatus(value.status)
+    || !Array.isArray(value.models)) {
+    throw new Error('AI Connection returned an invalid model catalog response')
+  }
+  return compactObject({
+    provider: expectedProvider,
+    fetchedAt: stringValue(value.fetchedAt),
+    version: value.version,
+    status: value.status,
+    models: value.models.map(parseProviderModel).filter(isDefined),
+  }) as unknown as AiProviderModelCatalog
+}
+
+function parseProviderModel(value: unknown): AiProviderModel | undefined {
+  if (!isRecord(value)
+    || typeof value.id !== 'string'
+    || typeof value.selected !== 'boolean'
+    || !isProviderModelAvailability(value.availability)) {
+    return undefined
+  }
+  return compactObject({
+    id: value.id,
+    displayName: stringValue(value.displayName),
+    modelType: isProviderModelType(value.modelType) ? value.modelType : 'other',
+    selected: value.selected,
+    availability: value.availability,
+  }) as unknown as AiProviderModel
+}
+
 function isPlatformModelId(modelId: string): boolean {
   const normalized = modelId.toLowerCase()
   return normalized === 'linx'
@@ -545,6 +648,22 @@ function isConnectStatus(value: unknown): value is AiConnectStatus {
     || value === 'expired'
     || value === 'cancelled'
     || value === 'unsupported'
+}
+
+function isProviderModelType(value: unknown): value is AiProviderModelType {
+  return value === 'chat'
+    || value === 'embedding'
+    || value === 'image'
+    || value === 'audio'
+    || value === 'other'
+}
+
+function isProviderModelAvailability(value: unknown): value is AiProviderModelAvailability {
+  return value === 'available' || value === 'unavailable' || value === 'statusUnknown'
+}
+
+function isProviderModelCatalogStatus(value: unknown): value is AiProviderModelCatalogStatus {
+  return value === 'ready' || value === 'notFetched' || value === 'statusUnknown'
 }
 
 function isProviderStatus(

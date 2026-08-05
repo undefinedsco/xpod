@@ -120,6 +120,57 @@ describe('AI Connection controller host.solid integration', () => {
     })
   })
 
+  it('routes typed provider model discovery through the host-owned Solid fetcher', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe('POST')
+      return new Response(JSON.stringify({
+        provider: 'openai',
+        fetchedAt: '2026-08-05T00:00:00.000Z',
+        version: 'sha256:catalog',
+        status: 'ready',
+        models: [{
+          id: 'gpt-5',
+          displayName: 'GPT-5',
+          modelType: 'chat',
+          selected: true,
+          availability: 'available',
+          secret: 'must-not-escape',
+        }],
+        error: 'provider-secret-must-not-escape',
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    const controller = createAiConnectionController(hostFromSolid(solidCapability({
+      session: {
+        fetch: fetcher,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    })))
+
+    const catalog = await controller.client?.discoverModels('openai')
+
+    expect(catalog).toMatchObject({
+      provider: 'openai',
+      version: 'sha256:catalog',
+      status: 'ready',
+      models: [{
+        id: 'gpt-5',
+        displayName: 'GPT-5',
+        modelType: 'chat',
+        selected: true,
+        availability: 'available',
+      }],
+    })
+    expect(JSON.stringify(catalog)).not.toContain('must-not-escape')
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/gateway/providers/openai/models/discover',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('requires login through host.solid for anonymous sessions', async () => {
     const requireLogin = vi.fn(async () => undefined)
     const controller = createAiConnectionController(hostFromSolid(solidCapability({

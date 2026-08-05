@@ -14,6 +14,8 @@ import {
   type AiGatewayModel,
   type AiConnectionProvider,
   type AiProviderConnectionSummary,
+  type AiProviderModel,
+  type AiProviderModelCatalog,
   type AiQuotaSnapshot,
   normalizeAiConnectionThrownError,
 } from './ai-connection-client'
@@ -78,6 +80,15 @@ export function AiConnectionPanel({
   const [credentialError, setCredentialError] = useState<string>()
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
   const [models, setModels] = useState<AiGatewayModel[]>([])
+  const [modelCatalogs, setModelCatalogs] = useState<Partial<Record<AiConnectionProvider, AiProviderModelCatalog>>>({})
+  const [modelDrafts, setModelDrafts] = useState<Partial<Record<AiConnectionProvider, string[]>>>({})
+  const [modelSearches, setModelSearches] = useState<Partial<Record<AiConnectionProvider, string>>>({})
+  const [modelLoading, setModelLoading] = useState<Record<string, boolean>>({})
+  const [modelSaving, setModelSaving] = useState<Record<string, boolean>>({})
+  const [modelErrors, setModelErrors] = useState<Record<string, string | undefined>>({})
+  const [modelSaveNotices, setModelSaveNotices] = useState<Record<string, boolean>>({})
+  const modelLoadGeneration = useRef(0)
+  const loadedModelProviders = useRef(new Set<AiConnectionProvider>())
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
   const [busyProviders, setBusyProviders] = useState<Record<string, boolean>>({})
@@ -103,6 +114,69 @@ export function AiConnectionPanel({
       ]),
     ))
   }, [providerSummariesInput])
+
+  const applyModelCatalog = useCallback((provider: AiConnectionProvider, catalog: AiProviderModelCatalog) => {
+    setModelCatalogs((current) => ({ ...current, [provider]: catalog }))
+    setModelDrafts((current) => ({
+      ...current,
+      [provider]: catalog.models.filter((model) => model.selected).map((model) => model.id),
+    }))
+  }, [])
+
+  const loadProviderModels = useCallback(async (
+    provider: AiConnectionProvider,
+    discover: boolean,
+  ) => {
+    const generation = ++modelLoadGeneration.current
+    setModelLoading((current) => ({ ...current, [provider]: true }))
+    setModelErrors((current) => ({ ...current, [provider]: undefined }))
+    try {
+      let catalog: AiProviderModelCatalog
+      if (discover) {
+        catalog = await client.discoverModels(provider)
+      } else {
+        catalog = await client.getProviderModels(provider)
+      }
+      if (generation !== modelLoadGeneration.current) return
+      applyModelCatalog(provider, catalog)
+      loadedModelProviders.current.add(provider)
+    } catch (error) {
+      if (generation !== modelLoadGeneration.current) return
+      setModelErrors((current) => ({ ...current, [provider]: errorMessage(error) }))
+      if (discover) {
+        try {
+          const durable = await client.getProviderModels(provider)
+          if (generation !== modelLoadGeneration.current) return
+          applyModelCatalog(provider, durable)
+        } catch {
+          // Keep the inline discovery error when the durable fallback also fails.
+        }
+      }
+    } finally {
+      if (generation === modelLoadGeneration.current) {
+        setModelLoading((current) => ({ ...current, [provider]: false }))
+      }
+    }
+  }, [applyModelCatalog, client])
+
+  const selectedDefinition = selectedProvider ?? 'openai'
+  // Provider summaries arrive from the host in the same render that mounts the
+  // panel. Use that durable state as the initial source of truth so an already
+  // connected provider starts with discovery (rather than a redundant durable
+  // read) before the local state effect has run.
+  const selectedConnectionState = connectionStates[selectedDefinition]
+    ?? connectionStateFromSummary(providerSummariesInput[selectedDefinition])
+
+  useEffect(() => {
+    if (!serviceAccessGranted) return
+    const connected = selectedConnectionState === 'connected' || selectedConnectionState === 'configured'
+    if (connected) {
+      void loadProviderModels(selectedDefinition, true)
+    } else if (!loadedModelProviders.current.has(selectedDefinition)) {
+      loadedModelProviders.current.add(selectedDefinition)
+      void loadProviderModels(selectedDefinition, false)
+    }
+  }, [loadProviderModels, selectedConnectionState, selectedDefinition, serviceAccessGranted])
 
   useEffect(() => {
     let active = true
@@ -141,6 +215,37 @@ export function AiConnectionPanel({
 
   const setProviderError = (provider: AiConnectionProvider, value?: string) => {
     setProviderErrors((current) => ({ ...current, [provider]: value }))
+  }
+
+  const toggleModel = (provider: AiConnectionProvider, model: AiProviderModel) => {
+    setModelSaveNotices((current) => ({ ...current, [provider]: false }))
+    setModelDrafts((current) => {
+      const selected = new Set(current[provider] ?? [])
+      if (selected.has(model.id)) selected.delete(model.id)
+      else if (model.availability === 'available') selected.add(model.id)
+      return { ...current, [provider]: Array.from(selected) }
+    })
+  }
+
+  const saveModels = async (provider: AiConnectionProvider) => {
+    const catalog = modelCatalogs[provider]
+    if (!catalog || !serviceAccessGranted) return
+    setModelSaving((current) => ({ ...current, [provider]: true }))
+    setModelErrors((current) => ({ ...current, [provider]: undefined }))
+    try {
+      const saved = await client.replaceModelSelection(provider, {
+        modelIds: catalog.models
+          .filter((model) => (modelDrafts[provider] ?? []).includes(model.id))
+          .map((model) => model.id),
+        expectedVersion: catalog.version,
+      })
+      applyModelCatalog(provider, saved)
+      setModelSaveNotices((current) => ({ ...current, [provider]: true }))
+    } catch (error) {
+      setModelErrors((current) => ({ ...current, [provider]: errorMessage(error) }))
+    } finally {
+      setModelSaving((current) => ({ ...current, [provider]: false }))
+    }
   }
 
   const openAttemptUrl = useCallback(async (attempt: AiConnectAttempt) => {
@@ -360,6 +465,17 @@ export function AiConnectionPanel({
               error={providerErrors[definition.id]}
               quota={quotas[definition.id]}
               models={models.filter((model) => model.provider === definition.id)}
+              modelCatalog={modelCatalogs[definition.id]}
+              modelLoading={Boolean(modelLoading[definition.id])}
+              modelSaving={Boolean(modelSaving[definition.id])}
+              modelError={modelErrors[definition.id]}
+              modelSearch={modelSearches[definition.id] ?? ''}
+              selectedModelIds={modelDrafts[definition.id]}
+              modelSaved={Boolean(modelSaveNotices[definition.id])}
+              modelDirty={Boolean(modelCatalogs[definition.id]) && !sameModelSelection(
+                modelCatalogs[definition.id]?.models ?? [],
+                modelDrafts[definition.id] ?? [],
+              )}
               onApiKeyChange={(value) => setApiKeyInputs((current) => ({
                 ...current,
                 [definition.id]: value,
@@ -369,6 +485,13 @@ export function AiConnectionPanel({
               onSaveApiKey={() => void saveApiKey(definition)}
               onDisconnect={() => void disconnect(definition.id)}
               onRefreshQuota={() => void refreshQuota(definition.id)}
+              onModelSearch={(value) => setModelSearches((current) => ({ ...current, [definition.id]: value }))}
+              onToggleModel={(model) => toggleModel(definition.id, model)}
+              onSaveModels={() => void saveModels(definition.id)}
+              onRetryModels={() => void loadProviderModels(
+                definition.id,
+                connectionStates[definition.id] === 'connected' || connectionStates[definition.id] === 'configured',
+              )}
             />
           ))}
       </section>
@@ -554,4 +677,20 @@ function errorMessage(error: unknown): string {
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined
+}
+
+function sameModelSelection(models: AiProviderModel[], selectedIds: string[]): boolean {
+  const persisted = models.filter((model) => model.selected).map((model) => model.id).sort()
+  const draft = [...selectedIds].sort()
+  return persisted.length === draft.length && persisted.every((id, index) => id === draft[index])
+}
+
+function connectionStateFromSummary(
+  summary?: AiProviderConnectionSummary,
+): ProviderConnectionState | undefined {
+  if (!summary) return undefined
+  if (summary.status === 'connected') {
+    return summary.authMode === 'browserAssistedApiKey' ? 'configured' : 'connected'
+  }
+  return summary.status
 }

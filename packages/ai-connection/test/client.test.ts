@@ -207,6 +207,92 @@ describe('AI Connection management client', () => {
     expect(JSON.stringify(models)).not.toContain('must-not-escape')
   })
 
+  it('discovers, reads, and replaces provider model selections through typed catalog routes', async () => {
+    const responses = [
+      {
+        provider: 'openai',
+        fetchedAt: '2026-08-05T00:00:00.000Z',
+        version: 'sha256:catalog',
+        status: 'ready',
+        models: [
+          {
+            id: 'gpt-5',
+            displayName: 'GPT-5',
+            modelType: 'chat',
+            selected: true,
+            availability: 'available',
+            secret: 'sk-provider-secret',
+          },
+          {
+            id: 'gpt-4.1',
+            modelType: 'chat',
+            selected: false,
+            availability: 'available',
+          },
+          { id: 'malformed', selected: 'yes', availability: 'available' },
+        ],
+        error: 'upstream body with provider-secret',
+      },
+      {
+        provider: 'openai',
+        version: 'sha256:catalog',
+        status: 'notFetched',
+        models: [],
+      },
+      {
+        provider: 'openai',
+        fetchedAt: '2026-08-05T00:01:00.000Z',
+        version: 'sha256:selection',
+        status: 'ready',
+        models: [{
+          id: 'gpt-5',
+          displayName: 'GPT-5',
+          modelType: 'chat',
+          selected: true,
+          availability: 'available',
+        }],
+      },
+    ]
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => new Response(
+      JSON.stringify(responses.shift()),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const client = createAiConnectionClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const discovered = await client.discoverModels('openai')
+    expect(discovered).toMatchObject({
+      provider: 'openai',
+      status: 'ready',
+      version: 'sha256:catalog',
+      models: [
+        expect.objectContaining({ id: 'gpt-5', selected: true, availability: 'available' }),
+        expect.objectContaining({ id: 'gpt-4.1', selected: false }),
+      ],
+    })
+    expect(JSON.stringify(discovered)).not.toContain('secret')
+
+    await client.getProviderModels('openai')
+    await client.replaceModelSelection('openai', {
+      modelIds: ['gpt-5'],
+      defaultModel: 'gpt-5',
+      expectedVersion: 'sha256:catalog',
+    })
+
+    expect(authenticatedFetch.mock.calls.map(([input, init]) => [String(input), init?.method, init?.body])).toEqual([
+      ['https://pod.example/api/ai/gateway/providers/openai/models/discover', 'POST', undefined],
+      ['https://pod.example/api/ai/gateway/providers/openai/models', 'GET', undefined],
+      ['https://pod.example/api/ai/gateway/providers/openai/models/selection', 'PUT', JSON.stringify({
+        modelIds: ['gpt-5'],
+        defaultModel: 'gpt-5',
+        expectedVersion: 'sha256:catalog',
+      })],
+    ])
+  })
+
   it('binds provider operations to the fixed provider route and current identity fetch', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       mode: 'browserAssistedApiKey',
