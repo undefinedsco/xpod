@@ -862,6 +862,7 @@ function publicCredentialRecord(record: {
   return {
     id: record.id,
     credentialIri: record.credentialIri,
+    webId: record.webId,
     provider: record.provider,
     authMode: record.authMode,
     status: record.status,

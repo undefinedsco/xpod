@@ -73,6 +73,41 @@ describe('AI Connection management client', () => {
     expect(JSON.stringify(providers)).not.toMatch(/deployment|webId|metadata|secret/)
   })
 
+  it('round-trips the safe owner WebID from a disconnect credential response', async () => {
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('https://pod.example/api/ai/gateway/providers/openai/connect')
+      expect(init?.method).toBe('DELETE')
+      return new Response(JSON.stringify({
+        record: {
+          id: 'credential-openai',
+          credentialIri: 'https://pod.example/alice/settings/credentials.ttl#openai',
+          webId: WEB_ID,
+          provider: 'openai',
+          authMode: 'apiKey',
+          status: 'disconnected',
+          metadata: { apiKey: 'sk-must-not-escape' },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    })
+    const client = createAiConnectionClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const credential = await client.disconnect('openai')
+
+    expect(credential).toEqual({
+      id: 'credential-openai',
+      credentialIri: 'https://pod.example/alice/settings/credentials.ttl#openai',
+      webId: WEB_ID,
+      provider: 'openai',
+      authMode: 'apiKey',
+      status: 'disconnected',
+    })
+    expect(JSON.stringify(credential)).not.toContain('sk-must-not-escape')
+  })
+
   it('discovers the AI Connection service-access descriptor with authenticated fetch', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       appletId: 'co.undefineds.ai-connection',

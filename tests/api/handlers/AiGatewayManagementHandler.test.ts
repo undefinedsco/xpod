@@ -106,6 +106,54 @@ describe('AiGatewayManagementHandler', () => {
     }));
   });
 
+  it.each([
+    ['alice', 'https://id.example/alice/profile/card#me'],
+    ['bob', 'https://id.example/bob/profile/card#me'],
+  ])('returns the current owner WebID in a disconnect credential record for %s', async (label, webId) => {
+    const { server, routes } = createServer();
+    const disconnect = vi.fn(async (input: { webId: string }) => ({
+      id: `credential-${label}`,
+      credentialIri: `https://pod.example/${label}/settings/credentials.ttl#openai`,
+      webId: input.webId,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      status: 'disconnected',
+      metadata: { apiKey: 'sk-must-not-escape' },
+    }));
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      connectService: { disconnect } as never,
+    });
+    const res = response();
+    const auth = { type: 'solid' as const, webId };
+
+    await routes['DELETE /api/ai/gateway/providers/:provider/connect'](
+      request(auth, undefined, '/api/ai/gateway/providers/openai/connect', 'DELETE'),
+      res,
+      { provider: 'openai' },
+    );
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.record).toMatchObject({
+      id: `credential-${label}`,
+      credentialIri: `https://pod.example/${label}/settings/credentials.ttl#openai`,
+      webId,
+      provider: 'openai',
+      authMode: 'apiKey',
+      status: 'disconnected',
+    });
+    expect(body.record).not.toHaveProperty('metadata');
+    expect(res.body).not.toContain('sk-must-not-escape');
+    expect(disconnect).toHaveBeenCalledWith(expect.objectContaining({
+      webId,
+      provider: 'openai',
+      deployment: 'cloud',
+      auth,
+    }));
+  });
+
   it('passes the authenticated Solid context into quota reads', async () => {
     const { server, routes } = createServer();
     const status = vi.fn(async () => ({ status: 'available', stale: false }));
