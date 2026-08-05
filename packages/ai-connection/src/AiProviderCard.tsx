@@ -242,6 +242,17 @@ export function AiProviderCard({
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {onRetryModels ? (
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label="刷新模型"
+                onClick={onRetryModels}
+                disabled={disabled || modelLoading || modelSaving}
+              >
+                {modelLoading ? '读取中…' : '刷新模型'}
+              </Button>
+            ) : null}
             {modelSaved ? <span className="text-xs text-muted-foreground" role="status">已保存</span> : null}
             {modelCatalog && modelDirty && onSaveModels ? (
               <Button

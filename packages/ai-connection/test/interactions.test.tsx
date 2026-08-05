@@ -359,6 +359,43 @@ describe('AI Connection settings', () => {
     expect(getProviderModels).not.toHaveBeenCalled()
   })
 
+  it('refreshes the connected Provider model catalog from the visible model action', async () => {
+    const catalog = {
+      provider: 'openai' as const,
+      version: 'sha256:catalog',
+      status: 'ready' as const,
+      models: [{
+        id: 'gpt-5',
+        displayName: 'GPT-5',
+        modelType: 'chat' as const,
+        selected: true,
+        availability: 'available' as const,
+      }],
+    }
+    const discoverModels = vi.fn(async () => catalog)
+    const current = client({ discoverModels })
+
+    render(
+      <AiConnectionPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            authMode: 'deviceCodeOAuth',
+            connect: { modes: ['deviceCodeOAuth'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    await waitFor(() => expect(discoverModels).toHaveBeenCalledTimes(1))
+    fireEvent.click(await screen.findByRole('button', { name: '刷新模型' }))
+    await waitFor(() => expect(discoverModels).toHaveBeenCalledTimes(2))
+  })
+
   it('discovers models after an API-key connection completes', async () => {
     const catalog = {
       provider: 'openai' as const,
