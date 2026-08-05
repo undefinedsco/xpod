@@ -392,7 +392,7 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
     fixtureItem('connect-quota', [
       'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
     ], [
-      'ProviderConnectAdapters covers OpenAI/Anthropic/Kimi/Bailian connect contracts and DeepSeek connectUnsupported.',
+      'ProviderConnectAdapters covers API-key Connect for OpenAI, Anthropic, Kimi, Bailian and DeepSeek, plus Kimi device-code OAuth.',
       'ProviderQuotaAdapters covers available, stale/error and unsupported quota snapshots without invented percentages.',
     ]),
     fixtureItem('gateway-protocols', [
