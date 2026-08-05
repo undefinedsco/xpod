@@ -81,14 +81,26 @@ test.describe('Xpod settings product acceptance', () => {
         await expect(alice.getByRole('checkbox', { name: /gpt-5 \(gpt-5\)/i }).first()).toBeVisible({ timeout: 30_000 });
       });
 
-      await test.step('Pick only gpt-5 and persist it through the authenticated API', async () => {
-        const checkbox = alice.getByRole('checkbox', { name: /gpt-5 \(gpt-5\)/i }).first();
-        if (await checkbox.isChecked()) {
-          await checkbox.uncheck();
-          await saveSelectedModels(alice);
+      await test.step('seed gpt-5-mini as an existing selected model for reset coverage', async () => {
+        const checkbox = modelCheckbox(alice, 'gpt-5-mini');
+        if (!(await checkbox.isChecked())) {
+          await checkbox.check();
+          await saveSelectedModels(alice, await selectedModelIds(alice));
         }
+        await expect(checkbox).toBeChecked();
+      });
+
+      await test.step('Pick only gpt-5 and persist it through the authenticated API', async () => {
+        const selectedCheckboxes = await checkedModelCheckboxes(alice);
+        if (selectedCheckboxes.length > 0) {
+          for (const checkbox of selectedCheckboxes) await checkbox.uncheck();
+          await saveSelectedModels(alice, []);
+        }
+        await expect(alice.getByText('已选 0 个', { exact: true })).toBeVisible();
+
+        const checkbox = modelCheckbox(alice, 'gpt-5');
         await checkbox.check();
-        await saveSelectedModels(alice);
+        await saveSelectedModels(alice, ['gpt-5']);
       });
 
       await test.step('remove gpt-5 upstream, force refresh and retain the selected row as unavailable', async () => {
@@ -260,7 +272,33 @@ async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void
   await expect(page.locator('body')).toContainText(/connected|configured|saved|已连接|已配置|已保存/i);
 }
 
-async function saveSelectedModels(page: Page): Promise<void> {
+function modelCheckbox(page: Page, modelId: string) {
+  const escapedId = modelId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return page.getByRole('checkbox', { name: new RegExp(`\\(${escapedId}\\)$`, 'i') }).first();
+}
+
+async function checkedModelCheckboxes(page: Page): Promise<import('@playwright/test').Locator[]> {
+  const checkboxes = page.getByRole('checkbox');
+  const checked: import('@playwright/test').Locator[] = [];
+  for (let index = 0; index < await checkboxes.count(); index += 1) {
+    const checkbox = checkboxes.nth(index);
+    const label = await checkbox.getAttribute('aria-label');
+    if (label?.match(/\([^()]+\)$/u) && await checkbox.isChecked()) checked.push(checkbox);
+  }
+  return checked;
+}
+
+async function selectedModelIds(page: Page): Promise<string[]> {
+  const selected: string[] = [];
+  for (const checkbox of await checkedModelCheckboxes(page)) {
+    const label = await checkbox.getAttribute('aria-label');
+    const modelId = label?.match(/\(([^()]+)\)$/u)?.[1];
+    if (modelId) selected.push(modelId);
+  }
+  return selected;
+}
+
+async function saveSelectedModels(page: Page, expectedModelIds: readonly string[]): Promise<void> {
   const saveResponsePromise = page.waitForResponse((response) => (
     new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/models/selection'
     && response.request().method() === 'PUT'
@@ -269,6 +307,7 @@ async function saveSelectedModels(page: Page): Promise<void> {
   await page.getByRole('button', { name: '保存模型', exact: true }).click();
   const saveResponse = await saveResponsePromise;
   expect(saveResponse.ok(), `model selection save failed: ${saveResponse.status()}`).toBe(true);
+  expect((saveResponse.request().postDataJSON() as { modelIds?: unknown }).modelIds).toEqual([...expectedModelIds]);
   await expect(page.getByText('已保存', { exact: true })).toBeVisible();
 }
 
