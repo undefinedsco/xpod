@@ -1078,6 +1078,62 @@ describe('ProviderConnectService', () => {
     expect(probedIds).not.toContain('other.ttl#local-openai');
   });
 
+  it('rejects legacy secret-cell credentials before any plaintext update or secret-bearing error', async () => {
+    const legacyId = 'credentials.ttl#local-local-cloud-openai';
+    const previous = {
+      id: legacyId,
+      provider: 'openai.ttl',
+      authMode: 'apiKey',
+      service: 'ai',
+      status: 'active',
+      storageMode: 'secret-cell-v1',
+      encryptedSecret: JSON.stringify({ ciphertext: 'old-secret-cell-ciphertext' }),
+      wrappedDataKey: 'old-wrapped-data-key',
+      encryptionAlgorithm: 'A256GCM',
+      keyVersion: '4',
+    };
+    const rows = new Map<string, Record<string, unknown>>([[legacyId, previous]]);
+    const updateById = vi.fn(async () => null);
+    const deleteById = vi.fn(async () => true);
+    const insert = vi.fn(() => ({
+      values: () => ({ execute: async () => [] }),
+    }));
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        updateById,
+        deleteById,
+        insert,
+      } as any),
+    });
+    const before = jsonClone(previous);
+    const save = repository.upsertConnectedCredential({
+      id: 'credentials.ttl#local-openai',
+      credentialIri: 'https://id.example/alice/settings/credentials.ttl#local-openai',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'local',
+      authMode: 'apiKey',
+      storageMode: 'plaintext-v1',
+      secretPayload: JSON.stringify({ type: 'apiKey', apiKey: 'new-plaintext-secret' }),
+      status: 'active',
+      expectedVersion: 4,
+    });
+    const failure = await save.catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(UnsupportedCredentialStorageModeError);
+    expect(String(failure)).toContain('secret-cell-v1');
+    expect(String(failure)).not.toContain('old-secret-cell-ciphertext');
+    expect(String(failure)).not.toContain('new-plaintext-secret');
+    expect(updateById).not.toHaveBeenCalled();
+    expect(deleteById).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+    expect(rows.get(legacyId)).toEqual(before);
+    expect(JSON.stringify(rows.get(legacyId))).toBe(JSON.stringify(before));
+  });
+
   it('replaces a revoked exact Pod credential instead of partially updating it', async () => {
     const rows = new Map<string, Record<string, unknown>>([
       ['credentials.ttl#cloud-openai', {

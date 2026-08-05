@@ -292,6 +292,10 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const existingVersion = existing ? versionFromRow(existing) : 0;
     const replacesUnsupportedRecord = Boolean(existing)
       && stringFrom(existing?.storageMode) !== PLAINTEXT_CREDENTIAL_STORAGE_MODE;
+    const preservesLegacyId = Boolean(existing && (existingId !== record.id || isLegacyCredentialId(existingId)));
+    if (preservesLegacyId && replacesUnsupportedRecord) {
+      throw new UnsupportedCredentialStorageModeError(stringFrom(existing?.storageMode) || 'missing');
+    }
     if (!replacesUnsupportedRecord
       && record.expectedVersion !== undefined
       && record.expectedVersion !== existingVersion) {
@@ -302,7 +306,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       ...record,
       version: nextVersion,
     });
-    if (existing && (existingId !== record.id || isLegacyCredentialId(existingId))) {
+    if (existing && preservesLegacyId) {
       const { id: _canonicalId, ...patch } = row;
       try {
         const updated = await db.updateById<Record<string, unknown>>(credential, existingId, patch);
