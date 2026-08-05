@@ -135,10 +135,7 @@ import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
 import { LocalPodProvisioningService } from './provision/LocalPodProvisioningService';
 import { SqliteSolidFsSyncJournal } from './solidfs/SolidFsSyncJournal';
-import {
-  LEGACY_DERIVED_INDEX_CONSUMER_ID,
-  PostgresDerivedIndexJournal,
-} from './storage/PostgresDerivedIndexJournal';
+import { PostgresDerivedIndexJournal } from './storage/PostgresDerivedIndexJournal';
 import { ObservableResourceStore } from './storage/ObservableResourceStore';
 import { RdfDerivedIndexingListener } from './storage/RdfDerivedIndexingListener';
 
@@ -282,13 +279,11 @@ export {
   // SolidFS recovery exports
   SqliteSolidFsSyncJournal,
   PostgresDerivedIndexJournal,
-  LEGACY_DERIVED_INDEX_CONSUMER_ID,
   ObservableResourceStore,
   RdfDerivedIndexingListener,
 };
 
 export type {
-  DurableResourceChangeConsumer,
   DerivedIndexReplayResult,
   PostgresDerivedIndexJournalOptions,
 } from './storage/PostgresDerivedIndexJournal';

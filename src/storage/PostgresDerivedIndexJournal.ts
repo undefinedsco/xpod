@@ -56,35 +56,40 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
     resolvePodScope?: (event: ResourceChangeEvent) => string | Promise<string>,
     retryDelayMs = 1_000,
     leaseMs = 60_000,
-    consumers: DurableResourceChangeConsumer[] = [],
+    consumers: ResourceChangeListener[] = [],
     pollIntervalMs = 1_000,
   ) {
+    const durableConsumers: DurableResourceChangeConsumer[] = [];
+    const consumerIds = new Set<string>();
+    for (const consumer of consumers) {
+      const consumerId = (consumer as { consumerId?: unknown }).consumerId;
+      if (typeof consumerId !== 'string' || !consumerId.trim()) {
+        throw new Error('Derived-index consumer requires a non-empty consumerId');
+      }
+      if (consumerIds.has(consumerId)) {
+        throw new Error(`Duplicate derived-index consumerId: ${consumerId}`);
+      }
+      consumerIds.add(consumerId);
+      durableConsumers.push(consumer as DurableResourceChangeConsumer);
+    }
     const resolvedOptions: PostgresDerivedIndexJournalOptions = {
       connectionString,
       executor,
       resolvePodScope,
       retryDelayMs,
       leaseMs,
-      consumers,
+      consumers: durableConsumers,
       pollIntervalMs,
     };
     this.options = resolvedOptions;
     if (!resolvedOptions.executor && !resolvedOptions.connectionString) {
       throw new Error('PostgresDerivedIndexJournal requires executor or connectionString');
     }
-    const consumerIds = new Set<string>();
-    for (const consumer of consumers) {
-      if (!consumer.consumerId.trim()) {
-        throw new Error('Derived-index consumer requires a non-empty consumerId');
-      }
-      if (consumerIds.has(consumer.consumerId)) {
-        throw new Error(`Duplicate derived-index consumerId: ${consumer.consumerId}`);
-      }
-      consumerIds.add(consumer.consumerId);
-    }
-    this.consumers = new Map(consumers.map((consumer) => [consumer.consumerId, consumer]));
+    this.consumers = new Map(durableConsumers.map((consumer) => [consumer.consumerId, consumer]));
     this.activeConsumerIds = new Set(
-      consumers.length > 0 ? consumers.map((consumer) => consumer.consumerId) : [LEGACY_DERIVED_INDEX_CONSUMER_ID],
+      durableConsumers.length > 0
+        ? durableConsumers.map((consumer) => consumer.consumerId)
+        : [LEGACY_DERIVED_INDEX_CONSUMER_ID],
     );
     this.executor = resolvedOptions.executor
       ?? new PgPoolRdfSqlExecutor(getSharedPool({ connectionString: resolvedOptions.connectionString }));

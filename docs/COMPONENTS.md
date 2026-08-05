@@ -92,9 +92,11 @@ MonitoringStore → BinarySliceResourceStore → IndexRepresentationStore
 ### PostgresDerivedIndexJournal
 - **Path**: `src/storage/PostgresDerivedIndexJournal.ts`
 - **Purpose**: CSS subscribe 写入口到 FTS/VEC 派生索引的持久化 outbox
-- **Ordering**: 只允许同一 Pod 最早的未完成事件被 claim；不同 Pod 可并行
-- **Recovery**: processing lease 超时后自动回到 pending，失败按延迟重试；`reconcilePod` 可从权威资源清单补录历史数据
-- **Consumer**: `RdfDerivedIndexingListener` 对每个事件只读取一次资源权威内容，随后更新 `PostgresRdfTextIndex` 与 `PostgresRdfVectorIndex`；两者都成功后才把 outbox 行标记为 done
+- **Ordering**: 顺序边界是 `(consumerId, Pod)`；同一消费者失败会阻止该 Pod 后续事件，但不重复其他已成功消费者，也不阻止其他 Pod
+- **Recovery**: processing lease 超时后只重置对应 consumer delivery；`reconcilePod` 的参数必须是一个 Pod 的完整权威清单，当前路径生成 repair update，已消失路径生成 delete tombstone
+- **Consumer**: `RdfDerivedIndexingListener` 使用稳定 ID `rdf-fts-vec-v1`，对每个事件只读取一次资源权威内容，随后更新 `PostgresRdfTextIndex` 与 `PostgresRdfVectorIndex`；两者都成功后才完成该消费者的 delivery
+- **Durability**: `derived_index_change_journal` 保存单份不可变事件；`derived_index_consumers` / `derived_index_event_deliveries` 保存独立 retry、lease、done 状态；`derived_index_resource_checkpoints` 保存成功应用到资源的最后事件
+- **Delivery**: 采用 at-least-once 语义，因此 FTS/VEC 的 source replace/delete 必须保持幂等
 - **Deployment**: Cloud 使用 PostgreSQL；Local 不创建第二份日志，继续由 `SqliteSolidFsSyncJournal` 驱动 composite RDF/text/vector syncer
 
 ## Identity & Authentication

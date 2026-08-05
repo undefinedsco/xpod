@@ -328,6 +328,7 @@ describe('PostgresDerivedIndexJournal', () => {
     expect(graph.find((entry) => entry['@id'] === 'urn:undefineds:xpod:RdfDerivedIndexingListener'))
       .toMatchObject({
         '@type': 'RdfDerivedIndexingListener',
+        consumerId: 'rdf-fts-vec-v1',
         rdfEngine: { '@id': 'urn:undefineds:xpod:SolidRdfEngine' },
       });
     expect(override?.overrideParameters).toMatchObject({

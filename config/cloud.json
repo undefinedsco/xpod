@@ -208,6 +208,7 @@
       "comment": "Refreshes the PostgreSQL FTS/vector structures consumed by RDF queries and QLever.",
       "@id": "urn:undefineds:xpod:RdfDerivedIndexingListener",
       "@type": "RdfDerivedIndexingListener",
+      "consumerId": "rdf-fts-vec-v1",
       "rdfEngine": { "@id": "urn:undefineds:xpod:SolidRdfEngine" },
       "resourceStore": { "@id": "urn:undefineds:xpod:SparqlResourceStoreBackend" },
       "embeddingService": { "@id": "urn:undefineds:xpod:DerivedIndexEmbeddingService" },
