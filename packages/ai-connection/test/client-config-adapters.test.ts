@@ -23,11 +23,117 @@ function profile(overrides: Record<string, unknown> = {}) {
     apiKey: 'sk-client-credentials-secret',
     webId: WEB_ID,
     model: 'gpt-5.4',
+    activeModels: [{ id: 'gpt-5.4', provider: 'openai' }],
     ...overrides,
   }
 }
 
 describe('publishable AI client config adapters', () => {
+  it.each([
+    ['codex', () => new CodexConfigAdapter({ homeDir: tempHome() })],
+    ['claude-code', () => new ClaudeCodeConfigAdapter({ homeDir: tempHome() })],
+    ['pi', () => new PiConfigAdapter({ homeDir: tempHome() })],
+    ['codebuddy', () => new CodeBuddyConfigAdapter({ homeDir: tempHome() })],
+  ] as const)('%s rejects an empty active Gateway catalog before writing files', async (_client, createAdapter) => {
+    const adapter = createAdapter()
+    await expect(adapter.plan(profile({ activeModels: [] }))).rejects.toMatchObject({
+      code: 'model_catalog_empty',
+    })
+  })
+
+  it.each([
+    ['codex', (home: string) => new CodexConfigAdapter({ homeDir: home })],
+    ['claude-code', (home: string) => new ClaudeCodeConfigAdapter({ homeDir: home })],
+    ['pi', (home: string) => new PiConfigAdapter({ homeDir: home })],
+    ['codebuddy', (home: string) => new CodeBuddyConfigAdapter({ homeDir: home })],
+  ] as const)('%s resolves a provider-qualified model and rejects an ambiguous unqualified alias', async (_client, createAdapter) => {
+    const home = tempHome()
+    try {
+      const adapter = createAdapter(home)
+      const catalog = [
+        { id: 'gpt-5.4', provider: 'openai' },
+        { id: 'gpt-5.4', provider: 'deepseek' },
+      ]
+      await expect(adapter.plan(profile({ model: 'gpt-5.4', activeModels: catalog }))).rejects.toMatchObject({
+        code: 'model_not_available',
+      })
+      const plan = await adapter.plan(profile({ model: 'openai/gpt-5.4', activeModels: catalog }))
+      const config = plan.writes.map((write) => write.content ?? '').join('\n')
+      expect(config).toMatch(/(?:["']?(?:model|defaultModel)["']?)\s*[:=]\s*["']openai\/gpt-5\.4/)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('does not project a model explicitly marked unavailable by the Gateway catalog', async () => {
+    const home = tempHome()
+    try {
+      const adapter = new CodexConfigAdapter({ homeDir: home })
+      await expect(adapter.plan(profile({
+        model: 'openai/gpt-5.4',
+        activeModels: [{ id: 'gpt-5.4', provider: 'openai', availability: 'unavailable' }],
+      }))).rejects.toMatchObject({ code: 'model_catalog_empty' })
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['codex', (home: string) => new CodexConfigAdapter({ homeDir: home })],
+    ['claude-code', (home: string) => new ClaudeCodeConfigAdapter({ homeDir: home })],
+    ['pi', (home: string) => new PiConfigAdapter({ homeDir: home })],
+    ['codebuddy', (home: string) => new CodeBuddyConfigAdapter({ homeDir: home })],
+  ] as const)('%s removes an old unpicked model instead of projecting it to the Gateway', async (_client, createAdapter) => {
+    const home = tempHome()
+    try {
+      if (_client === 'codex') {
+        fs.mkdirSync(path.join(home, '.codex'), { recursive: true })
+        fs.writeFileSync(path.join(home, '.codex', 'config.toml'), 'model = "old-unpicked-model"\n')
+      } else if (_client === 'claude-code') {
+        fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+        fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ model: 'old-unpicked-model' }))
+      } else if (_client === 'pi') {
+        fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true })
+        fs.writeFileSync(path.join(home, '.pi', 'agent', 'settings.json'), JSON.stringify({ defaultModel: 'old-unpicked-model' }))
+      } else {
+        fs.mkdirSync(path.join(home, '.codebuddy'), { recursive: true })
+        fs.writeFileSync(path.join(home, '.codebuddy', 'settings.json'), JSON.stringify({ model: 'old-unpicked-model' }))
+      }
+      const adapter = createAdapter(home)
+      const plan = await adapter.plan(profile({ model: 'gpt-5.4', activeModels: [{ id: 'gpt-5.4', provider: 'openai' }] }))
+      const serialized = plan.writes.map((write) => write.content ?? '').join('\n')
+      expect(serialized).not.toContain('old-unpicked-model')
+      await expect(adapter.plan(profile({ model: 'old-unpicked-model', activeModels: [{ id: 'gpt-5.4', provider: 'openai' }] }))).rejects.toMatchObject({
+        code: 'model_not_available',
+      })
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('does not place an upstream provider URL or provider credential in generated client configuration', async () => {
+    const home = tempHome()
+    try {
+      const adapters = [
+        new CodexConfigAdapter({ homeDir: home }),
+        new ClaudeCodeConfigAdapter({ homeDir: home }),
+        new PiConfigAdapter({ homeDir: home }),
+        new CodeBuddyConfigAdapter({ homeDir: home }),
+      ]
+      const generated = (await Promise.all(adapters.map((adapter) => adapter.plan(profile({
+        endpoint: 'https://xpod.example/v1',
+        apiKey: 'sk-gateway-only',
+        activeModels: [{ id: 'gpt-5.4', provider: 'openai' }],
+      }))))).flatMap((plan) => plan.writes.map((write) => write.content ?? '')).join('\n')
+      expect(generated).toContain('https://xpod.example')
+      expect(generated).toContain('sk-gateway-only')
+      expect(generated).not.toContain('https://api.openai.com')
+      expect(generated).not.toContain('sk-provider')
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('exports native Codex, Claude Code, Pi, and CodeBuddy adapter semantics', async () => {
     const home = tempHome()
     try {
@@ -40,13 +146,17 @@ describe('publishable AI client config adapters', () => {
         env: { KEEP_ME: 'yes', ANTHROPIC_BASE_URL: 'https://old.example' },
       }))
       fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true })
-      fs.writeFileSync(path.join(home, '.pi', 'agent', 'settings.json'), JSON.stringify({ theme: 'dark' }))
+      fs.writeFileSync(path.join(home, '.pi', 'agent', 'settings.json'), JSON.stringify({
+        theme: 'dark',
+        defaultModel: 'old-unpicked-model',
+      }))
       fs.writeFileSync(path.join(home, '.pi', 'agent', 'models.json'), JSON.stringify({
         providers: { custom: { baseUrl: 'https://keep.example', apiKey: 'keep' } },
       }))
       fs.mkdirSync(path.join(home, '.codebuddy'), { recursive: true })
       fs.writeFileSync(path.join(home, '.codebuddy', 'settings.json'), JSON.stringify({
         enabledPlugins: { keep: true },
+        model: 'old-unpicked-model',
         env: { KEEP_ME: 'yes' },
       }))
 
@@ -68,11 +178,12 @@ describe('publishable AI client config adapters', () => {
       const codexAuth = JSON.parse(fs.readFileSync(path.join(home, '.codex', 'auth.json'), 'utf8'))
       expect(codexToml).toContain('command = "keep"')
       expect(codexToml).toContain('model_provider = "xpod"')
+      expect(codexToml).not.toContain('model = "user-model"')
       expect(codexToml).toContain('base_url = "https://pod.example/alice/api/ai/v1"')
       expect(codexAuth).toMatchObject({ legacy: 'keep-me', OPENAI_API_KEY: 'sk-client-credentials-secret' })
 
       const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
-      expect(claude.model).toBe('opus')
+      expect(claude.model).toBe('openai/gpt-5.4')
       expect(claude.env).toMatchObject({
         KEEP_ME: 'yes',
         ANTHROPIC_BASE_URL: 'https://pod.example/alice/api/ai',
@@ -82,7 +193,8 @@ describe('publishable AI client config adapters', () => {
 
       const piSettings = JSON.parse(fs.readFileSync(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8'))
       const piModels = JSON.parse(fs.readFileSync(path.join(home, '.pi', 'agent', 'models.json'), 'utf8'))
-      expect(piSettings).toMatchObject({ theme: 'dark', defaultProvider: 'xpod', defaultModel: 'gpt-5.4' })
+      expect(piSettings).toMatchObject({ theme: 'dark', defaultProvider: 'xpod', defaultModel: 'openai/gpt-5.4' })
+      expect(piSettings.defaultModel).not.toBe('old-unpicked-model')
       expect(piModels.providers.custom.baseUrl).toBe('https://keep.example')
       expect(piModels.providers.xpod).toMatchObject({
         baseUrl: 'https://pod.example/alice/api/ai/v1',
@@ -92,11 +204,13 @@ describe('publishable AI client config adapters', () => {
 
       const codebuddy = JSON.parse(fs.readFileSync(path.join(home, '.codebuddy', 'settings.json'), 'utf8'))
       expect(codebuddy.enabledPlugins).toEqual({ keep: true })
+      expect(codebuddy.model).not.toBe('old-unpicked-model')
       expect(codebuddy.env).toMatchObject({
         KEEP_ME: 'yes',
         CODEBUDDY_BASE_URL: 'https://pod.example/alice/api/ai/v1',
         CODEBUDDY_API_KEY: 'sk-client-credentials-secret',
       })
+      expect(codebuddy.model).toBe('openai/gpt-5.4')
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }
@@ -187,6 +301,29 @@ describe('publishable AI client config adapters', () => {
       const restoredCodeBuddy = JSON.stringify(JSON.parse(fs.readFileSync(path.join(home, '.codebuddy', 'settings.json'), 'utf8')))
       expect(restoredCodeBuddy).not.toContain('old-xpod')
       expect(restoredCodeBuddy).not.toContain('old-web-id')
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('restores an unrelated Codex model after a temporary Gateway projection', async () => {
+    const home = tempHome()
+    try {
+      const dir = path.join(home, '.codex')
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'config.toml'), [
+        'model_provider = "openai"',
+        'model = "user-model"',
+        '',
+      ].join('\n'))
+      const adapter = new CodexConfigAdapter({ homeDir: home })
+      await adapter.apply(await adapter.plan(profile()))
+      await adapter.restore(WEB_ID)
+
+      const restored = fs.readFileSync(path.join(dir, 'config.toml'), 'utf8')
+      expect(restored).toContain('model_provider = "openai"')
+      expect(restored).toContain('model = "user-model"')
+      expect(restored).not.toContain('xpod-ai-connection')
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }

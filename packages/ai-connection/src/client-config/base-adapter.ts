@@ -5,12 +5,27 @@ import { AiClientConfigTransaction } from './transaction';
 import type {
   AiClientConfigAdapter,
   AiClientConfigPlan,
+  AiClientModelReference,
   AiConnectionClientProfile,
   ClientDetection,
   ClientInspection,
   ClientVerification,
   ConfigWrite,
 } from './types';
+
+/** Stable, machine-readable errors shared by all coding-client adapters. */
+export class AiClientConfigError extends Error {
+  public readonly code: 'model_catalog_empty' | 'model_catalog_invalid' | 'model_not_available';
+
+  public constructor(
+    code: 'model_catalog_empty' | 'model_catalog_invalid' | 'model_not_available',
+    message: string = code,
+  ) {
+    super(message);
+    this.name = 'AiClientConfigError';
+    this.code = code;
+  }
+}
 
 interface OwnershipState {
   version: 1;
@@ -68,6 +83,89 @@ export function profileApiKey(profile: AiConnectionClientProfile): string {
   return typeof value === 'string' ? value : '';
 }
 
+/**
+ * Resolve a requested model against the already-filtered Gateway catalog.
+ *
+ * The Gateway owns visibility and provider alias semantics. This boundary only
+ * accepts the resulting typed projection and prevents stale/unpicked models
+ * from leaking into a local client config. An unqualified id is accepted only
+ * when it maps to one catalog entry; provider-qualified ids are deterministic.
+ */
+export function resolveActiveModel(profile: AiConnectionClientProfile): string {
+  const catalog = normalizeActiveModels(profile.activeModels);
+  const requested = profile.model?.trim();
+  if (!requested) return catalog[0].qualifiedId;
+
+  const exact = catalog.filter((model) => model.qualifiedId.toLowerCase() === requested.toLowerCase());
+  if (exact.length === 1) return exact[0].qualifiedId;
+  if (exact.length > 1) throw new AiClientConfigError('model_not_available');
+
+  const aliases = catalog.filter((model) => model.id.toLowerCase() === requested.toLowerCase());
+  if (aliases.length === 1) return aliases[0].qualifiedId;
+  throw new AiClientConfigError('model_not_available');
+}
+
+/** Return all active, validated models for clients that expose a model list. */
+export function activeModelReferences(profile: AiConnectionClientProfile): Array<{
+  id: string;
+  name: string;
+}> {
+  return normalizeActiveModels(profile.activeModels).map((model) => ({
+    id: model.qualifiedId,
+    name: model.displayName ?? model.qualifiedId,
+  }));
+}
+
+interface NormalizedActiveModel {
+  id: string;
+  qualifiedId: string;
+  displayName?: string;
+}
+
+function normalizeActiveModels(models: readonly AiClientModelReference[] | undefined): NormalizedActiveModel[] {
+  if (!Array.isArray(models) || models.length === 0) {
+    throw new AiClientConfigError('model_catalog_empty');
+  }
+
+  const normalized: NormalizedActiveModel[] = [];
+  const seenQualified = new Set<string>();
+  for (const model of models) {
+    if (!model || typeof model.id !== 'string' || !model.id.trim()) continue;
+    if (model.availability !== undefined && model.availability !== 'available') continue;
+    const id = model.id.trim();
+    const provider = typeof model.provider === 'string' ? model.provider.trim() : '';
+    const qualifiedId = provider && !id.toLowerCase().startsWith(`${provider.toLowerCase()}/`)
+      ? `${provider}/${id}`
+      : id;
+    const key = qualifiedId.toLowerCase();
+    if (seenQualified.has(key)) {
+      throw new AiClientConfigError('model_catalog_invalid', 'Active Gateway catalog contains duplicate model ids');
+    }
+    seenQualified.add(key);
+    normalized.push({
+      id: provider && id.toLowerCase().startsWith(`${provider.toLowerCase()}/`)
+        ? id.slice(provider.length + 1)
+        : id,
+      qualifiedId,
+      ...(typeof model.displayName === 'string' && model.displayName.trim()
+        ? { displayName: model.displayName.trim() }
+        : {}),
+    });
+  }
+  if (normalized.length === 0) {
+    throw new AiClientConfigError('model_catalog_empty');
+  }
+  return normalized;
+}
+
+/** Apply catalog validation once at the shared adapter boundary. */
+export function normalizeClientProfile(profile: AiConnectionClientProfile): AiConnectionClientProfile {
+  return {
+    ...profile,
+    model: resolveActiveModel(profile),
+  };
+}
+
 export function stripLegacyXpodObject(value: Record<string, unknown>): void {
   const legacy = value.xpod;
   if (legacy && typeof legacy === 'object' && !Array.isArray(legacy)) {
@@ -108,8 +206,8 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
   }
 
   public async plan(profile: AiConnectionClientProfile): Promise<AiClientConfigPlan> {
-    this.validateProfile(profile);
-    const ownerHash = hashWebId(profile.webId);
+    const normalizedProfile = this.validateProfile(profile);
+    const ownerHash = hashWebId(normalizedProfile.webId);
     const currentState = await this.readState();
     if (currentState && currentState.webIdHash !== ownerHash) {
       throw new Error(`${this.client} AI Connection projection is owned by another WebID`);
@@ -120,7 +218,7 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
       await this.rejectSymlink(filePath);
       contents.set(filePath, await this.readOptional(filePath));
     }
-    const projected = await this.project(profile, contents);
+    const projected = await this.project(normalizedProfile, contents);
     const timestamp = Date.now();
     const files = this.configPaths.map((filePath) => {
       const prior = currentState?.files.find((file) => file.path === filePath);
@@ -155,11 +253,12 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
   }
 
   public async verify(profile: AiConnectionClientProfile): Promise<ClientVerification> {
+    const normalizedProfile = this.validateProfile(profile);
     const state = await this.readState();
-    if (!state || state.webIdHash !== hashWebId(profile.webId)) {
+    if (!state || state.webIdHash !== hashWebId(normalizedProfile.webId)) {
       return { ok: false, reason: 'AI Connection ownership does not match the current WebID' };
     }
-    return this.verifyProjection(profile);
+    return this.verifyProjection(normalizedProfile);
   }
 
   public async restore(webId: string): Promise<void> {
@@ -215,10 +314,11 @@ export abstract class BaseAiClientConfigAdapter implements AiClientConfigAdapter
     }
   }
 
-  private validateProfile(profile: AiConnectionClientProfile): void {
+  private validateProfile(profile: AiConnectionClientProfile): AiConnectionClientProfile {
     if (!profile.endpoint.trim()) throw new Error('AI Connection endpoint is required');
     if (!profileApiKey(profile).trim()) throw new Error('AI Connection API key is required');
     if (!profile.webId.trim()) throw new Error('Current WebID is required');
+    return normalizeClientProfile(profile);
   }
 
   private async readState(): Promise<OwnershipState | undefined> {

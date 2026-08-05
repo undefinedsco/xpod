@@ -50,6 +50,7 @@ export function registerAiClientConfigurationRoutes(
       client: requireClient(params.client),
       endpoint: requireString(body.endpoint, 'endpoint'),
       model: optionalString(body.model),
+      auth: request.auth,
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));
   });
@@ -67,6 +68,7 @@ export function registerAiClientConfigurationRoutes(
       client: requireClient(params.client),
       planId: requireString(body.planId, 'planId'),
       apiKey: requireString(body.apiKey, 'apiKey'),
+      auth: request.auth,
       confirmation: optionalConfirmation(body.confirmation),
       webId: request.auth?.type === 'solid' ? request.auth.webId : optionalString(body.webId),
     }));

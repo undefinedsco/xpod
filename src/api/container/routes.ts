@@ -45,6 +45,8 @@ import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManageme
 import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
 import { registerDeviceNotificationRuntime, type DeviceNotificationRuntimeOptions } from '../handlers/DeviceNotificationRuntime';
 import { AiClientConfigurationService } from '../service/AiClientConfigurationService';
+import type { AuthContext } from '../auth/AuthContext';
+import type { GatewayModelProjection } from '../ai-gateway/routing/ModelRouter';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { DrizzleQuotaService } from '../../quota/DrizzleQuotaService';
@@ -124,8 +126,9 @@ function registerSharedRoutes(
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const providerModelSelectionService = container.resolve('providerModelSelectionService');
   const gatewayProviderRegistry = container.resolve('gatewayProviderRegistry');
+  const aiGatewayService = container.resolve('aiGatewayService');
   const config = container.resolve('config') as ApiContainerConfig;
-  const aiClientConfigurationService = resolveAiClientConfigurationService(container, config);
+  const aiClientConfigurationService = resolveAiClientConfigurationService(container, config, aiGatewayService);
   const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true });
   const dnsProvider = container.resolve('dnsProvider', { allowUnregistered: true });
   const dnsCoordinator = container.resolve('dnsCoordinator', { allowUnregistered: true });
@@ -156,7 +159,6 @@ function registerSharedRoutes(
     apiBaseUrl: config.cloudApiEndpoint ?? process.env.XPOD_CLOUD_API_ENDPOINT ?? process.env.CSS_BASE_URL,
   });
   registerNodeRoutes(server, { repository: nodeRepo });
-  const aiGatewayService = container.resolve('aiGatewayService');
   registerChatRoutes(server, {
     chatService,
     aiGatewayService,
@@ -250,6 +252,7 @@ function createOwnerOnlyNotificationTopicAuthorizer(origin: string): DeviceNotif
 function resolveAiClientConfigurationService(
   container: AwilixContainer<ApiContainerCradle>,
   config: ApiContainerConfig,
+  aiGatewayService?: { listModels(auth: AuthContext): Promise<readonly GatewayModelProjection[]> },
 ): AiClientConfigurationService | undefined {
   const injected = container.resolve('aiClientConfigurationService', { allowUnregistered: true });
   if (injected) return injected;
@@ -260,6 +263,9 @@ function resolveAiClientConfigurationService(
   return new AiClientConfigurationService({
     homeDir: capability.homeDir,
     backupRoot: capability.backupRoot,
+    ...(aiGatewayService ? {
+      listActiveModels: ({ auth }) => aiGatewayService.listModels(auth),
+    } : {}),
   });
 }
 

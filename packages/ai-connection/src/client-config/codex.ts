@@ -37,7 +37,7 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
   ): Promise<Map<string, string>> {
     const config = this.removeManagedBlock(current.get(this.configPath) ?? '')
       .split('\n')
-      .filter((line) => !/^\s*model_provider\s*=/.test(line))
+      .filter((line) => !/^\s*(?:model_provider|model)\s*=/.test(line))
       .join('\n')
       .trimEnd();
     const model = profile.model?.trim();
@@ -67,6 +67,7 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
       const config = await fs.promises.readFile(this.configPath, 'utf8');
       const auth = parseJsonObject(await fs.promises.readFile(this.authPath, 'utf8'), 'Codex auth.json');
       const ok = config.includes('model_provider = "xpod"') &&
+        config.includes(`model = ${JSON.stringify(profile.model)}`) &&
         config.includes(`base_url = ${JSON.stringify(normalizeV1Endpoint(profile.endpoint))}`) &&
         auth.OPENAI_API_KEY === profileApiKey(profile);
       return ok ? { ok: true } : { ok: false, reason: 'Codex projection differs from the requested connection' };
@@ -95,12 +96,19 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
 
     let restored = this.removeManagedBlock(current ?? '').trim();
     const hasCurrentProvider = restored.split('\n').some((line) => /^\s*model_provider\s*=/.test(line));
+    const originalContent = original ?? '';
+    const originalHasXpodProjection = originalContent.includes(START)
+      || originalContent.split('\n').some((line) => /^\s*model_provider\s*=\s*["']xpod["']/.test(line));
+    const originalOwnedModelLines = originalHasXpodProjection
+      ? []
+      : originalContent.split('\n').filter((line) => /^\s*model\s*=/.test(line));
     if (!hasCurrentProvider) {
-      const originalProviders = (original ?? '')
+      const originalProviders = originalContent
         .split('\n')
         .filter((line) => /^\s*model_provider\s*=/.test(line) && !line.includes('xpod'));
-      if (originalProviders.length > 0) {
-        restored = `${originalProviders.join('\n')}${restored ? `\n${restored}` : ''}`;
+      const originalRoot = [...originalProviders, ...originalOwnedModelLines];
+      if (originalRoot.length > 0) {
+        restored = `${originalRoot.join('\n')}${restored ? `\n${restored}` : ''}`;
       }
     }
     return !originallyExisted && !restored ? null : `${restored}${restored ? '\n' : ''}`;

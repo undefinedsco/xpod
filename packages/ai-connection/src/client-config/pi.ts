@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   BaseAiClientConfigAdapter,
+  activeModelReferences,
   looksLikePreviousXpodValue,
   normalizeV1Endpoint,
   parseJsonObject,
@@ -38,7 +39,7 @@ export class PiConfigAdapter extends BaseAiClientConfigAdapter {
     const providers = models.providers && typeof models.providers === 'object' && !Array.isArray(models.providers)
       ? { ...models.providers as Record<string, unknown> }
       : {};
-    const model = profile.model?.trim() || 'default';
+    const model = profile.model;
     settings.defaultProvider = 'xpod';
     settings.defaultModel = model;
     providers.xpod = {
@@ -46,7 +47,7 @@ export class PiConfigAdapter extends BaseAiClientConfigAdapter {
       apiKey: profileApiKey(profile),
       authHeader: true,
       api: 'openai-responses',
-      models: [{ id: model, name: model }],
+      models: activeModelReferences(profile),
     };
     models.providers = providers;
     return new Map([
@@ -60,9 +61,16 @@ export class PiConfigAdapter extends BaseAiClientConfigAdapter {
       const models = parseJsonObject(await fs.promises.readFile(this.modelsPath, 'utf8'), 'Pi models.json');
       const xpod = (models.providers as Record<string, unknown> | undefined)?.xpod as
         Record<string, unknown> | undefined;
+      const configuredModels = isObject(xpod?.models) || Array.isArray(xpod?.models) ? xpod?.models : undefined;
       const ok = xpod?.baseUrl === normalizeV1Endpoint(profile.endpoint) &&
         xpod.apiKey === profileApiKey(profile);
-      return ok ? { ok: true } : { ok: false, reason: 'Pi projection differs from the requested connection' };
+      const modelIds = Array.isArray(configuredModels)
+        ? configuredModels.map((entry) => isObject(entry) && typeof entry.id === 'string' ? entry.id : undefined)
+          .filter((id): id is string => id !== undefined)
+        : [];
+      return ok && modelIds.includes(profile.model ?? '')
+        ? { ok: true }
+        : { ok: false, reason: 'Pi projection differs from the requested connection' };
     } catch (error) {
       return { ok: false, reason: String(error) };
     }

@@ -34,10 +34,14 @@ describe('AiClientConfigurationHandler', () => {
   let tmpDir: string;
   let service: AiClientConfigurationService;
   let routes: Record<string, RouteHandler>;
+  let visibleModels: Array<{ id: string; provider: string }>;
+  let catalogRequests: Array<{ webId: string; auth: AuthenticatedRequest['auth'] }>;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xpod-client-config-'));
     await writeFixtures(tmpDir);
+    visibleModels = [{ id: 'gpt-5', provider: 'openai' }];
+    catalogRequests = [];
     const verifier = vi.fn(async () => ({
       models: true,
       authenticatedRequest: true,
@@ -46,6 +50,10 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: verifier,
+      listActiveModels: async (input) => {
+        catalogRequests.push(input);
+        return visibleModels;
+      },
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -55,6 +63,51 @@ describe('AiClientConfigurationHandler', () => {
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('rejects planning when the authenticated Gateway has no active picked models', async () => {
+    visibleModels = [];
+    const res = response();
+
+    await route('POST /api/ai/client-configuration/:client/plan')(
+      jsonRequest({ endpoint: ENDPOINT, model: 'openai/gpt-5' }, scopedAuth('client-config:write')),
+      res,
+      { client: 'codex' },
+    );
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'model_catalog_empty' });
+  });
+
+  it('rechecks active Gateway visibility before apply and rejects a removed model', async () => {
+    const plan = await postPlan('codex');
+    visibleModels = [];
+
+    const res = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({ planId: plan.planId, apiKey: GATEWAY_KEY }, scopedAuth('client-config:write')),
+      res,
+      { client: 'codex' },
+    );
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'model_not_available' });
+    expect(await readCodexConfig(tmpDir)).not.toContain('xpod-ai-connection');
+  });
+
+  it('passes the authenticated WebID and auth context to Gateway model visibility', async () => {
+    await postPlan('codex');
+
+    expect(catalogRequests).toHaveLength(1);
+    expect(catalogRequests[0]).toMatchObject({
+      webId: WEB_ID,
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        internalInvocation: true,
+        scopes: expect.arrayContaining(['client-config:write']),
+      },
+    });
   });
 
   it.each(CLIENTS)('plans %s as a pure redacted operation and preserves unrelated fixture configuration', async (client) => {
@@ -178,6 +231,7 @@ describe('AiClientConfigurationHandler', () => {
       verifyGateway: vi.fn(async () => {
         throw new Error(`upstream rejected ${GATEWAY_KEY}`);
       }),
+      listActiveModels: async () => visibleModels,
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -325,6 +379,7 @@ describe('AiClientConfigurationHandler', () => {
       homeDir: tmpDir,
       backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
       verifyGateway: vi.fn(),
+      listActiveModels: async () => visibleModels,
       now: () => new Date('2026-07-31T08:00:00.000Z'),
     });
     const server = createServer();
@@ -501,6 +556,8 @@ async function writeFixtures(home: string): Promise<void> {
     '[model_providers.openai]',
     'name = "OpenAI"',
     'base_url = "https://api.openai.com/v1"',
+    '[mcp_servers.keep_me]',
+    'command = "keep"',
     '',
   ].join('\n'));
   await fs.mkdir(path.join(home, '.claude'), { recursive: true });
@@ -598,7 +655,7 @@ async function expectNativeProjection(home: string, client: AiClientId): Promise
 
 async function expectUnrelatedPreserved(home: string, client: AiClientId): Promise<void> {
   const content = await clientContent(home, client);
-  if (client === 'codex') expect(content).toContain('model = "gpt-5"');
+  if (client === 'codex') expect(content).toContain('command = "keep"');
   if (client === 'claude-code') expect(content).toContain('Bash(echo safe)');
   if (client === 'pi') {
     expect(await fs.readFile(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8')).toContain('"telemetry": false');
