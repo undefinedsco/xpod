@@ -28,7 +28,7 @@ export interface RdfDerivedIndexingListenerOptions {
   supportedExtensions?: string[];
 }
 
-/** Rebuilds the exact PG text/vector derivations consumed by QLever. */
+/** Rebuilds the canonical PostgreSQL text/vector derivations consumed by native RDF queries. */
 export class RdfDerivedIndexingListener implements ResourceChangeListener {
   public readonly consumerId: string;
   private readonly options: RdfDerivedIndexingListenerOptions & {

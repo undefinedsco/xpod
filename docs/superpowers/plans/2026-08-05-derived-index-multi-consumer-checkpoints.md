@@ -762,6 +762,6 @@ git commit -m "✅ Prove PostgreSQL FTS/VEC replay and self-healing" \
 
 After this plan passes, return to the active RDF rollout plan. Do not claim the
 overall goal complete until the exact components revision passes the one-off
-SealOS 2M c1/c8 gate, Xpod's QLever-primary configuration passes full integration,
+SealOS 2M c1/c8 gate, Xpod's native-primary configuration passes full integration,
 both repositories are merged intentionally, the production deployment is
-healthy, and production probes prove QLever serves the supported request matrix.
+healthy, and production probes prove the native engine serves the supported request matrix.

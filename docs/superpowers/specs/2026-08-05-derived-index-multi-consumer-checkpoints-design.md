@@ -224,7 +224,7 @@ results, delete an authority resource through reconciliation, and verify both
 derived indexes no longer return it.
 
 Release verification requires `bun run build:ts`, the focused journal/index
-tests, and `bun run test:integration`. The QLever primary-engine and deployment
+tests, and `bun run test:integration`. The native primary-engine and deployment
 gates remain downstream work and cannot use this design document alone as
 completion evidence.
 
