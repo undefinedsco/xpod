@@ -8,8 +8,10 @@ import {
 import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from '../../../src/api/ai-gateway/providers/ProviderRuntimeRegistry';
 import { InMemorySessionAffinityStore } from '../../../src/api/ai-gateway/routing/InMemorySessionAffinityStore';
-import { ModelRouter } from '../../../src/api/ai-gateway/routing/ModelRouter';
-import type { GatewayModelSelection } from '../../../src/api/ai-gateway/routing/ModelRouter';
+import {
+  ModelRouter,
+  type GatewayModelSelection,
+} from '../../../src/api/ai-gateway/routing/ModelRouter';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
@@ -56,6 +58,7 @@ function serviceWith(
   store: GatewayCredentialStore;
 } {
   const registry = createDefaultProviderRegistry();
+  const durableSelections = selections ?? selectionsFromCredentials(credentials, registry);
   const store: GatewayCredentialStore = {
     listCredentials: vi.fn(async() => credentials),
     recordSuccess: vi.fn(async() => {}),
@@ -80,9 +83,7 @@ function serviceWith(
         registry,
         affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
         credentials: store.listCredentials,
-        ...(selections
-          ? { selectionRepository: { listActiveSelections: async() => selections } }
-          : {}),
+        selectionRepository: { listActiveSelections: async() => durableSelections },
         now: () => now,
       }),
       credentials: store,
@@ -90,6 +91,28 @@ function serviceWith(
       now: () => now,
     }),
   };
+}
+
+function selectionsFromCredentials(
+  credentials: StoredGatewayCredential[],
+  registry: ReturnType<typeof createDefaultProviderRegistry>,
+): GatewayModelSelection[] {
+  const selections = new Map<string, GatewayModelSelection>();
+  for (const credential of credentials) {
+    const provider = credential.provider.trim().toLowerCase();
+    const models = credential.models?.length
+      ? credential.models
+      : registry.getProvider(provider)?.models.map((model) => model.id) ?? [];
+    const selection = selections.get(provider) ?? { provider, models: [], version: `test:${provider}` };
+    const existing = new Set(selection.models.map((model) => typeof model === 'string' ? model : model.id));
+    for (const model of models) {
+      if (!existing.has(model)) {
+        selection.models.push({ id: `${provider}.ttl#${model}`, status: 'active', modelType: 'chat' });
+      }
+    }
+    selections.set(provider, selection);
+  }
+  return Array.from(selections.values());
 }
 
 describe('AiGatewayService', () => {
@@ -103,9 +126,7 @@ describe('AiGatewayService', () => {
 
   it('projects only active selected models whose credentials are usable', async () => {
     const { service } = serviceWith([
-      // Legacy credential metadata is intentionally stale; Pod picks are the
-      // authoritative model boundary for the Gateway projection.
-      credential({ id: 'healthy', provider: 'openai', models: ['gpt-4.1'] }),
+      credential({ id: 'healthy', provider: 'openai', models: [] }),
       credential({ id: 'reauth', provider: 'openai', health: 'reauthRequired', models: ['gpt-4.1'] }),
       credential({ id: 'quota', provider: 'openai', quota: { status: 'exhausted' }, models: ['gpt-4.1'] }),
       credential({
@@ -218,6 +239,23 @@ describe('AiGatewayService', () => {
         registry,
         affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
         credentials: store.listCredentials,
+        selectionRepository: {
+          listActiveSelections: async() => [
+            {
+              provider: 'openai',
+              models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+              version: 'test:openai',
+            },
+            {
+              provider: 'deepseek',
+              models: [
+                { id: 'deepseek.ttl#deepseek-chat', modelType: 'chat', status: 'active' },
+                { id: 'deepseek.ttl#deepseek-reasoner', modelType: 'chat', status: 'active' },
+              ],
+              version: 'test:deepseek',
+            },
+          ],
+        },
       }),
       credentials: store,
       runtimes: { get: vi.fn() } as unknown as ProviderRuntimeRegistry,
@@ -308,6 +346,13 @@ describe('AiGatewayService', () => {
         registry,
         affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
         credentials: store.listCredentials,
+        selectionRepository: {
+          listActiveSelections: async() => [{
+            provider: 'openai',
+            models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+            version: 'test:openai',
+          }],
+        },
       }),
       credentials: store,
       runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,

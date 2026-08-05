@@ -5,6 +5,7 @@ export type GatewayErrorCode =
   | 'service_access_missing'
   | 'credential_unavailable'
   | 'model_not_available'
+  | 'no_model_available'
   | 'provider_error'
   | 'internal_error';
 

@@ -153,7 +153,7 @@ export class ModelRouter {
       auth: input.auth,
     });
     const visibleTargets = await this.visibleTargets(input, candidates);
-    const target = this.resolveTarget(input, candidates, visibleTargets);
+    const target = this.resolveTarget(input, visibleTargets);
     const provider = this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
       .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))
@@ -204,9 +204,8 @@ export class ModelRouter {
 
   /**
    * Return the exact model projection shared by /v1/models and route target
-   * resolution. The optional legacy path is retained only for lightweight
-   * callers that predate durable model selections; production wiring always
-   * supplies the singleton Pod selection repository.
+   * resolution. Missing durable selection wiring fails closed, so an absent
+   * repository can never widen the visible model set.
    */
   public async listVisibleModels(input: ModelRouterVisibleModelsInput): Promise<GatewayModelProjection[]> {
     const candidates = await this.credentials({
@@ -248,12 +247,10 @@ export class ModelRouter {
     input: ModelRouteInput | ModelRouterVisibleModelsInput,
     candidates: GatewayCredentialCandidate[],
   ): Promise<VisibleModelTarget[]> {
-    const selections = this.selectionRepository
-      ? await this.selectionRepository.listActiveSelections({ webId: input.webId, auth: input.auth })
-      : undefined;
-    if (selections === undefined) {
-      return this.legacyVisibleTargets(input, candidates);
+    if (!this.selectionRepository) {
+      return [];
     }
+    const selections = await this.selectionRepository.listActiveSelections({ webId: input.webId, auth: input.auth });
 
     const selectionByProvider = new Map<string, GatewayModelSelection>();
     for (const selection of selections) {
@@ -296,79 +293,6 @@ export class ModelRouter {
     return targets;
   }
 
-  private async legacyVisibleTargets(
-    input: ModelRouteInput | ModelRouterVisibleModelsInput,
-    candidates: GatewayCredentialCandidate[],
-  ): Promise<VisibleModelTarget[]> {
-    const activeCredentialModels = new Map<string, Set<string> | undefined>();
-    for (const credential of candidates) {
-      if (!await this.isCredentialVisible(input, credential)) {
-        continue;
-      }
-      const providerId = normalizeProviderId(credential.provider);
-      const allowedModels = credential.models ?? [];
-      if (allowedModels.length === 0) {
-        activeCredentialModels.set(providerId, undefined);
-        continue;
-      }
-      const existing = activeCredentialModels.get(providerId);
-      if (existing === undefined && activeCredentialModels.has(providerId)) {
-        continue;
-      }
-      const models = existing ?? new Set<string>();
-      for (const model of allowedModels) {
-        models.add(modelIdentity(model));
-      }
-      activeCredentialModels.set(providerId, models);
-    }
-
-    const targets: VisibleModelTarget[] = [];
-    const seen = new Set<string>();
-    for (const provider of this.registry.listProviders()) {
-      const providerId = normalizeProviderId(provider.id);
-      if (!activeCredentialModels.has(providerId)) {
-        continue;
-      }
-      const allowedModels = activeCredentialModels.get(providerId);
-      const providerModels = allowedModels === undefined
-        ? provider.models.map((model) => model.id)
-        : Array.from(allowedModels);
-      for (const model of providerModels) {
-        if (!model || seen.has(`${providerId}\u0000${model}`)) {
-          continue;
-        }
-        if (!await this.hasUsableCredential(input, candidates, providerId, model)) {
-          continue;
-        }
-        seen.add(`${providerId}\u0000${model}`);
-        targets.push({
-          providerId,
-          model,
-          source: 'exact-model',
-          selectionDefault: false,
-          projection: modelProjection(provider, model),
-        });
-      }
-      if (allowedModels !== undefined) {
-        const registryIds = new Set(provider.models.map((model) => modelIdentity(model.id)));
-        for (const model of Array.from(allowedModels).filter((value) => !registryIds.has(value))) {
-          if (!await this.hasUsableCredential(input, candidates, providerId, model)) {
-            continue;
-          }
-          seen.add(`${providerId}\u0000${model}`);
-          targets.push({
-            providerId,
-            model,
-            source: 'exact-model',
-            selectionDefault: false,
-            projection: modelProjection(provider, model),
-          });
-        }
-      }
-    }
-    return targets;
-  }
-
   private async hasUsableCredential(
     input: ModelRouteInput | ModelRouterVisibleModelsInput,
     candidates: GatewayCredentialCandidate[],
@@ -386,23 +310,8 @@ export class ModelRouter {
     return false;
   }
 
-  private async isCredentialVisible(
-    input: ModelRouteInput | ModelRouterVisibleModelsInput,
-    candidate: GatewayCredentialCandidate,
-  ): Promise<boolean> {
-    if (!candidate.enabled || (candidate.health && candidate.health !== 'healthy')) {
-      return false;
-    }
-    if (candidate.quota?.status === 'exhausted') {
-      return false;
-    }
-    const cooldownUntil = await this.effectiveCooldownUntil(input, candidate);
-    return !cooldownUntil || cooldownUntil.getTime() <= this.now().getTime();
-  }
-
   private resolveTarget(
     input: ModelRouteInput,
-    candidates: GatewayCredentialCandidate[],
     visibleTargets: VisibleModelTarget[],
   ): ResolvedModelTarget {
     const requestedModel = input.model?.trim();
@@ -411,8 +320,8 @@ export class ModelRouter {
       if (alias) {
         const visible = visibleTargets.find((target) =>
           target.providerId === normalizeProviderId(alias.provider)
-          && sameModel(target.model, alias.model));
-        if (!visible && this.selectionRepository) {
+          && this.visibleTargetMatches(target, alias.model));
+        if (!visible) {
           throw modelNotAvailableError(requestedModel);
         }
         return {
@@ -437,7 +346,7 @@ export class ModelRouter {
         const visible = visibleTargets.find((target) =>
           target.providerId === explicit.providerId
           && this.visibleTargetMatches(target, explicit.model));
-        if (!visible && this.selectionRepository) {
+        if (!visible) {
           throw modelNotAvailableError(requestedModel);
         }
         return {
@@ -456,32 +365,20 @@ export class ModelRouter {
           source: 'exact-model',
         };
       }
-      if (!this.selectionRepository) {
-        const legacyExact = this.findExactModelTarget(requestedModel, candidates);
-        if (legacyExact) {
-          return legacyExact;
-        }
-      }
-      if (this.selectionRepository) {
-        throw modelNotAvailableError(requestedModel);
-      }
+      throw modelNotAvailableError(requestedModel);
     }
 
-    const defaultProviderTarget = this.findDefaultProviderTarget(requestedModel, candidates, visibleTargets);
+    const defaultProviderTarget = this.findDefaultProviderTarget(requestedModel, visibleTargets);
     if (defaultProviderTarget) {
       return defaultProviderTarget;
     }
 
-    const defaultModelTarget = this.findDefaultModelTarget(candidates, visibleTargets);
+    const defaultModelTarget = this.findDefaultModelTarget(visibleTargets);
     if (defaultModelTarget) {
       return defaultModelTarget;
     }
 
-    throw new GatewayProtocolError('Unable to resolve model route', {
-      code: 'invalid_request',
-      status: 400,
-      details: { model: input.model },
-    });
+    throw noModelAvailableError();
   }
 
   private visibleTargetMatches(target: VisibleModelTarget, requestedModel: string): boolean {
@@ -503,49 +400,16 @@ export class ModelRouter {
     };
   }
 
-  private findExactModelTarget(
-    model: string,
-    candidates: GatewayCredentialCandidate[],
-  ): ResolvedModelTarget | undefined {
-    const registryMatches = this.registry.findModel(model);
-    if (registryMatches.length > 0) {
-      const candidateMatch = registryMatches.find((match) =>
-        candidates.some((candidate) =>
-          normalizeProviderId(candidate.provider) === normalizeProviderId(match.provider.id)
-          && credentialSupportsModel(candidate, match.model.id)));
-      const match = candidateMatch ?? registryMatches[0];
-      return {
-        providerId: normalizeProviderId(match.provider.id),
-        model: match.model.id,
-        source: 'exact-model',
-      };
-    }
-
-    const candidate = candidates.find((item) => credentialSupportsModel(item, model));
-    if (candidate) {
-      return {
-        providerId: normalizeProviderId(candidate.provider),
-        model,
-        source: 'exact-model',
-      };
-    }
-    return undefined;
-  }
-
   private findDefaultProviderTarget(
     requestedModel: string | undefined,
-    candidates: GatewayCredentialCandidate[],
     visibleTargets: VisibleModelTarget[],
   ): ResolvedModelTarget | undefined {
     if (!this.defaultProvider || requestedModel) {
       return undefined;
     }
     const providerTargets = visibleTargets.filter((target) => target.providerId === this.defaultProvider);
-    const credential = candidates.find((item) => normalizeProviderId(item.provider) === this.defaultProvider);
     const preferredModel = this.defaultModel
-      ?? providerTargets.find((target) => target.selectionDefault)?.model
-      ?? credential?.defaultModel
-      ?? credential?.models?.[0];
+      ?? providerTargets.find((target) => target.selectionDefault)?.model;
     const target = preferredModel
       ? providerTargets.find((item) => sameModel(item.model, preferredModel))
       : providerTargets[0];
@@ -560,7 +424,6 @@ export class ModelRouter {
   }
 
   private findDefaultModelTarget(
-    candidates: GatewayCredentialCandidate[],
     visibleTargets: VisibleModelTarget[],
   ): ResolvedModelTarget | undefined {
     const selectionDefault = visibleTargets.find((target) => target.selectionDefault);
@@ -571,36 +434,13 @@ export class ModelRouter {
         source: 'default-model',
       };
     }
-    if (this.selectionRepository) {
-      return visibleTargets[0]
-        ? {
-          providerId: visibleTargets[0].providerId,
-          model: visibleTargets[0].model,
-          source: 'default-model',
-        }
-        : undefined;
-    }
-    for (const candidate of candidates) {
-      const model = candidate.defaultModel ?? candidate.models?.[0];
-      if (model) {
-        return {
-          providerId: normalizeProviderId(candidate.provider),
-          model,
-          source: 'default-model',
-        };
+    return visibleTargets[0]
+      ? {
+        providerId: visibleTargets[0].providerId,
+        model: visibleTargets[0].model,
+        source: 'default-model',
       }
-    }
-    for (const provider of this.registry.listProviders()) {
-      const model = provider.models[0]?.id;
-      if (model && candidates.some((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))) {
-        return {
-          providerId: normalizeProviderId(provider.id),
-          model,
-          source: 'default-model',
-        };
-      }
-    }
-    return undefined;
+      : undefined;
   }
 
   private async selectExplicitCredential(
@@ -669,10 +509,8 @@ export class ModelRouter {
     if (cooldownUntil && cooldownUntil.getTime() > this.now().getTime()) {
       return false;
     }
-    // Durable Pod picks are the authoritative model boundary in production.
-    // Credential metadata may contain a stale pre-selection allowlist, so it
-    // is only consulted by the compatibility path without a selection reader.
-    return this.selectionRepository ? true : credentialSupportsModel(candidate, model);
+    const models = candidate.models ?? [];
+    return models.length === 0 || models.some((candidateModel) => sameModel(candidateModel, model));
   }
 
   private async effectiveCooldownUntil(
@@ -692,11 +530,6 @@ export class ModelRouter {
     return futureCooldowns.reduce((latest, value) =>
       value.getTime() > latest.getTime() ? value : latest);
   }
-}
-
-function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {
-  const models = candidate.models ?? [];
-  return models.length === 0 || models.some((candidateModel) => sameModel(candidateModel, model));
 }
 
 function modelIdentity(value: string): string {
@@ -728,6 +561,13 @@ function modelNotAvailableError(model: string): GatewayProtocolError {
     code: 'model_not_available',
     status: 404,
     details: { model },
+  });
+}
+
+function noModelAvailableError(): GatewayProtocolError {
+  return new GatewayProtocolError('No model is available for this account', {
+    code: 'no_model_available',
+    status: 404,
   });
 }
 

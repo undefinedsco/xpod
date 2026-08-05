@@ -10,6 +10,7 @@ import {
   ModelRouter,
   type GatewayCredentialCandidate,
   type GatewayModelSelection,
+  type GatewayModelSelectionRepository,
 } from '../../../src/api/ai-gateway/routing/ModelRouter';
 import { RedisSessionAffinityStore } from '../../../src/api/ai-gateway/routing/RedisSessionAffinityStore';
 
@@ -44,19 +45,56 @@ function router(input: {
   defaultProvider?: string;
   defaultModel?: string;
   selections?: GatewayModelSelection[];
+  selectionRepository?: false;
   now?: Date;
 } = {}): ModelRouter {
+  const registry = input.registry ?? createDefaultProviderRegistry();
+  const credentials = input.credentials ?? [];
+  const selections = input.selections ?? selectionsFromCredentials(credentials, registry);
+  const selectionRepository: GatewayModelSelectionRepository | undefined = input.selectionRepository === false
+    ? undefined
+    : { listActiveSelections: async() => selections };
   return new ModelRouter({
-    registry: input.registry ?? createDefaultProviderRegistry(),
+    registry,
     affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
-    credentials: async() => input.credentials ?? [],
-    ...(input.selections
-      ? { selectionRepository: { listActiveSelections: async() => input.selections ?? [] } }
-      : {}),
+    credentials: async() => credentials,
+    selectionRepository,
     defaultProvider: input.defaultProvider,
     defaultModel: input.defaultModel,
     now: () => input.now ?? new Date('2026-07-23T00:00:00.000Z'),
   });
+}
+
+function selectionsFromCredentials(
+  credentials: GatewayCredentialCandidate[],
+  registry: ProviderRegistry,
+): GatewayModelSelection[] {
+  const selections = new Map<string, GatewayModelSelection>();
+  for (const candidate of credentials) {
+    const provider = candidate.provider.trim().toLowerCase();
+    const models = candidate.models?.length
+      ? candidate.models
+      : registry.getProvider(provider)?.models.map((model) => model.id) ?? [];
+    const selection = selections.get(provider) ?? { provider, models: [], version: `test:${provider}` };
+    const existing = new Set(selection.models.map((model) => typeof model === 'string' ? model : model.id));
+    for (const model of models) {
+      if (!existing.has(model)) {
+        selection.models.push({ id: `${provider}.ttl#${model}`, status: 'active', modelType: 'chat' });
+      }
+    }
+    selections.set(provider, selection);
+  }
+  return Array.from(selections.values());
+}
+
+function openAiSelectionRepository(): GatewayModelSelectionRepository {
+  return {
+    listActiveSelections: async() => [{
+      provider: 'openai',
+      models: [{ id: 'openai.ttl#gpt-5', status: 'active', modelType: 'chat' }],
+      version: 'test:openai',
+    }],
+  };
 }
 
 describe('ProviderRegistry', () => {
@@ -148,6 +186,24 @@ describe('ProviderRegistry', () => {
 });
 
 describe('ModelRouter', () => {
+  it('fails closed when durable Pod selection wiring is absent', async () => {
+    const modelRouter = router({
+      selectionRepository: false,
+      credentials: [credential({ id: 'legacy', provider: 'openai', models: [] })],
+    });
+
+    await expect(modelRouter.listVisibleModels({ webId: WEB_ID, deployment: 'cloud' })).resolves.toEqual([]);
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-5',
+    })).rejects.toMatchObject({ code: 'model_not_available', status: 404 });
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).rejects.toMatchObject({ code: 'no_model_available', status: 404 });
+  });
+
   it('routes only active Pod picks and rejects unpicked models with a stable model error', async () => {
     const modelRouter = router({
       selections: [{
@@ -156,7 +212,7 @@ describe('ModelRouter', () => {
         version: 'sha256:openai',
       }],
       credentials: [
-        credential({ id: 'cred_openai', provider: 'openai', models: ['gpt-4.1'] }),
+        credential({ id: 'cred_openai', provider: 'openai', models: [] }),
       ],
     });
 
@@ -290,6 +346,22 @@ describe('ModelRouter', () => {
       credential: { id: 'cred_openai' },
       source: 'alias',
     });
+
+    const restrictedRouter = router({
+      registry,
+      selections: [{
+        provider: 'openai',
+        models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+        version: 'sha256:openai',
+      }],
+      credentials: [credential({ id: 'cred_openai', provider: 'openai', models: [] })],
+    });
+
+    await expect(restrictedRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'claude-sonnet',
+    })).rejects.toMatchObject({ code: 'model_not_available', status: 404 });
   });
 
   it('falls through explicit provider/model, exact model, default provider and default model in order', async () => {
@@ -351,10 +423,9 @@ describe('ModelRouter', () => {
       deployment: 'cloud',
       model: 'gpt-5',
     })).rejects.toMatchObject({
-      code: 'credential_unavailable',
-      status: 403,
+      code: 'model_not_available',
+      status: 404,
       details: {
-        provider: 'openai',
         model: 'gpt-5',
       },
     });
@@ -500,6 +571,7 @@ describe('ModelRouter', () => {
         credential({ id: 'cred_a', provider: 'openai', models: ['gpt-5'], priority: 1 }),
         credential({ id: 'cred_b', provider: 'openai', models: ['gpt-5'], priority: 2 }),
       ].filter((item) => input.webId === WEB_ID ? true : item.id === 'cred_b'),
+      selectionRepository: openAiSelectionRepository(),
       now: () => new Date('2026-07-23T00:00:00.000Z'),
     });
 
@@ -598,6 +670,7 @@ describe('ModelRouter', () => {
         credential({ id: 'cred_a', provider: 'openai', models: ['gpt-5'], priority: 1 }),
         credential({ id: 'cred_b', provider: 'openai', models: ['gpt-5'], priority: 2 }),
       ],
+      selectionRepository: openAiSelectionRepository(),
       now: () => now,
     });
 
@@ -659,6 +732,7 @@ describe('ModelRouter', () => {
         }),
         credential({ id: 'cred_b', provider: 'openai', models: ['gpt-5'], priority: 2 }),
       ],
+      selectionRepository: openAiSelectionRepository(),
       now: () => now,
     });
     await modelRouter.recordCooldown({

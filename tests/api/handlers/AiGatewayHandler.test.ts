@@ -252,6 +252,13 @@ function createFixture(options: {
       registry,
       affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
       credentials: store.listCredentials,
+      selectionRepository: {
+        listActiveSelections: async({ webId }: { webId: string }) => webId === WEB_ID ? [{
+          provider: 'openai',
+          models: [{ id: 'openai.ttl#gpt-5', modelType: 'chat', status: 'active' }],
+          version: 'test:openai',
+        }] : [],
+      },
     }),
     credentials: store,
     runtimes,
