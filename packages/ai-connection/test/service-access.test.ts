@@ -38,6 +38,22 @@ describe('parseAiConnectionServiceAccess', () => {
       })
   })
 
+  it('accepts provider-specific documents advertised by the service descriptor', () => {
+    expect(parseAiConnectionServiceAccess(descriptor({
+      resources: [{
+        id: 'providerDocument:openai',
+        url: 'https://pod.example/alice/settings/providers/openai.ttl',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }), CURRENT_POD_URL).resources).toEqual([{
+      id: 'providerDocument:openai',
+      url: 'https://pod.example/alice/settings/providers/openai.ttl',
+      mediaType: 'text/turtle',
+      access: { read: true, append: true, write: true },
+    }])
+  })
+
   it.each([
     ['wrong applet', { appletId: 'evil.applet' }],
     ['non-http service WebID', { service: { webId: 'urn:xpod:service', label: 'Xpod AI Connection' } }],
@@ -133,6 +149,14 @@ describe('parseAiConnectionServiceAccess', () => {
       resources: [{
         id: 'unknownResource',
         url: 'https://pod.example/alice/settings/credentials.ttl',
+        mediaType: 'text/turtle',
+        access: { read: true, append: true, write: true },
+      }],
+    }],
+    ['unknown provider document id', {
+      resources: [{
+        id: 'providerDocument:unknown',
+        url: 'https://pod.example/alice/settings/providers/unknown.ttl',
         mediaType: 'text/turtle',
         access: { read: true, append: true, write: true },
       }],
