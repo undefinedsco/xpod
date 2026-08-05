@@ -38,6 +38,8 @@ export interface DiscoverProviderModelInput {
   deployment?: GatewayDeployment;
   auth?: AuthContext;
   signal?: AbortSignal;
+  /** Bypass a fresh catalog cache while preserving in-flight de-duplication. */
+  forceRefresh?: boolean;
 }
 
 export interface GetProviderModelCatalogInput extends DiscoverProviderModelInput {}
@@ -139,9 +141,11 @@ export class ProviderModelSelectionService {
   public async discover(input: DiscoverProviderModelInput): Promise<ProviderModelCatalog> {
     const normalizedProvider = normalizeProvider(input.provider);
     const key = cacheKey(input.webId, normalizedProvider, input.deployment);
-    const cached = this.freshCacheEntry(key);
-    if (cached) {
-      return cloneCatalog(cached.catalog);
+    if (!input.forceRefresh) {
+      const cached = this.freshCacheEntry(key);
+      if (cached) {
+        return cloneCatalog(cached.catalog);
+      }
     }
 
     const existing = this.inFlight.get(key);

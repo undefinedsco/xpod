@@ -267,6 +267,7 @@ export function registerAiGatewayManagementRoutes(
         provider: params.provider,
         deployment: options.deployment,
         auth: request.auth,
+        forceRefresh: true,
       });
       sendJson(response, 200, catalog);
     } catch (error) {

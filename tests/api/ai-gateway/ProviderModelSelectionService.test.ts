@@ -332,6 +332,69 @@ describe('ProviderModelSelectionService', () => {
     expect(harness.adapter.discover).toHaveBeenCalledTimes(2);
   });
 
+  it('force refresh bypasses a fresh ready catalog while the default path still uses the cache', async () => {
+    let calls = 0;
+    const harness = createHarness({
+      adapterDiscover: async () => [{ id: `gpt-${++calls}`, modelType: 'chat' }],
+    });
+    const input = { webId: ALICE, provider: 'openai', deployment: 'local' as const, auth: AUTH_ALICE };
+
+    await expect(harness.service.discover(input)).resolves.toMatchObject({
+      models: [expect.objectContaining({ id: 'gpt-1' })],
+    });
+    await expect(harness.service.discover(input)).resolves.toMatchObject({
+      models: [expect.objectContaining({ id: 'gpt-1' })],
+    });
+    await expect(harness.service.discover({ ...input, forceRefresh: true })).resolves.toMatchObject({
+      models: [expect.objectContaining({ id: 'gpt-2' })],
+    });
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(2);
+  });
+
+  it('deduplicates concurrent force refreshes for the same WebID/provider key', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const harness = createHarness({
+      adapterDiscover: async () => {
+        started();
+        await gate;
+        return [{ id: 'gpt-refresh', modelType: 'chat' }];
+      },
+    });
+    const input = { webId: ALICE, provider: 'openai', deployment: 'local' as const, auth: AUTH_ALICE, forceRefresh: true };
+
+    const first = harness.service.discover(input);
+    const second = harness.service.discover(input);
+    await startedPromise;
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(1);
+    release();
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+  });
+
+  it('keeps the last ready cache available after a force refresh fails', async () => {
+    let calls = 0;
+    const harness = createHarness({
+      adapterDiscover: async () => {
+        calls += 1;
+        if (calls === 2) throw new Error('fixture provider temporarily unavailable');
+        return [{ id: 'gpt-5', modelType: 'chat' }];
+      },
+    });
+    const input = { webId: ALICE, provider: 'openai', deployment: 'local' as const, auth: AUTH_ALICE };
+
+    const ready = await harness.service.discover(input);
+    const unknown = await harness.service.discover({ ...input, forceRefresh: true });
+    expect(ready.status).toBe('ready');
+    expect(unknown.status).toBe('statusUnknown');
+    await expect(harness.service.getCatalog(input)).resolves.toMatchObject({
+      status: 'ready',
+      models: [expect.objectContaining({ id: 'gpt-5', availability: 'available' })],
+    });
+    expect(harness.adapter.discover).toHaveBeenCalledTimes(2);
+  });
+
   it('deduplicates a refresh started exactly at the expiry boundary', async () => {
     let now = new Date('2026-08-05T00:00:00.000Z');
     const harness = createHarness({ now: () => now });

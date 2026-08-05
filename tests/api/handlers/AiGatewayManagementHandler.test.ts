@@ -191,6 +191,7 @@ describe('AiGatewayManagementHandler', () => {
       provider: 'openai',
       deployment: 'cloud',
       auth,
+      forceRefresh: true,
     });
   });
 
