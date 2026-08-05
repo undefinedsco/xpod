@@ -137,18 +137,26 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.completeApiKey({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      attemptId: stringBody(body.attemptId),
-      state: stringBody(body.state),
-      signature: stringBody(body.signature),
-      apiKey,
-      accountLabel: normalizeOptionalString(body.accountLabel),
-      auth: request.auth,
-    } satisfies CompleteApiKeyInput);
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.completeApiKey({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        attemptId: stringBody(body.attemptId),
+        state: stringBody(body.state),
+        signature: stringBody(body.signature),
+        apiKey,
+        accountLabel: normalizeOptionalString(body.accountLabel),
+        auth: request.auth,
+      } satisfies CompleteApiKeyInput);
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      const stage = credentialPersistenceFailureStage(error);
+      if (!stage) {
+        throw error;
+      }
+      sendJson(response, 500, { error: 'credential_persistence_failed', stage });
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/poll', async (request, response, params) => {
@@ -272,6 +280,14 @@ export function registerAiGatewayManagementRoutes(
       sendQuotaError(response, error);
     }
   });
+}
+
+function credentialPersistenceFailureStage(error: unknown): string | undefined {
+  if (!(error instanceof Error)) {
+    return undefined;
+  }
+  const match = /^credential_persistence_failed:([a-z][a-z0-9-]*)$/u.exec(error.message);
+  return match?.[1];
 }
 
 function authorizeManagementCaller(

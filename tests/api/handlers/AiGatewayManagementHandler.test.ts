@@ -127,4 +127,35 @@ describe('AiGatewayManagementHandler', () => {
       refresh: false,
     }));
   });
+
+  it('returns a secret-free persistence stage when an API-key save fails', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      deployment: 'cloud',
+      connectService: {
+        completeApiKey: vi.fn(async () => {
+          throw new Error('credential_persistence_failed:replace-delete', {
+            cause: new Error('upstream response contained sk-must-not-leak'),
+          });
+        }),
+      } as never,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/complete-api-key'](
+      request(
+        { type: 'solid', webId: WEB_ID },
+        { attemptId: 'attempt', state: 'state', signature: 'signature', apiKey: 'sk-must-not-leak' },
+      ),
+      res,
+      { provider: 'openai' },
+    );
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'credential_persistence_failed',
+      stage: 'replace-delete',
+    });
+    expect(res.body).not.toContain('sk-must-not-leak');
+  });
 });
