@@ -432,6 +432,8 @@ describe('Xpod settings product acceptance harness', () => {
     expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
     expect(spec).toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
     expect(spec).toContain('completeApiKeyThroughUi');
+    expect(spec).toContain("waitForEvent('page')");
+    expect(spec).toContain('externalConsole.close()');
     expect(spec).toContain("'/settings/models'");
     expect(spec).not.toContain("'/dashboard/models'");
     expect(spec).toContain("'/settings/network'");

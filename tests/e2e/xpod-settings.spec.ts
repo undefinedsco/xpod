@@ -24,28 +24,40 @@ test.describe('Xpod settings product acceptance', () => {
     const bob = await authenticatedPage(browser, bobState!);
     let cleanupNeeded = false;
     try {
-      const aliceBefore = await readPodAiConnectionStatus(alice);
-      const bobBefore = await readPodAiConnectionStatus(bob);
+      const { aliceBefore, bobBefore } = await test.step('read Alice and Bob baselines', async () => ({
+        aliceBefore: await readPodAiConnectionStatus(alice),
+        bobBefore: await readPodAiConnectionStatus(bob),
+      }));
       expect(aliceBefore.webId).not.toBe(bobBefore.webId);
 
-      await openModule(alice, '/settings/models', 'Models');
-      await completeApiKeyThroughUi(alice, testApiKey!);
+      await test.step('connect Alice OpenAI API key', async () => {
+        await openModule(alice, '/settings/models', 'Models');
+        await completeApiKeyThroughUi(alice, testApiKey!);
+      });
       cleanupNeeded = true;
-      await alice.reload({ waitUntil: 'domcontentloaded' });
-      await expect(alice.locator('body')).not.toContainText(testApiKey!);
-      await expect(alice.locator('body')).toContainText(/openai|configured|connected|api key/i);
+      await test.step('verify Alice Pod persistence after reload', async () => {
+        await alice.reload({ waitUntil: 'domcontentloaded' });
+        await expect(alice.locator('body')).not.toContainText(testApiKey!);
+        await expect(alice.locator('body')).toContainText(/openai|configured|connected|api key/i);
 
-      const aliceAfter = await readPodAiConnectionStatus(alice);
-      expect(aliceAfter.webId).toBe(aliceBefore.webId);
-      expect(aliceAfter.configuredProviders).toBe(aliceBefore.configuredProviders + 1);
+        const aliceAfter = await readPodAiConnectionStatus(alice);
+        expect(aliceAfter.webId).toBe(aliceBefore.webId);
+        expect(aliceAfter.configuredProviders).toBe(aliceBefore.configuredProviders + 1);
+      });
 
-      await openModule(bob, '/settings/models', 'Models');
-      await expect(bob.locator('body')).not.toContainText(testApiKey!);
-      const bobAfter = await readPodAiConnectionStatus(bob);
-      expect(bobAfter.webId).toBe(bobBefore.webId);
-      expect(bobAfter.configuredProviders).toBe(bobBefore.configuredProviders);
+      await test.step('verify Bob remains isolated', async () => {
+        await openModule(bob, '/settings/models', 'Models');
+        await expect(bob.locator('body')).not.toContainText(testApiKey!);
+        const bobAfter = await readPodAiConnectionStatus(bob);
+        expect(bobAfter.webId).toBe(bobBefore.webId);
+        expect(bobAfter.configuredProviders).toBe(bobBefore.configuredProviders);
+      });
     } finally {
-      if (cleanupNeeded) await cleanupApiKeyThroughUi(alice).catch(() => undefined);
+      if (cleanupNeeded) {
+        await test.step('revoke acceptance credential', async () => {
+          await cleanupApiKeyThroughUi(alice).catch(() => undefined);
+        });
+      }
       await alice.context().close();
       await bob.context().close();
     }
@@ -155,7 +167,10 @@ async function waitForStableAuthenticatedRoute(page: Page, route: string): Promi
 
 async function completeApiKeyThroughUi(page: Page, apiKey: string): Promise<void> {
   await page.getByRole('button', { name: 'OpenAI', exact: true }).click();
+  const externalConsolePromise = page.context().waitForEvent('page');
   await page.getByRole('button', { name: 'OpenAI API Key', exact: true }).click();
+  const externalConsole = await externalConsolePromise;
+  await externalConsole.close();
   await page.getByLabel('OpenAI API Key 输入', { exact: true }).fill(apiKey);
   const saveResponsePromise = page.waitForResponse((response) => (
     new URL(response.url()).pathname === '/api/ai/gateway/providers/openai/connect/complete-api-key'
