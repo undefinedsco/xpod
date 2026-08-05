@@ -11,7 +11,7 @@ import {
   stripGatewayAdminProxyHeaders,
 } from './GatewayAdminProxyAuth';
 
-type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean };
+type InterceptedRequest = http.IncomingMessage & { __xpodInspectRootMutation?: boolean; __xpodCssRouted?: boolean };
 
 interface RootMutationForbiddenBody {
   name: 'ForbiddenHttpError';
@@ -81,6 +81,7 @@ export class GatewayProxy {
     this.proxy.on('proxyRes', (proxyRes, req, res) => {
       this.normalizeProxiedCorsHeaders(req, proxyRes);
       this.sanitizeProxyResponseHeaders(req, proxyRes);
+      this.injectNotificationDescriptorLink(req as InterceptedRequest, proxyRes);
       const interceptedRequest = req as InterceptedRequest;
       const outgoing = res as http.ServerResponse;
       if (!interceptedRequest.__xpodInspectRootMutation || !outgoing || outgoing.headersSent) {
@@ -104,8 +105,8 @@ export class GatewayProxy {
     this.server.on('upgrade', (req, socket, head) => {
       const url = req.url ?? '/';
 
-      // Route /ws/* WebSocket connections to API server
-      if (url.startsWith('/ws/') && this.targets.api) {
+      // Route /ws/* and device notification WebSocket connections to API server
+      if ((url.startsWith('/ws/') || url.startsWith('/v1/notifications/ws')) && this.targets.api) {
         this.proxy.ws(req, socket, head, { target: this.toProxyTarget(this.targets.api) as any });
       } else if (this.targets.css) {
         this.proxy.ws(req, socket, head, { target: this.toProxyTarget(this.targets.css) as any });
@@ -221,6 +222,7 @@ export class GatewayProxy {
 
       const interceptedRequest = req as InterceptedRequest;
       interceptedRequest.__xpodInspectRootMutation = this.shouldInspectRootMutation(req);
+      interceptedRequest.__xpodCssRouted = true;
       this.proxy.web(req, res, {
         target: this.toProxyTarget(this.targets.css) as any,
         ...(interceptedRequest.__xpodInspectRootMutation ? { selfHandleResponse: true } : {}),
@@ -406,6 +408,29 @@ export class GatewayProxy {
         delete headers['content-length'];
       }
     }
+  }
+
+  private static readonly NOTIFICATION_DESCRIPTOR_LINK =
+    '</v1/notifications/ws>; rel="urn:xpod:notifications:v1"';
+
+  private injectNotificationDescriptorLink(req: InterceptedRequest, proxyRes: http.IncomingMessage): void {
+    if (!req.__xpodCssRouted) {
+      return;
+    }
+    const method = (req.method ?? 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD') {
+      return;
+    }
+    const headers = proxyRes.headers as Record<string, string | string[] | undefined>;
+    const existing = headers.link;
+    const values = (Array.isArray(existing) ? existing : [existing])
+      .flatMap((value) => value?.split(', ') ?? [])
+      .filter(Boolean);
+    if (values.some((value) => value.includes('urn:xpod:notifications:v1'))) {
+      return;
+    }
+    values.push(GatewayProxy.NOTIFICATION_DESCRIPTOR_LINK);
+    headers.link = values.join(', ');
   }
 
   private normalizeProxiedCorsHeaders(
