@@ -69,6 +69,16 @@
           }
         },
         {
+          "comment": "=== Hidden: CSS seeding (resolved by the upstream CSS variable resolver) ===",
+          "@type": "YargsParameter",
+          "name": "seedConfig",
+          "options": {
+            "type": "string",
+            "requiresArg": true,
+            "hidden": true
+          }
+        },
+        {
           "@type": "YargsParameter",
           "name": "minioAccessKey",
           "options": {

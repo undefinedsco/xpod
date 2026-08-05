@@ -19,6 +19,49 @@ const ACL_AUTH_IMPORTS = [
 ];
 
 describe('CSS child process env and args', () => {
+  it('passes an explicit seed config to the legacy CSS child', () => {
+    const seedConfig = path.join(os.tmpdir(), 'xpod-seed.dev.json');
+    fs.writeFileSync(seedConfig, '[]', 'utf-8');
+
+    const args = buildCssArgs({
+      cssBinary: 'community-solid-server',
+      configPath: 'config/local.json',
+      cssModuleRoot: '/xpod',
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+      seedConfig,
+    });
+
+    expect(args).toContain('--seedConfig');
+    expect(args).toContain(seedConfig);
+  });
+
+  it('fails before spawning CSS when the seed config does not exist', () => {
+    const seedConfig = path.join(os.tmpdir(), `xpod-missing-seed-${Date.now()}.json`);
+
+    expect(() => buildCssArgs({
+      cssBinary: 'community-solid-server',
+      configPath: 'config/local.json',
+      cssModuleRoot: '/xpod',
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+      seedConfig,
+    })).toThrow(`Seed config file not found: ${seedConfig}`);
+  });
+
+  it('fails before spawning CSS when the seed config path is a directory', () => {
+    const seedConfig = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-seed-directory-'));
+
+    expect(() => buildCssArgs({
+      cssBinary: 'community-solid-server',
+      configPath: 'config/local.json',
+      cssModuleRoot: '/xpod',
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+      seedConfig,
+    })).toThrow(`Seed config path is not a file: ${seedConfig}`);
+  });
+
   it('keeps external IdP out of CSS CLI args', () => {
     const args = buildCssArgs({
       cssBinary: 'community-solid-server',

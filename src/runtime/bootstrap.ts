@@ -339,6 +339,7 @@ export function buildRuntimeShorthand(
     identityDbUrl: state.identityDbUrl,
     usageDbUrl: state.usageDbUrl,
     logLevel: state.logLevel,
+    ...(options.seedConfig ? { seedConfig: options.seedConfig } : {}),
     authMode: state.cssAuthMode,
     edition: state.mode === 'cloud' ? 'server' : 'local',
     edgeNodesEnabled: options.edgeNodesEnabled ?? false,

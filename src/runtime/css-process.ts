@@ -241,13 +241,33 @@ export function buildCssArgs(options: {
   cssPort: number
   baseUrl: string
   externalOidcIssuer?: string
+  seedConfig?: string
 }): string[] {
+  if (options.seedConfig) {
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(options.seedConfig);
+    } catch (error: unknown) {
+      const code = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: string }).code
+        : undefined;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        throw new Error(`Seed config file not found: ${options.seedConfig}`);
+      }
+      throw new Error(`Unable to read seed config file: ${options.seedConfig}`);
+    }
+    if (!stats.isFile()) {
+      throw new Error(`Seed config path is not a file: ${options.seedConfig}`);
+    }
+  }
+
   return [
     options.cssBinary,
     '-c', options.configPath,
     '-m', options.cssModuleRoot,
     '-p', options.cssPort.toString(),
     '-b', options.baseUrl,
+    ...(options.seedConfig ? ['--seedConfig', options.seedConfig] : []),
   ];
 }
 

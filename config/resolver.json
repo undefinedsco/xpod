@@ -75,6 +75,14 @@
           }
         },
         {
+          "comment": "Use the upstream CSS asset-path resolver for seeded accounts and pods.",
+          "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:seedConfig",
+          "CombinedShorthandResolver:_resolvers_value": {
+            "@type": "AssetPathExtractor",
+            "key": "seedConfig"
+          }
+        },
+        {
           "CombinedShorthandResolver:_resolvers_key": "urn:solid-server:default:variable:rdfIndexPath",
           "CombinedShorthandResolver:_resolvers_value": {
             "@type": "KeyExtractor",

@@ -128,6 +128,27 @@ describe('runtime bootstrap helpers', () => {
     expect(shorthand.emailConfigAuthPass).toBe('');
   });
 
+  it('passes seedConfig through runtime shorthand for seeded local acceptance', async() => {
+    const state = await resolveRuntimeBootstrap('test-seed-config', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/seed-config',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5790,
+      cssPort: 5791,
+      apiPort: 5792,
+      seedConfig: 'config/seed.dev.json',
+    }, nodeRuntimeHost);
+
+    const runtimeEnv = buildRuntimeEnv(state, { mode: 'local', seedConfig: 'config/seed.dev.json' });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, {
+      mode: 'local',
+      seedConfig: 'config/seed.dev.json',
+    }, state, {});
+
+    expect(shorthand.seedConfig).toBe('config/seed.dev.json');
+  });
+
   it('should generate isolated gateway admin proxy secrets and inject them into runtime env', async() => {
     const firstState = await resolveRuntimeBootstrap('test-admin-proxy-secret-a', {
       mode: 'local',
