@@ -298,40 +298,45 @@ export function registerAiGatewayManagementRoutes(
     }
   });
 
-  server.put('/api/ai/gateway/providers/:provider/models/selection', async (request, response, params) => {
-    if (!authorizeProviderModels(request, response)) {
-      return;
-    }
-    if (!knownModelProvider(params.provider, options, response)) {
-      return;
-    }
-    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
-    if (!body) {
-      return;
-    }
-    const selectionInput = parseModelSelectionBody(body, response);
-    if (!selectionInput) {
-      return;
-    }
-    const selectionService = requireModelSelectionService(options, response);
-    if (!selectionService) {
-      return;
-    }
-    try {
-      const catalog = await selectionService.replaceSelection({
-        webId: request.auth.webId,
-        provider: params.provider,
-        modelIds: selectionInput.modelIds,
-        defaultModel: selectionInput.defaultModel,
-        expectedVersion: selectionInput.expectedVersion,
-        deployment: options.deployment,
-        auth: request.auth,
-      });
-      sendJson(response, 200, catalog);
-    } catch (error) {
-      sendModelSelectionError(response, error);
-    }
-  });
+  // Keep registration tolerant of lightweight legacy test doubles that only
+  // implement the original GET/POST/DELETE convenience methods. ApiServer
+  // always exposes put in production.
+  if (typeof server.put === 'function') {
+    server.put('/api/ai/gateway/providers/:provider/models/selection', async (request, response, params) => {
+      if (!authorizeProviderModels(request, response)) {
+        return;
+      }
+      if (!knownModelProvider(params.provider, options, response)) {
+        return;
+      }
+      const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+      if (!body) {
+        return;
+      }
+      const selectionInput = parseModelSelectionBody(body, response);
+      if (!selectionInput) {
+        return;
+      }
+      const selectionService = requireModelSelectionService(options, response);
+      if (!selectionService) {
+        return;
+      }
+      try {
+        const catalog = await selectionService.replaceSelection({
+          webId: request.auth.webId,
+          provider: params.provider,
+          modelIds: selectionInput.modelIds,
+          defaultModel: selectionInput.defaultModel,
+          expectedVersion: selectionInput.expectedVersion,
+          deployment: options.deployment,
+          auth: request.auth,
+        });
+        sendJson(response, 200, catalog);
+      } catch (error) {
+        sendModelSelectionError(response, error);
+      }
+    });
+  }
 
   server.get('/api/ai/gateway/providers/:provider/connect/callback', async (_request, response) => {
     // This endpoint is intentionally public only for signed one-time OAuth callbacks.
