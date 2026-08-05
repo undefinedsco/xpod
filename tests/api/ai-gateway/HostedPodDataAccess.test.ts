@@ -336,8 +336,10 @@ describe('HostedPodDataAccess', () => {
 
   it('preserves request and response bodies through the loopback channel', async () => {
     let forwardedBody = '';
+    let forwardedInit: RequestInit | undefined;
     const access = createAccess({
       fetch: vi.fn(async (input, init) => {
+        forwardedInit = init;
         const request = new Request(input, init);
         forwardedBody = await request.text();
         return new Response(new ReadableStream({
@@ -358,7 +360,66 @@ describe('HostedPodDataAccess', () => {
     });
 
     expect(forwardedBody).toBe('payload');
+    expect(forwardedInit?.body).toBeInstanceOf(Uint8Array);
+    expect((forwardedInit as RequestInit & { duplex?: unknown } | undefined)?.duplex).toBeUndefined();
     expect(await response.text()).toBe('streamed');
+  });
+
+  it('buffers PATCH bodies before forwarding them through Node fetch', async () => {
+    let forwardedBody = '';
+    let forwardedInit: RequestInit | undefined;
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        forwardedInit = init;
+        forwardedBody = await new Request(input, init).text();
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+
+    await trustedFetch!(CREDENTIAL_RESOURCE, {
+      method: 'PATCH',
+      body: 'INSERT DATA { <urn:subject> <urn:predicate> "chunk-safe" . }',
+      headers: { 'content-type': 'application/sparql-update' },
+    });
+
+    expect(forwardedBody).toContain('chunk-safe');
+    expect(forwardedInit?.body).toBeInstanceOf(Uint8Array);
+    expect((forwardedInit as RequestInit & { duplex?: unknown } | undefined)?.duplex).toBeUndefined();
+  });
+
+  it('preserves PATCH stream chunks exactly once when buffering', async () => {
+    let forwardedBody = '';
+    const access = createAccess({
+      fetch: vi.fn(async (input, init) => {
+        forwardedBody = await new Request(input, init).text();
+        return new Response(null, { status: 204 });
+      }) as typeof fetch,
+    });
+    const trustedFetch = await access.getTrustedFetch(OWNER, { type: 'solid', webId: OWNER });
+    const encoder = new TextEncoder();
+    const chunks = [
+      'INSERT DATA { <urn:subject> ',
+      '<urn:predicate> "stream-',
+      'chunk" . }',
+    ];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+
+    await trustedFetch!(CREDENTIAL_RESOURCE, {
+      method: 'PATCH',
+      body,
+      duplex: 'half',
+      headers: { 'content-type': 'application/sparql-update' },
+    } as RequestInit & { duplex: 'half' });
+
+    expect(forwardedBody).toBe(chunks.join(''));
   });
 
   it('signs quota snapshot refresh writes as the verified Solid user principal', async () => {

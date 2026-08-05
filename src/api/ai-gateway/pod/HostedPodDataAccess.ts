@@ -58,6 +58,9 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
       const method = normalizeMethod(request.method);
       const resourceUrl = normalizeResourceUrl(request.url);
       const body = method === 'POST' ? await readRequestBody(request) : undefined;
+      const forwardedBytes = method === 'PATCH' || method === 'PUT'
+        ? await readRequestBytes(request)
+        : undefined;
       const authorization = this.authorize({ owner, auth, method, resourceUrl, body });
       const loopbackUrl = new URL(INTERNAL_POD_DATA_PATH, this.cssBaseUrl);
       const headers = this.headersForLoopback(request.headers, {
@@ -68,14 +71,16 @@ export class HostedPodDataAccess implements InternalPodAccessTokenProvider {
         scopes: [isReadOnlyMethod(method, resourceUrl, owner) ? 'ai:credentials:read' : 'ai:credentials:write'],
         ...(body ? { bodyDigest: body.digest } : {}),
       });
-      const forwardedBody = method === 'POST' ? body?.bytes : request.body;
+      const forwardedBody = method === 'POST'
+        ? body?.bytes
+        : forwardedBytes ?? request.body;
 
       return this.fetch(loopbackUrl, {
         method,
         headers,
         body: forwardedBody,
         signal: init?.signal ?? request.signal,
-        ...(forwardedBody ? { duplex: 'half' } : {}),
+        ...(forwardedBody instanceof ReadableStream ? { duplex: 'half' } : {}),
       } as RequestInit);
     };
   }
@@ -186,11 +191,18 @@ interface RequestBody {
   bytes: Uint8Array;
 }
 
-async function readRequestBody(request: Request): Promise<RequestBody | undefined> {
+async function readRequestBytes(request: Request): Promise<Uint8Array | undefined> {
   if (!request.body) {
     return undefined;
   }
-  const bytes = new Uint8Array(await request.clone().arrayBuffer());
+  return new Uint8Array(await request.clone().arrayBuffer());
+}
+
+async function readRequestBody(request: Request): Promise<RequestBody | undefined> {
+  const bytes = await readRequestBytes(request);
+  if (!bytes) {
+    return undefined;
+  }
   if (bytes.byteLength === 0 || bytes.byteLength > MODEL_QUERY_MAX_BODY_BYTES) {
     return undefined;
   }
