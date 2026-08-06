@@ -7,6 +7,7 @@ import { oidcTokenEndpoint } from './oidc-issuer';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
 import { cssAuthModeConfigImports } from './bootstrap';
+import { normalizeDatabaseUrl } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -46,6 +47,8 @@ export function buildCssChildEnv(
     }
   }
 
+  normalizeDatabaseEnv(env);
+
   return env;
 }
 
@@ -56,6 +59,29 @@ function isExternalOidcPollutionKey(key: string): boolean {
     normalized.includes('IDPJWKSURL') ||
     normalized.includes('IDENTITYPROVIDERURL') ||
     normalized.includes('IDENTITYPROVIDERJWKSURL');
+}
+
+function normalizeDatabaseEnv(env: Record<string, string | undefined>): void {
+  const identityInput = nonEmptyEnvValue(env.CSS_IDENTITY_DB_URL) ?? nonEmptyEnvValue(env.DATABASE_URL);
+  if (identityInput === undefined) {
+    delete env.CSS_IDENTITY_DB_URL;
+    delete env.DATABASE_URL;
+  } else {
+    const identityUrl = normalizeDatabaseUrl(identityInput);
+    env.CSS_IDENTITY_DB_URL = identityUrl;
+    env.DATABASE_URL = identityUrl;
+  }
+
+  const usageInput = nonEmptyEnvValue(env.CSS_USAGE_DB_URL);
+  if (usageInput === undefined) {
+    delete env.CSS_USAGE_DB_URL;
+  } else {
+    env.CSS_USAGE_DB_URL = normalizeDatabaseUrl(usageInput);
+  }
+}
+
+function nonEmptyEnvValue(value: string | undefined): string | undefined {
+  return value === undefined || value.trim() === '' ? undefined : value;
 }
 
 function toImportSpecifier(fromFilePath: string, toFilePath: string): string {
@@ -297,5 +323,7 @@ export function buildApiChildEnv(options: {
       : `${options.baseUrl}.oidc/token`,
   } as Record<string, string>;
 
-  return applyAuthModeEnv(env, authMode);
+  applyAuthModeEnv(env, authMode);
+  normalizeDatabaseEnv(env);
+  return env;
 }

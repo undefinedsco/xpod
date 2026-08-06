@@ -450,4 +450,71 @@ describe('CSS child process env and args', () => {
 
     expect(env.XPOD_RDF_NATIVE_SPARQL_ENABLED).toBe('true');
   });
+
+  it('normalizes CSS child database variables with CSS identity taking precedence', () => {
+    const env = buildCssChildEnv('http://localhost:3000/', 3001, undefined, undefined, {
+      CSS_IDENTITY_DB_URL: '  identity.sqlite  ',
+      DATABASE_URL: 'postgresql://ignored.example/identity',
+      CSS_USAGE_DB_URL: 'POSTGRES://db.example/usage',
+      KEEP_ME: 'yes',
+    });
+
+    expect(env.CSS_IDENTITY_DB_URL).toBe(`sqlite:${path.resolve('identity.sqlite')}`);
+    expect(env.DATABASE_URL).toBe(env.CSS_IDENTITY_DB_URL);
+    expect(env.CSS_USAGE_DB_URL).toBe('postgres://db.example/usage');
+    expect(env.KEEP_ME).toBe('yes');
+  });
+
+  it('normalizes API child database variables and backfills CSS identity from DATABASE_URL', () => {
+    const env = buildApiChildEnv({
+      apiPort: 3002,
+      mainPort: 3000,
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+      baseEnv: {
+        DATABASE_URL: 'POSTGRESQL://db.example/identity',
+        CSS_USAGE_DB_URL: '  usage.sqlite  ',
+        KEEP_ME: 'yes',
+      },
+    });
+
+    expect(env.DATABASE_URL).toBe('postgresql://db.example/identity');
+    expect(env.CSS_IDENTITY_DB_URL).toBe(env.DATABASE_URL);
+    expect(env.CSS_USAGE_DB_URL).toBe(`sqlite:${path.resolve('usage.sqlite')}`);
+    expect(env.KEEP_ME).toBe('yes');
+  });
+
+  it('does not create database configuration from empty CSS child values', () => {
+    const env = buildCssChildEnv('http://localhost:3000/', 3001, undefined, undefined, {
+      CSS_IDENTITY_DB_URL: '  ',
+      DATABASE_URL: '',
+      CSS_USAGE_DB_URL: '',
+      KEEP_ME: 'yes',
+    });
+
+    expect(env.CSS_IDENTITY_DB_URL).toBeUndefined();
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.CSS_USAGE_DB_URL).toBeUndefined();
+    expect(env.KEEP_ME).toBe('yes');
+  });
+
+  it('does not create database configuration from empty API child values', () => {
+    const env = buildApiChildEnv({
+      apiPort: 3002,
+      mainPort: 3000,
+      cssPort: 3001,
+      baseUrl: 'http://localhost:3000/',
+      baseEnv: {
+        CSS_IDENTITY_DB_URL: '',
+        DATABASE_URL: '  ',
+        CSS_USAGE_DB_URL: '  ',
+        KEEP_ME: 'yes',
+      },
+    });
+
+    expect(env.CSS_IDENTITY_DB_URL).toBeUndefined();
+    expect(env.DATABASE_URL).toBeUndefined();
+    expect(env.CSS_USAGE_DB_URL).toBeUndefined();
+    expect(env.KEEP_ME).toBe('yes');
+  });
 });
