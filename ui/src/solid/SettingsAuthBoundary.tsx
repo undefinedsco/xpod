@@ -24,10 +24,10 @@ export function SettingsAuthBoundary({
       state={boundaryState}
       login={runtime.login}
       loginView={{
-        title: `Connect Xpod ${product}`,
+        title: `登录 Xpod ${product === 'Dashboard' ? 'Dashboard' : '设置'}`,
         description: product === 'Dashboard'
-          ? 'Use your Solid identity to inspect Xpod status, runtime, logs, RDF, network, and usage.'
-          : 'Use your Solid identity to manage model, Pod, network, and service settings.',
+          ? '使用 Solid 身份查看 Xpod 状态、运行时、日志、RDF、网络与用量。'
+          : '使用 Solid 身份管理模型、Pod、网络与服务设置。',
         defaultIssuer: window.location.origin,
       }}
     >

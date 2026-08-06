@@ -23,7 +23,7 @@ export interface AuthBoundaryProps {
   loginView?: Omit<LoginViewProps, 'error' | 'onLogin'>
 }
 
-const defaultLoginTitle = 'Connect Solid Pod'
+const defaultLoginTitle = '连接 Solid Pod'
 const safeLoginErrorMessage = '登录失败，请重试。'
 
 function normalizeLoginError(): string {
@@ -114,14 +114,17 @@ export function LoginView({
         <form className="flex flex-col gap-4" onSubmit={(event) => void handleSubmit(event)}>
           <div className="flex flex-col gap-2 text-left">
             <label className="text-sm font-medium leading-5 text-foreground" htmlFor={issuerId}>
-              Solid issuer
+              Solid Pod 地址
             </label>
             <Input
               id={issuerId}
+              type="url"
               value={issuer}
               disabled={pending}
+              aria-invalid={visibleError ? true : undefined}
               aria-describedby={describedBy}
-              placeholder="https://solidcommunity.net"
+              placeholder="https://pod.example.com"
+              className="border-border/60 bg-background focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
               onChange={(event) => setIssuer(event.currentTarget.value)}
             />
           </div>
@@ -129,7 +132,7 @@ export function LoginView({
           {visibleError ? (
             <p
               id={errorId}
-              className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm leading-5 text-destructive"
+              className="flex items-center gap-1.5 text-left text-xs text-destructive"
               role="alert"
             >
               {visibleError}
@@ -141,7 +144,7 @@ export function LoginView({
             className="w-full"
             disabled={!normalizedIssuer || pending}
           >
-            {pending ? '登录中...' : '登录'}
+            {pending ? '连接中...' : '连接'}
           </Button>
         </form>
       </div>

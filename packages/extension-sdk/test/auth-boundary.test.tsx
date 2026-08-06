@@ -41,10 +41,10 @@ describe('AuthBoundary', () => {
     expect(screen.getByRole('heading', { name: 'Connect Solid Pod' })).toBeTruthy()
     expect(screen.getByText('Use the issuer selected by the host.')).toBeTruthy()
 
-    fireEvent.change(screen.getByLabelText('Solid issuer'), {
+    fireEvent.change(screen.getByLabelText('Solid Pod 地址'), {
       target: { value: ' https://issuer.example.org ' },
     })
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '连接' }))
 
     expect(login).toHaveBeenCalledWith('https://issuer.example.org')
     expect(screen.queryByText('Private workspace')).toBeNull()
@@ -55,13 +55,13 @@ describe('AuthBoundary', () => {
 
     render(<LoginView title="Connect Solid Pod" onLogin={login} />)
 
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '登录' }).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接' }).disabled).toBe(true)
 
-    fireEvent.change(screen.getByLabelText('Solid issuer'), {
+    fireEvent.change(screen.getByLabelText('Solid Pod 地址'), {
       target: { value: '   ' },
     })
 
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '登录' }).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接' }).disabled).toBe(true)
     expect(login).not.toHaveBeenCalled()
   })
 
@@ -95,7 +95,7 @@ describe('AuthBoundary', () => {
     expect(alert.textContent).toBe('Pod host rejected the issuer.')
     expect(alert.textContent).not.toContain('Internal Server Error')
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '连接' }))
 
     expect(login).toHaveBeenCalledWith('https://solid.example.com')
   })
@@ -120,17 +120,17 @@ describe('LoginView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
-    fireEvent.click(screen.getByRole('button', { name: '登录中...' }))
+    fireEvent.click(screen.getByRole('button', { name: '连接' }))
+    fireEvent.click(screen.getByRole('button', { name: '连接中...' }))
 
     expect(login).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '登录中...' }).disabled).toBe(true)
-    expect(screen.getByLabelText<HTMLInputElement>('Solid issuer').disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接中...' }).disabled).toBe(true)
+    expect(screen.getByLabelText<HTMLInputElement>('Solid Pod 地址').disabled).toBe(true)
 
     finishLogin?.()
 
     await waitFor(() => {
-      expect(screen.getByRole<HTMLButtonElement>('button', { name: '登录' }).disabled).toBe(false)
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: '连接' }).disabled).toBe(false)
     })
   })
 
@@ -166,7 +166,7 @@ describe('LoginView', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '连接' }))
 
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toBe('登录失败，请重试。')
