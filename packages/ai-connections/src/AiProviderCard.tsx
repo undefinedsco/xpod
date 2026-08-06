@@ -18,6 +18,7 @@ import type {
 } from './ai-connections-client'
 import {
   Box,
+  Brain,
   Check,
   Copy,
   ExternalLink,
@@ -29,8 +30,11 @@ import {
   KeyRound,
   Loader2,
   LogOut,
+  Pencil,
+  Plus,
   RotateCw,
   Search,
+  Trash2,
 } from 'lucide-react'
 import { AiQuotaCard } from './AiQuotaCard'
 
@@ -66,6 +70,9 @@ export function AiProviderCard({
   onDisconnect,
   onRefreshQuota,
   onVerify,
+  onAddModel,
+  onEditModel,
+  onDeleteModel,
 }: {
   definition: AiProviderDefinition
   status: ProviderConnectionState
@@ -86,6 +93,9 @@ export function AiProviderCard({
   onDisconnect: () => void
   onRefreshQuota: () => void
   onVerify?: () => void
+  onAddModel?: () => void
+  onEditModel?: (model: AiGatewayModel) => void
+  onDeleteModel?: (model: AiGatewayModel) => void
 }) {
   const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
@@ -284,19 +294,35 @@ export function AiProviderCard({
               ) : null}
             </div>
             <div className="flex items-center gap-2">
-              {onVerify && (isConfigured || isConnected) ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 gap-1.5 text-xs"
-                  disabled={disabled || busy || verifyPending}
-                  onClick={onVerify}
-                >
-                  {verifyPending
-                    ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
-                    : <RotateCw aria-hidden="true" className="h-3.5 w-3.5" />}
-                  {verifyPending ? '验证中...' : '验证'}
-                </Button>
+              {(isConfigured || isConnected) && (onVerify || onAddModel) ? (
+                <>
+                  {onAddModel ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs"
+                      disabled={disabled || busy}
+                      onClick={onAddModel}
+                    >
+                      <Plus aria-hidden="true" className="h-3.5 w-3.5" />
+                      添加模型
+                    </Button>
+                  ) : null}
+                  {onVerify ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs"
+                      disabled={disabled || busy || verifyPending}
+                      onClick={onVerify}
+                    >
+                      {verifyPending
+                        ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                        : <RotateCw aria-hidden="true" className="h-3.5 w-3.5" />}
+                      {verifyPending ? '验证中...' : '验证'}
+                    </Button>
+                  ) : null}
+                </>
               ) : null}
               {models.length > 0 ? (
                 <div className="relative">
@@ -324,7 +350,7 @@ export function AiProviderCard({
           ) : (
             <div className="mt-3 grid gap-2">
               {visibleModels.map((model) => {
-                const capabilities = inferModelCapabilities(model.id)
+                const capabilities = model.capabilities ?? []
                 return (
                   <div
                     key={model.id}
@@ -357,6 +383,32 @@ export function AiProviderCard({
                         </div>
                       ) : null}
                     </div>
+                    {model.custom && (onEditModel || onDeleteModel) ? (
+                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100">
+                        {onEditModel ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            aria-label={`编辑 ${model.displayName ?? model.id}`}
+                            onClick={() => onEditModel(model)}
+                          >
+                            <Pencil aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        ) : null}
+                        {onDeleteModel ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            aria-label={`删除 ${model.displayName ?? model.id}`}
+                            onClick={() => onDeleteModel(model)}
+                          >
+                            <Trash2 aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 )
               })}
@@ -370,9 +422,10 @@ export function AiProviderCard({
 
 function CapabilityIcon({ type }: { type: string }) {
   const capability = {
-    vision: { icon: ImageIcon, label: '视觉识别', className: 'text-green-500' },
+    image: { icon: ImageIcon, label: '视觉识别', className: 'text-green-500' },
     web: { icon: Globe, label: '联网搜索', className: 'text-blue-500' },
-    function_calling: { icon: Box, label: '函数调用', className: 'text-orange-500' },
+    tool_call: { icon: Box, label: '函数调用', className: 'text-orange-500' },
+    reasoning: { icon: Brain, label: '推理', className: 'text-purple-500' },
   }[type]
   if (!capability) return null
 
@@ -391,17 +444,6 @@ function CapabilityIcon({ type }: { type: string }) {
       <TooltipContent>{capability.label}</TooltipContent>
     </Tooltip>
   )
-}
-
-export function inferModelCapabilities(modelId: string, explicitCapabilities: string[] = []): string[] {
-  if (explicitCapabilities.length > 0) return explicitCapabilities
-
-  const capabilities = new Set<string>()
-  const normalizedId = modelId.toLowerCase()
-  if (/vision|4o|claude-3|gemini-1\.5|llava/.test(normalizedId)) capabilities.add('vision')
-  if (/gpt-4|turbo|claude|tool|deepseek|mistral/.test(normalizedId)) capabilities.add('function_calling')
-  if (/online|search|sonar|net/.test(normalizedId)) capabilities.add('web')
-  return [...capabilities]
 }
 
 function providerMark(provider: AiProviderDefinition['id']): string {

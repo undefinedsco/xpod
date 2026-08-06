@@ -88,9 +88,17 @@ export interface AiGatewayModel {
   displayName?: string
   contextWindow?: number
   protocols?: string[]
+  custom?: boolean
+  capabilities?: string[]
 }
 
 export interface DiscoveredProviderModel {
+  id: string
+  displayName?: string
+  capabilities?: string[]
+}
+
+export interface CustomProviderModel {
   id: string
   displayName?: string
   capabilities?: string[]
@@ -146,6 +154,8 @@ export interface AiConnectionsClient {
   disconnect(provider: AiConnectionsProvider): Promise<AiConnectionsCredential | undefined>
   quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
   discoverModels(provider: AiConnectionsProvider): Promise<ProviderModelDiscovery>
+  saveProviderModel(provider: AiConnectionsProvider, model: CustomProviderModel): Promise<CustomProviderModel[]>
+  deleteProviderModel(provider: AiConnectionsProvider, modelId: string): Promise<CustomProviderModel[]>
 }
 
 export const AI_CONNECTIONS_GENERIC_ERROR_MESSAGE = 'AI Connection request failed. Please try again.'
@@ -339,6 +349,30 @@ export function createAiConnectionsClient({
       )
       return parseModelDiscovery(payload, provider)
     },
+
+    async saveProviderModel(provider, model) {
+      const payload = await request<{ data?: unknown }>(
+        providerPath(provider) + '/models',
+        'POST',
+        compactObject({
+          id: model.id,
+          displayName: model.displayName,
+          capabilities: model.capabilities,
+        }),
+        { provider },
+      )
+      return parseCustomModelList(payload.data)
+    },
+
+    async deleteProviderModel(provider, modelId) {
+      const payload = await request<{ data?: unknown }>(
+        `${providerPath(provider)}/models/${encodeURIComponent(modelId)}`,
+        'DELETE',
+        undefined,
+        { provider },
+      )
+      return parseCustomModelList(payload.data)
+    },
   }
 }
 
@@ -508,6 +542,24 @@ function parseGatewayKeyRecord(value: unknown): GatewayKeyRecord | undefined {
   }) as unknown as GatewayKeyRecord
 }
 
+function parseCustomModelList(value: unknown): CustomProviderModel[] {
+  if (!Array.isArray(value)) {
+    throw new Error('AI Connection returned an invalid custom models response')
+  }
+  const models: CustomProviderModel[] = []
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== 'string' || !item.id) continue
+    models.push(compactObject({
+      id: item.id,
+      displayName: stringValue(item.displayName),
+      capabilities: Array.isArray(item.capabilities)
+        ? item.capabilities.filter((cap): cap is string => typeof cap === 'string')
+        : undefined,
+    }) as unknown as CustomProviderModel)
+  }
+  return models
+}
+
 function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
   if (!isRecord(value) || typeof value.id !== 'string') return undefined
   if (isPlatformModelId(value.id)) return undefined
@@ -520,12 +572,27 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
   return compactObject({
     id: value.id,
     provider,
-    displayName: stringValue(value.displayName) ?? stringValue(value.name),
+    displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
     contextWindow: numberValue(value.contextWindow) ?? numberValue(value.context_window),
     protocols: Array.isArray(value.protocols)
       ? value.protocols.filter((protocol): protocol is string => typeof protocol === 'string')
       : undefined,
+    custom: value.custom === true ? true : undefined,
+    capabilities: modelCapabilitiesFromWire(value),
   }) as unknown as AiGatewayModel
+}
+
+function modelCapabilitiesFromWire(value: Record<string, unknown>): string[] | undefined {
+  if (Array.isArray(value.custom_capabilities)) {
+    const custom = value.custom_capabilities.filter((cap): cap is string => typeof cap === 'string')
+    if (custom.length > 0) return custom
+  }
+  if (!isRecord(value.capabilities)) return undefined
+  const capabilities: string[] = []
+  if (value.capabilities.imageInput === true) capabilities.push('image')
+  if (value.capabilities.toolCalls === true) capabilities.push('tool_call')
+  if (value.capabilities.reasoningEffort === true) capabilities.push('reasoning')
+  return capabilities.length > 0 ? capabilities : undefined
 }
 
 function isPlatformModelId(modelId: string): boolean {

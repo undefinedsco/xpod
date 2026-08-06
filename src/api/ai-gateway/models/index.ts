@@ -13,3 +13,8 @@ export {
   type ProviderModelDiscovery,
   type ProviderModelsServiceOptions,
 } from './ProviderModelsService';
+export {
+  ProviderCustomModelsService,
+  type ProviderCustomModelsServiceOptions,
+} from './ProviderCustomModelsService';
+export type { CustomProviderModel } from '../connect';

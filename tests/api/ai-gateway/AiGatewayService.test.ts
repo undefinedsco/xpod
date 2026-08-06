@@ -50,6 +50,7 @@ function credential(input: Partial<StoredGatewayCredential> & {
     health: input.health ?? 'healthy',
     quota: input.quota ?? { status: 'available' },
     cooldownUntil: input.cooldownUntil,
+    customModels: input.customModels,
     metadata: input.metadata,
     encryptedSecret: input.encryptedSecret ?? encrypted(input.id, input.provider),
     version: input.version,
@@ -154,6 +155,50 @@ describe('AiGatewayService', () => {
     ]);
     expect(models.map((model) => model.id)).not.toContain('gpt-4.1');
     expect(models.map((model) => model.id)).not.toContain('gpt-5-dynamic-safe');
+  });
+
+  it('unions custom credential models with display names and capability markers', async () => {
+    const { service } = serviceWith([
+      credential({
+        id: 'limited_openai',
+        provider: 'openai',
+        models: ['gpt-5'],
+        customModels: [
+          { id: 'ft-my-model', displayName: 'My Fine Tune', capabilities: ['image', 'tool_call'] },
+          { id: 'gpt-5', displayName: 'Shadow' },
+        ],
+      }),
+    ]);
+
+    const models = await service.listModels(AUTH);
+
+    expect(models).toEqual([
+      expect.objectContaining({ id: 'gpt-5', owned_by: 'openai' }),
+      {
+        id: 'ft-my-model',
+        object: 'model',
+        owned_by: 'openai',
+        custom: true,
+        display_name: 'My Fine Tune',
+        custom_capabilities: ['image', 'tool_call'],
+      },
+    ]);
+    expect(models.filter((model) => model.id === 'gpt-5')).toHaveLength(1);
+  });
+
+  it('keeps custom models hidden when their credential is not model-visible', async () => {
+    const { service } = serviceWith([
+      credential({
+        id: 'disabled_openai',
+        provider: 'openai',
+        enabled: false,
+        models: [],
+        customModels: [{ id: 'ft-hidden' }],
+      }),
+    ]);
+
+    const models = await service.listModels(AUTH);
+    expect(models.map((model) => model.id)).not.toContain('ft-hidden');
   });
 
   it('rewraps an old-key credential through the production inference read path', async() => {

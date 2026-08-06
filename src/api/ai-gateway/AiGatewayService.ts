@@ -10,6 +10,8 @@ import type { ProviderCapabilities, ProviderRegistry } from './providers/Provide
 import { normalizeProviderId } from './providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from './providers/ProviderRuntimeRegistry';
 import type { GatewayCredentialCandidate, ModelRouter, ModelRouteResult } from './routing/ModelRouter';
+import type { CustomProviderModel } from './connect';
+import { customModelsFromMetadata } from './connect';
 import type {
   GatewayEvent,
   GatewayProtocol,
@@ -84,6 +86,9 @@ export interface GatewayModelListItem {
   context_window?: number;
   capabilities?: ProviderCapabilities;
   protocols?: GatewayProtocol[];
+  custom?: boolean;
+  display_name?: string;
+  custom_capabilities?: string[];
 }
 
 export interface GatewayAcceptanceProvenance {
@@ -186,11 +191,24 @@ export class AiGatewayService {
       auth,
     });
     const activeCredentialModels = new Map<string, Set<string> | undefined>();
+    const customCredentialModels = new Map<string, CustomProviderModel[]>();
     for (const credential of credentials) {
       if (!isCredentialModelVisible(credential, this.now())) {
         continue;
       }
       const providerId = normalizeProviderId(credential.provider);
+      const customModels = credential.customModels ?? customModelsFromMetadata(credential.metadata);
+      if (customModels.length > 0) {
+        const existing = customCredentialModels.get(providerId) ?? [];
+        const known = new Set(existing.map((model) => model.id));
+        for (const model of customModels) {
+          if (!known.has(model.id)) {
+            known.add(model.id);
+            existing.push(model);
+          }
+        }
+        customCredentialModels.set(providerId, existing);
+      }
       const allowedModels = credential.models ?? [];
       if (allowedModels.length === 0) {
         activeCredentialModels.set(providerId, undefined);
@@ -234,7 +252,19 @@ export class AiGatewayService {
             object: 'model' as const,
             owned_by: provider.id,
           }));
-      for (const model of [ ...providerModelItems, ...credentialOnlyModelItems ]) {
+      const customModelItems = (customCredentialModels.get(providerId) ?? [])
+        .filter((model) => !registryModelIds.has(model.id))
+        .map((model) => ({
+          id: model.id,
+          object: 'model' as const,
+          owned_by: provider.id,
+          custom: true,
+          ...(model.displayName ? { display_name: model.displayName } : {}),
+          ...(model.capabilities && model.capabilities.length > 0
+            ? { custom_capabilities: [...model.capabilities] }
+            : {}),
+        }));
+      for (const model of [ ...providerModelItems, ...credentialOnlyModelItems, ...customModelItems ]) {
         if (seen.has(model.id)) {
           continue;
         }

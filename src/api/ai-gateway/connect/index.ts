@@ -229,6 +229,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     enabled: boolean;
     priority?: number;
     models?: string[];
+    customModels?: CustomProviderModel[];
     defaultModel?: string;
     health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
     quota?: { status: 'available' | 'unsupported' | 'exhausted' | 'error' };
@@ -265,6 +266,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         authMode: record.authMode,
         enabled: !record.reauthRequired,
         models: modelsFromMetadata(record.metadata),
+        customModels: customModelsFromMetadata(record.metadata),
         defaultModel: defaultModelFromMetadata(record.metadata),
         priority: priorityFromMetadata(record.metadata),
         health: record.reauthRequired ? 'reauthRequired' : 'healthy',
@@ -1286,6 +1288,41 @@ function metadataFromRow(row: Record<string, unknown>): Record<string, unknown> 
     }
   }
   return undefined;
+}
+
+export interface CustomProviderModel {
+  id: string;
+  displayName?: string;
+  capabilities?: string[];
+}
+
+export function customModelsFromMetadata(metadata: Record<string, unknown> | undefined): CustomProviderModel[] {
+  const value = metadata?.customModels;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const models: CustomProviderModel[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.id !== 'string' || !record.id.trim()) {
+      continue;
+    }
+    const displayName = typeof record.displayName === 'string' && record.displayName.trim()
+      ? record.displayName
+      : undefined;
+    const capabilities = Array.isArray(record.capabilities)
+      ? record.capabilities.filter((capability): capability is string => typeof capability === 'string' && Boolean(capability))
+      : undefined;
+    models.push({
+      id: record.id,
+      ...(displayName ? { displayName } : {}),
+      ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+    });
+  }
+  return models;
 }
 
 function modelsFromMetadata(metadata: Record<string, unknown> | undefined): string[] | undefined {

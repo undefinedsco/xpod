@@ -34,6 +34,8 @@ function credential(input: Partial<GatewayCredentialCandidate> & {
     health: input.health ?? 'healthy',
     quota: input.quota ?? { status: 'available' },
     cooldownUntil: input.cooldownUntil,
+    customModels: input.customModels,
+    metadata: input.metadata,
   };
 }
 
@@ -225,6 +227,48 @@ describe('ModelRouter', () => {
       credential: { id: 'cred_bailian' },
       source: 'default-model',
     });
+  });
+
+  it('routes custom credential models even when an allowlist restricts registry models', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'cred_openai',
+          provider: 'openai',
+          models: ['gpt-5'],
+          customModels: [{ id: 'ft-my-model', displayName: 'My Fine Tune' }],
+        }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'ft-my-model',
+    })).resolves.toMatchObject({
+      provider: { id: 'openai' },
+      model: 'ft-my-model',
+      credential: { id: 'cred_openai' },
+    });
+  });
+
+  it('still rejects non-allowlisted registry models when custom models exist', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'cred_openai',
+          provider: 'openai',
+          models: ['gpt-5'],
+          customModels: [{ id: 'ft-my-model' }],
+        }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'gpt-4.1',
+    })).rejects.toMatchObject({ code: 'credential_unavailable' });
   });
 
   it('does not let unrestricted credentials from another provider claim registry-owned exact models', async () => {

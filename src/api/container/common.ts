@@ -50,6 +50,7 @@ import {
 import {
   AnthropicModelsAdapter,
   OpenAiCompatibleModelsAdapter,
+  ProviderCustomModelsService,
   ProviderModelsService,
 } from '../ai-gateway/models';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
@@ -388,6 +389,18 @@ export function registerCommonServices(
             defaultBaseUrl: 'https://api.deepseek.com/v1',
           }),
         ],
+      });
+    }).singleton(),
+
+    providerCustomModelsService: asFunction((cradle: ApiContainerCradle) => {
+      const { config } = cradle;
+      if (!config.aiGatewayConnectEnabled) {
+        return undefined;
+      }
+      return new ProviderCustomModelsService({
+        credentialRepository: new PodConnectedCredentialRepository({
+          internalPodAccess: cradle.gatewayInternalPodAccess,
+        }),
       });
     }).singleton(),
 

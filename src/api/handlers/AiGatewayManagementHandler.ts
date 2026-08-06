@@ -25,7 +25,7 @@ import type {
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
-import { ProviderModelsFetchError, type ProviderModelsService } from '../ai-gateway/models';
+import { ProviderModelsFetchError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -39,6 +39,7 @@ export interface AiGatewayManagementHandlerOptions {
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
   modelsService?: ProviderModelsService;
+  customModelsService?: ProviderCustomModelsService;
   servicePrincipal?: {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
@@ -416,6 +417,64 @@ export function registerAiGatewayManagementRoutes(
       sendModelsError(response, error);
     }
   });
+
+  server.post('/api/ai/gateway/providers/:provider/models', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const customModelsService = requireCustomModelsService(options, response);
+    if (!customModelsService) {
+      return;
+    }
+    const model = normalizeCustomModelInput(body);
+    if (!model) {
+      sendJson(response, 400, { error: 'Model id must be a non-empty string; capabilities must be a string array' });
+      return;
+    }
+    try {
+      const data = await customModelsService.upsert({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        model,
+        auth: request.auth,
+      });
+      sendJson(response, 200, { data });
+    } catch (error) {
+      sendCustomModelsError(response, error);
+    }
+  });
+
+  server.delete('/api/ai/gateway/providers/:provider/models/:modelId', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const customModelsService = requireCustomModelsService(options, response);
+    if (!customModelsService) {
+      return;
+    }
+    const modelId = normalizeOptionalString(params.modelId);
+    if (!modelId) {
+      sendJson(response, 400, { error: 'Model id is required' });
+      return;
+    }
+    try {
+      const data = await customModelsService.remove({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        modelId,
+        auth: request.auth,
+      });
+      sendJson(response, 200, { data });
+    } catch (error) {
+      sendCustomModelsError(response, error);
+    }
+  });
 }
 
 function authorizeGatewayKeyManagement(
@@ -527,6 +586,63 @@ function requireModelsService(
     return undefined;
   }
   return options.modelsService;
+}
+
+function requireCustomModelsService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderCustomModelsService | undefined {
+  if (!options.customModelsService) {
+    sendJson(response, 503, { error: 'AI provider custom models service is not configured' });
+    return undefined;
+  }
+  return options.customModelsService;
+}
+
+function normalizeCustomModelInput(body: Record<string, unknown>): {
+  id: string;
+  displayName?: string;
+  capabilities?: string[];
+} | undefined {
+  const id = normalizeOptionalString(body.id);
+  if (!id || id.length > 256 || /\s/.test(id)) {
+    return undefined;
+  }
+  const displayName = normalizeOptionalString(body.displayName);
+  if (body.displayName !== undefined && body.displayName !== null && !displayName) {
+    return undefined;
+  }
+  let capabilities: string[] | undefined;
+  if (body.capabilities !== undefined) {
+    if (!Array.isArray(body.capabilities)
+      || body.capabilities.length > 16
+      || !body.capabilities.every((capability) => typeof capability === 'string' && capability.trim())) {
+      return undefined;
+    }
+    capabilities = [...new Set(body.capabilities.map((capability) => capability.trim()))];
+  }
+  return {
+    id,
+    ...(displayName ? { displayName } : {}),
+    ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+  };
+}
+
+function sendCustomModelsError(response: ServerResponse, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'models_credential_not_found') {
+    sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+    return;
+  }
+  if (message === 'credential_version_conflict') {
+    sendJson(response, 409, { error: 'credential_version_conflict' });
+    return;
+  }
+  if (message === 'service_access_missing') {
+    sendJson(response, 403, { error: 'service_access_missing' });
+    return;
+  }
+  sendJson(response, 500, { error: 'Provider custom models update failed' });
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {

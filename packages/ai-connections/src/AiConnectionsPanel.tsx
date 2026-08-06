@@ -42,6 +42,10 @@ import {
   AiProviderCard,
   type ProviderConnectionState,
 } from './AiProviderCard'
+import {
+  AiModelEditorDialog,
+  type AiModelEditorValue,
+} from './AiModelEditorDialog'
 
 const EMPTY_PROVIDER_SUMMARIES: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> = {}
 
@@ -84,6 +88,12 @@ export function AiConnectionsPanel({
   const [quotas, setQuotas] = useState<Record<string, AiQuotaSnapshot | undefined>>({})
   const [verifyingProviders, setVerifyingProviders] = useState<Record<string, boolean>>({})
   const [verifyMessages, setVerifyMessages] = useState<Record<string, string | undefined>>({})
+  const [modelEditor, setModelEditor] = useState<{
+    provider: AiConnectionsProvider
+    model?: AiGatewayModel
+  }>()
+  const [modelEditorError, setModelEditorError] = useState<string>()
+  const [modelEditorSaving, setModelEditorSaving] = useState(false)
   const [copied, setCopied] = useState(false)
   const pollingGeneration = useRef(0)
   const updateConnectionState = useCallback((
@@ -286,6 +296,50 @@ export function AiConnectionsPanel({
     }
   }
 
+  const reloadModels = useCallback(async () => {
+    try {
+      setModels(await client.listModels())
+    } catch {
+      // The catalog stays at its last known state; the mutation already succeeded.
+    }
+  }, [client])
+
+  const openModelEditor = (provider: AiConnectionsProvider, model?: AiGatewayModel) => {
+    setModelEditorError(undefined)
+    setModelEditor({ provider, model })
+  }
+
+  const saveProviderModel = async (value: AiModelEditorValue) => {
+    if (!modelEditor || !serviceAccessGranted) return
+    setModelEditorSaving(true)
+    setModelEditorError(undefined)
+    try {
+      await client.saveProviderModel(modelEditor.provider, {
+        id: value.id,
+        displayName: value.name || undefined,
+        capabilities: value.capabilities.length > 0 ? value.capabilities : undefined,
+      })
+      setModelEditor(undefined)
+      await reloadModels()
+    } catch (error) {
+      setModelEditorError(errorMessage(error))
+    } finally {
+      setModelEditorSaving(false)
+    }
+  }
+
+  const deleteProviderModel = async (provider: AiConnectionsProvider, model: AiGatewayModel) => {
+    if (!serviceAccessGranted) return
+    setProviderError(provider)
+    try {
+      await client.deleteProviderModel(provider, model.id)
+      setModels((current) => current.filter((item) => !(item.provider === provider && item.id === model.id)))
+      void reloadModels()
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
+    }
+  }
+
   const createKey = async () => {
     if (!serviceAccessGranted) return
     setCreatingKey(true)
@@ -381,9 +435,32 @@ export function AiConnectionsPanel({
               verifyPending={Boolean(verifyingProviders[definition.id])}
               verifyMessage={verifyMessages[definition.id]}
               onVerify={() => void verifyProvider(definition.id)}
+              onAddModel={() => openModelEditor(definition.id)}
+              onEditModel={(model) => openModelEditor(definition.id, model)}
+              onDeleteModel={(model) => void deleteProviderModel(definition.id, model)}
             />
           ))}
       </section>
+
+      {modelEditor ? (
+        <AiModelEditorDialog
+          open
+          providerName={PROVIDERS.find((definition) => definition.id === modelEditor.provider)?.name ?? modelEditor.provider}
+          initialValue={modelEditor.model
+            ? {
+                id: modelEditor.model.id,
+                name: modelEditor.model.displayName ?? '',
+                capabilities: modelEditor.model.capabilities ?? [],
+              }
+            : undefined}
+          error={modelEditorError}
+          saving={modelEditorSaving}
+          onOpenChange={(open) => {
+            if (!open) setModelEditor(undefined)
+          }}
+          onSave={(value) => void saveProviderModel(value)}
+        />
+      ) : null}
 
       <details className="border-t border-border/60 py-5">
         <summary className="cursor-pointer list-none text-sm font-medium">

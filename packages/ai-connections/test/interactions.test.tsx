@@ -56,6 +56,8 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
       observedAt: '2026-08-06T00:00:00.000Z',
       source: `${provider}:/models`,
     })),
+    saveProviderModel: vi.fn(async (_provider, model) => [model]),
+    deleteProviderModel: vi.fn(async () => []),
     quota: vi.fn(async (provider) => ({
       credential: `${provider}-credential`,
       status: 'unsupported' as const,
@@ -234,6 +236,86 @@ describe('AI Connection settings', () => {
     render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
 
     expect(screen.queryByRole('button', { name: /验证/ })).toBeNull()
+  })
+
+  it('adds a custom model through the editor dialog and refreshes the catalog', async () => {
+    const current = client({
+      listModels: vi.fn(async () => [
+        { id: 'ft-assistant', provider: 'openai' as const, displayName: 'Assistant', custom: true, capabilities: ['image', 'tool_call'] },
+      ]),
+    })
+
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            authMode: 'browserAssistedApiKey',
+            connect: { modes: ['browserAssistedApiKey'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '添加模型' }))
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'ft-assistant' } })
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Assistant' } })
+    fireEvent.click(screen.getByRole('button', { name: '视觉识别' }))
+    fireEvent.click(screen.getByRole('button', { name: '函数调用' }))
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(current.saveProviderModel).toHaveBeenCalledWith('openai', {
+      id: 'ft-assistant',
+      displayName: 'Assistant',
+      capabilities: ['image', 'tool_call'],
+    }))
+    expect(await screen.findByText('Assistant')).toBeTruthy()
+  })
+
+  it('edits and deletes custom models from the catalog rows', async () => {
+    const current = client({
+      listModels: vi.fn(async () => [
+        { id: 'ft-assistant', provider: 'openai' as const, displayName: 'Assistant', custom: true, capabilities: ['image'] },
+        { id: 'gpt-5', provider: 'openai' as const },
+      ]),
+    })
+
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerSummaries={{
+          openai: {
+            provider: 'openai',
+            status: 'connected',
+            authMode: 'browserAssistedApiKey',
+            connect: { modes: ['browserAssistedApiKey'], configured: true },
+          },
+        }}
+      />,
+    )
+
+    expect(await screen.findByText('Assistant')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '删除 gpt-5' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑 Assistant' }))
+    expect(screen.getByLabelText('模型 ID')).toHaveProperty('disabled', true)
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Assistant v2' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(current.saveProviderModel).toHaveBeenCalledWith('openai', {
+      id: 'ft-assistant',
+      displayName: 'Assistant v2',
+      capabilities: ['image'],
+    }))
+
+    fireEvent.click(screen.getByRole('button', { name: '删除 Assistant' }))
+    await waitFor(() => expect(current.deleteProviderModel).toHaveBeenCalledWith('openai', 'ft-assistant'))
   })
 
   it('opens browser-assisted key setup and submits the key without rendering it afterwards', async () => {

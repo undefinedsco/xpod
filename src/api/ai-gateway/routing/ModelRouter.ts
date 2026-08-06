@@ -1,4 +1,5 @@
 import { GatewayProtocolError } from '../errors';
+import { customModelsFromMetadata, type CustomProviderModel } from '../connect';
 import {
   normalizeProviderId,
   type ProviderAuthMode,
@@ -27,6 +28,7 @@ export interface GatewayCredentialCandidate {
   enabled: boolean;
   priority?: number;
   models?: string[];
+  customModels?: CustomProviderModel[];
   defaultModel?: string;
   health?: GatewayCredentialHealth;
   quota?: {
@@ -411,7 +413,14 @@ export class ModelRouter {
 
 function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {
   const models = candidate.models ?? [];
-  return models.length === 0 || models.some((candidateModel) => candidateModel === model);
+  if (models.length === 0) {
+    return true;
+  }
+  if (models.some((candidateModel) => candidateModel === model)) {
+    return true;
+  }
+  const customModels = candidate.customModels ?? customModelsFromMetadata(candidate.metadata);
+  return customModels.some((customModel) => customModel.id === model);
 }
 
 function compareCredentialPriority(
