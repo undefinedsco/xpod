@@ -110,6 +110,9 @@ test.describe('Local product seed consent acceptance', () => {
 
       await page.getByRole('button', { name: 'Authorize', exact: true }).click();
       await expect.poll(() => new URL(page.url()).pathname, { timeout: 60_000 }).toMatch(/^\/settings\/(?:auth\/callback|models(?:\/.*)?)$/u);
+      await expect(page.locator('[data-auth-boundary="surface"]')).toHaveCount(0, { timeout: 30_000 });
+      await expect(page.getByRole('heading', { name: 'OpenAI', exact: true }).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('body')).not.toContainText(/Solid login failed|Please reconnect your Pod/i);
     } finally {
       await page.close();
     }

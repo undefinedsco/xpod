@@ -157,17 +157,24 @@ describe('AI credential container config', () => {
   });
 
   it('constructs a disabled provider Connect service by default without requiring a SecretCell vault', async () => {
-    const service = createApiContainer(baseConfig()).resolve('providerConnectService');
+    const service = createApiContainer(baseConfig({ aiGatewayConnectEnabled: false })).resolve('providerConnectService');
 
     await expect(service.begin({
       webId: 'https://id.example/alice/profile/card#me',
       deployment: 'local',
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
-    })).resolves.toMatchObject({
-      status: 'unsupported',
-      message: expect.stringContaining('disabled'),
-    });
+    })).rejects.toThrow('connect_disabled');
+  });
+
+  it('enables provider Connect by default for product configuration', () => {
+    const previous = { ...process.env };
+    try {
+      delete process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED;
+      expect(loadConfigFromEnv().aiGatewayConnectEnabled).toBe(true);
+    } finally {
+      process.env = previous;
+    }
   });
 
   it('keeps Connect enabled without requiring the SecretCell credential vault', async () => {

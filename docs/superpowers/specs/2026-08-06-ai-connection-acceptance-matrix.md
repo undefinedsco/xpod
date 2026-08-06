@@ -19,6 +19,7 @@ AI Connection 的本地产品路径、Pod 持久化、模型发现与 Pick、标
 | --- | --- | --- |
 | 本地完整 Xpod 启动 | 通过 | `GET /service/status` 返回 200，CSS/API 均为 `running`；`GET /settings/models` 返回 200。 |
 | Solid OIDC 登录与用户隔离 | 通过 | `tests/e2e/xpod-settings.spec.ts` 使用 Alice/Bob 两组真实 OIDC storage state 验证 Pod 隔离；完整集成测试通过。 |
+| 裸路径 Local seed 复用已有 Pod | 通过 | `tests/e2e/local-seeded-consent.spec.ts` 使用裸 `CSS_IDENTITY_DB_URL`/`DATABASE_URL` 文件路径启动全新 Local runtime；Account API 返回 seed Pod/WebID，Consent 直接列出该 WebID（无 `Create your first storage`），启动日志无 PostgreSQL/迁移/连接错误，Authorize 后无 AuthBoundary、可见真实 OpenAI Settings 内容且无 `Solid login failed`。 |
 | API Key Connect：OpenAI | 通过 | 本地 Xpod 真实 Connect 请求返回 200；重启后从 Pod 重新读取；响应不泄露密钥。 |
 | API Key Connect：Anthropic | 通过（同类契约） | `ProviderConnectAdapters.test.ts` 覆盖请求、持久化与错误映射；与五家 API Key 共用同一持久化路径。 |
 | API Key Connect：Kimi | 通过 | 本地 Xpod 真实 Connect 请求返回 200；API Key 刷新不进入 OAuth reauth 路径。 |
@@ -51,18 +52,22 @@ AI Connection 的本地产品路径、Pod 持久化、模型发现与 Pick、标
 ```text
 bun run build:ts
 bun run build:packages
-bun run test -- <16 个 Connections/Models/API/SDK 核心测试文件>
-bun run test:integration
+bun run test:packages
+bun run test -- <21 个 Connections/ownership/handler 核心测试文件>
+bunx playwright test tests/e2e/local-seeded-consent.spec.ts --reporter=line --workers=1
+bun run test:integration:lite
+bun run test:integration:full
 bun scripts/accept-xpod-settings.ts --allow-incomplete
 ```
 
 结果：
 
-- TypeScript 构建通过。
-- Packages 构建通过。
-- 核心回归：16 个测试文件、326 个测试全部通过。
-- 完整集成回归：lite 128 个通过、5 个跳过；Docker full 40 个全部通过。
-- 验收器：`fail=0`；没有提供外部门禁变量时会如实返回 `complete=false`。
+- TypeScript 构建通过（9.68s）。
+- Packages 构建通过（2.86s）；packages 测试通过：`solid-sdk` 26、`shared-ui` 4、`extension-sdk` 61、`ai-connection` 101，共 192 个测试。
+- ownership/Connections 核心回归：21 个测试文件，345 个通过、1 个跳过（`AiGatewayPodIsolation.integration.test.ts` 在当前无专用集成开关时跳过），无失败（6.31s）。其中包含默认开启 Connect 与显式关闭 Connect 两种配置断言。
+- 裸路径 seed→Consent 浏览器验收：1 个通过（11.49s）；使用 fresh runtime，Authorize 后额外确认没有登录边界/登录失败提示并出现真实 OpenAI Settings 内容。
+- 完整集成回归：lite 22 个测试文件、128 个通过、5 个跳过（47.70s）；Docker full 4 个测试文件、40 个全部通过（30.68s）。
+- 验收器：`pass=3`、`notComplete=6`、`fail=0`、`complete=false`；没有提供外部门禁变量时会如实保留未完成状态。
 - `git diff --check release/0.3.71...HEAD` 通过。
 - 提交差异未包含 `.env`、私钥或真实供应商密钥；检出的 `sk-*` 均为测试夹具常量。
 
