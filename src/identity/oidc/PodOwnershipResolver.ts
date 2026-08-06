@@ -195,10 +195,13 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     for (const entry of body.entries) {
       if (!isRecord(entry)
         || typeof entry.webId !== 'string'
-        || !allowedWebIds.has(entry.webId)
-        || resolvedWebIds.has(entry.webId)
         || typeof entry.storageUrl !== 'string'
         || ('podUrl' in entry && entry.podUrl !== undefined && typeof entry.podUrl !== 'string')) {
+        this.warnRemoteFailure();
+        return [];
+      }
+
+      if (!allowedWebIds.has(entry.webId) || resolvedWebIds.has(entry.webId)) {
         continue;
       }
 

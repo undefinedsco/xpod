@@ -474,6 +474,31 @@ describe('CssPodOwnershipResolver', () => {
     }
   });
 
+  it('fails closed when valid and schema-invalid remote entries are mixed', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      entries: [
+        null,
+        {
+          webId: aliceWebId,
+          storageUrl: 'https://node.example/alice/',
+        },
+      ],
+    }), { status: 200 }));
+    const logger = { warn: vi.fn() };
+    const { resolver } = createResolver({ fetch: fetchMock, logger });
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [aliceWebId],
+      target: {
+        storageUrl: 'https://node.example/',
+        lookupUrl: 'https://lookup.example/',
+        serviceAccessToken: 'short-lived-token',
+      },
+    })).resolves.toEqual([]);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
   it('fails closed without requesting when either remote credential is missing', async () => {
     for (const target of [
       {
