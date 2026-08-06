@@ -385,7 +385,7 @@ describe('AI Connection management client', () => {
       data: [
         { id: 'gpt-5', owned_by: 'openai', capabilities: { imageInput: true, toolCalls: true, reasoningEffort: true, promptCaching: true } },
         { id: 'gpt-4.1', owned_by: 'openai', capabilities: { promptCaching: true } },
-        { id: 'ft-mine', owned_by: 'openai', custom: true, display_name: 'Mine', custom_capabilities: ['web'] },
+        { id: 'ft-mine', owned_by: 'openai', custom: true, display_name: 'Mine', modalities: { input: ['text', 'image'] }, custom_capabilities: ['web'] },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
     const client = createAiConnectionsClient({
@@ -398,7 +398,7 @@ describe('AI Connection management client', () => {
     expect(models).toEqual([
       { id: 'gpt-5', provider: 'openai', capabilities: ['image', 'tool_call', 'reasoning'] },
       { id: 'gpt-4.1', provider: 'openai' },
-      { id: 'ft-mine', provider: 'openai', custom: true, displayName: 'Mine', capabilities: ['web'] },
+      { id: 'ft-mine', provider: 'openai', custom: true, displayName: 'Mine', inputModalities: ['text', 'image'], capabilities: ['web'] },
     ])
   })
 
@@ -411,7 +411,7 @@ describe('AI Connection management client', () => {
         body: init?.body ? JSON.parse(String(init.body)) : undefined,
       })
       return new Response(JSON.stringify({
-        data: [{ id: 'ft-a', displayName: 'A', capabilities: ['image'] }],
+        data: [{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }],
       }), { status: 200, headers: { 'content-type': 'application/json' } })
     })
     const client = createAiConnectionsClient({
@@ -423,18 +423,19 @@ describe('AI Connection management client', () => {
     const saved = await client.saveProviderModel('openai', {
       id: 'ft-a',
       displayName: 'A',
-      capabilities: ['image'],
+      inputModalities: ['image'],
+      capabilities: ['tool_call'],
     })
-    expect(saved).toEqual([{ id: 'ft-a', displayName: 'A', capabilities: ['image'] }])
+    expect(saved).toEqual([{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }])
 
     const remaining = await client.deleteProviderModel('openai', 'ft-a/latest')
-    expect(remaining).toEqual([{ id: 'ft-a', displayName: 'A', capabilities: ['image'] }])
+    expect(remaining).toEqual([{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }])
 
     expect(calls).toEqual([
       {
         url: 'https://pod.example/api/ai/gateway/providers/openai/models',
         method: 'POST',
-        body: { id: 'ft-a', displayName: 'A', capabilities: ['image'] },
+        body: { id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] },
       },
       {
         url: `https://pod.example/api/ai/gateway/providers/openai/models/${encodeURIComponent('ft-a/latest')}`,

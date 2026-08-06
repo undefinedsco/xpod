@@ -57,14 +57,14 @@ describe('customModelsFromMetadata', () => {
   it('parses only well-formed custom model entries', () => {
     expect(customModelsFromMetadata({
       customModels: [
-        { id: 'ft-a', displayName: 'A', capabilities: ['vision', ''] },
+        { id: 'ft-a', displayName: 'A', inputModalities: ['image', ''], capabilities: ['tool_call', 'image'] },
         { id: '  ' },
         { id: 'ft-b' },
         'garbage',
         { displayName: 'no-id' },
       ],
     })).toEqual([
-      { id: 'ft-a', displayName: 'A', capabilities: ['vision'] },
+      { id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call', 'image'] },
       { id: 'ft-b' },
     ]);
     expect(customModelsFromMetadata(undefined)).toEqual([]);
@@ -81,9 +81,9 @@ describe('ProviderCustomModelsService', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'openai',
-      model: { id: 'ft-a', displayName: 'A', capabilities: ['vision'] },
+      model: { id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] },
     });
-    expect(added).toEqual([{ id: 'ft-a', displayName: 'A', capabilities: ['vision'] }]);
+    expect(added).toEqual([{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }]);
     expect(repository.record?.version).toBe(2);
     expect(customModelsFromMetadata(repository.record?.metadata)).toEqual(added);
 
@@ -198,15 +198,15 @@ describe('AiGatewayManagementHandler custom models routes', () => {
     const res = response();
     await routes['POST /api/ai/gateway/providers/:provider/models'](request(
       { type: 'solid', webId: WEB_ID },
-      { id: 'ft-a', displayName: 'A', capabilities: ['vision', 'vision'] },
+      { id: 'ft-a', displayName: 'A', inputModalities: ['image', 'image'], capabilities: ['tool_call'] },
     ), res, { provider: 'openai' });
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({
-      data: [{ id: 'ft-a', displayName: 'A', capabilities: ['vision'] }],
+      data: [{ id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] }],
     });
     expect(customModelsFromMetadata(repository.record?.metadata)).toEqual([
-      { id: 'ft-a', displayName: 'A', capabilities: ['vision'] },
+      { id: 'ft-a', displayName: 'A', inputModalities: ['image'], capabilities: ['tool_call'] },
     ]);
   });
 

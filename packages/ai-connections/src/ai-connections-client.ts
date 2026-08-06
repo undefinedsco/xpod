@@ -89,6 +89,8 @@ export interface AiGatewayModel {
   contextWindow?: number
   protocols?: string[]
   custom?: boolean
+  inputModalities?: string[]
+  outputModalities?: string[]
   capabilities?: string[]
 }
 
@@ -101,6 +103,8 @@ export interface DiscoveredProviderModel {
 export interface CustomProviderModel {
   id: string
   displayName?: string
+  inputModalities?: string[]
+  outputModalities?: string[]
   capabilities?: string[]
 }
 
@@ -357,6 +361,8 @@ export function createAiConnectionsClient({
         compactObject({
           id: model.id,
           displayName: model.displayName,
+          inputModalities: model.inputModalities,
+          outputModalities: model.outputModalities,
           capabilities: model.capabilities,
         }),
         { provider },
@@ -552,12 +558,18 @@ function parseCustomModelList(value: unknown): CustomProviderModel[] {
     models.push(compactObject({
       id: item.id,
       displayName: stringValue(item.displayName),
-      capabilities: Array.isArray(item.capabilities)
-        ? item.capabilities.filter((cap): cap is string => typeof cap === 'string')
-        : undefined,
+      inputModalities: stringListValue(item.inputModalities),
+      outputModalities: stringListValue(item.outputModalities),
+      capabilities: stringListValue(item.capabilities),
     }) as unknown as CustomProviderModel)
   }
   return models
+}
+
+function stringListValue(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const list = value.filter((item): item is string => typeof item === 'string')
+  return list.length > 0 ? list : undefined
 }
 
 function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
@@ -578,8 +590,18 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
       ? value.protocols.filter((protocol): protocol is string => typeof protocol === 'string')
       : undefined,
     custom: value.custom === true ? true : undefined,
+    inputModalities: modalitiesFromWire(value.modalities, 'input'),
+    outputModalities: modalitiesFromWire(value.modalities, 'output'),
     capabilities: modelCapabilitiesFromWire(value),
   }) as unknown as AiGatewayModel
+}
+
+function modalitiesFromWire(value: unknown, direction: 'input' | 'output'): string[] | undefined {
+  if (!isRecord(value)) return undefined
+  const list = value[direction]
+  if (!Array.isArray(list)) return undefined
+  const modalities = list.filter((item): item is string => typeof item === 'string')
+  return modalities.length > 0 ? modalities : undefined
 }
 
 function modelCapabilitiesFromWire(value: Record<string, unknown>): string[] | undefined {

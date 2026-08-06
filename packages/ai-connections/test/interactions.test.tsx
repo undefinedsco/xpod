@@ -241,7 +241,7 @@ describe('AI Connection settings', () => {
   it('adds a custom model through the editor dialog and refreshes the catalog', async () => {
     const current = client({
       listModels: vi.fn(async () => [
-        { id: 'ft-assistant', provider: 'openai' as const, displayName: 'Assistant', custom: true, capabilities: ['image', 'tool_call'] },
+        { id: 'ft-assistant', provider: 'openai' as const, displayName: 'Assistant', custom: true, inputModalities: ['image'], capabilities: ['tool_call'] },
       ]),
     })
 
@@ -271,7 +271,8 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(current.saveProviderModel).toHaveBeenCalledWith('openai', {
       id: 'ft-assistant',
       displayName: 'Assistant',
-      capabilities: ['image', 'tool_call'],
+      inputModalities: ['image'],
+      capabilities: ['tool_call'],
     }))
     expect(await screen.findByText('Assistant')).toBeTruthy()
   })
@@ -279,7 +280,7 @@ describe('AI Connection settings', () => {
   it('edits and deletes custom models from the catalog rows', async () => {
     const current = client({
       listModels: vi.fn(async () => [
-        { id: 'ft-assistant', provider: 'openai' as const, displayName: 'Assistant', custom: true, capabilities: ['image'] },
+        { id: 'ft-assistant', provider: 'openai' as const, displayName: 'Assistant', custom: true, inputModalities: ['image'] },
         { id: 'gpt-5', provider: 'openai' as const },
       ]),
     })
@@ -311,7 +312,8 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(current.saveProviderModel).toHaveBeenCalledWith('openai', {
       id: 'ft-assistant',
       displayName: 'Assistant v2',
-      capabilities: ['image'],
+      inputModalities: ['image'],
+      capabilities: undefined,
     }))
 
     fireEvent.click(screen.getByRole('button', { name: '删除 Assistant' }))

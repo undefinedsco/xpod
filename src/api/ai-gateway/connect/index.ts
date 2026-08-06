@@ -1293,6 +1293,8 @@ function metadataFromRow(row: Record<string, unknown>): Record<string, unknown> 
 export interface CustomProviderModel {
   id: string;
   displayName?: string;
+  inputModalities?: string[];
+  outputModalities?: string[];
   capabilities?: string[];
 }
 
@@ -1313,16 +1315,25 @@ export function customModelsFromMetadata(metadata: Record<string, unknown> | und
     const displayName = typeof record.displayName === 'string' && record.displayName.trim()
       ? record.displayName
       : undefined;
-    const capabilities = Array.isArray(record.capabilities)
-      ? record.capabilities.filter((capability): capability is string => typeof capability === 'string' && Boolean(capability))
-      : undefined;
+    const inputModalities = stringList(record.inputModalities);
+    const outputModalities = stringList(record.outputModalities);
+    const capabilities = stringList(record.capabilities);
     models.push({
       id: record.id,
       ...(displayName ? { displayName } : {}),
-      ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+      ...(inputModalities.length > 0 ? { inputModalities } : {}),
+      ...(outputModalities.length > 0 ? { outputModalities } : {}),
+      ...(capabilities.length > 0 ? { capabilities } : {}),
     });
   }
   return models;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())))];
 }
 
 function modelsFromMetadata(metadata: Record<string, unknown> | undefined): string[] | undefined {

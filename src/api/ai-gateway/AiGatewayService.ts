@@ -88,6 +88,10 @@ export interface GatewayModelListItem {
   protocols?: GatewayProtocol[];
   custom?: boolean;
   display_name?: string;
+  modalities?: {
+    input?: string[];
+    output?: string[];
+  };
   custom_capabilities?: string[];
 }
 
@@ -260,6 +264,14 @@ export class AiGatewayService {
           owned_by: provider.id,
           custom: true,
           ...(model.displayName ? { display_name: model.displayName } : {}),
+          ...((model.inputModalities?.length || model.outputModalities?.length)
+            ? {
+                modalities: {
+                  ...(model.inputModalities?.length ? { input: [...model.inputModalities] } : {}),
+                  ...(model.outputModalities?.length ? { output: [...model.outputModalities] } : {}),
+                },
+              }
+            : {}),
           ...(model.capabilities && model.capabilities.length > 0
             ? { custom_capabilities: [...model.capabilities] }
             : {}),

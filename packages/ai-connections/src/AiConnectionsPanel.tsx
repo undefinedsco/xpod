@@ -317,6 +317,7 @@ export function AiConnectionsPanel({
       await client.saveProviderModel(modelEditor.provider, {
         id: value.id,
         displayName: value.name || undefined,
+        inputModalities: value.inputModalities.length > 0 ? value.inputModalities : undefined,
         capabilities: value.capabilities.length > 0 ? value.capabilities : undefined,
       })
       setModelEditor(undefined)
@@ -450,6 +451,7 @@ export function AiConnectionsPanel({
             ? {
                 id: modelEditor.model.id,
                 name: modelEditor.model.displayName ?? '',
+                inputModalities: modelEditor.model.inputModalities ?? [],
                 capabilities: modelEditor.model.capabilities ?? [],
               }
             : undefined}

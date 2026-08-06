@@ -15,6 +15,7 @@ import { Box, Brain, Globe, Image as ImageIcon } from 'lucide-react'
 export interface AiModelEditorValue {
   id: string
   name: string
+  inputModalities: string[]
   capabilities: string[]
 }
 
@@ -28,8 +29,11 @@ export interface AiModelEditorDialogProps {
   onSave: (model: AiModelEditorValue) => void
 }
 
-const capabilityOptions = [
+const modalityOptions = [
   { id: 'image', label: '视觉识别', icon: ImageIcon },
+] as const
+
+const capabilityOptions = [
   { id: 'tool_call', label: '函数调用', icon: Box },
   { id: 'reasoning', label: '推理', icon: Brain },
   { id: 'web', label: '联网搜索', icon: Globe },
@@ -47,22 +51,51 @@ export function AiModelEditorDialog({
   const editing = Boolean(initialValue)
   const [id, setId] = useState('')
   const [name, setName] = useState('')
+  const [inputModalities, setInputModalities] = useState<string[]>([])
   const [capabilities, setCapabilities] = useState<string[]>([])
 
   useEffect(() => {
     if (!open) return
     setId(initialValue?.id ?? '')
     setName(initialValue?.name ?? '')
+    setInputModalities(initialValue?.inputModalities ?? [])
     setCapabilities(initialValue?.capabilities ?? [])
   }, [initialValue, open])
 
   const normalizedId = id.trim()
   const canSave = Boolean(normalizedId) && !saving
 
-  const toggleCapability = (capability: string) => {
-    setCapabilities((current) => current.includes(capability)
-      ? current.filter((item) => item !== capability)
-      : [...current, capability])
+  const toggle = (list: string[], setList: (next: string[]) => void, token: string) => {
+    setList(list.includes(token)
+      ? list.filter((item) => item !== token)
+      : [...list, token])
+  }
+
+  const optionButton = (
+    option: { id: string; label: string; icon: typeof Box },
+    list: string[],
+    setList: (next: string[]) => void,
+  ) => {
+    const active = list.includes(option.id)
+    const Icon = option.icon
+    return (
+      <button
+        key={option.id}
+        type="button"
+        aria-pressed={active}
+        disabled={saving}
+        onClick={() => toggle(list, setList, option.id)}
+        className={cn(
+          'flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors',
+          active
+            ? 'border-primary/50 bg-primary/10 text-primary'
+            : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground',
+        )}
+      >
+        <Icon aria-hidden="true" className="h-3.5 w-3.5" />
+        {option.label}
+      </button>
+    )
   }
 
   return (
@@ -96,30 +129,16 @@ export function AiModelEditorDialog({
           </div>
 
           <div className="flex flex-col gap-2">
+            <Label>输入模态</Label>
+            <div className="flex flex-wrap gap-2">
+              {modalityOptions.map((option) => optionButton(option, inputModalities, setInputModalities))}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
             <Label>能力标记</Label>
             <div className="flex flex-wrap gap-2">
-              {capabilityOptions.map((option) => {
-                const active = capabilities.includes(option.id)
-                const Icon = option.icon
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    aria-pressed={active}
-                    disabled={saving}
-                    onClick={() => toggleCapability(option.id)}
-                    className={cn(
-                      'flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors',
-                      active
-                        ? 'border-primary/50 bg-primary/10 text-primary'
-                        : 'border-border/60 text-muted-foreground hover:border-border hover:text-foreground',
-                    )}
-                  >
-                    <Icon aria-hidden="true" className="h-3.5 w-3.5" />
-                    {option.label}
-                  </button>
-                )
-              })}
+              {capabilityOptions.map((option) => optionButton(option, capabilities, setCapabilities))}
             </div>
           </div>
 
@@ -135,6 +154,7 @@ export function AiModelEditorDialog({
             onClick={() => onSave({
               id: normalizedId,
               name: name.trim(),
+              inputModalities,
               capabilities,
             })}
           >

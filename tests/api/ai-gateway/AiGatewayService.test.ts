@@ -164,7 +164,7 @@ describe('AiGatewayService', () => {
         provider: 'openai',
         models: ['gpt-5'],
         customModels: [
-          { id: 'ft-my-model', displayName: 'My Fine Tune', capabilities: ['image', 'tool_call'] },
+          { id: 'ft-my-model', displayName: 'My Fine Tune', inputModalities: ['image'], capabilities: ['tool_call'] },
           { id: 'gpt-5', displayName: 'Shadow' },
         ],
       }),
@@ -180,7 +180,8 @@ describe('AiGatewayService', () => {
         owned_by: 'openai',
         custom: true,
         display_name: 'My Fine Tune',
-        custom_capabilities: ['image', 'tool_call'],
+        modalities: { input: ['image'] },
+        custom_capabilities: ['tool_call'],
       },
     ]);
     expect(models.filter((model) => model.id === 'gpt-5')).toHaveLength(1);

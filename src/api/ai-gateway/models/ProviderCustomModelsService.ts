@@ -95,9 +95,13 @@ export class ProviderCustomModelsService {
 
 function serializeCustomModel(model: CustomProviderModel): CustomProviderModel {
   const capabilities = model.capabilities?.filter(Boolean);
+  const inputModalities = model.inputModalities?.filter(Boolean);
+  const outputModalities = model.outputModalities?.filter(Boolean);
   return {
     id: model.id,
     ...(model.displayName ? { displayName: model.displayName } : {}),
+    ...(inputModalities && inputModalities.length > 0 ? { inputModalities: [...inputModalities] } : {}),
+    ...(outputModalities && outputModalities.length > 0 ? { outputModalities: [...outputModalities] } : {}),
     ...(capabilities && capabilities.length > 0 ? { capabilities: [...capabilities] } : {}),
   };
 }

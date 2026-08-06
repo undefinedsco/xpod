@@ -602,6 +602,8 @@ function requireCustomModelsService(
 function normalizeCustomModelInput(body: Record<string, unknown>): {
   id: string;
   displayName?: string;
+  inputModalities?: string[];
+  outputModalities?: string[];
   capabilities?: string[];
 } | undefined {
   const id = normalizeOptionalString(body.id);
@@ -612,20 +614,31 @@ function normalizeCustomModelInput(body: Record<string, unknown>): {
   if (body.displayName !== undefined && body.displayName !== null && !displayName) {
     return undefined;
   }
-  let capabilities: string[] | undefined;
-  if (body.capabilities !== undefined) {
-    if (!Array.isArray(body.capabilities)
-      || body.capabilities.length > 16
-      || !body.capabilities.every((capability) => typeof capability === 'string' && capability.trim())) {
-      return undefined;
-    }
-    capabilities = [...new Set(body.capabilities.map((capability) => capability.trim()))];
+  const inputModalities = normalizeStringList(body.inputModalities);
+  const outputModalities = normalizeStringList(body.outputModalities);
+  const capabilities = normalizeStringList(body.capabilities);
+  if (inputModalities === null || outputModalities === null || capabilities === null) {
+    return undefined;
   }
   return {
     id,
     ...(displayName ? { displayName } : {}),
-    ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+    ...(inputModalities.length > 0 ? { inputModalities } : {}),
+    ...(outputModalities.length > 0 ? { outputModalities } : {}),
+    ...(capabilities.length > 0 ? { capabilities } : {}),
   };
+}
+
+function normalizeStringList(value: unknown): string[] | null {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)
+    || value.length > 16
+    || !value.every((item) => typeof item === 'string' && item.trim())) {
+    return null;
+  }
+  return [...new Set(value.map((item) => item.trim()))];
 }
 
 function sendCustomModelsError(response: ServerResponse, error: unknown): void {

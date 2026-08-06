@@ -350,7 +350,10 @@ export function AiProviderCard({
           ) : (
             <div className="mt-3 grid gap-2">
               {visibleModels.map((model) => {
-                const capabilities = model.capabilities ?? []
+                const iconTokens = [
+                  ...(model.inputModalities ?? []).filter((modality) => modality !== 'text'),
+                  ...(model.capabilities ?? []),
+                ]
                 return (
                   <div
                     key={model.id}
@@ -363,7 +366,7 @@ export function AiProviderCard({
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-medium text-foreground/90">{model.displayName ?? model.id}</span>
                         <div className="flex items-center gap-1">
-                          {capabilities.map((capability) => <CapabilityIcon key={capability} type={capability} />)}
+                          {iconTokens.map((token) => <CapabilityIcon key={token} type={token} />)}
                         </div>
                       </div>
                       {model.displayName ? (
