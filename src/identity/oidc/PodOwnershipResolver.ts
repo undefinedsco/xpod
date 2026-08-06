@@ -31,7 +31,7 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 export interface CssPodOwnershipResolverOptions {
   webIdStore: WebIdStore;
   podStore: PodStore;
-  /** Reserved for the remote resolver implementation; local resolution never uses it. */
+  /** Optional fetch implementation for remote resolution; local resolution never uses it. */
   fetch?: FetchLike;
   logger?: ResolverLogger;
 }
@@ -41,17 +41,18 @@ export interface CssPodOwnershipResolverOptions {
  *
  * This resolver deliberately does not inspect Pod data directories or open a
  * second database connection. A target carrying remote lookup credentials is
- * handled by a remote resolver and fails closed here until that implementation
- * is installed.
+ * verified through the target SP's provision lookup endpoint.
  */
 export class CssPodOwnershipResolver implements PodOwnershipResolver {
   private readonly logger: ResolverLogger;
   private readonly webIdStore: WebIdStore;
   private readonly podStore: PodStore;
+  private readonly fetch: FetchLike;
 
   public constructor(options: CssPodOwnershipResolverOptions) {
     this.webIdStore = options.webIdStore;
     this.podStore = options.podStore;
+    this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.logger = options.logger ?? getLoggerFor(this);
   }
 
@@ -77,8 +78,11 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     target: PodOwnershipTarget;
   }): Promise<OwnedWebIdEntry[]> {
     if (target.lookupUrl || target.serviceAccessToken) {
-      this.logger.warn('Pod ownership target requires remote verification; local resolver is fail-closed');
-      return [];
+      if (!target.lookupUrl || !target.serviceAccessToken) {
+        this.logger.warn('Pod ownership remote target is missing verification credentials; refusing unverified WebIDs');
+        return [];
+      }
+      return this.resolveRemoteOwnedWebIds(candidateWebIds, target);
     }
 
     const accountWebIds = new Set(await this.listAccountWebIds(accountId));
@@ -132,6 +136,94 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     }
 
     return entries;
+  }
+
+  private async resolveRemoteOwnedWebIds(
+    candidateWebIds: string[],
+    target: PodOwnershipTarget,
+  ): Promise<OwnedWebIdEntry[]> {
+    const candidates = candidateWebIds.filter(isNonEmptyString);
+    if (candidates.length === 0 || !target.lookupUrl || !target.serviceAccessToken) {
+      return [];
+    }
+
+    let lookupUrl: string;
+    try {
+      lookupUrl = new URL('/provision/webids', target.lookupUrl).toString();
+    } catch {
+      this.warnRemoteFailure();
+      return [];
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetch(lookupUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${target.serviceAccessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({ webIds: candidates }),
+      });
+    } catch {
+      this.warnRemoteFailure();
+      return [];
+    }
+
+    if (!response?.ok) {
+      this.warnRemoteFailure();
+      return [];
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      this.warnRemoteFailure();
+      return [];
+    }
+
+    if (!isRecord(body) || !Array.isArray(body.entries)) {
+      this.warnRemoteFailure();
+      return [];
+    }
+
+    const allowedWebIds = new Set(candidates);
+    const resolvedWebIds = new Set<string>();
+    const entries: OwnedWebIdEntry[] = [];
+    for (const entry of body.entries) {
+      if (!isRecord(entry)
+        || typeof entry.webId !== 'string'
+        || !allowedWebIds.has(entry.webId)
+        || resolvedWebIds.has(entry.webId)
+        || typeof entry.storageUrl !== 'string'
+        || ('podUrl' in entry && entry.podUrl !== undefined && typeof entry.podUrl !== 'string')) {
+        continue;
+      }
+
+      const podUrl = entry.podUrl as string | undefined;
+      if (!matchesTargetStorage(entry.storageUrl, target.storageUrl)
+        || (podUrl !== undefined && !matchesTargetStorage(podUrl, target.storageUrl))) {
+        continue;
+      }
+
+      const storageUrl = ensureTrailingSlash(entry.storageUrl);
+      entries.push({
+        webId: entry.webId,
+        storageUrl,
+        storageMode: deriveStorageMode(entry.webId, storageUrl),
+      });
+      resolvedWebIds.add(entry.webId);
+    }
+
+    return entries;
+  }
+
+  private warnRemoteFailure(): void {
+    // Never include the caught error, response body, or credentials: upstream
+    // services can echo sensitive values in either.
+    this.logger.warn('Remote Pod ownership lookup failed; refusing unverified WebIDs');
   }
 
   private warnStoreFailure(operation: string): void {
@@ -195,6 +287,10 @@ function dedupeStrings(values: string[]): string[] {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function sameStorageRoot(left: string, right: string): boolean {
