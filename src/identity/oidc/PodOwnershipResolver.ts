@@ -33,6 +33,8 @@ export interface CssPodOwnershipResolverOptions {
   podStore: PodStore;
   /** Optional fetch implementation for remote resolution; local resolution never uses it. */
   fetch?: FetchLike;
+  /** Maximum duration for a remote ownership lookup before it is aborted. */
+  remoteTimeoutMs?: number;
   logger?: ResolverLogger;
 }
 
@@ -48,11 +50,13 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
   private readonly webIdStore: WebIdStore;
   private readonly podStore: PodStore;
   private readonly fetch: FetchLike;
+  private readonly remoteTimeoutMs: number;
 
   public constructor(options: CssPodOwnershipResolverOptions) {
     this.webIdStore = options.webIdStore;
     this.podStore = options.podStore;
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.remoteTimeoutMs = options.remoteTimeoutMs ?? 15_000;
     this.logger = options.logger ?? getLoggerFor(this);
   }
 
@@ -142,7 +146,10 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
     candidateWebIds: string[],
     target: PodOwnershipTarget,
   ): Promise<OwnedWebIdEntry[]> {
-    const candidates = candidateWebIds.filter(isNonEmptyString);
+    const candidates = dedupeStrings(candidateWebIds
+      .filter(isNonEmptyString)
+      .map((webId) => webId.trim())
+      .filter(isNonEmptyString));
     if (candidates.length === 0 || !target.lookupUrl || !target.serviceAccessToken) {
       return [];
     }
@@ -155,72 +162,90 @@ export class CssPodOwnershipResolver implements PodOwnershipResolver {
       return [];
     }
 
-    let response: Response;
+    const controller = new AbortController();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error('Remote Pod ownership lookup timed out'));
+      }, this.remoteTimeoutMs);
+    });
     try {
-      response = await this.fetch(lookupUrl, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${target.serviceAccessToken}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({ webIds: candidates }),
-      });
-    } catch {
-      this.warnRemoteFailure();
-      return [];
-    }
-
-    if (!response?.ok) {
-      this.warnRemoteFailure();
-      return [];
-    }
-
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      this.warnRemoteFailure();
-      return [];
-    }
-
-    if (!isRecord(body) || !Array.isArray(body.entries)) {
-      this.warnRemoteFailure();
-      return [];
-    }
-
-    const allowedWebIds = new Set(candidates);
-    const resolvedWebIds = new Set<string>();
-    const entries: OwnedWebIdEntry[] = [];
-    for (const entry of body.entries) {
-      if (!isRecord(entry)
-        || typeof entry.webId !== 'string'
-        || typeof entry.storageUrl !== 'string'
-        || ('podUrl' in entry && entry.podUrl !== undefined && typeof entry.podUrl !== 'string')) {
+      let response: Response;
+      try {
+        response = await Promise.race([
+          this.fetch(lookupUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${target.serviceAccessToken}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: JSON.stringify({ webIds: candidates }),
+            signal: controller.signal,
+          }),
+          timeoutPromise,
+        ]);
+      } catch {
         this.warnRemoteFailure();
         return [];
       }
 
-      if (!allowedWebIds.has(entry.webId) || resolvedWebIds.has(entry.webId)) {
-        continue;
+      if (!response?.ok) {
+        this.warnRemoteFailure();
+        return [];
       }
 
-      const podUrl = entry.podUrl as string | undefined;
-      if (!matchesTargetStorage(entry.storageUrl, target.storageUrl)
-        || (podUrl !== undefined && !matchesTargetStorage(podUrl, target.storageUrl))) {
-        continue;
+      let body: unknown;
+      try {
+        body = await Promise.race([response.json(), timeoutPromise]);
+      } catch {
+        this.warnRemoteFailure();
+        return [];
       }
 
-      const storageUrl = ensureTrailingSlash(entry.storageUrl);
-      entries.push({
-        webId: entry.webId,
-        storageUrl,
-        storageMode: deriveStorageMode(entry.webId, storageUrl),
-      });
-      resolvedWebIds.add(entry.webId);
+      if (!isRecord(body) || !Array.isArray(body.entries)) {
+        this.warnRemoteFailure();
+        return [];
+      }
+
+      const allowedWebIds = new Set(candidates);
+      const resolvedWebIds = new Set<string>();
+      const entries: OwnedWebIdEntry[] = [];
+      for (const entry of body.entries) {
+        if (!isRecord(entry)
+          || typeof entry.webId !== 'string'
+          || typeof entry.storageUrl !== 'string'
+          || ('podUrl' in entry && entry.podUrl !== undefined && typeof entry.podUrl !== 'string')) {
+          this.warnRemoteFailure();
+          return [];
+        }
+
+        if (!allowedWebIds.has(entry.webId) || resolvedWebIds.has(entry.webId)) {
+          continue;
+        }
+
+        const podUrl = entry.podUrl as string | undefined;
+        if (!matchesTargetStorage(entry.storageUrl, target.storageUrl)
+          || (podUrl !== undefined && !matchesTargetStorage(podUrl, target.storageUrl))) {
+          continue;
+        }
+
+        const storageUrl = ensureTrailingSlash(entry.storageUrl);
+        entries.push({
+          webId: entry.webId,
+          storageUrl,
+          storageMode: deriveStorageMode(entry.webId, storageUrl),
+        });
+        resolvedWebIds.add(entry.webId);
+      }
+
+      return entries;
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
     }
-
-    return entries;
   }
 
   private warnRemoteFailure(): void {

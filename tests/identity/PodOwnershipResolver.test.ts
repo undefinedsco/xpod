@@ -10,6 +10,7 @@ describe('CssPodOwnershipResolver', () => {
   function createResolver(options: {
     fetch?: typeof fetch;
     logger?: { warn: (message: string) => void };
+    remoteTimeoutMs?: number;
   } = {}) {
     const webIdStore: WebIdStore = {
       findLinks: vi.fn().mockResolvedValue([
@@ -293,7 +294,7 @@ describe('CssPodOwnershipResolver', () => {
       storageUrl: 'https://node.example/alice/',
       storageMode: 'local',
     }]);
-    expect(fetchMock).toHaveBeenCalledWith('https://lookup.example/provision/webids', {
+    expect(fetchMock).toHaveBeenCalledWith('https://lookup.example/provision/webids', expect.objectContaining({
       method: 'POST',
       headers: {
         Authorization: 'Bearer short-lived-token',
@@ -301,7 +302,8 @@ describe('CssPodOwnershipResolver', () => {
         Accept: 'application/json',
       },
       body: JSON.stringify({ webIds: [aliceWebId] }),
-    });
+      signal: expect.any(AbortSignal),
+    }));
     expect(webIdStore.findLinks).not.toHaveBeenCalled();
     expect(podStore.findPods).not.toHaveBeenCalled();
   });
@@ -361,9 +363,6 @@ describe('CssPodOwnershipResolver', () => {
       storageUrl: 'https://node.example/alice/',
       storageMode: 'local',
     }]);
-    expect(fetchMock).toHaveBeenCalledWith('https://lookup.example/provision/webids', expect.objectContaining({
-      body: JSON.stringify({ webIds: [aliceWebId, aliceWebId] }),
-    }));
   });
 
   it('rejects remote entries whose storage root does not match the target', async () => {
@@ -497,6 +496,112 @@ describe('CssPodOwnershipResolver', () => {
       },
     })).resolves.toEqual([]);
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('normalizes candidate WebIDs before the remote request', async () => {
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(init?.body as string)).toEqual({ webIds: [aliceWebId] });
+      return new Response(JSON.stringify({
+        entries: [{
+          webId: aliceWebId,
+          storageUrl: 'https://node.example/alice/',
+        }],
+      }), { status: 200 });
+    });
+    const { resolver } = createResolver({ fetch: fetchMock });
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [` ${aliceWebId} `, '', '  ', aliceWebId, `\t${aliceWebId}\n`],
+      target: {
+        storageUrl: 'https://node.example/',
+        lookupUrl: 'https://lookup.example/',
+        serviceAccessToken: 'short-lived-token',
+      },
+    })).resolves.toEqual([expect.objectContaining({ webId: aliceWebId })]);
+  });
+
+  it('aborts a never-resolving remote request at the configured timeout', async () => {
+    let abortObserved = false;
+    const fetchMock = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const guard = setTimeout(() => reject(new Error('test guard timeout')), 100);
+      init?.signal?.addEventListener('abort', () => {
+        abortObserved = true;
+        clearTimeout(guard);
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    }));
+    const { resolver } = createResolver({ fetch: fetchMock, remoteTimeoutMs: 10 });
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [aliceWebId],
+      target: {
+        storageUrl: 'https://node.example/',
+        lookupUrl: 'https://lookup.example/',
+        serviceAccessToken: 'short-lived-token',
+      },
+    })).resolves.toEqual([]);
+    expect(abortObserved).toBe(true);
+  });
+
+  it('fails closed when the remote response body never resolves', async () => {
+    let signal: AbortSignal | undefined;
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      signal = init?.signal;
+      return {
+        ok: true,
+        json: () => new Promise<never>(() => undefined),
+      } as unknown as Response;
+    });
+    const { resolver } = createResolver({ fetch: fetchMock, remoteTimeoutMs: 10 });
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const guardPromise = new Promise<symbol>((resolve) => {
+      guard = setTimeout(() => resolve(Symbol('guard-timeout')), 100);
+    });
+
+    try {
+      const result = await Promise.race([
+        resolver.resolveOwnedWebIds({
+          accountId: 'alice-account',
+          candidateWebIds: [aliceWebId],
+          target: {
+            storageUrl: 'https://node.example/',
+            lookupUrl: 'https://lookup.example/',
+            serviceAccessToken: 'short-lived-token',
+          },
+        }),
+        guardPromise,
+      ]);
+      expect(result).toEqual([]);
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      if (guard !== undefined) {
+        clearTimeout(guard);
+      }
+    }
+  });
+
+  it('clears the remote timeout after a response completes', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ entries: [] }), { status: 200 }));
+      const { resolver } = createResolver({ fetch: fetchMock, remoteTimeoutMs: 25 });
+      const timersBefore = vi.getTimerCount();
+
+      await expect(resolver.resolveOwnedWebIds({
+        accountId: 'alice-account',
+        candidateWebIds: [aliceWebId],
+        target: {
+          storageUrl: 'https://node.example/',
+          lookupUrl: 'https://lookup.example/',
+          serviceAccessToken: 'short-lived-token',
+        },
+      })).resolves.toEqual([]);
+      expect(vi.getTimerCount()).toBe(timersBefore);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fails closed without requesting when either remote credential is missing', async () => {
