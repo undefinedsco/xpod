@@ -138,7 +138,7 @@ export interface ApiContainerConfig {
   aiGatewayConnectSigningSecret?: string;
   /** Xpod/Moonshot-issued Kimi device-code OAuth client id. Never reuse official CLI ids. */
   aiGatewayKimiClientId?: string;
-  /** Generic Pod SecretCell credential vault factory, configured by Xpod operations. */
+  /** Optional legacy SecretCell reader used only to migrate existing encrypted Pod credentials. */
   secretCellCredentialVaultFactory?: () => CredentialVault;
   /** Explicit provider endpoint overrides for controlled deployments and local E2E fixtures. */
   aiGatewayProviderBaseUrls?: Partial<Record<'openai', string>>;
