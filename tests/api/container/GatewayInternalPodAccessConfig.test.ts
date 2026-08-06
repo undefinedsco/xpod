@@ -110,7 +110,7 @@ describe('Gateway internal Pod access container config', () => {
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
   });
 
-  it('does not silently fall back to rotating service tokens as locator secrets', () => {
+  it('disables the gateway repository instead of falling back to rotating service tokens', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: undefined,
       gatewayLocatorKeyId: undefined,
@@ -118,7 +118,7 @@ describe('Gateway internal Pod access container config', () => {
       nodeToken: 'rotating-node-token',
     }));
 
-    expect(() => container.resolve('gatewayAccessKeyRepository')).toThrow(/GATEWAY_LOCATOR_SECRET/);
+    expect(container.resolve('gatewayAccessKeyRepository')).toBeUndefined();
   });
 
   it('constructs the default gateway repository when locator and internal access are configured', () => {
@@ -127,13 +127,13 @@ describe('Gateway internal Pod access container config', () => {
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
   });
 
-  it('fails fast for inference without the SecretCell credential vault', () => {
+  it('disables inference without the SecretCell credential vault', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       secretCellCredentialVaultFactory: undefined,
     }));
 
-    expect(() => container.resolve('aiGatewayService')).toThrow(/XPOD_SECRET_CELL_KEY/);
+    expect(container.resolve('aiGatewayService')).toBeUndefined();
   });
 
   it('constructs the inference gateway service when required dependencies are configured', () => {

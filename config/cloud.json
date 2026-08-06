@@ -205,9 +205,10 @@
       "pollIntervalMs": 1000
     },
     {
-      "comment": "Refreshes the PostgreSQL FTS/vector structures consumed by RDF queries and QLever.",
+      "comment": "Refreshes the PostgreSQL FTS/vector structures consumed by native RDF queries.",
       "@id": "urn:undefineds:xpod:RdfDerivedIndexingListener",
       "@type": "RdfDerivedIndexingListener",
+      "consumerId": "rdf-fts-vec-v1",
       "rdfEngine": { "@id": "urn:undefineds:xpod:SolidRdfEngine" },
       "resourceStore": { "@id": "urn:undefineds:xpod:SparqlResourceStoreBackend" },
       "embeddingService": { "@id": "urn:undefineds:xpod:DerivedIndexEmbeddingService" },

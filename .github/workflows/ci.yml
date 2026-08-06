@@ -26,6 +26,9 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Build workspace packages
+        run: bun run build:packages
+
       - name: Check platform package versions
         run: bun run check:platform-package-version
 
@@ -54,6 +57,9 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Build workspace packages
+        run: bun run build:packages
+
       - name: Build runtime artifacts
         run: bun run build:ts && bun run build:components
 
@@ -76,6 +82,9 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Build workspace packages
+        run: bun run build:packages
+
       - name: Bun runtime smoke
         run: bun run test:bun:runtime
 
@@ -94,6 +103,9 @@ jobs:
           node-version: 22
 
       - run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
 
       - name: Build runtime artifacts
         run: bun run build:ts && bun run build:components

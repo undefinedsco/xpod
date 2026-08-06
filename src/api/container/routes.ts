@@ -156,11 +156,13 @@ function registerSharedRoutes(
   });
   registerNodeRoutes(server, { repository: nodeRepo });
   const aiGatewayService = container.resolve('aiGatewayService');
-  registerChatRoutes(server, {
-    chatService,
-    aiGatewayService,
-    acceptanceEndpointsEnabled: process.env.XPOD_ACCEPTANCE_ENDPOINTS_ENABLED === 'true',
-  });
+  if (aiGatewayService) {
+    registerChatRoutes(server, {
+      chatService,
+      aiGatewayService,
+      acceptanceEndpointsEnabled: process.env.XPOD_ACCEPTANCE_ENDPOINTS_ENABLED === 'true',
+    });
+  }
   registerChatKitRoutes(server, { chatKitService });
   registerChatKitV1Routes(server, { store: chatKitStore });
   registerRunRoutes(server, { runStore: chatKitStore });
@@ -174,15 +176,17 @@ function registerSharedRoutes(
   registerRdfStatsRoutes(server, {
     rdfStorageStatsService,
   });
-  registerAiGatewayManagementRoutes(server, {
-    repository: gatewayAccessKeyRepository,
-    deployment: config.edition,
-    connectService: providerConnectService,
-    quotaService: providerQuotaService,
-    servicePrincipal: gatewayInternalPodAccess,
-    aiClientConfiguration: aiClientConfigurationService?.capability(),
-    aiConnectionInvocationKeyIssuer,
-  });
+  if (gatewayAccessKeyRepository) {
+    registerAiGatewayManagementRoutes(server, {
+      repository: gatewayAccessKeyRepository,
+      deployment: config.edition,
+      connectService: providerConnectService,
+      quotaService: providerQuotaService,
+      servicePrincipal: gatewayInternalPodAccess,
+      aiClientConfiguration: aiClientConfigurationService?.capability(),
+      aiConnectionInvocationKeyIssuer,
+    });
+  }
   registerAiClientConfigurationRoutes(server, {
     service: aiClientConfigurationService,
   });

@@ -64,6 +64,9 @@ describe('registerRoutes mode wiring', () => {
     vi.clearAllMocks();
     routes = {};
     mockServer = {
+      addResponseHeaders: vi.fn(),
+      addUpgradeHandler: vi.fn(),
+      addShutdownHandler: vi.fn(),
       route: vi.fn((method: string, path: string, handler: Function, options?: { public?: boolean }) => {
         storeRoute(method, path, handler, options);
       }),
@@ -272,6 +275,22 @@ describe('registerRoutes mode wiring', () => {
     }));
     expect(routes['GET /api/admin/status']).toBeUndefined();
     expect(routes['GET /api/linx/capabilities']).toBeUndefined();
+  });
+
+  it('starts non-AI routes when key-backed AI services are unavailable', () => {
+    registerRoutes(createContainer('local', {
+      services: {
+        aiGatewayService: undefined,
+        gatewayAccessKeyRepository: undefined,
+        aiConnectionInvocationKeyIssuer: undefined,
+      },
+    }));
+
+    expect(routes['GET /health']).toBeTypeOf('function');
+    expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
+    expect(routes['POST /v1/chat/completions']).toBeUndefined();
+    expect(routes['GET /v1/models']).toBeUndefined();
+    expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
   });
 
   it('registers local-only admin and onboarding routes in local mode', () => {

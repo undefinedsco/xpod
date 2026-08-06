@@ -3,6 +3,25 @@ import { describe, expect, it, vi } from 'vitest';
 import { RdfDerivedIndexingListener } from '../../src/storage/RdfDerivedIndexingListener';
 
 describe('RdfDerivedIndexingListener', () => {
+  it('exposes a stable durable consumer identity', () => {
+    const listener = createListener({
+      rdfEngine: engineMock(),
+      resourceStore: { getRepresentation: vi.fn() } as any,
+    });
+
+    expect(listener.consumerId).toBe('rdf-fts-vec-v1');
+  });
+
+  it('accepts an explicit durable consumer generation', () => {
+    const listener = createListener({
+      rdfEngine: engineMock(),
+      resourceStore: { getRepresentation: vi.fn() } as any,
+      consumerId: 'rdf-fts-vec-v2',
+    });
+
+    expect(listener.consumerId).toBe('rdf-fts-vec-v2');
+  });
+
   it('refreshes PostgreSQL text and vector structures from one authority read', async () => {
     const engine = engineMock();
     const resourceStore = {
@@ -72,6 +91,7 @@ function createListener(options: any): RdfDerivedIndexingListener {
     options.resolveCredential,
     options.defaultModel,
     options.supportedExtensions,
+    options.consumerId,
   );
 }
 
