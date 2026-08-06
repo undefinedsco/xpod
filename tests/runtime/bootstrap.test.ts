@@ -2,6 +2,7 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { buildRuntimeEnv, buildRuntimeShorthand, createCssRuntimeConfig, resolveRuntimeBootstrap } from '../../src/runtime/bootstrap';
+import { normalizeDatabaseUrl } from '../../src/runtime/database-url';
 import { nodeRuntimeHost } from '../../src/runtime/host/node/NodeRuntimeHost';
 import type { RuntimeHost } from '../../src/runtime/host/types';
 import type { RuntimePlatform } from '../../src/runtime/platform/types';
@@ -34,6 +35,29 @@ const ALLOW_ALL_AUTH_IMPORTS = [
 const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 
 describe('runtime bootstrap helpers', () => {
+  it('should trim whitespace before resolving database paths', () => {
+    const resolvePath = vi.fn((value: string) => `/sandbox/${value}`);
+
+    expect(normalizeDatabaseUrl('  relative/identity.sqlite  ', { resolvePath })).toBe('sqlite:/sandbox/relative/identity.sqlite');
+    expect(resolvePath).toHaveBeenCalledWith('relative/identity.sqlite');
+  });
+
+  it('should canonicalize supported database URL schemes', () => {
+    expect(normalizeDatabaseUrl('  SQLITE:/tmp/quadstore.sqlite  ')).toBe('sqlite:/tmp/quadstore.sqlite');
+    expect(normalizeDatabaseUrl('PostgreSQL://db.example/identity')).toBe('postgresql://db.example/identity');
+    expect(normalizeDatabaseUrl('POSTGRES://db.example/usage')).toBe('postgres://db.example/usage');
+    expect(normalizeDatabaseUrl('MySQL://db.example/other')).toBe('mysql://db.example/other');
+  });
+
+  it('should resolve Windows drive absolute and relative paths as files', () => {
+    const resolvePath = vi.fn((value: string) => `resolved:${value}`);
+
+    expect(normalizeDatabaseUrl('C:\\data\\identity.sqlite', { resolvePath })).toBe('sqlite:resolved:C:\\data\\identity.sqlite');
+    expect(normalizeDatabaseUrl('C:relative\\identity.sqlite', { resolvePath })).toBe('sqlite:resolved:C:relative\\identity.sqlite');
+    expect(resolvePath).toHaveBeenNthCalledWith(1, 'C:\\data\\identity.sqlite');
+    expect(resolvePath).toHaveBeenNthCalledWith(2, 'C:relative\\identity.sqlite');
+  });
+
   it('should normalize relative and absolute database paths', async() => {
     const state = await resolveRuntimeBootstrap('database-url-paths', {
       mode: 'local',
