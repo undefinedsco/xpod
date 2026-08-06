@@ -139,6 +139,8 @@ function encryptedRecordFromEnvelope(envelope: SecretCellEnvelope): EncryptedCre
 function envelopeFromEncryptedRecord(encrypted: EncryptedCredentialSecret): SecretCellEnvelope {
   const metadata = encrypted.metadata;
   if (
+    encrypted.algorithm !== 'AES-256-GCM'
+    ||
     !metadata?.secretCellWrapNonce
     || !metadata.secretCellWrapPurpose
     || !metadata.secretCellWrapVersion

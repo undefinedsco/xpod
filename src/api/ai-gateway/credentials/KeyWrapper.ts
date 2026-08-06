@@ -13,7 +13,7 @@ export interface WrappedDataKey {
 }
 
 export interface EncryptedCredentialSecret extends WrappedDataKey {
-  algorithm: 'AES-256-GCM';
+  algorithm: 'AES-256-GCM' | 'PLAINTEXT';
   aadPurpose: string;
   aadVersion: string;
   ciphertext: string;

@@ -127,13 +127,13 @@ describe('Gateway internal Pod access container config', () => {
     expect(container.resolve('gatewayAccessKeyRepository')).toBeTruthy();
   });
 
-  it('disables inference without the SecretCell credential vault', () => {
+  it('keeps inference available with plaintext Pod credentials when SecretCell is not configured', () => {
     const container = createApiContainer(baseConfig({
       gatewayLocatorSecret: '0123456789abcdef0123456789abcdef',
       secretCellCredentialVaultFactory: undefined,
     }));
 
-    expect(container.resolve('aiGatewayService')).toBeUndefined();
+    expect(container.resolve('aiGatewayService')).toBeTruthy();
   });
 
   it('constructs the inference gateway service when required dependencies are configured', () => {
@@ -159,12 +159,19 @@ describe('Gateway internal Pod access container config', () => {
     });
   });
 
-  it('fails fast when Connect is enabled without the SecretCell credential vault', () => {
-    expect(() => createApiContainer(baseConfig({
+  it('uses plaintext Pod credentials when Connect is enabled without SecretCell', async () => {
+    const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayKimiClientId: 'xpod-kimi-client',
       secretCellCredentialVaultFactory: undefined,
-    })).resolve('providerConnectService')).toThrow(/XPOD_SECRET_CELL_KEY/);
+    })).resolve('providerConnectService');
+
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'openai',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({ status: 'pending' });
   });
 
   it('keeps browser-assisted Connect usable when only the optional Kimi client id is missing', async () => {
