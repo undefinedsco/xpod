@@ -34,6 +34,59 @@ const ALLOW_ALL_AUTH_IMPORTS = [
 const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 
 describe('runtime bootstrap helpers', () => {
+  it('should normalize relative and absolute database paths', async() => {
+    const state = await resolveRuntimeBootstrap('database-url-paths', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-paths',
+      sparqlEndpoint: 'relative/quadstore.sqlite',
+      identityDbUrl: path.resolve('.test-data/runtime-bootstrap/database-url-paths/identity.sqlite'),
+      usageDbUrl: 'mysql://db.example/usage',
+    }, nodeRuntimeHost);
+
+    expect(state.sparqlEndpoint).toBe(`sqlite:${path.resolve('relative/quadstore.sqlite')}`);
+    expect(state.identityDbUrl).toBe(`sqlite:${path.resolve('.test-data/runtime-bootstrap/database-url-paths/identity.sqlite')}`);
+    expect(state.usageDbUrl).toBe('mysql://db.example/usage');
+  });
+
+  it('should preserve supported explicit database URLs', async() => {
+    const urls = [
+      'sqlite:/tmp/quadstore.sqlite',
+      'postgres://db.example/identity',
+      'postgresql://db.example/usage',
+      'mysql://db.example/other',
+    ];
+
+    for (const [index, url] of urls.entries()) {
+      const state = await resolveRuntimeBootstrap(`database-url-explicit-${index}`, {
+        mode: 'local',
+        transport: 'socket',
+        runtimeRoot: `.test-data/runtime-bootstrap/database-url-explicit-${index}`,
+        sparqlEndpoint: url,
+      }, nodeRuntimeHost);
+
+      expect(state.sparqlEndpoint).toBe(url);
+    }
+  });
+
+  it('should reject unknown database URL schemes', async() => {
+    await expect(resolveRuntimeBootstrap('database-url-unknown-scheme', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-unknown-scheme',
+      sparqlEndpoint: 'redis://db.example/quadstore',
+    }, nodeRuntimeHost)).rejects.toThrow(/Unsupported database URL scheme/);
+  });
+
+  it('should reject empty database URLs', async() => {
+    await expect(resolveRuntimeBootstrap('database-url-empty', {
+      mode: 'local',
+      transport: 'socket',
+      runtimeRoot: '.test-data/runtime-bootstrap/database-url-empty',
+      sparqlEndpoint: '',
+    }, nodeRuntimeHost)).rejects.toThrow(/Database URL must not be empty/);
+  });
+
   it('should resolve socket runtime bootstrap layout', async() => {
     const state = await resolveRuntimeBootstrap('test-id', {
       mode: 'local',

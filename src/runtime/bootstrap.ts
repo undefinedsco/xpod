@@ -14,6 +14,7 @@ import { applyAuthModeEnv, resolveAuthModeInput } from '../authorization/AuthMod
 import { extractComponentParameterContext, normalizeComponentParameterKeys } from './component-parameter-keys';
 import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
+import { normalizeDatabaseUrl } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -106,21 +107,6 @@ function withDefinedEntries(entries: Array<[string, string | number | boolean | 
     }
   }
   return result;
-}
-
-function normalizeDatabaseUrl(
-  value: string,
-  platform: Pick<RuntimePlatform, 'resolvePath'> = nodeRuntimePlatform,
-): string {
-  if (
-    value.startsWith('sqlite:') ||
-    value.startsWith('postgres://') ||
-    value.startsWith('postgresql://') ||
-    value.startsWith('mysql://')
-  ) {
-    return value;
-  }
-  return `sqlite:${platform.resolvePath(value)}`;
 }
 
 function readRuntimeEnvFile(
