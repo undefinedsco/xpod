@@ -6,6 +6,7 @@ export default defineConfig({
     exclude: [
       '**/dist/**',
       '**/.test-data/**',
+      '**/.worktrees/**',
       '**/node_modules/**',
     ],
   },

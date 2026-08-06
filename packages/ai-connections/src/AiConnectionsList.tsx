@@ -1,4 +1,5 @@
-import { AppletList, AppletListItem } from '@undefineds.co/shared-ui'
+import { useRef, type KeyboardEvent } from 'react'
+import { Avatar, AvatarFallback, cn } from '@undefineds.co/shared-ui'
 import type { AiConnectionsController } from './controller'
 import {
   PROVIDERS,
@@ -17,68 +18,88 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
     ? PROVIDERS.filter((provider) => provider.name.toLocaleLowerCase().includes(searchQuery))
     : PROVIDERS
 
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const selectedIndex = providers.findIndex((provider) => provider.id === selectedProvider)
+
   return (
-    <AppletList aria-label="AI 服务">
-      {providers.map((provider) => (
-        <ProviderListItem
-          key={provider.id}
-          provider={provider}
-          selected={selectedProvider === provider.id}
-          state={providerStates[provider.id] ?? 'loading'}
-          onSelect={() => controller.selectProvider(provider.id)}
-        />
-      ))}
+    <div role="listbox" aria-label="AI 服务" aria-orientation="vertical" className="py-0">
+      {providers.map((provider, index) => {
+        const selected = selectedProvider === provider.id
+        const tabbable = selected || (selectedIndex < 0 && index === 0)
+        const state = providerStates[provider.id] ?? 'loading'
+
+        const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+          let nextIndex: number
+          if (event.key === 'ArrowDown') nextIndex = Math.min(index + 1, providers.length - 1)
+          else if (event.key === 'ArrowUp') nextIndex = Math.max(index - 1, 0)
+          else if (event.key === 'Home') nextIndex = 0
+          else if (event.key === 'End') nextIndex = providers.length - 1
+          else return
+
+          event.preventDefault()
+          controller.selectProvider(providers[nextIndex].id)
+          optionRefs.current[nextIndex]?.focus()
+        }
+
+        return (
+          <button
+            ref={(node) => {
+              optionRefs.current[index] = node
+            }}
+            key={provider.id}
+            type="button"
+            role="option"
+            aria-selected={selected}
+            aria-label={provider.name}
+            aria-describedby={`ai-connections-provider-${provider.id}-status`}
+            tabIndex={tabbable ? 0 : -1}
+            onClick={() => controller.selectProvider(provider.id)}
+            onKeyDown={handleKeyDown}
+            className={cn(
+              'group flex w-full items-center gap-3 border-l-[3px] border-transparent px-4 py-3 text-left transition-colors',
+              selected ? 'border-l-primary bg-accent/80' : 'hover:bg-muted/40',
+            )}
+          >
+            <Avatar className="h-9 w-9 shrink-0 rounded-md border border-border/20">
+              <AvatarFallback className="rounded-md bg-muted text-[10px] font-bold uppercase text-muted-foreground">
+                {providerMark(provider.id)}
+              </AvatarFallback>
+            </Avatar>
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-sm font-medium',
+                selected ? 'text-foreground' : 'text-foreground/80',
+              )}
+            >
+              {provider.name}
+            </span>
+            <ProviderStateIndicator state={state} statusId={`ai-connections-provider-${provider.id}-status`} />
+          </button>
+        )
+      })}
       {providers.length === 0 ? (
-        <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-          没有匹配的 Provider
-        </p>
+        <p className="p-8 text-center text-xs text-muted-foreground">无结果</p>
       ) : null}
       {providerLoadError ? (
-        <p className="px-3 py-2 text-xs text-destructive">
-          Provider 状态读取失败：{providerLoadError}
-        </p>
+        <p className="px-4 py-2 text-xs text-destructive">Provider 状态读取失败：{providerLoadError}</p>
       ) : null}
-    </AppletList>
+    </div>
   )
 }
 
-function ProviderListItem({
-  provider,
-  selected,
+function ProviderStateIndicator({
   state,
-  onSelect,
+  statusId,
 }: {
-  provider: (typeof PROVIDERS)[number]
-  selected: boolean
   state: import('./controller').ProviderProductState
-  onSelect: () => void
+  statusId: string
 }) {
-  const statusId = `ai-connections-provider-${provider.id}-status`
-  const stateLabel = providerStateLabel(state)
+  const active = state === 'configured' || state === 'connected'
   return (
-    <AppletListItem
-      selected={selected}
-      aria-label={provider.name}
-      aria-describedby={statusId}
-      onClick={onSelect}
-      className="gap-3 py-2.5"
-    >
-      <span
-        aria-hidden="true"
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-muted text-[10px] font-semibold text-muted-foreground"
-      >
-        {providerMark(provider.id)}
-      </span>
-      <span className="min-w-0 flex-1 truncate">{provider.name}</span>
-      <span
-        id={statusId}
-        role="status"
-        aria-live="polite"
-        className="shrink-0 text-[11px] font-normal text-muted-foreground"
-      >
-        {stateLabel}
-      </span>
-    </AppletListItem>
+    <span id={statusId} role="status" aria-live="polite" className="flex shrink-0 items-center gap-1.5">
+      {active ? <span className="h-2 w-2 rounded-full bg-primary" aria-hidden="true" /> : null}
+      <span className="text-[11px] font-normal text-muted-foreground">{providerStateLabel(state)}</span>
+    </span>
   )
 }
 

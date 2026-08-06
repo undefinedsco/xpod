@@ -58,7 +58,7 @@ describe('AI Connection two-pane contribution', () => {
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'OpenAI' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
     for (const name of ['OpenAI', 'Anthropic', 'Kimi', '百炼', 'DeepSeek']) {
-      expect(screen.getByRole('button', { name })).toBeTruthy()
+      expect(screen.getByRole('option', { name })).toBeTruthy()
     }
     expect(screen.queryByRole('button', { name: 'Gateway Keys' })).toBeNull()
     expect(screen.queryByRole('button', { name: '编码客户端' })).toBeNull()
@@ -77,8 +77,8 @@ describe('AI Connection two-pane contribution', () => {
       target: { value: 'kimi' },
     })
 
-    expect(screen.getByRole('button', { name: 'Kimi' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'OpenAI' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'Kimi' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: 'OpenAI' })).toBeNull()
   })
 
   it('updates the main region when a Provider is selected', () => {
@@ -90,7 +90,7 @@ describe('AI Connection two-pane contribution', () => {
     )
 
     render(<>{mounted.list}<div data-testid="main-header">{mounted.mainHeader}</div>{mounted.main}</>)
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'AI 服务' })).getByRole('button', { name: 'Kimi' }))
+    fireEvent.click(within(screen.getByRole('listbox', { name: 'AI 服务' })).getByRole('option', { name: 'Kimi' }))
 
     expect(screen.getByRole('region', { name: 'Kimi 详情' })).toBeTruthy()
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Kimi' })).toBeTruthy()

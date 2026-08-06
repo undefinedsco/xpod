@@ -250,7 +250,7 @@ describe('AI Connection controller host.solid integration', () => {
 
     render(<>{<AiConnectionsList controller={controller} />}<AiConnectionsMain controller={controller} /></>)
 
-    const openAiButton = screen.getByRole('button', { name: 'OpenAI' })
+    const openAiButton = screen.getByRole('option', { name: 'OpenAI' })
     const describedBy = openAiButton.getAttribute('aria-describedby')
     expect(describedBy).toBeTruthy()
     expect(document.getElementById(describedBy!)?.textContent).toBe('读取中')
