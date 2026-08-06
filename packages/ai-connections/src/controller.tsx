@@ -20,14 +20,17 @@ export interface AiProviderDefinition {
   name: string
   browserMode: 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported'
   browserLabel: string
+  description: string
+  homeUrl: string
+  apiKeyUrl?: string
 }
 
 export const PROVIDERS: AiProviderDefinition[] = [
-  { id: 'openai', name: 'OpenAI', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台' },
-  { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台' },
-  { id: 'kimi', name: 'Kimi', browserMode: 'deviceCodeOAuth', browserLabel: '浏览器鉴权' },
-  { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台' },
-  { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '浏览器鉴权不支持' },
+  { id: 'openai', name: 'OpenAI', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台', description: 'OpenAI 模型与编码能力', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台', description: 'Claude 模型与编码能力', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys' },
+  { id: 'kimi', name: 'Kimi', browserMode: 'deviceCodeOAuth', browserLabel: '浏览器鉴权', description: 'Moonshot AI 模型服务', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys' },
+  { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台', description: '阿里云百炼模型服务', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key' },
+  { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '浏览器鉴权不支持', description: 'DeepSeek 模型服务', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys' },
 ]
 
 export type ProviderProductState =

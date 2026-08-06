@@ -1,7 +1,15 @@
+import { useMemo, useState } from 'react'
 import {
+  Avatar,
+  AvatarFallback,
   Badge,
   Button,
   Input,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+  cn,
 } from '@undefineds.co/shared-ui'
 import type {
   AiConnectAttempt,
@@ -9,11 +17,20 @@ import type {
   AiQuotaSnapshot,
 } from './ai-connections-client'
 import {
+  Box,
+  Check,
+  Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
+  Globe,
+  Image as ImageIcon,
+  Info,
   KeyRound,
   Loader2,
   LogOut,
   RotateCw,
+  Search,
 } from 'lucide-react'
 import { AiQuotaCard } from './AiQuotaCard'
 
@@ -67,157 +84,308 @@ export function AiProviderCard({
   const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
+  const [showKey, setShowKey] = useState(false)
+  const [modelSearch, setModelSearch] = useState('')
+  const [copiedModelId, setCopiedModelId] = useState<string>()
+
+  const visibleModels = useMemo(() => {
+    const query = modelSearch.trim().toLocaleLowerCase()
+    if (!query) return models
+    return models.filter((model) =>
+      model.id.toLocaleLowerCase().includes(query)
+      || model.displayName?.toLocaleLowerCase().includes(query))
+  }, [models, modelSearch])
+
+  const copyModelId = async (modelId: string) => {
+    try {
+      await navigator.clipboard.writeText(modelId)
+      setCopiedModelId(modelId)
+      setTimeout(() => setCopiedModelId((current) => (current === modelId ? undefined : current)), 1_500)
+    } catch {
+      setCopiedModelId(undefined)
+    }
+  }
 
   return (
-    <div>
-      <header className="flex items-start justify-between gap-4 pb-5">
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-foreground">{definition.name}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {providerDescription(definition.id)}
-          </p>
-        </div>
-        <Badge variant={isConnected || isConfigured ? 'default' : 'secondary'}>
-          {connectionStatusLabel(status)}
-        </Badge>
-      </header>
-
-      <section className="border-t border-border/60 py-5" aria-label="当前连接">
-        <div className="mb-4">
-          <h3 className="text-sm font-medium">当前连接</h3>
-          {accountLabel ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {maskAccountLabel(accountLabel)}
-            </p>
-          ) : (
-            <p className="mt-1 text-xs text-muted-foreground">
-              Provider 凭证加密保存在当前 Pod。
-            </p>
-          )}
-        </div>
-
-        {attempt?.userCode ? (
-          <div className="mb-4 border-l-2 border-primary bg-muted/30 px-3 py-2 text-sm">
-            验证码：<strong className="font-mono">{attempt.userCode}</strong>
+    <TooltipProvider>
+      <div>
+        <header className="flex items-start justify-between gap-4 pb-5">
+          <div className="flex items-center gap-3">
+            <Avatar className="h-9 w-9 shrink-0 rounded-lg border border-border/50 bg-muted/50 shadow-sm">
+              <AvatarFallback className="rounded-lg bg-transparent text-sm font-bold uppercase text-muted-foreground">
+                {providerMark(definition.id)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex flex-col justify-center gap-0.5">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold leading-none tracking-tight text-foreground">{definition.name}</h2>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="提供商说明"
+                      className="cursor-help rounded-sm text-muted-foreground/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Info aria-hidden="true" className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs text-xs">{definition.description}</TooltipContent>
+                </Tooltip>
+              </div>
+              <a
+                href={definition.homeUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-0.5 text-[10px] leading-none text-muted-foreground transition-colors hover:text-primary"
+              >
+                访问官网 <ExternalLink aria-hidden="true" className="h-2.5 w-2.5" />
+              </a>
+            </div>
           </div>
-        ) : null}
+          <Badge variant={isConnected || isConfigured ? 'default' : 'secondary'}>
+            {connectionStatusLabel(status)}
+          </Badge>
+        </header>
 
-        <div className="flex flex-wrap gap-2">
-          {isConnected ? (
-            <>
-              <Button variant="outline" size="sm" disabled={busy || disabled} onClick={onBeginBrowser}>
-                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCw className="mr-2 h-4 w-4" />}
-                重新连接
-              </Button>
-              <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
-                <LogOut className="mr-2 h-4 w-4" />
-                断开连接
-              </Button>
-            </>
-          ) : isConfigured ? (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-label="更新 API Key"
-                disabled={busy || disabled}
-                onClick={onBeginApiKey}
-              >
-                <KeyRound className="mr-2 h-4 w-4" />
-                更新 API Key
-              </Button>
-              <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
-                移除配置
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy || disabled || definition.browserMode === 'connectUnsupported'}
-                onClick={onBeginBrowser}
-              >
-                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
-                {definition.browserLabel}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-label={`${definition.name} API Key`}
-                disabled={busy || disabled}
-                onClick={onBeginApiKey}
-              >
-                <KeyRound className="mr-2 h-4 w-4" />
-                配置 API Key
-              </Button>
-            </>
-          )}
-        </div>
-
-        {apiKeyAttempt ? (
-          <div className="mt-4 space-y-2">
-            <Input
-              type="password"
-              autoComplete="off"
-              aria-label={`${definition.name} API Key 输入`}
-              placeholder="从官方控制台复制 API Key"
-              value={apiKey}
-              onChange={(event) => onApiKeyChange(event.target.value)}
-            />
-            <Button
-              size="sm"
-              aria-label={`保存 ${definition.name} API Key`}
-              disabled={!apiKey.trim() || busy || disabled}
-              onClick={onSaveApiKey}
-            >
-              保存 API Key
-            </Button>
+        <section className="border-t border-border/60 py-5" aria-label="当前连接">
+          <div className="mb-4">
+            <h3 className="text-sm font-medium">当前连接</h3>
+            {accountLabel ? (
+              <p className="mt-1 text-xs text-muted-foreground">{maskAccountLabel(accountLabel)}</p>
+            ) : (
+              <p className="mt-1 text-xs text-muted-foreground">Provider 凭证加密保存在当前 Pod。</p>
+            )}
           </div>
-        ) : null}
-        {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
-      </section>
 
-      <section className="border-t border-border/60 py-5">
-        <AiQuotaCard
-          providerName={definition.name}
-          quota={quota}
-          busy={busy}
-          disabled={disabled}
-          onRefresh={onRefreshQuota}
-        />
-      </section>
+          {attempt?.userCode ? (
+            <div className="mb-4 border-l-2 border-primary bg-muted/30 px-3 py-2 text-sm">
+              验证码：<strong className="font-mono">{attempt.userCode}</strong>
+            </div>
+          ) : null}
 
-      <section className="border-t border-border/60 py-5">
-        <h3 className="text-sm font-medium">可用模型</h3>
-        {models.length === 0 ? (
-          <p className="mt-2 text-xs text-muted-foreground">当前身份暂无可用模型</p>
-        ) : (
-          <ul className="mt-3 divide-y divide-border/50 text-sm">
-            {models.map((model) => (
-              <li key={model.id} className="flex items-center justify-between gap-4 py-2.5">
-                <span>{model.displayName ?? model.id}</span>
-                {model.displayName ? (
-                  <span className="truncate font-mono text-xs text-muted-foreground">
-                    {model.id}
-                  </span>
+          <div className="flex flex-wrap gap-2">
+            {isConnected ? (
+              <>
+                <Button variant="outline" size="sm" disabled={busy || disabled} onClick={onBeginBrowser}>
+                  {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCw className="mr-2 h-4 w-4" />}
+                  重新连接
+                </Button>
+                <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
+                  <LogOut className="mr-2 h-4 w-4" />
+                  断开连接
+                </Button>
+              </>
+            ) : isConfigured ? (
+              <>
+                <Button variant="outline" size="sm" aria-label="更新 API Key" disabled={busy || disabled} onClick={onBeginApiKey}>
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  更新 API Key
+                </Button>
+                <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
+                  移除配置
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || disabled || definition.browserMode === 'connectUnsupported'}
+                  onClick={onBeginBrowser}
+                >
+                  {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
+                  {definition.browserLabel}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`${definition.name} API Key`}
+                  disabled={busy || disabled}
+                  onClick={onBeginApiKey}
+                >
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  配置 API Key
+                </Button>
+              </>
+            )}
+          </div>
+
+          {apiKeyAttempt ? (
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">API Key</span>
+                {definition.apiKeyUrl ? (
+                  <a href={definition.apiKeyUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                    获取 API Key
+                  </a>
                 ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </div>
+              </div>
+              <div className="group relative">
+                <Input
+                  type={showKey ? 'text' : 'password'}
+                  autoComplete="off"
+                  aria-label={`${definition.name} API Key 输入`}
+                  placeholder="从官方控制台复制 API Key"
+                  value={apiKey}
+                  onChange={(event) => onApiKeyChange(event.target.value)}
+                  className="border-border/60 bg-muted/20 pr-10 font-mono transition-colors focus:border-primary/50 focus:bg-background"
+                />
+                <div className="absolute bottom-1 right-1 top-1 flex items-center">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-full w-8 rounded hover:bg-muted"
+                    onClick={() => setShowKey((current) => !current)}
+                    aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+                  >
+                    {showKey
+                      ? <EyeOff className="h-4 w-4 text-muted-foreground" />
+                      : <Eye className="h-4 w-4 text-muted-foreground" />}
+                  </Button>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                aria-label={`保存 ${definition.name} API Key`}
+                disabled={!apiKey.trim() || busy || disabled}
+                onClick={onSaveApiKey}
+              >
+                保存 API Key
+              </Button>
+            </div>
+          ) : null}
+          {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
+        </section>
+
+        <section className="border-t border-border/60 py-5">
+          <AiQuotaCard
+            providerName={definition.name}
+            quota={quota}
+            busy={busy}
+            disabled={disabled}
+            onRefresh={onRefreshQuota}
+          />
+        </section>
+
+        <section className="border-t border-border/60 py-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Box className="h-4 w-4 text-primary" />
+              <h3 className="text-sm font-medium text-foreground/90">可用模型</h3>
+              <Badge variant="secondary" className="ml-2 text-xs font-normal">{models.length}</Badge>
+            </div>
+            {models.length > 0 ? (
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={modelSearch}
+                  onChange={(event) => setModelSearch(event.target.value)}
+                  placeholder="搜索模型..."
+                  className="h-8 w-[180px] bg-muted/20 pl-8 text-xs"
+                  autoComplete="off"
+                  data-lpignore="true"
+                  data-1p-ignore
+                />
+              </div>
+            ) : null}
+          </div>
+
+          {models.length === 0 ? (
+            <p className="mt-3 text-xs text-muted-foreground">当前身份暂无可用模型</p>
+          ) : visibleModels.length === 0 ? (
+            <div className="mt-3 rounded-lg border border-dashed border-border/50 bg-muted/5 py-8 text-center text-sm text-muted-foreground">
+              未找到匹配的模型
+            </div>
+          ) : (
+            <div className="mt-3 grid gap-2">
+              {visibleModels.map((model) => {
+                const capabilities = inferModelCapabilities(model.id)
+                return (
+                  <div
+                    key={model.id}
+                    className="group flex items-center gap-3 rounded-lg border border-border/40 bg-card p-3 transition-all duration-200 hover:border-border/60 hover:bg-accent/30"
+                  >
+                    <div className="shrink-0 rounded bg-muted/50 p-2 text-muted-foreground transition-colors group-hover:text-primary">
+                      <Box className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-foreground/90">{model.displayName ?? model.id}</span>
+                        <div className="flex items-center gap-1">
+                          {capabilities.map((capability) => <CapabilityIcon key={capability} type={capability} />)}
+                        </div>
+                      </div>
+                      {model.displayName ? (
+                        <div className="mt-0.5 flex items-center gap-1.5">
+                          <code className="max-w-[300px] truncate font-mono text-[10px] text-muted-foreground opacity-70">{model.id}</code>
+                          <button
+                            type="button"
+                            onClick={() => void copyModelId(model.id)}
+                            className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100"
+                            aria-label={`复制 ${model.displayName} ID`}
+                            title="复制 ID"
+                          >
+                            {copiedModelId === model.id
+                              ? <Check aria-hidden="true" className="h-3 w-3 text-primary" />
+                              : <Copy aria-hidden="true" className="h-3 w-3" />}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+    </TooltipProvider>
   )
 }
 
-function providerDescription(provider: AiProviderDefinition['id']): string {
+function CapabilityIcon({ type }: { type: string }) {
+  const capability = {
+    vision: { icon: ImageIcon, label: '视觉识别', className: 'text-green-500' },
+    web: { icon: Globe, label: '联网搜索', className: 'text-blue-500' },
+    function_calling: { icon: Box, label: '函数调用', className: 'text-orange-500' },
+  }[type]
+  if (!capability) return null
+
+  const Icon = capability.icon
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={capability.label}
+          className="flex cursor-help items-center justify-center rounded-sm opacity-80 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Icon aria-hidden="true" className={cn('h-3.5 w-3.5', capability.className)} />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{capability.label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+export function inferModelCapabilities(modelId: string, explicitCapabilities: string[] = []): string[] {
+  if (explicitCapabilities.length > 0) return explicitCapabilities
+
+  const capabilities = new Set<string>()
+  const normalizedId = modelId.toLowerCase()
+  if (/vision|4o|claude-3|gemini-1\.5|llava/.test(normalizedId)) capabilities.add('vision')
+  if (/gpt-4|turbo|claude|tool|deepseek|mistral/.test(normalizedId)) capabilities.add('function_calling')
+  if (/online|search|sonar|net/.test(normalizedId)) capabilities.add('web')
+  return [...capabilities]
+}
+
+function providerMark(provider: AiProviderDefinition['id']): string {
   switch (provider) {
-    case 'openai': return 'OpenAI 模型与编码能力'
-    case 'anthropic': return 'Claude 模型与编码能力'
-    case 'kimi': return 'Moonshot AI 模型服务'
-    case 'bailian': return '阿里云百炼模型服务'
-    case 'deepseek': return 'DeepSeek 模型服务'
+    case 'openai': return 'OA'
+    case 'anthropic': return 'A'
+    case 'kimi': return 'K'
+    case 'bailian': return '百'
+    case 'deepseek': return 'DS'
   }
 }
 
