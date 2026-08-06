@@ -2014,8 +2014,11 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
     });
   });
 
-  it('builds RDF3X parity query engines with existing-schema read-only open options', () => {
-    const options = benchmark.buildRdf3xParityQueryEngineOptions('postgres://example.test/seeded_benchmark');
+  it('builds RDF3X parity query engines with the requested timeout and existing-schema read-only open options', () => {
+    const options = benchmark.buildRdf3xParityQueryEngineOptions(
+      'postgres://example.test/seeded_benchmark',
+      900_000,
+    );
     const connection = new URL(
       benchmark.buildRdf3xParityReadOnlyConnectionString('postgres://example.test/seeded_benchmark'),
     );
@@ -2026,6 +2029,10 @@ describe('native RDF3X/QLever cloud replacement runner', () => {
       maintenanceIntervalMs: 0,
       queryResultCacheEnabled: false,
       materializedResultCacheEnabled: false,
+    });
+    expect((options.pool as { options?: Record<string, unknown> }).options).toMatchObject({
+      query_timeout: 900_000,
+      statement_timeout: 900_000,
     });
     expect(connection.searchParams.get('options')).toContain('-c default_transaction_read_only=on');
   });

@@ -2257,13 +2257,16 @@ export function createRdf3xParityPrepareEngine(connectionUrl: string): Rdf3xPari
   ));
 }
 
-export function buildRdf3xParityQueryEngineOptions(connectionUrl: string): PostgresRdfEngineOptions {
+export function buildRdf3xParityQueryEngineOptions(
+  connectionUrl: string,
+  operationTimeoutMs: number = DEFAULT_OPERATION_TIMEOUT_MS,
+): PostgresRdfEngineOptions {
   return {
     ...buildBenchmarkPostgresEngineOptions(
       'rdf3x',
       buildRdf3xParityReadOnlyConnectionString(connectionUrl),
       'off',
-      DEFAULT_OPERATION_TIMEOUT_MS,
+      operationTimeoutMs,
     ),
     readOnlyExistingSchema: true,
   };
@@ -2469,7 +2472,7 @@ async function executeRdf3xParityProductQuery(
   query: string,
   operationTimeoutMs: number,
 ): Promise<SparqlJsonBindingsBody> {
-  const store = new PostgresRdfEngine(buildRdf3xParityQueryEngineOptions(connectionUrl));
+  const store = new PostgresRdfEngine(buildRdf3xParityQueryEngineOptions(connectionUrl, operationTimeoutMs));
   try {
     await store.open();
     const sparql = new SolidRdfSparqlEngine(store);
