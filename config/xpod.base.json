@@ -105,6 +105,17 @@
       }
     },
     {
+      "comment": "Resolve account WebID ownership through the CSS identity stores without opening a second database connection.",
+      "@id": "urn:undefineds:xpod:PodOwnershipResolver",
+      "@type": "CssPodOwnershipResolver",
+      "webIdStore": {
+        "@id": "urn:solid-server:default:WebIdStore"
+      },
+      "podStore": {
+        "@id": "urn:solid-server:default:PodStore"
+      }
+    },
+    {
       "comment": "Scope OIDC WebID choices to Pods known by the current storage provider.",
       "@type": "Override",
       "overrideInstance": {
@@ -112,8 +123,8 @@
       },
       "overrideParameters": {
         "@type": "ScopedPickWebIdHandler",
-        "webIdStore": {
-          "@id": "urn:solid-server:default:WebIdStore"
+        "ownershipResolver": {
+          "@id": "urn:undefineds:xpod:PodOwnershipResolver"
         },
         "providerFactory": {
           "@id": "urn:solid-server:default:IdentityProviderFactory"
@@ -124,10 +135,6 @@
         },
         "provisionBaseUrl": {
           "@id": "urn:solid-server:default:variable:oidcIssuer",
-          "@type": "Variable"
-        },
-        "identityDbUrl": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
           "@type": "Variable"
         }
       }

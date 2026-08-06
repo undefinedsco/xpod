@@ -131,6 +131,7 @@ import { AutoDetectOidcHandler } from './identity/oidc/AutoDetectOidcHandler';
 import { AutoDetectIdentityProviderHandler } from './identity/oidc/AutoDetectIdentityProviderHandler';
 import { LoopbackClientIdAdapterFactory } from './identity/oidc/LoopbackClientIdAdapterFactory';
 import { ScopedPickWebIdHandler } from './identity/oidc/ScopedPickWebIdHandler';
+import { CssPodOwnershipResolver } from './identity/oidc/PodOwnershipResolver';
 // Provision components
 import { ProvisionPodCreator } from './provision/ProvisionPodCreator';
 import { ProvisionCodeCodec } from './provision/ProvisionCodeCodec';
@@ -154,6 +155,12 @@ export type { EdgeNodeAgentOptions, EdgeNodeP2PAcceptEvent } from './edge/EdgeNo
 export type { EdgeNodeTunnelManager } from './edge/interfaces/EdgeNodeTunnelManager';
 export type { QuotaService, AccountQuota } from './quota/QuotaService';
 export type { EntitlementProvider, AccountEntitlement } from './quota/EntitlementProvider';
+export type {
+  OwnedWebIdEntry,
+  PodOwnershipResolver,
+  PodOwnershipTarget,
+  CssPodOwnershipResolverOptions,
+} from './identity/oidc/PodOwnershipResolver';
 // Tunnel and Subdomain types
 export type {
   TunnelProvider,
@@ -270,6 +277,7 @@ export {
   AutoDetectIdentityProviderHandler,
   LoopbackClientIdAdapterFactory,
   ScopedPickWebIdHandler,
+  CssPodOwnershipResolver,
   UrlAwareRedisLocker,
   // Provision exports
   ProvisionPodCreator,
