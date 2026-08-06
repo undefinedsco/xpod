@@ -49,7 +49,11 @@ interface PodOwnershipResolver {
   resolveOwnedWebIds(input: {
     accountId: string;
     candidateWebIds: string[];
-    targetStorageUrl: string;
+    target: {
+      storageUrl: string;
+      lookupUrl?: string;
+      serviceAccessToken?: string;
+    };
   }): Promise<Array<{
     webId: string;
     storageUrl: string;
@@ -58,7 +62,8 @@ interface PodOwnershipResolver {
 }
 ```
 
-接口表达的是授权事实，不暴露数据库、文件路径或部署类型。
+接口表达的是授权事实，不暴露数据库、文件路径或部署类型。远端 target
+中的短期 service access token 只由 resolver 消费，不进入日志或返回值。
 
 ### 3. Local/CSS 实现
 
