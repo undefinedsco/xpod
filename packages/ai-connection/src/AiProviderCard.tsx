@@ -139,7 +139,7 @@ export function AiProviderCard({
             </p>
           ) : (
             <p className="mt-1 text-xs text-muted-foreground">
-              Provider 凭证加密保存在当前 Pod。
+              Provider 凭证保存在当前 Pod，并受 Pod 权限保护。
             </p>
           )}
         </div>

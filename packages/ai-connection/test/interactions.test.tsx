@@ -105,6 +105,13 @@ describe('AI Connection settings', () => {
     expect(screen.queryByText(/local|cloud|deployment/i)).toBeNull()
   })
 
+  it('describes Pod credential storage without claiming encryption', () => {
+    render(<AiConnectionPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
+
+    expect(screen.getByText('Provider 凭证保存在当前 Pod，并受 Pod 权限保护。')).toBeTruthy()
+    expect(screen.queryByText(/Provider 凭证加密保存在当前 Pod/)).toBeNull()
+  })
+
   it('presents browser auth as connected and masks the account label', async () => {
     const current = client({
       listProviders: vi.fn(async () => [{
