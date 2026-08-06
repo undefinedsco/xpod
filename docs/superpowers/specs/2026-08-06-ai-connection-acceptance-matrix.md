@@ -63,7 +63,7 @@ bun scripts/accept-xpod-settings.ts --allow-incomplete
 结果：
 
 - TypeScript 构建通过（9.68s）。
-- Packages 构建通过（2.86s）；packages 测试通过：`solid-sdk` 26、`shared-ui` 4、`extension-sdk` 61、`ai-connection` 101，共 192 个测试。
+- Packages 构建通过（2.86s）；packages 测试通过：`solid-sdk` 26、`shared-ui` 4、`extension-sdk` 61、`ai-connection` 102，共 193 个测试。
 - ownership/Connections 核心回归：21 个测试文件，345 个通过、1 个跳过（`AiGatewayPodIsolation.integration.test.ts` 在当前无专用集成开关时跳过），无失败（6.31s）。其中包含默认开启 Connect 与显式关闭 Connect 两种配置断言。
 - 裸路径 seed→Consent 浏览器验收：1 个通过（11.49s）；使用 fresh runtime，Authorize 后额外确认没有登录边界/登录失败提示并出现真实 OpenAI Settings 内容。
 - 完整集成回归：lite 22 个测试文件、128 个通过、5 个跳过（47.70s）；Docker full 4 个测试文件、40 个全部通过（30.68s）。
