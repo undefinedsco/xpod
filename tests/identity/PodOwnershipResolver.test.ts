@@ -64,6 +64,56 @@ describe('CssPodOwnershipResolver', () => {
     expect(podStore.getOwners).not.toHaveBeenCalledWith('pod-other-root');
   });
 
+  it('classifies an owner on the same storage root as cloud', async () => {
+    const { resolver } = createResolver();
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [aliceWebId],
+      target: { storageUrl: 'http://localhost:3000/' },
+    })).resolves.toEqual([expect.objectContaining({ storageMode: 'cloud' })]);
+  });
+
+  it('classifies an owner on a different storage root as local', async () => {
+    const { resolver, webIdStore, podStore } = createResolver();
+    const localWebId = 'https://id.example/alice/profile/card#me';
+    webIdStore.findLinks = vi.fn().mockResolvedValue([{ id: 'link-local', webId: localWebId }]);
+    podStore.findPods = vi.fn().mockResolvedValue([
+      { id: 'pod-local', baseUrl: 'https://node.example/alice/' },
+    ]);
+    podStore.getOwners = vi.fn().mockResolvedValue([{ webId: localWebId, visible: false }]);
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [localWebId],
+      target: { storageUrl: 'https://node.example/' },
+    })).resolves.toEqual([{
+      webId: localWebId,
+      storageUrl: 'https://node.example/alice/',
+      storageMode: 'local',
+    }]);
+  });
+
+  it('classifies an owner with an invalid WebID root as custom', async () => {
+    const { resolver, webIdStore, podStore } = createResolver();
+    const customWebId = 'not-a-url';
+    webIdStore.findLinks = vi.fn().mockResolvedValue([{ id: 'link-custom', webId: customWebId }]);
+    podStore.findPods = vi.fn().mockResolvedValue([
+      { id: 'pod-custom', baseUrl: 'https://node.example/alice/' },
+    ]);
+    podStore.getOwners = vi.fn().mockResolvedValue([{ webId: customWebId, visible: false }]);
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [customWebId],
+      target: { storageUrl: 'https://node.example/' },
+    })).resolves.toEqual([{
+      webId: customWebId,
+      storageUrl: 'https://node.example/alice/',
+      storageMode: 'custom',
+    }]);
+  });
+
   it('excludes candidates that are not linked to the requested account', async () => {
     const { resolver, webIdStore, podStore } = createResolver();
     webIdStore.findLinks = vi.fn().mockResolvedValue([{ id: 'link-alice', webId: aliceWebId }]);
@@ -147,6 +197,36 @@ describe('CssPodOwnershipResolver', () => {
     })).resolves.toEqual([]);
   });
 
+  it('logs store failures without leaking caught credentials', async () => {
+    const { webIdStore, podStore } = createResolver();
+    const logger = { warn: vi.fn() };
+    const resolver = new CssPodOwnershipResolver({ webIdStore, podStore, logger });
+
+    webIdStore.findLinks = vi.fn().mockRejectedValue(new Error('database token=secret'));
+    await expect(resolver.listAccountWebIds('alice-account')).resolves.toEqual([]);
+
+    webIdStore.findLinks = vi.fn().mockResolvedValue([{ id: 'link-alice', webId: aliceWebId }]);
+    podStore.findPods = vi.fn().mockRejectedValue(new Error('database token=secret'));
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [aliceWebId],
+      target: { storageUrl: 'http://localhost:3000/' },
+    })).resolves.toEqual([]);
+
+    podStore.findPods = vi.fn().mockResolvedValue([{ id: 'pod-alice', baseUrl: 'http://localhost:3000/alice/' }]);
+    podStore.getOwners = vi.fn().mockRejectedValue(new Error('database token=secret'));
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [aliceWebId],
+      target: { storageUrl: 'http://localhost:3000/' },
+    })).resolves.toEqual([]);
+
+    expect(logger.warn).toHaveBeenCalled();
+    for (const [message] of logger.warn.mock.calls) {
+      expect(message).not.toContain('secret');
+    }
+  });
+
   it('matches localhost and 127.0.0.1 loopback aliases', async () => {
     const { resolver, webIdStore, podStore } = createResolver();
     const loopbackWebId = 'http://localhost:55303/alice/profile/card#me';
@@ -160,6 +240,26 @@ describe('CssPodOwnershipResolver', () => {
       accountId: 'alice-account',
       candidateWebIds: [loopbackWebId],
       target: { storageUrl: 'http://127.0.0.1:55303/' },
+    })).resolves.toEqual([{
+      webId: loopbackWebId,
+      storageUrl: 'http://localhost:55303/alice/',
+      storageMode: 'cloud',
+    }]);
+  });
+
+  it('matches the IPv6 loopback alias ::1 with localhost', async () => {
+    const { resolver, webIdStore, podStore } = createResolver();
+    const loopbackWebId = 'http://localhost:55303/alice/profile/card#me';
+    webIdStore.findLinks = vi.fn().mockResolvedValue([{ id: 'link-alice', webId: loopbackWebId }]);
+    podStore.findPods = vi.fn().mockResolvedValue([
+      { id: 'pod-alice', baseUrl: 'http://localhost:55303/alice/' },
+    ]);
+    podStore.getOwners = vi.fn().mockResolvedValue([{ webId: loopbackWebId, visible: false }]);
+
+    await expect(resolver.resolveOwnedWebIds({
+      accountId: 'alice-account',
+      candidateWebIds: [loopbackWebId],
+      target: { storageUrl: 'http://[::1]:55303/' },
     })).resolves.toEqual([{
       webId: loopbackWebId,
       storageUrl: 'http://localhost:55303/alice/',
