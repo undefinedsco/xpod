@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { once } from 'node:events';
@@ -8,7 +8,6 @@ import { expect, type Browser, type BrowserContext, type Page, test } from '@pla
 
 const repositoryRoot = path.resolve(__dirname, '../..');
 const testDataRoot = path.join(repositoryRoot, '.test-data');
-const acceptanceScreenshotPath = path.join(testDataRoot, 'acceptance', 'screenshots', 'local-seeded-consent.png');
 const seedEmail = 'local-seeded@example.test';
 const seedPassword = 'LocalSeed123456!';
 const seedPodName = 'seeded';
@@ -37,10 +36,10 @@ test.describe('Local product seed consent acceptance', () => {
 
   test.afterAll(async () => {
     await context?.close().catch(() => undefined);
-    await runtime?.stop().catch(() => undefined);
+    await runtime?.stop();
   });
 
-  test('serves seeded local identity and keeps its WebID on the real Settings consent flow', async () => {
+  test('serves seeded local identity and keeps its WebID on the real Settings consent flow', async ({}, testInfo) => {
     test.setTimeout(180_000);
 
     const status = await fetch(`${runtime.baseUrl}service/status`);
@@ -104,8 +103,10 @@ test.describe('Local product seed consent acceptance', () => {
       await expect(radios).toHaveCount(1);
       await expect(radios.first()).toHaveValue(runtime.seedWebId);
       await expect(page.locator('body')).not.toContainText(/Create your first storage/i);
-      await mkdir(path.dirname(acceptanceScreenshotPath), { recursive: true });
-      await page.screenshot({ path: acceptanceScreenshotPath, fullPage: true });
+      await testInfo.attach('local-seeded-consent', {
+        body: await page.screenshot({ fullPage: true }),
+        contentType: 'image/png',
+      });
 
       await page.getByRole('button', { name: 'Authorize', exact: true }).click();
       await expect.poll(() => new URL(page.url()).pathname, { timeout: 60_000 }).toMatch(/^\/settings\/(?:auth\/callback|models(?:\/.*)?)$/u);
@@ -123,6 +124,7 @@ test.describe('Local product seed consent acceptance', () => {
 
 async function startLocalSeedRuntime(): Promise<LocalSeedRuntime> {
   await mkdir(testDataRoot, { recursive: true });
+  await removeStaleLocalSeedRuntimes();
   const root = await mkdtemp(path.join(testDataRoot, 'local-seeded-consent-'));
   const seedConfigPath = path.join(root, 'seed.json');
   const identityDbPath = path.join(root, 'identity.sqlite');
@@ -173,9 +175,36 @@ async function startLocalSeedRuntime(): Promise<LocalSeedRuntime> {
   try {
     await waitForStatus(baseUrl, child);
   } catch (error) {
-    await stopChild(child);
-    await finishLogStream(startupLog);
-    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${await readFile(startupLogPath, 'utf8').catch(() => '')}`);
+    const startupFailure = error instanceof Error ? error.message : String(error);
+    let cleanupError: unknown;
+    let startupLogContents = '';
+    try {
+      try {
+        await stopChild(child);
+      } catch (stopFailure) {
+        cleanupError = stopFailure;
+      }
+      try {
+        child.stdout?.unpipe(startupLog);
+        child.stderr?.unpipe(startupLog);
+        await finishLogStream(startupLog);
+      } catch (logFailure) {
+        cleanupError ??= logFailure;
+      }
+      startupLogContents = await readFile(startupLogPath, 'utf8').catch(() => '');
+    } catch (cleanupFailure) {
+      cleanupError ??= cleanupFailure;
+    } finally {
+      try {
+        await rm(root, { recursive: true, force: true });
+      } catch (removeFailure) {
+        cleanupError ??= removeFailure;
+      }
+    }
+    const cleanupMessage = cleanupError
+      ? `\nCleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+      : '';
+    throw new Error(`${startupFailure}${cleanupMessage}\n${startupLogContents}`, { cause: error });
   }
 
   return {
@@ -186,15 +215,48 @@ async function startLocalSeedRuntime(): Promise<LocalSeedRuntime> {
     startupLogPath,
     child,
     stop: async () => {
-      await stopChild(child);
-      await finishLogStream(startupLog);
-      await rm(root, { recursive: true, force: true });
+      let cleanupError: unknown;
+      try {
+        try {
+          await stopChild(child);
+        } catch (stopFailure) {
+          cleanupError = stopFailure;
+        }
+        try {
+          child.stdout?.unpipe(startupLog);
+          child.stderr?.unpipe(startupLog);
+          await finishLogStream(startupLog);
+        } catch (logFailure) {
+          cleanupError ??= logFailure;
+        }
+      } finally {
+        try {
+          await rm(root, { recursive: true, force: true });
+        } catch (removeFailure) {
+          cleanupError ??= removeFailure;
+        }
+      }
+      if (cleanupError) throw cleanupError;
     },
   };
 }
 
+async function removeStaleLocalSeedRuntimes(): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(testDataRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+
+  await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('local-seeded-consent-'))
+    .map((entry) => rm(path.join(testDataRoot, entry.name), { recursive: true, force: true })));
+}
+
 async function finishLogStream(stream: ReturnType<typeof createWriteStream>): Promise<void> {
-  if (stream.closed) return;
+  if (stream.closed || stream.writableEnded || stream.destroyed) return;
   await new Promise<void>((resolve, reject) => {
     stream.end((error?: Error) => error ? reject(error) : resolve());
   });
