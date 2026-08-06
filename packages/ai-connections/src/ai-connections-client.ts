@@ -90,6 +90,20 @@ export interface AiGatewayModel {
   protocols?: string[]
 }
 
+export interface DiscoveredProviderModel {
+  id: string
+  displayName?: string
+  capabilities?: string[]
+}
+
+export interface ProviderModelDiscovery {
+  provider: AiConnectionsProvider
+  credential: string
+  models: DiscoveredProviderModel[]
+  observedAt: string
+  source: string
+}
+
 export interface CreatedGatewayKey {
   plaintext: string
   record: GatewayKeyRecord
@@ -131,6 +145,7 @@ export interface AiConnectionsClient {
   pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
   disconnect(provider: AiConnectionsProvider): Promise<AiConnectionsCredential | undefined>
   quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
+  discoverModels(provider: AiConnectionsProvider): Promise<ProviderModelDiscovery>
 }
 
 export const AI_CONNECTIONS_GENERIC_ERROR_MESSAGE = 'AI Connection request failed. Please try again.'
@@ -314,6 +329,16 @@ export function createAiConnectionsClient({
         { provider },
       )
     },
+
+    async discoverModels(provider) {
+      const payload = await request<unknown>(
+        `${providerPath(provider)}/models/refresh`,
+        'POST',
+        {},
+        { provider },
+      )
+      return parseModelDiscovery(payload, provider)
+    },
   }
 }
 
@@ -330,6 +355,12 @@ export function normalizeAiConnectionsErrorMessage(
   context: { provider?: AiConnectionsProvider } = {},
 ): string {
   const code = errorCodeFromPayload(payload)
+  if (code === 'provider_models_fetch_failed') {
+    const providerStatus = isRecord(payload) && typeof payload.providerStatus === 'number'
+      ? payload.providerStatus
+      : undefined
+    return modelDiscoveryErrorMessage(providerStatus)
+  }
   const coded = code ? messageForSafeErrorCode(code, context.provider) : undefined
   if (coded) return coded
 
@@ -354,6 +385,14 @@ export function normalizeAiConnectionsErrorMessage(
   return AI_CONNECTIONS_GENERIC_ERROR_MESSAGE
 }
 
+const MODEL_DISCOVERY_SAFE_MESSAGES = new Set([
+  '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。',
+  '模型服务地址不正确。请检查服务地址后重试。',
+  '请求太频繁。请稍等一会儿再试。',
+  '模型服务暂时没有响应。请稍后重试。',
+  '模型列表获取失败。请检查密钥、服务地址或网络后重试。',
+])
+
 function normalizeAiConnectionsErrorText(message: string): string {
   const exact = messageForSafeErrorCode(message)
   if (exact) return exact
@@ -361,6 +400,7 @@ function normalizeAiConnectionsErrorText(message: string): string {
   const prefixed = prefix ? messageForSafeErrorCode(prefix) : undefined
   if (prefixed) return prefixed
   if (message === 'AI Connection service identity is unavailable') return message
+  if (MODEL_DISCOVERY_SAFE_MESSAGES.has(message)) return message
   if (message.startsWith('invalid_')) return 'AI Connection returned an invalid response.'
   return AI_CONNECTIONS_GENERIC_ERROR_MESSAGE
 }
@@ -403,6 +443,22 @@ function messageForSafeErrorCode(
     default:
       return undefined
   }
+}
+
+function modelDiscoveryErrorMessage(providerStatus: number | undefined): string {
+  if (providerStatus === 401 || providerStatus === 403) {
+    return '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。'
+  }
+  if (providerStatus === 404) {
+    return '模型服务地址不正确。请检查服务地址后重试。'
+  }
+  if (providerStatus === 429) {
+    return '请求太频繁。请稍等一会儿再试。'
+  }
+  if (providerStatus !== undefined && providerStatus >= 500) {
+    return '模型服务暂时没有响应。请稍后重试。'
+  }
+  return '模型列表获取失败。请检查密钥、服务地址或网络后重试。'
 }
 
 function providerLabel(provider: AiConnectionsProvider): string {
@@ -580,6 +636,34 @@ function parseConnectAttempt(
     credentialId: stringValue(value.credentialId),
     message: stringValue(value.message),
   }) as unknown as AiConnectAttempt
+}
+
+function parseModelDiscovery(
+  value: unknown,
+  expectedProvider: AiConnectionsProvider,
+): ProviderModelDiscovery {
+  if (!isRecord(value) || !Array.isArray(value.models)) {
+    throw new Error('AI Connection returned an invalid model discovery response')
+  }
+  const models = value.models
+    .map((item): DiscoveredProviderModel | undefined => {
+      if (!isRecord(item) || typeof item.id !== 'string' || !item.id) return undefined
+      return compactObject({
+        id: item.id,
+        displayName: stringValue(item.displayName),
+        capabilities: Array.isArray(item.capabilities)
+          ? item.capabilities.filter((cap): cap is string => typeof cap === 'string')
+          : undefined,
+      }) as unknown as DiscoveredProviderModel
+    })
+    .filter(isDefined)
+  return {
+    provider: expectedProvider,
+    credential: typeof value.credential === 'string' ? value.credential : '',
+    models,
+    observedAt: typeof value.observedAt === 'string' ? value.observedAt : new Date(0).toISOString(),
+    source: typeof value.source === 'string' ? value.source : '',
+  }
 }
 
 function compactObject<T extends Record<string, unknown>>(value: T): T {

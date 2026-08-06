@@ -25,6 +25,7 @@ import type {
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
+import { ProviderModelsFetchError, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -37,6 +38,7 @@ export interface AiGatewayManagementHandlerOptions {
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
+  modelsService?: ProviderModelsService;
   servicePrincipal?: {
     getServicePrincipal(): Promise<{ webId: string }>;
   };
@@ -389,6 +391,31 @@ export function registerAiGatewayManagementRoutes(
       sendQuotaError(response, error);
     }
   });
+
+  server.post('/api/ai/gateway/providers/:provider/models/refresh', async (request, response, params) => {
+    if (!authorizeProviderQuota(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const modelsService = requireModelsService(options, response);
+    if (!modelsService) {
+      return;
+    }
+    try {
+      const result = await modelsService.list({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialIri: normalizeOptionalString(body.credentialIri),
+      });
+      sendJson(response, 200, result);
+    } catch (error) {
+      sendModelsError(response, error);
+    }
+  });
 }
 
 function authorizeGatewayKeyManagement(
@@ -489,6 +516,42 @@ function requireQuotaService(
     return undefined;
   }
   return options.quotaService;
+}
+
+function requireModelsService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderModelsService | undefined {
+  if (!options.modelsService) {
+    sendJson(response, 503, { error: 'AI provider models service is not configured' });
+    return undefined;
+  }
+  return options.modelsService;
+}
+
+function sendModelsError(response: ServerResponse, error: unknown): void {
+  if (error instanceof ProviderModelsFetchError) {
+    sendJson(response, 502, {
+      error: 'provider_models_fetch_failed',
+      providerStatus: error.providerStatus,
+      ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}),
+    });
+    return;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'models_credential_not_found') {
+    sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+    return;
+  }
+  if (message.startsWith('models_adapter_not_found:')) {
+    sendJson(response, 404, { error: 'Provider models adapter not found' });
+    return;
+  }
+  if (message === 'models_secret_missing') {
+    sendJson(response, 500, { error: 'Provider credential secret is unavailable' });
+    return;
+  }
+  sendJson(response, 500, { error: 'Provider models lookup failed' });
 }
 
 function sendQuotaError(response: ServerResponse, error: unknown): void {

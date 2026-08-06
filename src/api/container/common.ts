@@ -45,6 +45,11 @@ import {
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
 } from '../ai-gateway/quota';
+import {
+  AnthropicModelsAdapter,
+  OpenAiCompatibleModelsAdapter,
+  ProviderModelsService,
+} from '../ai-gateway/models';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
 import { VectorService } from '../service/VectorService';
@@ -346,6 +351,40 @@ export function registerCommonServices(
           new KimiQuotaAdapter(),
           new BailianQuotaAdapter(),
           new DeepSeekQuotaAdapter(),
+        ],
+      });
+    }).singleton(),
+
+    providerModelsService: asFunction((cradle: ApiContainerCradle) => {
+      const { config } = cradle;
+      if (!config.aiGatewayConnectEnabled) {
+        return undefined;
+      }
+      if (!config.secretCellCredentialVaultFactory) {
+        throw new Error('AI Gateway provider models requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
+      }
+      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      return new ProviderModelsService({
+        credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
+        vault: config.secretCellCredentialVaultFactory(),
+        adapters: [
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'openai',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+          }),
+          new AnthropicModelsAdapter(),
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'kimi',
+            defaultBaseUrl: 'https://api.moonshot.ai/v1',
+          }),
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'bailian',
+            defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          }),
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'deepseek',
+            defaultBaseUrl: 'https://api.deepseek.com/v1',
+          }),
         ],
       });
     }).singleton(),

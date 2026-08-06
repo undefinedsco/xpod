@@ -322,4 +322,61 @@ describe('AI Connection management client', () => {
     await expect(client.beginConnect('evil/provider' as never, 'browserAssistedApiKey'))
       .rejects.toThrow('Unsupported AI provider')
   })
+
+  it('discovers provider models through the server-side refresh route', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      provider: 'kimi',
+      credential: 'https://pod.example/alice/.data/credentials.ttl#kimi',
+      models: [
+        { id: 'kimi-k2', displayName: 'Kimi K2' },
+        { id: 'moonshot-v1-8k', capabilities: ['function_calling'] },
+        { invalid: true },
+      ],
+      observedAt: '2026-08-06T00:00:00.000Z',
+      source: 'kimi:/models',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const discovery = await client.discoverModels('kimi')
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/gateway/providers/kimi/models/refresh',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(discovery).toEqual({
+      provider: 'kimi',
+      credential: 'https://pod.example/alice/.data/credentials.ttl#kimi',
+      models: [
+        { id: 'kimi-k2', displayName: 'Kimi K2' },
+        { id: 'moonshot-v1-8k', capabilities: ['function_calling'] },
+      ],
+      observedAt: '2026-08-06T00:00:00.000Z',
+      source: 'kimi:/models',
+    })
+  })
+
+  it('maps provider fetch failures to the LinX verification messages', async () => {
+    const scenarios = [
+      { providerStatus: 401, message: '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。' },
+      { providerStatus: 404, message: '模型服务地址不正确。请检查服务地址后重试。' },
+      { providerStatus: 429, message: '请求太频繁。请稍等一会儿再试。' },
+      { providerStatus: 503, message: '模型服务暂时没有响应。请稍后重试。' },
+    ]
+    for (const scenario of scenarios) {
+      const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+        error: 'provider_models_fetch_failed',
+        providerStatus: scenario.providerStatus,
+      }), { status: 502, headers: { 'content-type': 'application/json' } }))
+      const scoped = createAiConnectionsClient({
+        webId: WEB_ID,
+        podBaseUrl: POD_BASE,
+        authenticatedFetch,
+      })
+      await expect(scoped.discoverModels('kimi')).rejects.toThrow(scenario.message)
+    }
+  })
 })

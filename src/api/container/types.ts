@@ -43,6 +43,7 @@ import type { RdfEngineLike } from '../../storage/rdf';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import type { ProviderConnectService } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
+import type { ProviderModelsService } from '../ai-gateway/models';
 import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiGatewayService';
 import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
 import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
@@ -242,6 +243,7 @@ export interface ApiContainerCradle {
   aiClientConfigurationService?: AiClientConfigurationService;
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;
+  providerModelsService?: ProviderModelsService;
   gatewayProviderRegistry: GatewayProviderRegistry;
   gatewayCredentialStore: GatewayCredentialStore;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;

@@ -123,6 +123,7 @@ function registerSharedRoutes(
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
+  const providerModelsService = container.resolve('providerModelsService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
   const aiClientConfigurationService = resolveAiClientConfigurationService(container, config);
   const ddnsManager = container.resolve('ddnsManager', { allowUnregistered: true });
@@ -182,6 +183,7 @@ function registerSharedRoutes(
       deployment: config.edition,
       connectService: providerConnectService,
       quotaService: providerQuotaService,
+      modelsService: providerModelsService,
       servicePrincipal: gatewayInternalPodAccess,
       aiClientConfiguration: aiClientConfigurationService?.capability(),
       aiConnectionInvocationKeyIssuer,

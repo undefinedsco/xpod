@@ -57,12 +57,15 @@ export function AiProviderCard({
   error,
   quota,
   models,
+  verifyPending = false,
+  verifyMessage,
   onApiKeyChange,
   onBeginApiKey,
   onBeginBrowser,
   onSaveApiKey,
   onDisconnect,
   onRefreshQuota,
+  onVerify,
 }: {
   definition: AiProviderDefinition
   status: ProviderConnectionState
@@ -74,12 +77,15 @@ export function AiProviderCard({
   error?: string
   quota?: AiQuotaSnapshot
   models: AiGatewayModel[]
+  verifyPending?: boolean
+  verifyMessage?: string
   onApiKeyChange: (value: string) => void
   onBeginApiKey: () => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
   onDisconnect: () => void
   onRefreshQuota: () => void
+  onVerify?: () => void
 }) {
   const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
@@ -273,21 +279,40 @@ export function AiProviderCard({
               <Box className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground/90">可用模型</h3>
               <Badge variant="secondary" className="ml-2 text-xs font-normal">{models.length}</Badge>
+              {verifyMessage ? (
+                <span className="ml-2 text-xs text-green-600" role="status">{verifyMessage}</span>
+              ) : null}
             </div>
-            {models.length > 0 ? (
-              <div className="relative">
-                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  value={modelSearch}
-                  onChange={(event) => setModelSearch(event.target.value)}
-                  placeholder="搜索模型..."
-                  className="h-8 w-[180px] bg-muted/20 pl-8 text-xs"
-                  autoComplete="off"
-                  data-lpignore="true"
-                  data-1p-ignore
-                />
-              </div>
-            ) : null}
+            <div className="flex items-center gap-2">
+              {onVerify && (isConfigured || isConnected) ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs"
+                  disabled={disabled || busy || verifyPending}
+                  onClick={onVerify}
+                >
+                  {verifyPending
+                    ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                    : <RotateCw aria-hidden="true" className="h-3.5 w-3.5" />}
+                  {verifyPending ? '验证中...' : '验证'}
+                </Button>
+              ) : null}
+              {models.length > 0 ? (
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    value={modelSearch}
+                    onChange={(event) => setModelSearch(event.target.value)}
+                    placeholder="搜索模型..."
+                    className="h-8 w-[180px] bg-muted/20 pl-8 text-xs"
+                    autoComplete="off"
+                    data-lpignore="true"
+                    data-1p-ignore
+                  />
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {models.length === 0 ? (

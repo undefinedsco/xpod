@@ -49,6 +49,13 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
     })),
     pollDevice: vi.fn(),
     disconnect: vi.fn(async () => undefined),
+    discoverModels: vi.fn(async (provider) => ({
+      provider,
+      credential: `${provider}-credential`,
+      models: [{ id: `${provider}-model-1`, displayName: `${provider} Model 1` }],
+      observedAt: '2026-08-06T00:00:00.000Z',
+      source: `${provider}:/models`,
+    })),
     quota: vi.fn(async (provider) => ({
       credential: `${provider}-credential`,
       status: 'unsupported' as const,
@@ -146,6 +153,87 @@ describe('AI Connection settings', () => {
 
     expect(await screen.findByText('已配置')).toBeTruthy()
     expect(screen.getByRole('button', { name: '更新 API Key' })).toBeTruthy()
+  })
+
+  it('verifies a configured provider and merges discovered models into the catalog', async () => {
+    const current = client({
+      listModels: vi.fn(async () => [
+        { id: 'deepseek-chat', provider: 'deepseek' as const, displayName: 'DeepSeek Chat' },
+      ]),
+      discoverModels: vi.fn(async (provider) => ({
+        provider,
+        credential: 'deepseek-credential',
+        models: [
+          { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+          { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner' },
+        ],
+        observedAt: '2026-08-06T00:00:00.000Z',
+        source: 'deepseek:/models',
+      })),
+    })
+
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="deepseek"
+        serviceAccessGranted
+        providerSummaries={{
+          deepseek: {
+            provider: 'deepseek',
+            status: 'connected',
+            authMode: 'browserAssistedApiKey',
+            connect: {
+              modes: ['browserAssistedApiKey'],
+              configured: true,
+            },
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /验证/ }))
+
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('deepseek'))
+    expect(await screen.findByText('连接成功，已同步 2 个模型')).toBeTruthy()
+    expect(screen.getByText('DeepSeek Reasoner')).toBeTruthy()
+    expect(screen.getAllByText('DeepSeek Chat')).toHaveLength(1)
+  })
+
+  it('surfaces a failed verification through the provider error slot', async () => {
+    const current = client({
+      discoverModels: vi.fn(async () => {
+        throw new Error('密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。')
+      }),
+    })
+
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="deepseek"
+        serviceAccessGranted
+        providerSummaries={{
+          deepseek: {
+            provider: 'deepseek',
+            status: 'connected',
+            authMode: 'browserAssistedApiKey',
+            connect: {
+              modes: ['browserAssistedApiKey'],
+              configured: true,
+            },
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /验证/ }))
+
+    expect(await screen.findByText('密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。')).toBeTruthy()
+  })
+
+  it('hides verification for providers without a credential', async () => {
+    render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
+
+    expect(screen.queryByRole('button', { name: /验证/ })).toBeNull()
   })
 
   it('opens browser-assisted key setup and submits the key without rendering it afterwards', async () => {

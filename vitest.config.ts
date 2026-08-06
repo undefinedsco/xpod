@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 const coverageEnabled = process.env.COVERAGE === 'true';
 
 export default defineConfig({
+  esbuild: {
+    jsx: 'automatic',
+  },
   test: {
     // Always load `.env.local` when present. For integration runs we also allow it to
     // override ambient env vars to keep tests deterministic across machines.
@@ -9,6 +12,7 @@ export default defineConfig({
     environment: 'node',
     pool: 'forks',  // Use forks instead of threads to avoid SIGSEGV with native modules
     environmentMatchGlobs: [
+      [ 'ui/src/**/*.test.{ts,tsx}', 'jsdom' ],
       [ 'tests/http/**', 'node' ],
       [ 'tests/storage/**', 'node' ],
       [ 'tests/identity/**', 'node' ],
@@ -20,6 +24,7 @@ export default defineConfig({
       '**/node_modules/**',
       '**/dist/**',
       '**/.test-data/**',
+      '**/.worktrees/**',
       '**/_deprecated/**',
       '**/_deprecated_quadstore/**',
       'tests/terminal/*.integration.test.ts',

@@ -15,6 +15,7 @@ import {
   type AiConnectionsProvider,
   type AiProviderConnectionSummary,
   type AiQuotaSnapshot,
+  type DiscoveredProviderModel,
   type GatewayKeyRecord,
   normalizeAiConnectionsThrownError,
 } from './ai-connections-client'
@@ -81,6 +82,8 @@ export function AiConnectionsPanel({
   const [busyProviders, setBusyProviders] = useState<Record<string, boolean>>({})
   const [providerErrors, setProviderErrors] = useState<Record<string, string | undefined>>({})
   const [quotas, setQuotas] = useState<Record<string, AiQuotaSnapshot | undefined>>({})
+  const [verifyingProviders, setVerifyingProviders] = useState<Record<string, boolean>>({})
+  const [verifyMessages, setVerifyMessages] = useState<Record<string, string | undefined>>({})
   const [copied, setCopied] = useState(false)
   const pollingGeneration = useRef(0)
   const updateConnectionState = useCallback((
@@ -262,6 +265,27 @@ export function AiConnectionsPanel({
     }
   }
 
+  const verifyProvider = async (provider: AiConnectionsProvider) => {
+    if (!serviceAccessGranted) return
+    setVerifyingProviders((current) => ({ ...current, [provider]: true }))
+    setVerifyMessages((current) => ({ ...current, [provider]: undefined }))
+    setProviderError(provider)
+    try {
+      const discovery = await client.discoverModels(provider)
+      setModels((current) => mergeDiscoveredModels(current, provider, discovery.models))
+      setVerifyMessages((current) => ({
+        ...current,
+        [provider]: discovery.models.length > 0
+          ? `连接成功，已同步 ${discovery.models.length} 个模型`
+          : '连接成功',
+      }))
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
+    } finally {
+      setVerifyingProviders((current) => ({ ...current, [provider]: false }))
+    }
+  }
+
   const createKey = async () => {
     if (!serviceAccessGranted) return
     setCreatingKey(true)
@@ -354,6 +378,9 @@ export function AiConnectionsPanel({
               onSaveApiKey={() => void saveApiKey(definition)}
               onDisconnect={() => void disconnect(definition.id)}
               onRefreshQuota={() => void refreshQuota(definition.id)}
+              verifyPending={Boolean(verifyingProviders[definition.id])}
+              verifyMessage={verifyMessages[definition.id]}
+              onVerify={() => void verifyProvider(definition.id)}
             />
           ))}
       </section>
@@ -523,6 +550,33 @@ function delay(milliseconds: number): Promise<void> {
 
 function errorMessage(error: unknown): string {
   return normalizeAiConnectionsThrownError(error)
+}
+
+function mergeDiscoveredModels(
+  current: AiGatewayModel[],
+  provider: AiConnectionsProvider,
+  discovered: DiscoveredProviderModel[],
+): AiGatewayModel[] {
+  const merged = [...current]
+  for (const model of discovered) {
+    const index = merged.findIndex((item) => item.provider === provider && item.id === model.id)
+    if (index === -1) {
+      merged.push(compactModel({
+        id: model.id,
+        provider,
+        displayName: model.displayName,
+      }))
+    } else if (model.displayName && !merged[index].displayName) {
+      merged[index] = { ...merged[index], displayName: model.displayName }
+    }
+  }
+  return merged
+}
+
+function compactModel(model: AiGatewayModel): AiGatewayModel {
+  return Object.fromEntries(
+    Object.entries(model).filter(([, value]) => value !== undefined),
+  ) as AiGatewayModel
 }
 
 function isDefined<T>(value: T | undefined): value is T {
