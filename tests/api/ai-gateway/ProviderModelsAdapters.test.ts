@@ -224,6 +224,159 @@ describe('ProviderModelsService', () => {
     });
   });
 
+  it('merges discovery across eligible credentials and records partial failures', async () => {
+    const vault = createVault();
+    const createKimiCredential = async (
+      id: string,
+      apiKey: string,
+      extra: Partial<ModelsCredentialRecord> = {},
+    ): Promise<ModelsCredentialRecord> => {
+      const credentialIri = `https://id.example/alice/.data/settings/credentials.ttl#${id}`;
+      return {
+        id,
+        credentialIri,
+        webId: WEB_ID,
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode: 'apiKey',
+        encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, 'kimi', { type: 'apiKey', apiKey }),
+        status: 'active',
+        ...extra,
+      };
+    };
+    const primary = await createKimiCredential('primary', 'primary-secret', {
+      metadata: { models: ['kimi-retired', 'kimi-legacy'] },
+    });
+    const secondary = await createKimiCredential('secondary', 'secondary-secret', {
+      metadata: { models: ['kimi-legacy', 'kimi-k2'] },
+    });
+    const tertiary = await createKimiCredential('tertiary', 'tertiary-secret');
+    const disabled = await createKimiCredential('disabled', 'disabled-secret', {
+      enabled: false,
+    });
+    const fetch = jsonFetch((_url, init) => {
+      const auth = new Headers(init?.headers).get('authorization');
+      if (auth === 'Bearer primary-secret') {
+        return { status: 429, body: { error: 'rate limited' } };
+      }
+      if (auth === 'Bearer disabled-secret') {
+        throw new Error('disabled credentials must not be fetched');
+      }
+      if (auth === 'Bearer tertiary-secret') {
+        return { body: { data: [{ id: 'kimi-k2' }] } };
+      }
+      return {
+        body: {
+          data: [
+            { id: 'kimi-k2', display_name: 'Kimi K2' },
+            { id: 'kimi-thinking' },
+          ],
+        },
+      };
+    });
+    const repository = {
+      listProviderCredentials: vi.fn(async () => [primary, secondary, tertiary, disabled]),
+    };
+    const service = new ProviderModelsService({
+      vault,
+      credentialRepository: repository as never,
+      adapters: [
+        new OpenAiCompatibleModelsAdapter({
+          provider: 'kimi',
+          defaultBaseUrl: 'https://api.moonshot.ai/v1',
+          fetchImpl: fetch,
+        }),
+      ],
+      now: () => new Date('2026-08-06T00:00:00.000Z'),
+    });
+
+    const discovery = await service.list({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+    });
+
+    expect(repository.listProviderCredentials).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(discovery).toEqual({
+      provider: 'kimi',
+      credential: secondary.credentialIri,
+      models: [
+        {
+          id: 'kimi-k2',
+          displayName: 'Kimi K2',
+          availability: 'available',
+          metadata: {
+            sources: [
+              {
+                credential: secondary.credentialIri,
+                source: 'kimi:/models',
+                status: 'available',
+              },
+              {
+                credential: tertiary.credentialIri,
+                source: 'kimi:/models',
+                status: 'available',
+              },
+            ],
+          },
+        },
+        {
+          id: 'kimi-thinking',
+          availability: 'available',
+          metadata: {
+            sources: [
+              {
+                credential: secondary.credentialIri,
+                source: 'kimi:/models',
+                status: 'available',
+              },
+            ],
+          },
+        },
+        {
+          id: 'kimi-retired',
+          availability: 'unavailable',
+          metadata: {
+            sources: [
+              {
+                credential: primary.credentialIri,
+                source: 'kimi:/models',
+                status: 'error',
+                error: 'provider_models_fetch_failed:429',
+              },
+            ],
+          },
+        },
+        {
+          id: 'kimi-legacy',
+          availability: 'unavailable',
+          metadata: {
+            sources: [
+              {
+                credential: primary.credentialIri,
+                source: 'kimi:/models',
+                status: 'error',
+                error: 'provider_models_fetch_failed:429',
+              },
+              {
+                credential: secondary.credentialIri,
+                source: 'kimi:/models',
+                status: 'unavailable',
+              },
+            ],
+          },
+        },
+      ],
+      observedAt: '2026-08-06T00:00:00.000Z',
+      source: 'kimi:/models',
+    });
+  });
+
   it('rejects providers without an adapter or credential with coded errors', async () => {
     const service = new ProviderModelsService({
       vault: createVault(),
@@ -255,6 +408,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
     server: {
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
+      patch: vi.fn((path: string, handler: Function) => { routes[`PATCH ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
     } as unknown as ApiServer,
   };

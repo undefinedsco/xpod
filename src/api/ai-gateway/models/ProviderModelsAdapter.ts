@@ -6,6 +6,17 @@ export interface DiscoveredProviderModel {
   id: string;
   displayName?: string;
   capabilities?: string[];
+  availability?: 'available' | 'unavailable';
+  metadata?: {
+    sources?: ProviderModelDiscoverySource[];
+  };
+}
+
+export interface ProviderModelDiscoverySource {
+  credential: string;
+  source: string;
+  status: 'available' | 'unavailable' | 'error';
+  error?: string;
 }
 
 export interface ModelsCredentialRecord extends ConnectCredentialRecord {
