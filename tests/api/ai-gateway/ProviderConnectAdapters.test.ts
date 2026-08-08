@@ -82,11 +82,13 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     webId: string;
     provider: string;
     deployment: 'local' | 'cloud';
+    credentialId?: string;
   }): Promise<ConnectCredentialRecord | undefined> {
     const latest = latestMatchingRow(this.rows, (row) =>
       row.webId === input.webId
       && row.provider === input.provider
-      && row.deployment === input.deployment);
+      && row.deployment === input.deployment
+      && (input.credentialId === undefined || row.id === input.credentialId));
     if (!latest) return undefined;
     latest.status = 'revoked';
     return structuredClone(latest);
@@ -510,6 +512,7 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       ...begunAttempt,
       apiKey: 'sk-live-openai-secret',
       accountLabel: 'Alice OpenAI',
+      baseUrl: 'https://gateway.example/v1',
     });
 
     expect(completed.status).toBe('completed');
@@ -522,6 +525,9 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       authMode: 'apiKey',
       accountLabel: 'Alice OpenAI',
       status: 'active',
+      metadata: {
+        baseUrl: 'https://gateway.example/v1',
+      },
     });
     expect(JSON.stringify(repository.rows[0])).not.toContain('sk-live-openai-secret');
     expect(repository.rows[0].encryptedSecret).toMatchObject({
@@ -547,6 +553,66 @@ describe('BrowserAssistedApiKeyConnectAdapter', () => {
       ...begunAttempt,
       apiKey: 'sk-second-use',
     })).rejects.toThrow(/already consumed/i);
+  });
+
+  it('disconnects the requested API-key credential without revoking its sibling', async () => {
+    const repository = new RecordingCredentialRepository();
+    const credentialA: ConnectCredentialRecord = {
+      id: 'cloud-openai-key-a',
+      credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-key-a',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: {
+        algorithm: 'PLAINTEXT',
+        keyId: 'a',
+        wrappedDek: 'wrapped-a',
+        aadPurpose: 'test',
+        aadVersion: '1',
+        ciphertext: 'ciphertext-a',
+        nonce: 'nonce-a',
+        webId: WEB_ID,
+        credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-key-a',
+        provider: 'openai',
+        dekWrapAlgorithm: 'test',
+      },
+      status: 'active',
+      version: 1,
+    };
+    const credentialB: ConnectCredentialRecord = {
+      ...credentialA,
+      id: 'cloud-openai-key-b',
+      credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-key-b',
+      encryptedSecret: {
+        ...credentialA.encryptedSecret,
+        keyId: 'b',
+        wrappedDek: 'wrapped-b',
+        ciphertext: 'ciphertext-b',
+        nonce: 'nonce-b',
+        credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-key-b',
+      },
+      version: 2,
+    };
+    repository.rows.push(credentialA, credentialB);
+    const adapter = new BrowserAssistedApiKeyConnectAdapter({
+      provider: 'openai',
+      consoleUrl: 'https://platform.openai.com/api-keys',
+      attempts: new InMemoryConnectAttemptStore(),
+      credentialRepository: repository,
+      vault: vault(),
+      deployment: 'cloud',
+      signingSecret: 'connect-signing-secret',
+    });
+
+    await expect(adapter.disconnect({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      credentialId: credentialA.id,
+    })).resolves.toMatchObject({ id: credentialA.id, status: 'revoked' });
+    expect(repository.rows.find((row) => row.id === credentialA.id)).toMatchObject({ status: 'revoked' });
+    expect(repository.rows.find((row) => row.id === credentialB.id)).toMatchObject({ status: 'active' });
   });
 
   it('expires attempts after five minutes and protects concurrent completion with version CAS', async () => {
@@ -1167,6 +1233,7 @@ describe('ProviderConnectService', () => {
       encryptedSecret: { ciphertext: 'not-public' },
       status: 'active' as const,
       accountLabel: 'Alice',
+      metadata: { baseUrl: 'https://proxy.example/v1' },
       version: 3,
       reauthRequired: true,
     }) : undefined);
@@ -1192,6 +1259,7 @@ describe('ProviderConnectService', () => {
         status: 'reauthRequired',
         authMode: 'apiKey',
         accountLabel: 'Alice',
+        baseUrl: 'https://proxy.example/v1',
         version: 3,
       }),
       expect.objectContaining({
@@ -2312,6 +2380,99 @@ describe('ProviderConnectService', () => {
     })).resolves.toMatchObject([
       { id: kimiId, provider: 'kimi', offeringId: 'official-subscription' },
     ]);
+  });
+
+  it('binds credential collection hydration to the Xpod settings SPARQL sidecar', async () => {
+    const endpoints: string[] = [];
+    const credentialId = 'credentials.ttl#cloud-openai';
+    const row = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: 'https://id.example/alice/settings/ai/providers/openai.ttl#openai',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      encryptedSecret: JSON.stringify({
+        algorithm: 'PLAINTEXT',
+        keyId: 'test',
+        wrappedDek: 'test',
+        aadPurpose: 'test',
+        aadVersion: '1',
+        ciphertext: 'test',
+        nonce: 'test',
+        webId: WEB_ID,
+        credentialIri: `https://id.example/alice/settings/${credentialId}`,
+        provider: 'openai',
+        dekWrapAlgorithm: 'test',
+      }),
+      keyVersion: '1',
+      metadata: { priority: 1 },
+    };
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => fetch),
+      },
+      dbFactory: async ({ credential }) => {
+        endpoints.push(credential?.getSparqlEndpoint?.() ?? '');
+        return {
+          init: vi.fn(),
+          insert: vi.fn(),
+          select: () => ({
+            from: () => ({
+              where: () => ({ execute: async () => [jsonClone(row)] }),
+            }),
+          }),
+          findById: async () => null,
+          updateById: vi.fn(),
+          update: vi.fn(),
+        } as any;
+      },
+    });
+
+    await expect(repository.listProviderCredentials({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).resolves.toMatchObject([{ id: credentialId, provider: 'openai' }]);
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toMatchObject([{ id: credentialId, provider: 'openai' }]);
+    expect(endpoints).toEqual(['/settings/-/sparql', '/settings/-/sparql']);
+  });
+
+  it('reports a capability error when the Pod has no collection query sidecar', async () => {
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => fetch),
+      },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              execute: async () => {
+                throw new Error('Document-mode collection queries over plain LDP are not supported for table "credential".');
+              },
+            }),
+          }),
+        }),
+        findById: async () => null,
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).rejects.toThrow('credential_collection_query_unsupported');
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).rejects.toThrow('credential_collection_query_unsupported');
   });
 });
 

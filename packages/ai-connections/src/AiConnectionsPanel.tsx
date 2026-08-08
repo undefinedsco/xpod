@@ -286,16 +286,28 @@ export function AiConnectionsPanel({
     }
   }
 
-  const disconnect = async (provider: AiConnectionsProvider) => {
+  const disconnect = async (provider: AiConnectionsProvider, credentialId?: string) => {
     if (!serviceAccessGranted) return
     setBusy(provider, true)
     setProviderError(provider)
     try {
-      await client.disconnect(provider)
+      await client.disconnect(provider, credentialId)
       setAttempts((current) => ({ ...current, [provider]: undefined }))
       setQuotas((current) => ({ ...current, [provider]: undefined }))
-      updateConnectionState(provider, 'disconnected')
-      toast({ description: '已断开连接' })
+      if (credentialId) {
+        setProviderProductOverrides((current) => ({
+          ...current,
+          [provider]: providerProductWithoutCredential(
+            effectiveProviderProducts[provider],
+            provider,
+            credentialId,
+          ),
+        }))
+        toast({ description: '已退出账号' })
+      } else {
+        updateConnectionState(provider, 'disconnected')
+        toast({ description: '已断开连接' })
+      }
     } catch (error) {
       setProviderError(provider, errorMessage(error))
     } finally {
@@ -646,7 +658,7 @@ export function AiConnectionsPanel({
               onBeginOffering={(offering, mode) => void beginOfferingConnect(definition.id, offering, mode)}
               onBeginBrowser={() => void beginBrowserConnect(definition)}
               onSaveApiKey={() => void saveApiKey(definition)}
-              onDisconnect={() => void disconnect(definition.id)}
+              onDisconnect={(credential) => void disconnect(definition.id, credential?.id)}
               onCreateApiKeyCredential={(offering, input) => void createApiKeyCredential(definition.id, offering, input)}
               onUpdateCredential={(credential, patch) => void updateProviderCredential(definition.id, credential, patch)}
               onDeleteCredential={(credential) => void deleteProviderCredential(definition.id, credential)}

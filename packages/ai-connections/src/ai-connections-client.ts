@@ -215,7 +215,7 @@ export interface AiConnectionsClient {
     baseUrl?: string,
   ): Promise<AiConnectAttempt>
   pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
-  disconnect(provider: AiConnectionsProvider): Promise<AiConnectionsCredential | undefined>
+  disconnect(provider: AiConnectionsProvider, credentialId?: string): Promise<AiConnectionsCredential | undefined>
   createApiKeyCredential(provider: AiConnectionsProvider, input: CreateApiKeyCredentialInput): Promise<AiProviderCredentialSummary>
   updateProviderCredential(provider: AiConnectionsProvider, credentialId: string, input: UpdateProviderCredentialInput): Promise<AiProviderCredentialSummary>
   deleteProviderCredential(provider: AiConnectionsProvider, credentialId: string): Promise<AiProviderCredentialSummary | undefined>
@@ -390,9 +390,12 @@ export function createAiConnectionsClient({
       )
     },
 
-    async disconnect(provider) {
+    async disconnect(provider, credentialId) {
+      const query = credentialId
+        ? `?${new URLSearchParams({ credentialId })}`
+        : ''
       const payload = await request<{ record?: unknown }>(
-        `${providerPath(provider)}/connect`,
+        `${providerPath(provider)}/connect${query}`,
         'DELETE',
       )
       return parseCredential(payload.record)
@@ -944,6 +947,7 @@ function legacyCredentialFromSummary(
       ? 'expired'
       : 'healthy',
     maskedHint: stringValue(value.maskedHint),
+    baseUrl: stringValue(value.baseUrl),
     expiresAt: stringValue(value.expiresAt),
     version: typeof value.version === 'number' ? value.version : 0,
   }) as AiProviderCredentialSummary

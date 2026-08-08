@@ -537,3 +537,6 @@ export interface WebExtensionModule<Database = unknown> {
   manifest: WebExtensionManifest;
   applets: Record<string, AppletModule<Database>>;
 }
+
+export { createSolidPermissionCapability } from './solid-permissions';
+export type { SolidPermissionCapabilityOptions } from './solid-permissions';

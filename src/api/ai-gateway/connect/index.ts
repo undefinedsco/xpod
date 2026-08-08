@@ -28,6 +28,9 @@ import { requireKimiOAuthClientId } from './OAuthIntegrationRegistry';
 export { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 export { OAuthIntegrationRegistry, requireKimiOAuthClientId, type OAuthIntegration } from './OAuthIntegrationRegistry';
 
+const CREDENTIAL_COLLECTION_SPARQL_ENDPOINT = '/settings/-/sparql';
+const CREDENTIAL_COLLECTION_QUERY_UNSUPPORTED = 'credential_collection_query_unsupported';
+
 export type ConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
 export type ConnectAttemptStatus =
   | 'pending'
@@ -76,6 +79,7 @@ export interface CompleteApiKeyInput {
   signature: string;
   apiKey: string;
   accountLabel?: string;
+  baseUrl?: string;
   auth?: AuthContext;
 }
 
@@ -438,11 +442,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     includeRevoked?: boolean;
   }): Promise<ConnectCredentialRecord[]> {
     const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const rows = await db
-      .select()
-      .from(credential)
-      .where(eq(credential.service, 'ai'))
-      .execute();
+    const rows = await this.selectCredentialRows(db, credential);
     const providerIds = queryProviderIds(input.provider);
     return rows
       .map(recordFromCredentialRow)
@@ -455,12 +455,26 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
 
   private async dbForOwnerRows(owner: string, auth?: AuthContext): Promise<ConnectCredentialRecord[]> {
     const { db, credential } = await this.dbForOwner(owner, auth);
-    const rows = await db
-      .select()
-      .from(credential)
-      .where(eq(credential.service, 'ai'))
-      .execute();
+    const rows = await this.selectCredentialRows(db, credential);
     return rows.map(recordFromCredentialRow);
+  }
+
+  private async selectCredentialRows(
+    db: ConnectedCredentialDb,
+    credential: typeof credentialResource,
+  ): Promise<Record<string, unknown>[]> {
+    try {
+      return await db
+        .select()
+        .from(credential)
+        .where(eq(credential.service, 'ai'))
+        .execute();
+    } catch (error) {
+      if (isCredentialCollectionQueryUnsupported(error)) {
+        throw new Error(CREDENTIAL_COLLECTION_QUERY_UNSUPPORTED);
+      }
+      throw error;
+    }
   }
 
   public async upsertConnectedCredential(
@@ -573,6 +587,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   }> {
     const trustedFetch = await this.resolveTrustedFetch(owner);
     const credential = alias(this.credentialTemplate, 'credential');
+    credential.setSparqlEndpoint(CREDENTIAL_COLLECTION_SPARQL_ENDPOINT);
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
     await db.init?.(credential, aiProvider);
@@ -812,6 +827,9 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       this.provider,
       { type: 'apiKey', apiKey: input.apiKey },
     );
+    const metadata = metadataWithoutUndefined({
+      baseUrl: input.baseUrl,
+    });
     const record = await this.credentialRepository.upsertConnectedCredential({
       id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: this.provider }),
       credentialIri,
@@ -823,6 +841,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       status: 'active',
       accountLabel: input.accountLabel,
       expectedVersion: consumed.expectedCredentialVersion,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     }, { auth: input.auth });
 
     return {
@@ -852,6 +871,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
       webId: input.webId,
       provider: this.provider,
       deployment: input.deployment,
+      credentialId: input.credentialId,
       auth: input.auth,
     });
   }
@@ -1258,6 +1278,7 @@ export interface ProviderConnectionSummary {
   status: 'connected' | 'disconnected' | 'reauthRequired';
   authMode?: 'apiKey' | 'deviceCodeOAuth';
   accountLabel?: string;
+  baseUrl?: string;
   expiresAt?: string;
   reauthRequired?: boolean;
   credentialIri?: string;
@@ -1379,6 +1400,7 @@ export class ProviderConnectService {
         });
       const active = credential?.status === 'active';
       const reauthRequired = active && credential.reauthRequired === true;
+      const metadata = metadataFromRowValue(credential?.metadata) ?? {};
       const modes = Array.from(new Set([
         ...descriptor.authModes.filter((mode) => mode !== 'connectUnsupported'),
         ...(descriptor.connect?.apiKeyManagementSupported ? ['apiKey'] : []),
@@ -1392,6 +1414,7 @@ export class ProviderConnectService {
             : 'disconnected' as const,
         authMode: active ? credential.authMode : undefined,
         accountLabel: active ? credential.accountLabel : undefined,
+        baseUrl: active ? stringMetadata(metadata, 'baseUrl') : undefined,
         expiresAt: active ? credential.expiresAt?.toISOString() : undefined,
         reauthRequired: reauthRequired || undefined,
         credentialIri: active ? credential.credentialIri : undefined,
@@ -2005,6 +2028,12 @@ function isPodResourceNotFound(error: unknown): boolean {
     return false;
   }
   return /\b404\b|not found/i.test(error.message);
+}
+
+function isCredentialCollectionQueryUnsupported(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Document-mode collection queries over plain LDP are not supported/i.test(message)
+    || /Invalid SPARQL endpoint response from .*HTTP status (?:404|405|501)\b/i.test(message);
 }
 
 function metadataFromRow(row: Record<string, unknown>): Record<string, unknown> | undefined {

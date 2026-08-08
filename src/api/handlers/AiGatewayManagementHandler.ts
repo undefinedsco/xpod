@@ -200,14 +200,18 @@ export function registerAiGatewayManagementRoutes(
     if (!poolService) {
       return;
     }
-    const pools = await poolService.listProviderCredentialPools({
-      webId: request.auth.webId,
-      deployment: options.deployment,
-      auth: request.auth,
-    });
-    sendJson(response, 200, {
-      data: pools.map(publicProviderPool),
-    });
+    try {
+      const pools = await poolService.listProviderCredentialPools({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        auth: request.auth,
+      });
+      sendJson(response, 200, {
+        data: pools.map(publicProviderPool),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
   });
 
   server.post('/api/ai/providers/:provider/credentials/api-key', async (request, response, params) => {
@@ -436,18 +440,23 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.completeApiKey({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      attemptId: stringBody(body.attemptId),
-      state: stringBody(body.state),
-      signature: stringBody(body.signature),
-      apiKey,
-      accountLabel: normalizeOptionalString(body.accountLabel),
-      auth: request.auth,
-    } satisfies CompleteApiKeyInput);
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.completeApiKey({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        attemptId: stringBody(body.attemptId),
+        state: stringBody(body.state),
+        signature: stringBody(body.signature),
+        apiKey,
+        accountLabel: normalizeOptionalString(body.accountLabel),
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        auth: request.auth,
+      } satisfies CompleteApiKeyInput);
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/poll', async (request, response, params) => {
@@ -488,14 +497,18 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const record = await connectService.refresh({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      credentialId: normalizeOptionalString(body.credentialId),
-      auth: request.auth,
-    });
-    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    try {
+      const record = await connectService.refresh({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId: normalizeOptionalString(body.credentialId),
+        auth: request.auth,
+      });
+      sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.delete('/api/ai/gateway/providers/:provider/connect', async (request, response, params) => {
@@ -508,14 +521,18 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const record = await connectService.disconnect({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      credentialId: normalizeOptionalString(url.searchParams.get('credentialId')),
-      auth: request.auth,
-    });
-    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    try {
+      const record = await connectService.disconnect({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId: normalizeOptionalString(url.searchParams.get('credentialId')),
+        auth: request.auth,
+      });
+      sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.get('/api/ai/gateway/providers/:provider/connect/callback', async (_request, response) => {
@@ -892,6 +909,20 @@ function sendCustomModelsError(response: ServerResponse, error: unknown): void {
     sendJson(response, 403, { error: 'service_access_missing' });
     return;
   }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
   sendJson(response, 500, { error: 'Provider custom models update failed' });
 }
 
@@ -906,11 +937,57 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
     sendJson(response, 409, { error: 'credential_version_conflict' });
     return;
   }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
   if (message === 'credential_not_found' || message === 'provider_credential_not_found') {
     sendJson(response, 404, { error: 'Provider credential not found for current identity' });
     return;
   }
   sendJson(response, 500, { error: 'Provider credential pool operation failed' });
+}
+
+function sendLegacyProviderConnectError(response: ServerResponse, error: unknown): void {
+  if (error instanceof GatewayProtocolError) {
+    const normalized = normalizeGatewayError(error);
+    sendJson(response, normalized.error.status, normalized);
+    return;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'credential_version_conflict') {
+    sendJson(response, 409, { error: 'credential_version_conflict' });
+    return;
+  }
+  if (message === 'service_access_missing') {
+    sendJson(response, 403, { error: 'service_access_missing' });
+    return;
+  }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
+  if (message === 'credential_not_found'
+    || message === 'provider_credential_not_found'
+    || message === 'oauth_credential_not_found') {
+    sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+    return;
+  }
+  if (/connect attempt not found/iu.test(message)) {
+    sendJson(response, 404, { error: 'Provider Connect attempt not found' });
+    return;
+  }
+  if (/provider does not support (?:refresh|disconnect)/iu.test(message)) {
+    sendJson(response, 400, { error: message });
+    return;
+  }
+  sendJson(response, 500, { error: 'Provider Connect operation failed' });
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {

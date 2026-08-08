@@ -105,7 +105,7 @@ export function AiProviderCard({
   onBeginOffering?: (offering: AiProviderOffering, mode: AiConnectionsMode) => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
-  onDisconnect: () => void
+  onDisconnect: (credential?: AiProviderCredentialSummary) => void
   onCreateApiKeyCredential?: (offering: AiProviderOffering, input: {
     apiKey: string
     label?: string

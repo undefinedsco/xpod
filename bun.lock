@@ -129,6 +129,7 @@
       "name": "@undefineds.co/extension-sdk",
       "version": "0.1.1-rc.0",
       "dependencies": {
+        "@inrupt/solid-client": "^3.0.0",
         "@undefineds.co/shared-ui": "workspace:*",
         "@undefineds.co/solid-sdk": "workspace:*",
       },

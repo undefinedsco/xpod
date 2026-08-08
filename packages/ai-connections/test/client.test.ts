@@ -39,6 +39,7 @@ describe('AI Connection management client', () => {
         status: 'connected',
         authMode: 'deviceCodeOAuth',
         accountLabel: 'user@example.com',
+        baseUrl: 'https://proxy.example/v1',
         deployment: 'cloud',
         webId: WEB_ID,
         metadata: { token: 'secret' },
@@ -71,6 +72,7 @@ describe('AI Connection management client', () => {
         enabled: true,
         priority: 0,
         health: 'healthy',
+        baseUrl: 'https://proxy.example/v1',
         version: 0,
       }],
       status: 'available',
@@ -477,6 +479,31 @@ describe('AI Connection management client', () => {
         method: 'POST',
         body: JSON.stringify({ mode: 'browserAssistedApiKey' }),
       }),
+    )
+  })
+
+  it('disconnects a specific Provider credential when credentialId is supplied', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      record: {
+        id: 'cloud-kimi-oauth',
+        credentialIri: 'https://pod.example/alice/settings/credentials/kimi.ttl#cloud-kimi-oauth',
+        webId: WEB_ID,
+        provider: 'kimi',
+        authMode: 'oauth',
+        status: 'disconnected',
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.disconnect('kimi', 'cloud-kimi-oauth')
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/gateway/providers/kimi/connect?credentialId=cloud-kimi-oauth',
+      expect.objectContaining({ method: 'DELETE' }),
     )
   })
 

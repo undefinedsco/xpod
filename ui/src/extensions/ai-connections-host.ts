@@ -1,6 +1,7 @@
 import { createAiConnectionsExtension, type AiConnectionsController } from '@undefineds.co/ai-connections';
 import {
   mountApplet,
+  createSolidPermissionCapability,
   type AppletModule,
   type MountedTwoPaneApplet,
   type WebExtensionHost,
@@ -45,18 +46,7 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       },
       pod,
       permissions: {
-        inspectAgentAccess: async (request) => ({
-          status: 'granted',
-          resources: request.resources,
-        }),
-        ensureAgentAccess: async (request) => ({
-          status: 'granted',
-          resources: request.resources,
-        }),
-        revokeAgentAccess: async (request) => ({
-          status: 'missing',
-          resources: request.resources,
-        }),
+        ...createSolidPermissionCapability({ fetch: runtime.fetch }),
       },
       requireLogin: async () => runtime.login(window.location.origin),
     },

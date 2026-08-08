@@ -35,6 +35,7 @@
     "test": "vitest run test --config ../../vitest.packages.config.mts"
   },
   "dependencies": {
+    "@inrupt/solid-client": "^3.0.0",
     "@undefineds.co/shared-ui": "workspace:*",
     "@undefineds.co/solid-sdk": "workspace:*"
   },

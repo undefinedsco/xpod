@@ -804,6 +804,7 @@ describe('AiGatewayManagementHandler', () => {
       signature: 'sig_1',
       apiKey: 'sk-submit-only-here',
       accountLabel: 'Alice',
+      baseUrl: 'https://gateway.example/v1',
     }), complete, {
       provider: 'openai',
     });
@@ -818,12 +819,104 @@ describe('AiGatewayManagementHandler', () => {
       signature: 'sig_1',
       apiKey: 'sk-submit-only-here',
       accountLabel: 'Alice',
+      baseUrl: 'https://gateway.example/v1',
       auth: {
         type: 'solid',
         webId: WEB_ID,
       },
     });
     expect(JSON.parse(complete.body)).not.toHaveProperty('deployment');
+  });
+
+  it('maps legacy provider Connect operation errors instead of leaking raw route failures', async () => {
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+
+    const completeService = {
+      completeApiKey: vi.fn(async () => {
+        throw new Error('Connect attempt not found');
+      }),
+    } as any;
+    const completeServer = createServer();
+    registerAiGatewayManagementRoutes(completeServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: completeService,
+    });
+    const complete = response();
+    await expect(completeServer.routes['POST /api/ai/gateway/providers/:provider/connect/complete-api-key'](
+      request(auth, {
+        attemptId: 'attempt_missing',
+        state: 'state_1',
+        signature: 'sig_1',
+        apiKey: 'sk-test',
+      }),
+      complete,
+      { provider: 'openai' },
+    )).resolves.toBeUndefined();
+    expect(complete.statusCode).toBe(404);
+    expect(JSON.parse(complete.body)).toEqual({ error: 'Provider Connect attempt not found' });
+
+    const refreshService = {
+      refresh: vi.fn(async () => {
+        throw new Error('provider_credential_not_found');
+      }),
+    } as any;
+    const refreshServer = createServer();
+    registerAiGatewayManagementRoutes(refreshServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: refreshService,
+    });
+    const refresh = response();
+    await expect(refreshServer.routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](
+      request(auth, { credentialId: 'missing_credential' }),
+      refresh,
+      { provider: 'kimi' },
+    )).resolves.toBeUndefined();
+    expect(refresh.statusCode).toBe(404);
+    expect(JSON.parse(refresh.body)).toEqual({ error: 'Provider credential not found for current identity' });
+
+    const disconnectService = {
+      disconnect: vi.fn(async () => {
+        throw new Error('service_access_missing');
+      }),
+    } as any;
+    const disconnectServer = createServer();
+    registerAiGatewayManagementRoutes(disconnectServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: disconnectService,
+    });
+    const disconnect = response();
+    await expect(disconnectServer.routes['DELETE /api/ai/gateway/providers/:provider/connect'](
+      request(auth),
+      disconnect,
+      { provider: 'kimi' },
+    )).resolves.toBeUndefined();
+    expect(disconnect.statusCode).toBe(403);
+    expect(JSON.parse(disconnect.body)).toEqual({ error: 'service_access_missing' });
+
+    const unsupportedService = {
+      refresh: vi.fn(async () => {
+        throw new Error('credential_collection_query_unsupported');
+      }),
+    } as any;
+    const unsupportedServer = createServer();
+    registerAiGatewayManagementRoutes(unsupportedServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: unsupportedService,
+    });
+    const unsupported = response();
+    await expect(unsupportedServer.routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](
+      request(auth, { credentialId: 'credential_1' }),
+      unsupported,
+      { provider: 'kimi' },
+    )).resolves.toBeUndefined();
+    expect(unsupported.statusCode).toBe(501);
+    expect(JSON.parse(unsupported.body)).toMatchObject({
+      error: 'credential_collection_query_unsupported',
+    });
   });
 
   it('persists browser-assisted API keys through the production management handler and Pod repository without plaintext serialization', async () => {
@@ -1327,6 +1420,28 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/encryptedSecret|refreshToken|sk-secret|nested-api-key|wrapped|cipher/);
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain('credentialIri');
     expect(JSON.stringify(JSON.parse(res.body))).not.toContain(WEB_ID);
+  });
+
+  it('reports an unsupported Pod collection capability without a generic 500', async () => {
+    const connectService = {
+      listProviderCredentialPools: vi.fn(async () => {
+        throw new Error('credential_collection_query_unsupported');
+      }),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['GET /api/ai/providers'](request({ type: 'solid', webId: WEB_ID }), res, {});
+
+    expect(res.statusCode).toBe(501);
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: 'credential_collection_query_unsupported',
+    });
   });
 
   it('creates API-key credentials in a provider pool without echoing plaintext secrets', async () => {

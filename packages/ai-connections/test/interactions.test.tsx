@@ -249,6 +249,63 @@ describe('AI Connection settings', () => {
     expect(screen.queryByLabelText(/client.?id/i)).toBeNull()
   })
 
+  it('logs out the selected OAuth credential row without showing fake switch actions', async () => {
+    const current = client()
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="kimi"
+        serviceAccessGranted
+        providerProducts={{
+          kimi: {
+            id: 'kimi',
+            name: 'Kimi',
+            status: 'available',
+            offerings: [{
+              id: 'official-subscription',
+              label: 'Kimi 账号',
+              authModes: ['oauth'],
+            }],
+            credentials: [
+              {
+                id: 'kimi-oauth-primary',
+                offeringId: 'official-subscription',
+                authMode: 'oauth',
+                label: 'alice@example.com',
+                enabled: true,
+                priority: 10,
+                health: 'healthy',
+                version: 1,
+              },
+              {
+                id: 'kimi-oauth-backup',
+                offeringId: 'official-subscription',
+                authMode: 'oauth',
+                label: 'bob@example.com',
+                enabled: true,
+                priority: 20,
+                health: 'expired',
+                version: 1,
+              },
+            ],
+            selectedModels: [],
+          },
+        }}
+      />,
+    )
+
+    expect(await screen.findByText('a***e@example.com')).toBeTruthy()
+    expect(screen.getByText('b***b@example.com')).toBeTruthy()
+    expect(screen.queryByText('切换')).toBeNull()
+    expect(screen.queryByText('重新授权')).toBeNull()
+    expect(screen.getByRole('button', { name: '添加账号' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '退出' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /a\*\*\*e@example\.com.*退出/ }))
+
+    await waitFor(() => expect(current.disconnect).toHaveBeenCalledWith('kimi', 'kimi-oauth-primary'))
+  })
+
   it('uses the shared Provider OAuth failure view for recoverable auth failures', async () => {
     const current = client({
       beginConnect: vi.fn(async (provider, mode) => ({

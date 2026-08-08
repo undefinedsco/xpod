@@ -77,7 +77,7 @@ export function AiCredentialPoolSection({
   onBeginOffering?: (offering: AiProviderOffering, mode: AiConnectionsMode) => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
-  onDisconnect: () => void
+  onDisconnect: (credential?: AiProviderCredentialSummary) => void
   onCreateApiKeyCredential?: (offering: AiProviderOffering, input: {
     apiKey: string
     label?: string
@@ -146,19 +146,20 @@ export function AiCredentialPoolSection({
                   title={offeringLabel(offering)}
                   providers={oauthProviderOptions(offering, offeringCredentials)}
                   connectingId={isPendingAttempt(attempt) ? definition.id : undefined}
-                  onConnect={() => onBeginOffering?.(offering, mode)}
+                  onConnect={(credentialId) => {
+                    const credential = offeringCredentials.find((item) => item.id === credentialId)
+                    if (credential) {
+                      onDisconnect(credential)
+                      return
+                    }
+                    onBeginOffering?.(offering, mode)
+                  }}
                 />
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" disabled={busy || disabled} onClick={() => onBeginOffering?.(offering, mode)}>
                     {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
                     {offeringCredentials.length ? '添加账号' : '登录'}
                   </Button>
-                  {offeringCredentials.length ? (
-                    <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
-                      <LogOut className="mr-2 h-4 w-4" />
-                      退出
-                    </Button>
-                  ) : null}
                 </div>
                 {error ? <p className="text-sm text-destructive">{error}</p> : null}
               </div>
@@ -593,7 +594,7 @@ function oauthProviderOptions(
     id: credential.id,
     label: credential.label ? maskAccountLabel(credential.label) : credential.id,
     subtitle: credential.maskedHint,
-    actionLabel: credential.health === 'expired' || credential.health === 'invalid' ? '重新授权' : '切换',
+    actionLabel: '退出',
     badge: {
       label: credential.enabled ? '启用' : '停用',
       tone: credential.health === 'healthy' ? 'success' : credential.health === 'unknown' ? 'neutral' : 'warning',
