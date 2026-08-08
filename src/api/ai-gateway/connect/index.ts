@@ -13,6 +13,7 @@ import {
 } from '@undefineds.co/models';
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
+import { GatewayProtocolError } from '../errors';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import {
   DEFAULT_PROVIDER_DESCRIPTORS,
@@ -21,6 +22,11 @@ import {
 } from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
+import { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
+import type { OAuthIntegration } from './OAuthIntegrationRegistry';
+import { requireKimiOAuthClientId } from './OAuthIntegrationRegistry';
+export { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
+export { OAuthIntegrationRegistry, requireKimiOAuthClientId, type OAuthIntegration } from './OAuthIntegrationRegistry';
 
 export type ConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
 export type ConnectAttemptStatus =
@@ -87,6 +93,7 @@ export interface RefreshInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  credentialId?: string;
   auth?: AuthContext;
 }
 
@@ -94,6 +101,7 @@ export interface DisconnectInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  credentialId?: string;
   auth?: AuthContext;
 }
 
@@ -289,7 +297,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const filtered = rows
       .filter((record) => record.status === 'active')
       .filter((record) => normalizeProvider(record.provider) !== '')
-      .filter((record) => enabledProviderIds.has(normalizeProvider(record.provider)));
+      .filter((record) => providerAllowedByConfiguredIds(record.provider, enabledProviderIds));
     return filtered
       .sort(compareCredentialRecords)
       .map((record) => ({
@@ -376,7 +384,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       ...input.patch,
       id: input.credentialId,
       webId: input.webId,
-      provider: input.provider,
+      provider: target.provider,
       deployment: input.deployment,
       version: currentVersion + 1,
     };
@@ -435,12 +443,12 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .from(credential)
       .where(eq(credential.service, 'ai'))
       .execute();
-    const provider = normalizeProvider(input.provider);
+    const providerIds = queryProviderIds(input.provider);
     return rows
       .map(recordFromCredentialRow)
       .filter((record) => record.webId === input.webId)
       .filter((record) => record.deployment === input.deployment)
-      .filter((record) => normalizeProvider(record.provider) === provider)
+      .filter((record) => providerIds.has(normalizeProvider(record.provider)))
       .filter((record) => input.includeRevoked || record.status === 'active')
       .sort(compareCredentialRecords);
   }
@@ -926,7 +934,7 @@ export class BrowserAssistedApiKeyConnectAdapter implements ProviderConnectAdapt
 
 export interface KimiDeviceCodeConnectAdapterOptions extends Omit<BrowserAssistedApiKeyConnectAdapterOptions, 'provider' | 'consoleUrl'> {
   fetch?: typeof fetch;
-  clientId: string;
+  oauthIntegration: OAuthIntegration;
   deviceAuthorizationEndpoint?: string;
   tokenEndpoint?: string;
 }
@@ -936,6 +944,7 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
   private readonly clientId: string;
   private readonly deviceAuthorizationEndpoint: string;
   private readonly tokenEndpoint: string;
+  private readonly oauthCredentials: OAuthConnectCredentialStore;
 
   public constructor(options: KimiDeviceCodeConnectAdapterOptions) {
     super({
@@ -944,9 +953,15 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       consoleUrl: 'https://kimi.moonshot.cn/device',
     });
     this.fetchImpl = options.fetch ?? fetch;
-    this.clientId = options.clientId;
+    this.clientId = requireKimiOAuthClientId(options.oauthIntegration);
     this.deviceAuthorizationEndpoint = options.deviceAuthorizationEndpoint ?? 'https://auth.kimi.com/api/oauth/device_authorization';
     this.tokenEndpoint = options.tokenEndpoint ?? 'https://auth.kimi.com/api/oauth/token';
+    this.oauthCredentials = new OAuthConnectCredentialStore({
+      provider: 'kimi',
+      deployment: options.deployment,
+      credentialRepository: options.credentialRepository,
+      vault: options.vault,
+    });
     assertKimiEndpoint(this.deviceAuthorizationEndpoint, '/api/oauth/device_authorization');
     assertKimiEndpoint(this.tokenEndpoint, '/api/oauth/token');
   }
@@ -1111,14 +1126,20 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     }
     requireStringField(body, 'access_token');
     requireStringField(body, 'refresh_token');
-    return this.storeOAuthCredential(input, body, current.version);
+    return this.updateOAuthCredential(input, body, current);
   }
 
   public override async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
-    return this.credentialRepository.disconnect({
+    const current = await this.findOAuthCredential(input);
+    if (!current) {
+      throw new Error('oauth_credential_not_found');
+    }
+    return this.credentialRepository.revokeCredential({
       webId: input.webId,
       provider: 'kimi',
       deployment: input.deployment,
+      credentialId: current.id,
+      expectedVersion: current.version,
       auth: input.auth,
     });
   }
@@ -1132,10 +1153,6 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     body: Record<string, unknown>,
     expectedVersion?: number,
   ): Promise<ConnectCredentialRecord> {
-    const credentialIri = aiRuntimeRepository.credentialIri(input.webId, {
-      deployment: input.deployment,
-      provider: 'kimi',
-    });
     const expiresAt = expiresAtFrom(body.expires_in, this.now());
     const secret: ProviderSecret = {
       type: 'deviceCodeOAuth',
@@ -1145,22 +1162,69 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       scope: stringFrom(body.scope),
       idToken: stringFrom(body.id_token),
     };
-    const encryptedSecret = await this.vault.seal(principal(input.webId), credentialIri, 'kimi', secret);
-    return this.credentialRepository.upsertConnectedCredential({
-      id: aiRuntimeRepository.credentialId({ deployment: input.deployment, provider: 'kimi' }),
-      credentialIri,
+    return this.oauthCredentials.createSiblingOAuthCredential({
       webId: input.webId,
-      provider: 'kimi',
       deployment: input.deployment,
-      authMode: 'deviceCodeOAuth',
-      encryptedSecret,
-      status: 'active',
+      secret,
       expiresAt,
       expectedVersion,
+      auth: input.auth,
       metadata: {
         authoritativeSubject: decodeJwtSubject(stringFrom(body.id_token)),
       },
-    }, { auth: input.auth });
+    });
+  }
+
+  private async updateOAuthCredential(
+    input: { webId: string; deployment: GatewayDeployment; auth?: AuthContext },
+    body: Record<string, unknown>,
+    current: ConnectCredentialRecord,
+  ): Promise<ConnectCredentialRecord | undefined> {
+    const expiresAt = expiresAtFrom(body.expires_in, this.now());
+    const secret: ProviderSecret = {
+      type: 'deviceCodeOAuth',
+      accessToken: stringFrom(body.access_token),
+      refreshToken: stringFrom(body.refresh_token),
+      expiresAt: expiresAt?.toISOString(),
+      scope: stringFrom(body.scope),
+      idToken: stringFrom(body.id_token),
+    };
+    return this.oauthCredentials.updateOAuthCredential({
+      current,
+      webId: input.webId,
+      deployment: input.deployment,
+      secret,
+      expiresAt,
+      auth: input.auth,
+      metadata: {
+        authoritativeSubject: decodeJwtSubject(stringFrom(body.id_token)),
+      },
+    });
+  }
+
+  private async findOAuthCredential(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    credentialId?: string;
+    auth?: AuthContext;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const credentials = input.credentialId
+      ? [
+        await this.credentialRepository.getCredentialById({
+          webId: input.webId,
+          provider: 'kimi',
+          deployment: input.deployment,
+          credentialId: input.credentialId,
+          auth: input.auth,
+        }),
+      ]
+      : await this.credentialRepository.listProviderCredentials({
+        webId: input.webId,
+        provider: 'kimi',
+        deployment: input.deployment,
+        auth: input.auth,
+      });
+    return credentials.find((credential) => credential && isKimiOAuthCredential(credential));
   }
 }
 
@@ -1283,13 +1347,16 @@ export class ProviderConnectService {
       throw new Error('Requested Connect mode does not match provider capability');
     }
     if (descriptor.connect?.configured === false) {
+      const message = descriptor.connect.notes?.includes('auth_not_available')
+        ? 'auth_not_available'
+        : descriptor.connect.notes?.join(' ');
       return Promise.resolve({
         mode: descriptor.connect.mode,
         status: 'unsupported',
         provider: normalizeProvider(input.provider),
         deployment: input.deployment,
         apiKeyManagementSupported: descriptor.connect.apiKeyManagementSupported,
-        message: descriptor.connect.notes?.join(' '),
+        message,
       });
     }
     return this.requireAdapter(input.provider).begin(input);
@@ -1387,6 +1454,7 @@ export class ProviderConnectService {
       throw new Error('credential_pool_not_configured');
     }
     const provider = normalizeProvider(input.provider);
+    const offeringId = requireApiKeyOffering(provider, input.offeringId);
     const credentialIri = createPoolCredentialIri(input.webId, input.deployment, provider);
     const encryptedSecret = await this.vault.seal(
       { webId: input.webId },
@@ -1403,12 +1471,12 @@ export class ProviderConnectService {
       encryptedSecret,
       status: 'active',
       accountLabel: input.label,
-      offeringId: input.offeringId ?? defaultOfferingFor(provider),
+      offeringId,
       priority: input.priority ?? 100,
       enabled: true,
       health: 'healthy',
       metadata: metadataWithoutUndefined({
-        offeringId: input.offeringId ?? defaultOfferingFor(provider),
+        offeringId,
         priority: input.priority ?? 100,
         enabled: true,
         health: 'healthy',
@@ -1547,9 +1615,9 @@ export class ProviderConnectService {
     if (!this.credentialRepository || !this.vault) {
       throw new Error('CredentialVault and PodCredentialRepository are required for provider refresh');
     }
-    const current = await this.credentialRepository.getActiveCredential(input);
+    const current = await this.getRefreshCredential(input);
     if (!current) {
-      throw new Error('Active provider credential not found');
+      throw new Error('oauth_credential_not_found');
     }
     const secret = await this.vault.open(
       { webId: input.webId },
@@ -1561,7 +1629,7 @@ export class ProviderConnectService {
       return await adapter.refresh(input, current, secret);
     } catch (error) {
       if (remainingAttempts > 0 && isVersionConflict(error)) {
-        const latest = await this.credentialRepository.getActiveCredential(input);
+        const latest = await this.getRefreshCredential(input);
         if (latest && latest.version !== current.version && !latest.reauthRequired) {
           return latest;
         }
@@ -1577,6 +1645,20 @@ export class ProviderConnectService {
       throw new Error('Provider does not support disconnect');
     }
     return adapter.disconnect(input);
+  }
+
+  private async getRefreshCredential(input: RefreshInput): Promise<ConnectCredentialRecord | undefined> {
+    if (!this.credentialRepository) {
+      return undefined;
+    }
+    const credential = input.credentialId
+      ? await this.credentialRepository.getCredentialById({
+        ...input,
+        credentialId: input.credentialId,
+      })
+      : (await this.credentialRepository.listProviderCredentials(input))
+        .find(isOAuthProviderCredential);
+    return credential && isOAuthProviderCredential(credential) ? credential : undefined;
   }
 
   private requireAdapter(provider: string): ProviderConnectAdapter {
@@ -1613,7 +1695,7 @@ function publicPoolCredentialSummary(record: ConnectCredentialRecord): AiProvide
   return metadataWithoutUndefined({
     id: record.id,
     provider: normalizeProvider(record.provider),
-    offeringId: record.offeringId ?? stringMetadata(metadata, 'offeringId') ?? defaultOfferingFor(record.provider) ?? 'api-platform',
+    offeringId: record.offeringId ?? stringMetadata(metadata, 'offeringId') ?? defaultOfferingFor(record.provider, record.authMode) ?? 'api-platform',
     authMode: publicAuthMode(record.authMode),
     label: record.accountLabel,
     enabled: record.enabled ?? booleanMetadata(metadata, 'enabled') ?? record.status === 'active',
@@ -1629,6 +1711,21 @@ function publicPoolCredentialSummary(record: ConnectCredentialRecord): AiProvide
 
 function publicAuthMode(authMode: ConnectCredentialRecord['authMode']): AiProviderCredentialSummary['authMode'] {
   return authMode === 'deviceCodeOAuth' ? 'deviceCode' : 'apiKey';
+}
+
+function isOAuthProviderCredential(record: ConnectCredentialRecord): boolean {
+  return record.status === 'active'
+    && record.authMode === 'deviceCodeOAuth'
+    && credentialOfferingId(record) === 'official-subscription';
+}
+
+function isKimiOAuthCredential(record: ConnectCredentialRecord): boolean {
+  return normalizeProvider(record.provider) === 'kimi' && isOAuthProviderCredential(record);
+}
+
+function credentialOfferingId(record: ConnectCredentialRecord): string | undefined {
+  const metadata = metadataFromRowValue(record.metadata) ?? {};
+  return record.offeringId ?? stringMetadata(metadata, 'offeringId');
 }
 
 function publicCredentialHealth(record: ConnectCredentialRecord): AiProviderCredentialSummary['health'] {
@@ -1772,7 +1869,7 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
   const metadata = metadataFromRowValue(record.metadata) ?? {};
   const normalizedProvider = normalizeProvider(record.provider);
   if (record.offeringId === undefined) {
-    metadata.offeringId = metadata.offeringId ?? defaultOfferingFor(normalizedProvider);
+    metadata.offeringId = metadata.offeringId ?? defaultOfferingFor(normalizedProvider, record.authMode);
   } else {
     metadata.offeringId = record.offeringId;
   }
@@ -1814,13 +1911,14 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
   const webId = encrypted.webId;
   const status = stringFrom(row.status) === 'revoked' ? 'revoked' : 'active';
   const reauthRequired = row.reauthRequired === true || row.reauthRequired === 'true';
+  const authMode = stringFrom(row.authMode) === 'deviceCodeOAuth' ? 'deviceCodeOAuth' : 'apiKey';
   return {
     id,
     credentialIri: encrypted.credentialIri,
     webId,
     provider,
     deployment,
-    authMode: stringFrom(row.authMode) === 'deviceCodeOAuth' ? 'deviceCodeOAuth' : 'apiKey',
+    authMode,
     encryptedSecret: encrypted,
     status,
     accountLabel: stringFrom(row.accountLabel) || stringFrom(row.label) || undefined,
@@ -1830,7 +1928,7 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     reauthRequired,
     metadata: metadataFromRow(row),
     priority: rowPriorityFromMetadata(row) ?? 100,
-    offeringId: rowOfferingIdFromMetadata(row) ?? defaultOfferingFor(provider),
+    offeringId: rowOfferingIdFromMetadata(row) ?? defaultOfferingFor(provider, authMode),
     enabled: rowEnabledFromMetadata(row) ?? status === 'active',
     health: rowHealthFromMetadata(row) ?? (reauthRequired ? 'reauthRequired' : 'healthy'),
   };
@@ -2081,6 +2179,35 @@ function normalizeProvider(provider: string): string {
   return provider.trim().toLowerCase();
 }
 
+function queryProviderIds(provider: string): Set<string> {
+  const normalized = normalizeProvider(provider);
+  const product = providerProductFor(normalized);
+  if (!product || normalizeProvider(product.id) !== normalized) {
+    return new Set([normalized]);
+  }
+  return new Set([
+    normalizeProvider(product.id),
+    ...product.offerings.flatMap((offering) => offering.runtimeProviderIds.map(normalizeProvider)),
+  ]);
+}
+
+function providerAllowedByConfiguredIds(provider: string, configuredProviderIds: ReadonlySet<string>): boolean {
+  const normalized = normalizeProvider(provider);
+  if (configuredProviderIds.has(normalized)) {
+    return true;
+  }
+  const product = providerProductFor(normalized);
+  return product ? configuredProviderIds.has(normalizeProvider(product.id)) : false;
+}
+
+function providerProductFor(provider: string): typeof DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS[number] | undefined {
+  const normalized = normalizeProvider(provider);
+  return DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS.find((product) =>
+    normalizeProvider(product.id) === normalized
+    || product.offerings.some((offering) =>
+      offering.runtimeProviderIds.some((runtimeProviderId) => normalizeProvider(runtimeProviderId) === normalized)));
+}
+
 async function safeJson(response: Response): Promise<Record<string, unknown>> {
   const text = await response.text();
   if (!text) {
@@ -2196,11 +2323,52 @@ function decodeJwtSubject(idToken: string): string | undefined {
   }
 }
 
-function defaultOfferingFor(provider: string): string | undefined {
+function defaultOfferingFor(provider: string, authMode?: ConnectCredentialRecord['authMode']): string | undefined {
   const normalized = normalizeProvider(provider);
-  const product = DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS
-    .find((entry) => normalizeProvider(entry.id) === normalized);
-  return product?.offerings.at(0)?.id;
+  const product = providerProductFor(normalized);
+  if (!product) {
+    return undefined;
+  }
+  const runtimeOffering = product.offerings.find((offering) =>
+    offering.runtimeProviderIds.some((runtimeProviderId) => normalizeProvider(runtimeProviderId) === normalized)
+    && offeringMatchesAuthMode(offering.authModes, authMode));
+  if (runtimeOffering) {
+    return runtimeOffering.id;
+  }
+  return product.offerings.find((offering) => offeringMatchesAuthMode(offering.authModes, authMode))?.id
+    ?? product.offerings.at(0)?.id;
+}
+
+function requireApiKeyOffering(provider: string, offeringId: string | undefined): string {
+  const normalized = normalizeProvider(provider);
+  const product = providerProductFor(normalized);
+  const resolvedOfferingId = offeringId ?? defaultOfferingFor(normalized, 'apiKey');
+  const offering = product?.offerings.find((candidate) =>
+    normalizeProvider(candidate.id) === normalizeProvider(resolvedOfferingId ?? ''));
+  if (!resolvedOfferingId || !offering || !offering.authModes.includes('apiKey')) {
+    throw new GatewayProtocolError('Provider offering is not compatible with API key credentials', {
+      code: 'invalid_request',
+      status: 400,
+      details: {
+        provider: normalized,
+        ...(offeringId ? { offeringId } : {}),
+      },
+    });
+  }
+  return offering.id;
+}
+
+function offeringMatchesAuthMode(
+  offeringAuthModes: readonly string[],
+  authMode: ConnectCredentialRecord['authMode'] | undefined,
+): boolean {
+  if (!authMode) {
+    return true;
+  }
+  if (authMode === 'apiKey') {
+    return offeringAuthModes.includes('apiKey');
+  }
+  return offeringAuthModes.includes('oauth') || offeringAuthModes.includes('deviceCode');
 }
 
 async function updateByCredentialIdAndVersion(params: {

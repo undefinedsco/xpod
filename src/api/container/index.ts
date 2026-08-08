@@ -144,7 +144,8 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
     secretCellCredentialVaultFactory,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
-    aiGatewayKimiClientId: process.env.XPOD_AI_GATEWAY_KIMI_CLIENT_ID,
+    aiGatewayKimiOAuthIntegrationId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_INTEGRATION_ID,
+    aiGatewayKimiOAuthClientId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_CLIENT_ID,
     aiGatewayProviderBaseUrls: openAiGatewayBaseUrl ? { openai: openAiGatewayBaseUrl } : undefined,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',

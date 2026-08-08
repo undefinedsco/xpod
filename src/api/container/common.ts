@@ -30,6 +30,7 @@ import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
   KimiDeviceCodeConnectAdapter,
+  OAuthIntegrationRegistry,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
@@ -224,6 +225,7 @@ export function registerCommonServices(
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
       const vault = credentialVaultForConfig(config);
       const attempts = new InMemoryConnectAttemptStore();
+      const oauthIntegrations = createKimiOAuthIntegrations(config);
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
           provider: 'openai',
@@ -253,22 +255,23 @@ export function registerCommonServices(
           signingSecret,
         }),
       ];
-      if (config.aiGatewayKimiClientId) {
+      const kimiOAuth = oauthIntegrations?.require('kimi');
+      if (kimiOAuth) {
         adapters.push(new KimiDeviceCodeConnectAdapter({
           attempts,
           credentialRepository,
           vault,
           deployment: config.edition,
           signingSecret,
-          clientId: config.aiGatewayKimiClientId,
+          oauthIntegration: kimiOAuth,
         }));
       }
       return new ProviderConnectService({
         registry: createDefaultGatewayProviderRegistry({
           connect: {
-            kimi: config.aiGatewayKimiClientId
+            kimi: kimiOAuth
               ? { configured: true }
-              : { configured: false, notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'] },
+              : { configured: false, notes: ['auth_not_available'] },
           },
         }),
         adapters,
@@ -617,4 +620,21 @@ export function registerCommonServices(
       });
     }).singleton(),
   });
+}
+
+function createKimiOAuthIntegrations(config: ApiContainerCradle['config']): OAuthIntegrationRegistry | undefined {
+  try {
+    return OAuthIntegrationRegistry.fromServerConfig({
+      kimi: {
+        integrationId: config.aiGatewayKimiOAuthIntegrationId,
+        issuedBy: 'xpod',
+        clientId: config.aiGatewayKimiOAuthClientId,
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'auth_not_available') {
+      return undefined;
+    }
+    throw error;
+  }
 }

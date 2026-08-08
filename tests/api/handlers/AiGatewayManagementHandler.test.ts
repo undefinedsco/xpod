@@ -15,6 +15,7 @@ import {
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../../../src/api/ai-gateway/connect';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
 import type {
   KeyWrapContext,
@@ -637,6 +638,34 @@ describe('AiGatewayManagementHandler', () => {
       },
     });
     expect(JSON.parse(res.body)).not.toHaveProperty('deployment');
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('clientId');
+  });
+
+  it('rejects provider Connect begin requests that include a clientId', async () => {
+    const connectService = {
+      begin: vi.fn(),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      mode: 'deviceCodeOAuth',
+      clientId: 'attacker-client-id',
+    }), res, {
+      provider: 'kimi',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'clientId is not accepted' });
+    expect(connectService.begin).not.toHaveBeenCalled();
   });
 
   it('lists effective provider connections for the current identity without infrastructure fields', async () => {
@@ -1154,6 +1183,7 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }, {
       refreshToken: 'must-not-leave-handler',
+      credentialId: 'cloud-kimi-oauth',
     }), res, {
       provider: 'kimi',
     });
@@ -1163,6 +1193,45 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
+      credentialId: 'cloud-kimi-oauth',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+      },
+    });
+  });
+
+  it('passes an optional credentialId through provider Connect disconnect', async () => {
+    const connectService = {
+      disconnect: vi.fn(async () => ({
+        id: 'cloud-kimi-oauth',
+        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#cloud-kimi-oauth',
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode: 'deviceCodeOAuth',
+        status: 'revoked',
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const req = request({ type: 'solid', webId: WEB_ID });
+    req.url = '/api/ai/gateway/providers/kimi/connect?credentialId=cloud-kimi-oauth';
+    const res = response();
+
+    await routes['DELETE /api/ai/gateway/providers/:provider/connect'](req, res, {
+      provider: 'kimi',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.disconnect).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'cloud-kimi-oauth',
       auth: {
         type: 'solid',
         webId: WEB_ID,
@@ -1318,6 +1387,43 @@ describe('AiGatewayManagementHandler', () => {
       }),
     });
     expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/sk-new-secret-key|encryptedSecret|cipher/);
+  });
+
+  it('returns coded invalid_request errors for incompatible API-key offerings', async () => {
+    const connectService = {
+      createApiKeyCredential: vi.fn(async () => {
+        throw new GatewayProtocolError('Provider offering is not compatible with API key credentials', {
+          code: 'invalid_request',
+          status: 400,
+          details: { provider: 'kimi', offeringId: 'official-subscription' },
+        });
+      }),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/api-key'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      offeringId: 'official-subscription',
+      apiKey: 'sk-new-secret-key',
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'invalid_request',
+        message: 'Provider offering is not compatible with API key credentials',
+        status: 400,
+        details: { provider: 'kimi', offeringId: 'official-subscription' },
+      },
+    });
   });
 
   it('patches only allowlisted credential fields and requires expectedVersion', async () => {

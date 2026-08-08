@@ -422,6 +422,58 @@ describe('ModelRouter', () => {
     });
   });
 
+  it('routes product credentials through compatible offering runtime provider ids', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'token_plan',
+          provider: 'bailian-token-plan',
+          models: ['qwen-max'],
+          metadata: { offeringId: 'token-plan' },
+        }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'bailian/qwen-max',
+    })).resolves.toMatchObject({
+      provider: { id: 'bailian' },
+      model: 'qwen-max',
+      credential: {
+        id: 'token_plan',
+        provider: 'bailian-token-plan',
+      },
+    });
+  });
+
+  it('maps credential-only runtime provider custom models back to the provider product id', async () => {
+    const modelRouter = router({
+      credentials: [
+        credential({
+          id: 'token_plan',
+          provider: 'bailian-token-plan',
+          customModels: [{ id: 'qwen-token-custom' }],
+          metadata: { offeringId: 'token-plan' },
+        }),
+      ],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      model: 'qwen-token-custom',
+    })).resolves.toMatchObject({
+      provider: { id: 'bailian' },
+      model: 'qwen-token-custom',
+      credential: {
+        id: 'token_plan',
+        provider: 'bailian-token-plan',
+      },
+    });
+  });
+
   it('keeps conversation affinity isolated by deployment and WebID without using raw prompt text', async () => {
     const affinityStore = new InMemorySessionAffinityStore({
       secret: AFFINITY_SECRET,

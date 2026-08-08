@@ -32,6 +32,7 @@ import {
   type AiClientConfigurationCapabilityDescriptor,
   unavailableAiClientConfigurationCapability,
 } from '../service/AiClientConfigurationService';
+import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
 
 export interface AiGatewayManagementHandlerOptions {
   repository: GatewayAccessKeyRepository;
@@ -231,20 +232,24 @@ export function registerAiGatewayManagementRoutes(
     if (!poolService) {
       return;
     }
-    const credential = await poolService.createApiKeyCredential({
-      webId: request.auth.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      offeringId: normalizeOptionalString(body.offeringId),
-      apiKey,
-      label: normalizeOptionalString(body.label),
-      baseUrl: normalizeOptionalString(body.baseUrl),
-      priority,
-      auth: request.auth,
-    });
-    sendJson(response, 201, {
-      credential: publicCredentialPoolCredential(credential),
-    });
+    try {
+      const credential = await poolService.createApiKeyCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        offeringId: normalizeOptionalString(body.offeringId),
+        apiKey,
+        label: normalizeOptionalString(body.label),
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        priority,
+        auth: request.auth,
+      });
+      sendJson(response, 201, {
+        credential: publicCredentialPoolCredential(credential),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
   });
 
   server.patch('/api/ai/providers/:provider/credentials/:credentialId', async (request, response, params) => {
@@ -365,6 +370,10 @@ export function registerAiGatewayManagementRoutes(
     if (!body) {
       return;
     }
+    if (body.clientId !== undefined) {
+      sendJson(response, 400, { error: 'clientId is not accepted' });
+      return;
+    }
     const mode = typeof body.mode === 'string' ? body.mode : undefined;
     if (mode !== 'browserAssistedApiKey' && mode !== 'deviceCodeOAuth' && mode !== 'connectUnsupported') {
       sendJson(response, 400, { error: 'mode must be a supported Connect mode' });
@@ -483,6 +492,7 @@ export function registerAiGatewayManagementRoutes(
       webId: request.auth!.webId,
       deployment: options.deployment,
       provider: params.provider,
+      credentialId: normalizeOptionalString(body.credentialId),
       auth: request.auth,
     });
     sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
@@ -497,10 +507,12 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     const record = await connectService.disconnect({
       webId: request.auth!.webId,
       deployment: options.deployment,
       provider: params.provider,
+      credentialId: normalizeOptionalString(url.searchParams.get('credentialId')),
       auth: request.auth,
     });
     sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
@@ -884,6 +896,11 @@ function sendCustomModelsError(response: ServerResponse, error: unknown): void {
 }
 
 function sendCredentialPoolError(response: ServerResponse, error: unknown): void {
+  if (error instanceof GatewayProtocolError) {
+    const normalized = normalizeGatewayError(error);
+    sendJson(response, normalized.error.status, normalized);
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (message === 'credential_version_conflict') {
     sendJson(response, 409, { error: 'credential_version_conflict' });

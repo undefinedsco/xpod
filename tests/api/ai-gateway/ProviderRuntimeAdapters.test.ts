@@ -373,6 +373,27 @@ describe('Provider runtime adapters', () => {
       status: 400,
       details: { capability: 'reasoningEffort' },
     });
+
+    const officialSubscription = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const officialAdapter = new KimiRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: officialSubscription.fetch }),
+      provider: registry.requireProvider('kimi'),
+    });
+    await collect(officialAdapter.execute({
+      request: baseRequest({ model: 'kimi-k2', reasoning: undefined }),
+      apiKey: 'sk-kimi-subscription',
+      credential: { baseUrl: 'https://api.kimi.com/coding/v1' },
+    }));
+    expect(officialSubscription.captured[0].url).toBe('https://api.kimi.com/coding/v1/chat/completions');
+
+    await expect(collect(officialAdapter.execute({
+      request: baseRequest({ model: 'kimi-k2', reasoning: undefined }),
+      apiKey: 'sk-kimi-subscription',
+      credential: { baseUrl: 'https://api.kimi.com/coding/v2' },
+    }))).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
+    });
   });
 
   it('selects Bailian standard and Coding Plan endpoints without mixing credential key types', async () => {
@@ -402,11 +423,29 @@ describe('Provider runtime adapters', () => {
       apiKey: 'sk-sp-bailian',
       credential: {
         keyType: 'codingPlan',
-        baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+        baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
       },
     }));
-    expect(codingPlan.captured[0].url).toBe('https://dashscope.aliyuncs.com/api/v1/messages');
+    expect(codingPlan.captured[0].url).toBe('https://coding.dashscope.aliyuncs.com/apps/anthropic/messages');
     expect(codingPlan.captured[0].headers.get('x-api-key')).toBe('sk-sp-bailian');
+
+    const tokenPlan = fetchFixture(new Response(jsonSse([
+      { id: 'chatcmpl_token_plan', choices: [{ delta: { role: 'assistant' } }] },
+      { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]), { status: 200 }));
+    const tokenAdapter = new BailianRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: tokenPlan.fetch }) });
+    await collect(tokenAdapter.execute({
+      request: baseRequest({ model: 'qwen-max' }),
+      apiKey: 'sk-token-plan',
+      credential: {
+        keyType: 'tokenPlan',
+        baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      },
+    }));
+    expect(tokenPlan.captured[0].url).toBe(
+      'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions',
+    );
 
     await expect(collect(adapter.execute({
       request: baseRequest({ model: 'qwen-max' }),
@@ -425,6 +464,30 @@ describe('Provider runtime adapters', () => {
       code: 'invalid_request',
       status: 400,
       details: { keyType: 'codingPlan' },
+    });
+
+    await expect(collect(adapter.execute({
+      request: baseRequest({ model: 'qwen-max' }),
+      apiKey: 'sk-bailian-standard',
+      credential: {
+        keyType: 'dashscope',
+        baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      },
+    }))).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
+    });
+
+    await expect(collect(tokenAdapter.execute({
+      request: baseRequest({ model: 'qwen-max' }),
+      apiKey: 'sk-token-plan',
+      credential: {
+        keyType: 'tokenPlan',
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      },
+    }))).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
     });
   });
 
@@ -724,7 +787,7 @@ describe('Provider runtime adapters', () => {
       apiKey: 'sk-sp-bailian',
       credential: {
         keyType: 'codingPlan',
-        baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+        baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
       },
     }));
     expect(bailianCoding.captured[0].body.max_tokens).toBe(1234);

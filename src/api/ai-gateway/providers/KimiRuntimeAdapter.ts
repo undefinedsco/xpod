@@ -4,6 +4,7 @@ import {
 } from './ProviderRuntimeAdapter';
 import {
   createDefaultProviderRegistry,
+  type ProviderOfferingDescriptor,
   type ProviderDescriptor,
   type ProviderModelDescriptor,
 } from './ProviderRegistry';
@@ -23,7 +24,10 @@ export class KimiRuntimeAdapter extends OpenAiCompatibleRuntimeAdapter {
       provider: 'kimi',
       descriptor: provider,
       defaultBaseUrl: provider.defaultBaseUrl || KIMI_BASE_URL,
-      safeBaseUrls: provider.safeBaseUrls,
+      safeBaseUrls: Array.from(new Set([
+        ...provider.safeBaseUrls,
+        ...offeringBaseUrls('kimi', 'chatCompletions'),
+      ])),
       supportsImages: true,
       supportsDeveloperMessages: true,
       allowToolChoiceRequired: true,
@@ -32,6 +36,16 @@ export class KimiRuntimeAdapter extends OpenAiCompatibleRuntimeAdapter {
       fallbackReasoningBody: (effort, request, model) => fallbackKimiThinking(effort, request, model),
     });
   }
+}
+
+function offeringBaseUrls(productId: string, protocol: 'chatCompletions'): string[] {
+  return createDefaultProviderRegistry()
+    .requireProduct(productId)
+    .offerings
+    .flatMap((offering: ProviderOfferingDescriptor) =>
+      offering.endpoints
+        .filter((endpoint) => endpoint.protocol === protocol)
+        .map((endpoint) => endpoint.baseUrl));
 }
 
 function mapKimiReasoningEffort(

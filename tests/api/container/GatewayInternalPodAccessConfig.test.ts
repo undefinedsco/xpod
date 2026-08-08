@@ -162,7 +162,8 @@ describe('Gateway internal Pod access container config', () => {
   it('uses plaintext Pod credentials when Connect is enabled without SecretCell', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
-      aiGatewayKimiClientId: 'xpod-kimi-client',
+      aiGatewayKimiOAuthIntegrationId: 'xpod-kimi-oauth',
+      aiGatewayKimiOAuthClientId: 'xpod-kimi-client',
       secretCellCredentialVaultFactory: undefined,
     })).resolve('providerConnectService');
 
@@ -178,7 +179,8 @@ describe('Gateway internal Pod access container config', () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       secretCellCredentialVaultFactory: testCredentialVault,
-      aiGatewayKimiClientId: undefined,
+      aiGatewayKimiOAuthIntegrationId: undefined,
+      aiGatewayKimiOAuthClientId: undefined,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
     })).resolve('providerConnectService');
 
@@ -199,15 +201,16 @@ describe('Gateway internal Pod access container config', () => {
     })).resolves.toMatchObject({
       status: 'unsupported',
       mode: 'deviceCodeOAuth',
-      message: expect.stringMatching(/not_configured|client id/i),
+      message: 'auth_not_available',
     });
   });
 
-  it('constructs the configured provider Connect service with injected SecretCell vault and Kimi client id', async () => {
+  it('constructs the configured provider Connect service with injected SecretCell vault and Xpod Kimi OAuth integration', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
-      aiGatewayKimiClientId: 'xpod-kimi-client',
+      aiGatewayKimiOAuthIntegrationId: 'xpod-kimi-oauth',
+      aiGatewayKimiOAuthClientId: 'xpod-kimi-client',
       secretCellCredentialVaultFactory: testCredentialVault,
     })).resolve('providerConnectService');
 
