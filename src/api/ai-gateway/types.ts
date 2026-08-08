@@ -16,13 +16,22 @@ export interface GatewayMessage {
   protocolExtensions?: Record<string, unknown>;
 }
 
-export interface GatewayTool {
+export interface GatewayFunctionTool {
   type: 'function';
   name: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
   protocolExtensions?: Record<string, unknown>;
 }
+
+export interface GatewayWebSearchTool {
+  type: 'web_search';
+  protocolExtensions?: Record<string, unknown>;
+}
+
+export type GatewayTool = GatewayFunctionTool | GatewayWebSearchTool;
+
+export type GatewayTextAnnotation = Record<string, unknown>;
 
 export interface GatewayReasoningOptions {
   effort?: string;
@@ -52,6 +61,7 @@ export interface GatewayRequest {
 export type GatewayEvent =
   | { type: 'response.started'; id: string }
   | { type: 'text.delta'; text: string }
+  | { type: 'text.annotations'; annotations: GatewayTextAnnotation[] }
   | { type: 'reasoning.delta'; text: string }
   | { type: 'reasoning.signature'; provider: string; signature: string }
   | { type: 'tool.started'; callId: string; name: string }
@@ -199,6 +209,14 @@ export function normalizeToolFromResponses(tool: unknown): GatewayTool | undefin
     return undefined;
   }
   const record = tool as Record<string, unknown>;
+  if (record.type === 'web_search' || record.type === 'web_search_preview') {
+    return {
+      type: 'web_search',
+      protocolExtensions: {
+        responses: { ...record, type: 'web_search' },
+      },
+    };
+  }
   const name = stringOrUndefined(record.name);
   if (!name) {
     return undefined;

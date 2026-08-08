@@ -34,6 +34,10 @@ describe('AI Gateway protocol frontends', () => {
       ],
       tools: [
         {
+          type: 'web_search',
+          search_context_size: 'medium',
+        },
+        {
           type: 'function',
           name: 'lookup',
           description: 'Lookup a value',
@@ -81,7 +85,13 @@ describe('AI Gateway protocol frontends', () => {
         toolCallId: 'call_lookup',
       },
     ]);
-    expect(request.tools[0]).toMatchObject({
+    expect(request.tools[0]).toEqual({
+      type: 'web_search',
+      protocolExtensions: {
+        responses: { type: 'web_search', search_context_size: 'medium' },
+      },
+    });
+    expect(request.tools[1]).toMatchObject({
       type: 'function',
       name: 'lookup',
       inputSchema: { type: 'object' },
@@ -316,6 +326,10 @@ describe('AI Gateway protocol frontends', () => {
     const events: GatewayEvent[] = [
       { type: 'response.started', id: 'resp_1' },
       { type: 'text.delta', text: '{"not buffered text"' },
+      {
+        type: 'text.annotations',
+        annotations: [{ type: 'url_citation', url: 'https://example.test/source', title: 'Source' }],
+      },
       { type: 'reasoning.delta', text: 'reasoning chunk' },
       { type: 'tool.started', callId: 'call_1', name: 'lookup' },
       { type: 'tool.arguments.delta', callId: 'call_1', delta: '{"q":' },
@@ -405,7 +419,11 @@ describe('AI Gateway protocol frontends', () => {
         item_id: 'msg_0',
         output_index: 0,
         content_index: 0,
-        part: { type: 'output_text', text: '{"not buffered text"' },
+        part: {
+          type: 'output_text',
+          text: '{"not buffered text"',
+          annotations: [{ type: 'url_citation', url: 'https://example.test/source', title: 'Source' }],
+        },
       },
       {
         type: 'response.output_item.done',
@@ -414,18 +432,23 @@ describe('AI Gateway protocol frontends', () => {
           id: 'msg_0',
           type: 'message',
           role: 'assistant',
-          content: [{ type: 'output_text', text: '{"not buffered text"' }],
+          content: [{
+            type: 'output_text',
+            text: '{"not buffered text"',
+            annotations: [{ type: 'url_citation', url: 'https://example.test/source', title: 'Source' }],
+          }],
         },
       },
       { type: 'response.completed', response: { id: 'resp_1', status: 'completed', finish_reason: 'stop' } },
     ]);
 
-    expect(events.map((event) => messagesStream.serializeEvent(event))).toContainEqual({
+    const crossProtocolEvents = events.filter((event) => event.type !== 'text.annotations');
+    expect(crossProtocolEvents.map((event) => messagesStream.serializeEvent(event))).toContainEqual({
       type: 'content_block_delta',
       delta: { type: 'input_json_delta', partial_json: '{"q":' },
       index: 0,
     });
-    expect(events.map((event) => chatStream.serializeEvent(event))).toContainEqual({
+    expect(crossProtocolEvents.map((event) => chatStream.serializeEvent(event))).toContainEqual({
       choices: [
         {
           index: 0,
