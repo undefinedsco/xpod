@@ -1,6 +1,6 @@
 import { Button } from '@undefineds.co/shared-ui'
 import type { AiQuotaSnapshot } from './ai-connections-client'
-import { RefreshCcw } from 'lucide-react'
+import { RefreshCcw, Wallet } from 'lucide-react'
 
 export function AiQuotaCard({
   providerName,
@@ -16,9 +16,12 @@ export function AiQuotaCard({
   onRefresh: () => void
 }) {
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-medium">剩余额度</div>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2 border-b border-border/40 pb-2">
+        <div className="flex items-center gap-2">
+          <Wallet className="h-4 w-4 text-primary" />
+          <div className="text-sm font-medium text-foreground/90">剩余额度</div>
+        </div>
         <Button
           variant="ghost"
           size="sm"

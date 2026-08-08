@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import {
   Avatar,
   AvatarFallback,
+  AvatarImage,
   Badge,
   Button,
   Input,
@@ -11,6 +12,7 @@ import {
   TooltipTrigger,
   cn,
 } from '@undefineds.co/shared-ui'
+import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type {
   AiConnectAttempt,
   AiGatewayModel,
@@ -34,6 +36,7 @@ import {
   Plus,
   RotateCw,
   Search,
+  Settings2,
   Trash2,
 } from 'lucide-react'
 import { AiQuotaCard } from './AiQuotaCard'
@@ -56,14 +59,15 @@ export function AiProviderCard({
   accountLabel,
   attempt,
   apiKey,
+  baseUrl = '',
   busy,
   disabled = false,
   error,
   quota,
   models,
   verifyPending = false,
-  verifyMessage,
   onApiKeyChange,
+  onBaseUrlChange,
   onBeginApiKey,
   onBeginBrowser,
   onSaveApiKey,
@@ -79,14 +83,15 @@ export function AiProviderCard({
   accountLabel?: string
   attempt?: AiConnectAttempt
   apiKey: string
+  baseUrl?: string
   busy: boolean
   disabled?: boolean
   error?: string
   quota?: AiQuotaSnapshot
   models: AiGatewayModel[]
   verifyPending?: boolean
-  verifyMessage?: string
   onApiKeyChange: (value: string) => void
+  onBaseUrlChange?: (value: string) => void
   onBeginApiKey: () => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
@@ -124,10 +129,14 @@ export function AiProviderCard({
 
   return (
     <TooltipProvider>
-      <div>
-        <header className="flex items-start justify-between gap-4 pb-5">
+      <div className="space-y-8">
+        <header className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Avatar className="h-9 w-9 shrink-0 rounded-lg border border-border/50 bg-muted/50 shadow-sm">
+            <Avatar
+              className="h-9 w-9 shrink-0 rounded-lg border border-border/50 bg-muted/50 shadow-sm"
+              style={getProviderAvatarBackground(definition.id) ? { backgroundColor: getProviderAvatarBackground(definition.id) } : undefined}
+            >
+              <AvatarImage src={getProviderAvatar(definition.id)} className="object-cover" />
               <AvatarFallback className="rounded-lg bg-transparent text-sm font-bold uppercase text-muted-foreground">
                 {providerMark(definition.id)}
               </AvatarFallback>
@@ -163,13 +172,16 @@ export function AiProviderCard({
           </Badge>
         </header>
 
-        <section className="border-t border-border/60 py-5" aria-label="当前连接">
-          <div className="mb-4">
-            <h3 className="text-sm font-medium">当前连接</h3>
+        <section className="space-y-4" aria-label="当前连接">
+          <div className="flex items-center gap-2 border-b border-border/40 pb-2">
+            <Settings2 className="h-4 w-4 text-primary" />
+            <h3 className="text-sm font-medium text-foreground/90">当前连接</h3>
+          </div>
+          <div>
             {accountLabel ? (
-              <p className="mt-1 text-xs text-muted-foreground">{maskAccountLabel(accountLabel)}</p>
+              <p className="text-xs text-muted-foreground">{maskAccountLabel(accountLabel)}</p>
             ) : (
-              <p className="mt-1 text-xs text-muted-foreground">Provider 凭证加密保存在当前 Pod。</p>
+              <p className="text-xs text-muted-foreground">Provider 凭证加密保存在当前 Pod。</p>
             )}
           </div>
 
@@ -241,7 +253,7 @@ export function AiProviderCard({
                   type={showKey ? 'text' : 'password'}
                   autoComplete="off"
                   aria-label={`${definition.name} API Key 输入`}
-                  placeholder="从官方控制台复制 API Key"
+                  placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
                   value={apiKey}
                   onChange={(event) => onApiKeyChange(event.target.value)}
                   className="border-border/60 bg-muted/20 pr-10 font-mono transition-colors focus:border-primary/50 focus:bg-background"
@@ -260,6 +272,27 @@ export function AiProviderCard({
                   </Button>
                 </div>
               </div>
+              {onBaseUrlChange ? (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">Base URL（选填）</span>
+                  </div>
+                  <Input
+                    autoComplete="off"
+                    data-lpignore="true"
+                    data-1p-ignore
+                    aria-label={`${definition.name} Base URL 输入`}
+                    placeholder={definition.defaultBaseUrl || '默认服务地址'}
+                    value={baseUrl}
+                    onChange={(event) => onBaseUrlChange(event.target.value)}
+                    className="border-border/60 bg-muted/20 font-mono text-xs transition-colors focus:border-primary/50 focus:bg-background"
+                  />
+                  <p className="break-all font-mono text-[11px] text-muted-foreground opacity-80">
+                    <span className="mr-1 select-none opacity-50">预览:</span>
+                    {(baseUrl.trim() || definition.defaultBaseUrl || '').replace(/\/+$/, '')}/chat/completions
+                  </p>
+                </div>
+              ) : null}
               <Button
                 size="sm"
                 aria-label={`保存 ${definition.name} API Key`}
@@ -273,7 +306,7 @@ export function AiProviderCard({
           {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
         </section>
 
-        <section className="border-t border-border/60 py-5">
+        <section className="space-y-4">
           <AiQuotaCard
             providerName={definition.name}
             quota={quota}
@@ -283,15 +316,12 @@ export function AiProviderCard({
           />
         </section>
 
-        <section className="border-t border-border/60 py-5">
-          <div className="flex items-center justify-between">
+        <section className="space-y-4">
+          <div className="flex items-center justify-between border-b border-border/40 pb-4">
             <div className="flex items-center gap-2">
               <Box className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground/90">可用模型</h3>
               <Badge variant="secondary" className="ml-2 text-xs font-normal">{models.length}</Badge>
-              {verifyMessage ? (
-                <span className="ml-2 text-xs text-green-600" role="status">{verifyMessage}</span>
-              ) : null}
             </div>
             <div className="flex items-center gap-2">
               {(isConfigured || isConnected) && (onVerify || onAddModel) ? (
@@ -342,13 +372,15 @@ export function AiProviderCard({
           </div>
 
           {models.length === 0 ? (
-            <p className="mt-3 text-xs text-muted-foreground">当前身份暂无可用模型</p>
+            <div className="rounded-lg border border-dashed border-border/50 bg-muted/5 py-12 text-center text-sm text-muted-foreground">
+              暂无可用模型
+            </div>
           ) : visibleModels.length === 0 ? (
-            <div className="mt-3 rounded-lg border border-dashed border-border/50 bg-muted/5 py-8 text-center text-sm text-muted-foreground">
+            <div className="rounded-lg border border-dashed border-border/50 bg-muted/5 py-12 text-center text-sm text-muted-foreground">
               未找到匹配的模型
             </div>
           ) : (
-            <div className="mt-3 grid gap-2">
+            <div className="grid gap-2">
               {visibleModels.map((model) => {
                 const iconTokens = [
                   ...(model.inputModalities ?? []).filter((modality) => modality !== 'text'),

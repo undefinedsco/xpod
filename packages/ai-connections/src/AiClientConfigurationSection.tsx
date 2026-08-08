@@ -2,11 +2,6 @@ import { useEffect, useState } from 'react'
 import {
   Badge,
   Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
   Input,
 } from '@undefineds.co/shared-ui'
 import { MonitorCog, RotateCcw } from 'lucide-react'
@@ -185,17 +180,17 @@ export function AiClientConfigurationSection({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <MonitorCog className="h-4 w-4" />
-          编码客户端
-        </CardTitle>
-        <CardDescription>
+    <section className="space-y-4">
+      <div className="border-b border-border/40 pb-2">
+        <div className="flex items-center gap-2">
+          <MonitorCog className="h-4 w-4 text-primary" />
+          <h3 className="text-sm font-medium text-foreground/90">编码客户端</h3>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
           AI Connection 自动管理客户端访问密钥；Provider 凭证不会离开 Pod。
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2">
+        </p>
+      </div>
+      <div className="space-y-2">
         {AI_CONNECTIONS_CLIENTS.map((client) => {
           const status = statuses[client] ?? {
             status: bridge ? 'notConfigured' : 'unavailable',
@@ -289,8 +284,8 @@ export function AiClientConfigurationSection({
             </div>
           )
         })}
-      </CardContent>
-    </Card>
+      </div>
+    </section>
   )
 }
 

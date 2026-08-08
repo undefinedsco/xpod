@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
   Input,
+  Toaster,
+  toast,
 } from '@undefineds.co/shared-ui'
 import {
   type AiConnectAttempt,
@@ -83,11 +80,11 @@ export function AiConnectionsPanel({
   const [models, setModels] = useState<AiGatewayModel[]>([])
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
+  const [baseUrlInputs, setBaseUrlInputs] = useState<Record<string, string>>({})
   const [busyProviders, setBusyProviders] = useState<Record<string, boolean>>({})
   const [providerErrors, setProviderErrors] = useState<Record<string, string | undefined>>({})
   const [quotas, setQuotas] = useState<Record<string, AiQuotaSnapshot | undefined>>({})
   const [verifyingProviders, setVerifyingProviders] = useState<Record<string, boolean>>({})
-  const [verifyMessages, setVerifyMessages] = useState<Record<string, string | undefined>>({})
   const [modelEditor, setModelEditor] = useState<{
     provider: AiConnectionsProvider
     model?: AiGatewayModel
@@ -111,6 +108,12 @@ export function AiConnectionsPanel({
         summary.status === 'connected' && summary.authMode === 'browserAssistedApiKey'
           ? 'configured'
           : summary.status,
+      ]),
+    ))
+    setBaseUrlInputs(Object.fromEntries(
+      Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
+        summary.provider,
+        summary.baseUrl ?? '',
       ]),
     ))
   }, [providerSummariesInput])
@@ -229,15 +232,19 @@ export function AiConnectionsPanel({
   const saveApiKey = async (definition: AiProviderDefinition) => {
     if (!serviceAccessGranted) return
     const apiKey = apiKeyInputs[definition.id]?.trim()
+    const baseUrl = baseUrlInputs[definition.id]
+      ?? providerSummariesInput[definition.id]?.baseUrl
+      ?? ''
     const attempt = attempts[definition.id]
     if (!apiKey || !attempt) return
     setBusy(definition.id, true)
     setProviderError(definition.id)
     try {
-      const result = await client.completeApiKey(definition.id, attempt, apiKey)
+      const result = await client.completeApiKey(definition.id, attempt, apiKey, undefined, baseUrl.trim())
       setAttempts((current) => ({ ...current, [definition.id]: result }))
       setApiKeyInputs((current) => ({ ...current, [definition.id]: '' }))
       updateConnectionState(definition.id, 'configured')
+      toast({ description: 'API Key 已保存' })
     } catch (error) {
       setProviderError(definition.id, errorMessage(error))
       updateConnectionState(definition.id, 'failed')
@@ -255,6 +262,7 @@ export function AiConnectionsPanel({
       setAttempts((current) => ({ ...current, [provider]: undefined }))
       setQuotas((current) => ({ ...current, [provider]: undefined }))
       updateConnectionState(provider, 'disconnected')
+      toast({ description: '已断开连接' })
     } catch (error) {
       setProviderError(provider, errorMessage(error))
     } finally {
@@ -278,19 +286,20 @@ export function AiConnectionsPanel({
   const verifyProvider = async (provider: AiConnectionsProvider) => {
     if (!serviceAccessGranted) return
     setVerifyingProviders((current) => ({ ...current, [provider]: true }))
-    setVerifyMessages((current) => ({ ...current, [provider]: undefined }))
     setProviderError(provider)
     try {
       const discovery = await client.discoverModels(provider)
       setModels((current) => mergeDiscoveredModels(current, provider, discovery.models))
-      setVerifyMessages((current) => ({
-        ...current,
-        [provider]: discovery.models.length > 0
+      toast({
+        variant: 'success',
+        description: discovery.models.length > 0
           ? `连接成功，已同步 ${discovery.models.length} 个模型`
           : '连接成功',
-      }))
+      })
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
+      const message = errorMessage(error)
+      setProviderError(provider, message)
+      toast({ variant: 'destructive', description: `连接失败：${message}` })
     } finally {
       setVerifyingProviders((current) => ({ ...current, [provider]: false }))
     }
@@ -311,6 +320,7 @@ export function AiConnectionsPanel({
 
   const saveProviderModel = async (value: AiModelEditorValue) => {
     if (!modelEditor || !serviceAccessGranted) return
+    const editing = Boolean(modelEditor.model)
     setModelEditorSaving(true)
     setModelEditorError(undefined)
     try {
@@ -321,6 +331,7 @@ export function AiConnectionsPanel({
         capabilities: value.capabilities.length > 0 ? value.capabilities : undefined,
       })
       setModelEditor(undefined)
+      toast({ description: editing ? '模型已更新' : '模型已添加' })
       await reloadModels()
     } catch (error) {
       setModelEditorError(errorMessage(error))
@@ -335,6 +346,7 @@ export function AiConnectionsPanel({
     try {
       await client.deleteProviderModel(provider, model.id)
       setModels((current) => current.filter((item) => !(item.provider === provider && item.id === model.id)))
+      toast({ description: '模型已移除' })
       void reloadModels()
     } catch (error) {
       setProviderError(provider, errorMessage(error))
@@ -353,6 +365,7 @@ export function AiConnectionsPanel({
       setOneTimeKey(created.plaintext)
       setKeys((current) => [created.record, ...current])
       setKeyName('')
+      toast({ description: 'Gateway Key 已创建' })
     } catch (error) {
       setKeyError(errorMessage(error))
     } finally {
@@ -368,6 +381,7 @@ export function AiConnectionsPanel({
       setKeys((current) => current.map((item) => item.id === keyId
         ? (record ?? { ...item, revokedAt: new Date().toISOString() })
         : item))
+      toast({ description: 'Gateway Key 已撤销' })
     } catch (error) {
       setKeyError(errorMessage(error))
     }
@@ -404,7 +418,8 @@ export function AiConnectionsPanel({
   }, [client, serviceAccessGranted])
 
   return (
-    <div className="mx-auto w-full max-w-5xl px-8 py-8">
+    <div className="mx-auto w-full max-w-5xl space-y-10 px-8 py-8">
+      <Toaster />
       <section>
           {providerLoadError ? (
             <p className="mb-4 rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
@@ -419,6 +434,7 @@ export function AiConnectionsPanel({
               accountLabel={providerSummariesInput[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
               apiKey={apiKeyInputs[definition.id] ?? ''}
+              baseUrl={baseUrlInputs[definition.id] ?? providerSummariesInput[definition.id]?.baseUrl ?? ''}
               busy={Boolean(busyProviders[definition.id])}
               disabled={!serviceAccessGranted}
               error={providerErrors[definition.id]}
@@ -428,13 +444,16 @@ export function AiConnectionsPanel({
                 ...current,
                 [definition.id]: value,
               }))}
+              onBaseUrlChange={(value) => setBaseUrlInputs((current) => ({
+                ...current,
+                [definition.id]: value,
+              }))}
               onBeginApiKey={() => void beginApiKey(definition.id)}
               onBeginBrowser={() => void beginBrowserConnect(definition)}
               onSaveApiKey={() => void saveApiKey(definition)}
               onDisconnect={() => void disconnect(definition.id)}
               onRefreshQuota={() => void refreshQuota(definition.id)}
               verifyPending={Boolean(verifyingProviders[definition.id])}
-              verifyMessage={verifyMessages[definition.id]}
               onVerify={() => void verifyProvider(definition.id)}
               onAddModel={() => openModelEditor(definition.id)}
               onEditModel={(model) => openModelEditor(definition.id, model)}
@@ -464,8 +483,8 @@ export function AiConnectionsPanel({
         />
       ) : null}
 
-      <details className="border-t border-border/60 py-5">
-        <summary className="cursor-pointer list-none text-sm font-medium">
+      <details className="space-y-4">
+        <summary className="cursor-pointer list-none border-b border-border/40 pb-2 text-sm font-medium text-foreground/90">
           客户端接入
         </summary>
         <div className="mt-4 space-y-6">
@@ -475,22 +494,21 @@ export function AiConnectionsPanel({
             createGatewayKey={createManagedGatewayKey}
           />
 
-          <details className="border-t border-border/60 pt-4">
+          <details className="space-y-4 border-t border-border/40 pt-4">
             <summary className="cursor-pointer text-sm font-medium text-muted-foreground">
               高级：Gateway Keys
             </summary>
-            <div className="mt-3">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <KeyRound className="h-4 w-4" />
-            Gateway Keys
-          </CardTitle>
-          <CardDescription>
+            <section className="mt-3 space-y-4">
+        <div className="border-b border-border/40 pb-2">
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-primary" />
+            <h3 className="text-sm font-medium text-foreground/90">Gateway Keys</h3>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
             编码客户端只使用 Gateway Key；新密钥明文仅在创建后显示一次。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </p>
+        </div>
+        <div className="space-y-4">
           <div className="flex gap-2">
             <Input
               aria-label="Gateway Key 名称"
@@ -555,9 +573,8 @@ export function AiConnectionsPanel({
               ))}
             </div>
           )}
-        </CardContent>
-      </Card>
-            </div>
+        </div>
+            </section>
           </details>
         </div>
       </details>
