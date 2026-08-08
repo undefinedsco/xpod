@@ -499,6 +499,16 @@ describe('AiGatewayHandler', () => {
         { type: 'reasoning.delta', text: 'think' },
         { type: 'reasoning.signature', provider: 'anthropic', signature: 'sig_1' },
         { type: 'text.delta', text: 'answer' },
+        {
+          type: 'text.annotations',
+          annotations: [{
+            type: 'url_citation',
+            url: 'https://example.test/source',
+            title: 'Source',
+            start_index: 0,
+            end_index: 6,
+          }],
+        },
         { type: 'tool.started', callId: 'call_1', name: 'lookup' },
         { type: 'tool.arguments.delta', callId: 'call_1', delta: '{"q":"xpod"}' },
         { type: 'tool.completed', callId: 'call_1' },
@@ -524,6 +534,21 @@ describe('AiGatewayHandler', () => {
     expect(JSON.parse(responses.body)).toMatchObject({
       output: expect.arrayContaining([
         { type: 'reasoning', summary: [{ type: 'summary_text', text: 'think' }], encrypted_content: 'sig_1' },
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{
+            type: 'output_text',
+            text: 'answer',
+            annotations: [{
+              type: 'url_citation',
+              url: 'https://example.test/source',
+              title: 'Source',
+              start_index: 0,
+              end_index: 6,
+            }],
+          }],
+        },
         { type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"q":"xpod"}' },
       ]),
       usage: { input_tokens: 7, output_tokens: 11, total_tokens: 18 },

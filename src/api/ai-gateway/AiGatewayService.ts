@@ -574,7 +574,11 @@ function aggregateEvents(
         {
           type: 'message',
           role: 'assistant',
-          content: state.text ? [{ type: 'output_text', text: state.text }] : [],
+          content: state.text ? [{
+            type: 'output_text',
+            text: state.text,
+            ...(state.annotations.length > 0 ? { annotations: state.annotations } : {}),
+          }] : [],
         },
         ...state.tools.map((tool) => ({
           type: 'function_call',
@@ -646,12 +650,14 @@ function collectEventState(events: GatewayEvent[]): {
   finishReason?: string;
   tools: Array<{ id: string; name: string; arguments: string }>;
   reasoning: string;
+  annotations: Record<string, unknown>[];
   reasoningSignatures: Array<{ provider: string; signature: string }>;
 } {
   const tools = new Map<string, { id: string; name: string; arguments: string }>();
   let id: string | undefined;
   let text = '';
   let reasoning = '';
+  const annotations = new Map<string, Record<string, unknown>>();
   const reasoningSignatures: Array<{ provider: string; signature: string }> = [];
   let usage: GatewayUsage | undefined;
   let finishReason: string | undefined;
@@ -660,6 +666,10 @@ function collectEventState(events: GatewayEvent[]): {
       id = event.id;
     } else if (event.type === 'text.delta') {
       text += event.text;
+    } else if (event.type === 'text.annotations') {
+      for (const annotation of event.annotations) {
+        annotations.set(JSON.stringify(annotation), annotation);
+      }
     } else if (event.type === 'reasoning.delta') {
       reasoning += event.text;
     } else if (event.type === 'reasoning.signature') {
@@ -684,6 +694,7 @@ function collectEventState(events: GatewayEvent[]): {
     finishReason,
     tools: Array.from(tools.values()),
     reasoning,
+    annotations: Array.from(annotations.values()),
     reasoningSignatures,
   };
 }

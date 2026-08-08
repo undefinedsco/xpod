@@ -151,7 +151,16 @@ describe('Provider runtime adapters', () => {
     const fixture = fetchFixture(new Response(jsonSse([
       { type: 'response.created', response: { id: 'resp_openai' } },
       { type: 'response.output_text.delta', delta: 'hel' },
-      { type: 'response.output_item.done', item: { id: 'msg_1', type: 'message' } },
+      {
+        type: 'response.output_text.done',
+        annotations: [{
+          type: 'url_citation',
+          url: 'https://example.test/source',
+          title: 'Source',
+          start_index: 0,
+          end_index: 3,
+        }],
+      },
       { type: 'response.reasoning_summary_text.delta', delta: 'thinking' },
       {
         type: 'response.output_item.added',
@@ -183,11 +192,32 @@ describe('Provider runtime adapters', () => {
     const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
 
     await expect(collect(adapter.execute({
-      request: baseRequest({ model: 'gpt-5' }),
+      request: baseRequest({
+        model: 'gpt-5',
+        tools: [
+          ...baseRequest().tools,
+          {
+            type: 'web_search',
+            protocolExtensions: {
+              responses: { type: 'web_search', search_context_size: 'medium' },
+            },
+          },
+        ],
+      }),
       apiKey: 'sk-openai-secret',
     }))).resolves.toEqual([
       { type: 'response.started', id: 'resp_openai' },
       { type: 'text.delta', text: 'hel' },
+      {
+        type: 'text.annotations',
+        annotations: [{
+          type: 'url_citation',
+          url: 'https://example.test/source',
+          title: 'Source',
+          start_index: 0,
+          end_index: 3,
+        }],
+      },
       { type: 'reasoning.delta', text: 'thinking' },
       { type: 'tool.started', callId: 'call_1', name: 'lookup' },
       { type: 'tool.arguments.delta', callId: 'call_1', delta: '{"q":' },
@@ -218,6 +248,7 @@ describe('Provider runtime adapters', () => {
           name: 'lookup',
           parameters: { type: 'object' },
         },
+        { type: 'web_search', search_context_size: 'medium' },
       ],
     });
   });

@@ -305,6 +305,11 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
       if (delta) {
         yield { type: 'text.delta', text: delta };
       }
+    } else if (type === 'response.output_text.done') {
+      const annotations = annotationRecords(payload.annotations);
+      if (annotations.length > 0) {
+        yield { type: 'text.annotations', annotations };
+      }
     } else if (type === 'response.reasoning_summary_text.delta') {
       const delta = stringField(payload, 'delta');
       if (delta) {
@@ -344,6 +349,11 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
           }
           yield { type: 'tool.completed', callId };
         }
+      } else if (stringField(item, 'type') === 'message') {
+        const annotations = messageItemAnnotations(item);
+        if (annotations.length > 0) {
+          yield { type: 'text.annotations', annotations };
+        }
       } else {
         const callId = stringField(payload, 'call_id');
         if (!callId) {
@@ -363,6 +373,22 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
       throw providerStreamError(payload, 502, secret);
     }
   }
+}
+
+function annotationRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((annotation): annotation is Record<string, unknown> => (
+        annotation !== null && typeof annotation === 'object' && !Array.isArray(annotation)
+      ))
+    : [];
+}
+
+function messageItemAnnotations(item: Record<string, unknown>): Record<string, unknown>[] {
+  if (!Array.isArray(item.content)) return [];
+  return item.content.flatMap((part) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return [];
+    return annotationRecords((part as Record<string, unknown>).annotations);
+  });
 }
 
 export async function* parseAnthropicMessagesSse(events: AsyncIterable<ProviderSseEvent>, secret?: string): AsyncIterable<GatewayEvent> {
@@ -665,6 +691,12 @@ function contentToText(content: GatewayContentPart[]): string {
 }
 
 function toOpenAiTool(tool: GatewayTool): Record<string, unknown> {
+  if (tool.type === 'web_search') {
+    const native = tool.protocolExtensions?.responses;
+    return native && typeof native === 'object' && !Array.isArray(native)
+      ? { ...(native as Record<string, unknown>), type: 'web_search' }
+      : { type: 'web_search' };
+  }
   return {
     type: 'function',
     name: tool.name,
@@ -674,6 +706,13 @@ function toOpenAiTool(tool: GatewayTool): Record<string, unknown> {
 }
 
 function toAnthropicTool(tool: GatewayTool): Record<string, unknown> {
+  if (tool.type !== 'function') {
+    throw new GatewayProtocolError('Anthropic runtime does not support Responses built-in web search', {
+      code: 'invalid_request',
+      status: 400,
+      details: { capability: tool.type },
+    });
+  }
   return {
     name: tool.name,
     ...(tool.description ? { description: tool.description } : {}),
@@ -682,6 +721,13 @@ function toAnthropicTool(tool: GatewayTool): Record<string, unknown> {
 }
 
 function toChatTool(tool: GatewayTool): Record<string, unknown> {
+  if (tool.type !== 'function') {
+    throw new GatewayProtocolError('Chat Completions runtime does not support Responses built-in web search', {
+      code: 'invalid_request',
+      status: 400,
+      details: { capability: tool.type },
+    });
+  }
   return {
     type: 'function',
     function: {

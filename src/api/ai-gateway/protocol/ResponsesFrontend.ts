@@ -5,6 +5,7 @@ import {
   type GatewayEventSerializer,
   type GatewayProtocolFrontend,
   type GatewayRequest,
+  type GatewayTextAnnotation,
   mapGatewayUsageToOpenAi,
   normalizeContentParts,
   normalizeMessage,
@@ -81,6 +82,7 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
   private messageOutputIndex: number | undefined;
   private nextOutputIndex = 0;
   private text = '';
+  private annotations: GatewayTextAnnotation[] = [];
   private textPartOpen = false;
 
   public serializeEvent(event: GatewayEvent): Record<string, unknown> | Record<string, unknown>[] {
@@ -94,6 +96,7 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
         this.messageOutputIndex = undefined;
         this.nextOutputIndex = 0;
         this.text = '';
+        this.annotations = [];
         this.textPartOpen = false;
         return { type: 'response.created', response: { id: event.id } };
       case 'text.delta':
@@ -108,6 +111,9 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
             delta: event.text,
           },
         ];
+      case 'text.annotations':
+        this.annotations = mergeAnnotations(this.annotations, event.annotations);
+        return [];
       case 'reasoning.delta':
         return { type: 'response.reasoning_summary_text.delta', delta: event.text };
       case 'reasoning.signature':
@@ -178,7 +184,11 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
             item_id: this.messageId,
             output_index: this.messageOutputIndex,
             content_index: 0,
-            part: { type: 'output_text', text: this.text },
+            part: {
+              type: 'output_text',
+              text: this.text,
+              ...(this.annotations.length > 0 ? { annotations: this.annotations } : {}),
+            },
           },
           {
             type: 'response.output_item.done',
@@ -187,7 +197,11 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
               id: this.messageId,
               type: 'message',
               role: 'assistant',
-              content: [{ type: 'output_text', text: this.text }],
+              content: [{
+                type: 'output_text',
+                text: this.text,
+                ...(this.annotations.length > 0 ? { annotations: this.annotations } : {}),
+              }],
             },
           },
         ] : [];
@@ -197,6 +211,7 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
         this.messageId = undefined;
         this.messageOutputIndex = undefined;
         this.text = '';
+        this.annotations = [];
         this.textPartOpen = false;
         return [
           ...closeText,
@@ -248,4 +263,15 @@ class ResponsesEventSerializer implements GatewayEventSerializer {
     }
     return outputIndex;
   }
+}
+
+function mergeAnnotations(
+  current: GatewayTextAnnotation[],
+  incoming: GatewayTextAnnotation[],
+): GatewayTextAnnotation[] {
+  const merged = new Map(current.map((annotation) => [JSON.stringify(annotation), annotation]));
+  for (const annotation of incoming) {
+    merged.set(JSON.stringify(annotation), annotation);
+  }
+  return Array.from(merged.values());
 }
