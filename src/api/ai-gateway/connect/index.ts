@@ -5,7 +5,7 @@ import {
   randomUUID as nodeRandomUUID,
   timingSafeEqual,
 } from 'node:crypto';
-import { alias, and, drizzle, eq } from '@undefineds.co/drizzle-solid';
+import { alias, and, drizzle, eq, resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
 import {
   aiProviderResource,
   aiRuntimeRepository,
@@ -33,7 +33,6 @@ import { requireKimiOAuthClientId } from './OAuthIntegrationRegistry';
 export { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 export { OAuthIntegrationRegistry, requireKimiOAuthClientId, type OAuthIntegration } from './OAuthIntegrationRegistry';
 
-const CREDENTIAL_COLLECTION_SPARQL_ENDPOINT = '/settings/-/sparql';
 const CREDENTIAL_COLLECTION_QUERY_UNSUPPORTED = 'credential_collection_query_unsupported';
 
 export type ConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
@@ -72,7 +71,18 @@ export interface ConnectBeginResult {
   intervalSeconds?: number;
   apiKeyManagementSupported?: boolean;
   credentialId?: string;
+  oauthCredential?: OneTimeOAuthCredential;
   message?: string;
+}
+
+export interface OneTimeOAuthCredential {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: string;
+  scope?: string;
+  idToken?: string;
+  accountSubject?: string;
+  expectedVersion?: number;
 }
 
 export interface CompleteApiKeyInput {
@@ -104,6 +114,12 @@ export interface RefreshInput {
   provider: string;
   credentialId?: string;
   auth?: AuthContext;
+}
+
+export interface CallerOwnedOAuthRefreshInput extends RefreshInput {
+  credentialId: string;
+  refreshToken: string;
+  expectedVersion: number;
 }
 
 export interface DisconnectInput {
@@ -461,7 +477,6 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     return rows
       .map(recordFromCredentialRow)
       .filter((record) => record.webId === input.webId)
-      .filter((record) => record.deployment === input.deployment)
       .filter((record) => providerIds.has(normalizeProvider(record.provider)))
       .filter((record) => input.includeRevoked || record.status === 'active')
       .sort(compareCredentialRecords);
@@ -528,7 +543,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       return false;
     }
     const current = recordFromCredentialRow(existing);
-    if (current.webId !== input.webId || current.deployment !== input.deployment) {
+    if (current.webId !== input.webId) {
       return false;
     }
     const currentVersion = versionFromRow(existing);
@@ -602,8 +617,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   }> {
     const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const credential = alias(this.credentialTemplate, 'credential');
-    credential.setSparqlEndpoint(CREDENTIAL_COLLECTION_SPARQL_ENDPOINT);
+    const podBaseUrl = resolvePodBaseUrl(owner).replace(/\/$/u, '');
+    const settingsSparqlEndpoint = `${podBaseUrl}/settings/-/sparql`;
+    credential.setSparqlEndpoint(settingsSparqlEndpoint);
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
+    aiProvider.setSparqlEndpoint(settingsSparqlEndpoint);
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
     await db.init?.(credential, aiProvider);
     return { db, credential, aiProvider };
@@ -646,6 +664,7 @@ export interface ProviderConnectAdapter {
     current: ConnectCredentialRecord,
     secret: ProviderSecret,
   ): Promise<ConnectCredentialRecord | undefined>;
+  refreshCallerOwned?(input: CallerOwnedOAuthRefreshInput): Promise<ConnectBeginResult>;
   disconnect?(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined>;
 }
 
@@ -1105,14 +1124,13 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
       await this.attempts.consume(input.attemptId, this.nowForConsume());
       requireStringField(body, 'access_token');
       requireStringField(body, 'refresh_token');
-      const record = await this.storeOAuthCredential(input, body, attempt.expectedCredentialVersion);
       return {
         mode: 'deviceCodeOAuth',
         status: 'completed',
         provider: 'kimi',
         deployment: input.deployment,
         attemptId: input.attemptId,
-        credentialId: record.id,
+        oauthCredential: oneTimeOAuthCredential(body, this.now(), attempt.expectedCredentialVersion),
       };
     } catch (error) {
       await this.attempts.releasePollClaim(input.attemptId);
@@ -1175,6 +1193,31 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
     return this.updateOAuthCredential(input, body, current);
   }
 
+  public async refreshCallerOwned(input: CallerOwnedOAuthRefreshInput): Promise<ConnectBeginResult> {
+    if (!input.refreshToken.trim()) throw new Error('oauth_refresh_token_required');
+    const response = await this.fetchImpl(this.tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: input.refreshToken,
+        client_id: this.clientId,
+      }),
+    });
+    const body = await safeJson(response);
+    if (!response.ok) {
+      throw new Error(`Kimi OAuth refresh failed: ${safeProviderError(body)}`);
+    }
+    return {
+      mode: 'deviceCodeOAuth',
+      status: 'completed',
+      provider: 'kimi',
+      deployment: input.deployment,
+      credentialId: input.credentialId,
+      oauthCredential: oneTimeOAuthCredential(body, this.now(), input.expectedVersion),
+    };
+  }
+
   public override async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
     const current = await this.findOAuthCredential(input);
     if (!current) {
@@ -1192,33 +1235,6 @@ export class KimiDeviceCodeConnectAdapter extends BrowserAssistedApiKeyConnectAd
 
   private nowForConsume(): Date {
     return this.now();
-  }
-
-  private async storeOAuthCredential(
-    input: { webId: string; deployment: GatewayDeployment; auth?: AuthContext },
-    body: Record<string, unknown>,
-    expectedVersion?: number,
-  ): Promise<ConnectCredentialRecord> {
-    const expiresAt = expiresAtFrom(body.expires_in, this.now());
-    const secret: ProviderSecret = {
-      type: 'deviceCodeOAuth',
-      accessToken: stringFrom(body.access_token),
-      refreshToken: stringFrom(body.refresh_token),
-      expiresAt: expiresAt?.toISOString(),
-      scope: stringFrom(body.scope),
-      idToken: stringFrom(body.id_token),
-    };
-    return this.oauthCredentials.createSiblingOAuthCredential({
-      webId: input.webId,
-      deployment: input.deployment,
-      secret,
-      expiresAt,
-      expectedVersion,
-      auth: input.auth,
-      metadata: {
-        authoritativeSubject: decodeJwtSubject(stringFrom(body.id_token)),
-      },
-    });
   }
 
   private async updateOAuthCredential(
@@ -1653,6 +1669,14 @@ export class ProviderConnectService {
     return this.refreshWithRetry(input, 2);
   }
 
+  public refreshCallerOwned(input: CallerOwnedOAuthRefreshInput): Promise<ConnectBeginResult> {
+    const adapter = this.requireAdapter(input.provider);
+    if (!adapter.refreshCallerOwned) {
+      throw new Error('Provider does not support caller-owned OAuth refresh');
+    }
+    return adapter.refreshCallerOwned(input);
+  }
+
   private async refreshWithRetry(
     input: RefreshInput,
     remainingAttempts: number,
@@ -1961,6 +1985,13 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
   const status = stringFrom(row.status) === 'revoked' ? 'revoked' : 'active';
   const reauthRequired = row.reauthRequired === true || row.reauthRequired === 'true';
   const authMode = stringFrom(row.authMode) === 'deviceCodeOAuth' ? 'deviceCodeOAuth' : 'apiKey';
+  const rowMetadata = metadataFromRow(row) ?? {};
+  const metadata = {
+    ...rowMetadata,
+    ...(typeof rowMetadata.baseUrl === 'string' || typeof row.baseUrl !== 'string'
+      ? {}
+      : { baseUrl: row.baseUrl }),
+  };
   return {
     id,
     credentialIri: encrypted.credentialIri,
@@ -1975,7 +2006,7 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : undefined,
     version: versionFromRow(row),
     reauthRequired,
-    metadata: metadataFromRow(row),
+    metadata,
     priority: rowPriorityFromMetadata(row) ?? 100,
     offeringId: rowOfferingIdFromMetadata(row) ?? defaultOfferingFor(provider, authMode),
     enabled: rowEnabledFromMetadata(row) ?? status === 'active',
@@ -2315,6 +2346,24 @@ function expiresAtFrom(expiresIn: unknown, now: Date): Date | undefined {
     return undefined;
   }
   return new Date(now.getTime() + expiresIn * 1000);
+}
+
+function oneTimeOAuthCredential(
+  body: Record<string, unknown>,
+  now: Date,
+  expectedVersion?: number,
+): OneTimeOAuthCredential {
+  requireStringField(body, 'access_token');
+  requireStringField(body, 'refresh_token');
+  return {
+    accessToken: stringFrom(body.access_token)!,
+    refreshToken: stringFrom(body.refresh_token)!,
+    expiresAt: expiresAtFrom(body.expires_in, now)?.toISOString(),
+    scope: stringFrom(body.scope),
+    idToken: stringFrom(body.id_token),
+    accountSubject: decodeJwtSubject(stringFrom(body.id_token)),
+    expectedVersion,
+  };
 }
 
 function safeProviderError(body: Record<string, unknown>): string {

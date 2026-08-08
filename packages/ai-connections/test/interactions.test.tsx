@@ -110,6 +110,12 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
 }
 
 describe('AI Connection settings', () => {
+  it('describes the current Pod protection accurately before a credential is added', () => {
+    render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
+
+    expect(screen.getByText('Provider 凭证保存在当前 Pod，由 Pod 权限保护。')).toBeTruthy()
+    expect(screen.queryByText(/加密保存在当前 Pod/)).toBeNull()
+  })
   it('shows one selected Provider without repeating the Applet header or WebID hero', async () => {
     render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
 
@@ -299,9 +305,9 @@ describe('AI Connection settings', () => {
     expect(screen.queryByText('切换')).toBeNull()
     expect(screen.queryByText('重新授权')).toBeNull()
     expect(screen.getByRole('button', { name: '添加账号' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: '退出' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '移除' })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: /a\*\*\*e@example\.com.*退出/ }))
+    fireEvent.click(screen.getByRole('button', { name: /a\*\*\*e@example\.com.*移除/ }))
 
     await waitFor(() => expect(current.disconnect).toHaveBeenCalledWith('kimi', 'kimi-oauth-primary'))
   })

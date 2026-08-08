@@ -358,6 +358,52 @@ describe('AiGatewayService', () => {
     }));
   });
 
+  it('keeps an explicitly configured credential base URL ahead of the offering default', async() => {
+    const runtimeExecute = vi.fn(async function* () {
+      yield { type: 'response.started' as const, id: 'resp_1' };
+      yield { type: 'response.completed' as const, finishReason: 'stop' };
+    });
+    const registry = createDefaultProviderRegistry();
+    const credentials = [credential({
+      id: 'openai_custom_endpoint',
+      provider: 'openai',
+      models: ['custom-model'],
+      runtimeCredential: { baseUrl: 'https://gateway.example/v1' },
+    })];
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async() => credentials),
+    };
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+      }),
+      credentials: store,
+      vault: {
+        seal: vi.fn(),
+        rewrap: vi.fn(),
+        open: vi.fn(async() => ({ apiKey: 'sk-custom' })),
+      },
+      runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+    });
+
+    await service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'openai/custom-model',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    });
+
+    expect(runtimeExecute).toHaveBeenCalledWith(expect.objectContaining({
+      credential: expect.objectContaining({ baseUrl: 'https://gateway.example/v1' }),
+    }));
+  });
+
   it('routes Kimi omitted offeringId by credential auth mode through the real runtime adapter', async() => {
     const captured: string[] = [];
     const registry = createDefaultProviderRegistry();
@@ -567,5 +613,46 @@ describe('AiGatewayService', () => {
     expect(attempts).toEqual(['sk-primary', 'sk-backup']);
     expect(fixture.store.listCredentials).toHaveBeenNthCalledWith(1, expect.objectContaining({ auth: AUTH }));
     expect(fixture.store.listCredentials).toHaveBeenNthCalledWith(2, expect.objectContaining({ auth: AUTH }));
+  });
+
+  it('fails over before client events when a runtime preserves an untyped HTTP 429', async() => {
+    const attempts: string[] = [];
+    const runtimeExecute = vi.fn(async function* (input) {
+      attempts.push(input.apiKey);
+      if (attempts.length === 1) {
+        throw Object.assign(new Error('rate limited'), { status: 429 });
+      }
+      yield { type: 'response.started' as const, id: 'resp_1' };
+      yield { type: 'text.delta' as const, text: 'ok' };
+      yield { type: 'response.completed' as const, finishReason: 'stop' };
+    });
+    const fixture = serviceWith([
+      credential({ id: 'primary', provider: 'openai', models: ['gpt-5'], priority: 1 }),
+      credential({ id: 'backup', provider: 'openai', models: ['gpt-5'], priority: 2 }),
+    ]);
+    (fixture.service as unknown as { runtimes: ProviderRuntimeRegistry }).runtimes = {
+      get: vi.fn(() => ({ execute: runtimeExecute })),
+    } as unknown as ProviderRuntimeRegistry;
+
+    await expect(fixture.service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'gpt-5',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+    })).resolves.toMatchObject({
+      choices: [
+        expect.objectContaining({
+          message: expect.objectContaining({ content: 'ok' }),
+        }),
+      ],
+    });
+    expect(attempts).toEqual(['sk-primary', 'sk-backup']);
+    expect(fixture.store.recordFailure).toHaveBeenCalledWith(expect.objectContaining({
+      credentialId: 'primary',
+      status: 429,
+      errorCode: 'provider_error',
+    }));
   });
 });

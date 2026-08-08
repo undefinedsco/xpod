@@ -1,4 +1,5 @@
 import type {
+  AiConnectionsOAuthCredential,
   AiClientCredentialRecord,
   AiClientCredentialsCapability,
 } from '@undefineds.co/extension-sdk/web'
@@ -40,6 +41,7 @@ export interface AiConnectAttempt {
   intervalSeconds?: number
   apiKeyManagementSupported?: boolean
   credentialId?: string
+  oauthCredential?: AiConnectionsOAuthCredential
   message?: string
 }
 
@@ -221,6 +223,7 @@ export interface AiConnectionsClient {
     baseUrl?: string,
   ): Promise<AiConnectAttempt>
   pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
+  refreshOAuthCredential(provider: AiConnectionsProvider, credentialId: string, refreshToken: string, expectedVersion: number): Promise<AiConnectAttempt>
   disconnect(provider: AiConnectionsProvider, credentialId?: string): Promise<AiConnectionsCredential | undefined>
   createApiKeyCredential(provider: AiConnectionsProvider, input: CreateApiKeyCredentialInput): Promise<AiProviderCredentialSummary>
   updateProviderCredential(provider: AiConnectionsProvider, credentialId: string, input: UpdateProviderCredentialInput): Promise<AiProviderCredentialSummary>
@@ -450,6 +453,14 @@ export function createAiConnectionsClient({
           signature: attempt.signature,
         }),
       )
+    },
+
+    refreshOAuthCredential(provider, credentialId, refreshToken, expectedVersion) {
+      return requestConnect(provider, '/connect/refresh', 'POST', {
+        credentialId,
+        refreshToken,
+        expectedVersion,
+      })
     },
 
     async disconnect(provider, credentialId) {
@@ -1134,8 +1145,29 @@ function parseConnectAttempt(
       ? value.apiKeyManagementSupported
       : undefined,
     credentialId: stringValue(value.credentialId),
+    oauthCredential: parseOAuthCredential(value.oauthCredential),
     message: stringValue(value.message),
   }) as unknown as AiConnectAttempt
+}
+
+function parseOAuthCredential(value: unknown): AiConnectionsOAuthCredential | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)
+    || typeof value.accessToken !== 'string'
+    || !value.accessToken
+    || typeof value.refreshToken !== 'string'
+    || !value.refreshToken) {
+    throw new Error('AI Connection returned an invalid OAuth credential payload')
+  }
+  return compactObject({
+    accessToken: value.accessToken,
+    refreshToken: value.refreshToken,
+    expiresAt: stringValue(value.expiresAt),
+    scope: stringValue(value.scope),
+    idToken: stringValue(value.idToken),
+    accountSubject: stringValue(value.accountSubject),
+    expectedVersion: typeof value.expectedVersion === 'number' ? value.expectedVersion : undefined,
+  }) as AiConnectionsOAuthCredential
 }
 
 function parseModelDiscovery(

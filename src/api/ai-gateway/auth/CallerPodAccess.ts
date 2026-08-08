@@ -26,6 +26,9 @@ export function createCallerAuthenticatedPodFetch(
       ?? (input instanceof Request ? input.headers : undefined),
     );
     headers.set('Authorization', `Bearer ${accessToken}`);
+    // A Request body's encoded byte length can change when Bun/Undici replays
+    // it with a new init object. Let the runtime calculate the framing.
+    headers.delete('content-length');
     return upstream(input, {
       ...init,
       headers,

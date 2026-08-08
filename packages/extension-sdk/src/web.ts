@@ -81,6 +81,13 @@ export interface AiConnectionsPodStore {
     baseUrl?: string;
     priority?: number;
   }): Promise<unknown>;
+  saveOAuthCredential?(provider: string, input: AiConnectionsOAuthCredential): Promise<unknown>;
+  updateOAuthCredential?(
+    provider: string,
+    credentialId: string,
+    expectedVersion: number,
+    input: AiConnectionsOAuthCredential,
+  ): Promise<unknown>;
   updateProviderCredential?(provider: string, credentialId: string, input: {
     expectedVersion: number;
     label?: string;
@@ -92,6 +99,16 @@ export interface AiConnectionsPodStore {
   readCredentialSecret?(provider: string, credentialId: string): Promise<Record<string, unknown>>;
   saveDiscoveredModels?(provider: string, credentialId: string, models: unknown[]): Promise<void>;
   saveModelSelection?(provider: string, modelIds: string[]): Promise<void>;
+}
+
+export interface AiConnectionsOAuthCredential {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: string;
+  scope?: string;
+  idToken?: string;
+  accountSubject?: string;
+  expectedVersion?: number;
 }
 
 /**

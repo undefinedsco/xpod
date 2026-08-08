@@ -507,14 +507,23 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     try {
-      const record = await connectService.refresh({
+      const credentialId = normalizeOptionalString(body.credentialId);
+      const refreshToken = normalizeOptionalString(body.refreshToken);
+      const expectedVersion = typeof body.expectedVersion === 'number' ? body.expectedVersion : undefined;
+      if (!credentialId || !refreshToken || expectedVersion === undefined) {
+        sendJson(response, 400, { error: 'credentialId, refreshToken and expectedVersion are required' });
+        return;
+      }
+      const result = await connectService.refreshCallerOwned({
         webId: request.auth!.webId,
         deployment: options.deployment,
         provider: params.provider,
-        credentialId: normalizeOptionalString(body.credentialId),
+        credentialId,
+        refreshToken,
+        expectedVersion,
         auth: request.auth,
       });
-      sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+      sendJson(response, 200, publicConnectResult(result));
     } catch (error) {
       sendLegacyProviderConnectError(response, error);
     }
@@ -1036,6 +1045,10 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
   }
   if (message === 'models_secret_missing') {
     sendJson(response, 500, { error: 'Provider credential secret is unavailable' });
+    return;
+  }
+  if (message === 'unsafe_provider_base_url') {
+    sendJson(response, 400, { error: 'unsafe_provider_base_url' });
     return;
   }
   logger.error(`Provider models lookup failed: ${message}`);

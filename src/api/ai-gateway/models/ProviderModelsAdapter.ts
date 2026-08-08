@@ -49,17 +49,20 @@ export class ProviderModelsFetchError extends Error {
 export interface OpenAiCompatibleModelsAdapterOptions {
   provider: string;
   defaultBaseUrl: string;
+  safeBaseUrls?: string[];
   fetchImpl?: typeof fetch;
 }
 
 export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
   public readonly provider: string;
   private readonly defaultBaseUrl: string;
+  private readonly safeBaseUrls: string[];
   private readonly fetchImpl: typeof fetch;
 
   public constructor(options: OpenAiCompatibleModelsAdapterOptions) {
     this.provider = options.provider;
     this.defaultBaseUrl = options.defaultBaseUrl;
+    this.safeBaseUrls = options.safeBaseUrls ?? [options.defaultBaseUrl];
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -68,7 +71,11 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
     if (!apiKey) {
       throw new Error('models_secret_missing');
     }
-    const baseUrl = (input.credential.baseUrl ?? this.defaultBaseUrl).replace(/\/$/, '');
+    const baseUrl = resolveSafeModelsBaseUrl(
+      input.credential.baseUrl,
+      this.defaultBaseUrl,
+      this.safeBaseUrls,
+    );
     const response = await this.fetchImpl(`${baseUrl}/models`, {
       method: 'GET',
       headers: { authorization: `Bearer ${apiKey}` },
@@ -91,10 +98,12 @@ export const ANTHROPIC_MODELS_VERSION = '2023-06-01';
 export class AnthropicModelsAdapter implements ProviderModelsAdapter {
   public readonly provider = 'anthropic';
   private readonly defaultBaseUrl: string;
+  private readonly safeBaseUrls: string[];
   private readonly fetchImpl: typeof fetch;
 
-  public constructor(options: { defaultBaseUrl?: string; fetchImpl?: typeof fetch } = {}) {
+  public constructor(options: { defaultBaseUrl?: string; safeBaseUrls?: string[]; fetchImpl?: typeof fetch } = {}) {
     this.defaultBaseUrl = options.defaultBaseUrl ?? ANTHROPIC_MODELS_BASE_URL;
+    this.safeBaseUrls = options.safeBaseUrls ?? [this.defaultBaseUrl];
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -103,7 +112,11 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
     if (!apiKey) {
       throw new Error('models_secret_missing');
     }
-    const baseUrl = (input.credential.baseUrl ?? this.defaultBaseUrl).replace(/\/$/, '');
+    const baseUrl = resolveSafeModelsBaseUrl(
+      input.credential.baseUrl,
+      this.defaultBaseUrl,
+      this.safeBaseUrls,
+    );
     const response = await this.fetchImpl(`${baseUrl}/models`, {
       method: 'GET',
       headers: {
@@ -121,6 +134,38 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
     }
     return normalizeDiscoveredModels(await response.json());
   }
+}
+
+export function resolveSafeModelsBaseUrl(
+  configuredBaseUrl: string | undefined,
+  defaultBaseUrl: string,
+  safeBaseUrls: readonly string[],
+): string {
+  const requested = normalizeModelsBaseUrl(configuredBaseUrl ?? defaultBaseUrl);
+  const allowed = new Set(safeBaseUrls.map(normalizeModelsBaseUrl));
+  if (!allowed.has(requested)) {
+    throw new Error('unsafe_provider_base_url');
+  }
+  return requested;
+}
+
+function normalizeModelsBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('unsafe_provider_base_url');
+  }
+  if (
+    (url.protocol !== 'https:' && url.protocol !== 'http:')
+    || url.username
+    || url.password
+    || url.search
+    || url.hash
+  ) {
+    throw new Error('unsafe_provider_base_url');
+  }
+  return url.href.replace(/\/$/u, '');
 }
 
 export function normalizeDiscoveredModels(payload: unknown): DiscoveredProviderModel[] {

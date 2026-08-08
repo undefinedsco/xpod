@@ -59,7 +59,11 @@ export class PlaintextCredentialVault implements CredentialVault {
       throw new CredentialVaultError('Credential plaintext context mismatch');
     }
     try {
-      const parsed: unknown = JSON.parse(stored.ciphertext);
+      const encoding = (stored as EncryptedCredentialSecret & { encoding?: unknown }).encoding;
+      const serialized = encoding === 'base64'
+        ? Buffer.from(stored.ciphertext, 'base64').toString('utf8')
+        : stored.ciphertext;
+      const parsed: unknown = JSON.parse(serialized);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error('credential value is not an object');
       }

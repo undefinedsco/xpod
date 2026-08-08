@@ -116,6 +116,7 @@ describe('ProviderModelsAdapters', () => {
     const models = await new OpenAiCompatibleModelsAdapter({
       provider: 'kimi',
       defaultBaseUrl: 'https://api.moonshot.ai/v1',
+      safeBaseUrls: ['https://api.moonshot.ai/v1', 'https://api.moonshot.cn/v1'],
       fetchImpl: fetch,
     }).fetch({
       credential: kimiCredential,
@@ -123,6 +124,28 @@ describe('ProviderModelsAdapters', () => {
     });
 
     expect(models).toEqual([{ id: 'kimi-k2' }]);
+  });
+
+  it('rejects an untrusted credential base URL before attaching the provider secret', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof globalThis.fetch;
+
+    await expect(new OpenAiCompatibleModelsAdapter({
+      provider: 'deepseek',
+      defaultBaseUrl: 'https://api.deepseek.com/v1',
+      safeBaseUrls: ['https://api.deepseek.com/v1'],
+      fetchImpl: fetch,
+    }).fetch({
+      credential: {
+        ...await credential('deepseek'),
+        baseUrl: 'http://127.0.0.1:5790/v1',
+      },
+      secret: { type: 'apiKey', apiKey: 'must-not-leave' },
+    })).rejects.toThrow('unsafe_provider_base_url');
+
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('discovers Anthropic models with x-api-key and version headers', async () => {
@@ -218,6 +241,32 @@ describe('ProviderModelsService', () => {
       observedAt: '2026-08-09T00:00:00.000Z',
       source: 'deepseek:/models',
     });
+  });
+
+  it('does not send an ephemeral caller secret to an untrusted discovery base URL', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof globalThis.fetch;
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'deepseek',
+        defaultBaseUrl: 'https://api.deepseek.com/v1',
+        safeBaseUrls: ['https://api.deepseek.com/v1'],
+        fetchImpl: fetch,
+      })],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      apiKey: 'must-not-leave',
+      baseUrl: 'http://169.254.169.254/latest/meta-data',
+    })).rejects.toThrow('unsafe_provider_base_url');
+
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('resolves the active credential, opens the vault and returns the discovery', async () => {
@@ -623,7 +672,8 @@ describe('AiGatewayManagementHandler models routes', () => {
     const modelsService = {
       list: vi.fn()
         .mockRejectedValueOnce(new Error('models_credential_not_found'))
-        .mockRejectedValueOnce(new ProviderModelsFetchError(429, '30')),
+        .mockRejectedValueOnce(new ProviderModelsFetchError(429, '30'))
+        .mockRejectedValueOnce(new Error('unsafe_provider_base_url')),
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -653,6 +703,15 @@ describe('AiGatewayManagementHandler models routes', () => {
       providerStatus: 429,
       retryAfter: '30',
     });
+
+    const unsafe = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](
+      request({ type: 'solid', webId: WEB_ID }, {}),
+      unsafe,
+      { provider: 'kimi' },
+    );
+    expect(unsafe.statusCode).toBe(400);
+    expect(JSON.parse(unsafe.body)).toEqual({ error: 'unsafe_provider_base_url' });
   });
 
   it('responds 503 when the models service is not configured', async () => {

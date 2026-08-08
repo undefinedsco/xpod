@@ -323,6 +323,47 @@ function createInteractiveAiConnectionsClient(
       ? async (provider, credentialId) =>
           podStore.deleteProviderCredential!(provider, credentialId) as Promise<AiProviderCredentialSummary | undefined>
       : operationsClient.deleteProviderCredential,
+    pollDevice: podStore.saveOAuthCredential
+      ? async (provider, attempt) => {
+          const result = await operationsClient.pollDevice(provider, attempt)
+          if (result.status !== 'completed' || !result.oauthCredential) return result
+          const saved = await podStore.saveOAuthCredential!(provider, result.oauthCredential) as {
+            id?: string
+          } | undefined
+          const { oauthCredential: _discarded, ...publicResult } = result
+          return {
+            ...publicResult,
+            credentialId: saved?.id ?? result.credentialId,
+          }
+        }
+      : operationsClient.pollDevice,
+    refreshOAuthCredential: podStore.readCredentialSecret && podStore.updateOAuthCredential
+      ? async (provider, credentialId, _refreshToken, _expectedVersion) => {
+          const providers = await podStore.listProviders() as AiProviderSummary[]
+          const credential = providers
+            .find((item) => item.id === provider)
+            ?.credentials.find((item) => item.id === credentialId)
+          if (!credential) throw new Error('oauth_credential_not_found')
+          const secret = await podStore.readCredentialSecret!(provider, credentialId)
+          const refreshToken = typeof secret.refreshToken === 'string' ? secret.refreshToken : undefined
+          if (!refreshToken) throw new Error('oauth_refresh_token_required')
+          const result = await operationsClient.refreshOAuthCredential(
+            provider,
+            credentialId,
+            refreshToken,
+            credential.version,
+          )
+          if (result.status !== 'completed' || !result.oauthCredential) return result
+          await podStore.updateOAuthCredential!(
+            provider,
+            credentialId,
+            credential.version,
+            result.oauthCredential,
+          )
+          const { oauthCredential: _discarded, ...publicResult } = result
+          return publicResult
+        }
+      : operationsClient.refreshOAuthCredential,
     disconnect: async (provider, credentialId) => {
       if (!credentialId || !podStore.deleteProviderCredential) {
         return operationsClient.disconnect(provider, credentialId)

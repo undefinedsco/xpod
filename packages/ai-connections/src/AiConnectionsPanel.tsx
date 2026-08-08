@@ -333,7 +333,7 @@ export function AiConnectionsPanel({
             credentialId,
           ),
         }))
-        toast({ description: '已退出账号' })
+        toast({ description: '已从当前 Pod 移除账号' })
       } else {
         updateConnectionState(provider, 'disconnected')
         toast({ description: '已断开连接' })

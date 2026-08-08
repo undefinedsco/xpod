@@ -69,6 +69,7 @@ export function createXpodAiConnectionsPodStore(
       await input.database.init?.(credentialResource, aiProviderResource);
       const id = credentialResource.buildId({ id: `${normalizedProvider}-${crypto.randomUUID()}` });
       const version = 1;
+      const baseUrl = values.baseUrl ?? offeringBaseUrl(normalizedProvider, values.offeringId);
       const row = {
         id,
         provider: aiProviderResource.buildId({ id: normalizedProvider }),
@@ -77,20 +78,95 @@ export function createXpodAiConnectionsPodStore(
         status: 'active',
         accountLabel: values.label,
         label: values.label,
-        baseUrl: values.baseUrl ?? offeringBaseUrl(normalizedProvider, values.offeringId),
+        baseUrl,
         keyVersion: String(version),
         reauthRequired: false,
-        encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, values.apiKey),
+        encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, {
+          type: 'apiKey',
+          apiKey: values.apiKey,
+        }),
         encryptionAlgorithm: 'PLAINTEXT',
         metadata: {
           offeringId: values.offeringId ?? 'api-platform',
           priority: values.priority ?? 100,
           enabled: true,
           health: 'healthy',
+          baseUrl,
         },
       };
       await input.database.insert(credentialResource).values(row as never).execute();
       return credentialSummaryFromRow(input, normalizedProvider, row)!;
+    },
+    async saveOAuthCredential(provider, values) {
+      const normalizedProvider = providerValue(provider);
+      if (!normalizedProvider) throw new Error('unsupported_provider');
+      await input.database.init?.(credentialResource, aiProviderResource);
+      const id = credentialResource.buildId({ id: `${normalizedProvider}-oauth-${crypto.randomUUID()}` });
+      const row = {
+        id,
+        provider: aiProviderResource.buildId({ id: normalizedProvider }),
+        service: 'ai',
+        authMode: 'deviceCodeOAuth',
+        status: 'active',
+        accountLabel: 'OAuth',
+        label: 'OAuth',
+        expiresAt: values.expiresAt,
+        scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
+        keyVersion: '1',
+        reauthRequired: false,
+        encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, {
+          type: 'deviceCodeOAuth',
+          accessToken: values.accessToken,
+          refreshToken: values.refreshToken,
+          expiresAt: values.expiresAt,
+          scope: values.scope,
+          idToken: values.idToken,
+        }),
+        encryptionAlgorithm: 'PLAINTEXT',
+        metadata: {
+          offeringId: 'official-subscription',
+          priority: 100,
+          enabled: true,
+          health: 'healthy',
+          authoritativeSubject: values.accountSubject,
+        },
+      };
+      await input.database.insert(credentialResource).values(row as never).execute();
+      return credentialSummaryFromRow(input, normalizedProvider, row)!;
+    },
+    async updateOAuthCredential(provider, credentialId, expectedVersion, values) {
+      const normalizedProvider = providerValue(provider);
+      if (!normalizedProvider) throw new Error('unsupported_provider');
+      await input.database.init?.(credentialResource, aiProviderResource);
+      const current = await input.database.findById(credentialResource, credentialId) as Record<string, unknown> | null;
+      const summary = current && credentialSummaryFromRow(input, normalizedProvider, current);
+      if (!current || !summary || summary.authMode !== 'deviceCode') throw new Error('oauth_credential_not_found');
+      if (summary.version !== expectedVersion) throw new Error('credential_version_conflict');
+      const patch = {
+        expiresAt: values.expiresAt,
+        scopes: values.scope ? values.scope.split(/\s+/u).filter(Boolean) : undefined,
+        keyVersion: String(expectedVersion + 1),
+        reauthRequired: false,
+        status: 'active',
+        encryptedSecret: plaintextEnvelope(input, normalizedProvider, credentialId, {
+          type: 'deviceCodeOAuth',
+          accessToken: values.accessToken,
+          refreshToken: values.refreshToken,
+          expiresAt: values.expiresAt,
+          scope: values.scope,
+          idToken: values.idToken,
+        }),
+        metadata: {
+          ...objectValue(current.metadata),
+          enabled: true,
+          health: 'healthy',
+          authoritativeSubject: values.accountSubject
+            ?? stringValue(objectValue(current.metadata)?.authoritativeSubject),
+        },
+      };
+      const updated = await input.database.updateById(credentialResource, credentialId, patch as never);
+      if (!updated) throw new Error('credential_version_conflict');
+      return credentialSummaryFromRow(input, normalizedProvider, updated as Record<string, unknown>)!;
     },
     async updateProviderCredential(provider, credentialId, values) {
       const normalizedProvider = providerValue(provider);
@@ -104,6 +180,7 @@ export function createXpodAiConnectionsPodStore(
         ...objectValue(current.metadata),
         ...(values.priority === undefined ? {} : { priority: values.priority }),
         ...(values.enabled === undefined ? {} : { enabled: values.enabled }),
+        ...(values.baseUrl === undefined ? {} : { baseUrl: values.baseUrl }),
       };
       const patch = {
         ...(values.label === undefined ? {} : { accountLabel: values.label, label: values.label }),
@@ -225,12 +302,11 @@ function plaintextEnvelope(
   input: CreateXpodAiConnectionsPodStoreInput,
   provider: AiConnectionsProvider,
   id: string,
-  apiKey: string,
+  secret: Record<string, unknown>,
 ): string {
   return JSON.stringify({
     algorithm: 'PLAINTEXT',
-    encoding: 'base64',
-    ciphertext: encodeBase64Json({ type: 'apiKey', apiKey }),
+    ciphertext: JSON.stringify(secret),
     webId: input.webId,
     credentialIri: credentialResource.buildIri(input.podUrl, { id }),
     provider,
@@ -448,13 +524,6 @@ function parsePlaintextSecret(
   } catch {
     return undefined;
   }
-}
-
-function encodeBase64Json(value: Record<string, unknown>): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }
 
 function decodeBase64Json(value: string): unknown {

@@ -154,6 +154,111 @@ describe('AI Connection controller host.solid integration', () => {
     expect(sessionFetch).not.toHaveBeenCalled()
   })
 
+  it('persists a completed OAuth payload through the current Pod store exactly once', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/ai/gateway/providers/kimi/connect/poll')) {
+        return Response.json({
+          mode: 'deviceCodeOAuth',
+          status: 'completed',
+          provider: 'kimi',
+          attemptId: 'attempt-1',
+          oauthCredential: {
+            accessToken: 'kimi-access-token',
+            refreshToken: 'kimi-refresh-token',
+            expiresAt: '2026-08-09T08:00:00.000Z',
+          },
+        })
+      }
+      throw new Error(`Unexpected interactive API request: ${String(input)}`)
+    }) as unknown as typeof fetch
+    const saveOAuthCredential = vi.fn(async () => ({ id: 'credentials.ttl#kimi-oauth-1' }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => []),
+      saveOAuthCredential,
+    }
+    const controller = createAiConnectionsController(host)
+
+    const result = await controller.client!.pollDevice('kimi', {
+      attemptId: 'attempt-1',
+      state: 'state-1',
+      signature: 'signature-1',
+    })
+
+    expect(saveOAuthCredential).toHaveBeenCalledTimes(1)
+    expect(saveOAuthCredential).toHaveBeenCalledWith('kimi', expect.objectContaining({
+      accessToken: 'kimi-access-token',
+      refreshToken: 'kimi-refresh-token',
+    }))
+    expect(result).toMatchObject({
+      status: 'completed',
+      credentialId: 'credentials.ttl#kimi-oauth-1',
+    })
+    expect(result).not.toHaveProperty('oauthCredential')
+  })
+
+  it('refreshes OAuth from the current Pod and updates the same credential by version', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/kimi\/connect\/refresh$/u)
+      expect(JSON.parse(String(init?.body))).toEqual({
+        credentialId: 'credentials.ttl#kimi-oauth-1',
+        refreshToken: 'current-refresh-token',
+        expectedVersion: 3,
+      })
+      return Response.json({
+        mode: 'deviceCodeOAuth',
+        status: 'completed',
+        provider: 'kimi',
+        credentialId: 'credentials.ttl#kimi-oauth-1',
+        oauthCredential: {
+          accessToken: 'next-access-token',
+          refreshToken: 'next-refresh-token',
+        },
+      })
+    }) as unknown as typeof fetch
+    const updateOAuthCredential = vi.fn(async () => ({ id: 'credentials.ttl#kimi-oauth-1' }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'kimi',
+        credentials: [{ id: 'credentials.ttl#kimi-oauth-1', version: 3 }],
+      }]),
+      readCredentialSecret: vi.fn(async () => ({
+        type: 'deviceCodeOAuth',
+        refreshToken: 'current-refresh-token',
+      })),
+      updateOAuthCredential,
+    }
+    const controller = createAiConnectionsController(host)
+
+    const result = await controller.client!.refreshOAuthCredential(
+      'kimi',
+      'credentials.ttl#kimi-oauth-1',
+      'must-not-use-caller-argument',
+      999,
+    )
+
+    expect(updateOAuthCredential).toHaveBeenCalledWith(
+      'kimi',
+      'credentials.ttl#kimi-oauth-1',
+      3,
+      expect.objectContaining({ refreshToken: 'next-refresh-token' }),
+    )
+    expect(result).not.toHaveProperty('oauthCredential')
+  })
+
   it('uses host CSS client credentials for coding-client Gateway key methods', async () => {
     const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
       throw new Error(`Unexpected opaque Gateway request: ${String(input)}`)

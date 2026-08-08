@@ -112,7 +112,15 @@ describe('XpodAiConnectionsPodStore', () => {
       priority: 5,
     }) as { id: string; maskedHint: string; version: number };
     expect(created).toMatchObject({ maskedHint: 'sk-...alue', version: 1 });
-    expect(JSON.stringify(rows.get(created.id))).not.toContain('sk-secret-value');
+    const storedEnvelope = JSON.parse(String(rows.get(created.id)?.encryptedSecret));
+    expect(storedEnvelope.encoding).toBeUndefined();
+    expect(JSON.parse(storedEnvelope.ciphertext)).toEqual({
+      type: 'apiKey',
+      apiKey: 'sk-secret-value',
+    });
+    expect(rows.get(created.id)?.metadata).toMatchObject({
+      baseUrl: 'https://api.deepseek.com/v1',
+    });
     await expect(store.readCredentialSecret!('deepseek', created.id)).resolves.toEqual({
       type: 'apiKey',
       apiKey: 'sk-secret-value',
@@ -134,6 +142,78 @@ describe('XpodAiConnectionsPodStore', () => {
     await store.deleteProviderCredential!('deepseek', created.id);
     expect(database.deleteById).toHaveBeenCalledWith(credentialResource, created.id);
     expect(rows.has(created.id)).toBe(false);
+  });
+
+  it('persists OAuth completion as a sibling credential with the current Pod database', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    rows.set('credentials.ttl#kimi-api', {
+      id: 'credentials.ttl#kimi-api',
+      provider: aiProviderResource.buildId({ id: 'kimi' }),
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+    });
+    const database = {
+      init: vi.fn(),
+      findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const saved = await store.saveOAuthCredential!('kimi', {
+      accessToken: 'kimi-access-token',
+      refreshToken: 'kimi-refresh-token',
+      expiresAt: '2026-08-09T08:00:00.000Z',
+      scope: 'openid profile',
+      accountSubject: 'moonshot-user-1',
+    }) as { id: string; authMode: string };
+
+    expect(saved).toMatchObject({ authMode: 'deviceCode' });
+    expect(rows.has('credentials.ttl#kimi-api')).toBe(true);
+    const stored = rows.get(saved.id)!;
+    expect(stored.metadata).toMatchObject({
+      offeringId: 'official-subscription',
+      authoritativeSubject: 'moonshot-user-1',
+    });
+    const envelope = JSON.parse(String(stored.encryptedSecret));
+    expect(JSON.parse(envelope.ciphertext)).toEqual(expect.objectContaining({
+      type: 'deviceCodeOAuth',
+      accessToken: 'kimi-access-token',
+      refreshToken: 'kimi-refresh-token',
+    }));
+
+    await expect(store.updateOAuthCredential!('kimi', saved.id, 1, {
+      accessToken: 'next-access-token',
+      refreshToken: 'next-refresh-token',
+      expiresAt: '2026-08-09T09:00:00.000Z',
+    })).resolves.toMatchObject({ version: 2, authMode: 'deviceCode' });
+    await expect(store.updateOAuthCredential!('kimi', saved.id, 1, {
+      accessToken: 'stale-access-token',
+      refreshToken: 'stale-refresh-token',
+    })).rejects.toThrow('credential_version_conflict');
+    const refreshedEnvelope = JSON.parse(String(rows.get(saved.id)?.encryptedSecret));
+    expect(JSON.parse(refreshedEnvelope.ciphertext)).toEqual(expect.objectContaining({
+      accessToken: 'next-access-token',
+      refreshToken: 'next-refresh-token',
+    }));
   });
 
   it('persists discovered models and provider selection while retaining missing selected models', async () => {

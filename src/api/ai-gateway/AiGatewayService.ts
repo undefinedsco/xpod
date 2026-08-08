@@ -460,8 +460,8 @@ export class AiGatewayService {
       return configured;
     }
     return {
-      ...configured,
       ...offeringCredential,
+      ...configured,
     };
   }
 
@@ -635,7 +635,11 @@ function healthRecord(webId: string, deployment: string, route: ModelRouteResult
 }
 
 function isCredentialFailoverError(error: unknown): boolean {
-  if (!(error instanceof GatewayProtocolError) || error.code !== 'provider_error') {
+  if (!(error instanceof GatewayProtocolError)) {
+    const normalized = normalizeGatewayError(error);
+    return normalized.error.code === 'provider_error' && normalized.error.status === 429;
+  }
+  if (error.code !== 'provider_error') {
     return false;
   }
   const classification = stringMetadata(error.details, 'classification');

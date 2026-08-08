@@ -400,7 +400,7 @@ function ApiKeyPool({
         ) : accountLabel ? (
           <p className="text-xs text-muted-foreground">{maskAccountLabel(accountLabel)}</p>
         ) : (
-          <p className="text-xs text-muted-foreground">Provider 凭证加密保存在当前 Pod。</p>
+          <p className="text-xs text-muted-foreground">Provider 凭证保存在当前 Pod，由 Pod 权限保护。</p>
         )}
       </div>
 
@@ -594,7 +594,7 @@ function oauthProviderOptions(
     id: credential.id,
     label: credential.label ? maskAccountLabel(credential.label) : credential.id,
     subtitle: credential.maskedHint,
-    actionLabel: '退出',
+    actionLabel: '移除',
     badge: {
       label: credential.enabled ? '启用' : '停用',
       tone: credential.health === 'healthy' ? 'success' : credential.health === 'unknown' ? 'neutral' : 'warning',

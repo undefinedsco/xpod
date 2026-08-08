@@ -361,6 +361,12 @@ export function registerCommonServices(
     providerModelsService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
       const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const registry = cradle.gatewayProviderRegistry;
+      const safeBaseUrls = (provider: string): string[] => [
+        ...registry.requireProvider(provider).safeBaseUrls,
+        ...(registry.getProduct(provider)?.offerings.flatMap((offering) =>
+          offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []),
+      ];
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
         vault: credentialVaultForConfig(config),
@@ -368,19 +374,23 @@ export function registerCommonServices(
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',
             defaultBaseUrl: 'https://api.openai.com/v1',
+            safeBaseUrls: safeBaseUrls('openai'),
           }),
-          new AnthropicModelsAdapter(),
+          new AnthropicModelsAdapter({ safeBaseUrls: safeBaseUrls('anthropic') }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'kimi',
             defaultBaseUrl: 'https://api.moonshot.ai/v1',
+            safeBaseUrls: safeBaseUrls('kimi'),
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'bailian',
             defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            safeBaseUrls: safeBaseUrls('bailian'),
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'deepseek',
             defaultBaseUrl: 'https://api.deepseek.com/v1',
+            safeBaseUrls: safeBaseUrls('deepseek'),
           }),
         ],
       });

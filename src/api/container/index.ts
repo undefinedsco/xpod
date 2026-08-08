@@ -120,6 +120,9 @@ export function loadConfigFromEnv(): ApiContainerConfig {
   const tunnelProfileState = resolveTunnelProfileState(process.env);
   const secretCellCredentialVaultFactory = loadSecretCellCredentialVaultFactory(process.env);
   const openAiGatewayBaseUrl = normalizeOptionalBaseUrl(process.env.XPOD_AI_GATEWAY_OPENAI_BASE_URL);
+  const aiClientConfiguration = edition === 'local'
+    ? loadAiClientConfiguration(process.env)
+    : undefined;
 
   return {
     edition,
@@ -147,6 +150,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     aiGatewayKimiOAuthIntegrationId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_INTEGRATION_ID,
     aiGatewayKimiOAuthClientId: process.env.XPOD_AI_GATEWAY_KIMI_OAUTH_CLIENT_ID,
     aiGatewayProviderBaseUrls: openAiGatewayBaseUrl ? { openai: openAiGatewayBaseUrl } : undefined,
+    aiClientConfiguration,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',
       mode: process.env.XPOD_INNGEST_MODE === 'spawn' || process.env.XPOD_INNGEST_MODE === 'managed'
@@ -200,6 +204,26 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     // Edge 节点管理 (cloud 模式)
     edgeNodesEnabled: process.env.XPOD_EDGE_NODES_ENABLED === 'true',
   };
+}
+
+function loadAiClientConfiguration(env: NodeJS.ProcessEnv): ApiContainerConfig['aiClientConfiguration'] {
+  if (env.XPOD_AI_CLIENT_CONFIGURATION_ENABLED !== 'true') {
+    return undefined;
+  }
+
+  const homeDir = path.resolve(nonEmptyEnv(env.XPOD_AI_CLIENT_CONFIGURATION_HOME_DIR) ?? env.HOME ?? os.homedir());
+  const backupRoot = nonEmptyEnv(env.XPOD_AI_CLIENT_CONFIGURATION_BACKUP_ROOT);
+  return {
+    enabled: true,
+    authority: 'local-filesystem',
+    homeDir,
+    ...(backupRoot ? { backupRoot: path.resolve(backupRoot) } : {}),
+  };
+}
+
+function nonEmptyEnv(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
 }
 
 function loadSecretCellCredentialVaultFactory(env: NodeJS.ProcessEnv): (() => CredentialVault) | undefined {

@@ -24,6 +24,7 @@ type RouteHandler = (request: AuthenticatedRequest, response: TestResponse, para
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const ENDPOINT = 'https://xpod.example';
 const GATEWAY_KEY = 'xpod_gw_v1_super_secret_gateway_key';
+const CSS_CLIENT_CREDENTIALS_KEY = 'sk-Y2xpZW50LTE6c2VjcmV0';
 const PROVIDER_KEY = 'sk-provider-must-never-appear';
 
 const CLIENTS: AiClientId[] = ['codex', 'claude-code', 'pi', 'codebuddy'];
@@ -133,6 +134,41 @@ describe('AiClientConfigurationHandler', () => {
       { client },
     );
     expect(JSON.parse(secondRestore.body)).toMatchObject({ status: 'notConfigured' });
+  });
+
+  it.each(CLIENTS)('applies %s with a CSS client-credentials Gateway key', async (client) => {
+    const plan = await postPlan(client);
+    const apply = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({
+        planId: plan.planId,
+        gatewayKey: CSS_CLIENT_CREDENTIALS_KEY,
+        ...(plan.confirmation ? {
+          confirmation: {
+            token: plan.confirmation.token,
+            targetHash: plan.confirmation.targetHash,
+          },
+        } : {}),
+      }, scopedAuth('client-config:write')),
+      apply,
+      { client },
+    );
+
+    expect(apply.statusCode, apply.body).toBe(200);
+    await expectNativeProjection(tmpDir, client, CSS_CLIENT_CREDENTIALS_KEY);
+  });
+
+  it.each(['sk-not-base64', 'sk-Y2xpZW50LTE', 'sk-Y2xpZW50LTE6c2VjcmV0='])('rejects malformed CSS client-credentials Gateway key %s', async (gatewayKey) => {
+    const plan = await postPlan('codex');
+    const apply = response();
+    await route('POST /api/ai/client-configuration/:client/apply')(
+      jsonRequest({ planId: plan.planId, gatewayKey }, scopedAuth('client-config:write')),
+      apply,
+      { client: 'codex' },
+    );
+
+    expect(apply.statusCode).toBe(400);
+    expect(JSON.parse(apply.body)).toMatchObject({ code: 'invalid_gateway_key' });
   });
 
   it.each(CLIENTS)('restores old managed %s projection without user edits by stripping shared adapter managed state first', async (client) => {
@@ -541,19 +577,19 @@ async function expectClientConfigured(home: string, client: AiClientId): Promise
   expect((stat.mode & 0o077)).toBe(0);
 }
 
-async function expectNativeProjection(home: string, client: AiClientId): Promise<void> {
+async function expectNativeProjection(home: string, client: AiClientId, gatewayKey = GATEWAY_KEY): Promise<void> {
   if (client === 'codex') {
     const config = await readCodexConfig(home);
     const auth = JSON.parse(await fs.readFile(path.join(home, '.codex', 'auth.json'), 'utf8'));
     expect(config).toContain('requires_openai_auth = true');
     expect(config).toContain('model_provider = "xpod"');
-    expect(auth.OPENAI_API_KEY).toBe(GATEWAY_KEY);
+    expect(auth.OPENAI_API_KEY).toBe(gatewayKey);
     return;
   }
   if (client === 'claude-code') {
     const settings = JSON.parse(await fs.readFile(path.join(home, '.claude', 'settings.json'), 'utf8'));
     expect(settings.env.ANTHROPIC_BASE_URL).toBe(ENDPOINT);
-    expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe(GATEWAY_KEY);
+    expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBe(gatewayKey);
     return;
   }
   if (client === 'pi') {
@@ -563,14 +599,14 @@ async function expectNativeProjection(home: string, client: AiClientId): Promise
     expect(settings.defaultModel).toBe('openai/gpt-5');
     expect(models.providers.xpod).toMatchObject({
       baseUrl: `${ENDPOINT}/v1`,
-      apiKey: GATEWAY_KEY,
+      apiKey: gatewayKey,
       api: 'openai-responses',
     });
     return;
   }
   const settings = JSON.parse(await fs.readFile(path.join(home, '.codebuddy', 'settings.json'), 'utf8'));
   expect(settings.env.CODEBUDDY_BASE_URL).toBe(`${ENDPOINT}/v1`);
-  expect(settings.env.CODEBUDDY_API_KEY).toBe(GATEWAY_KEY);
+  expect(settings.env.CODEBUDDY_API_KEY).toBe(gatewayKey);
 }
 
 async function expectUnrelatedPreserved(home: string, client: AiClientId): Promise<void> {

@@ -753,6 +753,11 @@ describe('AiGatewayManagementHandler', () => {
         deployment: 'cloud',
         status: 'completed',
         credential: { id: 'cred_1', deployment: 'cloud' },
+        oauthCredential: {
+          accessToken: 'one-time-access',
+          refreshToken: 'one-time-refresh',
+          expiresAt: '2026-08-09T08:00:00.000Z',
+        },
       })),
     } as any;
     const { server, routes } = createServer();
@@ -779,6 +784,13 @@ describe('AiGatewayManagementHandler', () => {
 
     expect(JSON.stringify(JSON.parse(statusResponse.body))).not.toContain('deployment');
     expect(JSON.stringify(JSON.parse(pollResponse.body))).not.toContain('deployment');
+    expect(JSON.parse(pollResponse.body)).toMatchObject({
+      oauthCredential: {
+        accessToken: 'one-time-access',
+        refreshToken: 'one-time-refresh',
+      },
+    });
+    expect(JSON.stringify(JSON.parse(pollResponse.body))).not.toContain('client_secret');
     expect(connectService.status).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
     expect(connectService.pollDevice).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
   });
@@ -866,7 +878,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(complete.body)).toEqual({ error: 'Provider Connect attempt not found' });
 
     const refreshService = {
-      refresh: vi.fn(async () => {
+      refreshCallerOwned: vi.fn(async () => {
         throw new Error('provider_credential_not_found');
       }),
     } as any;
@@ -878,7 +890,7 @@ describe('AiGatewayManagementHandler', () => {
     });
     const refresh = response();
     await expect(refreshServer.routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](
-      request(auth, { credentialId: 'missing_credential' }),
+      request(auth, { credentialId: 'missing_credential', refreshToken: 'refresh', expectedVersion: 1 }),
       refresh,
       { provider: 'kimi' },
     )).resolves.toBeUndefined();
@@ -906,7 +918,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(disconnect.body)).toEqual({ error: 'service_access_missing' });
 
     const unsupportedService = {
-      refresh: vi.fn(async () => {
+      refreshCallerOwned: vi.fn(async () => {
         throw new Error('credential_collection_query_unsupported');
       }),
     } as any;
@@ -918,7 +930,7 @@ describe('AiGatewayManagementHandler', () => {
     });
     const unsupported = response();
     await expect(unsupportedServer.routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](
-      request(auth, { credentialId: 'credential_1' }),
+      request(auth, { credentialId: 'credential_1', refreshToken: 'refresh', expectedVersion: 1 }),
       unsupported,
       { provider: 'kimi' },
     )).resolves.toBeUndefined();
@@ -1268,9 +1280,15 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage provider Connect state' });
   });
 
-  it('does not accept plaintext refresh tokens through the provider Connect refresh API', async () => {
+  it('passes only the transient refresh input through caller-owned OAuth refresh', async () => {
     const connectService = {
-      refresh: vi.fn(async () => undefined),
+      refreshCallerOwned: vi.fn(async () => ({
+        mode: 'deviceCodeOAuth',
+        status: 'completed',
+        provider: 'kimi',
+        credentialId: 'cloud-kimi-oauth',
+        oauthCredential: { accessToken: 'next-access', refreshToken: 'next-refresh', expectedVersion: 3 },
+      })),
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -1286,21 +1304,26 @@ describe('AiGatewayManagementHandler', () => {
     }, {
       refreshToken: 'must-not-leave-handler',
       credentialId: 'cloud-kimi-oauth',
+      expectedVersion: 3,
     }), res, {
       provider: 'kimi',
     });
 
     expect(res.statusCode).toBe(200);
-    expect(connectService.refresh).toHaveBeenCalledWith({
+    expect(connectService.refreshCallerOwned).toHaveBeenCalledWith({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
       credentialId: 'cloud-kimi-oauth',
+      refreshToken: 'must-not-leave-handler',
+      expectedVersion: 3,
       auth: {
         type: 'solid',
         webId: WEB_ID,
       },
     });
+    expect(JSON.parse(res.body)).toMatchObject({ oauthCredential: { refreshToken: 'next-refresh' } });
+    expect(res.body).not.toContain('must-not-leave-handler');
   });
 
   it('passes an optional credentialId through provider Connect disconnect', async () => {
@@ -1719,7 +1742,7 @@ describe('AiGatewayManagementHandler', () => {
 
   it('adds deprecation headers to legacy provider Connect routes', async () => {
     const connectService = {
-      refresh: vi.fn(async () => undefined),
+      refreshCallerOwned: vi.fn(async () => ({ mode: 'deviceCodeOAuth', status: 'completed', provider: 'kimi' })),
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -1732,7 +1755,7 @@ describe('AiGatewayManagementHandler', () => {
     await routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](request({
       type: 'solid',
       webId: WEB_ID,
-    }, {}), res, { provider: 'kimi' });
+    }, { credentialId: 'credential-1', refreshToken: 'refresh', expectedVersion: 1 }), res, { provider: 'kimi' });
 
     expect(res.statusCode).toBe(200);
     expect(res.headers).toMatchObject({
