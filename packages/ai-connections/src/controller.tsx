@@ -23,14 +23,16 @@ export interface AiProviderDefinition {
   description: string
   homeUrl: string
   apiKeyUrl?: string
+  apiKeyPlaceholder?: string
+  defaultBaseUrl?: string
 }
 
 export const PROVIDERS: AiProviderDefinition[] = [
-  { id: 'openai', name: 'OpenAI', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台', description: 'OpenAI 模型与编码能力', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys' },
-  { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台', description: 'Claude 模型与编码能力', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys' },
-  { id: 'kimi', name: 'Kimi', browserMode: 'deviceCodeOAuth', browserLabel: '浏览器鉴权', description: 'Moonshot AI 模型服务', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys' },
-  { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '打开官方控制台', description: '阿里云百炼模型服务', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key' },
-  { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '浏览器鉴权不支持', description: 'DeepSeek 模型服务', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys' },
+  { id: 'openai', name: 'OpenAI', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'OpenAI 模型与编码能力', homeUrl: 'https://openai.com', apiKeyUrl: 'https://platform.openai.com/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.openai.com/v1' },
+  { id: 'anthropic', name: 'Anthropic', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Claude 模型与编码能力', homeUrl: 'https://www.anthropic.com', apiKeyUrl: 'https://console.anthropic.com/settings/keys', apiKeyPlaceholder: 'sk-ant-...', defaultBaseUrl: 'https://api.anthropic.com' },
+  { id: 'kimi', name: 'Kimi', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: 'Moonshot AI 模型服务', homeUrl: 'https://www.moonshot.cn', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  { id: 'bailian', name: '百炼', browserMode: 'browserAssistedApiKey', browserLabel: '登录', description: '阿里云百炼模型服务', homeUrl: 'https://www.aliyun.com/product/bailian', apiKeyUrl: 'https://bailian.console.aliyun.com/#/api-key', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  { id: 'deepseek', name: 'DeepSeek', browserMode: 'connectUnsupported', browserLabel: '不支持登录', description: 'DeepSeek 模型服务', homeUrl: 'https://www.deepseek.com', apiKeyUrl: 'https://platform.deepseek.com/api_keys', apiKeyPlaceholder: 'sk-...', defaultBaseUrl: 'https://api.deepseek.com/v1' },
 ]
 
 export type ProviderProductState =
@@ -137,7 +139,13 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       notify()
     },
     selectFirstUnconfiguredProvider() {
-      const provider = PROVIDERS.find(
+      const currentIndex = PROVIDERS.findIndex((candidate) => candidate.id === selectedProvider)
+      const ordered = currentIndex < 0
+        ? PROVIDERS
+        : [...PROVIDERS.slice(currentIndex + 1), ...PROVIDERS.slice(0, currentIndex + 1)]
+      const provider = ordered.find(
+        (candidate) => providerStates[candidate.id] === 'unconfigured' && candidate.id !== selectedProvider,
+      ) ?? PROVIDERS.find(
         (candidate) => providerStates[candidate.id] === 'unconfigured',
       ) ?? PROVIDERS[0]
       if (provider) controller.selectProvider(provider.id)

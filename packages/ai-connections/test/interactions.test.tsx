@@ -144,6 +144,7 @@ describe('AI Connection settings', () => {
             provider: 'deepseek',
             status: 'connected',
             authMode: 'browserAssistedApiKey',
+            baseUrl: 'https://proxy.example/v1',
             connect: {
               modes: ['browserAssistedApiKey'],
               configured: true,
@@ -155,6 +156,12 @@ describe('AI Connection settings', () => {
 
     expect(await screen.findByText('已配置')).toBeTruthy()
     expect(screen.getByRole('button', { name: '更新 API Key' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '更新 API Key' }))
+    await waitFor(() => expect(screen.getByLabelText('DeepSeek Base URL 输入')).toHaveProperty(
+      'value',
+      'https://proxy.example/v1',
+    ))
   })
 
   it('verifies a configured provider and merges discovered models into the catalog', async () => {
@@ -332,9 +339,18 @@ describe('AI Connection settings', () => {
     fireEvent.change(screen.getByLabelText('OpenAI API Key 输入'), {
       target: { value: 'sk-provider-secret' },
     })
+    fireEvent.change(screen.getByLabelText('OpenAI Base URL 输入'), {
+      target: { value: 'https://proxy.example/v1' },
+    })
     fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
 
-    await waitFor(() => expect(current.completeApiKey).toHaveBeenCalled())
+    await waitFor(() => expect(current.completeApiKey).toHaveBeenCalledWith(
+      'openai',
+      expect.anything(),
+      'sk-provider-secret',
+      undefined,
+      'https://proxy.example/v1',
+    ))
     expect(screen.queryByDisplayValue('sk-provider-secret')).toBeNull()
     expect(screen.queryByText('sk-provider-secret')).toBeNull()
     expect(screen.getByText('已配置')).toBeTruthy()

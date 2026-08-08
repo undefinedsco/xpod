@@ -1,5 +1,13 @@
-import { useId, type ReactNode } from 'react'
-import { ConnectHeader, ConnectSurface, SolidConnectForm } from '@undefineds.co/shared-ui'
+import { useId, useState, type ReactNode } from 'react'
+import {
+  ConnectHeader,
+  ConnectSurface,
+  LoginFailureView,
+  LoginProviderListView,
+  LoginRestoringView,
+  SolidConnectForm,
+  type LoginProviderOption,
+} from '@undefineds.co/shared-ui'
 
 export type AuthBoundaryState =
   | { status: 'loading' }
@@ -14,13 +22,19 @@ export interface LoginViewProps {
   logo?: ReactNode
   error?: string
   onLogin: (issuer: string) => void | Promise<void>
+  providers?: LoginProviderOption[]
+  providerListTitle?: string
+  connectingProviderId?: string
+  onAddProvider?: (url: string) => void
+  onDismissError?: () => void
 }
 
 export interface AuthBoundaryProps {
   state: AuthBoundaryState
   login: (issuer: string) => void | Promise<void>
   children: ReactNode
-  loginView?: Omit<LoginViewProps, 'error' | 'onLogin'>
+  loginView?: Omit<LoginViewProps, 'error' | 'onLogin' | 'onDismissError'>
+  restoringLabel?: string
 }
 
 const defaultLoginTitle = '连接 Solid Pod'
@@ -33,19 +47,37 @@ export function LoginView({
   logo,
   error,
   onLogin,
+  providers,
+  providerListTitle,
+  connectingProviderId,
+  onAddProvider,
+  onDismissError,
 }: LoginViewProps) {
   const titleId = useId()
+  const usesProviderList = Boolean(providers?.length || onAddProvider)
 
   return (
     <ConnectSurface labelledBy={titleId}>
       <div className="flex flex-col gap-6">
         <ConnectHeader title={title} titleId={titleId} description={description} logo={logo} />
-        <SolidConnectForm
-          defaultIssuer={defaultIssuer}
-          error={error}
-          submitErrorMessage={safeLoginErrorMessage}
-          onConnect={onLogin}
-        />
+        {usesProviderList ? (
+          <LoginProviderListView
+            title={providerListTitle ?? '选择登录方式'}
+            providers={providers ?? []}
+            error={error}
+            connectingId={connectingProviderId}
+            onConnect={(providerId) => void onLogin(providerId)}
+            onAddProvider={onAddProvider}
+            onDismissError={onDismissError}
+          />
+        ) : (
+          <SolidConnectForm
+            defaultIssuer={defaultIssuer}
+            error={error}
+            submitErrorMessage={safeLoginErrorMessage}
+            onConnect={onLogin}
+          />
+        )}
       </div>
     </ConnectSurface>
   )
@@ -56,7 +88,10 @@ export function AuthBoundary({
   login,
   children,
   loginView,
+  restoringLabel = '正在检查登录状态',
 }: AuthBoundaryProps) {
+  const [dismissedError, setDismissedError] = useState<string | null>(null)
+
   if (state.status === 'authenticated') {
     return <>{children}</>
   }
@@ -64,14 +99,26 @@ export function AuthBoundary({
   if (state.status === 'loading') {
     return (
       <ConnectSurface>
-        <div
-          className="flex flex-col items-center gap-3 text-center text-sm leading-6 text-muted-foreground"
-          role="status"
-          aria-label="认证状态"
-        >
-          <span className="h-8 w-8 rounded-full border-2 border-border border-t-primary" aria-hidden="true" />
-          <span>正在检查登录状态</span>
-        </div>
+        <LoginRestoringView label={`${restoringLabel}...`} />
+      </ConnectSurface>
+    )
+  }
+
+  const errorMessage = state.status === 'error' ? state.message : undefined
+
+  if (errorMessage && dismissedError !== errorMessage) {
+    const retryIssuer = loginView?.defaultIssuer ?? loginView?.providers?.[0]?.id
+    return (
+      <ConnectSurface>
+        <LoginFailureView
+          description={errorMessage}
+          primaryLabel="重新登录"
+          onPrimary={() => {
+            if (retryIssuer) void login(retryIssuer)
+          }}
+          secondaryLabel="重新选择登录方式"
+          onSecondary={() => setDismissedError(errorMessage)}
+        />
       </ConnectSurface>
     )
   }
@@ -82,7 +129,12 @@ export function AuthBoundary({
       description={loginView?.description}
       defaultIssuer={loginView?.defaultIssuer}
       logo={loginView?.logo}
-      error={state.status === 'error' ? state.message : undefined}
+      providers={loginView?.providers}
+      providerListTitle={loginView?.providerListTitle}
+      connectingProviderId={loginView?.connectingProviderId}
+      onAddProvider={loginView?.onAddProvider}
+      onDismissError={() => setDismissedError(null)}
+      error={errorMessage}
       onLogin={login}
     />
   )

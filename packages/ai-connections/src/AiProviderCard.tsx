@@ -497,7 +497,7 @@ function connectionStatusLabel(status: ProviderConnectionState): string {
     case 'configured': return '已配置'
     case 'connected': return '已连接'
     case 'disconnected': return '未设置'
-    case 'reauthRequired': return '需要重新鉴权'
+    case 'reauthRequired': return '需要重新登录'
     case 'failed': return '连接失败'
     default: return '未检查'
   }

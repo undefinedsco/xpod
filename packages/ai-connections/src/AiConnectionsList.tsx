@@ -1,5 +1,6 @@
 import { useRef, type KeyboardEvent } from 'react'
-import { Avatar, AvatarFallback, cn } from '@undefineds.co/shared-ui'
+import { Avatar, AvatarFallback, AvatarImage, cn } from '@undefineds.co/shared-ui'
+import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type { AiConnectionsController } from './controller'
 import {
   PROVIDERS,
@@ -60,7 +61,11 @@ export function AiConnectionsList({ controller }: { controller: AiConnectionsCon
               selected ? 'border-l-primary bg-accent/80' : 'hover:bg-muted/40',
             )}
           >
-            <Avatar className="h-9 w-9 shrink-0 rounded-md border border-border/20">
+            <Avatar
+              className="h-9 w-9 shrink-0 rounded-md border border-border/20"
+              style={getProviderAvatarBackground(provider.id) ? { backgroundColor: getProviderAvatarBackground(provider.id) } : undefined}
+            >
+              <AvatarImage src={getProviderAvatar(provider.id)} className="object-cover" />
               <AvatarFallback className="rounded-md bg-muted text-[10px] font-bold uppercase text-muted-foreground">
                 {providerMark(provider.id)}
               </AvatarFallback>

@@ -126,6 +126,7 @@ export interface AiProviderConnectionSummary {
   status: 'connected' | 'disconnected' | 'reauthRequired'
   authMode?: string
   accountLabel?: string
+  baseUrl?: string
   expiresAt?: string
   reauthRequired?: boolean
   credentialIri?: string
@@ -153,6 +154,7 @@ export interface AiConnectionsClient {
     attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>,
     apiKey: string,
     accountLabel?: string,
+    baseUrl?: string,
   ): Promise<AiConnectAttempt>
   pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
   disconnect(provider: AiConnectionsProvider): Promise<AiConnectionsCredential | undefined>
@@ -299,7 +301,7 @@ export function createAiConnectionsClient({
       )
     },
 
-    completeApiKey(provider, attempt, apiKey, accountLabel) {
+    completeApiKey(provider, attempt, apiKey, accountLabel, baseUrl) {
       return requestConnect(
         provider,
         '/connect/complete-api-key',
@@ -310,6 +312,7 @@ export function createAiConnectionsClient({
           signature: attempt.signature,
           apiKey,
           accountLabel,
+          baseUrl,
         }),
       )
     },
