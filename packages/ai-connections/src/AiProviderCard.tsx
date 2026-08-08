@@ -84,6 +84,8 @@ export function AiProviderCard({
   onAddModel,
   onEditModel,
   onDeleteModel,
+  selectedModelIds,
+  onModelSelectionChange,
   onDismissError,
 }: {
   definition: AiProviderDefinition
@@ -126,12 +128,16 @@ export function AiProviderCard({
   onAddModel?: () => void
   onEditModel?: (model: AiGatewayModel) => void
   onDeleteModel?: (model: AiGatewayModel) => void
+  selectedModelIds?: string[]
+  onModelSelectionChange?: (provider: AiProviderSummary['id'], modelIds: string[]) => void
   onDismissError?: () => void
 }) {
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
   const [modelSearch, setModelSearch] = useState('')
   const [copiedModelId, setCopiedModelId] = useState<string>()
+  const [localSelectedModelIds, setLocalSelectedModelIds] = useState<string[]>(selectedModelIds ?? [])
+  const effectiveSelectedModelIds = selectedModelIds ?? localSelectedModelIds
 
   const visibleModels = useMemo(() => {
     const query = modelSearch.trim().toLocaleLowerCase()
@@ -149,6 +155,15 @@ export function AiProviderCard({
     } catch {
       setCopiedModelId(undefined)
     }
+  }
+
+  const toggleModel = (modelId: string) => {
+    const next = new Set(effectiveSelectedModelIds)
+    if (next.has(modelId)) next.delete(modelId)
+    else next.add(modelId)
+    const nextModelIds = [...next]
+    if (selectedModelIds === undefined) setLocalSelectedModelIds(nextModelIds)
+    onModelSelectionChange?.(definition.id, nextModelIds)
   }
 
   return (
@@ -238,6 +253,9 @@ export function AiProviderCard({
               <Box className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground/90">可用模型</h3>
               <Badge variant="secondary" className="ml-2 text-xs font-normal">{models.length}</Badge>
+              <Badge variant="outline" className="text-xs font-normal">
+                已选择 {effectiveSelectedModelIds.length}
+              </Badge>
             </div>
             <div className="flex items-center gap-2">
               {(isConfigured || isConnected) && (onVerify || onAddModel) ? (
@@ -298,6 +316,9 @@ export function AiProviderCard({
           ) : (
             <div className="grid gap-2">
               {visibleModels.map((model) => {
+                const isSelected = effectiveSelectedModelIds.includes(model.id)
+                const isUnavailable = model.availability === 'unavailable'
+                const modelLabel = model.displayName ?? model.id
                 const iconTokens = [
                   ...(model.inputModalities ?? []).filter((modality) => modality !== 'text'),
                   ...(model.capabilities ?? []),
@@ -305,17 +326,48 @@ export function AiProviderCard({
                 return (
                   <div
                     key={model.id}
-                    className="group flex items-center gap-3 rounded-lg border border-border/40 bg-card p-3 transition-all duration-200 hover:border-border/60 hover:bg-accent/30"
+                    className={cn(
+                      'group flex items-center gap-3 rounded-lg border bg-card p-3 transition-all duration-200 hover:border-border/60 hover:bg-accent/30',
+                      isSelected ? 'border-primary/40 bg-primary/[0.03]' : 'border-border/40',
+                      isUnavailable && 'opacity-75',
+                    )}
                   >
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={isSelected}
+                      aria-label={`${isSelected ? '取消选择' : '选择'} ${modelLabel}`}
+                      className={cn(
+                        'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        isSelected
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border text-transparent hover:border-primary/60',
+                      )}
+                      disabled={disabled || busy}
+                      onClick={() => toggleModel(model.id)}
+                    >
+                      <Check aria-hidden="true" className="h-3.5 w-3.5" />
+                    </button>
                     <div className="shrink-0 rounded bg-muted/50 p-2 text-muted-foreground transition-colors group-hover:text-primary">
                       <Box className="h-4 w-4" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground/90">{model.displayName ?? model.id}</span>
+                        <span className="truncate text-sm font-medium text-foreground/90">{modelLabel}</span>
                         <div className="flex items-center gap-1">
                           {iconTokens.map((token) => <CapabilityIcon key={token} type={token} />)}
                         </div>
+                        <Badge variant={isSelected ? 'default' : 'secondary'} className="shrink-0 text-[10px] font-normal">
+                          {isSelected ? '已选择' : '未选择'}
+                        </Badge>
+                        <Badge variant="outline" className="shrink-0 text-[10px] font-normal">
+                          {model.custom ? '手工' : '上游'}
+                        </Badge>
+                        {isUnavailable ? (
+                          <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">
+                            不可用
+                          </Badge>
+                        ) : null}
                       </div>
                       {model.displayName ? (
                         <div className="mt-0.5 flex items-center gap-1.5">

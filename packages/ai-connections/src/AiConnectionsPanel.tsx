@@ -62,6 +62,10 @@ export interface AiConnectionsPanelProps {
     provider: AiConnectionsProvider,
     state: ProviderProductState,
   ) => void
+  onModelSelectionChange?: (
+    provider: AiConnectionsProvider,
+    modelIds: string[],
+  ) => void
 }
 
 export function AiConnectionsPanel({
@@ -74,6 +78,7 @@ export function AiConnectionsPanel({
   providerLoadError,
   serviceAccessGranted = false,
   onProviderStateChange,
+  onModelSelectionChange,
 }: AiConnectionsPanelProps) {
   const [keys, setKeys] = useState<GatewayKeyRecord[]>([])
   const [keysLoading, setKeysLoading] = useState(true)
@@ -83,6 +88,9 @@ export function AiConnectionsPanel({
   const [keyError, setKeyError] = useState<string>()
   const [connectionStates, setConnectionStates] = useState<Record<string, ProviderConnectionState>>({})
   const [models, setModels] = useState<AiGatewayModel[]>([])
+  const [selectedModelIds, setSelectedModelIds] = useState<
+    Partial<Record<AiConnectionsProvider, string[]>>
+  >({})
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
   const [baseUrlInputs, setBaseUrlInputs] = useState<Record<string, string>>({})
@@ -129,6 +137,26 @@ export function AiConnectionsPanel({
       ]),
     ))
   }, [providerSummariesInput])
+
+  useEffect(() => {
+    setSelectedModelIds((current) => {
+      const next = { ...current }
+      let changed = false
+      for (const [provider, product] of Object.entries(providerProducts) as Array<[
+        AiConnectionsProvider,
+        AiProviderSummary | undefined,
+      ]>) {
+        if (!product) continue
+        const ids = product.selectedModels.map((model) => model.id)
+        const previous = current[provider]
+        if (!previous || previous.join('\u0000') !== ids.join('\u0000')) {
+          next[provider] = ids
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [providerProducts])
 
   useEffect(() => {
     let active = true
@@ -559,6 +587,15 @@ export function AiConnectionsPanel({
     }
   }
 
+  const handleModelSelectionChange = useCallback((
+    provider: AiConnectionsProvider,
+    modelIds: string[],
+  ) => {
+    const ids = [...new Set(modelIds)]
+    setSelectedModelIds((current) => ({ ...current, [provider]: ids }))
+    onModelSelectionChange?.(provider, ids)
+  }, [onModelSelectionChange])
+
   const createKey = async () => {
     if (!serviceAccessGranted) return
     setCreatingKey(true)
@@ -632,11 +669,20 @@ export function AiConnectionsPanel({
               Provider 状态读取失败：{providerLoadError}
             </p>
           ) : null}
-          {PROVIDERS.filter((definition) => definition.id === (selectedProvider ?? 'openai')).map((definition) => (
+          {PROVIDERS.filter((definition) => definition.id === (selectedProvider ?? 'openai')).map((definition) => {
+            const providerProduct = effectiveProviderProducts[definition.id]
+            const providerModels = mergeProviderModelCatalog(
+              models.filter((model) => model.provider === definition.id),
+              providerProduct?.selectedModels ?? [],
+            )
+            const providerSelectedModelIds = selectedModelIds[definition.id]
+              ?? providerProduct?.selectedModels.map((model) => model.id)
+              ?? []
+            return (
             <AiProviderCard
               key={definition.id}
               definition={definition}
-              product={effectiveProviderProducts[definition.id]}
+              product={providerProduct}
               status={connectionStates[definition.id] ?? 'unknown'}
               accountLabel={providerSummariesInput[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
@@ -646,7 +692,8 @@ export function AiConnectionsPanel({
               disabled={!serviceAccessGranted}
               error={providerErrors[definition.id]}
               quota={quotas[definition.id]}
-              models={models.filter((model) => model.provider === definition.id)}
+              models={providerModels}
+              selectedModelIds={providerSelectedModelIds}
               onApiKeyChange={(value) => setApiKeyInputs((current) => ({
                 ...current,
                 [definition.id]: value,
@@ -677,9 +724,11 @@ export function AiConnectionsPanel({
               onAddModel={() => openModelEditor(definition.id)}
               onEditModel={(model) => openModelEditor(definition.id, model)}
               onDeleteModel={(model) => void deleteProviderModel(definition.id, model)}
+              onModelSelectionChange={handleModelSelectionChange}
               onDismissError={() => setProviderError(definition.id)}
             />
-          ))}
+            )
+          })}
       </section>
 
       {modelEditor ? (
@@ -954,6 +1003,26 @@ function mergeDiscoveredModels(
     } else if (model.displayName && !merged[index].displayName) {
       merged[index] = { ...merged[index], displayName: model.displayName }
     }
+  }
+  return merged
+}
+
+function mergeProviderModelCatalog(
+  catalog: AiGatewayModel[],
+  selectedModels: AiGatewayModel[],
+): AiGatewayModel[] {
+  const merged = [...catalog]
+  for (const selectedModel of selectedModels) {
+    const index = merged.findIndex((model) => model.id === selectedModel.id)
+    if (index === -1) {
+      merged.push(selectedModel)
+      continue
+    }
+    merged[index] = compactModel({
+      ...merged[index],
+      ...selectedModel,
+      displayName: merged[index].displayName ?? selectedModel.displayName,
+    })
   }
   return merged
 }
