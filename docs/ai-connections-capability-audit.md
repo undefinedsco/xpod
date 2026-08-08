@@ -8,14 +8,14 @@
 
 ## 结论
 
-Xpod 目前不是“什么都没做”，而是**网关内核明显领先于管理产品**：标准协议、Pod 凭据、模型投影、Gateway Key、四类编码客户端配置已有真实代码；但 Provider 管理、认证、多账号、连接验证、运行观测、桌面快速操作等产品闭环远弱于 CC Switch 和 OpenCodex。
+Xpod 已完成 Provider-first 的 AI Connections 主链路：Provider/Offering/Auth Mode 正交建模、Pod 多凭据池、聚合模型发现、凭据级连接测试、标准 Gateway 路由和统一管理界面已经贯通。与 CC Switch 和 OpenCodex 的主要差距转为自定义 Provider、运行观测、成本统计、自动故障转移策略和桌面快捷操作。
 
 当前最严重的四个认知偏差：
 
 1. “浏览器登录”大部分实际是打开厂商控制台后粘贴 API Key，不是 OAuth。
-2. “添加 Connection”只能定位到固定列表中第一个未配置项，不能创建自定义 Provider。
+2. “添加 Connection”现在会在供应商下新增独立凭据；自定义 Provider 仍未形成产品闭环。
 3. “额度”只有 Kimi、DeepSeek 可真实查询；OpenAI、Anthropic、百炼返回 `unsupported`。
-4. 模型拉取和自定义模型已存在，但缺少连接健康、真实推理验证、延迟、TTFB、使用量和成本闭环。
+4. 模型拉取、凭据级 `/models` 连接验证和自定义模型已存在，但仍缺少最小推理、延迟、TTFB、使用量和成本闭环。
 
 因此下一阶段不应继续围绕页面细节零散补功能，应先把 AI Connections 定义为：
 
@@ -29,15 +29,15 @@ Xpod 目前不是“什么都没做”，而是**网关内核明显领先于管�
 | 自定义 Provider | 完整，支持通用兼容 Provider | 完整，可增删改、禁用、设默认 | 数据模型可表达，UI 当前以固定目录为主 | Registry 类型允许 string，但 UI/安全 Base URL/运行时均固定 | **缺失产品闭环** |
 | Base URL | 可编辑 | 可编辑 | 可编辑并写 Pod | 当前 UI 可随 API Key 保存 Base URL，但只允许注册的安全地址 | **部分** |
 | 出站代理 | 全局 outbound proxy | Provider/全局 proxy | schema 有 `proxyUrl`，旧管理尚未完整暴露 | 无 AI Connections 产品入口 | **缺失** |
-| API Key | 完整 | 完整，多 Key Pool、启停和 alias | 完整，写 Pod credential | 单 Provider 单当前凭据；可更新/断开 | **部分** |
-| OAuth / 浏览器登录 | Claude/Codex/Gemini 等官方登录 | 7 类 OAuth、多账号、切换、退出 | 无统一 Provider OAuth 产品 | 当前无可用公开 callback；多为打开控制台粘 Key | **严重缺失** |
-| 多账号 / 多凭据 | Provider 配置可复制/排序 | 完整，多账号与 Key Pool | schema 可扩展，UI未形成产品 | 单 Provider 单活动连接视图 | **缺失** |
+| API Key | 完整 | 完整，多 Key Pool、启停和 alias | 完整，写 Pod credential | Provider 下支持多 Key、标签、优先级、启停、测试和撤销 | **具备** |
+| OAuth / 浏览器登录 | Claude/Codex/Gemini 等官方登录 | 7 类 OAuth、多账号、切换、退出 | 无统一 Provider OAuth 产品 | Kimi OAuth 状态机与凭据共存已实现；真实签发 client id 待外部验收 | **部分** |
+| 多账号 / 多凭据 | Provider 配置可复制/排序 | 完整，多账号与 Key Pool | schema 可扩展，UI未形成产品 | 同一 Provider 支持 OAuth/API Key 多凭据、排序和独立状态 | **具备** |
 | 凭据归属 | 本机 SQLite/目标配置文件 | 本机 auth JSON/account store | 用户 Pod | 用户 Pod + Solid 权限 | **Xpod 优势** |
 | 模型发现 | `/v1/models` + OAuth backend | live discovery、缓存、allowlist | 在线拉取并写 Pod | 服务端 refresh，五家适配器 | **基本具备** |
 | Pick 后对应用可见 | 主要按客户端配置切换 | selectedModels / visible models | enabled 模型 | Gateway `/v1/models` 只投影选中模型，并保留失效状态 | **Xpod 优势** |
 | 自定义模型 | 支持 | 支持 | 增删改、能力标注 | 当前本地工作树已有增删改接口和 UI | **具备，待验收** |
 | 模型元数据 | 基础模型与定价 | context/capabilities/custom caps | 基础 capabilities | registry 有能力字段，发现结果较薄 | **部分** |
-| 连接测试 | Fetch Models + Stream Check | `/models` 测试为主 | Fetch Models 被当作连接验证 | 只有发现模型；没有真实最小推理测试 | **缺失** |
+| 连接测试 | Fetch Models + Stream Check | `/models` 测试为主 | Fetch Models 被当作连接验证 | 对指定已存凭据执行真实 `/models` 探测，不接收临时明文 Key | **基本具备** |
 | 延迟 / TTFB | 完整 | Provider test/health | 无 | 无 | **缺失** |
 | 故障转移 / 断路器 | 完整、按客户端队列 | combos/pools/sidecars 等路由能力 | 无管理面 | Router 有候选与 session affinity，UI 无策略管理 | **底层部分，产品缺失** |
 | 标准 API | Anthropic、Chat、Responses 转换 | Responses、Chat、Messages 等 | 主要消费 Xpod/runtime | `/v1/responses`、`/v1/chat/completions`、`/v1/messages`、`/v1/models` | **具备** |
@@ -127,8 +127,8 @@ AI Connections 应成为这套能力的升级和统一宿主；Linx 后续只消
 ### 目前只是部分或表象
 
 - 固定 Provider：前端固定 7 个条目，无法新增自定义 Provider；
-- OAuth：callback 明确不接受 browser-assisted API key，当前 Provider UI 的“登录”多数只是跳控制台；
-- Connect 验证：模型发现成功不代表 Chat/Responses/Messages 真实可用；
+- OAuth：Kimi OAuth 已实现 begin/poll/refresh/disconnect 和服务端 integration provenance 校验，但真实 Xpod/Moonshot 签发的 client id 尚未验收；
+- Connect 验证：指定凭据的 `/models` 可真实验证，但仍不等于 Chat/Responses/Messages 最小推理已验证；
 - 额度：OpenAI、Anthropic、百炼无真实 API，产品只能显示 unsupported；
 - Base URL：可编辑但受 registry safe URL 限制，不能表达任意兼容网关；
 - 客户端配置：代码完整，但需要在真实安装的四个客户端上验收；
@@ -140,17 +140,17 @@ AI Connections 应成为这套能力的升级和统一宿主；Linx 后续只消
 ### P0：先形成可信产品闭环
 
 1. **统一 Provider 数据模型**：preset 与 custom 使用同一 descriptor；将 Provider、Offering、Auth Mode、Protocol、Endpoint 正交建模，支持 models URL、quota strategy、capabilities。
-2. **真正的新增 Connection**：加号创建 Provider/连接，而不是跳到第一个未配置项。
-3. **修正认证语义**：明确区分“API Key”“打开控制台获取 Key”“OAuth/Device Code”；禁止把前两者叫浏览器登录。
+2. **真正的新增 Connection（已实现）**：加号在 Provider 下创建独立凭据，并支持多凭据管理。
+3. **修正认证语义（已实现）**：明确区分 API Key、OAuth 与 Offering；Token Plan/Coding Plan 不再被当作认证方式。
 4. **真实连接验证**：保存前后执行最小 `/models` + 最小推理检查；展示延迟、TTFB、协议与失败原因。
-5. **吸收 LinX 模型管理**：API Key、Base URL、在线拉取、模型增删改、Pod CRUD 全部以 AI Connections 为唯一实现。
+5. **吸收 LinX 模型管理（主链路已实现）**：API Key、在线拉取、模型增删改、Pod CRUD 统一进入 AI Connections；任意自定义 Base URL 仍受安全策略限制。
 6. **发布态验收**：自定义模型、Gateway Key、四客户端 Apply、Kimi/DeepSeek 额度必须用真实本地 Xpod + Pod 登录验证。
 
 ### P1：达到可替代 CC Switch/OpenCodex 的日常管理水平
 
 1. Provider preset catalog，至少覆盖 OpenAI-compatible、Anthropic-compatible、Google、Azure、OpenRouter、Ollama/local、forward gateway；
-2. 多凭据/多账号、启停、标签、选择与轮换策略；
-3. OAuth 状态机：begin、browser/device、callback/poll、refresh、logout、expired；
+2. 多凭据/多账号的自动轮换、权重和可视化 fallback 策略（基础启停、标签、优先级已实现）；
+3. 扩展更多供应商 OAuth；Kimi 已具备 begin/device poll、refresh、logout/expired 基础状态机；
 4. 健康状态、延迟、TTFB、最近错误、自动重试；
 5. 请求日志、Token usage、按 Provider/Model/时间统计、成本估算；
 6. 额度 adapter/plugin，unsupported/unknown/error 清晰区分；
