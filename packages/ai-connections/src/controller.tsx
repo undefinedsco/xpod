@@ -9,8 +9,11 @@ import {
   createAiConnectionsClient,
   normalizeAiConnectionsThrownError,
   type AiConnectionsClient,
+  type AiConnectionsMode,
   type AiConnectionsProvider,
   type AiProviderConnectionSummary,
+  type AiProviderCredentialSummary,
+  type AiProviderSummary,
 } from './ai-connections-client'
 import type { AiClientConfigurationBridge } from './AiClientConfigurationSection'
 import { parseAiConnectionsServiceAccess } from './service-access'
@@ -65,7 +68,7 @@ export interface AiConnectionsController {
   readonly selectedProvider: AiConnectionsProvider
   readonly searchQuery: string
   readonly providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>>
-  readonly providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
+  readonly providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   readonly providerLoadError?: string
   readonly serviceAccessState: ServiceAccessState
   selectProvider(provider: AiConnectionsProvider): void
@@ -94,7 +97,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   let selectedProvider: AiConnectionsProvider = 'openai'
   let searchQuery = ''
   let providerStates: Partial<Record<AiConnectionsProvider, ProviderProductState>> = {}
-  let providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> = {}
+  let providerSummaries: Partial<Record<AiConnectionsProvider, AiProviderSummary>> = {}
   let providerLoadError: string | undefined
   let providerLoadGeneration = 0
   let providerLoadPromise: Promise<void> | undefined
@@ -159,11 +162,11 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       if (providerStates[provider] === state) return
       providerLoadGeneration += 1
       providerStates = { ...providerStates, [provider]: state }
-      const summary = durableSummaryFromProductState(provider, state)
-      if (summary) {
+      const product = durableProviderFromProductState(provider, state)
+      if (product) {
         providerSummaries = {
           ...providerSummaries,
-          [provider]: summary,
+          [provider]: product,
         }
       }
       notify()
@@ -258,13 +261,11 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       try {
         const summaries = await client.listProviders()
         if (generation !== providerLoadGeneration) return
-        providerSummaries = Object.fromEntries(
-          summaries.map((summary) => [summary.provider, summary]),
-        )
+        providerSummaries = Object.fromEntries(summaries.map((summary) => [summary.id, summary]))
         providerStates = Object.fromEntries(
           PROVIDERS.map((provider) => [
             provider.id,
-            productStateFromSummary(providerSummaries[provider.id]),
+            productStateFromProvider(providerSummaries[provider.id]),
           ]),
         )
         notify()
@@ -327,8 +328,8 @@ export function useProviderSummaries(
 ): Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> {
   return useSyncExternalStore(
     controller.subscribe,
-    () => controller.providerSummaries,
-    () => controller.providerSummaries,
+    () => legacySummariesFor(controller.providerSummaries),
+    () => legacySummariesFor(controller.providerSummaries),
   )
 }
 
@@ -348,38 +349,108 @@ export function useServiceAccessState(controller: AiConnectionsController): Serv
   )
 }
 
-function productStateFromSummary(
-  summary?: AiProviderConnectionSummary,
+function productStateFromProvider(
+  product?: AiProviderSummary,
 ): ProviderProductState {
-  if (!summary || summary.status === 'disconnected') return 'unconfigured'
-  if (summary.status === 'reauthRequired') return 'attention'
-  return summary.authMode === 'browserAssistedApiKey' ? 'configured' : 'connected'
+  if (!product || product.status === 'unconfigured' || product.status === 'unavailable') {
+    return 'unconfigured'
+  }
+  if (product.status === 'attention') return 'attention'
+  const credential = primaryCredential(product)
+  return credential?.authMode === 'oauth' || credential?.authMode === 'deviceCode'
+    ? 'connected'
+    : 'configured'
 }
 
-function durableSummaryFromProductState(
+const legacySummaryCache = new WeakMap<
+  Partial<Record<AiConnectionsProvider, AiProviderSummary>>,
+  Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
+>()
+
+function legacySummariesFor(
+  products: Partial<Record<AiConnectionsProvider, AiProviderSummary>>,
+): Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> {
+  const cached = legacySummaryCache.get(products)
+  if (cached) return cached
+  const summaries = Object.fromEntries(
+    Object.values(products).filter(isDefined).map((product) => [
+      product.id,
+      legacySummaryFromProviderProduct(product),
+    ]),
+  )
+  legacySummaryCache.set(products, summaries)
+  return summaries
+}
+
+function legacySummaryFromProviderProduct(product: AiProviderSummary): AiProviderConnectionSummary {
+  const credential = primaryCredential(product)
+  const status = product.status === 'available'
+    ? 'connected'
+    : product.status === 'attention'
+      ? 'reauthRequired'
+      : 'disconnected'
+  const credentialMode = credential?.authMode
+  return {
+    provider: product.id,
+    status,
+    authMode: credentialMode === 'oauth' || credentialMode === 'deviceCode'
+      ? 'deviceCodeOAuth'
+      : credentialMode
+        ? 'browserAssistedApiKey'
+        : undefined,
+    accountLabel: credential?.label,
+    expiresAt: credential?.expiresAt,
+    reauthRequired: status === 'reauthRequired' ? true : undefined,
+    credentialIri: credential?.id,
+    version: credential?.version,
+    connect: {
+      modes: connectModesFromProviderProduct(product),
+      configured: product.status !== 'unavailable',
+    },
+  }
+}
+
+function connectModesFromProviderProduct(product: AiProviderSummary): AiConnectionsMode[] {
+  const modes = [
+    ...product.offerings.flatMap((offering) => offering.authModes ?? []),
+    ...product.credentials.map((credential) => credential.authMode),
+  ].map((authMode): AiConnectionsMode | undefined => (
+    authMode === 'oauth' || authMode === 'deviceCode'
+      ? 'deviceCodeOAuth'
+      : authMode === 'apiKey' || authMode === 'local'
+        ? 'browserAssistedApiKey'
+        : undefined
+  )).filter(isDefined)
+  return modes.length > 0 ? [...new Set(modes)] : ['browserAssistedApiKey']
+}
+
+function primaryCredential(product: AiProviderSummary): AiProviderCredentialSummary | undefined {
+  return product.credentials.find((credential) => credential.enabled) ?? product.credentials[0]
+}
+
+function durableProviderFromProductState(
   provider: AiConnectionsProvider,
   state: ProviderProductState,
-): AiProviderConnectionSummary | undefined {
+): AiProviderSummary | undefined {
   if (state === 'configured') {
     return {
-      provider,
-      status: 'connected',
-      authMode: 'browserAssistedApiKey',
-      connect: {
-        modes: ['browserAssistedApiKey'],
-        configured: true,
-      },
+      id: provider,
+      name: providerName(provider),
+      offerings: [],
+      credentials: [durableCredential(provider, 'apiKey')],
+      selectedModels: [],
+      status: 'available',
     }
   }
 
   if (state === 'connected') {
     return {
-      provider,
-      status: 'connected',
-      connect: {
-        modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
-        configured: true,
-      },
+      id: provider,
+      name: providerName(provider),
+      offerings: [],
+      credentials: [durableCredential(provider, 'deviceCode')],
+      selectedModels: [],
+      status: 'available',
     }
   }
 
@@ -392,13 +463,38 @@ function durableSummaryFromProductState(
   }
 
   return {
-    provider,
-    status: 'disconnected',
-    connect: {
-      modes: ['browserAssistedApiKey'],
-      configured: false,
-    },
+    id: provider,
+    name: providerName(provider),
+    offerings: [],
+    credentials: [],
+    selectedModels: [],
+    status: 'unconfigured',
   }
+}
+
+function durableCredential(
+  provider: AiConnectionsProvider,
+  authMode: AiProviderCredentialSummary['authMode'],
+): AiProviderCredentialSummary {
+  return {
+    id: `${provider}:current`,
+    offeringId: authMode === 'deviceCode' || authMode === 'oauth'
+      ? 'official-subscription'
+      : 'api-platform',
+    authMode,
+    enabled: true,
+    priority: 0,
+    health: 'healthy',
+    version: 0,
+  }
+}
+
+function providerName(provider: AiConnectionsProvider): string {
+  return PROVIDERS.find((candidate) => candidate.id === provider)?.name ?? provider
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined
 }
 
 function errorMessage(error: unknown): string {

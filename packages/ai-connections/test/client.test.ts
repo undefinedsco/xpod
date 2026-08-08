@@ -60,17 +60,72 @@ describe('AI Connection management client', () => {
       'https://pod.example/api/ai/connections/providers',
       expect.objectContaining({ method: 'GET' }),
     )
-    expect(providers).toEqual([{
-      provider: 'kimi',
-      status: 'connected',
-      authMode: 'deviceCodeOAuth',
-      accountLabel: 'user@example.com',
-      connect: {
-        modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
-        configured: true,
-      },
+    expect(providers).toMatchObject([{
+      id: 'kimi',
+      name: 'Kimi',
+      credentials: [{
+        id: 'kimi:current',
+        offeringId: 'official-subscription',
+        authMode: 'deviceCode',
+        label: 'user@example.com',
+        enabled: true,
+        priority: 0,
+        health: 'healthy',
+        version: 0,
+      }],
+      status: 'available',
     }])
+    expect(providers[0]?.offerings).toEqual([])
+    expect(providers[0]?.selectedModels).toEqual([])
     expect(JSON.stringify(providers)).not.toMatch(/deployment|webId|metadata|secret/)
+  })
+
+  it('parses grouped Provider credentials without exposing secrets', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [{
+        id: 'bailian',
+        name: 'Alibaba Bailian',
+        status: 'available',
+        offerings: [
+          { id: 'pay-as-you-go', label: 'Pay as You Go', kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'] },
+          { id: 'coding-plan', label: 'Coding Plan', kind: 'codingPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
+          { id: 'token-plan', label: 'Token Plan', kind: 'tokenPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
+        ],
+        credentials: [
+          { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey', label: 'PAYG', enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...payg', version: 1, apiKey: 'sk-secret-payg' },
+          { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey', label: 'Coding', enabled: true, priority: 20, health: 'unknown', maskedHint: 'sk-...code', version: 2, encryptedSecret: 'ciphertext-coding' },
+          { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey', label: 'Token', enabled: false, priority: 30, health: 'expired', expiresAt: '2026-08-08T00:00:00.000Z', maskedHint: 'sk-...tokn', version: 3, accessToken: 'token-secret' },
+        ],
+        selectedModels: [
+          { id: 'qwen-max', provider: 'bailian', secret: 'model-secret' },
+        ],
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const providers = await client.listProviders()
+
+    expect(providers).toMatchObject([{
+      id: 'bailian',
+      name: 'Alibaba Bailian',
+      offerings: [
+        { id: 'pay-as-you-go' },
+        { id: 'coding-plan' },
+        { id: 'token-plan' },
+      ],
+      credentials: [
+        { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey' },
+        { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey' },
+        { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey' },
+      ],
+      selectedModels: [{ id: 'qwen-max', provider: 'bailian' }],
+      status: 'available',
+    }])
+    expect(JSON.stringify(providers)).not.toMatch(/encryptedSecret|accessToken|sk-secret|ciphertext|token-secret|model-secret/)
   })
 
   it('discovers the AI Connection service-access descriptor with authenticated fetch', async () => {

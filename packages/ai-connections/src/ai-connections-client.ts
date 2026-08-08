@@ -116,6 +116,42 @@ export interface ProviderModelDiscovery {
   source: string
 }
 
+export interface AiProviderOffering {
+  id: string
+  label?: string
+  kind?: string
+  authModes?: Array<'oauth' | 'deviceCode' | 'apiKey' | 'local'>
+  runtimeProviderIds?: string[]
+}
+
+export interface AiProviderCredentialSummary {
+  id: string
+  offeringId: string
+  authMode: 'oauth' | 'deviceCode' | 'apiKey' | 'local'
+  label?: string
+  enabled: boolean
+  priority: number
+  health: 'healthy' | 'expired' | 'invalid' | 'unknown'
+  maskedHint?: string
+  expiresAt?: string
+  version: number
+}
+
+export interface AiProviderSummary {
+  id: AiConnectionsProvider
+  name: string
+  offerings: AiProviderOffering[]
+  credentials: AiProviderCredentialSummary[]
+  selectedModels: AiGatewayModel[]
+  status: 'unconfigured' | 'available' | 'attention' | 'unavailable'
+}
+
+export type AiProviderSummaryStatus =
+  | 'unconfigured'
+  | 'available'
+  | 'attention'
+  | 'unavailable'
+
 export interface CreatedGatewayKey {
   plaintext: string
   record: GatewayKeyRecord
@@ -142,7 +178,7 @@ export interface AiConnectionsClient {
   readonly webId: string
   readonly apiBase: string
   getServiceAccess(): Promise<unknown>
-  listProviders(): Promise<AiProviderConnectionSummary[]>
+  listProviders(): Promise<AiProviderSummary[]>
   listModels(): Promise<AiGatewayModel[]>
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
   createGatewayKey(input: { name?: string; scopes?: string[]; expiresAt?: string }): Promise<CreatedGatewayKey>
@@ -234,9 +270,7 @@ export function createAiConnectionsClient({
 
     async listProviders() {
       const payload = await request<{ data?: unknown[] }>('/api/ai/connections/providers', 'GET')
-      return Array.isArray(payload.data)
-        ? payload.data.map(parseProviderSummary).filter(isDefined)
-        : []
+      return Array.isArray(payload.data) ? parseProviderSummaries(payload.data) : []
     },
 
     async listModels() {
@@ -630,8 +664,14 @@ function isPlatformModelId(modelId: string): boolean {
 
 function providerValue(value: unknown): AiConnectionsProvider | undefined {
   if (typeof value !== 'string') return undefined
-  const normalized = value.toLowerCase()
-  if (normalized === 'alibaba' || normalized === 'dashscope') return 'bailian'
+  const normalized = value.toLowerCase().trim()
+  if (
+    normalized === 'alibaba'
+    || normalized === 'dashscope'
+    || normalized === 'alibaba-bailian'
+    || normalized === 'bailian-coding-plan'
+    || normalized === 'bailian-token-plan'
+  ) return 'bailian'
   return (AI_CONNECTIONS_PROVIDERS as readonly string[]).includes(normalized)
     ? normalized as AiConnectionsProvider
     : undefined
@@ -646,7 +686,22 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-function parseProviderSummary(value: unknown): AiProviderConnectionSummary | undefined {
+function parseProviderSummaries(values: unknown[]): AiProviderSummary[] {
+  const grouped = new Map<AiConnectionsProvider, AiProviderSummary>()
+  for (const value of values) {
+    const summary = parseProviderSummary(value)
+    if (!summary) continue
+    const current = grouped.get(summary.id)
+    grouped.set(summary.id, current ? mergeProviderSummaries(current, summary) : summary)
+  }
+  return [...grouped.values()]
+}
+
+function parseProviderSummary(value: unknown): AiProviderSummary | undefined {
+  return parseGroupedProviderSummary(value) ?? parseLegacyProviderSummary(value)
+}
+
+function parseLegacyProviderSummary(value: unknown): AiProviderSummary | undefined {
   if (!isRecord(value)
     || typeof value.provider !== 'string'
     || !isProviderStatus(value.status)
@@ -656,22 +711,207 @@ function parseProviderSummary(value: unknown): AiProviderConnectionSummary | und
     || typeof value.connect.configured !== 'boolean') {
     return undefined
   }
-  assertProvider(value.provider)
-  return compactObject({
-    provider: value.provider,
+  const provider = providerValue(value.provider)
+  if (!provider) return undefined
+  const credential = legacyCredentialFromSummary(value, provider)
+  return {
+    id: provider,
+    name: providerDisplayName(provider),
+    offerings: [],
+    credentials: credential ? [credential] : [],
+    selectedModels: [],
+    status: providerProductStatusFromLegacy(value.status),
+  }
+}
+
+function parseGroupedProviderSummary(value: unknown): AiProviderSummary | undefined {
+  if (!isRecord(value)) return undefined
+  const provider = providerValue(value.id) ?? providerValue(value.provider)
+  if (!provider || !isProviderSummaryStatus(value.status)) return undefined
+  const offerings = arrayValue(value.offerings, parseProviderOffering)
+  const credentials = arrayValue(value.credentials, parseProviderCredentialSummary)
+  const selectedModels = arrayValue(value.selectedModels, parseGatewayModel)
+  return {
+    id: provider,
+    name: stringValue(value.name) ?? providerDisplayName(provider),
+    offerings,
+    credentials,
+    selectedModels,
     status: value.status,
-    authMode: stringValue(value.authMode),
-    accountLabel: stringValue(value.accountLabel),
+  }
+}
+
+function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return undefined
+  const authModes = arrayValue(value.authModes, offeringAuthModeValue)
+  return compactObject({
+    id: value.id,
+    label: stringValue(value.label),
+    kind: stringValue(value.kind),
+    authModes,
+    runtimeProviderIds: stringListValue(value.runtimeProviderIds),
+  }) as unknown as AiProviderOffering
+}
+
+function parseProviderCredentialSummary(value: unknown): AiProviderCredentialSummary | undefined {
+  if (!isRecord(value)
+    || typeof value.id !== 'string'
+    || !value.id
+    || typeof value.offeringId !== 'string'
+    || !value.offeringId
+    || !isOfferingAuthMode(value.authMode)
+    || typeof value.enabled !== 'boolean'
+    || typeof value.priority !== 'number'
+    || !Number.isFinite(value.priority)
+    || !isCredentialHealth(value.health)
+    || typeof value.version !== 'number'
+    || !Number.isFinite(value.version)) {
+    return undefined
+  }
+  return compactObject({
+    id: value.id,
+    offeringId: value.offeringId,
+    authMode: value.authMode,
+    label: stringValue(value.label),
+    enabled: value.enabled,
+    priority: value.priority,
+    health: value.health,
+    maskedHint: stringValue(value.maskedHint),
     expiresAt: stringValue(value.expiresAt),
-    reauthRequired: typeof value.reauthRequired === 'boolean' ? value.reauthRequired : undefined,
-    credentialIri: stringValue(value.credentialIri),
-    version: typeof value.version === 'number' ? value.version : undefined,
-    connect: compactObject({
-      modes: [...value.connect.modes],
-      configured: value.connect.configured,
-      message: stringValue(value.connect.message),
-    }),
-  }) as unknown as AiProviderConnectionSummary
+    version: value.version,
+  }) as unknown as AiProviderCredentialSummary
+}
+
+function mergeProviderSummaries(
+  left: AiProviderSummary,
+  right: AiProviderSummary,
+): AiProviderSummary {
+  const credentials = uniqueBy(
+    [...left.credentials, ...right.credentials],
+    (credential) => credential.id,
+  )
+  const offerings = uniqueBy(
+    [...left.offerings, ...right.offerings],
+    (offering) => offering.id,
+  )
+  const selectedModels = uniqueBy(
+    [...left.selectedModels, ...right.selectedModels],
+    (model) => `${model.provider}:${model.id}`,
+  )
+  return {
+    id: left.id,
+    name: left.name ?? right.name,
+    offerings,
+    credentials,
+    selectedModels,
+    status: mergeProviderSummaryStatus(left.status, right.status),
+  }
+}
+
+function providerProductStatusFromLegacy(
+  status: AiProviderConnectionSummary['status'],
+): AiProviderSummary['status'] {
+  if (status === 'connected') return 'available'
+  if (status === 'reauthRequired') return 'attention'
+  return 'unconfigured'
+}
+
+function mergeProviderSummaryStatus(
+  left: AiProviderSummary['status'],
+  right: AiProviderSummary['status'],
+): AiProviderSummary['status'] {
+  if (left === 'available' || right === 'available') return 'available'
+  if (left === 'attention' || right === 'attention') return 'attention'
+  if (left === 'unconfigured' || right === 'unconfigured') return 'unconfigured'
+  return 'unavailable'
+}
+
+function legacyCredentialFromSummary(
+  value: Record<string, unknown>,
+  provider: AiConnectionsProvider,
+): AiProviderCredentialSummary | undefined {
+  if (value.status === 'disconnected') return undefined
+  const authMode = legacyCredentialAuthMode(value.authMode)
+  return compactObject({
+    id: stringValue(value.credentialIri) ?? `${provider}:current`,
+    offeringId: legacyOfferingId(authMode),
+    authMode,
+    label: stringValue(value.accountLabel),
+    enabled: value.status === 'connected',
+    priority: 0,
+    health: value.status === 'reauthRequired' || value.reauthRequired === true
+      ? 'expired'
+      : 'healthy',
+    maskedHint: stringValue(value.maskedHint),
+    expiresAt: stringValue(value.expiresAt),
+    version: typeof value.version === 'number' ? value.version : 0,
+  }) as AiProviderCredentialSummary
+}
+
+function legacyCredentialAuthMode(value: unknown): AiProviderCredentialSummary['authMode'] {
+  if (value === 'deviceCodeOAuth') return 'deviceCode'
+  return 'apiKey'
+}
+
+function legacyOfferingId(authMode: AiProviderCredentialSummary['authMode']): string {
+  return authMode === 'deviceCode' || authMode === 'oauth'
+    ? 'official-subscription'
+    : 'api-platform'
+}
+
+function offeringAuthModeValue(value: unknown): AiProviderCredentialSummary['authMode'] | undefined {
+  return isOfferingAuthMode(value) ? value : undefined
+}
+
+function isOfferingAuthMode(value: unknown): value is AiProviderCredentialSummary['authMode'] {
+  return value === 'oauth'
+    || value === 'deviceCode'
+    || value === 'apiKey'
+    || value === 'local'
+}
+
+function isCredentialHealth(value: unknown): value is AiProviderCredentialSummary['health'] {
+  return value === 'healthy'
+    || value === 'expired'
+    || value === 'invalid'
+    || value === 'unknown'
+}
+
+function isProviderSummaryStatus(value: unknown): value is AiProviderSummary['status'] {
+  return value === 'unconfigured'
+    || value === 'available'
+    || value === 'attention'
+    || value === 'unavailable'
+}
+
+function arrayValue<T>(
+  value: unknown,
+  parseItem: (item: unknown) => T | undefined,
+): T[] {
+  if (!Array.isArray(value)) return []
+  return value.map(parseItem).filter(isDefined)
+}
+
+function uniqueBy<T>(values: T[], keyFor: (value: T) => string): T[] {
+  const seen = new Set<string>()
+  const result: T[] = []
+  for (const value of values) {
+    const key = keyFor(value)
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(value)
+  }
+  return result
+}
+
+function providerDisplayName(provider: AiConnectionsProvider): string {
+  switch (provider) {
+    case 'openai': return 'OpenAI'
+    case 'anthropic': return 'Anthropic'
+    case 'kimi': return 'Kimi'
+    case 'bailian': return 'Alibaba Bailian'
+    case 'deepseek': return 'DeepSeek'
+  }
 }
 
 function parseCredential(value: unknown): AiConnectionsCredential | undefined {
@@ -684,12 +924,13 @@ function parseCredential(value: unknown): AiConnectionsCredential | undefined {
     || typeof value.status !== 'string') {
     return undefined
   }
-  assertProvider(value.provider)
+  const provider = providerValue(value.provider)
+  if (!provider) return undefined
   return compactObject({
     id: value.id,
     credentialIri: value.credentialIri,
     webId: value.webId,
-    provider: value.provider,
+    provider,
     authMode: value.authMode,
     status: value.status,
     accountLabel: stringValue(value.accountLabel),

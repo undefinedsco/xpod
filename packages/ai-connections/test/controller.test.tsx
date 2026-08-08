@@ -350,6 +350,57 @@ describe('AI Connection controller host.solid integration', () => {
     ).toHaveLength(1)
   })
 
+  it('groups Provider credentials into one controller summary per product', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/ai/connections/providers')) {
+        return new Response(JSON.stringify({
+          data: [{
+            id: 'bailian',
+            name: 'Alibaba Bailian',
+            status: 'available',
+            offerings: [
+              { id: 'pay-as-you-go', label: 'Pay as You Go', kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'] },
+              { id: 'coding-plan', label: 'Coding Plan', kind: 'codingPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
+              { id: 'token-plan', label: 'Token Plan', kind: 'tokenPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
+            ],
+            credentials: [
+              { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey', label: 'PAYG', enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...payg', version: 1, encryptedSecret: 'ciphertext-payg' },
+              { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey', label: 'Coding', enabled: true, priority: 20, health: 'unknown', maskedHint: 'sk-...code', version: 2, apiKey: 'sk-secret-coding' },
+              { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey', label: 'Token', enabled: false, priority: 30, health: 'expired', maskedHint: 'sk-...tokn', version: 3, refreshToken: 'refresh-secret' },
+            ],
+            selectedModels: [{ id: 'qwen-max', provider: 'bailian', apiKey: 'model-secret' }],
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }) as unknown as typeof fetch
+    const controller = createAiConnectionsController(hostFromSolid(solidCapability({
+      session: {
+        fetch: fetcher,
+        getSnapshot: () => ({
+          status: 'authenticated',
+          webId: WEB_ID,
+        }),
+        subscribe: () => () => undefined,
+      },
+    })))
+
+    await controller.loadProviders()
+
+    expect(controller.providerStates.bailian).toBe('configured')
+    expect(controller.providerSummaries.bailian?.credentials).toHaveLength(3)
+    expect(controller.providerSummaries.bailian).toMatchObject({
+      id: 'bailian',
+      name: 'Alibaba Bailian',
+      status: 'available',
+    })
+    expect(JSON.stringify(controller.providerSummaries.bailian)).not.toMatch(/encryptedSecret|refreshToken|ciphertext|sk-secret|model-secret/)
+  })
+
   it('revokes service access through the generic host permission capability', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
