@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { aiProviderResource, credentialResource } from '@undefineds.co/models';
+import { aiModelResource, aiProviderResource, credentialResource } from '@undefineds.co/models';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
@@ -50,8 +50,7 @@ describe('XpodAiConnectionsPodStore', () => {
       select: () => ({
         from: (resource: unknown) => ({
           execute: async () => {
-            expect(resource).toBe(credentialResource);
-            return rows;
+            return resource === credentialResource ? rows : [];
           },
         }),
       }),
@@ -63,7 +62,7 @@ describe('XpodAiConnectionsPodStore', () => {
       webId: WEB_ID,
     }).listProviders();
 
-    expect(database.init).toHaveBeenCalledWith(credentialResource, aiProviderResource);
+    expect(database.init).toHaveBeenCalledWith(credentialResource, aiProviderResource, aiModelResource);
     expect(providers.find((provider) => provider.id === 'openai')).toMatchObject({
       status: 'available',
       credentials: [
@@ -113,7 +112,11 @@ describe('XpodAiConnectionsPodStore', () => {
       priority: 5,
     }) as { id: string; maskedHint: string; version: number };
     expect(created).toMatchObject({ maskedHint: 'sk-...alue', version: 1 });
-    expect(JSON.stringify(rows.get(created.id))).toContain('sk-secret-value');
+    expect(JSON.stringify(rows.get(created.id))).not.toContain('sk-secret-value');
+    await expect(store.readCredentialSecret!('deepseek', created.id)).resolves.toEqual({
+      type: 'apiKey',
+      apiKey: 'sk-secret-value',
+    });
 
     const updated = await store.updateProviderCredential!('deepseek', created.id, {
       expectedVersion: 1,
@@ -131,5 +134,77 @@ describe('XpodAiConnectionsPodStore', () => {
     await store.deleteProviderCredential!('deepseek', created.id);
     expect(database.deleteById).toHaveBeenCalledWith(credentialResource, created.id);
     expect(rows.has(created.id)).toBe(false);
+  });
+
+  it('persists discovered models and provider selection while retaining missing selected models', async () => {
+    const providerId = aiProviderResource.buildId({ id: 'deepseek' });
+    const selectedModelId = 'deepseek.ttl#deepseek-reasoner';
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map()],
+      [aiProviderResource, new Map([[providerId, {
+        id: providerId,
+        displayName: 'DeepSeek',
+        hasModel: [selectedModelId],
+      }]])],
+      [aiModelResource, new Map([[selectedModelId, {
+        id: selectedModelId,
+        displayName: 'DeepSeek Reasoner',
+        isProvidedBy: providerId,
+        status: 'active',
+      }]])],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    await store.saveDiscoveredModels!('deepseek', 'credentials.ttl#deepseek-primary', [
+      { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+    ]);
+
+    await expect(store.listModels!()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'deepseek-chat', availability: 'available' }),
+      expect.objectContaining({ id: 'deepseek-reasoner', availability: 'unavailable' }),
+    ]));
+
+    let provider = (await store.listProviders()).find((item) => item.id === 'deepseek')!;
+    expect(provider.selectedModels).toEqual([
+      expect.objectContaining({ id: 'deepseek-reasoner', availability: 'unavailable' }),
+    ]);
+
+    await store.saveModelSelection!('deepseek', ['deepseek-chat']);
+    provider = (await store.listProviders()).find((item) => item.id === 'deepseek')!;
+    expect(provider.selectedModels).toEqual([
+      expect.objectContaining({ id: 'deepseek-chat', displayName: 'DeepSeek Chat', availability: 'available' }),
+    ]);
+    expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
+      'deepseek.ttl#deepseek-chat',
+    ]);
   });
 });

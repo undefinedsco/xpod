@@ -73,6 +73,7 @@ export interface AiClientConfigurationCapability {
 
 export interface AiConnectionsPodStore {
   listProviders(): Promise<unknown[]>;
+  listModels?(): Promise<unknown[]>;
   createApiKeyCredential?(provider: string, input: {
     offeringId?: string;
     apiKey: string;

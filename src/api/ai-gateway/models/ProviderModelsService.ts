@@ -90,6 +90,42 @@ export class ProviderModelsService {
     };
   }
 
+  public async listFromSecret(input: {
+    webId: string;
+    provider: string;
+    credentialId: string;
+    apiKey: string;
+    baseUrl?: string;
+    signal?: AbortSignal;
+  }): Promise<ProviderModelDiscovery> {
+    const provider = normalizeProvider(input.provider);
+    const adapter = this.adapters.get(provider);
+    if (!adapter) throw new Error(`models_adapter_not_found:${provider}`);
+    const models = await adapter.fetch({
+      credential: {
+        id: input.credentialId,
+        credentialIri: input.credentialId,
+        webId: input.webId,
+        deployment: 'local',
+        provider,
+        authMode: 'apiKey',
+        status: 'active',
+        reauthRequired: false,
+        encryptedSecret: {} as never,
+        baseUrl: input.baseUrl,
+      },
+      secret: { type: 'apiKey', apiKey: input.apiKey },
+      signal: input.signal,
+    });
+    return {
+      provider,
+      credential: input.credentialId,
+      models,
+      observedAt: this.now().toISOString(),
+      source: `${provider}:/models`,
+    };
+  }
+
   private async listAcrossCredentials(input: {
     webId: string;
     deployment: GatewayDeployment;

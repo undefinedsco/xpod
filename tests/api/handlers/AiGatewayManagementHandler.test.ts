@@ -160,7 +160,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Authentication required' });
   });
 
-  it('returns 503 when the AI Connection service identity is unavailable', async () => {
+  it('uses the authenticated WebID for interactive service access when no service identity is configured', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       repository: new InMemoryGatewayAccessKeyRepository(),
@@ -173,8 +173,17 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }), res, {});
 
-    expect(res.statusCode).toBe(503);
-    expect(JSON.parse(res.body)).toEqual({ error: 'AI Connection service identity is unavailable' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      service: {
+        webId: WEB_ID,
+      },
+      resources: expect.arrayContaining([
+        expect.objectContaining({
+          url: 'https://id.example/alice/settings/credentials.ttl',
+        }),
+      ]),
+    });
   });
 
   it('publishes AI Connection service-access resources derived only from the authenticated WebID', async () => {

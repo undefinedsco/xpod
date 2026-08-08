@@ -91,6 +91,7 @@ export interface AiGatewayModel {
   id: string
   provider: AiConnectionsProvider
   displayName?: string
+  availability?: 'available' | 'unavailable'
   contextWindow?: number
   protocols?: string[]
   custom?: boolean
@@ -226,7 +227,12 @@ export interface AiConnectionsClient {
   deleteProviderCredential(provider: AiConnectionsProvider, credentialId: string): Promise<AiProviderCredentialSummary | undefined>
   testProviderCredential(provider: AiConnectionsProvider, input: TestProviderCredentialInput): Promise<Record<string, unknown>>
   quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
-  discoverModels(provider: AiConnectionsProvider): Promise<ProviderModelDiscovery>
+  discoverModels(provider: AiConnectionsProvider, input?: {
+    credentialId?: string
+    apiKey?: string
+    baseUrl?: string
+  }): Promise<ProviderModelDiscovery>
+  saveModelSelection?(provider: AiConnectionsProvider, modelIds: string[]): Promise<void>
   saveProviderModel(provider: AiConnectionsProvider, model: CustomProviderModel): Promise<CustomProviderModel[]>
   deleteProviderModel(provider: AiConnectionsProvider, modelId: string): Promise<CustomProviderModel[]>
 }
@@ -514,11 +520,11 @@ export function createAiConnectionsClient({
       )
     },
 
-    async discoverModels(provider) {
+    async discoverModels(provider, input) {
       const payload = await request<unknown>(
         `${providerPath(provider)}/models/refresh`,
         'POST',
-        {},
+        compactObject({ ...input }),
         { provider },
       )
       return parseModelDiscovery(payload, provider)

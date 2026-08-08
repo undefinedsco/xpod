@@ -212,7 +212,7 @@ type ConnectedCredentialDb = {
       where(condition: unknown): { execute(): Promise<Record<string, unknown>[]> };
     };
   };
-  findById<TRow>(resource: typeof credentialResource, id: string): Promise<TRow | null>;
+  findById<TRow>(resource: typeof credentialResource | typeof aiProviderResource, id: string): Promise<TRow | null>;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
     set(patch: unknown): {
@@ -301,12 +301,18 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
-    const rows = await this.dbForOwnerRows(input.webId, input.auth);
+    const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
+    const rows = (await this.selectCredentialRows(db, credential)).map(recordFromCredentialRow);
     const enabledProviderIds = new Set(this.providerIds.map(normalizeProvider));
     const filtered = rows
       .filter((record) => record.status === 'active')
       .filter((record) => normalizeProvider(record.provider) !== '')
       .filter((record) => providerAllowedByConfiguredIds(record.provider, enabledProviderIds));
+    const selectedModelsByProvider = new Map<string, string[]>();
+    await Promise.all([...new Set(filtered.map((record) => normalizeProvider(record.provider)))].map(async (provider) => {
+      const row = await db.findById<Record<string, unknown>>(aiProvider, aiProviderResource.buildId({ id: provider }));
+      selectedModelsByProvider.set(provider, modelIdsFromProviderRow(row));
+    }));
     return filtered
       .sort(compareCredentialRecords)
       .map((record) => ({
@@ -316,7 +322,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         authMode: record.authMode,
         enabled: record.enabled === false ? false : !record.reauthRequired,
         accountLabel: record.accountLabel,
-        models: modelsFromMetadata(record.metadata),
+        models: selectedModelsByProvider.get(normalizeProvider(record.provider))
+          ?? modelsFromMetadata(record.metadata),
         customModels: customModelsFromMetadata(record.metadata),
         defaultModel: defaultModelFromMetadata(record.metadata),
         priority: record.priority ?? 100,
@@ -327,6 +334,8 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
         metadata: {
           ...record.metadata,
+          models: selectedModelsByProvider.get(normalizeProvider(record.provider))
+            ?? modelsFromMetadata(record.metadata),
           offeringId: record.offeringId ?? (metadataFromRowValue(record.metadata)?.offeringId ?? undefined),
           priority: record.priority ?? 100,
           enabled: record.enabled ?? !record.reauthRequired,
@@ -589,6 +598,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<{
     db: ConnectedCredentialDb;
     credential: typeof credentialResource;
+    aiProvider: typeof aiProviderResource;
   }> {
     const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const credential = alias(this.credentialTemplate, 'credential');
@@ -596,7 +606,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
     await db.init?.(credential, aiProvider);
-    return { db, credential };
+    return { db, credential, aiProvider };
   }
 
   private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
@@ -2122,6 +2132,20 @@ function stringList(value: unknown): string[] {
 function modelsFromMetadata(metadata: Record<string, unknown> | undefined): string[] | undefined {
   const value = metadata?.models;
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
+}
+
+function modelIdsFromProviderRow(row: Record<string, unknown> | null | undefined): string[] {
+  const raw = row?.hasModel;
+  const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  return [...new Set(values.flatMap((value) => {
+    if (typeof value !== 'string' || !value.trim()) return [];
+    const fragment = value.includes('#') ? value.slice(value.lastIndexOf('#') + 1) : value;
+    try {
+      return [decodeURIComponent(fragment)];
+    } catch {
+      return [fragment];
+    }
+  }))];
 }
 
 function defaultModelFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {

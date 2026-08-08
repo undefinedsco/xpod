@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
@@ -34,8 +35,11 @@ import {
 } from '../service/AiClientConfigurationService';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
 
+const logger = getLoggerFor('AiGatewayManagementHandler');
+
 export interface AiGatewayManagementHandlerOptions {
-  repository: GatewayAccessKeyRepository;
+  /** Legacy persistent Gateway key storage. AI Connection routes do not need it. */
+  repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
@@ -56,20 +60,17 @@ export function registerAiGatewayManagementRoutes(
   options: AiGatewayManagementHandlerOptions,
 ): void {
   const now = options.now ?? (() => new Date());
-  const createKeyId = options.keyId ?? ((owner: string) => (
-    options.repository.createKeyId?.(owner, options.deployment) ?? createGatewayKeyId()
-  ));
   const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 64 * 1024;
 
   server.get('/api/applets/service-access/ai-connections', async (request, response) => {
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
-    if (!options.servicePrincipal) {
-      sendJson(response, 503, { error: 'AI Connection service identity is unavailable' });
-      return;
-    }
-    const service = await options.servicePrincipal.getServicePrincipal();
+    // Interactive applet operations run as the current Solid user. A separate
+    // service principal is only needed by background/runtime Pod access.
+    const service = options.servicePrincipal
+      ? await options.servicePrincipal.getServicePrincipal()
+      : { webId: request.auth.webId };
     const descriptor = createAiConnectionsServiceAccess({
       ownerWebId: request.auth.webId,
       serviceWebId: service.webId,
@@ -77,6 +78,7 @@ export function registerAiGatewayManagementRoutes(
     const invocation = options.aiConnectionInvocationKeyIssuer
       ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
       : undefined;
+    logger.debug(`Issuing AI Connection service access for ${request.auth.webId}; invocation=${Boolean(invocation)}`);
     sendJson(response, 200, {
       ...descriptor,
       aiClientConfiguration: options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
@@ -84,10 +86,16 @@ export function registerAiGatewayManagementRoutes(
     });
   });
 
-  server.post('/api/ai/gateway/keys', async (request, response) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
+  const repository = options.repository;
+  if (repository) {
+    const createKeyId = options.keyId ?? ((owner: string) => (
+      repository.createKeyId?.(owner, options.deployment) ?? createGatewayKeyId()
+    ));
+
+    server.post('/api/ai/gateway/keys', async (request, response) => {
+      if (!authorizeGatewayKeyManagement(request, response)) {
+        return;
+      }
 
     const bodyResult = await readBoundedJsonBody(request, { limitBytes: jsonBodyLimitBytes });
     if (!bodyResult.ok) {
@@ -121,7 +129,7 @@ export function registerAiGatewayManagementRoutes(
       keyId: createKeyId(owner),
     });
     const createdAt = now();
-    const record = await options.repository.create({
+    const record = await repository.create({
       ...issued.record,
       owner,
       scopes,
@@ -134,45 +142,46 @@ export function registerAiGatewayManagementRoutes(
       key: issued.plaintext,
       record: publicRecord(record),
     });
-  });
+    });
 
-  server.get('/api/ai/gateway/keys', async (request, response) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
+    server.get('/api/ai/gateway/keys', async (request, response) => {
+      if (!authorizeGatewayKeyManagement(request, response)) {
+        return;
+      }
 
     const owner = ownerForList(request);
     if (!owner) {
       sendJson(response, 400, { error: 'Gateway key owner WebID is required' });
       return;
     }
-    const records = await options.repository.listByOwner(owner, { auth: request.auth });
+    const records = await repository.listByOwner(owner, { auth: request.auth });
     sendJson(response, 200, {
       data: records.map(publicRecord),
     });
-  });
-
-  server.delete('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
-
-    const keyId = decodeURIComponent(params.keyId);
-    const existing = await options.repository.findById(keyId);
-    if (!existing) {
-      sendJson(response, 404, { error: 'Gateway key not found' });
-      return;
-    }
-    const owner = ownerForList(request);
-    if (!owner || existing.owner !== owner) {
-      sendJson(response, 403, { error: 'Cannot revoke a gateway key owned by another WebID' });
-      return;
-    }
-    const revoked = await options.repository.revoke(keyId, now(), { auth: request.auth });
-    sendJson(response, 200, {
-      record: revoked ? publicRecord(revoked) : undefined,
     });
-  });
+
+    server.delete('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
+      if (!authorizeGatewayKeyManagement(request, response)) {
+        return;
+      }
+
+      const keyId = decodeURIComponent(params.keyId);
+      const existing = await repository.findById(keyId);
+      if (!existing) {
+        sendJson(response, 404, { error: 'Gateway key not found' });
+        return;
+      }
+      const owner = ownerForList(request);
+      if (!owner || existing.owner !== owner) {
+        sendJson(response, 403, { error: 'Cannot revoke a gateway key owned by another WebID' });
+        return;
+      }
+      const revoked = await repository.revoke(keyId, now(), { auth: request.auth });
+      sendJson(response, 200, {
+        record: revoked ? publicRecord(revoked) : undefined,
+      });
+    });
+  }
 
   server.get('/api/ai/connections/providers', async (request, response) => {
     if (!authorizeProviderConnect(request, response)) {
@@ -596,6 +605,8 @@ export function registerAiGatewayManagementRoutes(
   });
 
   server.post('/api/ai/gateway/providers/:provider/models/refresh', async (request, response, params) => {
+    const requester = request.auth?.type === 'solid' ? request.auth.webId : 'anonymous';
+    logger.debug(`Refreshing ${params.provider} models for ${requester}`);
     if (!authorizeProviderQuota(request, response)) {
       return;
     }
@@ -608,13 +619,24 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     try {
-      const result = await modelsService.list({
-        webId: request.auth.webId,
-        deployment: options.deployment,
-        provider: params.provider,
-        credentialIri: normalizeOptionalString(body.credentialIri),
-        auth: request.auth,
-      });
+      const apiKey = normalizeOptionalString(body.apiKey);
+      const credentialId = normalizeOptionalString(body.credentialId);
+      logger.debug(`Model refresh credential input: apiKey=${Boolean(apiKey)} credentialId=${Boolean(credentialId)} baseUrl=${Boolean(normalizeOptionalString(body.baseUrl))}`);
+      const result = apiKey && credentialId
+        ? await modelsService.listFromSecret({
+          webId: request.auth.webId,
+          provider: params.provider,
+          credentialId,
+          apiKey,
+          baseUrl: normalizeOptionalString(body.baseUrl),
+        })
+        : await modelsService.list({
+          webId: request.auth.webId,
+          deployment: options.deployment,
+          provider: params.provider,
+          credentialIri: normalizeOptionalString(body.credentialIri),
+          auth: request.auth,
+        });
       sendJson(response, 200, result);
     } catch (error) {
       sendModelsError(response, error);
@@ -995,6 +1017,7 @@ function sendLegacyProviderConnectError(response: ServerResponse, error: unknown
 
 function sendModelsError(response: ServerResponse, error: unknown): void {
   if (error instanceof ProviderModelsFetchError) {
+    logger.warn(`Provider models request returned ${error.providerStatus}`);
     sendJson(response, 502, {
       error: 'provider_models_fetch_failed',
       providerStatus: error.providerStatus,
@@ -1015,6 +1038,7 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
     sendJson(response, 500, { error: 'Provider credential secret is unavailable' });
     return;
   }
+  logger.error(`Provider models lookup failed: ${message}`);
   sendJson(response, 500, { error: 'Provider models lookup failed' });
 }
 

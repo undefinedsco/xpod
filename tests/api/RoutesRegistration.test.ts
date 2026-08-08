@@ -290,6 +290,9 @@ describe('registerRoutes mode wiring', () => {
     expect(routes['GET /v1/rdf/stats']).toBeTypeOf('function');
     expect(routes['POST /v1/chat/completions']).toBeUndefined();
     expect(routes['GET /v1/models']).toBeUndefined();
+    expect(routes['GET /api/applets/service-access/ai-connections']).toBeTypeOf('function');
+    expect(routes['GET /api/ai/connections/providers']).toBeTypeOf('function');
+    expect(routes['POST /api/ai/gateway/providers/:provider/models/refresh']).toBeTypeOf('function');
     expect(routes['POST /api/ai/gateway/keys']).toBeUndefined();
   });
 

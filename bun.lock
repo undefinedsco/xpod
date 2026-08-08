@@ -22,7 +22,7 @@
         "@undefineds.co/ai-connections": "workspace:*",
         "@undefineds.co/drizzle-solid": "0.3.18",
         "@undefineds.co/extensions": "github:undefinedsco/extensions#497942519bc211b6b5bc684f47f41bad189cf632",
-        "@undefineds.co/models": "0.2.47",
+        "@undefineds.co/models": "0.2.50",
         "abstract-level": "^1.0.4",
         "acme-client": "^5.1.3",
         "ai": "^6.0.6",
@@ -201,7 +201,7 @@
         "@undefineds.co/ai-connections": "workspace:*",
         "@undefineds.co/drizzle-solid": "0.3.18",
         "@undefineds.co/extension-sdk": "workspace:*",
-        "@undefineds.co/models": "0.2.47",
+        "@undefineds.co/models": "0.2.50",
         "@undefineds.co/shared-ui": "workspace:*",
         "@undefineds.co/solid-sdk": "workspace:*",
         "ansi-to-html": "^0.7.2",
@@ -1855,7 +1855,7 @@
 
     "@undefineds.co/extensions": ["@undefineds.co/extensions@github:undefinedsco/extensions#4979425", {}, "undefinedsco-extensions-4979425"],
 
-    "@undefineds.co/models": ["@undefineds.co/models@0.2.47", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-rW5cob4Oaob8zgCzFBdy+acgHgf9Xv5nW+HAmnLdGC87y54fysWPuI+QMeZwtJ9vxFFsWGf9tIqHhl1uLxLm5w=="],
+    "@undefineds.co/models": ["@undefineds.co/models@0.2.50", "", { "dependencies": { "@comunica/query-sparql-solid": "^4.0.2", "@inrupt/vocab-common-rdf": "^1.0.5", "@undefineds.co/drizzle-solid": "^0.3.14", "n3": "^1.26.0", "zod": "^3.22.4" }, "bin": { "udfs": "dist/bin/udfs.js" } }, "sha512-pZyDcBwUWElm+lXNV3Mmg4ILn6hwOyrLjZNhmZzfOCnlOfaIfGJS5o7Ry66p5zm0oxCtmsGq3kaNxGthBrK1+g=="],
 
     "@undefineds.co/shared-ui": ["@undefineds.co/shared-ui@workspace:packages/shared-ui"],
 

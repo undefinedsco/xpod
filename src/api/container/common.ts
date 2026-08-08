@@ -177,23 +177,21 @@ export function registerCommonServices(
     }).singleton(),
 
     invocationTokenCodec: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
+      // Invocation tokens are short-lived and process-local by default. A
+      // configured secret makes them portable across replicas, but local Xpod
+      // must remain usable without legacy Gateway locator configuration.
+      const secret = config.gatewayLocatorSecret ?? randomBytes(32).toString('hex');
       return new AesInvocationTokenCodec({
         active: {
           kid: config.gatewayLocatorKeyId ?? 'active',
-          secret: config.gatewayLocatorSecret,
+          secret,
         },
-        previous: config.gatewayPreviousLocatorSecrets,
+        previous: config.gatewayLocatorSecret ? config.gatewayPreviousLocatorSecrets : undefined,
       });
     }).singleton(),
 
     aiConnectionInvocationKeyIssuer: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
       return new AiConnectionsInvocationKeyIssuer({
         codec: cradle.invocationTokenCodec!,
         deployment: config.edition,
@@ -362,16 +360,10 @@ export function registerCommonServices(
 
     providerModelsService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway provider models requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: config.secretCellCredentialVaultFactory(),
+        vault: credentialVaultForConfig(config),
         adapters: [
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',
@@ -425,7 +417,7 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
-      const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository && invocationTokenCodec
+      const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository || invocationTokenCodec
         ? new GatewayApiKeyAuthenticator({
           repository: gatewayAccessKeyRepository,
           invocationTokenCodec,

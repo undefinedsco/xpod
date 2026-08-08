@@ -109,6 +109,7 @@ export function AiConnectionsPanel({
     Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   >({})
   const pollingGeneration = useRef(0)
+  const modelSelectionGeneration = useRef<Partial<Record<AiConnectionsProvider, number>>>({})
   const effectiveProviderProducts = {
     ...providerProducts,
     ...providerProductOverrides,
@@ -592,9 +593,26 @@ export function AiConnectionsPanel({
     modelIds: string[],
   ) => {
     const ids = [...new Set(modelIds)]
+    const previousIds = selectedModelIds[provider]
+      ?? effectiveProviderProducts[provider]?.selectedModels.map((model) => model.id)
+      ?? []
+    const generation = (modelSelectionGeneration.current[provider] ?? 0) + 1
+    modelSelectionGeneration.current[provider] = generation
     setSelectedModelIds((current) => ({ ...current, [provider]: ids }))
-    onModelSelectionChange?.(provider, ids)
-  }, [onModelSelectionChange])
+    void (async () => {
+      try {
+        await client.saveModelSelection?.(provider, ids)
+        if (modelSelectionGeneration.current[provider] === generation) {
+          onModelSelectionChange?.(provider, ids)
+        }
+      } catch (error) {
+        if (modelSelectionGeneration.current[provider] !== generation) return
+        setSelectedModelIds((current) => ({ ...current, [provider]: previousIds }))
+        onModelSelectionChange?.(provider, previousIds)
+        toast({ variant: 'destructive', description: errorMessage(error) })
+      }
+    })()
+  }, [client, effectiveProviderProducts, modelSelectionGeneration, onModelSelectionChange, selectedModelIds])
 
   const createKey = async () => {
     if (!serviceAccessGranted) return

@@ -28,6 +28,7 @@ function client(models: AiGatewayModel[]): AiConnectionsClient {
     pollDevice: vi.fn(),
     disconnect: vi.fn(),
     discoverModels: vi.fn(),
+    saveModelSelection: vi.fn(async () => undefined),
     saveProviderModel: vi.fn(),
     deleteProviderModel: vi.fn(),
     createApiKeyCredential: vi.fn(),
@@ -52,12 +53,13 @@ function openAiProduct(selectedModels: AiGatewayModel[]): AiProviderSummary {
 describe('AI Connection model selection', () => {
   it('shows selected and unavailable picked models while keeping upstream models selectable', async () => {
     const onModelSelectionChange = vi.fn()
+    const current = client([
+      { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' },
+      { id: 'gpt-5-mini', provider: 'openai', displayName: 'GPT-5 Mini' },
+    ])
     render(
       <AiConnectionsPanel
-        client={client([
-          { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' },
-          { id: 'gpt-5-mini', provider: 'openai', displayName: 'GPT-5 Mini' },
-        ])}
+        client={current}
         selectedProvider="openai"
         serviceAccessGranted
         providerProducts={{
@@ -80,12 +82,47 @@ describe('AI Connection model selection', () => {
       'openai',
       ['gpt-5', 'legacy-model', 'gpt-5-mini'],
     ))
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
+      'openai',
+      ['gpt-5', 'legacy-model', 'gpt-5-mini'],
+    ))
 
     fireEvent.click(screen.getByRole('checkbox', { name: '取消选择 GPT-5' }))
     await waitFor(() => expect(onModelSelectionChange).toHaveBeenLastCalledWith(
       'openai',
       ['legacy-model', 'gpt-5-mini'],
     ))
+  })
+
+  it('rolls selection back and reports an error when Pod selection persistence fails', async () => {
+    const saveModelSelection = vi.fn(async () => {
+      throw new Error('selection_write_failed')
+    })
+    const current = client([
+      { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' },
+      { id: 'gpt-5-mini', provider: 'openai', displayName: 'GPT-5 Mini' },
+    ])
+    current.saveModelSelection = saveModelSelection
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerProducts={{
+          openai: openAiProduct([
+            { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5', availability: 'available' },
+          ]),
+        }}
+      />,
+    )
+
+    const mini = await screen.findByRole('checkbox', { name: '选择 GPT-5 Mini' })
+    fireEvent.click(mini)
+
+    await waitFor(() => expect(saveModelSelection).toHaveBeenCalledWith('openai', ['gpt-5', 'gpt-5-mini']))
+    expect(await screen.findByText('AI Connection request failed. Please try again.')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' })).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
   })
 
   it('labels manual models separately from upstream models', async () => {

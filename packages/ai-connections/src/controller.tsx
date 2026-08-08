@@ -13,6 +13,7 @@ import {
   type AiConnectionsClient,
   type AiConnectionsMode,
   type AiConnectionsProvider,
+  type AiGatewayModel,
   type AiProviderConnectionSummary,
   type AiProviderCredentialSummary,
   type AiProviderSummary,
@@ -307,6 +308,9 @@ function createInteractiveAiConnectionsClient(
   return {
     ...operationsClient,
     listProviders: async () => podStore.listProviders() as Promise<AiProviderSummary[]>,
+    listModels: podStore.listModels
+      ? async () => podStore.listModels!() as Promise<AiGatewayModel[]>
+      : operationsClient.listModels,
     createApiKeyCredential: podStore.createApiKeyCredential
       ? async (provider, input) =>
           podStore.createApiKeyCredential!(provider, input) as Promise<AiProviderCredentialSummary>
@@ -326,6 +330,38 @@ function createInteractiveAiConnectionsClient(
       const deleted = await podStore.deleteProviderCredential(provider, credentialId)
       return deleted as Awaited<ReturnType<AiConnectionsClient['disconnect']>>
     },
+    discoverModels: podStore.readCredentialSecret
+      ? async (provider) => {
+          const summaries = await podStore.listProviders() as AiProviderSummary[]
+          const product = summaries.find((item) => item.id === provider)
+          const credentials = product?.credentials.filter((item) => item.enabled) ?? []
+          if (credentials.length === 0) throw new Error('models_credential_not_found')
+          const settled = await Promise.allSettled(credentials.map(async (credential) => {
+            const secret = await podStore.readCredentialSecret!(provider, credential.id)
+            const apiKey = typeof secret.apiKey === 'string' ? secret.apiKey : undefined
+            if (!apiKey) throw new Error('models_secret_missing')
+            return operationsClient.discoverModels(provider, {
+              credentialId: credential.id,
+              apiKey,
+              baseUrl: credential.baseUrl,
+            })
+          }))
+          const successful = settled
+            .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<AiConnectionsClient['discoverModels']>>> => result.status === 'fulfilled')
+            .map((result) => result.value)
+          if (successful.length === 0) {
+            throw (settled[0] as PromiseRejectedResult).reason
+          }
+          const models = [...new Map(successful.flatMap((result) => result.models).map((model) => [model.id, model])).values()]
+          if (podStore.saveDiscoveredModels) {
+            await podStore.saveDiscoveredModels(provider, successful[0]!.credential, models)
+          }
+          return { ...successful[0]!, models }
+        }
+      : operationsClient.discoverModels,
+    saveModelSelection: podStore.saveModelSelection
+      ? async (provider, modelIds) => podStore.saveModelSelection!(provider, modelIds)
+      : operationsClient.saveModelSelection,
   }
 }
 

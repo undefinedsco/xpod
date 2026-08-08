@@ -178,6 +178,18 @@ AI Connections 应成为这套能力的升级和统一宿主；Linx 后续只消
 
 只有 TypeScript 类型、mock 测试、按钮或返回 `unsupported`，不能计为产品完成。
 
+### 2026-08-09 本地真实链路证据
+
+使用本地 Xpod、真实 Solid OIDC 登录、Alice Pod 与可变的 DeepSeek-compatible 上游完成了以下验收：
+
+- API Key 凭据写入 Pod 后，页面刷新仍能读取遮罩提示并用于模型发现；
+- 上游 `/v1/models` 返回两个模型时，AI Connections 同步并展示两个模型；
+- pick `deepseek-chat` 后，选择写入 `aiProvider.hasModel`，刷新页面仍保持；
+- 上游随后移除 `deepseek-chat` 时，该已选模型继续展示并标记“不可用”；
+- 使用页面创建的编码客户端凭证调用 `GET /v1/models`，只返回 Pod 中 pick 的 `deepseek-chat`。
+
+这条证据覆盖数据层、服务层和产品层的本地链路。供应商使用的是本地兼容服务而非 DeepSeek 生产账号，因此不替代真实厂商网络与额度验收。多模型 pick 依赖共享 `@undefineds.co/models` 将 `aiProvider.hasModel` 修正为 URI array；Xpod 不维护该 schema 的私有副本。
+
 ## 建议的下一份设计文档
 
 下一步应先写 `AI Connections Provider Descriptor & Lifecycle`，冻结以下内容后再继续开发：

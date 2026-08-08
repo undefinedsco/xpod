@@ -38,7 +38,8 @@ export interface GatewayAccessKeyRepository {
 }
 
 export interface GatewayApiKeyAuthenticatorOptions {
-  repository: GatewayAccessKeyRepository;
+  /** Persistent key storage is optional for stateless invocation-token auth. */
+  repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   requiredScopes?: string[];
   invocationTokenCodec?: InvocationTokenCodec;
@@ -52,7 +53,7 @@ const INVALID_GATEWAY_API_KEY = 'Invalid gateway API key';
 export const DEFAULT_GATEWAY_API_KEY_SCOPES = ['models:read', 'inference:write'] as const;
 
 export class GatewayApiKeyAuthenticator implements Authenticator {
-  private readonly repository: GatewayAccessKeyRepository;
+  private readonly repository?: GatewayAccessKeyRepository;
   private readonly deployment: GatewayDeployment;
   private readonly requiredScopes: string[];
   private readonly invocationTokenCodec?: InvocationTokenCodec;
@@ -97,6 +98,13 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
     const parsed = bearer ? parseGatewayApiKey(bearer) : undefined;
     if (!parsed) {
       return { success: false, error: INVALID_GATEWAY_API_KEY };
+    }
+
+    // A locator-less deployment can still authenticate short-lived invocation
+    // tokens. Persistent gateway keys require their backing repository and
+    // must never be accepted or fabricated when it is unavailable.
+    if (!this.repository) {
+      return infrastructureError(new Error('Gateway API key repository is not configured'));
     }
 
     let record: GatewayAccessKeyRecord | undefined;

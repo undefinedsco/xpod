@@ -7,12 +7,14 @@ import { QueryEngine } from '@comunica/query-sparql-solid';
 import { ActionObserverHttp } from '@comunica/actor-query-result-serialize-stats';
 import { ActionObserverHttp as JsonActionObserverHttp } from '@comunica/actor-query-result-serialize-sparql-json';
 import {
+  aiModelResource,
   aiProviderResource,
   credentialResource,
 } from '@undefineds.co/models';
 import {
   AI_CONNECTIONS_PROVIDERS,
   type AiConnectionsProvider,
+  type AiGatewayModel,
   type AiProviderCredentialSummary,
   type AiProviderOffering,
   type AiProviderSummary,
@@ -32,15 +34,34 @@ export function createXpodAiConnectionsPodStore(
   configureSparqlEngine({
     createQueryEngine: async () => new QueryEngine() as unknown as SPARQLQueryEngine,
   });
-  credentialResource.setSparqlEndpoint(new URL('settings/-/sparql', input.podUrl).toString());
+  const settingsSparqlEndpoint = new URL('settings/-/sparql', input.podUrl).toString();
+  credentialResource.setSparqlEndpoint(settingsSparqlEndpoint);
+  aiProviderResource.setSparqlEndpoint(settingsSparqlEndpoint);
+  aiModelResource.setSparqlEndpoint(settingsSparqlEndpoint);
   return {
-    async listProviders() {
-      await input.database.init?.(credentialResource, aiProviderResource);
+    async listModels() {
+      await input.database.init?.(aiModelResource);
       const rows = await input.database
+        .select()
+        .from(aiModelResource)
+        .execute() as Record<string, unknown>[];
+      return rows.map(modelSummaryFromRow).filter(isDefined);
+    },
+    async listProviders() {
+      await input.database.init?.(credentialResource, aiProviderResource, aiModelResource);
+      const credentialRows = await input.database
         .select()
         .from(credentialResource)
         .execute() as Record<string, unknown>[];
-      return providerSummariesFromCredentialRows(input, rows);
+      const providerRows = await input.database
+        .select()
+        .from(aiProviderResource)
+        .execute() as Record<string, unknown>[];
+      const modelRows = await input.database
+        .select()
+        .from(aiModelResource)
+        .execute() as Record<string, unknown>[];
+      return providerSummariesFromPodRows(input, credentialRows, providerRows, modelRows);
     },
     async createApiKeyCredential(provider, values) {
       const normalizedProvider = providerValue(provider);
@@ -56,7 +77,7 @@ export function createXpodAiConnectionsPodStore(
         status: 'active',
         accountLabel: values.label,
         label: values.label,
-        baseUrl: values.baseUrl,
+        baseUrl: values.baseUrl ?? offeringBaseUrl(normalizedProvider, values.offeringId),
         keyVersion: String(version),
         reauthRequired: false,
         encryptedSecret: plaintextEnvelope(input, normalizedProvider, id, values.apiKey),
@@ -115,6 +136,40 @@ export function createXpodAiConnectionsPodStore(
       if (!secret) throw new Error('credential_secret_unavailable');
       return secret;
     },
+    async saveDiscoveredModels(provider, _credentialId, models) {
+      const normalizedProvider = providerValue(provider);
+      if (!normalizedProvider) throw new Error('unsupported_provider');
+      await input.database.init?.(aiProviderResource, aiModelResource);
+      await ensureProviderRow(input.database, normalizedProvider);
+      const providerId = aiProviderResource.buildId({ id: normalizedProvider });
+      const existing = await input.database
+        .select()
+        .from(aiModelResource)
+        .execute() as Record<string, unknown>[];
+      const existingIds = new Set(existing.map((row) => stringValue(row.id)).filter(isDefined));
+      const discovered = models
+        .map(discoveredModelValue)
+        .filter(isDefined);
+      const discoveredIds = new Set(discovered.map((model) => model.id));
+      for (const row of existing.filter((item) => providerFromRelation(stringValue(item.isProvidedBy)) === normalizedProvider)) {
+        const modelId = modelKeyFromRowId(stringValue(row.id), normalizedProvider);
+        if (modelId && !discoveredIds.has(modelId) && stringValue(row.status) !== 'unavailable') {
+          await input.database.updateById(aiModelResource, String(row.id), { status: 'unavailable' } as never);
+        }
+      }
+      for (const model of discovered) {
+        await upsertModelRow(input.database, normalizedProvider, providerId, model, existingIds);
+      }
+    },
+    async saveModelSelection(provider, modelIds) {
+      const normalizedProvider = providerValue(provider);
+      if (!normalizedProvider) throw new Error('unsupported_provider');
+      await input.database.init?.(aiProviderResource, aiModelResource);
+      const providerId = aiProviderResource.buildId({ id: normalizedProvider });
+      await ensureProviderRow(input.database, normalizedProvider);
+      const hasModel = [...new Set(modelIds.map((id) => modelResourceId(normalizedProvider, id)))];
+      await input.database.updateById(aiProviderResource, providerId, { hasModel } as never);
+    },
   };
 }
 
@@ -137,11 +192,13 @@ function patchObserverPrototype(source: object): void {
   prototype.__xpodObservedActorsPatch = true;
 }
 
-function providerSummariesFromCredentialRows(
+function providerSummariesFromPodRows(
   input: CreateXpodAiConnectionsPodStoreInput,
-  rows: Record<string, unknown>[],
+  credentialRows: Record<string, unknown>[],
+  providerRows: Record<string, unknown>[],
+  modelRows: Record<string, unknown>[],
 ): AiProviderSummary[] {
-  const activeRows = rows
+  const activeRows = credentialRows
     .filter((row) => stringValue(row.service) === 'ai')
     .filter((row) => stringValue(row.status) !== 'revoked');
 
@@ -150,12 +207,15 @@ function providerSummariesFromCredentialRows(
       .map((row) => credentialSummaryFromRow(input, provider, row))
       .filter(isDefined)
       .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
+    const providerRow = providerRows.find((row) => providerFromRelation(stringValue(row.id)) === provider);
+    const selectedIds = stringListValue(providerRow?.hasModel);
+    const selectedModels = selectedIds.map((selectedId) => modelSummaryFromRows(provider, selectedId, modelRows));
     return {
       id: provider,
       name: providerName(provider),
       offerings: providerOfferings(provider),
       credentials,
-      selectedModels: [],
+      selectedModels,
       status: providerStatus(credentials),
     };
   });
@@ -169,7 +229,8 @@ function plaintextEnvelope(
 ): string {
   return JSON.stringify({
     algorithm: 'PLAINTEXT',
-    ciphertext: JSON.stringify({ type: 'apiKey', apiKey }),
+    encoding: 'base64',
+    ciphertext: encodeBase64Json({ type: 'apiKey', apiKey }),
     webId: input.webId,
     credentialIri: credentialResource.buildIri(input.podUrl, { id }),
     provider,
@@ -204,11 +265,108 @@ function credentialSummaryFromRow(
   };
 }
 
+function modelSummaryFromRows(
+  provider: AiConnectionsProvider,
+  selectedId: string,
+  rows: Record<string, unknown>[],
+): AiGatewayModel {
+  const selectedKey = modelKeyFromRowId(selectedId, provider) ?? selectedId;
+  const row = rows.find((candidate) => {
+    const rowId = stringValue(candidate.id);
+    return rowId === selectedId || modelKeyFromRowId(rowId, provider) === selectedKey;
+  });
+  return {
+    id: selectedKey,
+    provider,
+    displayName: stringValue(row?.displayName),
+    availability: stringValue(row?.status) === 'unavailable' || !row ? 'unavailable' : 'available',
+  };
+}
+
+function modelSummaryFromRow(row: Record<string, unknown>): AiGatewayModel | undefined {
+  const provider = providerFromRelation(stringValue(row.isProvidedBy));
+  const id = provider && modelKeyFromRowId(stringValue(row.id), provider);
+  if (!provider || !id) return undefined;
+  return {
+    id,
+    provider,
+    displayName: stringValue(row.displayName),
+    availability: stringValue(row.status) === 'unavailable' ? 'unavailable' : 'available',
+  };
+}
+
+function discoveredModelValue(value: unknown): { id: string; displayName?: string } | undefined {
+  const row = objectValue(value);
+  const id = stringValue(row?.id);
+  if (!id) return undefined;
+  return { id, displayName: stringValue(row?.displayName) };
+}
+
+async function ensureProviderRow(database: SolidDatabase, provider: AiConnectionsProvider): Promise<void> {
+  const id = aiProviderResource.buildId({ id: provider });
+  const rows = await database.select().from(aiProviderResource).execute() as Record<string, unknown>[];
+  if (rows.some((row) => stringValue(row.id) === id || providerFromRelation(stringValue(row.id)) === provider)) return;
+  await database.insert(aiProviderResource).values({
+    id,
+    displayName: providerName(provider),
+  } as never).execute();
+}
+
+async function upsertModelRow(
+  database: SolidDatabase,
+  provider: AiConnectionsProvider,
+  providerId: string,
+  model: { id: string; displayName?: string },
+  existingIds: Set<string>,
+): Promise<void> {
+  const id = modelResourceId(provider, model.id);
+  const patch = {
+    displayName: model.displayName ?? model.id,
+    isProvidedBy: providerId,
+    status: 'active',
+  };
+  if (existingIds.has(id)) {
+    await database.updateById(aiModelResource, id, patch as never);
+    return;
+  }
+  await database.insert(aiModelResource).values({ id, ...patch } as never).execute();
+  existingIds.add(id);
+}
+
+function modelResourceId(provider: AiConnectionsProvider, modelId: string): string {
+  return `${provider}.ttl#${encodeURIComponent(modelId)}`;
+}
+
+function modelKeyFromRowId(id: string | undefined, provider: AiConnectionsProvider): string | undefined {
+  if (!id) return undefined;
+  const marker = `${provider}.ttl#`;
+  const index = id.lastIndexOf(marker);
+  if (index < 0) return undefined;
+  try {
+    return decodeURIComponent(id.slice(index + marker.length));
+  } catch {
+    return id.slice(index + marker.length);
+  }
+}
+
+function stringListValue(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(stringValue).filter(isDefined);
+  const single = stringValue(value);
+  return single ? [single] : [];
+}
+
 function providerOfferings(provider: AiConnectionsProvider): AiProviderOffering[] {
   if (provider === 'kimi') {
     return [
       { id: 'official-subscription', label: '官方订阅', kind: 'officialSubscription', authModes: ['oauth'] },
       { id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', authModes: ['apiKey'] },
+    ];
+  }
+  if (provider === 'bailian') {
+    return [
+      { id: 'pay-as-you-go', label: '按量付费', kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'] },
+      { id: 'coding-plan', label: 'Coding Plan', kind: 'codingPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
+      { id: 'token-plan', label: 'Token Plan', kind: 'tokenPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
     ];
   }
   return [{ id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', authModes: ['apiKey'] }];
@@ -240,7 +398,15 @@ function defaultOfferingFor(provider: AiConnectionsProvider, authMode: AiProvide
   if (provider === 'kimi' && (authMode === 'oauth' || authMode === 'deviceCode')) {
     return 'official-subscription';
   }
+  if (provider === 'bailian') return 'pay-as-you-go';
   return 'api-platform';
+}
+
+function offeringBaseUrl(provider: AiConnectionsProvider, offeringId?: string): string | undefined {
+  if (provider !== 'bailian') return undefined;
+  if (offeringId === 'coding-plan') return 'https://coding.dashscope.aliyuncs.com/v1';
+  if (offeringId === 'token-plan') return 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1';
+  return 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 }
 
 function maskedHintFromEncryptedSecret(
@@ -275,11 +441,26 @@ function parsePlaintextSecret(
     if (envelope.credentialIri !== expectedIri) {
       return undefined;
     }
-    const secret = JSON.parse(String(envelope.ciphertext));
+    const secret = envelope.encoding === 'base64'
+      ? decodeBase64Json(String(envelope.ciphertext))
+      : JSON.parse(String(envelope.ciphertext));
     return objectValue(secret);
   } catch {
     return undefined;
   }
+}
+
+function encodeBase64Json(value: Record<string, unknown>): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeBase64Json(value: string): unknown {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 function providerFromRelation(value: string | undefined): AiConnectionsProvider | undefined {

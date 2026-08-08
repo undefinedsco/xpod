@@ -190,6 +190,36 @@ describe('ProviderModelsAdapters', () => {
 });
 
 describe('ProviderModelsService', () => {
+  it('discovers from an ephemeral caller-supplied API key without reading the Pod server-side', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.deepseek.com/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer caller-secret');
+      return { body: { data: [{ id: 'deepseek-chat' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'deepseek',
+        defaultBaseUrl: 'https://api.deepseek.com/v1',
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      apiKey: 'caller-secret',
+    })).resolves.toEqual({
+      provider: 'deepseek',
+      credential: 'credentials.ttl#deepseek-primary',
+      models: [{ id: 'deepseek-chat' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'deepseek:/models',
+    });
+  });
+
   it('resolves the active credential, opens the vault and returns the discovery', async () => {
     const kimiCredential = await credential('kimi');
     const fetch = jsonFetch((url) => {
@@ -499,6 +529,40 @@ function response(): any {
 }
 
 describe('AiGatewayManagementHandler models routes', () => {
+  it('uses an ephemeral API key for browser-owned Pod credentials', async () => {
+    const modelsService = {
+      list: vi.fn(),
+      listFromSecret: vi.fn(async () => ({
+        provider: 'deepseek',
+        credential: 'credentials.ttl#deepseek-primary',
+        models: [{ id: 'deepseek-chat' }],
+        observedAt: '2026-08-09T00:00:00.000Z',
+        source: 'deepseek:/models',
+      })),
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'local',
+      modelsService: modelsService as never,
+    });
+
+    const res = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](request(
+      { type: 'solid', webId: WEB_ID },
+      { credentialId: 'credentials.ttl#deepseek-primary', apiKey: 'caller-secret' },
+    ), res, { provider: 'deepseek' });
+
+    expect(res.statusCode).toBe(200);
+    expect(modelsService.listFromSecret).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      apiKey: 'caller-secret',
+    }));
+    expect(modelsService.list).not.toHaveBeenCalled();
+  });
+
   it('refreshes provider models for the current Solid identity', async () => {
     const kimiCredential = await credential('kimi');
     const modelsService = {

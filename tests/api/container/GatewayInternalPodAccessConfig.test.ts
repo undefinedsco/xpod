@@ -39,6 +39,8 @@ function baseConfig(overrides: Partial<ApiContainerConfig> = {}): ApiContainerCo
   };
 }
 
+const WEB_ID = 'https://id.example/alice/profile/card#me';
+
 describe('Gateway internal Pod access container config', () => {
   it('loads internal gateway client credentials from env without using user/provider AI secrets', () => {
     const previous = { ...process.env };
@@ -119,6 +121,29 @@ describe('Gateway internal Pod access container config', () => {
     }));
 
     expect(container.resolve('gatewayAccessKeyRepository')).toBeUndefined();
+    expect(container.resolve('invocationTokenCodec')).toBeTruthy();
+    expect(container.resolve('aiConnectionInvocationKeyIssuer')).toBeTruthy();
+  });
+
+  it('authenticates short-lived AI Connection invocation keys without a gateway locator repository', async () => {
+    const container = createApiContainer(baseConfig({
+      gatewayLocatorSecret: undefined,
+      gatewayLocatorKeyId: undefined,
+    }));
+    const invocation = await container.resolve('aiConnectionInvocationKeyIssuer').issue({
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+
+    await expect(container.resolve('authenticator').authenticate({
+      headers: { authorization: `Bearer ${invocation.gatewayKey}` },
+    } as any)).resolves.toMatchObject({
+      success: true,
+      context: {
+        type: 'solid',
+        webId: WEB_ID,
+        internalInvocation: true,
+      },
+    });
   });
 
   it('constructs the default gateway repository when locator and internal access are configured', () => {
