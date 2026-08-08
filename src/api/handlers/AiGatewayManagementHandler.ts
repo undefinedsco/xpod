@@ -191,10 +191,176 @@ export function registerAiGatewayManagementRoutes(
     });
   });
 
+  server.get('/api/ai/providers', async (request, response) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    const pools = await poolService.listProviderCredentialPools({
+      webId: request.auth.webId,
+      deployment: options.deployment,
+      auth: request.auth,
+    });
+    sendJson(response, 200, {
+      data: pools.map(publicProviderPool),
+    });
+  });
+
+  server.post('/api/ai/providers/:provider/credentials/api-key', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const apiKey = normalizeOptionalString(body.apiKey);
+    if (!apiKey) {
+      sendJson(response, 400, { error: 'apiKey is required' });
+      return;
+    }
+    const priority = normalizeOptionalNumber(body.priority);
+    if (body.priority !== undefined && priority === undefined) {
+      sendJson(response, 400, { error: 'priority must be a finite number' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    const credential = await poolService.createApiKeyCredential({
+      webId: request.auth.webId,
+      deployment: options.deployment,
+      provider: params.provider,
+      offeringId: normalizeOptionalString(body.offeringId),
+      apiKey,
+      label: normalizeOptionalString(body.label),
+      baseUrl: normalizeOptionalString(body.baseUrl),
+      priority,
+      auth: request.auth,
+    });
+    sendJson(response, 201, {
+      credential: publicCredentialPoolCredential(credential),
+    });
+  });
+
+  server.patch('/api/ai/providers/:provider/credentials/:credentialId', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    if (typeof body.expectedVersion !== 'number' || !Number.isInteger(body.expectedVersion)) {
+      sendJson(response, 400, { error: 'expectedVersion is required' });
+      return;
+    }
+    const patch = normalizeCredentialPatch(body);
+    if (!patch) {
+      sendJson(response, 400, { error: 'Credential patch contains invalid field values' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const credential = await poolService.updateCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId: decodeURIComponent(params.credentialId),
+        expectedVersion: body.expectedVersion,
+        patch,
+        auth: request.auth,
+      });
+      if (!credential) {
+        sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+        return;
+      }
+      sendJson(response, 200, {
+        credential: publicCredentialPoolCredential(credential),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.delete('/api/ai/providers/:provider/credentials/:credentialId', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const credential = await poolService.revokeCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId: decodeURIComponent(params.credentialId),
+        auth: request.auth,
+      });
+      if (!credential) {
+        sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+        return;
+      }
+      sendJson(response, 200, {
+        credential: publicCredentialPoolCredential(credential),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.post('/api/ai/providers/:provider/credentials/test', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const credentialId = normalizeOptionalString(body.credentialId);
+    if (!credentialId) {
+      sendJson(response, 400, { error: 'credentialId is required' });
+      return;
+    }
+    if (body.apiKey !== undefined) {
+      sendJson(response, 400, { error: 'credentialId is required' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const result = await poolService.testCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId,
+        modelsService: options.modelsService,
+        auth: request.auth,
+      });
+      sendJson(response, 200, {
+        result: publicCredentialTestResult(result),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
   server.post('/api/ai/gateway/providers/:provider/connect/begin', async (request, response, params) => {
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
       return;
@@ -225,6 +391,7 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     const connectService = requireConnectService(options, response);
     if (!connectService) {
@@ -246,6 +413,7 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
       return;
@@ -277,6 +445,7 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
       return;
@@ -301,6 +470,7 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
       return;
@@ -322,6 +492,7 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const connectService = requireConnectService(options, response);
     if (!connectService) {
       return;
@@ -566,6 +737,18 @@ function requireConnectService(
   return options.connectService;
 }
 
+function requireCredentialPoolManagementService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderConnectService | undefined {
+  return requireConnectService(options, response);
+}
+
+function markLegacyProviderConnectRoute(response: ServerResponse): void {
+  response.setHeader('Deprecation', 'true');
+  response.setHeader('Link', '</api/ai/providers>; rel="successor-version"');
+}
+
 function requireQuotaService(
   options: AiGatewayManagementHandlerOptions,
   response: ServerResponse,
@@ -629,6 +812,48 @@ function normalizeCustomModelInput(body: Record<string, unknown>): {
   };
 }
 
+function normalizeCredentialPatch(body: Record<string, unknown>): {
+  label?: string;
+  enabled?: boolean;
+  priority?: number;
+  baseUrl?: string;
+} | undefined {
+  const patch: {
+    label?: string;
+    enabled?: boolean;
+    priority?: number;
+    baseUrl?: string;
+  } = {};
+  if (body.label !== undefined) {
+    const label = normalizeOptionalString(body.label);
+    if (!label) {
+      return undefined;
+    }
+    patch.label = label;
+  }
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== 'boolean') {
+      return undefined;
+    }
+    patch.enabled = body.enabled;
+  }
+  if (body.priority !== undefined) {
+    const priority = normalizeOptionalNumber(body.priority);
+    if (priority === undefined) {
+      return undefined;
+    }
+    patch.priority = priority;
+  }
+  if (body.baseUrl !== undefined) {
+    const baseUrl = normalizeOptionalString(body.baseUrl);
+    if (!baseUrl) {
+      return undefined;
+    }
+    patch.baseUrl = baseUrl;
+  }
+  return patch;
+}
+
 function normalizeStringList(value: unknown): string[] | null {
   if (value === undefined) {
     return [];
@@ -656,6 +881,19 @@ function sendCustomModelsError(response: ServerResponse, error: unknown): void {
     return;
   }
   sendJson(response, 500, { error: 'Provider custom models update failed' });
+}
+
+function sendCredentialPoolError(response: ServerResponse, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'credential_version_conflict') {
+    sendJson(response, 409, { error: 'credential_version_conflict' });
+    return;
+  }
+  if (message === 'credential_not_found' || message === 'provider_credential_not_found') {
+    sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+    return;
+  }
+  sendJson(response, 500, { error: 'Provider credential pool operation failed' });
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {
@@ -753,6 +991,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
 function stringBody(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -795,6 +1037,116 @@ function publicCredentialRecord(record: {
     version: record.version,
     reauthRequired: record.reauthRequired,
   };
+}
+
+function publicProviderPool(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  const record = value as Record<string, unknown>;
+  return stripUndefined({
+    id: record.id,
+    name: record.name,
+    status: record.status,
+    offerings: publicSafeArray(record.offerings),
+    credentials: Array.isArray(record.credentials)
+      ? record.credentials.map(publicCredentialPoolCredential)
+      : [],
+    selectedModels: publicSafeArray(record.selectedModels),
+  });
+}
+
+function publicCredentialPoolCredential(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  const record = value as Record<string, unknown> & {
+    label?: string;
+    accountLabel?: string;
+    status?: string;
+    expiresAt?: Date | string;
+    baseUrl?: string;
+    maskedHint?: string;
+    quota?: unknown;
+    metadata?: Record<string, unknown>;
+  };
+  const metadata = record.metadata && typeof record.metadata === 'object'
+    ? record.metadata as Record<string, unknown>
+    : {};
+  return stripUndefined({
+    id: record.id,
+    provider: record.provider,
+    offeringId: record.offeringId ?? stringMetadata(metadata, 'offeringId'),
+    authMode: record.authMode,
+    label: record.label ?? record.accountLabel,
+    enabled: record.enabled ?? (record.status ? record.status === 'active' : undefined),
+    priority: record.priority ?? numberMetadata(metadata, 'priority'),
+    health: record.health ?? stringMetadata(metadata, 'health'),
+    maskedHint: record.maskedHint ?? stringMetadata(metadata, 'maskedHint'),
+    expiresAt: record.expiresAt instanceof Date ? record.expiresAt.toISOString() : record.expiresAt,
+    baseUrl: record.baseUrl ?? stringMetadata(metadata, 'baseUrl'),
+    version: record.version,
+    quota: record.quota ?? metadata.quota ?? metadata.quotaStatus,
+  });
+}
+
+function publicCredentialTestResult(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(publicCredentialTestResult);
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !secretFieldNames.has(key))
+      .map(([key, item]) => [key, publicCredentialTestResult(item)]),
+  );
+}
+
+function publicSafeArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value.map(publicSafeObject) : [];
+}
+
+function publicSafeObject(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(publicSafeObject);
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !secretFieldNames.has(key))
+      .map(([key, item]) => [key, publicSafeObject(item)]),
+  );
+}
+
+const secretFieldNames = new Set([
+  'apiKey',
+  'encryptedSecret',
+  'refreshToken',
+  'accessToken',
+  'token',
+  'secret',
+  'secretHash',
+  'ciphertext',
+  'wrappedDek',
+  'wrappedDataKey',
+]);
+
+function stringMetadata(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function numberMetadata(metadata: Record<string, unknown>, key: string): number | undefined {
+  const value = metadata[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function stripUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 function publicConnectResult(value: unknown): unknown {

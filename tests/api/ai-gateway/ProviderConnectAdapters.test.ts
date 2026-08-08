@@ -90,6 +90,78 @@ class RecordingCredentialRepository implements PodCredentialRepository {
     latest.status = 'revoked';
     return structuredClone(latest);
   }
+
+  public async listProviderCredentials(input: {
+    webId: string;
+    provider: string;
+    deployment: 'local' | 'cloud';
+  }): Promise<ConnectCredentialRecord[]> {
+    return this.rows
+      .filter((row) =>
+        row.webId === input.webId
+        && row.provider === input.provider
+        && row.deployment === input.deployment)
+      .sort((left, right) => (left.priority ?? 100) - (right.priority ?? 100))
+      .map((row) => structuredClone(row));
+  }
+
+  public async getCredentialById(input: {
+    webId: string;
+    provider: string;
+    deployment: 'local' | 'cloud';
+    credentialId: string;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const row = this.rows.find((candidate) =>
+      candidate.webId === input.webId
+      && candidate.provider === input.provider
+      && candidate.deployment === input.deployment
+      && candidate.id === input.credentialId);
+    return row ? structuredClone(row) : undefined;
+  }
+
+  public async createCredential(record: Omit<ConnectCredentialRecord, 'id'> & { id?: string }): Promise<ConnectCredentialRecord> {
+    this.version += 1;
+    const stored = structuredClone({
+      ...record,
+      id: record.id ?? `credential-${this.version}`,
+      version: this.version,
+    });
+    this.rows.push(stored);
+    return stored;
+  }
+
+  public async updateCredential(input: {
+    webId: string;
+    provider: string;
+    deployment: 'local' | 'cloud';
+    credentialId: string;
+    expectedVersion?: number;
+    patch: Partial<ConnectCredentialRecord>;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const row = this.rows.find((candidate) =>
+      candidate.webId === input.webId
+      && candidate.provider === input.provider
+      && candidate.deployment === input.deployment
+      && candidate.id === input.credentialId);
+    if (!row) return undefined;
+    if (input.expectedVersion !== undefined && input.expectedVersion !== row.version) {
+      throw new Error('credential_version_conflict');
+    }
+    Object.assign(row, input.patch, { version: (row.version ?? 0) + 1 });
+    return structuredClone(row);
+  }
+
+  public async revokeCredential(input: {
+    webId: string;
+    provider: string;
+    deployment: 'local' | 'cloud';
+    credentialId: string;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    return this.updateCredential({
+      ...input,
+      patch: { status: 'revoked', enabled: false, health: 'disabled' },
+    });
+  }
 }
 
 function vault(): WebCryptoCredentialVault {
@@ -145,6 +217,206 @@ describe('Provider Connect capabilities', () => {
     for (const provider of ['openai', 'anthropic', 'bailian']) {
       expect(registry.requireProvider(provider).authModes).not.toContain('oauth');
     }
+  });
+});
+
+describe('Provider credential pool management', () => {
+  it('lists canonical provider summaries with aggregate status and selected models', async () => {
+    const repository = new RecordingCredentialRepository();
+    repository.rows.push({
+      id: 'kimi-key-a',
+      credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: {
+        webId: WEB_ID,
+        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+        provider: 'kimi',
+        type: 'apiKey',
+        apiKey: 'sk-secret',
+      },
+      status: 'active',
+      accountLabel: 'Kimi key',
+      offeringId: 'api-platform',
+      enabled: true,
+      priority: 10,
+      health: 'healthy',
+      version: 3,
+      metadata: {
+        models: ['moonshot-v1-8k'],
+        defaultModel: 'moonshot-v1-8k',
+        customModels: [{ id: 'moonshot-custom', displayName: 'Custom Moonshot' }],
+      },
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+
+    await expect(service.listProviderCredentialPools({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'kimi',
+        name: 'Kimi',
+        status: 'available',
+        selectedModels: [
+          expect.objectContaining({ id: 'moonshot-v1-8k', provider: 'kimi' }),
+          expect.objectContaining({ id: 'moonshot-custom', provider: 'kimi', custom: true }),
+        ],
+        credentials: [
+          expect.objectContaining({
+            id: 'kimi-key-a',
+            provider: 'kimi',
+            offeringId: 'api-platform',
+            authMode: 'apiKey',
+            label: 'Kimi key',
+            enabled: true,
+            priority: 10,
+            health: 'healthy',
+            version: 3,
+          }),
+        ],
+      }),
+    ]));
+    const payload = JSON.stringify(await service.listProviderCredentialPools({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    }));
+    expect(payload).not.toMatch(/encryptedSecret|sk-secret|credentialIri|webId/);
+  });
+
+  it('creates, patches and revokes credentials through explicit pool methods', async () => {
+    const repository = new RecordingCredentialRepository();
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+
+    const created = await service.createApiKeyCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret',
+      label: 'Work key',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      priority: 5,
+    });
+    const patched = await service.updateCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: created.id,
+      expectedVersion: created.version,
+      patch: {
+        label: 'Paused',
+        enabled: false,
+        priority: 20,
+        baseUrl: 'https://example.test/v1',
+      },
+    });
+    const revoked = await service.revokeCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: created.id,
+    });
+
+    expect(created).toMatchObject({
+      provider: 'kimi',
+      offeringId: 'api-platform',
+      authMode: 'apiKey',
+      label: 'Work key',
+      enabled: true,
+      priority: 5,
+      health: 'healthy',
+    });
+    expect(JSON.stringify(created)).not.toContain('sk-new-secret');
+    expect(patched).toMatchObject({
+      label: 'Paused',
+      enabled: false,
+      priority: 20,
+      health: 'unknown',
+      baseUrl: 'https://example.test/v1',
+    });
+    expect(revoked).toMatchObject({
+      id: created.id,
+      enabled: false,
+      health: 'unknown',
+    });
+  });
+
+  it('tests stored credentials through ProviderModelsService and rejects temporary API keys', async () => {
+    const repository = new RecordingCredentialRepository();
+    repository.rows.push({
+      id: 'kimi-key-a',
+      credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: {
+        webId: WEB_ID,
+        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+        provider: 'kimi',
+        type: 'apiKey',
+        apiKey: 'sk-secret',
+      },
+      status: 'active',
+      offeringId: 'api-platform',
+      enabled: true,
+      priority: 10,
+      health: 'healthy',
+      version: 1,
+    });
+    const modelsService = {
+      list: vi.fn(async () => ({
+        provider: 'kimi',
+        credential: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+        models: [{ id: 'moonshot-v1-8k' }],
+        observedAt: '2026-08-08T00:00:00.000Z',
+        source: 'kimi:/models',
+      })),
+    };
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+
+    await expect(service.testCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      modelsService,
+    })).resolves.toEqual({
+      status: 'ok',
+      checkedAt: '2026-08-08T00:00:00.000Z',
+      models: [{ id: 'moonshot-v1-8k' }],
+    });
+    expect(modelsService.list).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+    });
+    await expect(service.testCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      apiKey: 'sk-temporary',
+      modelsService,
+    })).rejects.toThrow('credential_test_requires_credential_id');
   });
 });
 

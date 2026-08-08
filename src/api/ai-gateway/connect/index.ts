@@ -1205,6 +1205,63 @@ export interface ProviderConnectionSummary {
   };
 }
 
+export interface AiProviderCredentialSummary {
+  id: string;
+  provider: string;
+  offeringId: string;
+  authMode: 'oauth' | 'deviceCode' | 'apiKey' | 'local';
+  label?: string;
+  enabled: boolean;
+  priority: number;
+  health: 'healthy' | 'expired' | 'invalid' | 'unknown';
+  maskedHint?: string;
+  baseUrl?: string;
+  expiresAt?: string;
+  version: number;
+  quota?: unknown;
+}
+
+export interface AiGatewayModelSummary {
+  id: string;
+  provider: string;
+  displayName?: string;
+  custom?: boolean;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  capabilities?: string[];
+}
+
+export interface AiProviderPoolSummary {
+  id: string;
+  name: string;
+  status: 'unconfigured' | 'available' | 'attention' | 'unavailable';
+  offerings: Array<{
+    id: string;
+    label: string;
+    kind?: string;
+    authModes?: string[];
+    runtimeProviderIds?: string[];
+  }>;
+  credentials: AiProviderCredentialSummary[];
+  selectedModels: AiGatewayModelSummary[];
+}
+
+export interface ProviderCredentialTestModelsService {
+  list(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    credentialIri?: string;
+  }): Promise<{
+    models: Array<{
+      id: string;
+      displayName?: string;
+      capabilities?: string[];
+    }>;
+    observedAt: string;
+  }>;
+}
+
 export class ProviderConnectService {
   private readonly registry: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
@@ -1279,6 +1336,176 @@ export class ProviderConnectService {
         },
       };
     }));
+  }
+
+  public async listProviderCredentialPools(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    auth?: AuthContext;
+  }): Promise<AiProviderPoolSummary[]> {
+    if (!this.credentialRepository) {
+      return this.registry.listProducts().map((product) => ({
+        id: product.id,
+        name: product.label,
+        status: 'unconfigured',
+        offerings: product.offerings.map(publicOfferingSummary),
+        credentials: [],
+        selectedModels: [],
+      }));
+    }
+    return Promise.all(this.registry.listProducts().map(async (product) => {
+      const runtimeProviders = new Set(product.offerings.flatMap((offering) => offering.runtimeProviderIds));
+      const credentials = (await Promise.all([...runtimeProviders].map((provider) =>
+        this.credentialRepository!.listProviderCredentials({
+          ...input,
+          provider,
+        })))).flat();
+      const publicCredentials = credentials.map(publicPoolCredentialSummary);
+      return {
+        id: product.id,
+        name: product.label,
+        status: aggregateProviderPoolStatus(publicCredentials),
+        offerings: product.offerings.map(publicOfferingSummary),
+        credentials: publicCredentials,
+        selectedModels: selectedModelsFromCredentials(credentials),
+      };
+    }));
+  }
+
+  public async createApiKeyCredential(input: {
+    webId: string;
+    deployment: GatewayDeployment;
+    provider: string;
+    offeringId?: string;
+    apiKey: string;
+    label?: string;
+    baseUrl?: string;
+    priority?: number;
+    auth?: AuthContext;
+  }): Promise<AiProviderCredentialSummary> {
+    if (!this.credentialRepository || !this.vault) {
+      throw new Error('credential_pool_not_configured');
+    }
+    const provider = normalizeProvider(input.provider);
+    const credentialIri = createPoolCredentialIri(input.webId, input.deployment, provider);
+    const encryptedSecret = await this.vault.seal(
+      { webId: input.webId },
+      credentialIri,
+      provider,
+      { type: 'apiKey', apiKey: input.apiKey },
+    );
+    const created = await this.credentialRepository.createCredential({
+      credentialIri,
+      webId: input.webId,
+      provider,
+      deployment: input.deployment,
+      authMode: 'apiKey',
+      encryptedSecret,
+      status: 'active',
+      accountLabel: input.label,
+      offeringId: input.offeringId ?? defaultOfferingFor(provider),
+      priority: input.priority ?? 100,
+      enabled: true,
+      health: 'healthy',
+      metadata: metadataWithoutUndefined({
+        offeringId: input.offeringId ?? defaultOfferingFor(provider),
+        priority: input.priority ?? 100,
+        enabled: true,
+        health: 'healthy',
+        baseUrl: input.baseUrl,
+        maskedHint: maskApiKey(input.apiKey),
+      }),
+    }, { auth: input.auth });
+    return publicPoolCredentialSummary(created);
+  }
+
+  public async updateCredential(input: ProviderCredentialQuery & {
+    credentialId: string;
+    expectedVersion: number;
+    patch: {
+      label?: string;
+      enabled?: boolean;
+      priority?: number;
+      baseUrl?: string;
+    };
+  }): Promise<AiProviderCredentialSummary | undefined> {
+    if (!this.credentialRepository) {
+      throw new Error('credential_pool_not_configured');
+    }
+    const existing = await this.credentialRepository.getCredentialById(input);
+    const metadata = metadataFromRowValue(existing?.metadata) ?? {};
+    const updated = await this.credentialRepository.updateCredential({
+      ...input,
+      patch: metadataWithoutUndefined({
+        accountLabel: input.patch.label,
+        enabled: input.patch.enabled,
+        priority: input.patch.priority,
+        health: input.patch.enabled === false ? 'disabled' : undefined,
+        metadata: metadataWithoutUndefined({
+          ...metadata,
+          baseUrl: input.patch.baseUrl ?? metadata.baseUrl,
+          priority: input.patch.priority ?? metadata.priority,
+          enabled: input.patch.enabled ?? metadata.enabled,
+          health: input.patch.enabled === false ? 'disabled' : metadata.health,
+        }),
+      }),
+    });
+    return updated ? publicPoolCredentialSummary(updated) : undefined;
+  }
+
+  public async revokeCredential(input: ProviderCredentialQuery & {
+    credentialId: string;
+  }): Promise<AiProviderCredentialSummary | undefined> {
+    if (!this.credentialRepository) {
+      throw new Error('credential_pool_not_configured');
+    }
+    const revoked = await this.credentialRepository.revokeCredential(input);
+    return revoked ? publicPoolCredentialSummary(revoked) : undefined;
+  }
+
+  public async testCredential(input: ProviderCredentialQuery & {
+    credentialId?: string;
+    apiKey?: string;
+    modelsService?: ProviderCredentialTestModelsService;
+  }): Promise<{
+    status: 'ok';
+    checkedAt: string;
+    models: Array<{ id: string; displayName?: string; capabilities?: string[] }>;
+  }> {
+    if (input.apiKey) {
+      throw new Error('credential_test_requires_credential_id');
+    }
+    if (!input.credentialId) {
+      throw new Error('credential_not_found');
+    }
+    if (!this.credentialRepository) {
+      throw new Error('credential_pool_not_configured');
+    }
+    if (!input.modelsService) {
+      throw new Error('models_probe_not_configured');
+    }
+    const credential = await this.credentialRepository.getCredentialById({
+      ...input,
+      credentialId: input.credentialId,
+    });
+    if (!credential) {
+      throw new Error('credential_not_found');
+    }
+    const result = await input.modelsService.list({
+      webId: input.webId,
+      deployment: input.deployment,
+      provider: input.provider,
+      credentialIri: credential.credentialIri,
+    });
+    return {
+      status: 'ok',
+      checkedAt: result.observedAt,
+      models: result.models.map((model) => ({
+        id: model.id,
+        ...(model.displayName ? { displayName: model.displayName } : {}),
+        ...(model.capabilities ? { capabilities: model.capabilities } : {}),
+      })),
+    };
   }
 
   public completeApiKey(input: CompleteApiKeyInput): Promise<ConnectBeginResult> {
@@ -1363,6 +1590,159 @@ export class ProviderConnectService {
 
 function token(randomBytes: (bytes: number) => Buffer): string {
   return randomBytes(32).toString('base64url');
+}
+
+function publicOfferingSummary(offering: {
+  id: string;
+  label: string;
+  kind?: string;
+  authModes?: string[];
+  runtimeProviderIds?: string[];
+}): AiProviderPoolSummary['offerings'][number] {
+  return metadataWithoutUndefined({
+    id: offering.id,
+    label: offering.label,
+    kind: offering.kind,
+    authModes: offering.authModes,
+    runtimeProviderIds: offering.runtimeProviderIds,
+  }) as AiProviderPoolSummary['offerings'][number];
+}
+
+function publicPoolCredentialSummary(record: ConnectCredentialRecord): AiProviderCredentialSummary {
+  const metadata = metadataFromRowValue(record.metadata) ?? {};
+  return metadataWithoutUndefined({
+    id: record.id,
+    provider: normalizeProvider(record.provider),
+    offeringId: record.offeringId ?? stringMetadata(metadata, 'offeringId') ?? defaultOfferingFor(record.provider) ?? 'api-platform',
+    authMode: publicAuthMode(record.authMode),
+    label: record.accountLabel,
+    enabled: record.enabled ?? booleanMetadata(metadata, 'enabled') ?? record.status === 'active',
+    priority: record.priority ?? numberMetadata(metadata, 'priority') ?? 100,
+    health: publicCredentialHealth(record),
+    maskedHint: stringMetadata(metadata, 'maskedHint'),
+    baseUrl: stringMetadata(metadata, 'baseUrl'),
+    expiresAt: record.expiresAt?.toISOString(),
+    version: record.version ?? 0,
+    quota: metadata.quota ?? metadata.quotaStatus,
+  }) as unknown as AiProviderCredentialSummary;
+}
+
+function publicAuthMode(authMode: ConnectCredentialRecord['authMode']): AiProviderCredentialSummary['authMode'] {
+  return authMode === 'deviceCodeOAuth' ? 'deviceCode' : 'apiKey';
+}
+
+function publicCredentialHealth(record: ConnectCredentialRecord): AiProviderCredentialSummary['health'] {
+  const metadata = metadataFromRowValue(record.metadata) ?? {};
+  const health = record.health ?? stringMetadata(metadata, 'health');
+  if (record.reauthRequired || health === 'reauthRequired') {
+    return 'expired';
+  }
+  if (health === 'healthy') {
+    return 'healthy';
+  }
+  if (health === 'error') {
+    return 'invalid';
+  }
+  if (record.status === 'revoked' || health === 'disabled') {
+    return 'unknown';
+  }
+  return record.status === 'active' ? 'healthy' : 'unknown';
+}
+
+function aggregateProviderPoolStatus(credentials: AiProviderCredentialSummary[]): AiProviderPoolSummary['status'] {
+  if (credentials.length === 0) {
+    return 'unconfigured';
+  }
+  if (credentials.some((credential) => credential.enabled && credential.health === 'healthy')) {
+    return 'available';
+  }
+  if (credentials.some((credential) => credential.health === 'expired' || credential.health === 'invalid')) {
+    return 'attention';
+  }
+  return 'unavailable';
+}
+
+function selectedModelsFromCredentials(credentials: ConnectCredentialRecord[]): AiGatewayModelSummary[] {
+  const selected = new Map<string, AiGatewayModelSummary>();
+  for (const credential of credentials) {
+    if (credential.status !== 'active') {
+      continue;
+    }
+    const metadata = metadataFromRowValue(credential.metadata);
+    const provider = normalizeProvider(credential.provider);
+    for (const modelId of modelIdsFromMetadata(metadata)) {
+      selected.set(`${provider}:${modelId}`, { id: modelId, provider });
+    }
+    for (const custom of customModelsFromMetadata(metadata)) {
+      selected.set(`${provider}:${custom.id}`, metadataWithoutUndefined({
+        id: custom.id,
+        provider,
+        displayName: custom.displayName,
+        custom: true,
+        inputModalities: custom.inputModalities,
+        outputModalities: custom.outputModalities,
+        capabilities: custom.capabilities,
+      }) as unknown as AiGatewayModelSummary);
+    }
+  }
+  return [...selected.values()];
+}
+
+function modelIdsFromMetadata(metadata: Record<string, unknown> | undefined): string[] {
+  const ids = new Set<string>();
+  const models = modelsFromMetadata(metadata) ?? [];
+  for (const model of models) {
+    ids.add(model);
+  }
+  const defaultModel = defaultModelFromMetadata(metadata);
+  if (defaultModel) {
+    ids.add(defaultModel);
+  }
+  return [...ids];
+}
+
+function createPoolCredentialIri(webId: string, deployment: GatewayDeployment, provider: string): string {
+  const credentialId = `${deployment}-${provider}-${nodeRandomUUID()}`;
+  try {
+    const url = new URL(webId);
+    const profileIndex = url.pathname.indexOf('/profile/');
+    const podPath = profileIndex >= 0 ? url.pathname.slice(0, profileIndex) : '';
+    url.pathname = `${podPath}/settings/credentials/${provider}.ttl`;
+    url.hash = credentialId;
+    url.search = '';
+    return url.toString();
+  } catch {
+    return `${webId.replace(/[#/]*$/u, '')}/settings/credentials/${provider}.ttl#${credentialId}`;
+  }
+}
+
+function maskApiKey(apiKey: string): string | undefined {
+  const trimmed = apiKey.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const prefix = trimmed.slice(0, Math.min(3, trimmed.length));
+  const suffix = trimmed.slice(-Math.min(4, trimmed.length));
+  return `${prefix}...${suffix}`;
+}
+
+function metadataWithoutUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function stringMetadata(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function numberMetadata(metadata: Record<string, unknown>, key: string): number | undefined {
+  const value = metadata[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function booleanMetadata(metadata: Record<string, unknown>, key: string): boolean | undefined {
+  const value = metadata[key];
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function createDefaultConnectedCredentialDb(input: {

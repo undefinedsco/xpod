@@ -50,6 +50,7 @@ function createServer(): { server: ApiServer; routes: Record<string, Function> }
       post: vi.fn((path: string, handler: Function) => { routes[`POST ${path}`] = handler; }),
       get: vi.fn((path: string, handler: Function) => { routes[`GET ${path}`] = handler; }),
       delete: vi.fn((path: string, handler: Function) => { routes[`DELETE ${path}`] = handler; }),
+      patch: vi.fn((path: string, handler: Function) => { routes[`PATCH ${path}`] = handler; }),
     } as unknown as ApiServer,
   };
 }
@@ -818,6 +819,21 @@ describe('AiGatewayManagementHandler', () => {
           Object.assign(row, patch);
           return jsonClone(row);
         },
+        update: () => ({
+          set: (patch: Record<string, unknown>) => ({
+            where: () => ({
+              returning: () => ({
+                execute: async () => {
+                  const row = [...rows.values()][0];
+                  if (!row) return [];
+                  Object.assign(row, patch);
+                  rows.set(String(row.id), row);
+                  return [jsonClone(row)];
+                },
+              }),
+            }),
+          }),
+        }),
       } as any),
     });
     const vault = new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
@@ -883,6 +899,21 @@ describe('AiGatewayManagementHandler', () => {
     });
     expect(JSON.stringify(provider)).not.toContain('encryptedSecret');
     expect(JSON.stringify(provider)).not.toContain('sk-production-management-path');
+
+    const pool = response();
+    await routes['GET /api/ai/providers'](request(auth), pool, {});
+    const openAiPool = JSON.parse(pool.body).data.find((item: any) => item.id === 'openai');
+    expect(openAiPool.credentials).toEqual([
+      expect.objectContaining({
+        id: 'credentials.ttl#cloud-openai',
+        provider: 'openai',
+        authMode: 'apiKey',
+        label: 'Alice OpenAI',
+        enabled: true,
+      }),
+    ]);
+    expect(JSON.stringify(openAiPool)).not.toContain('encryptedSecret');
+    expect(JSON.stringify(openAiPool)).not.toContain('sk-production-management-path');
 
     const remove = response();
     await routes['DELETE /api/ai/gateway/providers/:provider/connect'](request(auth), remove, {
@@ -1136,6 +1167,347 @@ describe('AiGatewayManagementHandler', () => {
         type: 'solid',
         webId: WEB_ID,
       },
+    });
+  });
+
+  it('returns grouped provider credential pools without credential secrets', async () => {
+    const connectService = {
+      listProviderCredentialPools: vi.fn(async () => [
+        {
+          id: 'kimi',
+          name: 'Kimi',
+          status: 'available',
+          offerings: [{ id: 'api-platform', label: 'API Platform' }],
+          credentials: [
+            {
+              id: 'kimi-key-a',
+              credentialIri: 'https://id.example/alice/settings/credentials.ttl#kimi-key-a',
+              webId: WEB_ID,
+              provider: 'kimi',
+              deployment: 'cloud',
+              offeringId: 'api-platform',
+              authMode: 'apiKey',
+              accountLabel: 'Alice Kimi',
+              label: 'Alice Kimi',
+              enabled: true,
+              priority: 10,
+              health: 'healthy',
+              status: 'active',
+              baseUrl: 'https://api.moonshot.cn/v1',
+              maskedHint: 'sk-...abcd',
+              version: 3,
+              expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+              encryptedSecret: { algorithm: 'test', wrappedDek: 'wrapped', ciphertext: 'cipher' },
+              refreshToken: 'refresh-secret',
+              apiKey: 'sk-secret',
+              metadata: {
+                encryptedSecret: 'nested-secret',
+                apiKey: 'nested-api-key',
+                quota: { status: 'ok', remaining: 42 },
+              },
+            },
+          ],
+          selectedModels: [{ id: 'moonshot-v1-8k', provider: 'kimi' }],
+        },
+      ]),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['GET /api/ai/providers'](request({ type: 'solid', webId: WEB_ID }), res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.listProviderCredentialPools).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      data: [
+        {
+          id: 'kimi',
+          name: 'Kimi',
+          status: 'available',
+          offerings: [{ id: 'api-platform', label: 'API Platform' }],
+          credentials: [
+            {
+              id: 'kimi-key-a',
+              provider: 'kimi',
+              offeringId: 'api-platform',
+              authMode: 'apiKey',
+              label: 'Alice Kimi',
+              enabled: true,
+              priority: 10,
+              health: 'healthy',
+              maskedHint: 'sk-...abcd',
+              expiresAt: '2026-08-01T00:00:00.000Z',
+              baseUrl: 'https://api.moonshot.cn/v1',
+              version: 3,
+              quota: { status: 'ok', remaining: 42 },
+            },
+          ],
+          selectedModels: [{ id: 'moonshot-v1-8k', provider: 'kimi' }],
+        },
+      ],
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/encryptedSecret|refreshToken|sk-secret|nested-api-key|wrapped|cipher/);
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('credentialIri');
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain(WEB_ID);
+  });
+
+  it('creates API-key credentials in a provider pool without echoing plaintext secrets', async () => {
+    const connectService = {
+      createApiKeyCredential: vi.fn(async (input: any) => ({
+        id: 'kimi-key-new',
+        provider: input.provider,
+        offeringId: input.offeringId,
+        authMode: 'apiKey',
+        accountLabel: input.label,
+        enabled: true,
+        priority: 30,
+        health: 'healthy',
+        status: 'active',
+        maskedHint: 'sk-...tkey',
+        version: 1,
+        encryptedSecret: { ciphertext: 'cipher' },
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/api-key'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret-key',
+      label: 'Work key',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      priority: 30,
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(201);
+    expect(connectService.createApiKeyCredential).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret-key',
+      label: 'Work key',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      priority: 30,
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      credential: expect.objectContaining({
+        id: 'kimi-key-new',
+        provider: 'kimi',
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        label: 'Work key',
+      }),
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/sk-new-secret-key|encryptedSecret|cipher/);
+  });
+
+  it('patches only allowlisted credential fields and requires expectedVersion', async () => {
+    const connectService = {
+      updateCredential: vi.fn(async (input: any) => ({
+        id: input.credentialId,
+        provider: input.provider,
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        accountLabel: input.patch.label,
+        enabled: input.patch.enabled,
+        priority: input.patch.priority,
+        health: 'disabled',
+        status: 'active',
+        version: 8,
+        metadata: { baseUrl: input.patch.baseUrl },
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+
+    const missingVersion = response();
+    await routes['PATCH /api/ai/providers/:provider/credentials/:credentialId'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, { enabled: false }), missingVersion, { provider: 'kimi', credentialId: 'kimi-key-a' });
+
+    const patched = response();
+    await routes['PATCH /api/ai/providers/:provider/credentials/:credentialId'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      label: 'Paused',
+      enabled: false,
+      priority: 5,
+      baseUrl: 'https://api.moonshot.cn/v1',
+      expectedVersion: 7,
+      apiKey: 'must-be-ignored',
+      status: 'revoked',
+    }), patched, { provider: 'kimi', credentialId: 'kimi-key-a' });
+
+    expect(missingVersion.statusCode).toBe(400);
+    expect(JSON.parse(missingVersion.body)).toEqual({ error: 'expectedVersion is required' });
+    expect(patched.statusCode).toBe(200);
+    expect(connectService.updateCredential).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      expectedVersion: 7,
+      patch: {
+        label: 'Paused',
+        enabled: false,
+        priority: 5,
+        baseUrl: 'https://api.moonshot.cn/v1',
+      },
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.stringify(connectService.updateCredential.mock.calls[0][0])).not.toContain('must-be-ignored');
+  });
+
+  it('deletes one credential by id', async () => {
+    const connectService = {
+      revokeCredential: vi.fn(async (input: any) => ({
+        id: input.credentialId,
+        provider: input.provider,
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        enabled: false,
+        priority: 10,
+        health: 'disabled',
+        status: 'revoked',
+        version: 4,
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['DELETE /api/ai/providers/:provider/credentials/:credentialId'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, { provider: 'kimi', credentialId: 'kimi-key-a' });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.revokeCredential).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      auth: { type: 'solid', webId: WEB_ID },
+    }));
+  });
+
+  it('tests provider credentials without exposing probe secrets', async () => {
+    const connectService = {
+      testCredential: vi.fn(async () => ({
+        status: 'ok',
+        checkedAt: '2026-08-08T00:00:00.000Z',
+        apiKey: 'must-not-return',
+      })),
+    } as any;
+    const modelsService = { list: vi.fn() } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+      modelsService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/test'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      credentialId: 'kimi-key-a',
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.testCredential).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      modelsService,
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      result: {
+        status: 'ok',
+        checkedAt: '2026-08-08T00:00:00.000Z',
+      },
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('must-not-return');
+  });
+
+  it('rejects temporary API keys on provider credential test route', async () => {
+    const connectService = {
+      testCredential: vi.fn(),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/test'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      apiKey: 'sk-temporary',
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'credentialId is required' });
+    expect(connectService.testCredential).not.toHaveBeenCalled();
+  });
+
+  it('adds deprecation headers to legacy provider Connect routes', async () => {
+    const connectService = {
+      refresh: vi.fn(async () => undefined),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {}), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers).toMatchObject({
+      deprecation: 'true',
+      link: '</api/ai/providers>; rel="successor-version"',
     });
   });
 });
