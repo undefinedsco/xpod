@@ -105,7 +105,7 @@
     },
     "packages/ai-connections": {
       "name": "@undefineds.co/ai-connections",
-      "version": "0.1.0",
+      "version": "0.1.0-rc.0",
       "dependencies": {
         "@undefineds.co/extension-sdk": "workspace:*",
         "@undefineds.co/shared-ui": "workspace:*",
@@ -127,7 +127,7 @@
     },
     "packages/extension-sdk": {
       "name": "@undefineds.co/extension-sdk",
-      "version": "0.1.0",
+      "version": "0.1.1-rc.0",
       "dependencies": {
         "@undefineds.co/shared-ui": "workspace:*",
         "@undefineds.co/solid-sdk": "workspace:*",
@@ -146,7 +146,7 @@
     },
     "packages/shared-ui": {
       "name": "@undefineds.co/shared-ui",
-      "version": "0.1.0",
+      "version": "0.1.1-rc.0",
       "dependencies": {
         "@radix-ui/react-avatar": "^1.1.11",
         "@radix-ui/react-dialog": "^1.1.15",
@@ -196,9 +196,9 @@
         "@radix-ui/react-select": "^2.2.6",
         "@undefineds.co/ai-connections": "workspace:*",
         "@undefineds.co/drizzle-solid": "0.3.18",
-        "@undefineds.co/extension-sdk": "workspace:*",
-        "@undefineds.co/shared-ui": "workspace:*",
-        "@undefineds.co/solid-sdk": "workspace:*",
+        "@undefineds.co/extension-sdk": "^0.1.0",
+        "@undefineds.co/shared-ui": "^0.1.0",
+        "@undefineds.co/solid-sdk": "^0.1.0",
         "ansi-to-html": "^0.7.2",
         "clsx": "^2.1.1",
         "framer-motion": "^12.23.26",
@@ -4080,6 +4080,10 @@
 
     "ui/@types/react-dom": ["@types/react-dom@19.2.4", "", { "peerDependencies": { "@types/react": "^19.2.0" } }, "sha512-Bsc+QHgp+P/F02XDzNCY9jnZNCUuLki36KT7VKrTXXLdHf+vHMNZnW1rVu5DNW/rCK+fya3DATySbLM4yhtKUw=="],
 
+    "ui/@undefineds.co/extension-sdk": ["@undefineds.co/extension-sdk@0.1.0", "", { "dependencies": { "@undefineds.co/shared-ui": "^0.1.0", "@undefineds.co/solid-sdk": "^0.1.0" }, "peerDependencies": { "react": "^19.2.0" } }, "sha512-7Ba0p30DufoKNzZM1kPafw84eCFOu2nsF/Y2597c9bqJ3ty3JhnKMHtrQN73jKrlN7liIbLjYTedzY4crgxJjQ=="],
+
+    "ui/@undefineds.co/shared-ui": ["@undefineds.co/shared-ui@0.1.0", "", { "dependencies": { "@radix-ui/react-avatar": "^1.1.11", "@radix-ui/react-dialog": "^1.1.15", "@radix-ui/react-scroll-area": "^1.2.10", "@radix-ui/react-separator": "^1.1.8", "@radix-ui/react-slot": "^1.2.4", "@radix-ui/react-switch": "^1.2.6", "@radix-ui/react-tooltip": "^1.2.8", "class-variance-authority": "^0.7.1", "clsx": "^2.1.1", "lucide-react": "^0.525.0", "tailwind-merge": "^3.5.0" }, "peerDependencies": { "react": "^19.2.0" } }, "sha512-56+nkU1kWNCFxoy8wpsnO9TAKUUC0bHb8uReltfPYIPU+MoPWy4plXuQepvibnVTDYK6DIKHkZybKLXRlJwk5A=="],
+
     "ui/lucide-react": ["lucide-react@0.563.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-8dXPB2GI4dI8jV4MgUDGBeLdGk8ekfqVZ0BdLcrRzocGgG75ltNEmWS+gE7uokKF/0oSUuczNDT+g9hFJ23FkA=="],
 
     "ui/react-router-dom": ["react-router-dom@7.18.2", "", { "dependencies": { "react-router": "7.18.2" }, "peerDependencies": { "react": ">=18", "react-dom": ">=18" } }, "sha512-AIKJ/jgGlFb3EbfCXk5Gzshiwt+l3mqbCrNjmEWMMjqQxNJ3svBa6bgzFyCC2Sw3RA0VWF1kg3uQf2OFhxb8hw=="],
@@ -4573,6 +4577,8 @@
     "typescript-eslint/@typescript-eslint/typescript-estree/ts-api-utils": ["ts-api-utils@2.5.0", "", { "peerDependencies": { "typescript": ">=4.8.4" } }, "sha512-OJ/ibxhPlqrMM0UiNHJ/0CKQkoKF243/AEmplt3qpRgkW8VG7IfOS41h7V8TjITqdByHzrjcS/2si+y4lIh8NA=="],
 
     "ui/@types/node/undici-types": ["undici-types@7.18.2", "", {}, "sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w=="],
+
+    "ui/@undefineds.co/shared-ui/lucide-react": ["lucide-react@0.525.0", "", { "peerDependencies": { "react": "^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-Tm1txJ2OkymCGkvwoHt33Y2JpN5xucVq1slHcgE6Lk0WjDfjgKWor5CdVER8U6DvcfMwh4M8XxmpTiyzfmfDYQ=="],
 
     "ui/react-router-dom/react-router": ["react-router@7.18.2", "", { "dependencies": { "cookie": "^1.0.1", "set-cookie-parser": "^2.6.0" }, "peerDependencies": { "react": ">=18", "react-dom": ">=18" }, "optionalPeers": ["react-dom"] }, "sha512-aUVMjFm3GAPTTZL7oYr5E7ETiqfQCHRLH+B+5afnICvf0r7kkK4eR6SMuwbSTJw/7t+12khT/Kahij49fqOCIg=="],
 

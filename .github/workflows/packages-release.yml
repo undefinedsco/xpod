@@ -49,7 +49,7 @@ jobs:
             exit 1
           fi
 
-      - run: bun install
+      - run: bun install --frozen-lockfile
 
       - name: Build workspace dependencies
         run: |
