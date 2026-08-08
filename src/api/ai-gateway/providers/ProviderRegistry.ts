@@ -1,8 +1,40 @@
 import type { GatewayProtocol } from '../types';
 
 export type ProviderId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
+export type ProviderProductId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
 export type ProviderAuthMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'apiKey' | 'connectUnsupported';
 export type ProviderConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
+export type OfferingAuthMode = 'oauth' | 'deviceCode' | 'apiKey' | 'local';
+export type ProviderOfferingKind =
+  | 'payAsYouGo'
+  | 'codingPlan'
+  | 'tokenPlan'
+  | 'officialSubscription'
+  | 'local'
+  | 'custom';
+
+export interface ProviderOfferingEndpointDescriptor {
+  protocol: GatewayProtocol;
+  baseUrl: string;
+  region?: string;
+}
+
+export interface ProviderOfferingDescriptor {
+  id: string;
+  runtimeProviderIds: string[];
+  label: string;
+  kind: ProviderOfferingKind;
+  authModes: OfferingAuthMode[];
+  endpoints: ProviderOfferingEndpointDescriptor[];
+  apiKeyPrefixHints?: string[];
+  oauthIntegrationId?: string;
+}
+
+export interface ProviderProductDescriptor {
+  id: ProviderProductId;
+  label: string;
+  offerings: ProviderOfferingDescriptor[];
+}
 
 export interface ProviderConnectCapability {
   mode: ProviderConnectMode;
@@ -54,6 +86,7 @@ export interface ModelAliasTarget {
 export interface ProviderRegistryOptions {
   aliases?: Record<string, ModelAliasTarget>;
   connect?: Partial<Record<string, Partial<ProviderConnectCapability>>>;
+  products?: ProviderProductDescriptor[];
 }
 
 const RESERVED_DISCOVERY_METADATA_KEYS = new Set([
@@ -68,6 +101,8 @@ const RESERVED_DISCOVERY_METADATA_KEYS = new Set([
 export class ProviderRegistry {
   private readonly providers = new Map<string, ProviderDescriptor>();
   private readonly aliases = new Map<string, ModelAliasTarget>();
+  private readonly products = new Map<string, ProviderProductDescriptor>();
+  private readonly productByRuntimeProvider = new Map<string, ProviderProductDescriptor>();
 
   public constructor(providers: ProviderDescriptor[], options: ProviderRegistryOptions = {}) {
     for (const provider of providers) {
@@ -83,6 +118,15 @@ export class ProviderRegistry {
           ],
         },
       } : provider);
+    }
+    for (const product of options.products ?? DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS) {
+      const normalizedProduct = freezeProviderProductDescriptor(product);
+      this.products.set(normalizeProviderId(normalizedProduct.id), normalizedProduct);
+      for (const offering of normalizedProduct.offerings) {
+        for (const runtimeProviderId of offering.runtimeProviderIds) {
+          this.productByRuntimeProvider.set(normalizeProviderId(runtimeProviderId), normalizedProduct);
+        }
+      }
     }
     for (const [alias, target] of Object.entries(options.aliases ?? {})) {
       this.aliases.set(normalizeKey(alias), {
@@ -118,6 +162,23 @@ export class ProviderRegistry {
 
   public listProviders(): ProviderDescriptor[] {
     return Array.from(this.providers.values());
+  }
+
+  public getProduct(product: string): ProviderProductDescriptor | undefined {
+    const normalized = normalizeProviderId(product);
+    return this.products.get(normalized) ?? this.productByRuntimeProvider.get(normalized);
+  }
+
+  public requireProduct(product: string): ProviderProductDescriptor {
+    const descriptor = this.getProduct(product);
+    if (!descriptor) {
+      throw new Error(`Unknown AI provider product "${product}"`);
+    }
+    return descriptor;
+  }
+
+  public listProducts(): ProviderProductDescriptor[] {
+    return Array.from(this.products.values());
   }
 
   public resolveAlias(model: string): ModelAliasTarget | undefined {
@@ -157,6 +218,127 @@ export class ProviderRegistry {
 export function createDefaultProviderRegistry(options: ProviderRegistryOptions = {}): ProviderRegistry {
   return new ProviderRegistry(DEFAULT_PROVIDER_DESCRIPTORS, options);
 }
+
+export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    offerings: [
+      {
+        id: 'api-platform',
+        runtimeProviderIds: ['openai'],
+        label: 'API Platform',
+        kind: 'payAsYouGo',
+        authModes: ['apiKey'],
+        apiKeyPrefixHints: ['sk-'],
+        endpoints: [
+          { protocol: 'responses', baseUrl: 'https://api.openai.com/v1' },
+          { protocol: 'chatCompletions', baseUrl: 'https://api.openai.com/v1' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    offerings: [
+      {
+        id: 'api-platform',
+        runtimeProviderIds: ['anthropic'],
+        label: 'API Platform',
+        kind: 'payAsYouGo',
+        authModes: ['apiKey'],
+        apiKeyPrefixHints: ['sk-ant-'],
+        endpoints: [
+          { protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'kimi',
+    label: 'Kimi',
+    offerings: [
+      {
+        id: 'official-subscription',
+        runtimeProviderIds: ['kimi'],
+        label: 'Official Subscription',
+        kind: 'officialSubscription',
+        authModes: ['oauth'],
+        oauthIntegrationId: 'kimi-code',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
+        ],
+      },
+      {
+        id: 'api-platform',
+        runtimeProviderIds: ['kimi'],
+        label: 'API Platform',
+        kind: 'payAsYouGo',
+        authModes: ['apiKey'],
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.moonshot.ai/v1' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'bailian',
+    label: 'Alibaba Bailian',
+    offerings: [
+      {
+        id: 'pay-as-you-go',
+        runtimeProviderIds: ['bailian'],
+        label: 'Pay as You Go',
+        kind: 'payAsYouGo',
+        authModes: ['apiKey'],
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic' },
+        ],
+      },
+      {
+        id: 'coding-plan',
+        runtimeProviderIds: ['bailian-coding-plan'],
+        label: 'Coding Plan',
+        kind: 'codingPlan',
+        authModes: ['apiKey'],
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic' },
+        ],
+      },
+      {
+        id: 'token-plan',
+        runtimeProviderIds: ['bailian-token-plan'],
+        label: 'Token Plan',
+        kind: 'tokenPlan',
+        authModes: ['apiKey'],
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    offerings: [
+      {
+        id: 'api-platform',
+        runtimeProviderIds: ['deepseek'],
+        label: 'API Platform',
+        kind: 'payAsYouGo',
+        authModes: ['apiKey'],
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.deepseek.com/v1' },
+        ],
+      },
+    ],
+  },
+];
 
 export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
@@ -353,6 +535,20 @@ function freezeProviderDescriptor(provider: ProviderDescriptor): ProviderDescrip
       protocols: model.protocols ? [ ...model.protocols ] : undefined,
       capabilities: model.capabilities ? { ...model.capabilities } : undefined,
       metadata: model.metadata ? { ...model.metadata } : undefined,
+    })),
+  };
+}
+
+function freezeProviderProductDescriptor(product: ProviderProductDescriptor): ProviderProductDescriptor {
+  return {
+    ...product,
+    id: normalizeProviderId(product.id),
+    offerings: product.offerings.map((offering) => ({
+      ...offering,
+      runtimeProviderIds: offering.runtimeProviderIds.map(normalizeProviderId),
+      authModes: [ ...offering.authModes ],
+      endpoints: offering.endpoints.map((endpoint) => ({ ...endpoint })),
+      apiKeyPrefixHints: offering.apiKeyPrefixHints ? [ ...offering.apiKeyPrefixHints ] : undefined,
     })),
   };
 }
