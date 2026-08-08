@@ -377,6 +377,63 @@ describe('ProviderModelsService', () => {
     });
   });
 
+  it('resolves a requested non-default active credential through the repository list with auth', async () => {
+    const vault = createVault();
+    const auth = { type: 'solid', webId: WEB_ID };
+    const createKimiCredential = async (id: string, apiKey: string): Promise<ModelsCredentialRecord> => {
+      const credentialIri = `https://id.example/alice/.data/settings/credentials.ttl#${id}`;
+      return {
+        id,
+        credentialIri,
+        webId: WEB_ID,
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode: 'apiKey',
+        encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, 'kimi', { type: 'apiKey', apiKey }),
+        status: 'active',
+      };
+    };
+    const primary = await createKimiCredential('primary', 'primary-secret');
+    const secondary = await createKimiCredential('secondary', 'secondary-secret');
+    const fetch = jsonFetch((_url, init) => {
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer secondary-secret');
+      return { body: { data: [{ id: 'kimi-k2' }] } };
+    });
+    const repository = {
+      listProviderCredentials: vi.fn(async () => [primary, secondary]),
+      getActiveCredential: vi.fn(async () => primary),
+    };
+    const service = new ProviderModelsService({
+      vault,
+      credentialRepository: repository as never,
+      adapters: [
+        new OpenAiCompatibleModelsAdapter({
+          provider: 'kimi',
+          defaultBaseUrl: 'https://api.moonshot.ai/v1',
+          fetchImpl: fetch,
+        }),
+      ],
+    });
+
+    const discovery = await service.list({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: secondary.credentialIri,
+      auth: auth as never,
+    });
+
+    expect(repository.listProviderCredentials).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      auth,
+    });
+    expect(repository.getActiveCredential).not.toHaveBeenCalled();
+    expect(discovery.credential).toBe(secondary.credentialIri);
+    expect(discovery.models).toEqual([{ id: 'kimi-k2' }]);
+  });
+
   it('rejects providers without an adapter or credential with coded errors', async () => {
     const service = new ProviderModelsService({
       vault: createVault(),

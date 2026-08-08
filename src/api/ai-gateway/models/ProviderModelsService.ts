@@ -1,4 +1,5 @@
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
+import type { AuthContext } from '../../auth/AuthContext';
 import type { PodCredentialRepository } from '../connect';
 import type { CredentialVault } from '../credentials/CredentialVault';
 import { normalizeProvider } from '../quota/ProviderQuotaAdapter';
@@ -47,6 +48,7 @@ export class ProviderModelsService {
     deployment: GatewayDeployment;
     provider: string;
     credentialIri?: string;
+    auth?: AuthContext;
     signal?: AbortSignal;
   }): Promise<ProviderModelDiscovery> {
     const provider = normalizeProvider(input.provider);
@@ -66,6 +68,7 @@ export class ProviderModelsService {
       deployment: input.deployment,
       provider,
       credentialIri: input.credentialIri,
+      auth: input.auth,
     });
     const secret = await this.vault.open(
       { webId: input.webId },
@@ -92,6 +95,7 @@ export class ProviderModelsService {
     deployment: GatewayDeployment;
     provider: string;
     adapter: ProviderModelsAdapter;
+    auth?: AuthContext;
     signal?: AbortSignal;
   }): Promise<ProviderModelDiscovery> {
     const source = `${input.provider}:/models`;
@@ -99,6 +103,7 @@ export class ProviderModelsService {
       webId: input.webId,
       deployment: input.deployment,
       provider: input.provider,
+      auth: input.auth,
     }))
       .filter(isEligibleCredential) as ModelsCredentialRecord[];
     if (credentials.length === 0) {
@@ -199,6 +204,7 @@ export class ProviderModelsService {
     deployment: GatewayDeployment;
     provider: string;
     credentialIri?: string;
+    auth?: AuthContext;
   }): Promise<ModelsCredentialRecord> {
     const listed = this.credentials.find((candidate) =>
       candidate.webId === input.webId
@@ -209,10 +215,26 @@ export class ProviderModelsService {
       return listed;
     }
 
+    if (input.credentialIri && this.credentialRepository) {
+      const exact = (await this.credentialRepository.listProviderCredentials({
+        webId: input.webId,
+        deployment: input.deployment,
+        provider: input.provider,
+        auth: input.auth,
+      })).find((candidate) =>
+        candidate.credentialIri === input.credentialIri
+        && isEligibleCredential(candidate));
+      if (exact) {
+        return exact as ModelsCredentialRecord;
+      }
+      throw new Error('models_credential_not_found');
+    }
+
     const active = await this.credentialRepository?.getActiveCredential({
       webId: input.webId,
       deployment: input.deployment,
       provider: input.provider,
+      auth: input.auth,
     });
     if (
       active
