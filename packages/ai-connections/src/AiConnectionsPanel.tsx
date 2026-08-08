@@ -10,7 +10,10 @@ import {
   type AiConnectionsClient,
   type AiGatewayModel,
   type AiConnectionsProvider,
+  type AiProviderCredentialSummary,
   type AiProviderConnectionSummary,
+  type AiProviderOffering,
+  type AiProviderSummary,
   type AiQuotaSnapshot,
   type DiscoveredProviderModel,
   type GatewayKeyRecord,
@@ -52,6 +55,7 @@ export interface AiConnectionsPanelProps {
   clientConfigurationBridge?: AiClientConfigurationBridge
   selectedProvider?: AiConnectionsProvider
   providerSummaries?: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
+  providerProducts?: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   providerLoadError?: string
   serviceAccessGranted?: boolean
   onProviderStateChange?: (
@@ -66,6 +70,7 @@ export function AiConnectionsPanel({
   clientConfigurationBridge,
   selectedProvider,
   providerSummaries: providerSummariesInput = EMPTY_PROVIDER_SUMMARIES,
+  providerProducts = {},
   providerLoadError,
   serviceAccessGranted = false,
   onProviderStateChange,
@@ -92,7 +97,14 @@ export function AiConnectionsPanel({
   const [modelEditorError, setModelEditorError] = useState<string>()
   const [modelEditorSaving, setModelEditorSaving] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [providerProductOverrides, setProviderProductOverrides] = useState<
+    Partial<Record<AiConnectionsProvider, AiProviderSummary>>
+  >({})
   const pollingGeneration = useRef(0)
+  const effectiveProviderProducts = {
+    ...providerProducts,
+    ...providerProductOverrides,
+  }
   const updateConnectionState = useCallback((
     provider: AiConnectionsProvider,
     state: ProviderConnectionState,
@@ -192,40 +204,61 @@ export function AiConnectionsPanel({
       return
     }
 
-    setBusy(definition.id, true)
-    setProviderError(definition.id)
+    await beginConnectMode(definition.id, definition.browserMode)
+  }
+
+  const beginOfferingConnect = async (
+    provider: AiConnectionsProvider,
+    offering: AiProviderOffering,
+    mode: AiConnectAttempt['mode'],
+  ) => {
+    if (mode === 'browserAssistedApiKey') {
+      await beginApiKey(provider)
+      return
+    }
+    await beginConnectMode(provider, mode)
+  }
+
+  const beginConnectMode = async (
+    provider: AiConnectionsProvider,
+    mode: AiConnectAttempt['mode'],
+  ) => {
+    if (!serviceAccessGranted) return
+    if (mode === 'connectUnsupported') return
+    setBusy(provider, true)
+    setProviderError(provider)
     const generation = pollingGeneration.current + 1
     pollingGeneration.current = generation
     try {
-      const attempt = await client.beginConnect(definition.id, definition.browserMode)
-      setAttempts((current) => ({ ...current, [definition.id]: attempt }))
+      const attempt = await client.beginConnect(provider, mode)
+      setAttempts((current) => ({ ...current, [provider]: attempt }))
       if (!isPendingAttempt(attempt.status)) {
         const connected = attempt.status === 'completed'
-        updateConnectionState(definition.id, connected ? 'connected' : 'failed')
+        updateConnectionState(provider, connected ? 'connected' : 'failed')
         if (!connected) {
           setProviderError(
-            definition.id,
+            provider,
             attempt.message ?? connectFailureMessage(attempt.status),
           )
         }
-        setBusy(definition.id, false)
+        setBusy(provider, false)
         return
       }
-      updateConnectionState(definition.id, 'pending')
+      updateConnectionState(provider, 'pending')
       await openAttemptUrl(attempt)
-      void pollDeviceConnect(client, definition.id, attempt, generation, pollingGeneration, {
-        onAttempt: (next) => setAttempts((current) => ({ ...current, [definition.id]: next })),
-        onConnected: () => updateConnectionState(definition.id, 'connected'),
+      void pollDeviceConnect(client, provider, attempt, generation, pollingGeneration, {
+        onAttempt: (next) => setAttempts((current) => ({ ...current, [provider]: next })),
+        onConnected: () => updateConnectionState(provider, 'connected'),
         onFailed: (message) => {
-          updateConnectionState(definition.id, 'failed')
-          setProviderError(definition.id, message)
+          updateConnectionState(provider, 'failed')
+          setProviderError(provider, message)
         },
-        onFinished: () => setBusy(definition.id, false),
+        onFinished: () => setBusy(provider, false),
       })
     } catch (error) {
-      updateConnectionState(definition.id, 'failed')
-      setProviderError(definition.id, errorMessage(error))
-      setBusy(definition.id, false)
+      updateConnectionState(provider, 'failed')
+      setProviderError(provider, errorMessage(error))
+      setBusy(provider, false)
     }
   }
 
@@ -263,6 +296,166 @@ export function AiConnectionsPanel({
       setQuotas((current) => ({ ...current, [provider]: undefined }))
       updateConnectionState(provider, 'disconnected')
       toast({ description: '已断开连接' })
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
+    } finally {
+      setBusy(provider, false)
+    }
+  }
+
+  const mergeProviderCredential = (
+    provider: AiConnectionsProvider,
+    credential: AiProviderCredentialSummary,
+  ) => {
+    setProviderProductOverrides((current) => ({
+      ...current,
+      [provider]: providerProductWithCredential(
+        effectiveProviderProducts[provider],
+        provider,
+        credential,
+      ),
+    }))
+    updateConnectionState(provider, credential.authMode === 'apiKey' || credential.authMode === 'local'
+      ? 'configured'
+      : 'connected')
+  }
+
+  const createApiKeyCredential = async (
+    provider: AiConnectionsProvider,
+    offering: AiProviderOffering,
+    input: {
+      apiKey: string
+      label?: string
+      baseUrl?: string
+      priority: number
+    },
+  ) => {
+    if (!serviceAccessGranted) return
+    setBusy(provider, true)
+    setProviderError(provider)
+    try {
+      const credential = await client.createApiKeyCredential(provider, {
+        offeringId: offering.id,
+        apiKey: input.apiKey,
+        label: input.label,
+        baseUrl: input.baseUrl,
+        priority: input.priority,
+      })
+      mergeProviderCredential(provider, credential)
+      toast({ description: 'API Key 已添加' })
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
+    } finally {
+      setBusy(provider, false)
+    }
+  }
+
+  const updateProviderCredential = async (
+    provider: AiConnectionsProvider,
+    credential: AiProviderCredentialSummary,
+    patch: {
+      label?: string
+      enabled?: boolean
+      priority?: number
+      baseUrl?: string
+    },
+  ) => {
+    if (!serviceAccessGranted) return
+    setBusy(provider, true)
+    setProviderError(provider)
+    try {
+      const updated = await client.updateProviderCredential(provider, credential.id, {
+        expectedVersion: credential.version,
+        ...patch,
+      })
+      mergeProviderCredential(provider, updated)
+      toast({ description: '凭证已更新' })
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
+    } finally {
+      setBusy(provider, false)
+    }
+  }
+
+  const deleteProviderCredential = async (
+    provider: AiConnectionsProvider,
+    credential: AiProviderCredentialSummary,
+  ) => {
+    if (!serviceAccessGranted) return
+    setBusy(provider, true)
+    setProviderError(provider)
+    try {
+      await client.deleteProviderCredential(provider, credential.id)
+      setProviderProductOverrides((current) => ({
+        ...current,
+        [provider]: providerProductWithoutCredential(
+          effectiveProviderProducts[provider],
+          provider,
+          credential.id,
+        ),
+      }))
+      toast({ description: '凭证已删除' })
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
+    } finally {
+      setBusy(provider, false)
+    }
+  }
+
+  const testProviderCredential = async (
+    provider: AiConnectionsProvider,
+    credential: AiProviderCredentialSummary,
+  ) => {
+    if (!serviceAccessGranted) return
+    setBusy(provider, true)
+    setProviderError(provider)
+    try {
+      await client.testProviderCredential(provider, { credentialId: credential.id })
+      toast({ variant: 'success', description: '测试通过' })
+    } catch (error) {
+      setProviderError(provider, errorMessage(error))
+    } finally {
+      setBusy(provider, false)
+    }
+  }
+
+  const reorderProviderCredentials = async (
+    provider: AiConnectionsProvider,
+    offering: AiProviderOffering,
+    credentials: AiProviderCredentialSummary[],
+    fromIndex: number,
+    toIndex: number,
+  ) => {
+    if (!serviceAccessGranted || toIndex < 0 || toIndex >= credentials.length) return
+    const reordered = [...credentials]
+    const [moved] = reordered.splice(fromIndex, 1)
+    if (!moved) return
+    reordered.splice(toIndex, 0, moved)
+    setBusy(provider, true)
+    setProviderError(provider)
+    try {
+      const updatedCredentials: AiProviderCredentialSummary[] = []
+      for (const [index, credential] of reordered.entries()) {
+        const nextPriority = (index + 1) * 10
+        if (credential.priority === nextPriority) {
+          updatedCredentials.push(credential)
+          continue
+        }
+        updatedCredentials.push(await client.updateProviderCredential(provider, credential.id, {
+          expectedVersion: credential.version,
+          priority: nextPriority,
+        }))
+      }
+      setProviderProductOverrides((current) => ({
+        ...current,
+        [provider]: providerProductWithCredentialList(
+          effectiveProviderProducts[provider],
+          provider,
+          offering,
+          updatedCredentials,
+        ),
+      }))
+      toast({ description: '顺序已保存' })
     } catch (error) {
       setProviderError(provider, errorMessage(error))
     } finally {
@@ -430,6 +623,7 @@ export function AiConnectionsPanel({
             <AiProviderCard
               key={definition.id}
               definition={definition}
+              product={effectiveProviderProducts[definition.id]}
               status={connectionStates[definition.id] ?? 'unknown'}
               accountLabel={providerSummariesInput[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
@@ -449,15 +643,28 @@ export function AiConnectionsPanel({
                 [definition.id]: value,
               }))}
               onBeginApiKey={() => void beginApiKey(definition.id)}
+              onBeginOffering={(offering, mode) => void beginOfferingConnect(definition.id, offering, mode)}
               onBeginBrowser={() => void beginBrowserConnect(definition)}
               onSaveApiKey={() => void saveApiKey(definition)}
               onDisconnect={() => void disconnect(definition.id)}
+              onCreateApiKeyCredential={(offering, input) => void createApiKeyCredential(definition.id, offering, input)}
+              onUpdateCredential={(credential, patch) => void updateProviderCredential(definition.id, credential, patch)}
+              onDeleteCredential={(credential) => void deleteProviderCredential(definition.id, credential)}
+              onTestCredential={(credential) => void testProviderCredential(definition.id, credential)}
+              onReorderCredentials={(offering, credentials, fromIndex, toIndex) => void reorderProviderCredentials(
+                definition.id,
+                offering,
+                credentials,
+                fromIndex,
+                toIndex,
+              )}
               onRefreshQuota={() => void refreshQuota(definition.id)}
               verifyPending={Boolean(verifyingProviders[definition.id])}
               onVerify={() => void verifyProvider(definition.id)}
               onAddModel={() => openModelEditor(definition.id)}
               onEditModel={(model) => openModelEditor(definition.id, model)}
               onDeleteModel={(model) => void deleteProviderModel(definition.id, model)}
+              onDismissError={() => setProviderError(definition.id)}
             />
           ))}
       </section>
@@ -634,6 +841,75 @@ function productStateFromConnection(
   if (state === 'failed' || state === 'reauthRequired') return 'attention'
   if (state === 'pending') return 'loading'
   return 'unconfigured'
+}
+
+function providerProductWithCredential(
+  product: AiProviderSummary | undefined,
+  provider: AiConnectionsProvider,
+  credential: AiProviderCredentialSummary,
+): AiProviderSummary {
+  const base = product ?? emptyProviderProduct(provider)
+  return {
+    ...base,
+    credentials: sortCredentialsByPriority([
+      ...base.credentials.filter((item) => item.id !== credential.id),
+      credential,
+    ]),
+    status: credential.enabled ? 'available' : base.status,
+  }
+}
+
+function providerProductWithoutCredential(
+  product: AiProviderSummary | undefined,
+  provider: AiConnectionsProvider,
+  credentialId: string,
+): AiProviderSummary {
+  const base = product ?? emptyProviderProduct(provider)
+  const credentials = base.credentials.filter((credential) => credential.id !== credentialId)
+  return {
+    ...base,
+    credentials,
+    status: credentials.length > 0 ? base.status : 'unconfigured',
+  }
+}
+
+function providerProductWithCredentialList(
+  product: AiProviderSummary | undefined,
+  provider: AiConnectionsProvider,
+  offering: AiProviderOffering,
+  updatedCredentials: AiProviderCredentialSummary[],
+): AiProviderSummary {
+  const base = product ?? emptyProviderProduct(provider)
+  const updatedIds = new Set(updatedCredentials.map((credential) => credential.id))
+  return {
+    ...base,
+    offerings: base.offerings.some((item) => item.id === offering.id)
+      ? base.offerings
+      : [...base.offerings, offering],
+    credentials: sortCredentialsByPriority([
+      ...base.credentials.filter(
+        (credential) => credential.offeringId !== offering.id || !updatedIds.has(credential.id),
+      ),
+      ...updatedCredentials,
+    ]),
+  }
+}
+
+function emptyProviderProduct(provider: AiConnectionsProvider): AiProviderSummary {
+  return {
+    id: provider,
+    name: PROVIDERS.find((definition) => definition.id === provider)?.name ?? provider,
+    offerings: [],
+    credentials: [],
+    selectedModels: [],
+    status: 'unconfigured',
+  }
+}
+
+function sortCredentialsByPriority(
+  credentials: AiProviderCredentialSummary[],
+): AiProviderCredentialSummary[] {
+  return [...credentials].sort((left, right) => left.priority - right.priority)
 }
 
 function openExternalUrl(url: string): void {

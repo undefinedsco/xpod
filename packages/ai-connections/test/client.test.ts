@@ -57,7 +57,7 @@ describe('AI Connection management client', () => {
     const providers = await client.listProviders()
 
     expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/connections/providers',
+      'https://pod.example/api/ai/providers',
       expect.objectContaining({ method: 'GET' }),
     )
     expect(providers).toMatchObject([{
@@ -126,6 +126,140 @@ describe('AI Connection management client', () => {
       status: 'available',
     }])
     expect(JSON.stringify(providers)).not.toMatch(/encryptedSecret|accessToken|sk-secret|ciphertext|token-secret|model-secret/)
+  })
+
+  it('creates API-key credentials through the Provider credential-pool route without exposing secrets', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      credential: {
+        id: 'openai-key-work',
+        provider: 'openai',
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        label: 'Work key',
+        enabled: true,
+        priority: 20,
+        health: 'healthy',
+        maskedHint: 'sk-...work',
+        baseUrl: 'https://proxy.example/v1',
+        version: 1,
+        encryptedSecret: 'ciphertext',
+      },
+    }), { status: 201, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const credential = await client.createApiKeyCredential('openai', {
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret',
+      label: 'Work key',
+      baseUrl: 'https://proxy.example/v1',
+      priority: 20,
+    })
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/providers/openai/credentials/api-key',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          offeringId: 'api-platform',
+          apiKey: 'sk-new-secret',
+          label: 'Work key',
+          baseUrl: 'https://proxy.example/v1',
+          priority: 20,
+        }),
+      }),
+    )
+    expect(credential).toMatchObject({
+      id: 'openai-key-work',
+      offeringId: 'api-platform',
+      authMode: 'apiKey',
+      label: 'Work key',
+      maskedHint: 'sk-...work',
+      baseUrl: 'https://proxy.example/v1',
+      version: 1,
+    })
+    expect(JSON.stringify(credential)).not.toMatch(/sk-new-secret|ciphertext/)
+  })
+
+  it('patches, deletes, and tests exact Provider credentials through credential-pool routes', async () => {
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/ai/providers/openai/credentials/openai-key-work')) {
+        return new Response(JSON.stringify({
+          credential: {
+            id: 'openai-key-work',
+            provider: 'openai',
+            offeringId: 'api-platform',
+            authMode: 'apiKey',
+            label: 'Paused key',
+            enabled: false,
+            priority: 30,
+            health: 'unknown',
+            version: 8,
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/api/ai/providers/openai/credentials/test')) {
+        return new Response(JSON.stringify({
+          result: {
+            status: 'ok',
+            checkedAt: '2026-08-08T00:00:00.000Z',
+            apiKey: 'must-not-return',
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    }) as unknown as typeof fetch
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.updateProviderCredential('openai', 'openai-key-work', {
+      expectedVersion: 7,
+      label: 'Paused key',
+      enabled: false,
+      priority: 30,
+      baseUrl: 'https://proxy.example/v1',
+    })
+    await client.deleteProviderCredential('openai', 'openai-key-work')
+    const result = await client.testProviderCredential('openai', { credentialId: 'openai-key-work' })
+
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      1,
+      'https://pod.example/api/ai/providers/openai/credentials/openai-key-work',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          expectedVersion: 7,
+          label: 'Paused key',
+          enabled: false,
+          priority: 30,
+          baseUrl: 'https://proxy.example/v1',
+        }),
+      }),
+    )
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      2,
+      'https://pod.example/api/ai/providers/openai/credentials/openai-key-work',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      3,
+      'https://pod.example/api/ai/providers/openai/credentials/test',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ credentialId: 'openai-key-work' }),
+      }),
+    )
+    expect(result).toEqual({
+      status: 'ok',
+      checkedAt: '2026-08-08T00:00:00.000Z',
+    })
   })
 
   it('discovers the AI Connection service-access descriptor with authenticated fetch', async () => {

@@ -126,6 +126,7 @@ export interface AiProviderOffering {
 
 export interface AiProviderCredentialSummary {
   id: string
+  provider?: AiConnectionsProvider
   offeringId: string
   authMode: 'oauth' | 'deviceCode' | 'apiKey' | 'local'
   label?: string
@@ -133,6 +134,7 @@ export interface AiProviderCredentialSummary {
   priority: number
   health: 'healthy' | 'expired' | 'invalid' | 'unknown'
   maskedHint?: string
+  baseUrl?: string
   expiresAt?: string
   version: number
 }
@@ -155,6 +157,26 @@ export type AiProviderSummaryStatus =
 export interface CreatedGatewayKey {
   plaintext: string
   record: GatewayKeyRecord
+}
+
+export interface CreateApiKeyCredentialInput {
+  offeringId?: string
+  apiKey: string
+  label?: string
+  baseUrl?: string
+  priority?: number
+}
+
+export interface UpdateProviderCredentialInput {
+  expectedVersion: number
+  label?: string
+  enabled?: boolean
+  priority?: number
+  baseUrl?: string
+}
+
+export interface TestProviderCredentialInput {
+  credentialId: string
 }
 
 export interface AiProviderConnectionSummary {
@@ -194,6 +216,10 @@ export interface AiConnectionsClient {
   ): Promise<AiConnectAttempt>
   pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
   disconnect(provider: AiConnectionsProvider): Promise<AiConnectionsCredential | undefined>
+  createApiKeyCredential(provider: AiConnectionsProvider, input: CreateApiKeyCredentialInput): Promise<AiProviderCredentialSummary>
+  updateProviderCredential(provider: AiConnectionsProvider, credentialId: string, input: UpdateProviderCredentialInput): Promise<AiProviderCredentialSummary>
+  deleteProviderCredential(provider: AiConnectionsProvider, credentialId: string): Promise<AiProviderCredentialSummary | undefined>
+  testProviderCredential(provider: AiConnectionsProvider, input: TestProviderCredentialInput): Promise<Record<string, unknown>>
   quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
   discoverModels(provider: AiConnectionsProvider): Promise<ProviderModelDiscovery>
   saveProviderModel(provider: AiConnectionsProvider, model: CustomProviderModel): Promise<CustomProviderModel[]>
@@ -225,7 +251,7 @@ export function createAiConnectionsClient({
 
   const request = async <T>(
     path: string,
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     body?: Record<string, unknown>,
     context: { provider?: AiConnectionsProvider } = {},
   ): Promise<T> => {
@@ -269,7 +295,7 @@ export function createAiConnectionsClient({
     },
 
     async listProviders() {
-      const payload = await request<{ data?: unknown[] }>('/api/ai/connections/providers', 'GET')
+      const payload = await request<{ data?: unknown[] }>('/api/ai/providers', 'GET')
       return Array.isArray(payload.data) ? parseProviderSummaries(payload.data) : []
     },
 
@@ -370,6 +396,54 @@ export function createAiConnectionsClient({
         'DELETE',
       )
       return parseCredential(payload.record)
+    },
+
+    async createApiKeyCredential(provider, input) {
+      const payload = await request<{ credential?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/api-key`,
+        'POST',
+        compactObject({ ...input }),
+        { provider },
+      )
+      const credential = parseProviderCredentialSummary(payload.credential)
+      if (!credential) {
+        throw new Error('AI Connection returned an invalid Provider credential')
+      }
+      return credential
+    },
+
+    async updateProviderCredential(provider, credentialId, input) {
+      const payload = await request<{ credential?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/${encodeURIComponent(credentialId)}`,
+        'PATCH',
+        compactObject({ ...input }),
+        { provider },
+      )
+      const credential = parseProviderCredentialSummary(payload.credential)
+      if (!credential) {
+        throw new Error('AI Connection returned an invalid Provider credential')
+      }
+      return credential
+    },
+
+    async deleteProviderCredential(provider, credentialId) {
+      const payload = await request<{ credential?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/${encodeURIComponent(credentialId)}`,
+        'DELETE',
+        undefined,
+        { provider },
+      )
+      return parseProviderCredentialSummary(payload.credential)
+    },
+
+    async testProviderCredential(provider, input) {
+      const payload = await request<{ result?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/test`,
+        'POST',
+        compactObject({ ...input }),
+        { provider },
+      )
+      return sanitizePublicObject(payload.result)
     },
 
     quota(provider, refresh = false) {
@@ -770,6 +844,7 @@ function parseProviderCredentialSummary(value: unknown): AiProviderCredentialSum
   }
   return compactObject({
     id: value.id,
+    provider: providerValue(value.provider),
     offeringId: value.offeringId,
     authMode: value.authMode,
     label: stringValue(value.label),
@@ -777,9 +852,35 @@ function parseProviderCredentialSummary(value: unknown): AiProviderCredentialSum
     priority: value.priority,
     health: value.health,
     maskedHint: stringValue(value.maskedHint),
+    baseUrl: stringValue(value.baseUrl),
     expiresAt: stringValue(value.expiresAt),
     version: value.version,
   }) as unknown as AiProviderCredentialSummary
+}
+
+function sanitizePublicObject(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !isSecretFieldName(key))
+      .map(([key, item]) => [key, sanitizePublicValue(item)]),
+  )
+}
+
+function sanitizePublicValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizePublicValue)
+  if (isRecord(value)) return sanitizePublicObject(value)
+  return value
+}
+
+function isSecretFieldName(value: string): boolean {
+  const normalized = value.toLocaleLowerCase()
+  return normalized.includes('secret')
+    || normalized.includes('token')
+    || normalized.includes('apikey')
+    || normalized === 'api_key'
+    || normalized === 'key'
+    || normalized === 'authorization'
 }
 
 function mergeProviderSummaries(

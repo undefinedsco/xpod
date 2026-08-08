@@ -15,7 +15,11 @@ import {
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type {
   AiConnectAttempt,
+  AiConnectionsMode,
   AiGatewayModel,
+  AiProviderCredentialSummary,
+  AiProviderOffering,
+  AiProviderSummary,
   AiQuotaSnapshot,
 } from './ai-connections-client'
 import {
@@ -24,22 +28,18 @@ import {
   Check,
   Copy,
   ExternalLink,
-  Eye,
-  EyeOff,
   Globe,
   Image as ImageIcon,
   Info,
-  KeyRound,
   Loader2,
-  LogOut,
   Pencil,
   Plus,
   RotateCw,
   Search,
-  Settings2,
   Trash2,
 } from 'lucide-react'
 import { AiQuotaCard } from './AiQuotaCard'
+import { AiCredentialPoolSection } from './AiCredentialPoolSection'
 
 export type { AiProviderDefinition } from './controller'
 import type { AiProviderDefinition } from './controller'
@@ -55,6 +55,7 @@ export type ProviderConnectionState =
 
 export function AiProviderCard({
   definition,
+  product,
   status,
   accountLabel,
   attempt,
@@ -69,16 +70,24 @@ export function AiProviderCard({
   onApiKeyChange,
   onBaseUrlChange,
   onBeginApiKey,
+  onBeginOffering,
   onBeginBrowser,
   onSaveApiKey,
   onDisconnect,
+  onCreateApiKeyCredential,
+  onUpdateCredential,
+  onDeleteCredential,
+  onTestCredential,
+  onReorderCredentials,
   onRefreshQuota,
   onVerify,
   onAddModel,
   onEditModel,
   onDeleteModel,
+  onDismissError,
 }: {
   definition: AiProviderDefinition
+  product?: AiProviderSummary
   status: ProviderConnectionState
   accountLabel?: string
   attempt?: AiConnectAttempt
@@ -93,19 +102,34 @@ export function AiProviderCard({
   onApiKeyChange: (value: string) => void
   onBaseUrlChange?: (value: string) => void
   onBeginApiKey: () => void
+  onBeginOffering?: (offering: AiProviderOffering, mode: AiConnectionsMode) => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
   onDisconnect: () => void
+  onCreateApiKeyCredential?: (offering: AiProviderOffering, input: {
+    apiKey: string
+    label?: string
+    baseUrl?: string
+    priority: number
+  }) => void
+  onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
+    label?: string
+    enabled?: boolean
+    priority?: number
+    baseUrl?: string
+  }) => void
+  onDeleteCredential?: (credential: AiProviderCredentialSummary) => void
+  onTestCredential?: (credential: AiProviderCredentialSummary) => void
+  onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
   onRefreshQuota: () => void
   onVerify?: () => void
   onAddModel?: () => void
   onEditModel?: (model: AiGatewayModel) => void
   onDeleteModel?: (model: AiGatewayModel) => void
+  onDismissError?: () => void
 }) {
-  const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
-  const [showKey, setShowKey] = useState(false)
   const [modelSearch, setModelSearch] = useState('')
   const [copiedModelId, setCopiedModelId] = useState<string>()
 
@@ -172,139 +196,31 @@ export function AiProviderCard({
           </Badge>
         </header>
 
-        <section className="space-y-4" aria-label="当前连接">
-          <div className="flex items-center gap-2 border-b border-border/40 pb-2">
-            <Settings2 className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-medium text-foreground/90">当前连接</h3>
-          </div>
-          <div>
-            {accountLabel ? (
-              <p className="text-xs text-muted-foreground">{maskAccountLabel(accountLabel)}</p>
-            ) : (
-              <p className="text-xs text-muted-foreground">Provider 凭证加密保存在当前 Pod。</p>
-            )}
-          </div>
-
-          {attempt?.userCode ? (
-            <div className="mb-4 border-l-2 border-primary bg-muted/30 px-3 py-2 text-sm">
-              验证码：<strong className="font-mono">{attempt.userCode}</strong>
-            </div>
-          ) : null}
-
-          <div className="flex flex-wrap gap-2">
-            {isConnected ? (
-              <>
-                <Button variant="outline" size="sm" disabled={busy || disabled} onClick={onBeginBrowser}>
-                  {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCw className="mr-2 h-4 w-4" />}
-                  重新连接
-                </Button>
-                <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
-                  <LogOut className="mr-2 h-4 w-4" />
-                  断开连接
-                </Button>
-              </>
-            ) : isConfigured ? (
-              <>
-                <Button variant="outline" size="sm" aria-label="更新 API Key" disabled={busy || disabled} onClick={onBeginApiKey}>
-                  <KeyRound className="mr-2 h-4 w-4" />
-                  更新 API Key
-                </Button>
-                <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
-                  移除配置
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy || disabled || definition.browserMode === 'connectUnsupported'}
-                  onClick={onBeginBrowser}
-                >
-                  {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
-                  {definition.browserLabel}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label={`${definition.name} API Key`}
-                  disabled={busy || disabled}
-                  onClick={onBeginApiKey}
-                >
-                  <KeyRound className="mr-2 h-4 w-4" />
-                  配置 API Key
-                </Button>
-              </>
-            )}
-          </div>
-
-          {apiKeyAttempt ? (
-            <div className="mt-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">API Key</span>
-                {definition.apiKeyUrl ? (
-                  <a href={definition.apiKeyUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
-                    获取 API Key
-                  </a>
-                ) : null}
-              </div>
-              <div className="group relative">
-                <Input
-                  type={showKey ? 'text' : 'password'}
-                  autoComplete="off"
-                  aria-label={`${definition.name} API Key 输入`}
-                  placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
-                  value={apiKey}
-                  onChange={(event) => onApiKeyChange(event.target.value)}
-                  className="border-border/60 bg-muted/20 pr-10 font-mono transition-colors focus:border-primary/50 focus:bg-background"
-                />
-                <div className="absolute bottom-1 right-1 top-1 flex items-center">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-full w-8 rounded hover:bg-muted"
-                    onClick={() => setShowKey((current) => !current)}
-                    aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
-                  >
-                    {showKey
-                      ? <EyeOff className="h-4 w-4 text-muted-foreground" />
-                      : <Eye className="h-4 w-4 text-muted-foreground" />}
-                  </Button>
-                </div>
-              </div>
-              {onBaseUrlChange ? (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-muted-foreground">Base URL（选填）</span>
-                  </div>
-                  <Input
-                    autoComplete="off"
-                    data-lpignore="true"
-                    data-1p-ignore
-                    aria-label={`${definition.name} Base URL 输入`}
-                    placeholder={definition.defaultBaseUrl || '默认服务地址'}
-                    value={baseUrl}
-                    onChange={(event) => onBaseUrlChange(event.target.value)}
-                    className="border-border/60 bg-muted/20 font-mono text-xs transition-colors focus:border-primary/50 focus:bg-background"
-                  />
-                  <p className="break-all font-mono text-[11px] text-muted-foreground opacity-80">
-                    <span className="mr-1 select-none opacity-50">预览:</span>
-                    {(baseUrl.trim() || definition.defaultBaseUrl || '').replace(/\/+$/, '')}/chat/completions
-                  </p>
-                </div>
-              ) : null}
-              <Button
-                size="sm"
-                aria-label={`保存 ${definition.name} API Key`}
-                disabled={!apiKey.trim() || busy || disabled}
-                onClick={onSaveApiKey}
-              >
-                保存 API Key
-              </Button>
-            </div>
-          ) : null}
-          {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
-        </section>
+        <AiCredentialPoolSection
+          definition={definition}
+          product={product}
+          status={status}
+          accountLabel={accountLabel}
+          attempt={attempt}
+          apiKey={apiKey}
+          baseUrl={baseUrl}
+          busy={busy}
+          disabled={disabled}
+          error={error}
+          onApiKeyChange={onApiKeyChange}
+          onBaseUrlChange={onBaseUrlChange}
+          onBeginApiKey={onBeginApiKey}
+          onBeginOffering={onBeginOffering}
+          onBeginBrowser={onBeginBrowser}
+          onSaveApiKey={onSaveApiKey}
+          onDisconnect={onDisconnect}
+          onCreateApiKeyCredential={product?.offerings.length ? onCreateApiKeyCredential : undefined}
+          onUpdateCredential={onUpdateCredential}
+          onDeleteCredential={onDeleteCredential}
+          onTestCredential={onTestCredential}
+          onReorderCredentials={onReorderCredentials}
+          onDismissError={onDismissError}
+        />
 
         <section className="space-y-4">
           <AiQuotaCard
@@ -501,17 +417,4 @@ function connectionStatusLabel(status: ProviderConnectionState): string {
     case 'failed': return '连接失败'
     default: return '未检查'
   }
-}
-
-function maskAccountLabel(value: string): string {
-  const at = value.indexOf('@')
-  if (at > 0) {
-    const accountName = value.slice(0, at)
-    const visible = accountName.length > 1
-      ? `${accountName[0]}***${accountName[accountName.length - 1]}`
-      : `${accountName[0]}***`
-    return `${visible}${value.slice(at)}`
-  }
-  if (value.length <= 2) return `${value[0] ?? ''}***`
-  return `${value[0]}***${value[value.length - 1]}`
 }

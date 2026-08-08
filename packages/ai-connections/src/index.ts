@@ -23,6 +23,8 @@ export * from './AiConnectionsMainHeader'
 export * from './AiModelEditorDialog'
 export * from './controller'
 export * from './AiProviderCard'
+export * from './AiCredentialPoolSection'
+export * from './AiOfferingTabs'
 export * from './AiQuotaCard'
 export * from './manifest'
 

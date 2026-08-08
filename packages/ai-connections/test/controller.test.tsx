@@ -133,6 +133,7 @@ describe('AI Connection controller host.solid integration', () => {
     })))
 
     render(<AiConnectionsMain controller={controller} />)
+    expect(screen.getByRole('region', { name: '登录 Xpod' }).getAttribute('data-auth-boundary')).toBe('surface')
     fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
     await waitFor(() => expect(requireLogin).toHaveBeenCalledTimes(1))
@@ -162,7 +163,7 @@ describe('AI Connection controller host.solid integration', () => {
     render(<AiConnectionsMain controller={controller} />)
 
     expect(screen.getByText('Pod 打开失败')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '重试登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '重新登录' }))
     expect(requireLogin).toHaveBeenCalledTimes(1)
   })
 
@@ -171,7 +172,7 @@ describe('AI Connection controller host.solid integration', () => {
     const providerLoadQueue = [staleProviderLoad]
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/api/ai/connections/providers')) {
+      if (url.endsWith('/api/ai/providers')) {
         const load = providerLoadQueue.shift()
         if (!load) throw new Error('Unexpected provider load')
         return await load.promise
@@ -256,7 +257,7 @@ describe('AI Connection controller host.solid integration', () => {
     expect(document.getElementById(describedBy!)?.textContent).toBe('读取中')
     await waitFor(() => {
       expect(
-        vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/connections/providers')),
+        vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/providers')),
       ).toHaveLength(1)
     })
 
@@ -310,7 +311,7 @@ describe('AI Connection controller host.solid integration', () => {
           headers: { 'content-type': 'application/json' },
         })
       }
-      if (url.endsWith('/api/ai/connections/providers')) {
+      if (url.endsWith('/api/ai/providers')) {
         return new Response(JSON.stringify({ data: [] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -346,14 +347,14 @@ describe('AI Connection controller host.solid integration', () => {
       expect.objectContaining({ appletId: 'co.undefineds.ai-connections' }),
     )
     expect(
-      vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/connections/providers')),
+      vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/providers')),
     ).toHaveLength(1)
   })
 
   it('groups Provider credentials into one controller summary per product', async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/api/ai/connections/providers')) {
+      if (url.endsWith('/api/ai/providers')) {
         return new Response(JSON.stringify({
           data: [{
             id: 'bailian',
