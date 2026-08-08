@@ -1,4 +1,10 @@
-import { createHash, createHmac, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomBytes as nodeRandomBytes,
+  randomUUID as nodeRandomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
 import { alias, and, drizzle, eq } from '@undefineds.co/drizzle-solid';
 import {
   aiProviderResource,
@@ -8,8 +14,11 @@ import {
 import type { EncryptedCredentialSecret } from '../credentials/KeyWrapper';
 import type { CredentialVault, GatewayPrincipal, ProviderSecret } from '../credentials/CredentialVault';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
-import type { ProviderRegistry } from '../providers/ProviderRegistry';
-import { DEFAULT_PROVIDER_DESCRIPTORS } from '../providers/ProviderRegistry';
+import {
+  DEFAULT_PROVIDER_DESCRIPTORS,
+  DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS,
+  type ProviderRegistry,
+} from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 
@@ -103,10 +112,43 @@ export interface ConnectCredentialRecord {
   expectedVersion?: number;
   version?: number;
   reauthRequired?: boolean;
+  offeringId?: string;
+  priority?: number;
+  enabled?: boolean;
+  health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
   metadata?: Record<string, unknown>;
 }
 
+export type CreateConnectCredentialRecord = Omit<ConnectCredentialRecord, 'id'> & { id?: string };
+
+export interface ProviderCredentialQuery {
+  webId: string;
+  provider: string;
+  deployment: GatewayDeployment;
+  auth?: AuthContext;
+}
+
 export interface PodCredentialRepository {
+  listProviderCredentials(input: ProviderCredentialQuery): Promise<ConnectCredentialRecord[]>;
+  getCredentialById(input: ProviderCredentialQuery & {
+    credentialId: string;
+    keyVersion?: number;
+  }): Promise<ConnectCredentialRecord | undefined>;
+  createCredential(
+    record: CreateConnectCredentialRecord,
+    context?: { auth?: AuthContext },
+  ): Promise<ConnectCredentialRecord>;
+  updateCredential(input: ProviderCredentialQuery & {
+    credentialId: string;
+    keyVersion?: number;
+    expectedVersion?: number;
+    patch: Partial<ConnectCredentialRecord>;
+  }): Promise<ConnectCredentialRecord | undefined>;
+  revokeCredential(input: ProviderCredentialQuery & {
+    credentialId: string;
+    keyVersion?: number;
+    expectedVersion?: number;
+  }): Promise<ConnectCredentialRecord | undefined>;
   getCredential?(input: {
     webId: string;
     provider: string;
@@ -127,6 +169,7 @@ export interface PodCredentialRepository {
     webId: string;
     deployment: GatewayDeployment;
     credentialId: string;
+    keyVersion?: number;
     expectedVersion?: number;
     encryptedSecret: EncryptedCredentialSecret;
     auth?: AuthContext;
@@ -197,14 +240,13 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     deployment: GatewayDeployment;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const id = aiRuntimeRepository.credentialId(input);
-    const row = await db.findById<Record<string, unknown>>(credential, id);
-    const record = row ? recordFromCredentialRow(row) : undefined;
-    if (!record) {
-      return undefined;
+    const rows = await this.listProviderCredentials(input);
+    const requestedId = aiRuntimeRepository.credentialId(input);
+    const byId = rows.find((row) => row.id === requestedId);
+    if (byId) {
+      return byId;
     }
-    return record;
+    return rows[0];
   }
 
   public async getActiveCredential(input: {
@@ -213,8 +255,11 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     deployment: GatewayDeployment;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const record = await this.getCredential(input);
-    return record?.status === 'active' && !record.reauthRequired ? record : undefined;
+    const rows = await this.listProviderCredentials(input);
+    return rows
+      .filter((row) => row.status === 'active')
+      .filter((row) => !row.reauthRequired)
+      .at(0);
   }
 
   public async listCredentials(input: {
@@ -227,6 +272,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     provider: string;
     authMode: 'apiKey' | 'deviceCodeOAuth';
     enabled: boolean;
+    accountLabel?: string;
     priority?: number;
     models?: string[];
     customModels?: CustomProviderModel[];
@@ -238,44 +284,175 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const rows = (await Promise.all(
-      this.providerIds.map(async (provider) => {
-        try {
-          return await db.findById<Record<string, unknown>>(
-            credential,
-            aiRuntimeRepository.credentialId({ deployment: input.deployment, provider }),
-          );
-        } catch (error) {
-          if (isPodResourceNotFound(error)) {
-            return null;
-          }
-          throw error;
-        }
-      }),
-    )).filter((row): row is Record<string, unknown> => row !== null);
-    return rows
-      .map(recordFromCredentialRow)
-      .filter((record) => record.webId === input.webId)
-      .filter((record) => record.deployment === input.deployment)
+    const rows = await this.dbForOwnerRows(input.webId, input.auth);
+    const enabledProviderIds = new Set(this.providerIds.map(normalizeProvider));
+    const filtered = rows
       .filter((record) => record.status === 'active')
+      .filter((record) => normalizeProvider(record.provider) !== '')
+      .filter((record) => enabledProviderIds.has(normalizeProvider(record.provider)));
+    return filtered
+      .sort(compareCredentialRecords)
       .map((record) => ({
         id: record.id,
         credentialIri: record.credentialIri,
         provider: record.provider,
         authMode: record.authMode,
-        enabled: !record.reauthRequired,
+        enabled: record.enabled === false ? false : !record.reauthRequired,
+        accountLabel: record.accountLabel,
         models: modelsFromMetadata(record.metadata),
         customModels: customModelsFromMetadata(record.metadata),
         defaultModel: defaultModelFromMetadata(record.metadata),
-        priority: priorityFromMetadata(record.metadata),
-        health: record.reauthRequired ? 'reauthRequired' : 'healthy',
+        priority: record.priority ?? 100,
+        health: record.health ?? (record.reauthRequired ? 'reauthRequired' : 'healthy'),
         quota: { status: 'available' },
         encryptedSecret: record.encryptedSecret,
         version: record.version,
         runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
-        metadata: record.metadata,
+        metadata: {
+          ...record.metadata,
+          offeringId: record.offeringId ?? (metadataFromRowValue(record.metadata)?.offeringId ?? undefined),
+          priority: record.priority ?? 100,
+          enabled: record.enabled ?? !record.reauthRequired,
+          health: record.health ?? (record.reauthRequired ? 'reauthRequired' : 'healthy'),
+        },
       }));
+  }
+
+  public async listProviderCredentials(input: ProviderCredentialQuery): Promise<ConnectCredentialRecord[]> {
+    return this.findCredentialRows({
+      ...input,
+      includeRevoked: true,
+    });
+  }
+
+  public async getCredentialById(input: ProviderCredentialQuery & {
+    credentialId: string;
+    keyVersion?: number;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const rows = await this.findCredentialRows({
+      ...input,
+      includeRevoked: true,
+    });
+    const requestedVersion = input.keyVersion;
+    return rows
+      .filter((row) => row.id === input.credentialId)
+      .find((row) => requestedVersion === undefined || row.version === requestedVersion);
+  }
+
+  public async createCredential(
+    record: CreateConnectCredentialRecord,
+    context?: { auth?: AuthContext },
+  ): Promise<ConnectCredentialRecord> {
+    const credentialId = record.id || nodeRandomUUID();
+    const { db, credential } = await this.dbForOwner(record.webId, context?.auth);
+    const withDefaults = {
+      ...record,
+      id: credentialId,
+      version: Math.max(record.version ?? 0, 1),
+    };
+    const row = credentialRowFromRecord(withDefaults);
+    await db.insert(credential).values(row).execute();
+    return recordFromCredentialRow(row);
+  }
+
+  public async updateCredential(input: ProviderCredentialQuery & {
+    credentialId: string;
+    keyVersion?: number;
+    expectedVersion?: number;
+    patch: Partial<ConnectCredentialRecord>;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    const target = await this.getCredentialById(input);
+    if (!target) {
+      return undefined;
+    }
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
+    const currentVersion = target.version ?? 0;
+    const expectedVersion = input.expectedVersion ?? input.keyVersion;
+    if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
+      throw new Error('credential_version_conflict');
+    }
+    const merged: ConnectCredentialRecord = {
+      ...target,
+      ...input.patch,
+      id: input.credentialId,
+      webId: input.webId,
+      provider: input.provider,
+      deployment: input.deployment,
+      version: currentVersion + 1,
+    };
+    if (merged.status === 'revoked' && input.patch.enabled === undefined) {
+      merged.enabled = false;
+    }
+    if (merged.status === 'revoked' && input.patch.health === undefined) {
+      merged.health = 'disabled';
+    } else if (merged.reauthRequired === true && input.patch.health === undefined) {
+      merged.health = 'reauthRequired';
+    }
+    const row = credentialRowFromRecord({
+      ...merged,
+      health: merged.health ?? (merged.reauthRequired ? 'reauthRequired' : 'healthy'),
+      enabled: merged.enabled ?? merged.status === 'active',
+      priority: merged.priority ?? 100,
+    });
+    const expectedVersionString = String(expectedVersion ?? currentVersion);
+    const updated = await updateByCredentialIdAndVersion({
+      db,
+      credential,
+      credentialId: input.credentialId,
+      expectedVersion: expectedVersionString,
+      patch: row,
+    });
+    return updated ? recordFromCredentialRow(updated) : undefined;
+  }
+
+  public async revokeCredential(input: ProviderCredentialQuery & {
+    credentialId: string;
+    keyVersion?: number;
+    expectedVersion?: number;
+  }): Promise<ConnectCredentialRecord | undefined> {
+    return this.updateCredential({
+      webId: input.webId,
+      provider: input.provider,
+      deployment: input.deployment,
+      credentialId: input.credentialId,
+      keyVersion: input.keyVersion,
+      expectedVersion: input.expectedVersion,
+      patch: { status: 'revoked', enabled: false, health: 'disabled' },
+      auth: input.auth,
+    });
+  }
+
+  private async findCredentialRows(input: {
+    webId: string;
+    provider: string;
+    deployment: GatewayDeployment;
+    auth?: AuthContext;
+    includeRevoked?: boolean;
+  }): Promise<ConnectCredentialRecord[]> {
+    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
+    const rows = await db
+      .select()
+      .from(credential)
+      .where(eq(credential.service, 'ai'))
+      .execute();
+    const provider = normalizeProvider(input.provider);
+    return rows
+      .map(recordFromCredentialRow)
+      .filter((record) => record.webId === input.webId)
+      .filter((record) => record.deployment === input.deployment)
+      .filter((record) => normalizeProvider(record.provider) === provider)
+      .filter((record) => input.includeRevoked || record.status === 'active')
+      .sort(compareCredentialRecords);
+  }
+
+  private async dbForOwnerRows(owner: string, auth?: AuthContext): Promise<ConnectCredentialRecord[]> {
+    const { db, credential } = await this.dbForOwner(owner, auth);
+    const rows = await db
+      .select()
+      .from(credential)
+      .where(eq(credential.service, 'ai'))
+      .execute();
+    return rows.map(recordFromCredentialRow);
   }
 
   public async upsertConnectedCredential(
@@ -346,36 +523,40 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     expectedVersion?: number;
     auth?: AuthContext;
   }): Promise<ConnectCredentialRecord | undefined> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const id = aiRuntimeRepository.credentialId(input);
-    const existing = await db.findById<Record<string, unknown>>(credential, id);
-    if (!existing) {
+    const current = await this.getActiveCredential(input);
+    if (!current) {
       return undefined;
     }
-    const existingVersion = versionFromRow(existing);
-    if (input.expectedVersion !== undefined && input.expectedVersion !== existingVersion) {
+    if (input.expectedVersion !== undefined && input.expectedVersion !== current.version) {
       throw new Error('credential_version_conflict');
     }
-    const updated = await db.updateById<Record<string, unknown>>(credential, id, {
-      reauthRequired: true,
-      status: 'active',
-      keyVersion: String(existingVersion + 1),
+    return this.updateCredential({
+      webId: input.webId,
+      provider: input.provider,
+      deployment: input.deployment,
+      credentialId: current.id,
+      expectedVersion: input.expectedVersion,
+      patch: {
+        reauthRequired: true,
+        status: 'active',
+      },
+      auth: input.auth,
     });
-    return updated ? recordFromCredentialRow(updated) : undefined;
   }
 
   public async disconnect(input: DisconnectInput): Promise<ConnectCredentialRecord | undefined> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
-    const id = aiRuntimeRepository.credentialId(input);
-    const existing = await db.findById<Record<string, unknown>>(credential, id);
-    if (!existing) {
+    const current = await this.getCredential(input);
+    if (!current) {
       return undefined;
     }
-    const updated = await db.updateById<Record<string, unknown>>(credential, id, {
-      status: 'revoked',
-      keyVersion: String(versionFromRow(existing) + 1),
+    return this.revokeCredential({
+      webId: input.webId,
+      provider: input.provider,
+      deployment: input.deployment,
+      credentialId: current.id,
+      expectedVersion: current.version,
+      auth: input.auth,
     });
-    return updated ? recordFromCredentialRow(updated) : undefined;
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<{
@@ -1208,8 +1389,24 @@ function createDefaultConnectedCredentialDb(input: {
 }
 
 function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string, unknown> {
+  const metadata = metadataFromRowValue(record.metadata) ?? {};
+  const normalizedProvider = normalizeProvider(record.provider);
+  if (record.offeringId === undefined) {
+    metadata.offeringId = metadata.offeringId ?? defaultOfferingFor(normalizedProvider);
+  } else {
+    metadata.offeringId = record.offeringId;
+  }
+  metadata.priority = record.priority ?? metadata.priority ?? 100;
+  metadata.enabled = record.enabled ?? metadata.enabled ?? record.status === 'active';
+  if (record.health !== undefined) {
+    metadata.health = record.health;
+  } else {
+    metadata.health = rowHealthFromMetadata({ metadata })
+      ?? (record.reauthRequired === true ? 'reauthRequired' : 'healthy');
+  }
   return {
     id: record.id,
+    owner: record.webId,
     provider: aiProviderResource.buildId({ id: normalizeProvider(record.provider) }),
     service: 'ai',
     authMode: record.authMode,
@@ -1224,6 +1421,7 @@ function credentialRowFromRecord(record: ConnectCredentialRecord): Record<string
     label: record.accountLabel,
     reauthRequired: record.reauthRequired ?? false,
     lastRefreshAt: new Date(),
+    metadata,
   };
 }
 
@@ -1234,6 +1432,8 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     || providerFromCredentialId(id);
   const deployment = deploymentFromCredentialId(id);
   const webId = encrypted.webId;
+  const status = stringFrom(row.status) === 'revoked' ? 'revoked' : 'active';
+  const reauthRequired = row.reauthRequired === true || row.reauthRequired === 'true';
   return {
     id,
     credentialIri: encrypted.credentialIri,
@@ -1242,14 +1442,74 @@ function recordFromCredentialRow(row: Record<string, unknown>): ConnectCredentia
     deployment,
     authMode: stringFrom(row.authMode) === 'deviceCodeOAuth' ? 'deviceCodeOAuth' : 'apiKey',
     encryptedSecret: encrypted,
-    status: stringFrom(row.status) === 'revoked' ? 'revoked' : 'active',
+    status,
     accountLabel: stringFrom(row.accountLabel) || stringFrom(row.label) || undefined,
     expiresAt: dateFrom(row.expiresAt),
     scopes: Array.isArray(row.scopes) ? row.scopes.map(String) : undefined,
     version: versionFromRow(row),
-    reauthRequired: row.reauthRequired === true || row.reauthRequired === 'true',
+    reauthRequired,
     metadata: metadataFromRow(row),
+    priority: rowPriorityFromMetadata(row) ?? 100,
+    offeringId: rowOfferingIdFromMetadata(row) ?? defaultOfferingFor(provider),
+    enabled: rowEnabledFromMetadata(row) ?? status === 'active',
+    health: rowHealthFromMetadata(row) ?? (reauthRequired ? 'reauthRequired' : 'healthy'),
   };
+}
+
+function compareCredentialRecords(left: ConnectCredentialRecord, right: ConnectCredentialRecord): number {
+  return (left.priority ?? 100) - (right.priority ?? 100)
+    || (right.version ?? 0) - (left.version ?? 0)
+    || left.id.localeCompare(right.id);
+}
+
+function metadataFromRowValue(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function rowOfferingIdFromMetadata(row: Record<string, unknown>): string | undefined {
+  const metadata = metadataFromRow(row);
+  const value = metadata?.offeringId;
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function rowPriorityFromMetadata(row: Record<string, unknown>): number | undefined {
+  const metadata = metadataFromRow(row);
+  const value = metadata?.priority;
+  return typeof value === 'number' && Number.isFinite(value) ? value
+    : typeof value === 'string' && Number.isFinite(Number(value))
+      ? Number(value)
+      : undefined;
+}
+
+function rowEnabledFromMetadata(row: Record<string, unknown>): boolean | undefined {
+  const metadata = metadataFromRow(row);
+  const value = metadata?.enabled;
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    if (value === 'true') {
+      return true;
+    }
+    if (value === 'false') {
+      return false;
+    }
+  }
+  return undefined;
+}
+
+function rowHealthFromMetadata(row: Record<string, unknown>): 'healthy' | 'reauthRequired' | 'disabled' | 'error' | undefined {
+  const metadata = metadataFromRow(row);
+  const value = metadata?.health;
+  return value === 'healthy'
+    || value === 'disabled'
+    || value === 'error'
+    || value === 'reauthRequired'
+    ? value
+    : undefined;
 }
 
 function providerFromRelation(value: string): string | undefined {
@@ -1344,11 +1604,6 @@ function modelsFromMetadata(metadata: Record<string, unknown> | undefined): stri
 function defaultModelFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
   const value = metadata?.defaultModel;
   return typeof value === 'string' ? value : undefined;
-}
-
-function priorityFromMetadata(metadata: Record<string, unknown> | undefined): number | undefined {
-  const value = metadata?.priority;
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -1559,4 +1814,31 @@ function decodeJwtSubject(idToken: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function defaultOfferingFor(provider: string): string | undefined {
+  const normalized = normalizeProvider(provider);
+  const product = DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS
+    .find((entry) => normalizeProvider(entry.id) === normalized);
+  return product?.offerings.at(0)?.id;
+}
+
+async function updateByCredentialIdAndVersion(params: {
+  db: ConnectedCredentialDb;
+  credential: typeof credentialResource;
+  credentialId: string;
+  expectedVersion: string;
+  patch: Record<string, unknown>;
+}): Promise<Record<string, unknown> | null> {
+  const { db, credential, credentialId, expectedVersion, patch } = params;
+  const updated = await db
+    .update(credential)
+    .set({ ...patch })
+    .where(and(eq(credential.id, credentialId), eq(credential.keyVersion, expectedVersion)))
+    .returning()
+    .execute();
+  if (updated.length === 1) {
+    return updated[0] as Record<string, unknown>;
+  }
+  return null;
 }

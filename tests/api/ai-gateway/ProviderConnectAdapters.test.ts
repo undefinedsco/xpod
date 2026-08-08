@@ -825,7 +825,12 @@ describe('ProviderConnectService', () => {
         updateById: async (_resource: unknown, id: string, patch: any) => {
           const row = rows.get(id);
           if (!row) return null;
-          Object.assign(row, patch);
+          Object.assign(row, {
+            ...patch,
+            encryptedSecret: typeof patch.encryptedSecret === 'string'
+              ? patch.encryptedSecret
+              : JSON.stringify(patch.encryptedSecret),
+          });
           return jsonClone(row);
         },
         update: () => ({
@@ -838,13 +843,22 @@ describe('ProviderConnectService', () => {
                   if (!row) return [];
                   if (simulateConcurrentRefreshBeforeRewrap) {
                     simulateConcurrentRefreshBeforeRewrap = false;
+                    const currentSecret = JSON.parse(String(row.encryptedSecret));
                     Object.assign(row, {
-                      encryptedSecret: JSON.stringify({ ciphertext: 'fresh-token-ciphertext' }),
+                      encryptedSecret: JSON.stringify({
+                        ...currentSecret,
+                        ciphertext: 'fresh-token-ciphertext',
+                      }),
                       keyVersion: String(Number(row.keyVersion) + 1),
                     });
                     return [];
                   }
-                  Object.assign(row, patch);
+                  Object.assign(row, {
+                    ...patch,
+                    encryptedSecret: typeof patch.encryptedSecret === 'string'
+                      ? patch.encryptedSecret
+                      : JSON.stringify(patch.encryptedSecret),
+                  });
                   return [jsonClone(row)];
                 },
               }),
@@ -945,15 +959,16 @@ describe('ProviderConnectService', () => {
         wrappedDek: 'stale-rewrapped-dek',
       },
     })).resolves.toBe(false);
-    expect(rows.get(beforeRace!.id)).toMatchObject({
-      encryptedSecret: JSON.stringify({ ciphertext: 'fresh-token-ciphertext' }),
-      keyVersion: '3',
-    });
-    await expect(repository.disconnect({
+    const racedRow = rows.get(beforeRace!.id);
+    expect(typeof racedRow?.encryptedSecret).toBe('string');
+    expect(racedRow?.encryptedSecret).toContain('fresh-token-ciphertext');
+    expect(racedRow).toMatchObject({ keyVersion: '3' });
+    const disconnected = await repository.disconnect({
       webId: WEB_ID,
       provider: 'openai',
       deployment: 'cloud',
-    })).resolves.toMatchObject({ status: 'revoked', version: 4 });
+    });
+    expect(disconnected).toMatchObject({ status: 'revoked', version: 4 });
   });
 
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
@@ -1023,6 +1038,470 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       deployment: 'cloud',
     })).rejects.toThrow('service_access_missing');
+  });
+
+  it('supports multiple credential rows for the same provider when listing and resolving active credentials', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const providerIri = 'https://id.example/alice/settings/credentials/openai.ttl#openai';
+    const activeCredentialIri = aiRuntimeRepository.credentialIri(WEB_ID, {
+      deployment: 'cloud',
+      provider: 'openai',
+    });
+    const legacyCredentialIri = 'https://id.example/alice/settings/ai/credentials/openai.ttl#legacy-openai';
+    const makeRecord = (id: string, version: number, options: {
+      status: 'active' | 'revoked';
+      reauthRequired?: boolean;
+      accountLabel: string;
+      encryptedSecret: Record<string, unknown>;
+    }): Record<string, unknown> => ({
+      id,
+      provider: providerIri,
+      service: 'ai',
+      status: options.status,
+      authMode: 'apiKey',
+      encryptedSecret: JSON.stringify(options.encryptedSecret),
+      wrappedDataKey: 'wrapped',
+      encryptionAlgorithm: 'AES-256-GCM',
+      keyVersion: String(version),
+      accountLabel: options.accountLabel,
+      label: options.accountLabel,
+      reauthRequired: options.reauthRequired ?? false,
+      expiresAt: null,
+      scopes: [],
+      lastRefreshAt: new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    const activeId = aiRuntimeRepository.credentialId({ deployment: 'cloud', provider: 'openai' });
+    const legacyId = 'https://id.example/settings/credentials/openai.ttl#cloud-openai-legacy';
+    rows.set(activeId, makeRecord(activeId, 4, {
+      status: 'active',
+      accountLabel: 'Primary',
+      reauthRequired: true,
+      encryptedSecret: {
+        webId: WEB_ID,
+        credentialIri: activeCredentialIri,
+        provider: 'openai',
+        type: 'apiKey',
+        apiKey: 'sk-primary',
+      },
+    }));
+    rows.set(legacyId, makeRecord(legacyId, 2, {
+      status: 'active',
+      accountLabel: 'Legacy',
+      encryptedSecret: {
+        webId: WEB_ID,
+        credentialIri: legacyCredentialIri,
+        provider: 'openai',
+        type: 'apiKey',
+        apiKey: 'sk-legacy',
+      },
+    }));
+
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => fetch),
+      },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              execute: async () => [...rows.values()].map(jsonClone),
+            }),
+          }),
+        }),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        updateById: async (_resource: unknown, id: string, patch: any) => {
+          const row = rows.get(id);
+          if (!row) return null;
+          Object.assign(row, patch);
+          return jsonClone(row);
+        },
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.getCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).resolves.toMatchObject({
+      id: activeId,
+      version: 4,
+      reauthRequired: true,
+    });
+    await expect(repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+    })).resolves.toMatchObject({
+      id: 'https://id.example/settings/credentials/openai.ttl#cloud-openai-legacy',
+      version: 2,
+      accountLabel: 'Legacy',
+      reauthRequired: false,
+    });
+    const listed = await repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    });
+    expect(listed).toHaveLength(2);
+    expect(listed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ accountLabel: 'Primary', credentialIri: activeCredentialIri, enabled: false }),
+      expect.objectContaining({ accountLabel: 'Legacy', credentialIri: legacyCredentialIri, enabled: true }),
+    ]));
+  });
+
+  it('persists and restores offeringId/priority/enabled/health metadata and defaults', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const trustedFetch = vi.fn(async () => new Response('{}', { status: 200 }));
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
+      },
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/credentials.ttl');
+        return {
+          init: vi.fn(),
+          insert: () => ({
+            values: (value: any) => ({
+              execute: async () => {
+                rows.set(value.id, jsonClone(value));
+                return [jsonClone(value)];
+              },
+            }),
+          }),
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()].map(jsonClone) }) }) }),
+          findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+          updateById: async (_resource: unknown, id: string, patch: any) => {
+            const row = rows.get(id);
+            if (!row) return null;
+            Object.assign(row, patch);
+            return jsonClone(row);
+          },
+          update: () => ({
+            set: (_patch: any) => ({
+              where: (_condition: any) => ({
+                returning: () => ({ execute: async () => [] }),
+              }),
+            }),
+          }),
+        } as any;
+      },
+    });
+
+    await repository.createCredential({
+      id: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-legacy',
+      credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-legacy',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: {
+        webId: WEB_ID,
+        credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-legacy',
+        provider: 'openai',
+        type: 'apiKey',
+        apiKey: 'legacy-key',
+      },
+      status: 'active',
+      accountLabel: 'Defaulted',
+    });
+
+    const stored = [...rows.values()][0];
+    expect(stored.metadata).toMatchObject({
+      offeringId: 'api-platform',
+      priority: 100,
+      enabled: true,
+      health: 'healthy',
+    });
+    await expect(repository.getCredentialById({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      credentialId: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-legacy',
+    })).resolves.toMatchObject({
+      offeringId: 'api-platform',
+      priority: 100,
+      enabled: true,
+      health: 'healthy',
+    });
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toMatchObject([{
+      provider: 'openai',
+      enabled: true,
+      health: 'healthy',
+      priority: 100,
+    }]);
+    const listed = await repository.listCredentials({ webId: WEB_ID, deployment: 'cloud' });
+    expect(listed.at(0)?.metadata).toMatchObject({
+      offeringId: 'api-platform',
+    });
+
+    const generated = await repository.createCredential({
+      credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-generated',
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: {
+        webId: WEB_ID,
+        credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-generated',
+        provider: 'openai',
+        type: 'apiKey',
+        apiKey: 'generated-key',
+      },
+      status: 'active',
+      accountLabel: 'Generated',
+      metadata: {
+        offeringId: 'responses-api',
+        priority: 5,
+        enabled: false,
+        health: 'error',
+      },
+    });
+    expect(generated.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    expect(rows.get(generated.id)?.metadata).toMatchObject({
+      offeringId: 'responses-api',
+      priority: 5,
+      enabled: false,
+      health: 'error',
+    });
+  });
+
+  it('supports creating multi-row credentials, get by id and sibling revoke with version CAS', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const trustedFetch = vi.fn(async () => new Response('{}', { status: 200 }));
+    const makeRecord = (id: string, credentialIri: string, version: number, input: {
+      status: 'active' | 'revoked';
+      authMode: 'apiKey' | 'deviceCodeOAuth';
+      reauthRequired?: boolean;
+      accountLabel: string;
+      secretType: string;
+    }): Record<string, unknown> => ({
+      id,
+      provider: 'https://id.example/alice/settings/ai/credentials/kimi.ttl#kimi',
+      service: 'ai',
+      status: input.status,
+      authMode: input.authMode,
+      encryptedSecret: JSON.stringify({
+        webId: WEB_ID,
+        credentialIri,
+        provider: 'kimi',
+        type: input.secretType,
+      }),
+      wrappedDataKey: 'wrapped',
+      encryptionAlgorithm: 'AES-256-GCM',
+      keyVersion: String(version),
+      accountLabel: input.accountLabel,
+      label: input.accountLabel,
+      reauthRequired: input.reauthRequired ?? false,
+      scopes: [],
+      expiresAt: null,
+      lastRefreshAt: new Date('2026-07-23T00:00:00.000Z'),
+      metadata: {},
+    });
+    const apiKeyId = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-openai-api';
+    const oauthId = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-openai-oauth';
+    rows.set(apiKeyId, makeRecord(
+      apiKeyId,
+      'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-openai-api',
+      7,
+      {
+      status: 'active',
+      authMode: 'apiKey',
+      accountLabel: 'ApiKey',
+      secretType: 'apiKey',
+      },
+    ));
+    rows.set(oauthId, makeRecord(
+      oauthId,
+      'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-openai-oauth',
+      3,
+      {
+      status: 'active',
+      authMode: 'deviceCodeOAuth',
+      accountLabel: 'OAuth',
+      secretType: 'deviceCodeOAuth',
+      },
+    ));
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => trustedFetch as unknown as typeof fetch),
+      },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()].map(jsonClone) }) }) }),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        updateById: vi.fn(async (_resource: unknown, id: string, patch: any) => {
+          const row = rows.get(id);
+          if (!row) return null;
+          Object.assign(row, patch);
+          return jsonClone(row);
+        }),
+        update: () => ({
+          set: (_patch: any) => ({
+            where: (_condition: any) => ({
+              returning: () => ({
+                execute: async () => {
+                  if (!rows.has(oauthId)) return [];
+                  rows.set(oauthId, {
+                    ...rows.get(oauthId)!,
+                    status: 'revoked',
+                    keyVersion: String(Number(rows.get(oauthId)!.keyVersion) + 1),
+                  });
+                  return [jsonClone(rows.get(oauthId)!)];
+                },
+              }),
+            }),
+          }),
+        }),
+      } as any),
+    });
+
+    await expect(repository.getCredentialById({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      credentialId: oauthId,
+    })).resolves.toMatchObject({ authMode: 'deviceCodeOAuth', accountLabel: 'OAuth' });
+    await expect(repository.getCredentialById({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      credentialId: apiKeyId,
+    })).resolves.toMatchObject({ authMode: 'apiKey', accountLabel: 'ApiKey' });
+
+    const revoked = await repository.revokeCredential({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      credentialId: oauthId,
+      keyVersion: 3,
+      expectedVersion: 3,
+    });
+    expect(revoked).toMatchObject({
+      id: oauthId,
+      status: 'revoked',
+      version: 4,
+      authMode: 'deviceCodeOAuth',
+    });
+
+    await expect(repository.getCredentialById({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      credentialId: apiKeyId,
+    })).resolves.toMatchObject({
+      status: 'active',
+      accountLabel: 'ApiKey',
+      id: apiKeyId,
+    });
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: apiKeyId }),
+    ]));
+    expect((await repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).map((item) => item.id)).not.toContain(oauthId);
+
+    await expect(repository.getCredentialById({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      credentialId: oauthId,
+      keyVersion: 3,
+    })).resolves.toBeUndefined();
+    await expect(repository.getCredentialById({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      credentialId: oauthId,
+      keyVersion: 4,
+    })).resolves.toMatchObject({ id: oauthId, status: 'revoked' });
+  });
+
+  it('lists provider credentials in priority order and treats CAS mismatch as no update', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const makeRecord = (id: string, version: number, priority: number): Record<string, unknown> => ({
+      id,
+      provider: 'https://id.example/alice/settings/ai/credentials/kimi.ttl#kimi',
+      service: 'ai',
+      status: 'active',
+      authMode: 'apiKey',
+      encryptedSecret: JSON.stringify({
+        webId: WEB_ID,
+        credentialIri: id,
+        provider: 'kimi',
+        type: 'apiKey',
+      }),
+      wrappedDataKey: 'wrapped',
+      encryptionAlgorithm: 'AES-256-GCM',
+      keyVersion: String(version),
+      accountLabel: id.endsWith('a') ? 'A' : 'B',
+      label: id.endsWith('a') ? 'A' : 'B',
+      reauthRequired: false,
+      scopes: [],
+      expiresAt: null,
+      lastRefreshAt: new Date('2026-07-23T00:00:00.000Z'),
+      metadata: { offeringId: 'official-subscription', priority, enabled: true, health: 'healthy' },
+    });
+    const credentialA = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-kimi-key-a';
+    const credentialB = 'https://id.example/alice/settings/ai/credentials/kimi.ttl#cloud-kimi-key-b';
+    rows.set(credentialA, makeRecord(credentialA, 1, 20));
+    rows.set(credentialB, makeRecord(credentialB, 2, 10));
+    const updateById = vi.fn();
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: {
+        getTrustedFetch: vi.fn(async () => fetch),
+      },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({ from: () => ({ where: () => ({ execute: async () => [...rows.values()].map(jsonClone) }) }) }),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        updateById,
+        update: () => ({
+          set: (_patch: any) => ({
+            where: (_condition: any) => ({
+              returning: () => ({ execute: async () => [] }),
+            }),
+          }),
+        }),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+    })).resolves.toMatchObject([
+      { id: credentialB, status: 'active', priority: 10 },
+      { id: credentialA, status: 'active', priority: 20 },
+    ]);
+
+    await expect(repository.revokeCredential({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      credentialId: credentialA,
+      expectedVersion: 1,
+    })).resolves.toBeUndefined();
+    expect(updateById).not.toHaveBeenCalled();
+    await expect(repository.listProviderCredentials({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+    })).resolves.toMatchObject([
+      { id: credentialB, status: 'active' },
+      { id: credentialA, status: 'active' },
+    ]);
   });
 });
 
