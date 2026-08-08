@@ -46,6 +46,10 @@ function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
 }
 
+function publicHostForBindHost(bindHost: string): string {
+  return bindHost === '127.0.0.1' || bindHost === '::1' ? 'localhost' : bindHost;
+}
+
 function normalizeWindowsAbsolutePath(filePath: string): string {
   return filePath.replace(/^[\\/]+(?=[A-Za-z]:[\\/])/, '');
 }
@@ -202,7 +206,7 @@ export async function resolveRuntimeBootstrap(
   const baseUrl = ensureTrailingSlash(
     options.baseUrl ?? (transport === 'socket'
       ? 'http://localhost'
-      : `http://${bindHost}:${ports.gateway}`),
+      : `http://${publicHostForBindHost(bindHost)}:${ports.gateway}`),
   );
 
   return {
@@ -305,6 +309,7 @@ export function buildRuntimeShorthand(
       ['emailConfigPort', envValue('CSS_EMAIL_CONFIG_PORT') ?? '587'],
       ['emailConfigAuthUser', envValue('CSS_EMAIL_CONFIG_AUTH_USER') ?? ''],
       ['emailConfigAuthPass', envValue('CSS_EMAIL_CONFIG_AUTH_PASS') ?? ''],
+      ['seedConfig', envValue('CSS_SEED_CONFIG')],
       ['oidcIssuer', externalOidcIssuer],
       ['allowedHosts', envValue('CSS_ALLOWED_HOSTS')],
       ['edgeNodeAgentEnabled', envValue('XPOD_EDGE_NODE_AGENT_ENABLED')],
