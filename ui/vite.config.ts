@@ -64,11 +64,12 @@ export default defineConfig(() => {
       outDir: config.outDir,
       emptyOutDir: true,
       rollupOptions: {
-        // drizzle-solid can optionally load Comunica for SPARQL queries, but the
-        // browser smoke page only uses exact LDP read/write/delete. Keep the
-        // optional SPARQL engine external so the phone verifier does not ship a
-        // multi-megabyte unused query-engine chunk.
-        external: ['@comunica/query-sparql-solid', 'node:module'],
+        // The lightweight auth/smoke app only uses exact LDP operations. Settings,
+        // however, hydrates Provider collections and therefore must bundle the
+        // browser SPARQL engine instead of leaving an unresolvable bare import.
+        external: buildTarget === 'settings'
+          ? ['node:module']
+          : ['@comunica/query-sparql-solid', 'node:module'],
         input: typeof config.input === 'string'
           ? path.resolve(__dirname, config.input)
           : Object.fromEntries(Object.entries(config.input).map(([name, input]) => [name, path.resolve(__dirname, input)])),

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type {
+  AiConnectionsPodStore,
   WebExtensionHost,
   WebExtensionSessionStatus,
   WebExtensionSolidPodStatus,
@@ -8,6 +9,7 @@ import {
   AI_CONNECTIONS_PROVIDERS,
   createAiConnectionsClient,
   normalizeAiConnectionsThrownError,
+  withAiClientCredentialsGatewayKeys,
   type AiConnectionsClient,
   type AiConnectionsMode,
   type AiConnectionsProvider,
@@ -88,11 +90,20 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   const authenticated = sessionSnapshot.status === 'authenticated'
     && pod.status === 'ready'
   const client = authenticated
-    ? createAiConnectionsClient({
+    ? createInteractiveAiConnectionsClient(
+      host.capabilities.aiClientCredentials
+        ? withAiClientCredentialsGatewayKeys(createAiConnectionsClient({
+          webId: sessionSnapshot.webId,
+          podBaseUrl: pod.current.podUrl,
+          authenticatedFetch: host.solid.session.fetch,
+        }), host.capabilities.aiClientCredentials)
+        : createAiConnectionsClient({
         webId: sessionSnapshot.webId,
         podBaseUrl: pod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
-      })
+      }),
+      host.capabilities.aiConnectionsPodStore,
+    )
     : null
   let selectedProvider: AiConnectionsProvider = 'openai'
   let searchQuery = ''
@@ -286,6 +297,36 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   }
 
   return controller
+}
+
+function createInteractiveAiConnectionsClient(
+  operationsClient: AiConnectionsClient,
+  podStore?: AiConnectionsPodStore,
+): AiConnectionsClient {
+  if (!podStore) return operationsClient
+  return {
+    ...operationsClient,
+    listProviders: async () => podStore.listProviders() as Promise<AiProviderSummary[]>,
+    createApiKeyCredential: podStore.createApiKeyCredential
+      ? async (provider, input) =>
+          podStore.createApiKeyCredential!(provider, input) as Promise<AiProviderCredentialSummary>
+      : operationsClient.createApiKeyCredential,
+    updateProviderCredential: podStore.updateProviderCredential
+      ? async (provider, credentialId, input) =>
+          podStore.updateProviderCredential!(provider, credentialId, input) as Promise<AiProviderCredentialSummary>
+      : operationsClient.updateProviderCredential,
+    deleteProviderCredential: podStore.deleteProviderCredential
+      ? async (provider, credentialId) =>
+          podStore.deleteProviderCredential!(provider, credentialId) as Promise<AiProviderCredentialSummary | undefined>
+      : operationsClient.deleteProviderCredential,
+    disconnect: async (provider, credentialId) => {
+      if (!credentialId || !podStore.deleteProviderCredential) {
+        return operationsClient.disconnect(provider, credentialId)
+      }
+      const deleted = await podStore.deleteProviderCredential(provider, credentialId)
+      return deleted as Awaited<ReturnType<AiConnectionsClient['disconnect']>>
+    },
+  }
 }
 
 function sessionStatusFromSnapshot(
@@ -498,5 +539,7 @@ function isDefined<T>(value: T | undefined): value is T {
 }
 
 function errorMessage(error: unknown): string {
-  return normalizeAiConnectionsThrownError(error)
+  return error instanceof Error && error.message
+    ? error.message
+    : normalizeAiConnectionsThrownError(error)
 }

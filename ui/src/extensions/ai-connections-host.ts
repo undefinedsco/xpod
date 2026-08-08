@@ -8,8 +8,10 @@ import {
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { createServiceAccessGatewayFetch, createXpodAiClientConfigurationBridge } from '../api/ai-connections';
+import { createXpodAiClientConfigurationBridge } from '../api/ai-connections';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
+import { createXpodAiClientCredentialsCapability } from './XpodAiClientCredentials';
+import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
 const aiConnectionExtension = createAiConnectionsExtension();
 const aiConnectionAppletId = aiConnectionExtension.manifest.contributes.applets[0]?.appId;
@@ -37,12 +39,7 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       session: {
         getSnapshot: runtime.session.getSnapshot,
         subscribe: runtime.session.subscribe,
-        fetch: runtime.currentPod
-          ? createServiceAccessGatewayFetch({
-            podUrl: runtime.currentPod.podUrl,
-            authenticatedFetch: runtime.fetch,
-          })
-          : runtime.fetch,
+        fetch: runtime.fetch,
       },
       pod,
       permissions: {
@@ -56,6 +53,19 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       },
     },
     capabilities: {
+      aiClientCredentials: runtime.currentPod
+        ? createXpodAiClientCredentialsCapability({
+          accountBaseUrl: runtime.state.issuer ?? runtime.issuer,
+          webId: runtime.currentPod.webId,
+        })
+        : undefined,
+      aiConnectionsPodStore: runtime.currentPod
+        ? createXpodAiConnectionsPodStore({
+          database: runtime.currentPod.database,
+          podUrl: runtime.currentPod.podUrl,
+          webId: runtime.currentPod.webId,
+        })
+        : undefined,
       aiClientConfiguration: runtime.currentPod &&
         runtime.aiClientConfiguration?.available === true &&
         runtime.aiClientConfiguration.authority === 'local-filesystem'

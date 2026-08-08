@@ -734,6 +734,49 @@ describe('ProviderQuotaAdapters', () => {
     })).rejects.toThrow('AI Connection service identity is not configured');
   });
 
+  it('uses an owner-bound sk client-credentials Bearer token before service Pod access for persisted quota snapshots', async () => {
+    const internalPodAccess = {
+      getTrustedFetch: vi.fn(async () => {
+        throw new Error('service identity must not be used for caller-owned quota access');
+      }),
+    };
+    const repository = new PodQuotaSnapshotRepository({
+      internalPodAccess,
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/ai/quota.ttl');
+        return {
+          init: vi.fn(),
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          findByIri: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          updateByIri: vi.fn(async () => null),
+          insert: vi.fn() as any,
+        } as any;
+      },
+    });
+    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+
+    await repository.findLatest({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: CREDENTIAL_IRI,
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        viaApiKey: true,
+        accessToken: 'caller-bearer-token',
+        tokenType: 'Bearer',
+      },
+    });
+
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    const headers = callerFetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer caller-bearer-token');
+    callerFetch.mockRestore();
+  });
+
   it('normalizes quota Pod 403 responses as service_access_missing', async () => {
     const serviceFetch = vi.fn(async () => new Response('', { status: 403 }));
     const repository = new PodQuotaSnapshotRepository({

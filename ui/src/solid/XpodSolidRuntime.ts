@@ -9,6 +9,7 @@ import {
   type SolidSessionSnapshot,
 } from '@undefineds.co/solid-sdk';
 import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
+import { aiProviderResource, credentialResource } from '@undefineds.co/models';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import { createContext, useContext } from 'react';
 import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision-scope';
@@ -109,9 +110,13 @@ export function createXpodSolidRuntimeValue(
       discoverPod: ({ webId, fetch }) => discoverPodUrlFromWebId({ webId, fetch }),
       openDatabase: ({ podUrl }) => drizzle(authSession, {
         podUrl,
+        schema: {
+          aiProvider: aiProviderResource,
+          credential: credentialResource,
+        },
         autoConnect: false,
         resourcePreparation: 'off',
-      }),
+      }) as unknown as SolidDatabase,
       hydrateCollections: () => undefined,
     },
   });

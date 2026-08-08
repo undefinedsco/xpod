@@ -147,9 +147,10 @@ export function AiConnectionsPanel({
       .then((availableModels) => {
         if (active) setModels(availableModels)
       })
-      .catch((error) => {
-        if (active) setKeyError(errorMessage(error))
-      })
+      // Model discovery has its own Provider status surface. A discovery
+      // failure must not be rendered as a CSS client-credential error in the
+      // unrelated Gateway Keys section.
+      .catch(() => undefined)
     return () => {
       active = false
       pollingGeneration.current += 1

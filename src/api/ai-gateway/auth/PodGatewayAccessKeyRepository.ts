@@ -5,6 +5,11 @@ import {
   type GatewayAccessKeyRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
+import {
+  CALLER_POD_ACCESS_UNAVAILABLE,
+  createCallerAuthenticatedPodFetch,
+  isInternalPodAccessAllowed,
+} from './CallerPodAccess';
 import { createGatewayKeyLocator, type GatewayKeyLocatorCodec } from './GatewayKeyLocatorCodec';
 import {
   type GatewayAccessKeyRecord,
@@ -131,7 +136,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     resource: GatewayAccessKeyResource;
     listResource: GatewayAccessKeyResource;
   }> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, context?.auth);
     const resource = gatewayAccessKeyResource;
     const listResource = this.usesDefaultDbFactory
       ? createGatewayAccessKeyResource(owner)
@@ -147,11 +152,22 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     return { db, resource, listResource };
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
+    if (callerFetch) {
+      return this.wrapPodFetch(callerFetch);
+    }
+    if (!isInternalPodAccessAllowed(auth)) {
+      throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
+    }
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
+    return this.wrapPodFetch(trustedFetch);
+  }
+
+  private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {
     return async (input, init) => {
       const response = await trustedFetch(input, init);
       if (response.status === 403) {

@@ -21,6 +21,11 @@ import {
   type ProviderRegistry,
 } from '../providers/ProviderRegistry';
 import type { AuthContext } from '../../auth/AuthContext';
+import {
+  CALLER_POD_ACCESS_UNAVAILABLE,
+  createCallerAuthenticatedPodFetch,
+  isInternalPodAccessAllowed,
+} from '../auth/CallerPodAccess';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 import { OAuthConnectCredentialStore } from './OAuthConnectAdapter';
 import type { OAuthIntegration } from './OAuthIntegrationRegistry';
@@ -585,7 +590,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     db: ConnectedCredentialDb;
     credential: typeof credentialResource;
   }> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const credential = alias(this.credentialTemplate, 'credential');
     credential.setSparqlEndpoint(CREDENTIAL_COLLECTION_SPARQL_ENDPOINT);
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
@@ -594,11 +599,22 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     return { db, credential };
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
+    if (callerFetch) {
+      return this.wrapPodFetch(callerFetch);
+    }
+    if (!isInternalPodAccessAllowed(auth)) {
+      throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
+    }
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
+    return this.wrapPodFetch(trustedFetch);
+  }
+
+  private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {
     return async (input, init) => {
       const response = await trustedFetch(input, init);
       if (response.status === 403) {

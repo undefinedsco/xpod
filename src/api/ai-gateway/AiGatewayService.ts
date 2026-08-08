@@ -40,6 +40,7 @@ export interface GatewayCredentialStore {
     credentialId: string;
     expectedVersion?: number;
     encryptedSecret: EncryptedCredentialSecret;
+    auth?: AuthContext;
   }): Promise<boolean>;
 }
 
@@ -163,6 +164,7 @@ export class AiGatewayService {
     request.model = route.model;
     const events = this.executeWithCredentialFailover({
       principal,
+      auth: input.auth,
       protocol: input.protocol,
       request,
       route,
@@ -345,6 +347,7 @@ export class AiGatewayService {
     protocol: GatewayProtocol;
     request: GatewayRequest;
     route: ModelRouteResult;
+    auth: AuthContext;
     signal?: AbortSignal;
   }): AsyncIterable<GatewayEvent> {
     let route = input.route;
@@ -355,7 +358,7 @@ export class AiGatewayService {
       attempted.add(route.credential.id);
       const credential = route.credential as StoredGatewayCredential;
       try {
-        const apiKey = await this.openApiKey(input.principal, route, credential);
+        const apiKey = await this.openApiKey(input.principal, route, credential, input.auth);
         const adapter = this.runtimes.get(route.provider.id);
         const upstream = adapter.execute({
           request: input.request,
@@ -375,7 +378,7 @@ export class AiGatewayService {
       } catch (error) {
         await this.recordRouteFailure(input.principal.webId, route, error);
         if (!firstClientEventEmitted && this.router.canFailOver(route) && isCredentialFailoverError(error)) {
-          const nextRoute = await this.findFailoverRoute(input.principal.webId, input.request, route, attempted);
+          const nextRoute = await this.findFailoverRoute(input.principal.webId, input.auth, input.request, route, attempted);
           if (nextRoute) {
             route = nextRoute;
             continue;
@@ -388,6 +391,7 @@ export class AiGatewayService {
 
   private async findFailoverRoute(
     webId: string,
+    auth: AuthContext,
     request: GatewayRequest,
     failedRoute: ModelRouteResult,
     attempted: Set<string>,
@@ -396,6 +400,7 @@ export class AiGatewayService {
       return await this.router.route({
         webId,
         deployment: this.deployment,
+        auth,
         model: `${failedRoute.provider.id}/${failedRoute.model}`,
         conversationId: conversationIdFor(request),
       }, attempted);
@@ -411,6 +416,7 @@ export class AiGatewayService {
     principal: { webId: string },
     route: ModelRouteResult,
     credential: StoredGatewayCredential,
+    auth: AuthContext,
   ): Promise<string> {
     const secret = await this.vault.open(
       principal,
@@ -426,6 +432,7 @@ export class AiGatewayService {
         credentialId: credential.id,
         expectedVersion: credential.version,
         encryptedSecret: rewrapped,
+        auth,
       });
     }
     const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;

@@ -1673,12 +1673,13 @@ describe('ProviderConnectService', () => {
     expect(disconnected).toMatchObject({ status: 'revoked', version: 4 });
   });
 
-  it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
+  it('does not replay direct caller management tokens while preserving the delegated service Pod path', async () => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const ownerMismatch = new Error('Gateway internal Pod token WebID does not match requested owner');
+    const getTrustedFetch = vi.fn(async () => { throw ownerMismatch; });
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => { throw ownerMismatch; }),
+        getTrustedFetch,
       },
       dbFactory: async ({ fetch: podFetch }) => {
         await podFetch('https://id.example/alice/settings/credentials.ttl');
@@ -1705,6 +1706,8 @@ describe('ProviderConnectService', () => {
       },
     })).rejects.toBe(ownerMismatch);
 
+    expect(getTrustedFetch).toHaveBeenCalledWith(WEB_ID);
+
     expect(browserFetch).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1714,6 +1717,51 @@ describe('ProviderConnectService', () => {
       }),
     );
     browserFetch.mockRestore();
+  });
+
+  it('uses an owner-bound sk client-credentials Bearer token before service Pod access', async () => {
+    const internalPodAccess = {
+      getTrustedFetch: vi.fn(async () => {
+        throw new Error('service identity must not be used for caller-owned access');
+      }),
+    };
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess,
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/credentials.ttl');
+        return {
+          init: vi.fn(),
+          insert: vi.fn() as any,
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          update: vi.fn() as any,
+        } as any;
+      },
+    });
+    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+
+    await repository.getActiveCredential({
+      webId: WEB_ID,
+      provider: 'openai',
+      deployment: 'cloud',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        viaApiKey: true,
+        accessToken: 'caller-bearer-token',
+        tokenType: 'Bearer',
+      },
+    });
+
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    expect(callerFetch).toHaveBeenCalledWith(
+      'https://id.example/alice/settings/credentials.ttl',
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+    const headers = callerFetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer caller-bearer-token');
+    callerFetch.mockRestore();
   });
 
   it('normalizes credential Pod 403 responses as service_access_missing', async () => {

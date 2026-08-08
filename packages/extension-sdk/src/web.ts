@@ -71,6 +71,55 @@ export interface AiClientConfigurationCapability {
   restore(client: AiClientId): Promise<AiClientConfigurationStatus>;
 }
 
+export interface AiConnectionsPodStore {
+  listProviders(): Promise<unknown[]>;
+  createApiKeyCredential?(provider: string, input: {
+    offeringId?: string;
+    apiKey: string;
+    label?: string;
+    baseUrl?: string;
+    priority?: number;
+  }): Promise<unknown>;
+  updateProviderCredential?(provider: string, credentialId: string, input: {
+    expectedVersion: number;
+    label?: string;
+    enabled?: boolean;
+    priority?: number;
+    baseUrl?: string;
+  }): Promise<unknown>;
+  deleteProviderCredential?(provider: string, credentialId: string): Promise<unknown | undefined>;
+  readCredentialSecret?(provider: string, credentialId: string): Promise<Record<string, unknown>>;
+  saveDiscoveredModels?(provider: string, credentialId: string, models: unknown[]): Promise<void>;
+  saveModelSelection?(provider: string, modelIds: string[]): Promise<void>;
+}
+
+/**
+ * CSS account-owned OAuth client credentials used by coding clients.
+ *
+ * The secret is only returned as part of the create result. Hosts must turn
+ * it into the `sk-base64(client_id:client_secret)` wrapper before handing it
+ * to a client configuration adapter; it must not be persisted in the host.
+ */
+export interface AiClientCredentialRecord {
+  id: string;
+  resourceUrl: string;
+  owner: string;
+  name?: string;
+  createdAt?: string;
+  revokedAt?: string;
+}
+
+export interface CreatedAiClientCredential {
+  plaintext: string;
+  record: AiClientCredentialRecord;
+}
+
+export interface AiClientCredentialsCapability {
+  list(): Promise<AiClientCredentialRecord[]>;
+  create(input: { name?: string; webId: string }): Promise<CreatedAiClientCredential>;
+  revoke(credentialId: string): Promise<AiClientCredentialRecord | undefined>;
+}
+
 export type WebExtensionSolidPodStatus =
   | 'unavailable'
   | 'opening'
@@ -142,6 +191,8 @@ export interface WebExtensionNavigationCapability {
 
 export interface WebExtensionHostCapabilities {
   aiClientConfiguration?: AiClientConfigurationCapability;
+  aiConnectionsPodStore?: AiConnectionsPodStore;
+  aiClientCredentials?: AiClientCredentialsCapability;
 }
 
 export interface WebExtensionHost<Database = unknown> {

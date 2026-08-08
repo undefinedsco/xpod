@@ -2,20 +2,22 @@ import {
   PROVIDERS,
   useProviderLoadError,
   useProviderSummaries,
-  useServiceAccessState,
   useSelectedProvider,
   type AiConnectionsController,
-  type ServiceAccessState,
 } from './controller'
 import { AiConnectionsPanel } from './AiConnectionsPanel'
 import { AuthBoundary, type AuthBoundaryState } from '@undefineds.co/extension-sdk/react'
+import { useEffect } from 'react'
 
 export function AiConnectionsMain({ controller }: { controller: AiConnectionsController }) {
   const selectedProvider = useSelectedProvider(controller)
   const providerSummaries = useProviderSummaries(controller)
   const providerLoadError = useProviderLoadError(controller)
-  const serviceAccessState = useServiceAccessState(controller)
   const provider = PROVIDERS.find((item) => item.id === selectedProvider)
+
+  useEffect(() => {
+    if (controller.client) void controller.loadProviders()
+  }, [controller])
 
   if (!controller.client) {
     return (
@@ -40,9 +42,6 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
 
   return (
     <section role="region" aria-label={`${provider?.name ?? selectedProvider} 详情`}>
-      <p className="px-6 pt-4 text-xs text-muted-foreground" role="status">
-        {serviceAccessStateLabel(serviceAccessState)}
-      </p>
       <AiConnectionsPanel
         client={controller.client}
         selectedProvider={selectedProvider}
@@ -51,7 +50,7 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
         providerSummaries={providerSummaries}
         providerProducts={controller.providerSummaries}
         providerLoadError={providerLoadError}
-        serviceAccessGranted={serviceAccessState === 'granted'}
+        serviceAccessGranted
         onProviderStateChange={controller.setProviderState}
       />
     </section>
@@ -70,10 +69,4 @@ function authBoundaryState(controller: AiConnectionsController): AuthBoundarySta
         : undefined)
   if (error) return { status: 'error', message: error.message }
   return { status: 'anonymous' }
-}
-
-function serviceAccessStateLabel(state: ServiceAccessState): string {
-  if (state === 'granted') return '服务访问已授权'
-  if (state === 'checking') return '服务访问检查中'
-  return '服务访问未授权'
 }

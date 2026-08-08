@@ -250,6 +250,7 @@ describe('AiGatewayService', () => {
       credentialId: 'rotating',
       expectedVersion: 4,
       encryptedSecret: activeEncrypted,
+      auth: AUTH,
     });
   });
 
@@ -504,15 +505,15 @@ describe('AiGatewayService', () => {
         details: { classification: 'authentication' },
       });
     });
-    const { service } = serviceWith([
+    const fixture = serviceWith([
       credential({ id: 'primary', provider: 'openai', models: ['gpt-5'], priority: 1 }),
       credential({ id: 'backup', provider: 'openai', models: ['gpt-5'], priority: 2 }),
     ]);
-    (service as unknown as { runtimes: ProviderRuntimeRegistry }).runtimes = {
+    (fixture.service as unknown as { runtimes: ProviderRuntimeRegistry }).runtimes = {
       get: vi.fn(() => ({ execute: runtimeExecute })),
     } as unknown as ProviderRuntimeRegistry;
 
-    await expect(service.complete({
+    await expect(fixture.service.complete({
       auth: AUTH,
       protocol: 'chatCompletions',
       body: {
@@ -541,15 +542,15 @@ describe('AiGatewayService', () => {
       yield { type: 'text.delta' as const, text: 'ok' };
       yield { type: 'response.completed' as const, finishReason: 'stop' };
     });
-    const { service } = serviceWith([
+    const fixture = serviceWith([
       credential({ id: 'primary', provider: 'openai', models: ['gpt-5'], priority: 1 }),
       credential({ id: 'backup', provider: 'openai', models: ['gpt-5'], priority: 2 }),
     ]);
-    (service as unknown as { runtimes: ProviderRuntimeRegistry }).runtimes = {
+    (fixture.service as unknown as { runtimes: ProviderRuntimeRegistry }).runtimes = {
       get: vi.fn(() => ({ execute: runtimeExecute })),
     } as unknown as ProviderRuntimeRegistry;
 
-    await expect(service.complete({
+    await expect(fixture.service.complete({
       auth: AUTH,
       protocol: 'chatCompletions',
       body: {
@@ -564,5 +565,7 @@ describe('AiGatewayService', () => {
       ],
     });
     expect(attempts).toEqual(['sk-primary', 'sk-backup']);
+    expect(fixture.store.listCredentials).toHaveBeenNthCalledWith(1, expect.objectContaining({ auth: AUTH }));
+    expect(fixture.store.listCredentials).toHaveBeenNthCalledWith(2, expect.objectContaining({ auth: AUTH }));
   });
 });

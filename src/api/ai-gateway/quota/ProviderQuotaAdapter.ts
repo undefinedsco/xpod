@@ -6,6 +6,11 @@ import {
   type QuotaSnapshotRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
+import {
+  CALLER_POD_ACCESS_UNAVAILABLE,
+  createCallerAuthenticatedPodFetch,
+  isInternalPodAccessAllowed,
+} from '../auth/CallerPodAccess';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
@@ -62,18 +67,21 @@ export interface QuotaSnapshotRepository {
     provider: string;
     credentialIri: string;
     now: Date;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined>;
   findLatest(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
     credentialIri: string;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined>;
   upsert(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
     snapshot: NormalizedQuotaSnapshot;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot>;
 }
 
@@ -85,6 +93,7 @@ export interface ProviderQuotaStatusInput {
   refresh?: boolean;
   now?: Date;
   signal?: AbortSignal;
+  auth?: AuthContext;
 }
 
 export interface ProviderQuotaServiceOptions {
@@ -154,6 +163,7 @@ export class ProviderQuotaService {
       deployment: input.deployment,
       provider,
       credentialIri: input.credentialIri,
+      auth: input.auth,
     });
 
     if (!input.refresh) {
@@ -163,6 +173,7 @@ export class ProviderQuotaService {
         provider,
         credentialIri: credential.credentialIri,
         now,
+        auth: input.auth,
       });
       if (cached) {
         return { ...cached, stale: false };
@@ -172,6 +183,7 @@ export class ProviderQuotaService {
         deployment: input.deployment,
         provider,
         credentialIri: credential.credentialIri,
+        auth: input.auth,
       });
       if (latest) {
         return { ...latest, stale: true };
@@ -201,6 +213,7 @@ export class ProviderQuotaService {
       adapter,
       now,
       signal: input.signal,
+      auth: input.auth,
     }).finally(() => {
       this.inFlightRefreshes.delete(refreshKey);
     });
@@ -218,6 +231,7 @@ export class ProviderQuotaService {
       deployment: input.input.deployment,
       provider: input.provider,
       credentialIri: input.input.credentialIri,
+      auth: input.input.auth,
     });
     const adapter = this.adapters.get(input.provider);
     if (!adapter) {
@@ -231,6 +245,7 @@ export class ProviderQuotaService {
       adapter,
       now: input.now,
       signal: input.input.signal,
+      auth: input.input.auth,
     });
   }
 
@@ -242,6 +257,7 @@ export class ProviderQuotaService {
     adapter: ProviderQuotaAdapter;
     now: Date;
     signal?: AbortSignal;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot> {
     const secret = await this.vault.open(
       { webId: input.webId },
@@ -263,6 +279,7 @@ export class ProviderQuotaService {
         credentialId: input.credential.id,
         expectedVersion: input.credential.version,
         encryptedSecret: rewrapped,
+        auth: input.auth,
       });
     }
     let snapshot: NormalizedQuotaSnapshot;
@@ -289,6 +306,7 @@ export class ProviderQuotaService {
       deployment: input.deployment,
       provider: input.provider,
       snapshot,
+      auth: input.auth,
     });
   }
 
@@ -297,6 +315,7 @@ export class ProviderQuotaService {
     deployment: GatewayDeployment;
     provider: string;
     credentialIri?: string;
+    auth?: AuthContext;
   }): Promise<QuotaCredentialRecord> {
     const listed = this.credentials.find((candidate) =>
       candidate.webId === input.webId
@@ -311,6 +330,7 @@ export class ProviderQuotaService {
       webId: input.webId,
       deployment: input.deployment,
       provider: input.provider,
+      auth: input.auth,
     });
     if (
       active
@@ -429,8 +449,9 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     provider: string;
     credentialIri: string;
     now: Date;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const row = await aiGatewayRepository.findFreshQuotaSnapshot(db as never, {
       owner: input.webId,
       deployment: input.deployment,
@@ -446,8 +467,9 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     deployment: GatewayDeployment;
     provider: string;
     credentialIri: string;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const row = await aiGatewayRepository.findLatestQuotaSnapshot(db as never, {
       owner: input.webId,
       deployment: input.deployment,
@@ -462,8 +484,9 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     deployment: GatewayDeployment;
     provider: string;
     snapshot: NormalizedQuotaSnapshot;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const snapshot = sanitizeSnapshot({
       ...input.snapshot,
       id: input.snapshot.id ?? buildQuotaSnapshotId({
@@ -490,17 +513,28 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<QuotaSnapshotDb> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
     await db.init?.(quotaSnapshotResource);
     return db;
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
+    if (callerFetch) {
+      return this.wrapPodFetch(callerFetch);
+    }
+    if (!isInternalPodAccessAllowed(auth)) {
+      throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
+    }
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
+    return this.wrapPodFetch(trustedFetch);
+  }
+
+  private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {
     return async (input, init) => {
       const response = await trustedFetch(input, init);
       if (response.status === 403) {

@@ -120,6 +120,74 @@ describe('AI Connection controller host.solid integration', () => {
     })
   })
 
+  it('loads interactive Provider state from the host Pod store without service delegation', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`Unexpected interactive API request: ${String(input)}`)
+    }) as unknown as typeof fetch
+    const listProviders = vi.fn(async () => [{
+      id: 'openai',
+      name: 'OpenAI',
+      offerings: [],
+      credentials: [],
+      selectedModels: [],
+      status: 'unconfigured',
+    }])
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+      permissions: undefined,
+    })) as WebExtensionHost & {
+      capabilities: WebExtensionHost['capabilities'] & {
+        aiConnectionsPodStore: { listProviders: typeof listProviders }
+      }
+    }
+    host.capabilities.aiConnectionsPodStore = { listProviders }
+
+    const controller = createAiConnectionsController(host)
+    await controller.loadProviders()
+
+    expect(listProviders).toHaveBeenCalledTimes(1)
+    expect(controller.providerSummaries.openai?.status).toBe('unconfigured')
+    expect(sessionFetch).not.toHaveBeenCalled()
+  })
+
+  it('uses host CSS client credentials for coding-client Gateway key methods', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`Unexpected opaque Gateway request: ${String(input)}`)
+    }) as unknown as typeof fetch
+    const capability = {
+      list: vi.fn(async () => []),
+      create: vi.fn(async (input: { name?: string; webId: string }) => ({
+        plaintext: 'sk-Y2xpZW50LTE6c2VjcmV0',
+        record: {
+          id: 'client-1',
+          resourceUrl: 'https://pod.example/.account/client-credentials/client-1/',
+          owner: input.webId,
+          name: input.name,
+        },
+      })),
+      revoke: vi.fn(async () => undefined),
+    }
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiClientCredentials = capability
+
+    const controller = createAiConnectionsController(host)
+    const created = await controller.client?.createGatewayKey({ name: 'Codex' })
+
+    expect(created?.plaintext).toBe('sk-Y2xpZW50LTE6c2VjcmV0')
+    expect(capability.create).toHaveBeenCalledWith({ name: 'Codex', webId: WEB_ID })
+    expect(sessionFetch).not.toHaveBeenCalled()
+  })
+
   it('requires login through host.solid for anonymous sessions', async () => {
     const requireLogin = vi.fn(async () => undefined)
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({

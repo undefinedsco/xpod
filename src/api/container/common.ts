@@ -5,6 +5,7 @@
  */
 
 import { asFunction, type AwilixContainer } from 'awilix';
+import { randomBytes } from 'node:crypto';
 import type { ApiContainerCradle } from './types';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
@@ -304,10 +305,11 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
-      const secret = config.gatewayLocatorSecret;
-      if (!secret) {
-        throw new Error('AI Gateway inference requires XPOD_GATEWAY_LOCATOR_SECRET for session affinity hashing');
-      }
+      // Public /v1 routes must not disappear merely because the optional
+      // legacy opaque Gateway Key locator is disabled. Without an explicit
+      // deployment secret affinity becomes process-local (safe, but it will
+      // not survive restarts or coordinate across replicas).
+      const secret = config.gatewayLocatorSecret ?? randomBytes(32).toString('hex');
       if (config.redisUrl) {
         return new RedisSessionAffinityStore({
           client: config.redisUrl,
@@ -319,9 +321,6 @@ export function registerCommonServices(
 
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
       const gatewayRuntimeRegistry = cradle.gatewayRuntimeRegistry;

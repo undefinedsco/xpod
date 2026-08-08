@@ -560,6 +560,7 @@ export function registerAiGatewayManagementRoutes(
         provider: params.provider,
         credentialIri: normalizeOptionalString(url.searchParams.get('credentialIri')),
         refresh: false,
+        auth: request.auth,
       });
       sendJson(response, 200, result);
     } catch (error) {
@@ -586,6 +587,7 @@ export function registerAiGatewayManagementRoutes(
         provider: params.provider,
         credentialIri: normalizeOptionalString(body.credentialIri),
         refresh: true,
+        auth: request.auth,
       });
       sendJson(response, 200, result);
     } catch (error) {
@@ -611,6 +613,7 @@ export function registerAiGatewayManagementRoutes(
         deployment: options.deployment,
         provider: params.provider,
         credentialIri: normalizeOptionalString(body.credentialIri),
+        auth: request.auth,
       });
       sendJson(response, 200, result);
     } catch (error) {

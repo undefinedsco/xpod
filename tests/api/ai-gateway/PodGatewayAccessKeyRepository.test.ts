@@ -175,6 +175,7 @@ describe('PodGatewayAccessKeyRepository', () => {
         webId: ALICE,
         accessToken: 'solid-access-token',
         tokenType: 'Bearer',
+        internalInvocation: true,
       },
     });
 
@@ -338,7 +339,7 @@ describe('PodGatewayAccessKeyRepository', () => {
     anonymousFetch.mockRestore();
   });
 
-  it('requires internal service Pod access instead of replaying caller DPoP tokens', async () => {
+  it('does not replay browser DPoP tokens while preserving the delegated service Pod path', async () => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const internalPodAccess = {
       getTrustedFetch: vi.fn(async () => undefined),
@@ -379,6 +380,52 @@ describe('PodGatewayAccessKeyRepository', () => {
       }),
     );
     browserFetch.mockRestore();
+  });
+
+  it('uses an owner-bound sk client-credentials Bearer token before service Pod access', async () => {
+    const internalPodAccess = {
+      getTrustedFetch: vi.fn(async () => {
+        throw new Error('service identity must not be used for caller-owned access');
+      }),
+    };
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: vi.fn(async ({ fetch: podFetch }) => {
+        const response = await podFetch('https://id.example/alice/settings/ai/gateway/access-keys.ttl');
+        return {
+          init: vi.fn(),
+          insert: vi.fn() as any,
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          findByIri: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          lastResponse: response,
+        };
+      }),
+      locatorCodec: codec,
+      internalPodAccess,
+    });
+    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+
+    await repository.listByOwner(ALICE, {
+      auth: {
+        type: 'solid',
+        webId: ALICE,
+        viaApiKey: true,
+        accessToken: 'caller-bearer-token',
+        tokenType: 'Bearer',
+      },
+    });
+
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    expect(callerFetch).toHaveBeenCalledWith(
+      'https://id.example/alice/settings/ai/gateway/access-keys.ttl',
+      expect.objectContaining({
+        headers: expect.any(Headers),
+      }),
+    );
+    const headers = callerFetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer caller-bearer-token');
+    callerFetch.mockRestore();
   });
 
   it('normalizes service Pod 403 responses as service_access_missing', async () => {
