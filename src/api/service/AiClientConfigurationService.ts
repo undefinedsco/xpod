@@ -454,11 +454,15 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
     const timeout = AbortSignal.timeout(timeoutMs);
     const linked = mergeSignals(signal, timeout);
     const base = endpoint.replace(/\/+$/u, '');
-    await checkedGatewayFetch(fetchImpl, `${base}/v1/models`, {
+    const modelsPayload = await checkedGatewayJson(fetchImpl, `${base}/v1/models`, {
       method: 'GET',
       headers: { accept: 'application/json', authorization: `Bearer ${gatewayKey}` },
       signal: linked,
     });
+    const verificationModel = model ?? firstGatewayModelId(modelsPayload);
+    if (!verificationModel) {
+      throw new Error('Gateway verification failed: no available models');
+    }
     await checkedGatewayFetch(fetchImpl, `${base}/v1/responses`, {
       method: 'POST',
       headers: {
@@ -467,13 +471,35 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
         authorization: `Bearer ${gatewayKey}`,
       },
       body: JSON.stringify({
-        model: model ?? 'xpod/default',
+        model: verificationModel,
         input: 'ping',
         max_output_tokens: 1,
       }),
       signal: linked,
     });
   };
+}
+
+async function checkedGatewayJson(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<unknown> {
+  const response = await fetchImpl(url, init);
+  if (!response.ok) {
+    await response.arrayBuffer();
+    throw new Error(`Gateway verification failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+function firstGatewayModelId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) return undefined;
+  for (const item of data) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const id = (item as { id?: unknown }).id;
+      if (typeof id === 'string' && id.trim()) return id.trim();
+    }
+  }
+  return undefined;
 }
 
 async function checkedGatewayFetch(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<void> {
@@ -529,8 +555,8 @@ export function redactSecretText(input: string): string {
   return input
     .replace(/\/(?:Users|var|tmp|private|home)\/[^\s"',)]+/gu, '[path]')
     .replace(/xpod_[A-Za-z0-9._-]+/gu, '[redacted]')
-    .replace(/sk-[A-Za-z0-9._-]+/gu, '[redacted]')
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/giu, 'Bearer [redacted]');
+    .replace(/sk-[A-Za-z0-9._+/=-]+/gu, '[redacted]')
+    .replace(/Bearer\s+[A-Za-z0-9._+/=-]+/giu, 'Bearer [redacted]');
 }
 
 export function unavailableAiClientConfigurationCapability(): AiClientConfigurationCapabilityDescriptor {

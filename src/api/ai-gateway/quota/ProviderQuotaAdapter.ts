@@ -96,6 +96,19 @@ export interface ProviderQuotaStatusInput {
   auth?: AuthContext;
 }
 
+export interface CallerOwnedQuotaInput {
+  webId: string;
+  deployment: GatewayDeployment;
+  provider: string;
+  credentialId: string;
+  credentialIri: string;
+  authMode: 'apiKey' | 'deviceCodeOAuth';
+  baseUrl?: string;
+  secret: ProviderSecret;
+  now?: Date;
+  signal?: AbortSignal;
+}
+
 export interface ProviderQuotaServiceOptions {
   repository: QuotaSnapshotRepository;
   vault: CredentialVault;
@@ -151,6 +164,35 @@ export class ProviderQuotaService {
     }
 
     return this.statusAfterImplicitCredentialResolution(input, provider, now);
+  }
+
+  public async statusCallerOwned(input: CallerOwnedQuotaInput): Promise<NormalizedQuotaSnapshot> {
+    const provider = normalizeProvider(input.provider);
+    const adapter = this.adapters.get(provider);
+    if (!adapter) throw new Error(`quota_adapter_not_found:${provider}`);
+    const now = input.now ?? this.now();
+    const credential = {
+      id: input.credentialId,
+      credentialIri: input.credentialIri,
+      webId: input.webId,
+      provider,
+      deployment: input.deployment,
+      authMode: input.authMode,
+      encryptedSecret: {} as QuotaCredentialRecord['encryptedSecret'],
+      status: 'active' as const,
+      baseUrl: input.baseUrl,
+    };
+    try {
+      return await adapter.fetch({ credential, secret: input.secret, now, signal: input.signal });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      return errorQuotaSnapshot({
+        credential: input.credentialIri,
+        source: quotaErrorSource(provider),
+        now,
+        metadata: { reason: 'provider_quota_unavailable' },
+      });
+    }
   }
 
   private async statusAfterImplicitCredentialResolution(

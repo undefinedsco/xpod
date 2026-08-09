@@ -230,6 +230,13 @@ export interface AiConnectionsClient {
   deleteProviderCredential(provider: AiConnectionsProvider, credentialId: string): Promise<AiProviderCredentialSummary | undefined>
   testProviderCredential(provider: AiConnectionsProvider, input: TestProviderCredentialInput): Promise<Record<string, unknown>>
   quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
+  quotaFromSecret(provider: AiConnectionsProvider, input: {
+    credentialId: string
+    credentialIri: string
+    authMode: 'apiKey' | 'deviceCodeOAuth'
+    baseUrl?: string
+    secret: Record<string, unknown>
+  }): Promise<AiQuotaSnapshot>
   discoverModels(provider: AiConnectionsProvider, input?: {
     credentialId?: string
     apiKey?: string
@@ -527,6 +534,15 @@ export function createAiConnectionsClient({
         `${providerPath(provider)}/quota/${refresh ? 'refresh' : 'status'}`,
         refresh ? 'POST' : 'GET',
         refresh ? {} : undefined,
+        { provider },
+      )
+    },
+
+    quotaFromSecret(provider, input) {
+      return request<AiQuotaSnapshot>(
+        `${providerPath(provider)}/quota/refresh`,
+        'POST',
+        compactObject(input),
         { provider },
       )
     },

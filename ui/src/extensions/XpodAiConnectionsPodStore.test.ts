@@ -113,8 +113,8 @@ describe('XpodAiConnectionsPodStore', () => {
     }) as { id: string; maskedHint: string; version: number };
     expect(created).toMatchObject({ maskedHint: 'sk-...alue', version: 1 });
     const storedEnvelope = JSON.parse(String(rows.get(created.id)?.encryptedSecret));
-    expect(storedEnvelope.encoding).toBeUndefined();
-    expect(JSON.parse(storedEnvelope.ciphertext)).toEqual({
+    expect(storedEnvelope.encoding).toBe('base64');
+    expect(JSON.parse(atob(storedEnvelope.ciphertext))).toEqual({
       type: 'apiKey',
       apiKey: 'sk-secret-value',
     });
@@ -194,7 +194,7 @@ describe('XpodAiConnectionsPodStore', () => {
       authoritativeSubject: 'moonshot-user-1',
     });
     const envelope = JSON.parse(String(stored.encryptedSecret));
-    expect(JSON.parse(envelope.ciphertext)).toEqual(expect.objectContaining({
+    expect(JSON.parse(atob(envelope.ciphertext))).toEqual(expect.objectContaining({
       type: 'deviceCodeOAuth',
       accessToken: 'kimi-access-token',
       refreshToken: 'kimi-refresh-token',
@@ -210,7 +210,7 @@ describe('XpodAiConnectionsPodStore', () => {
       refreshToken: 'stale-refresh-token',
     })).rejects.toThrow('credential_version_conflict');
     const refreshedEnvelope = JSON.parse(String(rows.get(saved.id)?.encryptedSecret));
-    expect(JSON.parse(refreshedEnvelope.ciphertext)).toEqual(expect.objectContaining({
+    expect(JSON.parse(atob(refreshedEnvelope.ciphertext))).toEqual(expect.objectContaining({
       accessToken: 'next-access-token',
       refreshToken: 'next-refresh-token',
     }));

@@ -47,7 +47,7 @@ function credential(input: Partial<StoredGatewayCredential> & {
     authMode: input.authMode ?? 'apiKey',
     enabled: input.enabled ?? true,
     priority: input.priority ?? 100,
-    models: input.models ?? [],
+    models: input.models,
     defaultModel: input.defaultModel,
     health: input.health ?? 'healthy',
     quota: input.quota ?? { status: 'available' },
@@ -135,13 +135,26 @@ describe('AiGatewayService', () => {
     ]);
   });
 
+  it('exposes no models when an active credential has an empty model Pick', async () => {
+    const { service } = serviceWith([
+      credential({
+        id: 'empty_pick',
+        provider: 'openai',
+        models: [],
+        customModels: [{ id: 'ft-hidden' }],
+      }),
+    ]);
+
+    await expect(service.listModels(AUTH)).resolves.toEqual([]);
+  });
+
   it('lists provider registry and discovered models only when an active unrestricted credential exists for that provider', async () => {
     const registry = createDefaultProviderRegistry();
     registry.mergeDiscoveredModels('openai', [{ id: 'gpt-5-dynamic-safe' }]);
     const credentials = [
       credential({ id: 'limited_openai', provider: 'openai', models: ['gpt-5'] }),
       credential({ id: 'unrestricted_disabled', provider: 'openai', enabled: false, models: [] }),
-      credential({ id: 'unrestricted_deepseek', provider: 'deepseek', models: [] }),
+      credential({ id: 'unrestricted_deepseek', provider: 'deepseek' }),
     ];
     const store: GatewayCredentialStore = {
       listCredentials: vi.fn(async() => credentials),

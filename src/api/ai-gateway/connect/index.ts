@@ -318,7 +318,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     metadata?: Record<string, unknown>;
   }>> {
     const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
-    const rows = (await this.selectCredentialRows(db, credential)).map(recordFromCredentialRow);
+    const rows = parseCredentialRows(await this.selectCredentialRows(db, credential));
     const enabledProviderIds = new Set(this.providerIds.map(normalizeProvider));
     const filtered = rows
       .filter((record) => record.status === 'active')
@@ -475,7 +475,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     const rows = await this.selectCredentialRows(db, credential);
     const providerIds = queryProviderIds(input.provider);
     return rows
-      .map(recordFromCredentialRow)
+      .flatMap(parseCredentialRow)
       .filter((record) => record.webId === input.webId)
       .filter((record) => providerIds.has(normalizeProvider(record.provider)))
       .filter((record) => input.includeRevoked || record.status === 'active')
@@ -485,7 +485,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   private async dbForOwnerRows(owner: string, auth?: AuthContext): Promise<ConnectCredentialRecord[]> {
     const { db, credential } = await this.dbForOwner(owner, auth);
     const rows = await this.selectCredentialRows(db, credential);
-    return rows.map(recordFromCredentialRow);
+    return parseCredentialRows(rows);
   }
 
   private async selectCredentialRows(
@@ -2195,11 +2195,23 @@ function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('Credential row is missing encrypted secret payload');
   }
-  const parsed = JSON.parse(value);
+  const parsed: unknown = JSON.parse(value);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Credential row encrypted secret payload is invalid');
   }
   return parsed as EncryptedCredentialSecret;
+}
+
+function parseCredentialRows(rows: Record<string, unknown>[]): ConnectCredentialRecord[] {
+  return rows.flatMap(parseCredentialRow);
+}
+
+function parseCredentialRow(row: Record<string, unknown>): ConnectCredentialRecord[] {
+  try {
+    return [recordFromCredentialRow(row)];
+  } catch {
+    return [];
+  }
 }
 
 function versionFromRow(row: Record<string, unknown>): number {

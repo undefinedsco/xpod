@@ -599,13 +599,27 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     try {
-      const result = await quotaService.status({
+      const credentialId = normalizeOptionalString(body.credentialId);
+      const credentialIri = normalizeOptionalString(body.credentialIri);
+      const authMode = body.authMode === 'apiKey' || body.authMode === 'deviceCodeOAuth'
+        ? body.authMode
+        : undefined;
+      const secret = body.secret && typeof body.secret === 'object' && !Array.isArray(body.secret)
+        ? body.secret as Record<string, unknown>
+        : undefined;
+      if (!credentialId || !credentialIri || !authMode || !secret) {
+        sendJson(response, 400, { error: 'credentialId, credentialIri, authMode and secret are required' });
+        return;
+      }
+      const result = await quotaService.statusCallerOwned({
         webId: request.auth.webId,
         deployment: options.deployment,
         provider: params.provider,
-        credentialIri: normalizeOptionalString(body.credentialIri),
-        refresh: true,
-        auth: request.auth,
+        credentialId,
+        credentialIri,
+        authMode,
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        secret,
       });
       sendJson(response, 200, result);
     } catch (error) {

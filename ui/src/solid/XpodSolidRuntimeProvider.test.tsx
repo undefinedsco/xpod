@@ -463,7 +463,7 @@ describe('Xpod Solid runtime', () => {
 
   test('discovers AI client configuration capability from the authenticated API path and exposes the host bridge descriptor', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
-      if (String(input) === '/api/ai/client-configuration/capability') {
+      if (new URL(String(input), window.location.href).pathname === '/api/ai/client-configuration/capability') {
         return new Response(JSON.stringify({
           available: true,
           authority: 'local-filesystem',
@@ -484,7 +484,7 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(container.querySelector('[data-testid="capability"]')?.textContent).toBe('local-filesystem');
-    expect(fetchImpl).toHaveBeenCalledWith('/api/ai/client-configuration/capability', expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith(new URL('/api/ai/client-configuration/capability', window.location.href).toString(), expect.objectContaining({
       credentials: 'include',
       headers: expect.objectContaining({ accept: 'application/json' }),
     }));
@@ -493,7 +493,7 @@ describe('Xpod Solid runtime', () => {
 
   test('falls back to manual AI client configuration capability when discovery is unavailable', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
-      if (String(input) === '/api/ai/client-configuration/capability') {
+      if (new URL(String(input), window.location.href).pathname === '/api/ai/client-configuration/capability') {
         return new Response(JSON.stringify({ code: 'client_configuration_unavailable' }), {
           status: 503,
           headers: { 'content-type': 'application/json' },

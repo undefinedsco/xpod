@@ -441,9 +441,12 @@ export class ModelRouter {
 }
 
 function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {
-  const models = candidate.models ?? [];
-  if (models.length === 0) {
+  const models = candidate.models;
+  if (models === undefined) {
     return true;
+  }
+  if (models.length === 0) {
+    return false;
   }
   if (models.some((candidateModel) => candidateModel === model)) {
     return true;

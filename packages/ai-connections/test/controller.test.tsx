@@ -259,6 +259,56 @@ describe('AI Connection controller host.solid integration', () => {
     expect(result).not.toHaveProperty('oauthCredential')
   })
 
+  it('reads quota credentials from the current Pod and sends them only as a transient request', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/deepseek\/quota\/refresh$/u)
+      expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
+        credentialId: 'credentials.ttl#deepseek-primary',
+        authMode: 'apiKey',
+        secret: { type: 'apiKey', apiKey: 'deepseek-transient-key' },
+      }))
+      return Response.json({
+        credential: 'credentials.ttl#deepseek-primary',
+        status: 'available',
+        windows: [{ name: 'USD.total_balance', remaining: 2 }],
+        observedAt: '2026-08-09T08:00:00.000Z',
+        expiresAt: '2026-08-09T08:05:00.000Z',
+        source: 'deepseek:/user/balance',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({
+      type: 'apiKey',
+      apiKey: 'deepseek-transient-key',
+    }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'deepseek',
+        credentials: [{
+          id: 'credentials.ttl#deepseek-primary',
+          authMode: 'apiKey',
+          enabled: true,
+          priority: 1,
+          baseUrl: 'https://api.deepseek.com/v1',
+        }],
+      }]),
+      readCredentialSecret,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.quota('deepseek', true)).resolves.toMatchObject({
+      status: 'available',
+      windows: [{ remaining: 2 }],
+    })
+    expect(readCredentialSecret).toHaveBeenCalledWith('deepseek', 'credentials.ttl#deepseek-primary')
+  })
+
   it('uses host CSS client credentials for coding-client Gateway key methods', async () => {
     const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
       throw new Error(`Unexpected opaque Gateway request: ${String(input)}`)

@@ -306,11 +306,19 @@ function plaintextEnvelope(
 ): string {
   return JSON.stringify({
     algorithm: 'PLAINTEXT',
-    ciphertext: JSON.stringify(secret),
+    encoding: 'base64',
+    ciphertext: encodeBase64Json(secret),
     webId: input.webId,
     credentialIri: credentialResource.buildIri(input.podUrl, { id }),
     provider,
   });
+}
+
+function encodeBase64Json(value: Record<string, unknown>): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 function credentialSummaryFromRow(

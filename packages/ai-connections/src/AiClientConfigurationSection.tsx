@@ -246,6 +246,9 @@ export function AiClientConfigurationSection({
                       {confirmation.message ? (
                         <div className="text-xs text-muted-foreground">{confirmation.message}</div>
                       ) : null}
+                      <div className="text-xs text-muted-foreground">
+                        确认码：<code className="font-mono text-foreground">{confirmation.token}</code>
+                      </div>
                       <Input
                         aria-label={`输入确认码以应用 ${AI_CLIENT_LABELS[client]} 配置`}
                         value={confirmationValue}

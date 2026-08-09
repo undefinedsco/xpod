@@ -7,6 +7,7 @@ import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import {
   AiClientConfigurationService,
+  redactSecretText,
   type AiClientId,
 } from '../../../src/api/service/AiClientConfigurationService';
 import { registerAiClientConfigurationRoutes } from '../../../src/api/handlers/AiClientConfigurationHandler';
@@ -30,6 +31,11 @@ const PROVIDER_KEY = 'sk-provider-must-never-appear';
 const CLIENTS: AiClientId[] = ['codex', 'claude-code', 'pi', 'codebuddy'];
 
 describe('AiClientConfigurationHandler', () => {
+  it('fully redacts base64 client-credential gateway keys', () => {
+    expect(redactSecretText('rejected sk-Y2xpZW50KzE6c2VjcmV0Lz0= suffix'))
+      .toBe('rejected [redacted] suffix');
+  });
+
   let tmpDir: string;
   let service: AiClientConfigurationService;
   let routes: Record<string, RouteHandler>;
@@ -237,6 +243,40 @@ describe('AiClientConfigurationHandler', () => {
     expect(JSON.stringify(body)).not.toContain(GATEWAY_KEY);
     expect(await readCodexConfig(tmpDir)).not.toContain('xpod-ai-connections');
     await expectUnrelatedPreserved(tmpDir, 'codex');
+  });
+
+  it('verifies with the first picked Gateway model when the plan has no explicit model', async () => {
+    const requests: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    service = new AiClientConfigurationService({
+      homeDir: tmpDir,
+      backupRoot: path.join(tmpDir, '.xpod', 'client-config-backups'),
+      fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        requests.push({
+          url,
+          ...(typeof init?.body === 'string' ? { body: JSON.parse(init.body) as Record<string, unknown> } : {}),
+        });
+        if (url.endsWith('/v1/models')) {
+          return new Response(JSON.stringify({ data: [{ id: 'openai-test-model' }] }), {
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({ id: 'resp_test' }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch,
+    });
+    const plan = await service.plan({ client: 'codex', endpoint: ENDPOINT, webId: WEB_ID });
+
+    await expect(service.apply({
+      client: 'codex',
+      planId: plan.planId,
+      gatewayKey: GATEWAY_KEY,
+      webId: WEB_ID,
+    })).resolves.toEqual({ applied: true });
+
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual(['/v1/models', '/v1/responses']);
+    expect(requests[1]?.body?.model).toBe('openai-test-model');
   });
 
   it('rejects unsafe symlink targets before backup or write', async () => {

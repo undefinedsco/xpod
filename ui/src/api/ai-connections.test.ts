@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createXpodAiConnectionsClient } from './ai-connections';
+import { createServiceAccessGatewayFetch, createXpodAiConnectionsClient } from './ai-connections';
 
 const test = it;
 const mock = vi.fn;
@@ -34,6 +34,95 @@ function serviceAccessPayload(overrides: Partial<{
 }
 
 describe('Xpod AI Connection API client', () => {
+  test('never attaches an invocation Bearer to cross-origin or non-AI requests', async () => {
+    const solidCalls: Array<{ url: string; authorization: string | null }> = [];
+    const invocationFetch = mock(async () => new Response('{}')) as typeof fetch;
+    const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      solidCalls.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get('authorization'),
+      });
+      return new Response('{}');
+    }) as typeof fetch;
+    const gatewayFetch = createServiceAccessGatewayFetch({
+      podUrl: POD_URL,
+      authenticatedFetch,
+      invocationFetch,
+    });
+
+    await gatewayFetch('https://evil.example/api/ai/providers');
+    await gatewayFetch('https://pod.example/alice/private.ttl');
+    await gatewayFetch('https://evil.example/api/applets/service-access/ai-connections');
+
+    expect(invocationFetch).not.toHaveBeenCalled();
+    expect(solidCalls).toEqual([
+      { url: 'https://evil.example/api/ai/providers', authorization: null },
+      { url: 'https://pod.example/alice/private.ttl', authorization: null },
+      { url: 'https://evil.example/api/applets/service-access/ai-connections', authorization: null },
+    ]);
+  });
+
+  test('keeps the service-access invocation cached across ordinary Solid requests', async () => {
+    let serviceAccessCalls = 0;
+    const invocationFetch = mock(async () => new Response(JSON.stringify({ data: [] }), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const authenticatedFetch = mock(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/applets/service-access/ai-connections')) {
+        serviceAccessCalls += 1;
+        return new Response(JSON.stringify(serviceAccessPayload()), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ invocation: { gatewayKey: 'untrusted' } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const gatewayFetch = createServiceAccessGatewayFetch({ podUrl: POD_URL, authenticatedFetch, invocationFetch });
+
+    await gatewayFetch('https://pod.example/api/ai/providers');
+    await gatewayFetch('https://pod.example/alice/private.json');
+    await gatewayFetch('https://pod.example/api/ai/providers');
+
+    expect(serviceAccessCalls).toBe(1);
+    expect(invocationFetch).toHaveBeenCalledTimes(2);
+    expect(new Headers(invocationFetch.mock.calls[1]?.[1]?.headers).get('authorization'))
+      .toBe('Bearer xpod_inv_v1.owner-bound-short-token');
+  });
+
+  test('uses Solid DPoP only to mint service access and preserves the invocation Bearer on management calls', async () => {
+    const solidCalls: string[] = [];
+    const invocationCalls: Array<{ url: string; authorization: string | null }> = [];
+    const authenticatedFetch = mock(async (input: RequestInfo | URL) => {
+      solidCalls.push(String(input));
+      return new Response(JSON.stringify(serviceAccessPayload()), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const invocationFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      invocationCalls.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get('authorization'),
+      });
+      return new Response(JSON.stringify({ data: [] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const gatewayFetch = createServiceAccessGatewayFetch({
+      podUrl: POD_URL,
+      authenticatedFetch,
+      invocationFetch,
+    });
+
+    await gatewayFetch('https://pod.example/api/ai/connections/providers');
+
+    expect(solidCalls).toEqual(['https://pod.example/api/applets/service-access/ai-connections']);
+    expect(invocationCalls).toEqual([{
+      url: 'https://pod.example/api/ai/connections/providers',
+      authorization: 'Bearer xpod_inv_v1.owner-bound-short-token',
+    }]);
+  });
+
   test('exchanges Solid service access for an owner-bound invocation Bearer before management requests', async () => {
     const calls: Array<{ url: string; authorization: string | null }> = [];
     const authenticatedFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -64,7 +153,7 @@ describe('Xpod AI Connection API client', () => {
         authorization: null,
       },
       {
-        url: 'https://pod.example/api/ai/connections/providers',
+        url: 'https://pod.example/api/ai/providers',
         authorization: 'Bearer xpod_inv_v1.owner-bound-short-token',
       },
     ]);
@@ -141,7 +230,7 @@ describe('Xpod AI Connection API client', () => {
       const json = (value: unknown) => new Response(JSON.stringify(value), {
         headers: { 'content-type': 'application/json' },
       });
-      if (url.endsWith('/api/ai/connections/providers')) {
+      if (url.endsWith('/api/ai/providers')) {
         return json({ data: [{ provider: 'openai', status: 'disconnected', connect: { modes: ['browserAssistedApiKey'], configured: true } }] });
       }
       if (url.endsWith('/v1/models')) {
@@ -199,7 +288,7 @@ describe('Xpod AI Connection API client', () => {
     await client.quota('openai', true);
 
     expect(managementCalls.map((call) => [call.method, new URL(call.url).pathname])).toEqual([
-      ['GET', '/api/ai/connections/providers'],
+      ['GET', '/api/ai/providers'],
       ['GET', '/v1/models'],
       ['GET', '/api/ai/gateway/keys'],
       ['POST', '/api/ai/gateway/keys'],
@@ -246,7 +335,7 @@ describe('Xpod AI Connection API client', () => {
 
     expect(calls.map((call) => [new URL(call.url).pathname, call.authorization])).toEqual([
       ['/api/applets/service-access/ai-connections', null],
-      ['/api/ai/connections/providers', 'Bearer xpod_inv_v1.token-1'],
+      ['/api/ai/providers', 'Bearer xpod_inv_v1.token-1'],
       ['/api/applets/service-access/ai-connections', null],
       ['/api/ai/gateway/keys', 'Bearer xpod_inv_v1.token-2'],
     ]);
@@ -286,9 +375,9 @@ describe('Xpod AI Connection API client', () => {
 
     expect(calls.map((call) => [new URL(call.url).pathname, call.authorization])).toEqual([
       ['/api/applets/service-access/ai-connections', null],
-      ['/api/ai/connections/providers', 'Bearer xpod_inv_v1.retry-1'],
+      ['/api/ai/providers', 'Bearer xpod_inv_v1.retry-1'],
       ['/api/applets/service-access/ai-connections', null],
-      ['/api/ai/connections/providers', 'Bearer xpod_inv_v1.retry-2'],
+      ['/api/ai/providers', 'Bearer xpod_inv_v1.retry-2'],
     ]);
   });
 
@@ -317,7 +406,7 @@ describe('Xpod AI Connection API client', () => {
 
     expect(calls).toEqual([
       'none /api/applets/service-access/ai-connections',
-      'Bearer xpod_inv_v1.owner-bound-short-token /api/ai/connections/providers',
+      'Bearer xpod_inv_v1.owner-bound-short-token /api/ai/providers',
     ]);
   });
 

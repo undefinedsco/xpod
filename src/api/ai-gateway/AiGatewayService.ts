@@ -204,6 +204,13 @@ export class AiGatewayService {
         continue;
       }
       const providerId = normalizeProviderId(credential.provider);
+      const allowedModels = credential.models;
+      if (allowedModels !== undefined && allowedModels.length === 0) {
+        if (!activeCredentialModels.has(providerId)) {
+          activeCredentialModels.set(providerId, new Set<string>());
+        }
+        continue;
+      }
       const customModels = credential.customModels ?? customModelsFromMetadata(credential.metadata);
       if (customModels.length > 0) {
         const existing = customCredentialModels.get(providerId) ?? [];
@@ -216,8 +223,7 @@ export class AiGatewayService {
         }
         customCredentialModels.set(providerId, existing);
       }
-      const allowedModels = credential.models ?? [];
-      if (allowedModels.length === 0) {
+      if (allowedModels === undefined) {
         activeCredentialModels.set(providerId, undefined);
         continue;
       }

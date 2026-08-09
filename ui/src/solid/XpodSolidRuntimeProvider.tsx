@@ -150,7 +150,8 @@ async function discoverAiClientConfigurationCapability(
   fetchImpl: typeof fetch,
 ): Promise<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>> {
   try {
-    const response = await fetchImpl('/api/ai/client-configuration/capability', {
+    const capabilityUrl = new URL('/api/ai/client-configuration/capability', window.location.href).toString();
+    const response = await fetchImpl(capabilityUrl, {
       method: 'GET',
       credentials: 'include',
       headers: { accept: 'application/json' },

@@ -364,6 +364,25 @@ function createInteractiveAiConnectionsClient(
           return publicResult
         }
       : operationsClient.refreshOAuthCredential,
+    quota: podStore.readCredentialSecret
+      ? async (provider) => {
+          const providers = await podStore.listProviders() as AiProviderSummary[]
+          const credential = providers
+            .find((item) => item.id === provider)
+            ?.credentials.find((item) => item.enabled)
+          if (!credential) throw new Error('quota_credential_not_found')
+          const secret = await podStore.readCredentialSecret!(provider, credential.id)
+          return operationsClient.quotaFromSecret(provider, {
+            credentialId: credential.id,
+            credentialIri: credential.id,
+            authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
+              ? 'deviceCodeOAuth'
+              : 'apiKey',
+            baseUrl: credential.baseUrl,
+            secret,
+          })
+        }
+      : operationsClient.quota,
     disconnect: async (provider, credentialId) => {
       if (!credentialId || !podStore.deleteProviderCredential) {
         return operationsClient.disconnect(provider, credentialId)

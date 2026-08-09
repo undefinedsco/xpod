@@ -8,7 +8,10 @@ import {
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { createXpodAiClientConfigurationBridge } from '../api/ai-connections';
+import {
+  createServiceAccessGatewayFetch,
+  createXpodAiClientConfigurationBridge,
+} from '../api/ai-connections';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiClientCredentialsCapability } from './XpodAiClientCredentials';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
@@ -32,14 +35,22 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       ? { status: 'opening' as const }
       : runtime.state.status === 'error'
         ? { status: 'error' as const, error: runtime.state.error }
-        : { status: 'unavailable' as const };
+      : { status: 'unavailable' as const };
+  const invocationFetch = window.fetch.bind(window);
+  const aiConnectionsFetch = runtime.currentPod
+    ? createServiceAccessGatewayFetch({
+      podUrl: runtime.currentPod.podUrl,
+      authenticatedFetch: runtime.fetch,
+      invocationFetch,
+    })
+    : runtime.fetch;
 
   return {
     solid: {
       session: {
         getSnapshot: runtime.session.getSnapshot,
         subscribe: runtime.session.subscribe,
-        fetch: runtime.fetch,
+        fetch: aiConnectionsFetch,
       },
       pod,
       permissions: {
@@ -72,6 +83,7 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
         ? createXpodAiClientConfigurationBridge({
           podUrl: runtime.currentPod.podUrl,
           authenticatedFetch: runtime.fetch,
+          invocationFetch,
         })
         : unsupportedAiClientConfiguration,
     },

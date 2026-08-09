@@ -884,6 +884,7 @@ describe('AI Connection settings', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[2])
     expect(await screen.findByText('Pi will replace the active default model.')).toBeTruthy()
+    expect(screen.getByText('confirm-plan-pi-target')).toBeTruthy()
     expect((screen.getByRole('button', { name: '确认并应用 Pi 配置' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(screen.getByLabelText('输入确认码以应用 Pi 配置'), {
       target: { value: 'confirm-plan-pi-target' },

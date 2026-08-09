@@ -378,6 +378,57 @@ describe('ProviderQuotaAdapters', () => {
     expect(JSON.stringify(repository.rows)).not.toContain('secret-never-cache');
   });
 
+  it('fetches caller-owned quota without reading or writing repository and vault', async () => {
+    const repository = {
+      findFresh: vi.fn(),
+      findLatest: vi.fn(),
+      upsert: vi.fn(),
+    };
+    const vault = {
+      seal: vi.fn(),
+      open: vi.fn(),
+      rewrap: vi.fn(),
+      needsRewrap: vi.fn(),
+    } as unknown as CredentialVault;
+    const adapter = {
+      provider: 'deepseek',
+      fetch: vi.fn(async ({ credential: current, secret }: any) => ({
+        credential: current.credentialIri,
+        status: 'available' as const,
+        windows: [{ name: 'USD.total_balance', remaining: 2 }],
+        observedAt: '2026-07-23T00:00:00.000Z',
+        expiresAt: '2026-07-23T00:05:00.000Z',
+        source: 'deepseek:/user/balance',
+        metadata: { receivedSecretType: secret.type },
+      })),
+    };
+    const service = new ProviderQuotaService({
+      repository: repository as never,
+      vault,
+      adapters: [adapter],
+    });
+
+    await expect(service.statusCallerOwned({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      credentialIri: CREDENTIAL_IRI,
+      authMode: 'apiKey',
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+      now: new Date('2026-07-23T00:00:00.000Z'),
+    })).resolves.toMatchObject({ status: 'available' });
+
+    expect(adapter.fetch).toHaveBeenCalledWith(expect.objectContaining({
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+    }));
+    expect(repository.findFresh).not.toHaveBeenCalled();
+    expect(repository.findLatest).not.toHaveBeenCalled();
+    expect(repository.upsert).not.toHaveBeenCalled();
+    expect(vault.open).not.toHaveBeenCalled();
+    expect(vault.seal).not.toHaveBeenCalled();
+  });
+
   it('caches sanitized provider quota fetch failures without leaking network or parse details', async () => {
     const networkRepository = new InMemoryQuotaSnapshotRepository();
     const networkCredential = await credential('kimi', { type: 'apiKey', apiKey: 'secret-never-cache' });
@@ -856,6 +907,14 @@ describe('AiGatewayManagementHandler quota routes', () => {
         windows: [{ name: 'available_balance', remaining: 1 }],
         stale: false,
       })),
+      statusCallerOwned: vi.fn(async () => ({
+        status: 'available',
+        source: 'kimi:/v1/users/me/balance',
+        observedAt: '2026-07-23T00:00:00.000Z',
+        expiresAt: '2026-07-23T00:05:00.000Z',
+        windows: [{ name: 'available_balance', remaining: 1 }],
+        stale: false,
+      })),
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -884,13 +943,20 @@ describe('AiGatewayManagementHandler quota routes', () => {
     const refresh = response();
     await routes['POST /api/ai/gateway/providers/:provider/quota/refresh'](request(
       { type: 'solid', webId: WEB_ID },
-      { credentialIri: kimiCredential.credentialIri },
+      {
+        credentialId: kimiCredential.id,
+        credentialIri: kimiCredential.credentialIri,
+        authMode: 'apiKey',
+        secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+      },
       '/api/ai/gateway/providers/kimi/quota/refresh',
     ), refresh, { provider: 'kimi' });
     expect(refresh.statusCode).toBe(200);
-    expect(quotaService.status).toHaveBeenLastCalledWith(expect.objectContaining({
-      refresh: true,
+    expect(quotaService.statusCallerOwned).toHaveBeenCalledWith(expect.objectContaining({
+      credentialId: kimiCredential.id,
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
     }));
+    expect(refresh.body).not.toContain('transient-provider-key');
   });
 
   it('rejects gateway-key principals from provider quota management routes', async () => {
