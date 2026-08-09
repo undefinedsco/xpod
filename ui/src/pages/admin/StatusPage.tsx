@@ -174,7 +174,7 @@ function ActionNeededCard(props: { state: HealthState; routes: RouteRow[] }) {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-amber-800 dark:text-amber-200">{message}</p>
-        <Button variant="secondary" onClick={() => window.location.assign('/dashboard/logs')}>
+        <Button variant="secondary" onClick={() => window.location.assign('/status/logs')}>
           打开日志
         </Button>
       </CardContent>

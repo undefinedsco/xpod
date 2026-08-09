@@ -57,6 +57,12 @@ export const ALLOWED_ADMIN_CONFIG_KEYS = [
   'XPOD_TUNNEL_ACTIVE_PROFILE_ID',
   'XPOD_TUNNEL_PROFILES',
   'XPOD_TUNNEL_PUBLIC_URL',
+  'XPOD_DNS_DOMAIN',
+  'XPOD_DDNS_ENABLED',
+  'XPOD_DNS_PROVIDER',
+  'XPOD_DNS_RECORD_TTL',
+  'XPOD_DNS_PROVIDER_TOKEN',
+  'CLOUDFLARE_API_TOKEN',
   'CLOUDFLARE_TUNNEL_URL',
   'SAKURA_TUNNEL_URL',
   'CLOUDFLARE_TUNNEL_TOKEN',
@@ -68,6 +74,12 @@ export const ALLOWED_ADMIN_CONFIG_KEYS = [
   'XPOD_HTTPS_MODE',
   'XPOD_HTTPS_CERT_PATH',
   'XPOD_HTTPS_KEY_PATH',
+  'XPOD_ACME_EMAIL',
+  'XPOD_ACME_DOMAINS',
+  'XPOD_ACME_RENEW_BEFORE_DAYS',
+  'XPOD_P2P_ENABLED',
+  'XPOD_P2P_SIGNAL_SERVICE',
+  'XPOD_P2P_FALLBACK_POLICY',
   'XPOD_CLOUD_API_ENDPOINT',
   'XPOD_PUBLIC_API_URL',
   'XPOD_PUBLIC_REGISTRY_URL',
@@ -178,7 +190,7 @@ export function isAdminMutationAllowed(req: AuthenticatedRequest, options: Admin
     return true;
   }
 
-  const peerLoopback = isLoopbackRemoteAddress(req.socket.remoteAddress);
+  const peerLoopback = isLoopbackRemoteAddress(req.socket?.remoteAddress);
   const proxyMarker = verifyGatewayAdminProxyHeaders({
     headers: req.headers,
     secret: options.internalAdminAuthSecret,
@@ -268,6 +280,17 @@ function writeEnvFile(filePath: string, config: EnvConfig): void {
     lines.push(`${key}=${quotedValue}`);
   }
   fs.writeFileSync(filePath, lines.join('\n') + '\n');
+}
+
+export function readDurableAdminEnvironment(): Record<string, string> {
+  return readEnvFile(getEnvFilePath());
+}
+
+export function writeDurableAdminEnvironmentPatch(input: Record<string, string>): void {
+  const filePath = getEnvFilePath();
+  const current = readEnvFile(filePath);
+  const patch = createAllowedAdminConfigPatch(input);
+  writeEnvFile(filePath, { ...current, ...patch });
 }
 
 /**

@@ -153,7 +153,14 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
       throw new Error('AI Connection service identity is not configured');
     }
     return async (input, init) => {
-      const response = await trustedFetch(input, init);
+      // Comunica can inject a malformed content-length (e.g. the string "undefined")
+      // which undici rejects with UND_ERR_INVALID_ARG; drop it and let the runtime recompute.
+      const headers = new Headers(input instanceof Request ? input.headers : undefined);
+      if (init?.headers) {
+        new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+      }
+      headers.delete('content-length');
+      const response = await trustedFetch(input, { ...init, headers });
       if (response.status === 403) {
         throw new Error('service_access_missing');
       }

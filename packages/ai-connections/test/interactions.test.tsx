@@ -619,7 +619,7 @@ describe('AI Connection settings', () => {
     expect(screen.getByText(/请在“高级：Gateway Keys”中手动撤销/)).toBeTruthy()
   })
 
-  it('does not open or poll a terminal Kimi device-code attempt', async () => {
+  it('does not open or poll a terminal Connect attempt', async () => {
     const current = client({
       beginConnect: vi.fn(async (provider, mode) => ({
         provider,
@@ -639,7 +639,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: '浏览器鉴权' }))
+    fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
     expect(await screen.findByText('用户已取消连接')).toBeTruthy()
     expect(openExternal).not.toHaveBeenCalled()

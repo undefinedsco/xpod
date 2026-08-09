@@ -235,7 +235,15 @@ export class GatewayProxy {
     return url === '/dashboard'
       || url.startsWith('/dashboard/')
       || url === '/settings'
-      || url.startsWith('/settings/');
+      || url.startsWith('/settings/')
+      || url === '/status'
+      || url.startsWith('/status/')
+      || url === '/network'
+      || url.startsWith('/network/')
+      || url === '/ai-connections'
+      || url.startsWith('/ai-connections/')
+      || url === '/ai-config'
+      || url.startsWith('/ai-config/');
   }
 
   private shouldRouteToApi(url: string): boolean {
@@ -478,6 +486,30 @@ export class GatewayProxy {
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(logs));
+        return;
+      }
+
+      const restartMatch = /^\/service\/restart\/([^/]+)$/.exec(pathname);
+      if (restartMatch && req.method === 'POST') {
+        const service = decodeURIComponent(restartMatch[1]);
+        if (service === 'gateway') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'Gateway restart requires restarting the whole Xpod runtime.',
+            scope: 'runtime',
+          }));
+          return;
+        }
+        if (service !== 'css' && service !== 'api') {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unknown service.' }));
+          return;
+        }
+        const accepted = await this.supervisor.restart(service);
+        res.writeHead(accepted ? 202 : 409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(accepted
+          ? { ok: true, service }
+          : { error: `${service} is not managed by this runtime.`, service }));
         return;
       }
 

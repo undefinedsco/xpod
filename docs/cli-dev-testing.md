@@ -28,6 +28,24 @@ seed 账号定义在 `config/seed.dev.json`，默认包含：
 - `alice@dev.local` / `alice123456` → Pod: `/alice/`
 - `bob@dev.local` / `bob123456` → Pod: `/bob/`
 
+### 启动守卫：CSS_BASE_URL 校验
+
+`CSS_BASE_URL` 必须等于网关公开入口（上文启动命令显式设为
+`http://localhost:3000/`）。启动时 `main.ts` 会校验：若显式设置的
+`CSS_BASE_URL` 是回环地址（localhost/127.0.0.1/::1）但端口与网关端口不一致，
+进程会以退出码 20 拒绝启动并给出修复指引——回环地址上不会有其他进程提供
+服务，OIDC discovery/authorize 必然失败，且旧端口下创建的 Pod 会被
+consent 的 WebID 过滤（ScopedPickWebIdHandler 的 authority 比对含端口）
+静默隐藏。未设置时自动派生为 `http://<host>:<gatewayPort>/`，天然一致。
+公网域名（cloud / 隧道场景）不受此限制。
+
+注意：集成测试的 `setup-test-credentials` 每次会把 `.env.local` 的
+`CSS_BASE_URL` 改写为当次测试栈的动态端口（vitest 以 `override` 方式加载
+`.env.local`，依赖该值指向存活测试栈），这是预期行为。`bun run local`
+已在脚本层将 `CSS_BASE_URL` 固定为 `http://localhost:3000/`（可用
+`CSS_BASE_URL=... bun run local` 显式覆盖，覆盖值仍会过启动校验），
+因此测试改写不会再影响本地启动；其余变量如需自定义仍以 `.env.local` 为准。
+
 ### 验证服务就绪
 
 ```bash

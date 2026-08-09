@@ -91,8 +91,16 @@ export function AiConnectionsPanel({
   }>()
   const [modelEditorError, setModelEditorError] = useState<string>()
   const [modelEditorSaving, setModelEditorSaving] = useState(false)
+  const [connectionSaving, setConnectionSaving] = useState<Record<string, boolean>>({})
+  const [localSummaries, setLocalSummaries] = useState<
+    Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
+  >({})
   const [copied, setCopied] = useState(false)
   const pollingGeneration = useRef(0)
+  const providerSummaries = {
+    ...providerSummariesInput,
+    ...localSummaries,
+  }
   const updateConnectionState = useCallback((
     provider: AiConnectionsProvider,
     state: ProviderConnectionState,
@@ -102,6 +110,7 @@ export function AiConnectionsPanel({
   }, [onProviderStateChange])
 
   useEffect(() => {
+    setLocalSummaries({})
     setConnectionStates(Object.fromEntries(
       Object.values(providerSummariesInput).filter(isDefined).map((summary) => [
         summary.provider,
@@ -233,7 +242,7 @@ export function AiConnectionsPanel({
     if (!serviceAccessGranted) return
     const apiKey = apiKeyInputs[definition.id]?.trim()
     const baseUrl = baseUrlInputs[definition.id]
-      ?? providerSummariesInput[definition.id]?.baseUrl
+      ?? providerSummaries[definition.id]?.baseUrl
       ?? ''
     const attempt = attempts[definition.id]
     if (!apiKey || !attempt) return
@@ -243,6 +252,26 @@ export function AiConnectionsPanel({
       const result = await client.completeApiKey(definition.id, attempt, apiKey, undefined, baseUrl.trim())
       setAttempts((current) => ({ ...current, [definition.id]: result }))
       setApiKeyInputs((current) => ({ ...current, [definition.id]: '' }))
+      setLocalSummaries((current) => ({
+        ...current,
+        [definition.id]: {
+          ...(providerSummaries[definition.id] ?? {
+            provider: definition.id,
+            status: 'connected',
+            connect: {
+              modes: ['browserAssistedApiKey'],
+              configured: true,
+            },
+          }),
+          status: 'connected',
+          authMode: 'browserAssistedApiKey',
+          baseUrl: baseUrl.trim() || undefined,
+          connect: {
+            modes: providerSummaries[definition.id]?.connect.modes ?? ['browserAssistedApiKey'],
+            configured: true,
+          },
+        },
+      }))
       updateConnectionState(definition.id, 'configured')
       toast({ description: 'API Key 已保存' })
     } catch (error) {
@@ -250,6 +279,47 @@ export function AiConnectionsPanel({
       updateConnectionState(definition.id, 'failed')
     } finally {
       setBusy(definition.id, false)
+    }
+  }
+
+  const saveConnection = async (definition: AiProviderDefinition) => {
+    if (!serviceAccessGranted) return
+    const summary = providerSummaries[definition.id]
+    const nextBaseUrl = baseUrlInputs[definition.id] ?? summary?.baseUrl ?? ''
+    const currentBaseUrl = summary?.baseUrl ?? ''
+    if (nextBaseUrl.trim() === currentBaseUrl.trim()) return
+
+    setConnectionSaving((current) => ({ ...current, [definition.id]: true }))
+    setProviderError(definition.id)
+    try {
+      const record = await client.updateConnection(definition.id, {
+        baseUrl: nextBaseUrl.trim(),
+        expectedVersion: summary?.version,
+      })
+      setLocalSummaries((current) => ({
+        ...current,
+        [definition.id]: {
+          ...(summary ?? {
+            provider: definition.id,
+            status: 'connected',
+            connect: {
+              modes: ['browserAssistedApiKey'],
+              configured: true,
+            },
+          }),
+          baseUrl: record?.baseUrl ?? (nextBaseUrl.trim() || undefined),
+          version: record?.version ?? summary?.version,
+        },
+      }))
+      setBaseUrlInputs((current) => ({
+        ...current,
+        [definition.id]: record?.baseUrl ?? nextBaseUrl.trim(),
+      }))
+      toast({ description: '连接配置已保存' })
+    } catch (error) {
+      setProviderError(definition.id, errorMessage(error))
+    } finally {
+      setConnectionSaving((current) => ({ ...current, [definition.id]: false }))
     }
   }
 
@@ -261,6 +331,12 @@ export function AiConnectionsPanel({
       await client.disconnect(provider)
       setAttempts((current) => ({ ...current, [provider]: undefined }))
       setQuotas((current) => ({ ...current, [provider]: undefined }))
+      setBaseUrlInputs((current) => ({ ...current, [provider]: '' }))
+      setLocalSummaries((current) => {
+        const next = { ...current }
+        delete next[provider]
+        return next
+      })
       updateConnectionState(provider, 'disconnected')
       toast({ description: '已断开连接' })
     } catch (error) {
@@ -431,15 +507,16 @@ export function AiConnectionsPanel({
               key={definition.id}
               definition={definition}
               status={connectionStates[definition.id] ?? 'unknown'}
-              accountLabel={providerSummariesInput[definition.id]?.accountLabel}
+              accountLabel={providerSummaries[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
               apiKey={apiKeyInputs[definition.id] ?? ''}
-              baseUrl={baseUrlInputs[definition.id] ?? providerSummariesInput[definition.id]?.baseUrl ?? ''}
+              baseUrl={baseUrlInputs[definition.id] ?? providerSummaries[definition.id]?.baseUrl ?? ''}
               busy={Boolean(busyProviders[definition.id])}
               disabled={!serviceAccessGranted}
               error={providerErrors[definition.id]}
               quota={quotas[definition.id]}
               models={models.filter((model) => model.provider === definition.id)}
+              connectionSaving={Boolean(connectionSaving[definition.id])}
               onApiKeyChange={(value) => setApiKeyInputs((current) => ({
                 ...current,
                 [definition.id]: value,
@@ -451,6 +528,7 @@ export function AiConnectionsPanel({
               onBeginApiKey={() => void beginApiKey(definition.id)}
               onBeginBrowser={() => void beginBrowserConnect(definition)}
               onSaveApiKey={() => void saveApiKey(definition)}
+              onSaveConnection={() => void saveConnection(definition)}
               onDisconnect={() => void disconnect(definition.id)}
               onRefreshQuota={() => void refreshQuota(definition.id)}
               verifyPending={Boolean(verifyingProviders[definition.id])}

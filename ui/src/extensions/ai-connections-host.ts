@@ -8,6 +8,7 @@ import {
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { createServiceAccessGatewayFetch, createXpodAiClientConfigurationBridge } from '../api/ai-connections';
+import { createServiceAccessPermissionCapability } from '../api/service-access-acp';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 
 const aiConnectionExtension = createAiConnectionsExtension();
@@ -44,20 +45,10 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
           : runtime.fetch,
       },
       pod,
-      permissions: {
-        inspectAgentAccess: async (request) => ({
-          status: 'granted',
-          resources: request.resources,
-        }),
-        ensureAgentAccess: async (request) => ({
-          status: 'granted',
-          resources: request.resources,
-        }),
-        revokeAgentAccess: async (request) => ({
-          status: 'missing',
-          resources: request.resources,
-        }),
-      },
+      permissions: createServiceAccessPermissionCapability({
+        authenticatedFetch: runtime.fetch,
+        ownerWebId: runtime.webId,
+      }),
       requireLogin: async () => runtime.login(window.location.origin),
     },
     navigation: {

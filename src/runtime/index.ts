@@ -24,6 +24,8 @@ export type { RuntimeServices } from './lifecycle';
 export { GatewayProxy } from './Proxy';
 export { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
 export { getFreePort } from './port-finder';
+export { INVALID_CONFIGURATION_PREFIX, validateBaseUrl } from './base-url';
+export type { ValidateBaseUrlOptions } from './base-url';
 export { applyEnv, loadEnvFile } from './env-utils';
 export { NodeRuntimeHost, nodeRuntimeHost } from './host/node/NodeRuntimeHost';
 export { NodeRuntimePlatform, nodeRuntimePlatform } from './platform/node/NodeRuntimePlatform';

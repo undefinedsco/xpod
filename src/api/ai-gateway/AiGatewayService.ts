@@ -62,6 +62,16 @@ export interface AiGatewayServiceOptions {
   runtimes: ProviderRuntimeRegistry;
   frontends?: GatewayProtocolFrontend[];
   now?: () => Date;
+  usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
+}
+
+export interface GatewayUsageRecord {
+  webId: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 }
 
 export interface GatewayExecutionInput {
@@ -116,6 +126,7 @@ export class AiGatewayService {
   private readonly runtimes: ProviderRuntimeRegistry;
   private readonly frontends = new Map<GatewayProtocol, GatewayProtocolFrontend>();
   private readonly now: () => Date;
+  private readonly usageRecorder?: (input: GatewayUsageRecord) => Promise<void>;
 
   public constructor(options: AiGatewayServiceOptions) {
     this.deployment = options.deployment;
@@ -125,6 +136,7 @@ export class AiGatewayService {
     this.vault = options.vault;
     this.runtimes = options.runtimes;
     this.now = options.now ?? (() => new Date());
+    this.usageRecorder = options.usageRecorder;
     for (const frontend of options.frontends ?? [
       new ResponsesFrontend(),
       new MessagesFrontend(),
@@ -353,6 +365,7 @@ export class AiGatewayService {
       attempted.add(route.credential.id);
       const credential = route.credential as StoredGatewayCredential;
       try {
+        let finalUsage: GatewayUsage | undefined;
         const apiKey = await this.openApiKey(input.principal, route, credential);
         const adapter = this.runtimes.get(route.provider.id);
         const upstream = adapter.execute({
@@ -362,6 +375,9 @@ export class AiGatewayService {
           signal: input.signal,
         });
         for await (const event of upstream) {
+          if (event.type === 'usage') {
+            finalUsage = event.usage;
+          }
           if (!firstClientEventEmitted) {
             firstClientEventEmitted = true;
             this.router.markClientEventEmitted(route);
@@ -369,6 +385,7 @@ export class AiGatewayService {
           yield event;
         }
         await this.credentials.recordSuccess?.(healthRecord(input.principal.webId, this.deployment, route));
+        await this.recordUsage(input.principal.webId, route, finalUsage);
         return;
       } catch (error) {
         await this.recordRouteFailure(input.principal.webId, route, error);
@@ -381,6 +398,30 @@ export class AiGatewayService {
         }
         throw error;
       }
+    }
+  }
+
+  private async recordUsage(webId: string, route: ModelRouteResult, usage: GatewayUsage | undefined): Promise<void> {
+    if (!this.usageRecorder || !usage) {
+      return;
+    }
+    const inputTokens = normalizeTokenCount(usage.inputTokens);
+    const outputTokens = normalizeTokenCount(usage.outputTokens);
+    const totalTokens = normalizeTokenCount(usage.totalTokens ?? inputTokens + outputTokens);
+    if (totalTokens === 0) {
+      return;
+    }
+    try {
+      await this.usageRecorder({
+        webId,
+        provider: route.provider.id,
+        model: route.model,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+      });
+    } catch {
+      // Usage telemetry must never turn a completed upstream response into an inference failure.
     }
   }
 
@@ -709,6 +750,10 @@ function anthropicUsage(usage: GatewayUsage | undefined): Record<string, number>
     input_tokens: usage?.inputTokens ?? 0,
     output_tokens: usage?.outputTokens ?? 0,
   };
+}
+
+function normalizeTokenCount(value: number | undefined): number {
+  return Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : 0;
 }
 
 function parseJsonOrString(value: string): unknown {

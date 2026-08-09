@@ -57,7 +57,7 @@ describe('AI Connection two-pane contribution', () => {
     expect(screen.getByRole('button', { name: '添加 AI Connection' })).toBeTruthy()
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'OpenAI' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'AI Connection' })).toBeNull()
-    for (const name of ['OpenAI', 'Anthropic', 'Kimi', '百炼', 'DeepSeek']) {
+    for (const name of ['OpenAI', 'Anthropic', 'Kimi', '百炼·按量', '百炼·Coding Plan', '百炼·Token Plan', 'DeepSeek']) {
       expect(screen.getByRole('option', { name })).toBeTruthy()
     }
     expect(screen.queryByRole('button', { name: 'Gateway Keys' })).toBeNull()

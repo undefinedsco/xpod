@@ -58,7 +58,7 @@ export default function ServicesPage({
         && !controller.signal.aborted
         && !(caught instanceof DOMException && caught.name === 'AbortError')
       ) {
-        setError('Services status request failed. Please try again.');
+        setError('服务状态请求失败，请重试。');
       }
     } finally {
       if (mountedRef.current && requestIdRef.current === requestId && !controller.signal.aborted) {
@@ -150,8 +150,8 @@ function ServicesHeader({
   return (
     <div className="flex h-full min-w-0 items-center justify-between gap-4 px-4">
       <div className="min-w-0">
-        <div className="text-sm font-semibold text-foreground">Services</div>
-        <div className="truncate text-xs text-muted-foreground">Runtime health, logs, RDF indexing, and configuration</div>
+        <div className="text-sm font-semibold text-foreground">服务</div>
+        <div className="truncate text-xs text-muted-foreground">运行时健康、日志、RDF 索引与配置</div>
       </div>
       <div className="flex items-center gap-2">
         {product !== 'legacy' ? (
@@ -159,7 +159,7 @@ function ServicesHeader({
             className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground hover:bg-accent"
             href={product === 'dashboard' ? '/settings/services' : '/dashboard/runtime'}
           >
-            {product === 'dashboard' ? 'Configure' : 'View runtime'}
+            {product === 'dashboard' ? '配置' : '查看运行时'}
           </a>
         ) : null}
         <button
@@ -169,7 +169,7 @@ function ServicesHeader({
           className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
         >
           <RefreshCw className={clsx('mr-2 h-4 w-4', loading && 'animate-spin')} aria-hidden="true" />
-          Refresh
+          刷新
         </button>
       </div>
     </div>
@@ -197,10 +197,10 @@ function ServicesSidebar({
         <div className="px-4 pt-4">
           <div className="flex items-center gap-2 text-base font-semibold text-foreground">
             <Server className="h-4 w-4" aria-hidden="true" />
-            Service health
+            服务健康
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            {loading ? 'Loading runtime status' : `${runningCount}/${serviceCount || 0} services running`}
+            {loading ? '正在读取运行状态' : `${runningCount}/${serviceCount || 0} 个服务运行中`}
           </div>
         </div>
         <div className="space-y-2 px-4 pb-4 pt-3">
@@ -215,7 +215,7 @@ function ServicesSidebar({
               </span>
             </div>
           )) : (
-            <div className="text-sm text-muted-foreground">{loading ? 'Waiting for status' : 'No service status reported'}</div>
+            <div className="text-sm text-muted-foreground">{loading ? '等待状态' : '暂无服务状态上报'}</div>
           )}
         </div>
       </div>

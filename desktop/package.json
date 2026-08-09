@@ -1,0 +1,50 @@
+{
+  "name": "@undefineds.co/xpod-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Xpod desktop tray shell: window lifecycle, system tray and external browser hand-off for the local settings dashboard.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "start": "bun run build && electron dist/main.js",
+    "smoke": "bun run build && XPOD_DESKTOP_SMOKE=1 electron dist/main.js",
+    "pack": "bun run build && electron-builder --mac --dir",
+    "build:runtime": "cd .. && bun run build && node scripts/build-bun-single.js --output=desktop/runtime/xpod",
+    "dist": "bun run build:runtime && bun run build && electron-builder --mac"
+  },
+  "build": {
+    "appId": "co.undefineds.xpod",
+    "productName": "Xpod",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime/xpod",
+        "to": "runtime/xpod"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "dmg": {
+      "title": "Xpod"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8",
+    "typescript": "^6.0.3"
+  }
+}

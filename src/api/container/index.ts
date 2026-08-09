@@ -145,6 +145,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     secretCellCredentialVaultFactory,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
     aiGatewayKimiClientId: process.env.XPOD_AI_GATEWAY_KIMI_CLIENT_ID,
+    aiGatewayModelsDevUrl: process.env.XPOD_MODELS_DEV_URL,
     aiGatewayProviderBaseUrls: openAiGatewayBaseUrl ? { openai: openAiGatewayBaseUrl } : undefined,
     inngest: {
       enabled: process.env.XPOD_INNGEST_ENABLED !== 'false',

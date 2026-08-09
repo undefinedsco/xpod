@@ -3,6 +3,8 @@ export const AI_CONNECTIONS_PROVIDERS = [
   'anthropic',
   'kimi',
   'bailian',
+  'bailian-coding-plan',
+  'bailian-token-plan',
   'deepseek',
 ] as const
 
@@ -46,6 +48,7 @@ export interface AiConnectionsCredential {
   authMode: string
   status: string
   accountLabel?: string
+  baseUrl?: string
   expiresAt?: string
   version?: number
   reauthRequired?: boolean
@@ -157,6 +160,10 @@ export interface AiConnectionsClient {
     baseUrl?: string,
   ): Promise<AiConnectAttempt>
   pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
+  updateConnection(
+    provider: AiConnectionsProvider,
+    input: { baseUrl: string; expectedVersion?: number },
+  ): Promise<AiConnectionsCredential | undefined>
   disconnect(provider: AiConnectionsProvider): Promise<AiConnectionsCredential | undefined>
   quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
   discoverModels(provider: AiConnectionsProvider): Promise<ProviderModelDiscovery>
@@ -189,7 +196,7 @@ export function createAiConnectionsClient({
 
   const request = async <T>(
     path: string,
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     body?: Record<string, unknown>,
     context: { provider?: AiConnectionsProvider } = {},
   ): Promise<T> => {
@@ -328,6 +335,19 @@ export function createAiConnectionsClient({
           signature: attempt.signature,
         }),
       )
+    },
+
+    async updateConnection(provider, input) {
+      const payload = await request<{ record?: unknown }>(
+        `${providerPath(provider)}/connect`,
+        'PATCH',
+        compactObject({
+          baseUrl: input.baseUrl,
+          expectedVersion: input.expectedVersion,
+        }),
+        { provider },
+      )
+      return parseCredential(payload.record)
     },
 
     async disconnect(provider) {
@@ -510,6 +530,8 @@ function providerLabel(provider: AiConnectionsProvider): string {
     case 'anthropic': return 'Anthropic'
     case 'kimi': return 'Kimi'
     case 'bailian': return 'Bailian'
+    case 'bailian-coding-plan': return 'Bailian Coding Plan'
+    case 'bailian-token-plan': return 'Bailian Token Plan'
     case 'deepseek': return 'DeepSeek'
   }
 }
@@ -662,6 +684,7 @@ function parseProviderSummary(value: unknown): AiProviderConnectionSummary | und
     status: value.status,
     authMode: stringValue(value.authMode),
     accountLabel: stringValue(value.accountLabel),
+    baseUrl: stringValue(value.baseUrl),
     expiresAt: stringValue(value.expiresAt),
     reauthRequired: typeof value.reauthRequired === 'boolean' ? value.reauthRequired : undefined,
     credentialIri: stringValue(value.credentialIri),
@@ -693,6 +716,7 @@ function parseCredential(value: unknown): AiConnectionsCredential | undefined {
     authMode: value.authMode,
     status: value.status,
     accountLabel: stringValue(value.accountLabel),
+    baseUrl: stringValue(value.baseUrl),
     expiresAt: stringValue(value.expiresAt),
     version: typeof value.version === 'number' ? value.version : undefined,
     reauthRequired: typeof value.reauthRequired === 'boolean' ? value.reauthRequired : undefined,

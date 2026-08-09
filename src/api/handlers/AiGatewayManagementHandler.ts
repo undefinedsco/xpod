@@ -23,6 +23,7 @@ import type {
   CompleteApiKeyInput,
   ConnectBeginInput,
   ProviderConnectService,
+  UpdateConnectionInput,
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
@@ -268,6 +269,7 @@ export function registerAiGatewayManagementRoutes(
       signature: stringBody(body.signature),
       apiKey,
       accountLabel: normalizeOptionalString(body.accountLabel),
+      baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : undefined,
       auth: request.auth,
     } satisfies CompleteApiKeyInput);
     sendJson(response, 200, publicConnectResult(result));
@@ -316,6 +318,43 @@ export function registerAiGatewayManagementRoutes(
       auth: request.auth,
     });
     sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+  });
+
+  server.patch('/api/ai/gateway/providers/:provider/connect', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(body, 'baseUrl')) {
+      sendJson(response, 400, { error: 'baseUrl is required' });
+      return;
+    }
+    if (typeof body.baseUrl !== 'string') {
+      sendJson(response, 400, { error: 'baseUrl must be a string' });
+      return;
+    }
+    const connectService = requireConnectService(options, response);
+    if (!connectService) {
+      return;
+    }
+    try {
+      const record = await connectService.updateConnection({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        baseUrl: body.baseUrl,
+        expectedVersion: typeof body.expectedVersion === 'number'
+          ? body.expectedVersion
+          : undefined,
+        auth: request.auth,
+      } satisfies UpdateConnectionInput);
+      sendJson(response, 200, { record: publicCredentialRecord(record) });
+    } catch (error) {
+      sendConnectUpdateError(response, error);
+    }
   });
 
   server.delete('/api/ai/gateway/providers/:provider/connect', async (request, response, params) => {
@@ -779,6 +818,7 @@ function publicCredentialRecord(record: {
   authMode: string;
   status: string;
   accountLabel?: string;
+  baseUrl?: string | null;
   expiresAt?: Date;
   version?: number;
   reauthRequired?: boolean;
@@ -791,10 +831,32 @@ function publicCredentialRecord(record: {
     authMode: record.authMode,
     status: record.status,
     accountLabel: record.accountLabel,
+    baseUrl: record.baseUrl ?? undefined,
     expiresAt: record.expiresAt?.toISOString(),
     version: record.version,
     reauthRequired: record.reauthRequired,
   };
+}
+
+function sendConnectUpdateError(response: ServerResponse, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (message === 'Active provider credential not found') {
+    sendJson(response, 404, { error: 'Active provider credential not found' });
+    return;
+  }
+  if (message === 'credential_version_conflict') {
+    sendJson(response, 409, { error: 'credential_version_conflict' });
+    return;
+  }
+  if (message === 'baseUrl must be a valid URL' || message === 'baseUrl must use http or https') {
+    sendJson(response, 400, { error: message });
+    return;
+  }
+  if (message === 'PodCredentialRepository is required for connection updates') {
+    sendJson(response, 503, { error: 'AI provider Connect service is not configured' });
+    return;
+  }
+  sendJson(response, 500, { error: 'Provider connection update failed' });
 }
 
 function publicConnectResult(value: unknown): unknown {

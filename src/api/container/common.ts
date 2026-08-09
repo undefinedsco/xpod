@@ -5,10 +5,12 @@
  */
 
 import { asFunction, type AwilixContainer } from 'awilix';
+import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
+import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleRepository';
 import { ServiceTokenRepository } from '../../identity/drizzle/ServiceTokenRepository';
 import { LocalSetupServiceTokenRepository } from '../../setup/LocalSetupServiceTokenRepository';
@@ -28,12 +30,13 @@ import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCre
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import {
   BrowserAssistedApiKeyConnectAdapter,
-  InMemoryConnectAttemptStore,
   KimiDeviceCodeConnectAdapter,
+  InMemoryConnectAttemptStore,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
+import { syncProviderRegistryFromModelsDev } from '../ai-gateway/providers/ModelsDevCatalog';
 import { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
 import { InMemorySessionAffinityStore } from '../ai-gateway/routing/InMemorySessionAffinityStore';
@@ -210,6 +213,8 @@ export function registerCommonServices(
               anthropic: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               kimi: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               bailian: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
+              'bailian-coding-plan': { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
+              'bailian-token-plan': { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               deepseek: { configured: false },
             },
           }),
@@ -245,7 +250,25 @@ export function registerCommonServices(
         }),
         new BrowserAssistedApiKeyConnectAdapter({
           provider: 'bailian',
-          consoleUrl: 'https://bailian.console.aliyun.com/',
+          consoleUrl: 'https://bailian.console.aliyun.com/#/api-key',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'bailian-coding-plan',
+          consoleUrl: 'https://bailian.console.aliyun.com/cn-beijing/?tab=plan#/efm/subscription/coding-plan',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'bailian-token-plan',
+          consoleUrl: 'https://bailian.console.aliyun.com/cn-beijing/',
           attempts,
           credentialRepository,
           vault,
@@ -262,13 +285,26 @@ export function registerCommonServices(
           signingSecret,
           clientId: config.aiGatewayKimiClientId,
         }));
+      } else {
+        adapters.push(new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'kimi',
+          consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }));
       }
       return new ProviderConnectService({
         registry: createDefaultGatewayProviderRegistry({
           connect: {
             kimi: config.aiGatewayKimiClientId
-              ? { configured: true }
-              : { configured: false, notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'] },
+              ? { configured: true, notes: undefined }
+              : {
+                  configured: false,
+                  notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'],
+                },
           },
         }),
         adapters,
@@ -287,6 +323,10 @@ export function registerCommonServices(
           safeBaseUrls: [openAiBaseUrl],
         });
       }
+      void syncProviderRegistryFromModelsDev(registry, { url: config.aiGatewayModelsDevUrl })
+        .catch((error: unknown) => {
+          getLoggerFor('GatewayProviderRegistry').warn(`models.dev sync failed: ${(error as Error).message}`);
+        });
       return registry;
     }).singleton(),
 
@@ -323,6 +363,7 @@ export function registerCommonServices(
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
       const gatewayRuntimeRegistry = cradle.gatewayRuntimeRegistry;
       const gatewaySessionAffinityStore = cradle.gatewaySessionAffinityStore;
+      const usageRepository = new UsageRepository(cradle.db);
       const router = new ModelRouter({
         registry: gatewayProviderRegistry,
         affinityStore: gatewaySessionAffinityStore,
@@ -335,6 +376,13 @@ export function registerCommonServices(
         credentials: gatewayCredentialStore,
         runtimes: gatewayRuntimeRegistry,
         vault: credentialVaultForConfig(config),
+        usageRecorder: async ({ webId, totalTokens }) => {
+          const pod = await cradle.podLookupRepo?.findByWebId(webId);
+          if (!pod) {
+            return;
+          }
+          await usageRepository.incrementTokenUsage(pod.accountId, pod.podId, totalTokens);
+        },
       });
     }).singleton(),
 
@@ -353,6 +401,8 @@ export function registerCommonServices(
           new AnthropicQuotaAdapter(),
           new KimiQuotaAdapter(),
           new BailianQuotaAdapter(),
+          new BailianQuotaAdapter('bailian-coding-plan'),
+          new BailianQuotaAdapter('bailian-token-plan'),
           new DeepSeekQuotaAdapter(),
         ],
       });
@@ -363,13 +413,10 @@ export function registerCommonServices(
       if (!config.aiGatewayConnectEnabled) {
         return undefined;
       }
-      if (!config.secretCellCredentialVaultFactory) {
-        throw new Error('AI Gateway provider models requires XPOD_SECRET_CELL_KEY_ID and XPOD_SECRET_CELL_KEY');
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
-        vault: config.secretCellCredentialVaultFactory(),
+        vault: credentialVaultForConfig(config),
         adapters: [
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',

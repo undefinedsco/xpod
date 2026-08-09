@@ -179,7 +179,7 @@ function createPodBackedDbFactory() {
                 where() {
                   return {
                     async execute() {
-                      return [...store.values()].filter((row) => row.owner === owner).map((row) => structuredClone(row));
+                      return [...store.values()].map((row) => structuredClone(row));
                     },
                   };
                 },
@@ -269,6 +269,12 @@ describe('AI Connection Pod isolation integration', () => {
       encryptedSecret: encryptedSecret(BOB_WEB_ID, 'deepseek', 'bob-deepseek'),
       status: 'active',
     });
+    expect(await repository.listCredentials({ webId: ALICE_WEB_ID, deployment: 'cloud' })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ provider: 'openai', enabled: true })]),
+    );
+    expect(await repository.listCredentials({ webId: BOB_WEB_ID, deployment: 'cloud' })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ provider: 'deepseek', enabled: true })]),
+    );
     const fixture = createService({
       deployment: 'cloud',
       credentials: [],

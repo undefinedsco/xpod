@@ -8,7 +8,8 @@
   "private": false,
   "workspaces": [
     "packages/*",
-    "ui"
+    "ui",
+    "desktop"
   ],
   "bin": {
     "xpod": "./bin/xpod.js"
@@ -70,15 +71,15 @@
     "postpack": "node scripts/prepare-package-manifest.cjs restore",
     "build:ts": "tsc",
     "build:components": "componentsjs-generator -s src -c dist/components -r undefineds -i config/components-ignore.json",
-    "build:ui": "cd ui && bun install --frozen-lockfile && bun run build:all",
+    "build:ui": "bun run --filter ui build:all",
     "prepare.": "bun run build",
     "release": "node scripts/publish-release.cjs",
-    "clean": "rm -rf data/*",
+    "clean": "rm -rf data/* .xpod/runtime/legacy-css/rdf-index.sqlite*",
     "clean:test": "rm -rf .test-data && rm -f *.sqlite *.sqlite-wal *.sqlite-shm",
     "vanilla": "community-solid-server -c config/main.vanilla.json -f ./data_vanilla -p 3000",
     "cli": "bun src/cli/index.ts",
     "start": "bun src/main.ts",
-    "local": "dotenv -e .env.local -o -- env -u CSS_REDIS_CLIENT -u REDIS_URL -u CSS_REDIS_USERNAME -u CSS_REDIS_PASSWORD -u CSS_MINIO_ACCESS_KEY -u CSS_MINIO_SECRET_KEY -u CSS_MINIO_ENDPOINT -u CSS_MINIO_BUCKET_NAME bun --no-env-file src/main.ts -e .env.local -c config/local.json",
+    "local": "dotenv -e .env.local -o -- env -u CSS_REDIS_CLIENT -u REDIS_URL -u CSS_REDIS_USERNAME -u CSS_REDIS_PASSWORD -u CSS_MINIO_ACCESS_KEY -u CSS_MINIO_SECRET_KEY -u CSS_MINIO_ENDPOINT -u CSS_MINIO_BUCKET_NAME CSS_BASE_URL=${CSS_BASE_URL:-http://localhost:3000/} bun --no-env-file src/main.ts -e .env.local -c config/local.json",
     "cloud": "dotenv -e .env.cloud -o -- bun --no-env-file src/main.ts -e .env.cloud -c config/cloud.json",
     "dev": "./scripts/dev-start.sh",
     "dev:local": "./scripts/dev-start.sh --local",

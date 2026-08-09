@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { ApiServer, RouteHandler } from '../../../src/api/ApiServer';
 import { registerDashboardRoutes } from '../../../src/api/handlers/DashboardHandler';
 
-describe('registerDashboardRoutes legacy product redirects', () => {
+describe('registerDashboardRoutes canonical products and legacy redirects', () => {
   it('redirects moved configuration routes and preserves query parameters', async () => {
     const routes = new Map<string, RouteHandler>();
     const server = {
@@ -18,11 +18,16 @@ describe('registerDashboardRoutes legacy product redirects', () => {
     await handler?.({ url: '/dashboard/models?provider=kimi' } as never, response as never, {});
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe('/settings/models?provider=kimi');
+    expect(response.headers.location).toBe('/ai-connections?provider=kimi');
 
     const servicesResponse = createResponse();
     await routes.get('GET /dashboard/services')?.({ url: '/dashboard/services' } as never, servicesResponse as never, {});
-    expect(servicesResponse.headers.location).toBe('/settings/services');
+    expect(servicesResponse.headers.location).toBe('/status/overview');
+
+    expect(server.get).toHaveBeenCalledWith('/status', expect.any(Function), { public: true });
+    expect(server.get).toHaveBeenCalledWith('/status/*path', expect.any(Function), { public: true });
+    expect(server.get).toHaveBeenCalledWith('/network', expect.any(Function), { public: true });
+    expect(server.get).toHaveBeenCalledWith('/network/*path', expect.any(Function), { public: true });
   });
 });
 

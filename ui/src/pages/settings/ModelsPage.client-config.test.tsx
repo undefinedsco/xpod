@@ -38,6 +38,9 @@ describe('ModelsPage coding-client configuration capability', () => {
           },
         });
       }
+      if (url.pathname.endsWith('/settings/.acr')) {
+        return new Response('', { status: 201 });
+      }
       if (url.pathname === '/api/ai/connections/providers') {
         return json({ data: [{ provider: 'openai', status: 'connected', connect: { modes: ['browserAssistedApiKey'], configured: true } }] });
       }

@@ -261,6 +261,24 @@ export class PodChatKitStore implements ChatKitStore<StoreContext>, RunStore<Sto
     this.serverGroupReconcilerService = options.serverGroupReconcilerService;
   }
 
+  /** Build a Pod-scoped context for trusted internal maintenance jobs. */
+  public async createTrustedContext(input: { webId: string; podUrl: string; fetch: typeof fetch }): Promise<StoreContext> {
+    const db: any = drizzle(
+      { fetch: input.fetch, info: { webId: input.webId, isLoggedIn: true } } as any,
+      { schema },
+    );
+    await db.init(Chat, Thread, Message, Run, RunStep, Task, AIConfig, Credential);
+    const context: StoreContext = {
+      webId: input.webId,
+      podUrl: input.podUrl,
+      _cachedDb: db,
+      _cachedFetch: input.fetch,
+      _cachedWebId: input.webId,
+      _cachedPodBaseUrl: input.podUrl,
+    };
+    return context;
+  }
+
   // =========================================================================
   // Private Helpers
   // =========================================================================

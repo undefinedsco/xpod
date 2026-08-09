@@ -87,6 +87,16 @@ async function createCommandParser() {
 
 async function main() {
   const argv = process.argv.slice(2);
+  if (argv[0] === '__internal-api') {
+    await import('../api/main');
+    return;
+  }
+  if (argv[0] === '__internal-css') {
+    process.argv = [process.argv[0], process.argv[1], ...argv.slice(1)];
+    const { AppRunner } = await import('@solid/community-server');
+    new AppRunner().runCliSync(process);
+    return;
+  }
   const wantsRootHelp = argv.length === 0 || argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h';
   const wantsVersion = argv[0] === '--version' || argv[0] === '-v';
 

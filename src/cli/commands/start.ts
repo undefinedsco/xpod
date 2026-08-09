@@ -21,6 +21,7 @@ interface StartArgs {
   foreground?: boolean;
 }
 
+const isSingleBinaryRuntime = process.env.XPOD_BUN_SINGLE_RUNTIME === '1';
 const childJsRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined'
   ? (process.env.XPOD_NODE_BINARY ?? 'node')
   : process.execPath;
@@ -128,7 +129,9 @@ export const startCommand: CommandModule<object, StartArgs> = {
     console.log(`  Authorization mode: ${authMode}`);
 
     const supervisor = new Supervisor();
-    const cssBinary = require.resolve('@solid/community-server/bin/server.js');
+    const cssBinary = isSingleBinaryRuntime
+      ? path.join(PACKAGE_ROOT, 'node_modules', '@solid', 'community-server', 'bin', 'server.js')
+      : require.resolve('@solid/community-server/bin/server.js');
     const cssRuntimeConfig = createCssChildRuntimeConfig({
       configPath,
       runtimeRoot,
@@ -153,7 +156,9 @@ export const startCommand: CommandModule<object, StartArgs> = {
     });
 
     const isDevMode = __filename.endsWith('.ts');
-    const apiArgs = isDevMode
+    const apiArgs = isSingleBinaryRuntime
+      ? ['__internal-api']
+      : isDevMode
       ? [
           '-r',
           require.resolve('ts-node/register/transpile-only'),
@@ -165,7 +170,7 @@ export const startCommand: CommandModule<object, StartArgs> = {
 
     supervisor.register({
       name: 'api',
-      command: childJsRuntime,
+      command: isSingleBinaryRuntime ? process.execPath : childJsRuntime,
       args: apiArgs,
       env: buildApiChildEnv({
         apiPort,

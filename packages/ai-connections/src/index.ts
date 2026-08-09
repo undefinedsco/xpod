@@ -25,6 +25,7 @@ export * from './controller'
 export * from './AiProviderCard'
 export * from './AiQuotaCard'
 export * from './manifest'
+export * from './service-access'
 
 const appletManifest = aiConnectionManifest.contributes.applets[0]! as AppletManifest & { layout: 'two-pane' }
 

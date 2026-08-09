@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
+import type { NetworkDiagnosticCheckResult } from '../../../src/api/handlers/NetworkSettingsHandler';
 import {
   createCertificateCapability,
   createDnsStatusReader,
@@ -28,6 +29,7 @@ function createServer(): { server: ApiServer; routes: Record<string, RouteHandle
     server: {
       get: vi.fn((path: string, handler: RouteHandler) => { routes[`GET ${path}`] = handler; }),
       post: vi.fn((path: string, handler: RouteHandler) => { routes[`POST ${path}`] = handler; }),
+      put: vi.fn((path: string, handler: RouteHandler) => { routes[`PUT ${path}`] = handler; }),
     } as unknown as ApiServer,
   };
 }
@@ -38,6 +40,23 @@ function request(auth: AuthenticatedRequest['auth']): AuthenticatedRequest {
   req.url = '/api/network/settings/status';
   req.headers = {};
   req.auth = auth;
+  req.end();
+  return req;
+}
+
+function loopbackRequest(auth?: AuthenticatedRequest['auth']): AuthenticatedRequest {
+  const req = request(auth);
+  Object.defineProperty(req, 'socket', { configurable: true, value: { remoteAddress: '127.0.0.1' } });
+  return req;
+}
+
+function requestWithBody(auth: AuthenticatedRequest['auth'], body: unknown): AuthenticatedRequest {
+  const req = new PassThrough() as PassThrough & AuthenticatedRequest;
+  req.method = 'PUT';
+  req.url = '/api/network/settings/configuration';
+  req.headers = { 'content-type': 'application/json' };
+  req.auth = auth;
+  req.write(JSON.stringify(body));
   req.end();
   return req;
 }
@@ -65,6 +84,30 @@ function response(): TestResponse {
 }
 
 describe('NetworkSettingsHandler', () => {
+  it('allows an unauthenticated loopback host to read and write local network settings', async () => {
+    const { server, routes } = createServer();
+    const update = vi.fn(async () => ({
+      domainDns: { domain: '', ddnsEnabled: false, provider: '', recordTtl: 300, credentialConfigured: false },
+      https: { enabled: false, acmeEmail: '', domains: [], renewBeforeDays: 30 },
+      tunnelProfiles: { activeProfileId: '', profiles: [] },
+      p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' as const },
+    }));
+    registerNetworkSettingsRoutes(server, {
+      endpoint: 'http://127.0.0.1:3000/',
+      configurationStore: { read: vi.fn(async () => update()), update },
+    });
+
+    const readRes = response();
+    await routes['GET /api/network/settings/status'](loopbackRequest(), readRes);
+    expect(readRes.statusCode).toBe(200);
+
+    const writeReq = requestWithBody(undefined, { p2p: { enabled: true } });
+    Object.defineProperty(writeReq, 'socket', { configurable: true, value: { remoteAddress: '::1' } });
+    const writeRes = response();
+    await routes['PUT /api/network/settings/configuration'](writeReq, writeRes);
+    expect(writeRes.statusCode).toBe(200);
+    expect(update).toHaveBeenCalledWith({ p2p: { enabled: true } });
+  });
   it('requires deployment authentication and returns capability-shaped status without deployment', async () => {
     const { server, routes } = createServer();
     registerNetworkSettingsRoutes(server, {
@@ -145,10 +188,11 @@ describe('NetworkSettingsHandler', () => {
 
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.checks).toEqual([
+    expect(body.checks).toMatchObject([
       { id: 'dns', label: 'DNS', status: 'error', detail: '[redacted]' },
       { id: 'endpoint', label: 'Endpoint', status: 'ok', detail: 'https://xpod.example/ responded' },
     ]);
+    expect(body.checks.every((check: NetworkDiagnosticCheckResult) => typeof check.durationMs === 'number' && typeof check.checkedAt === 'string')).toBe(true);
     expect(JSON.stringify(body)).not.toContain('super-secret');
     expect(JSON.stringify(body)).not.toContain('postgres://');
     expect(JSON.stringify(body)).not.toContain('/Users/alice');
@@ -243,7 +287,11 @@ describe('NetworkSettingsHandler', () => {
     const certificateManager = {
       readCertificateStatus: vi.fn(async () => ({
         status: 'valid',
+        domains: ['xpod.example', 'www.xpod.example'],
+        issuer: 'Example ACME CA',
+        validFrom: '2026-08-01T00:00:00.000Z',
         expiresAt: '2026-10-31T00:00:00.000Z',
+        renewalStatus: 'scheduled',
       })),
       renewCertificate: vi.fn(async () => undefined),
     };
@@ -258,7 +306,15 @@ describe('NetworkSettingsHandler', () => {
     const statusRes = response();
     await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), statusRes, {});
     expect(JSON.parse(statusRes.body)).toMatchObject({
-      tls: { supported: true, status: 'valid', expiresAt: '2026-10-31T00:00:00.000Z' },
+      tls: {
+        supported: true,
+        status: 'valid',
+        domains: ['xpod.example', 'www.xpod.example'],
+        issuer: 'Example ACME CA',
+        validFrom: '2026-08-01T00:00:00.000Z',
+        expiresAt: '2026-10-31T00:00:00.000Z',
+        renewalStatus: 'scheduled',
+      },
       actions: { renewCertificate: true },
     });
 
@@ -362,5 +418,32 @@ describe('NetworkSettingsHandler', () => {
       error: 'Certificate renewal is already running',
       code: 'certificate_renewal_conflict',
     });
+  });
+
+  it('separates observed state from saved configuration and validates writes', async () => {
+    const { server, routes } = createServer();
+    const configuration = {
+      domainDns: { domain: 'xpod.example', ddnsEnabled: true, provider: 'cloudflare', recordTtl: 300, credentialConfigured: true },
+      https: { enabled: true, acmeEmail: 'alice@example.com', domains: ['xpod.example'], renewBeforeDays: 30 },
+      tunnelProfiles: { activeProfileId: 'home', profiles: [{ id: 'home', provider: 'cloudflare', label: 'Home', credentialConfigured: true }] },
+      p2p: { enabled: false, signalService: '', fallbackPolicy: 'when-direct-unavailable' },
+    };
+    const store = { read: vi.fn(async () => configuration), update: vi.fn(async () => configuration) };
+    registerNetworkSettingsRoutes(server, { endpoint: 'https://xpod.example/', configurationStore: store });
+
+    const read = response();
+    await routes['GET /api/network/settings/status'](request(deploymentReadAuth()), read);
+    expect(JSON.parse(read.body).configuration).toEqual(configuration);
+    expect(JSON.parse(read.body).configuration).not.toHaveProperty('credential');
+
+    const write = response();
+    await routes['PUT /api/network/settings/configuration'](requestWithBody(deploymentWriteAuth(), { domainDns: { recordTtl: 600 } }), write);
+    expect(write.statusCode).toBe(200);
+    expect(store.update).toHaveBeenCalledWith({ domainDns: { recordTtl: 600 } });
+    expect(JSON.parse(write.body).applyState).toBe('restart-required');
+
+    const invalid = response();
+    await routes['PUT /api/network/settings/configuration'](requestWithBody(deploymentWriteAuth(), { domainDns: { recordTtl: 0 } }), invalid);
+    expect(invalid.statusCode).toBe(400);
   });
 });

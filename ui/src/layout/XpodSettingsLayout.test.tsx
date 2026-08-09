@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { SettingsNavLinks, XpodSettingsLayout } from './XpodSettingsLayout';
@@ -17,6 +17,7 @@ function renderLayout(path = '/models') {
         <Route element={<XpodSettingsLayout />}>
           <Route path="/models" element={<section>Models workspace</section>} />
           <Route path="/services" element={<section>Services workspace</section>} />
+          <Route path="/settings/pod" element={<section>Services workspace</section>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -48,10 +49,11 @@ describe('XpodSettingsLayout', () => {
     const html = renderLayout('/models');
 
     expect(html).toContain('data-app-layout="workspace"');
-    expect(html).toContain('aria-label="Models"');
-    expect(html).toContain('aria-label="Pod"');
+    expect(html).toContain('aria-label="Status"');
     expect(html).toContain('aria-label="Network"');
-    expect(html).toContain('aria-label="Services"');
+    expect(html).toContain('aria-label="AI Connections"');
+    expect(html).toContain('aria-label="AI Config"');
+    expect(html).toContain('aria-label="Settings"');
     expect(html).not.toContain('aria-label="Search settings"');
     expect(html).not.toContain('Xpod Settings');
     expect(html).not.toContain('Runtime workspace');
@@ -60,9 +62,9 @@ describe('XpodSettingsLayout', () => {
   });
 
   test('marks the active navigation link for assistive technology', () => {
-    const html = renderLayout('/services');
+    const html = renderLayout('/settings/pod');
 
-    expect(html).toContain('href="/services"');
+    expect(html).toContain('href="/settings/pod"');
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('Services workspace');
   });
@@ -82,7 +84,7 @@ describe('XpodSettingsLayout', () => {
     );
 
     expect(html).toContain('role="status"');
-    expect(html).toContain('No settings sections match');
+    expect(html).toContain('没有与');
   });
 
   test('prevents submit reload and navigates to the first matching settings section on Enter', () => {

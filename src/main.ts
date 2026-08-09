@@ -7,7 +7,7 @@ import path from 'path';
 import { setGlobalLoggerFactory, getLoggerFor } from 'global-logger-factory';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
-import { createGatewayAdminProxyAuthSecret, GatewayProxy, getFreePort, PACKAGE_ROOT } from './runtime';
+import { createGatewayAdminProxyAuthSecret, GatewayProxy, getFreePort, INVALID_CONFIGURATION_PREFIX, PACKAGE_ROOT, validateBaseUrl } from './runtime';
 import {
   buildApiChildEnv,
   buildCssArgs,
@@ -227,7 +227,8 @@ function outputJson(payload: unknown): void {
 function exitForCliError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`Failed to start: ${message}`);
-  if (message.includes('Env file not found:') || message.includes('Config file not found:')) {
+  if (message.includes('Env file not found:') || message.includes('Config file not found:') ||
+      message.includes(INVALID_CONFIGURATION_PREFIX)) {
     process.exit(EXIT_CONFIG_ERROR);
   }
   process.exit(EXIT_INTERNAL_ERROR);
@@ -260,7 +261,9 @@ async function startRuntime(options: RunOptions): Promise<void> {
 
   const mode: 'local' | 'cloud' = options.mode ?? (configPath.includes('cloud') ? 'cloud' : 'local');
 
-  const baseUrl = ensureTrailingSlash(process.env.CSS_BASE_URL || `http://${host}:${mainPort}`);
+  const explicitBaseUrl = process.env.CSS_BASE_URL;
+  const baseUrl = ensureTrailingSlash(explicitBaseUrl || `http://${host}:${mainPort}`);
+  validateBaseUrl({ baseUrl, mainPort, explicit: explicitBaseUrl !== undefined });
   const cssPort = await getFreePort(mainPort + 1, host);
   const apiPort = await getFreePort(cssPort + 1, host);
   const runtimeRoot = path.join(process.cwd(), '.xpod/runtime/legacy-css');

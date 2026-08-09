@@ -23,12 +23,17 @@ import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerSettingsRoutes } from '../handlers/SettingsHandler';
-import { registerAdminRoutes } from '../handlers/AdminHandler';
+import { readDurableAdminEnvironment, registerAdminRoutes, writeDurableAdminEnvironmentPatch } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
 import { createLocalSetupProvisionStateWriter, registerProvisionRoutes, registerProvisionStatusRoute } from '../handlers/ProvisionHandler';
 import { registerPodManagementRoutes } from '../handlers/PodManagementHandler';
 import { DrizzlePodAiConnectionsStatusReader, registerPodSettingsRoutes } from '../handlers/PodSettingsHandler';
+import { registerAiConfigRoutes } from '../handlers/AiConfigHandler';
+import { DrizzlePodAiConfigStore } from '../ai-config/AiConfigStore';
+import { RuntimeAiConfigLifecycleService } from '../ai-config/AiConfigLifecycleService';
+import { PodSearchIndexRebuilder } from '../ai-config/PodSearchIndexRebuilder';
+import { NetworkEnvironmentConfigurationStore } from '../network/NetworkEnvironmentConfigurationStore';
 import {
   createAddressReaders,
   createCertificateCapability,
@@ -118,6 +123,8 @@ function registerSharedRoutes(
   const inngestTaskScheduler = container.resolve('inngestTaskScheduler');
   const inngestRuntimeConfig = container.resolve('inngestRuntimeConfig');
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
+  const rdfEngine = container.resolve('rdfEngine', { allowUnregistered: true });
+  const rdfSearchIndexingService = container.resolve('rdfSearchIndexingService', { allowUnregistered: true });
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
   const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
@@ -202,7 +209,53 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(gatewayInternalPodAccess),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(gatewayInternalPodAccess, config.edition),
+  });
+  const aiConfigStore = new DrizzlePodAiConfigStore({ internalPodAccess: gatewayInternalPodAccess });
+  const ftsRebuildAvailable = Boolean(gatewayInternalPodAccess && rdfEngine?.indexTextSource);
+  const vectorRebuildAvailable = Boolean(gatewayInternalPodAccess && rdfSearchIndexingService && chatKitStore.createTrustedContext);
+  const rebuildFts = async (owner: { webId: string; podUrl: string }) => {
+    const trustedFetch = await gatewayInternalPodAccess!.getTrustedFetch(owner.webId);
+    if (!trustedFetch || !rdfEngine?.indexTextSource) throw new Error('fts_rebuild_unavailable');
+    const result = await new PodSearchIndexRebuilder({
+      trustedFetch,
+      indexTextSource: async (source, text) => {
+        await rdfEngine.indexTextSource!(source, text);
+      },
+    }).rebuildText(owner);
+    if (result.failed > 0) throw new Error('fts_rebuild_incomplete');
+  };
+  const rebuildVector = async (owner: { webId: string; podUrl: string }) => {
+    const trustedFetch = await gatewayInternalPodAccess!.getTrustedFetch(owner.webId);
+    if (!trustedFetch || !rdfSearchIndexingService) throw new Error('vector_rebuild_unavailable');
+    const context = await chatKitStore.createTrustedContext({ ...owner, fetch: trustedFetch });
+    const result = await new PodSearchIndexRebuilder({
+      trustedFetch,
+      indexVectorSource: async (source, text) => {
+        const indexed = await rdfSearchIndexingService.indexVectorSource({ context, source, text });
+        if (indexed.status !== 'indexed') throw new Error(indexed.reason);
+      },
+    }).rebuildVector(owner);
+    if (result.failed > 0) throw new Error('vector_rebuild_incomplete');
+  };
+  const aiConfigLifecycle = new RuntimeAiConfigLifecycleService({
+    executors: {
+      ...(ftsRebuildAvailable ? { fts: rebuildFts } : {}),
+      ...(vectorRebuildAvailable ? { vector: rebuildVector } : {}),
+      ...(ftsRebuildAvailable && vectorRebuildAvailable ? { all: async (owner) => { await rebuildFts(owner); await rebuildVector(owner); } } : {}),
+    },
+    configurationVersion: async (owner) => (await aiConfigStore.read(owner)).updatedAt,
+  });
+  registerAiConfigRoutes(server, {
+    podLookupRepository,
+    store: aiConfigStore,
+    lifecycle: aiConfigLifecycle,
+    capabilities: () => ({
+      textBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['postgres-fts'] : [],
+      vectorBackends: config.edition === 'cloud' && config.sparqlEndpoint ? ['pgvector'] : ['vec'],
+      rebuildSupported: aiConfigLifecycle.supportedTargets().length > 0,
+      rebuildTargets: aiConfigLifecycle.supportedTargets(),
+    }),
   });
   registerNetworkSettingsRoutes(server, {
     endpoint: () => resolveNetworkEndpoint(config),
@@ -226,10 +279,15 @@ function registerSharedRoutes(
     tunnelStatusReader: createTunnelStatusReader(tunnelProvider),
     tlsStatusReader: certificateCapability?.tlsStatusReader,
     certificateRenewer: certificateCapability?.certificateRenewer,
+    configurationStore: new NetworkEnvironmentConfigurationStore({
+      read: readDurableAdminEnvironment,
+      write: writeDurableAdminEnvironmentPatch,
+    }),
     authorizer: createDeploymentNetworkSettingsAuthorizer({
       deployment: config.edition,
       accountRoleRepository,
     }),
+    internalAdminAuthSecret: config.gatewayAdminProxyAuthSecret,
   });
 
   // Quota & Usage API (Business 对接)

@@ -1,4 +1,6 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test, vi } from 'vitest';
+
+const mock = vi.fn;
 import { fetchPodSettingsStatus } from './pod-settings';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';

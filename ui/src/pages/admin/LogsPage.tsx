@@ -17,6 +17,7 @@ import { Download, FileDown, Pause, Play, Trash2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { buildDiagnosticsSnapshot, getLogFileTail, getLogs, subscribeLogs, type LogEntry } from '@/api/admin';
 import AnsiToHtml from 'ansi-to-html';
+import { filterLogEntries, type LogTimeRange } from './log-filters';
 
 const ansiConverter = new AnsiToHtml({
   fg: 'hsl(var(--foreground))',
@@ -74,8 +75,9 @@ function DiagnosticsPanel(props: { onExport: () => void; exporting: boolean; log
 
 export function LogsPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const [sourceFilter, setSourceFilter] = useState<string>(() => new URLSearchParams(window.location.search).get('source') || 'all');
   const [levelFilter, setLevelFilter] = useState<string>('all');
+  const [timeRange, setTimeRange] = useState<LogTimeRange>('all');
   const [keywordFilter, setKeywordFilter] = useState('');
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -127,14 +129,8 @@ export function LogsPage() {
   }, [logs, paused, autoScroll]);
 
   const filteredLogs = useMemo(() => {
-    const keyword = keywordFilter.trim().toLowerCase();
-    return logs.filter((log) => {
-      const sourceMatch = sourceFilter === 'all' || log.source === sourceFilter;
-      const levelMatch = levelFilter === 'all' || log.level === levelFilter;
-      const keywordMatch = !keyword || `${log.timestamp} ${log.level} ${log.source} ${log.message}`.toLowerCase().includes(keyword);
-      return sourceMatch && levelMatch && keywordMatch;
-    });
-  }, [logs, sourceFilter, levelFilter, keywordFilter]);
+    return filterLogEntries(logs, { source: sourceFilter, level: levelFilter, keyword: keywordFilter, timeRange });
+  }, [logs, sourceFilter, levelFilter, keywordFilter, timeRange]);
 
   const clearLogs = useCallback(() => {
     setLogs([]);
@@ -223,16 +219,25 @@ export function LogsPage() {
 
       <DiagnosticsPanel onExport={exportDiagnostics} exporting={exportingDiagnostics} logFileInfo={logFileInfo} />
 
-      <div className="mb-4 grid gap-3 lg:grid-cols-[160px_160px_1fr_auto]">
+      <div className="mb-4 grid gap-3 lg:grid-cols-[170px_140px_140px_1fr_auto]">
         <Select value={sourceFilter} onValueChange={(value) => setSourceFilter(value)}>
           <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">全部模块</SelectItem>
-            <SelectItem value="xpod">xpod</SelectItem>
+            <SelectItem value="all">All Sources</SelectItem>
+            <SelectItem value="runtime">Xpod Runtime</SelectItem>
             <SelectItem value="gateway">Gateway</SelectItem>
-            <SelectItem value="css">CSS</SelectItem>
-            <SelectItem value="api">API</SelectItem>
-            <SelectItem value="tunnel">Tunnel</SelectItem>
+            <SelectItem value="solid-server">Solid Server</SelectItem>
+            <SelectItem value="api">API Server</SelectItem>
+            <SelectItem value="errors">Errors</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={timeRange} onValueChange={(value) => setTimeRange(value as LogTimeRange)}>
+          <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All time</SelectItem>
+            <SelectItem value="15m">Last 15 min</SelectItem>
+            <SelectItem value="1h">Last hour</SelectItem>
+            <SelectItem value="24h">Last 24 hours</SelectItem>
           </SelectContent>
         </Select>
         <Select value={levelFilter} onValueChange={(value) => setLevelFilter(value)}>

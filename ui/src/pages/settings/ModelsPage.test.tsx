@@ -102,6 +102,9 @@ describe('ModelsPage AI Connection host', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
+      if (url.endsWith('/settings/.acr')) {
+        return new Response('', { status: 201 });
+      }
       expect(new Headers(init?.headers).get('authorization')).toBe('Bearer xpod_inv_v1.page-token');
       if (url.endsWith('/api/ai/connections/providers')) {
         return new Response(JSON.stringify({

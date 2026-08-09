@@ -66,11 +66,13 @@ export function AiProviderCard({
   quota,
   models,
   verifyPending = false,
+  connectionSaving = false,
   onApiKeyChange,
   onBaseUrlChange,
   onBeginApiKey,
   onBeginBrowser,
   onSaveApiKey,
+  onSaveConnection,
   onDisconnect,
   onRefreshQuota,
   onVerify,
@@ -90,11 +92,13 @@ export function AiProviderCard({
   quota?: AiQuotaSnapshot
   models: AiGatewayModel[]
   verifyPending?: boolean
+  connectionSaving?: boolean
   onApiKeyChange: (value: string) => void
   onBaseUrlChange?: (value: string) => void
   onBeginApiKey: () => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
+  onSaveConnection?: () => void
   onDisconnect: () => void
   onRefreshQuota: () => void
   onVerify?: () => void
@@ -105,6 +109,7 @@ export function AiProviderCard({
   const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
+  const showConnectionEditor = Boolean(onBaseUrlChange) && (apiKeyAttempt || isConfigured || isConnected)
   const [showKey, setShowKey] = useState(false)
   const [modelSearch, setModelSearch] = useState('')
   const [copiedModelId, setCopiedModelId] = useState<string>()
@@ -238,44 +243,60 @@ export function AiProviderCard({
             )}
           </div>
 
-          {apiKeyAttempt ? (
-            <div className="mt-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">API Key</span>
-                {definition.apiKeyUrl ? (
-                  <a href={definition.apiKeyUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
-                    获取 API Key
-                  </a>
-                ) : null}
-              </div>
-              <div className="group relative">
-                <Input
-                  type={showKey ? 'text' : 'password'}
-                  autoComplete="off"
-                  aria-label={`${definition.name} API Key 输入`}
-                  placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
-                  value={apiKey}
-                  onChange={(event) => onApiKeyChange(event.target.value)}
-                  className="border-border/60 bg-muted/20 pr-10 font-mono transition-colors focus:border-primary/50 focus:bg-background"
-                />
-                <div className="absolute bottom-1 right-1 top-1 flex items-center">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-full w-8 rounded hover:bg-muted"
-                    onClick={() => setShowKey((current) => !current)}
-                    aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
-                  >
-                    {showKey
-                      ? <EyeOff className="h-4 w-4 text-muted-foreground" />
-                      : <Eye className="h-4 w-4 text-muted-foreground" />}
-                  </Button>
+          {showConnectionEditor ? (
+            <div className="mt-4 space-y-3">
+              {apiKeyAttempt ? (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">API Key</span>
+                    {definition.apiKeyUrl ? (
+                      <a href={definition.apiKeyUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                        获取 API Key
+                      </a>
+                    ) : null}
+                  </div>
+                  <div className="group relative">
+                    <Input
+                      type={showKey ? 'text' : 'password'}
+                      autoComplete="off"
+                      aria-label={`${definition.name} API Key 输入`}
+                      placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
+                      value={apiKey}
+                      onChange={(event) => onApiKeyChange(event.target.value)}
+                      className="border-border/60 bg-muted/20 pr-10 font-mono transition-colors focus:border-primary/50 focus:bg-background"
+                    />
+                    <div className="absolute bottom-1 right-1 top-1 flex items-center">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-full w-8 rounded hover:bg-muted"
+                        onClick={() => setShowKey((current) => !current)}
+                        aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
+                      >
+                        {showKey
+                          ? <EyeOff className="h-4 w-4 text-muted-foreground" />
+                          : <Eye className="h-4 w-4 text-muted-foreground" />}
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">连接参数</span>
+                  {definition.apiKeyUrl ? (
+                    <a href={definition.apiKeyUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+                      获取 API Key
+                    </a>
+                  ) : null}
                 </div>
-              </div>
+              )}
+
               {onBaseUrlChange ? (
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-muted-foreground">Base URL（选填）</span>
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {apiKeyAttempt ? 'Base URL（选填）' : 'API 代理地址 (Base URL)'}
+                    </span>
                   </div>
                   <Input
                     autoComplete="off"
@@ -284,7 +305,11 @@ export function AiProviderCard({
                     aria-label={`${definition.name} Base URL 输入`}
                     placeholder={definition.defaultBaseUrl || '默认服务地址'}
                     value={baseUrl}
+                    disabled={disabled || busy || connectionSaving}
                     onChange={(event) => onBaseUrlChange(event.target.value)}
+                    onBlur={() => {
+                      if (!apiKeyAttempt && onSaveConnection) onSaveConnection()
+                    }}
                     className="border-border/60 bg-muted/20 font-mono text-xs transition-colors focus:border-primary/50 focus:bg-background"
                   />
                   <p className="break-all font-mono text-[11px] text-muted-foreground opacity-80">
@@ -293,14 +318,30 @@ export function AiProviderCard({
                   </p>
                 </div>
               ) : null}
-              <Button
-                size="sm"
-                aria-label={`保存 ${definition.name} API Key`}
-                disabled={!apiKey.trim() || busy || disabled}
-                onClick={onSaveApiKey}
-              >
-                保存 API Key
-              </Button>
+
+              {apiKeyAttempt ? (
+                <Button
+                  size="sm"
+                  aria-label={`保存 ${definition.name} API Key`}
+                  disabled={!apiKey.trim() || busy || disabled}
+                  onClick={onSaveApiKey}
+                >
+                  保存 API Key
+                </Button>
+              ) : onSaveConnection ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label={`保存 ${definition.name} 连接配置`}
+                  disabled={disabled || busy || connectionSaving}
+                  onClick={onSaveConnection}
+                >
+                  {connectionSaving
+                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    : null}
+                  {connectionSaving ? '保存中...' : '保存连接配置'}
+                </Button>
+              ) : null}
             </div>
           ) : null}
           {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
@@ -487,6 +528,8 @@ function providerMark(provider: AiProviderDefinition['id']): string {
     case 'anthropic': return 'A'
     case 'kimi': return 'K'
     case 'bailian': return '百'
+    case 'bailian-coding-plan': return '码'
+    case 'bailian-token-plan': return '量'
     case 'deepseek': return 'DS'
   }
 }

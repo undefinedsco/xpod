@@ -32,6 +32,10 @@ coverage/
 data/
 data.bak.*/
 static/app/assets/
+desktop/dist/
+desktop/release/
+desktop/runtime/
+desktop/.DS_Store
 
 # Logs
 logs/

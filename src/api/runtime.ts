@@ -5,6 +5,7 @@ import { createApiContainer, loadConfigFromEnv, type ApiContainerConfig, type Ap
 import { registerRoutes } from './container/routes';
 import type { AuthContext } from './auth/AuthContext';
 import { OpenAuthMiddleware } from './middleware/OpenAuthMiddleware';
+import type { AccountRoleRepository } from '../identity/drizzle/AccountRoleRepository';
 import type { RuntimeHost } from '../runtime/host/types';
 import { EmbeddedInngestService, type EmbeddedInngestRuntimeConfig } from './runs/EmbeddedInngestService';
 import { resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState } from '../provision/LocalProvisionState';
@@ -230,6 +231,31 @@ async function registerPrimaryServiceToken(
   }
 }
 
+async function reconcileLocalOwnerRoles(
+  container: AwilixContainer<ApiContainerCradle>,
+  config: ApiContainerConfig,
+  logger: ReturnType<typeof getLoggerFor>,
+): Promise<void> {
+  if (config.edition !== 'local') {
+    return;
+  }
+  try {
+    const accountRoleRepo = container.resolve('accountRoleRepo', { allowUnregistered: true }) as AccountRoleRepository | undefined;
+    if (!accountRoleRepo) {
+      return;
+    }
+    const accounts = await accountRoleRepo.listAccounts();
+    for (const account of accounts) {
+      if (!account.roles.includes('owner')) {
+        await accountRoleRepo.addRoles(account.accountId, ['owner']);
+        logger.info(`Granted owner role to local account ${account.accountId}`);
+      }
+    }
+  } catch (error) {
+    logger.error(`Failed to reconcile local owner roles: ${error}`);
+  }
+}
+
 async function startBackgroundServices(
   container: AwilixContainer<ApiContainerCradle>,
   logger: ReturnType<typeof getLoggerFor>,
@@ -388,6 +414,7 @@ export async function startApiService(options: StartApiServiceOptions = {}): Pro
 
   registerRoutes(container);
   await registerPrimaryServiceToken(container, config, logger);
+  await reconcileLocalOwnerRoles(container, config, logger);
   await startBackgroundServices(container, logger);
 
   const server = container.resolve('apiServer');

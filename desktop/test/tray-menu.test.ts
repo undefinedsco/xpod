@@ -1,0 +1,92 @@
+import { describe, expect, test } from 'vitest';
+import {
+  aggregateTrayStatus,
+  buildTrayMenuModel,
+  type TrayServiceSnapshot,
+} from '../src/tray-menu.js';
+
+const healthy: TrayServiceSnapshot[] = [
+  { name: 'gateway', status: 'running' },
+  { name: 'css', status: 'running' },
+  { name: 'api', status: 'running' },
+];
+
+describe('aggregateTrayStatus', () => {
+  test('requires exactly the three Xpod runtime services for healthy state', () => {
+    expect(aggregateTrayStatus(healthy)).toEqual({ state: 'healthy', running: 3, total: 3 });
+    expect(aggregateTrayStatus(healthy.slice(1))).toEqual({ state: 'degraded', running: 2, total: 3 });
+  });
+
+  test('prioritizes failed, starting, degraded, and stopped states', () => {
+    expect(aggregateTrayStatus([
+      healthy[0], healthy[1], { name: 'api', status: 'crashed' },
+    ]).state).toBe('failed');
+    expect(aggregateTrayStatus([
+      healthy[0], { name: 'css', status: 'starting' }, { name: 'api', status: 'stopped' },
+    ]).state).toBe('starting');
+    expect(aggregateTrayStatus([
+      healthy[0], healthy[1], { name: 'api', status: 'stopped' },
+    ]).state).toBe('degraded');
+    expect(aggregateTrayStatus([
+      { name: 'gateway', status: 'stopped' },
+      { name: 'css', status: 'stopped' },
+      { name: 'api', status: 'stopped' },
+    ]).state).toBe('stopped');
+  });
+});
+
+describe('buildTrayMenuModel', () => {
+  test('shows aggregate status, all services, global workspaces, and lifecycle actions', () => {
+    const model = buildTrayMenuModel({
+      services: healthy,
+      launchAtLogin: true,
+      identity: { label: 'Alice' },
+    });
+    const labels = model.items.flatMap((item) => item.label ? [item.label] : []);
+
+    expect(model.tooltip).toBe('Xpod · 3/3 services running');
+    expect(labels).toEqual(expect.arrayContaining([
+      '● Xpod healthy',
+      '● Gateway — Running',
+      '● Solid Server — Running',
+      '● API Server — Running',
+      'Open Xpod',
+      'Open Pod',
+      'Status',
+      'Network',
+      'AI Config',
+      'Settings',
+      'Check Status Again',
+      'Restart Xpod…',
+      'Signed in as Alice',
+      'Switch Account…',
+      'Launch at Login',
+      'About Xpod',
+      'Quit Xpod',
+    ]));
+    expect(model.items.find((item) => item.label === 'Launch at Login')?.checked).toBe(true);
+    expect(model.items.find((item) => item.label === 'Signed in as Alice')?.enabled).toBe(false);
+    expect(model.items.find((item) => item.label === '● Gateway — Running')?.action).toEqual({
+      type: 'open-route',
+      route: '/status/services/gateway',
+    });
+    expect(model.items.find((item) => item.label === 'Status')?.action).toEqual({
+      type: 'open-route',
+      route: '/status/overview',
+    });
+  });
+
+  test('offers Start Xpod when all services are stopped', () => {
+    const model = buildTrayMenuModel({ services: [], launchAtLogin: false });
+    expect(model.items.find((item) => item.label === 'Start Xpod')?.action).toEqual({ type: 'start' });
+  });
+
+  test('adds a contextual log action for a crashed service', () => {
+    const model = buildTrayMenuModel({
+      services: [healthy[0], healthy[1], { name: 'api', status: 'crashed' }],
+      launchAtLogin: false,
+    });
+
+    expect(model.items.map((item) => item.label)).toContain('Open API Server Logs');
+  });
+});

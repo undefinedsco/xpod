@@ -244,7 +244,18 @@ export class ApiServer {
     try {
       await route.handler(authRequest, response, params);
     } catch (error) {
-      this.logger.error(`Route handler error: ${error}`);
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      const causes: string[] = [];
+      let cause: unknown = error instanceof Error ? error.cause : undefined;
+      while (cause instanceof Error && causes.length < 5) {
+        const code = 'code' in cause && cause.code ? `[${String(cause.code)}] ` : '';
+        causes.push(`${code}${cause.message}`);
+        cause = cause.cause;
+      }
+      this.logger.error(
+        `Route handler error: ${method} ${path} - ${detail}` +
+        (causes.length > 0 ? ` | causes: ${causes.join(' <- ')}` : ''),
+      );
       if (!response.headersSent) {
         response.statusCode = 500;
         response.setHeader('Content-Type', 'application/json');

@@ -2,6 +2,7 @@ import { GatewayProtocolError } from '../errors';
 import { ProviderHttpTransport } from '../../service/provider-http-transport';
 import { AnthropicRuntimeAdapter } from './AnthropicRuntimeAdapter';
 import { BailianRuntimeAdapter } from './BailianRuntimeAdapter';
+import { BailianCodingPlanRuntimeAdapter, BailianTokenPlanRuntimeAdapter } from './BailianPlanRuntimeAdapters';
 import { DeepSeekRuntimeAdapter } from './DeepSeekRuntimeAdapter';
 import { KimiRuntimeAdapter } from './KimiRuntimeAdapter';
 import { OpenAiRuntimeAdapter } from './OpenAiRuntimeAdapter';
@@ -33,6 +34,8 @@ export class ProviderRuntimeRegistry {
       provider: registry.requireProvider('kimi'),
     }));
     this.adapters.set('bailian', new BailianRuntimeAdapter({ transport }));
+    this.adapters.set('bailian-coding-plan', new BailianCodingPlanRuntimeAdapter({ transport }));
+    this.adapters.set('bailian-token-plan', new BailianTokenPlanRuntimeAdapter({ transport }));
     this.adapters.set('deepseek', new DeepSeekRuntimeAdapter({
       transport,
       provider: registry.requireProvider('deepseek'),

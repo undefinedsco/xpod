@@ -15,10 +15,14 @@ export type PodStorageStatus =
       storageBytes: number;
       ingressBytes: number;
       egressBytes: number;
+      computeSeconds: number;
+      tokensUsed: number;
     };
     limits: {
       storageLimitBytes: number | null;
       bandwidthLimitBps: number | null;
+      computeLimitSeconds: number | null;
+      tokenLimitMonthly: number | null;
     };
     source?: string;
   }

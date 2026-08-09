@@ -7,9 +7,10 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Navigate, matchRoutes, useLocation, useRoutes } from 'react-router-dom';
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
-import { dashboardRoutes } from './dashboard-routes';
+import { dashboardRoutes, networkSurfaceRoutes, statusSurfaceRoutes } from './dashboard-routes';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
+import { AuthContext, type AuthContextType } from './context/AuthContextValue';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -54,6 +55,10 @@ function installDom(path: string) {
   globalThis.document = dom.window.document;
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.Event = dom.window.Event;
+  Object.defineProperty(globalThis, 'location', {
+    configurable: true,
+    value: { assign: mock(() => undefined) },
+  });
   return dom;
 }
 
@@ -91,11 +96,16 @@ async function renderDashboardRoute(path: string) {
 
   await act(async () => {
     root.render(
-      <XpodSolidRuntimeProvider value={runtime}>
-        <MemoryRouter initialEntries={[path]}>
-          <TestRoutes />
-        </MemoryRouter>
-      </XpodSolidRuntimeProvider>,
+      <AuthContext.Provider value={{
+        controls: {}, isInitializing: false, initError: null, idpIndex: '/.account/', isLoggedIn: false,
+        authenticating: false, hasOidcPending: false, refetchControls: mock(async () => undefined),
+      } satisfies AuthContextType}>
+        <XpodSolidRuntimeProvider value={runtime}>
+          <MemoryRouter initialEntries={[path]}>
+            <TestRoutes />
+          </MemoryRouter>
+        </XpodSolidRuntimeProvider>
+      </AuthContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -110,17 +120,25 @@ async function unmount(root: Root) {
 }
 
 describe('dashboard routes', () => {
+  test('exposes canonical Status and Network surface route trees', () => {
+    expect(matchRoutes(statusSurfaceRoutes, '/overview')).toBeTruthy();
+    expect(matchRoutes(statusSurfaceRoutes, '/services/gateway')).toBeTruthy();
+    expect(matchRoutes(statusSurfaceRoutes, '/index/vector')).toBeTruthy();
+    expect(matchRoutes(networkSurfaceRoutes, '/diagnostics')).toBeTruthy();
+  });
   test('redirects the dashboard index to Overview', () => {
     expect(redirectTargetFor('/')).toBe('/overview');
   });
 
   test('owns the read-oriented observability routes', () => {
-    expect(routeElementFor('/overview')).toBeTruthy();
-    expect(routeElementFor('/runtime')).toBeTruthy();
-    expect(routeElementFor('/logs')).toBeTruthy();
-    expect(routeElementFor('/rdf')).toBeTruthy();
-    expect(routeElementFor('/network')).toBeTruthy();
-    expect(routeElementFor('/usage')).toBeTruthy();
+    for (const path of [
+      '/overview', '/services/gateway', '/services/solid-server', '/services/api-server', '/logs',
+      '/index', '/index/rdf', '/index/fts', '/index/vector', '/index/retrieval-points', '/index/cache', '/index/slow-queries', '/index/benchmark',
+      '/network', '/network/endpoints', '/network/addresses', '/network/domain-dns', '/network/https', '/network/tunnel-profiles', '/network/p2p', '/network/diagnostics',
+      '/usage', '/usage/storage', '/usage/bandwidth', '/usage/ai', '/usage/index-storage',
+    ]) expect(routeElementFor(path)).toBeTruthy();
+    expect(redirectTargetFor('/runtime')).toBe('/overview');
+    expect(redirectTargetFor('/rdf')).toBe('/index/rdf');
   });
 
   test('does not own canonical settings sections', () => {
@@ -129,7 +147,7 @@ describe('dashboard routes', () => {
     expect(redirectTargetFor('/services')).toBe('/overview');
   });
 
-  test('normalizes anonymous dashboard redirects before settings auth guard', async () => {
+  test('normalizes anonymous dashboard routes before the account boundary', async () => {
     const cases = [
       ['/', '/overview'],
       ['/status', '/overview'],
@@ -140,7 +158,8 @@ describe('dashboard routes', () => {
       const { container, root, session, sessionConstructions } = await renderDashboardRoute(from);
 
       expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(to);
-      expect(container.textContent).toContain('Solid issuer');
+      expect(sessionStorage.getItem('xpod:returnTo')).toBe(to);
+      expect(container.textContent).not.toContain('登录 Xpod Dashboard');
       expect(sessionConstructions).toBe(1);
       expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
       await unmount(root);

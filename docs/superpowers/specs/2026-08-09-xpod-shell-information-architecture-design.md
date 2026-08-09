@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-09
 
-**Status:** Proposed for implementation planning
+**Status:** Implemented and verified
 
 **Scope:** Xpod desktop/web shell navigation, Status, Network, AI Config, Settings, user card, and macOS menu bar tray
 
@@ -27,7 +27,7 @@ The shell also needs a global user card and a macOS menu-bar tray that reflects 
 3. Every list row is selectable. Summary cards do not belong in the list pane.
 4. A content pane answers one subject. It may show summaries, forms, evidence, and contextual actions, but it does not introduce another navigation level.
 5. Observed state and desired configuration may coexist in a domain such as Network, but their controls must be visibly separated and must not duplicate one another.
-6. AI Config is a first-level workspace. AI Connections remains a separate product line and is not redesigned here.
+6. AI Connections and AI Config are separate first-level workspaces. AI Connections reuses the existing provider-management implementation and is not redesigned here.
 7. Persist user-level AI and indexing policy in the user's Pod. Runtime services report capabilities and operational state.
 8. Derived indexes may be rebuilt or discarded; authority data in the Pod must never be affected by index lifecycle actions.
 
@@ -41,6 +41,7 @@ The shell also needs a global user card and a macOS menu-bar tray that reflects 
 │              │                       │                                │
 │ Status       │ Selectable rows       │ State, configuration,          │
 │ Network      │ grouped when useful   │ evidence, and actions           │
+│ AI Connect.  │                       │                                │
 │ AI Config    │                       │                                │
 │              │                       │                                │
 │ Settings     │                       │                                │
@@ -57,6 +58,7 @@ TOP
 PRIMARY WORKSPACES
   Status
   Network
+  AI Connections
   AI Config
 
 BOTTOM
@@ -253,7 +255,48 @@ Observed state and configuration must be visually distinct within the same conte
 
 AI Config is an independent first-level workspace. It configures how Xpod capabilities consume models and derived-index backends. It does not manage provider connections, API keys, Base URLs, provider quotas, provider model catalogues, Gateway Keys, or external client connection flows.
 
-### 7.1 List
+### 7.1 Shared model semantics
+
+AI model records use three independent semantic dimensions. Product adapters must not collapse them into one string field:
+
+```text
+Class       what the model is       RDF class inheritance
+Capability  what the model can do   URI relation
+Role        how a product uses it    AI Config relation
+```
+
+`AIModel` is the shared parent class. Stable API-contract classes extend it through drizzle-solid `SolidSchema.extend()`:
+
+```text
+AIModel
+├─ ChatModel
+├─ EmbeddingModel
+├─ DocumentModel
+├─ RerankingModel
+├─ ImageGenerationModel
+├─ SpeechRecognitionModel
+├─ SpeechSynthesisModel
+└─ VideoGenerationModel
+```
+
+Capabilities such as reasoning, tool use, web access, vision, OCR, document understanding, structured output, and indexing are URI resources linked from a model. They are not model subclasses. A Qwen-VL record remains a `ChatModel` and may additionally link to OCR and document-understanding capabilities.
+
+AI Config fields are workload roles. Each role links to the shared `AIModel` parent and validates the capability required by that role:
+
+```text
+chatModel      requires Chat
+ocrModel       requires OCR
+readerModel    requires DocumentUnderstanding
+embeddingModel requires Embedding
+indexerModel   requires Indexing
+rerankerModel  requires Reranking
+```
+
+This allows a role to select any compatible subclass without encoding the current adapter or API route into the ontology. Model assignments always store AI model resource URIs rather than provider/model names.
+
+Only cross-product model semantics and user intent belong in `@undefineds.co/models`. Xpod-specific FTS/vector enablement, backend selection, and index lifecycle controls remain product-owned Pod configuration rather than predicates on the shared `AIConfig` class.
+
+### 7.2 List
 
 ```text
 AI Config
@@ -263,7 +306,7 @@ AI Config
 └─ Index Lifecycle
 ```
 
-### 7.2 Model Assignments content
+### 7.3 Model Assignments content
 
 Task-to-model assignments include only capabilities with real consumers:
 
@@ -278,7 +321,7 @@ Reranker
 
 Each assignment shows provider, model, availability, credential readiness, configuration source (system default or Pod override), restore-default action, and a bounded test action. It references provider configuration but does not edit credentials.
 
-### 7.3 Document Processing content
+### 7.4 Document Processing content
 
 - OCR enabled state.
 - Automatic or on-demand triggering.
@@ -289,7 +332,7 @@ Each assignment shows provider, model, availability, credential readiness, confi
 
 Model selection remains in Model Assignments and is not duplicated here.
 
-### 7.4 Search & Indexing content
+### 7.5 Search & Indexing content
 
 Default controls:
 
@@ -306,7 +349,7 @@ Manual backend choices are shown only after the user opts out of Auto:
 
 Advanced controls include FTS/vector/entity coverage and other bounded policy values only when they have an implemented consumer. Embedding dimension is derived from the selected model and is read-only.
 
-### 7.5 Index Lifecycle content
+### 7.6 Index Lifecycle content
 
 - Automatically index new resources.
 - Refresh derived indexes after source updates.
@@ -383,6 +426,8 @@ Measured storage and bandwidth usage belongs in Status / Usage, not Settings.
 ## 9. macOS menu-bar tray
 
 The tray is a native macOS menu-bar integration at the top-right of the screen. It is not part of the in-app rail.
+
+The existing lightweight desktop shell is the host for this integration. This design does not replace or scaffold another desktop shell; it adds the tray, routes, and workspace integration to the existing shell.
 
 ### 9.1 Icon
 

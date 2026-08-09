@@ -58,7 +58,20 @@ function credential(input: Partial<StoredGatewayCredential> & {
   };
 }
 
-function serviceWith(credentials: StoredGatewayCredential[], now = new Date('2026-07-23T00:00:00.000Z')): {
+function serviceWith(
+  credentials: StoredGatewayCredential[],
+  now = new Date('2026-07-23T00:00:00.000Z'),
+  options: {
+    usageRecorder?: (input: {
+      webId: string;
+      provider: string;
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+    }) => Promise<void>;
+  } = {},
+): {
   service: AiGatewayService;
   store: GatewayCredentialStore;
   vault: CredentialVault;
@@ -81,6 +94,7 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
       execute: vi.fn(async function* () {
         yield { type: 'response.started', id: 'resp_1' };
         yield { type: 'text.delta', text: 'ok' };
+        yield { type: 'usage', usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 } };
         yield { type: 'response.completed', finishReason: 'stop' };
       }),
     })),
@@ -102,11 +116,38 @@ function serviceWith(credentials: StoredGatewayCredential[], now = new Date('202
       vault,
       runtimes,
       now: () => now,
+      usageRecorder: options.usageRecorder,
     }),
   };
 }
 
 describe('AiGatewayService', () => {
+  it('records the final upstream token usage once for the resolved Pod principal', async () => {
+    const usageRecorder = vi.fn(async() => {});
+    const { service } = serviceWith([
+      credential({ id: 'openai', provider: 'openai', models: ['gpt-5'] }),
+    ], undefined, { usageRecorder });
+    const execution = await service.execute({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }], stream: true },
+    });
+
+    for await (const _event of execution.events) {
+      // Consume the response so the usage evidence can be committed.
+    }
+
+    expect(usageRecorder).toHaveBeenCalledTimes(1);
+    expect(usageRecorder).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      provider: 'openai',
+      model: 'gpt-5',
+      inputTokens: 7,
+      outputTokens: 3,
+      totalTokens: 10,
+    });
+  });
+
   it('lists the union of active credential model allowlists without exposing inactive credentials', async () => {
     const registryOnlyOpenAiModel = 'gpt-4.1';
     const { service } = serviceWith([
