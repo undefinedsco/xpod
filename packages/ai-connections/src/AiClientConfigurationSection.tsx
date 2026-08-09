@@ -149,7 +149,7 @@ export function AiClientConfigurationSection({
         try {
           await lease.revoke()
         } catch (revokeError) {
-          recoveryMessage = `${recoveryMessage}；自动撤销 Gateway Key 失败：${errorMessage(revokeError)}。请在“高级：Gateway Keys”中手动撤销。`
+          recoveryMessage = `${recoveryMessage}；自动撤销客户端凭证失败：${errorMessage(revokeError)}。请在“高级：客户端凭证管理”中手动撤销。`
         }
       }
       setStatuses((current) => ({
@@ -184,10 +184,10 @@ export function AiClientConfigurationSection({
       <div className="border-b border-border/40 pb-2">
         <div className="flex items-center gap-2">
           <MonitorCog className="h-4 w-4 text-primary" />
-          <h3 className="text-sm font-medium text-foreground/90">编码客户端</h3>
+          <h3 className="text-sm font-medium text-foreground/90">客户端凭证</h3>
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          AI Connection 自动管理客户端访问密钥；Provider 凭证不会离开 Pod。
+          为 Codex、Claude Code、Pi 和 CodeBuddy 配置访问 Xpod 的客户端凭证；它不是真实的 Provider API Key。
         </p>
       </div>
       <div className="space-y-2">
@@ -246,6 +246,9 @@ export function AiClientConfigurationSection({
                       {confirmation.message ? (
                         <div className="text-xs text-muted-foreground">{confirmation.message}</div>
                       ) : null}
+                      <div className="text-xs text-muted-foreground">
+                        确认码：<code className="font-mono text-foreground">{confirmation.token}</code>
+                      </div>
                       <Input
                         aria-label={`输入确认码以应用 ${AI_CLIENT_LABELS[client]} 配置`}
                         value={confirmationValue}

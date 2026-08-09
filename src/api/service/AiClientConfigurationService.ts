@@ -207,7 +207,7 @@ export class AiClientConfigurationService {
 
   public async apply(input: ApplyInput): Promise<{ applied: true }> {
     const plan = this.requirePlan(input.client, input.planId);
-    if (!input.gatewayKey?.startsWith('xpod_')) {
+    if (!isSupportedGatewayKey(input.gatewayKey)) {
       throw new AiClientConfigurationError('invalid_gateway_key', 'Gateway key is required.', 400);
     }
     if (plan.confirmation) {
@@ -407,6 +407,31 @@ function requireSupportedClient(client: AiClientId): AiClientId {
   throw new AiClientConfigurationError('unsupported_client', 'Unsupported AI client.', 404);
 }
 
+function isSupportedGatewayKey(value: string | undefined): value is string {
+  if (!value) return false;
+  if (value.startsWith('xpod_')) return true;
+  if (!value.startsWith('sk-')) return false;
+
+  const encoded = value.slice(3);
+  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded)) return false;
+  const padding = encoded.match(/=+$/u)?.[0].length ?? 0;
+  const unpaddedLength = encoded.length - padding;
+  if (unpaddedLength % 4 === 1 || (padding > 0 && (encoded.length % 4) !== 0)) return false;
+
+  let decoded: string;
+  try {
+    decoded = Buffer.from(encoded, 'base64').toString('utf8');
+  } catch {
+    return false;
+  }
+
+  const canonical = Buffer.from(decoded, 'utf8').toString('base64');
+  if (canonical.replace(/=+$/u, '') !== encoded.replace(/=+$/u, '')) return false;
+
+  const separator = decoded.indexOf(':');
+  return separator > 0 && separator < decoded.length - 1;
+}
+
 function isReplacementSensitive(client: AiClientId): boolean {
   return client === 'pi';
 }
@@ -429,11 +454,15 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
     const timeout = AbortSignal.timeout(timeoutMs);
     const linked = mergeSignals(signal, timeout);
     const base = endpoint.replace(/\/+$/u, '');
-    await checkedGatewayFetch(fetchImpl, `${base}/v1/models`, {
+    const modelsPayload = await checkedGatewayJson(fetchImpl, `${base}/v1/models`, {
       method: 'GET',
       headers: { accept: 'application/json', authorization: `Bearer ${gatewayKey}` },
       signal: linked,
     });
+    const verificationModel = model ?? firstGatewayModelId(modelsPayload);
+    if (!verificationModel) {
+      throw new Error('Gateway verification failed: no available models');
+    }
     await checkedGatewayFetch(fetchImpl, `${base}/v1/responses`, {
       method: 'POST',
       headers: {
@@ -442,13 +471,35 @@ function createDefaultGatewayVerifier(fetchImpl: typeof fetch, timeoutMs: number
         authorization: `Bearer ${gatewayKey}`,
       },
       body: JSON.stringify({
-        model: model ?? 'xpod/default',
+        model: verificationModel,
         input: 'ping',
         max_output_tokens: 1,
       }),
       signal: linked,
     });
   };
+}
+
+async function checkedGatewayJson(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<unknown> {
+  const response = await fetchImpl(url, init);
+  if (!response.ok) {
+    await response.arrayBuffer();
+    throw new Error(`Gateway verification failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+function firstGatewayModelId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) return undefined;
+  for (const item of data) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const id = (item as { id?: unknown }).id;
+      if (typeof id === 'string' && id.trim()) return id.trim();
+    }
+  }
+  return undefined;
 }
 
 async function checkedGatewayFetch(fetchImpl: typeof fetch, url: string, init: RequestInit): Promise<void> {
@@ -504,8 +555,8 @@ export function redactSecretText(input: string): string {
   return input
     .replace(/\/(?:Users|var|tmp|private|home)\/[^\s"',)]+/gu, '[path]')
     .replace(/xpod_[A-Za-z0-9._-]+/gu, '[redacted]')
-    .replace(/sk-[A-Za-z0-9._-]+/gu, '[redacted]')
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/giu, 'Bearer [redacted]');
+    .replace(/sk-[A-Za-z0-9._+/=-]+/gu, '[redacted]')
+    .replace(/Bearer\s+[A-Za-z0-9._+/=-]+/giu, 'Bearer [redacted]');
 }
 
 export function unavailableAiClientConfigurationCapability(): AiClientConfigurationCapabilityDescriptor {

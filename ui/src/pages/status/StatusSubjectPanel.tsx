@@ -39,7 +39,19 @@ export function ServiceStatusPanel({ serviceId, title }: { serviceId: 'gateway' 
       setLoading(false);
     }
   }, [serviceId]);
-  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
+        void load(controller.signal);
+      }
+    });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [load]);
 
   const metadata = useMemo(() => serviceMetadata(serviceId, config), [config, serviceId]);
   const restart = async () => {

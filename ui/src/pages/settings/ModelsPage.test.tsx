@@ -15,10 +15,11 @@ const mock = vi.fn;
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
 
-function installDom() {
+function installDom(fetchImpl: typeof fetch) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'https://pod.example/dashboard/models',
   });
+  dom.window.fetch = fetchImpl;
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
   globalThis.HTMLElement = dom.window.HTMLElement;
@@ -33,7 +34,7 @@ function installDom() {
 }
 
 async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
-  installDom();
+  installDom(runtime.fetch);
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -66,10 +67,23 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
     webId: WEB_ID,
     podUrl: POD_URL,
-    currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    currentPod: {
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      database: createEmptyPodDatabase(),
+    } as XpodSolidRuntimeValue['currentPod'],
     login: mock(async () => undefined),
     logout: mock(async () => undefined),
   };
+}
+
+function createEmptyPodDatabase() {
+  return {
+    init: mock(async () => undefined),
+    select: () => ({
+      from: () => ({ execute: async () => [] }),
+    }),
+  } as never;
 }
 
 function serviceAccessPayload() {
@@ -99,6 +113,11 @@ describe('ModelsPage AI Connection host', () => {
       const url = String(input);
       if (url.endsWith('/api/applets/service-access/ai-connections')) {
         return new Response(JSON.stringify(serviceAccessPayload()), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/.account/')) {
+        return new Response(JSON.stringify({ clientCredentials: {} }), {
           headers: { 'content-type': 'application/json' },
         });
       }
@@ -134,7 +153,7 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Kimi');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('百炼');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('服务访问已授权');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Provider 凭证保存在当前 Pod，由 Pod 权限保护。');
     expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('OpenAI');
     await unmount(root);
   });

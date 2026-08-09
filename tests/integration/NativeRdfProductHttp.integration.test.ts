@@ -55,7 +55,6 @@ run('native RDF product HTTP path', () => {
     engine = new PostgresRdfEngine({
       connectionString: `postgres://postgres:xpod@127.0.0.1:${postgresPort}/xpod`,
       nativeSparqlEnabled: true,
-      deferPgCustomIndexInitialization: true,
     });
     await engine.open();
 

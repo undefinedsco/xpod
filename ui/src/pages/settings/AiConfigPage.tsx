@@ -53,6 +53,7 @@ function AiConfigList() {
             <NavLink
               key={item.id}
               to={item.path}
+              end={item.end}
               onClick={() => workspace.openMain()}
               onKeyDown={handleListNavigationKeyDown}
               className={({ isActive }) => clsx(

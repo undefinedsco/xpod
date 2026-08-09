@@ -10,8 +10,6 @@ export const XPOD_PROVIDER_TO_MODELS_DEV: Record<string, string> = {
   anthropic: 'anthropic',
   kimi: 'moonshotai',
   bailian: 'alibaba-cn',
-  'bailian-coding-plan': 'alibaba-coding-plan-cn',
-  'bailian-token-plan': 'alibaba-token-plan-cn',
   deepseek: 'deepseek',
 };
 

@@ -2,7 +2,10 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
-import type { NetworkDiagnosticCheckResult } from '../../../src/api/handlers/NetworkSettingsHandler';
+import type {
+  NetworkDesiredConfiguration,
+  NetworkDiagnosticCheckResult,
+} from '../../../src/api/handlers/NetworkSettingsHandler';
 import {
   createCertificateCapability,
   createDnsStatusReader,
@@ -422,7 +425,7 @@ describe('NetworkSettingsHandler', () => {
 
   it('separates observed state from saved configuration and validates writes', async () => {
     const { server, routes } = createServer();
-    const configuration = {
+    const configuration: NetworkDesiredConfiguration = {
       domainDns: { domain: 'xpod.example', ddnsEnabled: true, provider: 'cloudflare', recordTtl: 300, credentialConfigured: true },
       https: { enabled: true, acmeEmail: 'alice@example.com', domains: ['xpod.example'], renewBeforeDays: 30 },
       tunnelProfiles: { activeProfileId: 'home', profiles: [{ id: 'home', provider: 'cloudflare', label: 'Home', credentialConfigured: true }] },

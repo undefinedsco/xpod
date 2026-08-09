@@ -15,7 +15,11 @@ import {
 import { getProviderAvatar, getProviderAvatarBackground } from './provider-visuals'
 import type {
   AiConnectAttempt,
+  AiConnectionsMode,
   AiGatewayModel,
+  AiProviderCredentialSummary,
+  AiProviderOffering,
+  AiProviderSummary,
   AiQuotaSnapshot,
 } from './ai-connections-client'
 import {
@@ -24,22 +28,18 @@ import {
   Check,
   Copy,
   ExternalLink,
-  Eye,
-  EyeOff,
   Globe,
   Image as ImageIcon,
   Info,
-  KeyRound,
   Loader2,
-  LogOut,
   Pencil,
   Plus,
   RotateCw,
   Search,
-  Settings2,
   Trash2,
 } from 'lucide-react'
 import { AiQuotaCard } from './AiQuotaCard'
+import { AiCredentialPoolSection } from './AiCredentialPoolSection'
 
 export type { AiProviderDefinition } from './controller'
 import type { AiProviderDefinition } from './controller'
@@ -55,6 +55,7 @@ export type ProviderConnectionState =
 
 export function AiProviderCard({
   definition,
+  product,
   status,
   accountLabel,
   attempt,
@@ -66,21 +67,29 @@ export function AiProviderCard({
   quota,
   models,
   verifyPending = false,
-  connectionSaving = false,
   onApiKeyChange,
   onBaseUrlChange,
   onBeginApiKey,
+  onBeginOffering,
   onBeginBrowser,
   onSaveApiKey,
-  onSaveConnection,
   onDisconnect,
+  onCreateApiKeyCredential,
+  onUpdateCredential,
+  onDeleteCredential,
+  onTestCredential,
+  onReorderCredentials,
   onRefreshQuota,
   onVerify,
   onAddModel,
   onEditModel,
   onDeleteModel,
+  selectedModelIds,
+  onModelSelectionChange,
+  onDismissError,
 }: {
   definition: AiProviderDefinition
+  product?: AiProviderSummary
   status: ProviderConnectionState
   accountLabel?: string
   attempt?: AiConnectAttempt
@@ -92,27 +101,43 @@ export function AiProviderCard({
   quota?: AiQuotaSnapshot
   models: AiGatewayModel[]
   verifyPending?: boolean
-  connectionSaving?: boolean
   onApiKeyChange: (value: string) => void
   onBaseUrlChange?: (value: string) => void
   onBeginApiKey: () => void
+  onBeginOffering?: (offering: AiProviderOffering, mode: AiConnectionsMode) => void
   onBeginBrowser: () => void
   onSaveApiKey: () => void
-  onSaveConnection?: () => void
-  onDisconnect: () => void
+  onDisconnect: (credential?: AiProviderCredentialSummary) => void
+  onCreateApiKeyCredential?: (offering: AiProviderOffering, input: {
+    apiKey: string
+    label?: string
+    baseUrl?: string
+    priority: number
+  }) => void
+  onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
+    label?: string
+    enabled?: boolean
+    priority?: number
+    baseUrl?: string
+  }) => void
+  onDeleteCredential?: (credential: AiProviderCredentialSummary) => void
+  onTestCredential?: (credential: AiProviderCredentialSummary) => void
+  onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
   onRefreshQuota: () => void
   onVerify?: () => void
   onAddModel?: () => void
   onEditModel?: (model: AiGatewayModel) => void
   onDeleteModel?: (model: AiGatewayModel) => void
+  selectedModelIds?: string[]
+  onModelSelectionChange?: (provider: AiProviderSummary['id'], modelIds: string[]) => void
+  onDismissError?: () => void
 }) {
-  const apiKeyAttempt = attempt?.mode === 'browserAssistedApiKey' && attempt.status === 'pending'
   const isConfigured = status === 'configured'
   const isConnected = status === 'connected'
-  const showConnectionEditor = Boolean(onBaseUrlChange) && (apiKeyAttempt || isConfigured || isConnected)
-  const [showKey, setShowKey] = useState(false)
   const [modelSearch, setModelSearch] = useState('')
   const [copiedModelId, setCopiedModelId] = useState<string>()
+  const [localSelectedModelIds, setLocalSelectedModelIds] = useState<string[]>(selectedModelIds ?? [])
+  const effectiveSelectedModelIds = selectedModelIds ?? localSelectedModelIds
 
   const visibleModels = useMemo(() => {
     const query = modelSearch.trim().toLocaleLowerCase()
@@ -121,6 +146,11 @@ export function AiProviderCard({
       model.id.toLocaleLowerCase().includes(query)
       || model.displayName?.toLocaleLowerCase().includes(query))
   }, [models, modelSearch])
+  const selectableVisibleModels = visibleModels.filter((model) => model.availability !== 'unavailable')
+  const selectedVisibleCount = selectableVisibleModels.filter((model) => effectiveSelectedModelIds.includes(modelSelectionId(model))).length
+  const allVisibleSelected = selectableVisibleModels.length > 0 && selectedVisibleCount === selectableVisibleModels.length
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected
+  const unavailableModelCount = models.filter((model) => model.availability === 'unavailable').length
 
   const copyModelId = async (modelId: string) => {
     try {
@@ -130,6 +160,27 @@ export function AiProviderCard({
     } catch {
       setCopiedModelId(undefined)
     }
+  }
+
+  const toggleModel = (modelId: string) => {
+    const next = new Set(effectiveSelectedModelIds)
+    if (next.has(modelId)) next.delete(modelId)
+    else next.add(modelId)
+    const nextModelIds = [...next]
+    if (selectedModelIds === undefined) setLocalSelectedModelIds(nextModelIds)
+    onModelSelectionChange?.(definition.id, nextModelIds)
+  }
+
+  const toggleVisibleModels = () => {
+    const next = new Set(effectiveSelectedModelIds)
+    for (const model of selectableVisibleModels) {
+      const selectionId = modelSelectionId(model)
+      if (allVisibleSelected) next.delete(selectionId)
+      else next.add(selectionId)
+    }
+    const nextModelIds = [...next]
+    if (selectedModelIds === undefined) setLocalSelectedModelIds(nextModelIds)
+    onModelSelectionChange?.(definition.id, nextModelIds)
   }
 
   return (
@@ -177,175 +228,31 @@ export function AiProviderCard({
           </Badge>
         </header>
 
-        <section className="space-y-4" aria-label="当前连接">
-          <div className="flex items-center gap-2 border-b border-border/40 pb-2">
-            <Settings2 className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-medium text-foreground/90">当前连接</h3>
-          </div>
-          <div>
-            {accountLabel ? (
-              <p className="text-xs text-muted-foreground">{maskAccountLabel(accountLabel)}</p>
-            ) : (
-              <p className="text-xs text-muted-foreground">Provider 凭证加密保存在当前 Pod。</p>
-            )}
-          </div>
-
-          {attempt?.userCode ? (
-            <div className="mb-4 border-l-2 border-primary bg-muted/30 px-3 py-2 text-sm">
-              验证码：<strong className="font-mono">{attempt.userCode}</strong>
-            </div>
-          ) : null}
-
-          <div className="flex flex-wrap gap-2">
-            {isConnected ? (
-              <>
-                <Button variant="outline" size="sm" disabled={busy || disabled} onClick={onBeginBrowser}>
-                  {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCw className="mr-2 h-4 w-4" />}
-                  重新连接
-                </Button>
-                <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
-                  <LogOut className="mr-2 h-4 w-4" />
-                  断开连接
-                </Button>
-              </>
-            ) : isConfigured ? (
-              <>
-                <Button variant="outline" size="sm" aria-label="更新 API Key" disabled={busy || disabled} onClick={onBeginApiKey}>
-                  <KeyRound className="mr-2 h-4 w-4" />
-                  更新 API Key
-                </Button>
-                <Button variant="ghost" size="sm" disabled={busy || disabled} onClick={onDisconnect}>
-                  移除配置
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={busy || disabled || definition.browserMode === 'connectUnsupported'}
-                  onClick={onBeginBrowser}
-                >
-                  {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
-                  {definition.browserLabel}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label={`${definition.name} API Key`}
-                  disabled={busy || disabled}
-                  onClick={onBeginApiKey}
-                >
-                  <KeyRound className="mr-2 h-4 w-4" />
-                  配置 API Key
-                </Button>
-              </>
-            )}
-          </div>
-
-          {showConnectionEditor ? (
-            <div className="mt-4 space-y-3">
-              {apiKeyAttempt ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">API Key</span>
-                    {definition.apiKeyUrl ? (
-                      <a href={definition.apiKeyUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
-                        获取 API Key
-                      </a>
-                    ) : null}
-                  </div>
-                  <div className="group relative">
-                    <Input
-                      type={showKey ? 'text' : 'password'}
-                      autoComplete="off"
-                      aria-label={`${definition.name} API Key 输入`}
-                      placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
-                      value={apiKey}
-                      onChange={(event) => onApiKeyChange(event.target.value)}
-                      className="border-border/60 bg-muted/20 pr-10 font-mono transition-colors focus:border-primary/50 focus:bg-background"
-                    />
-                    <div className="absolute bottom-1 right-1 top-1 flex items-center">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-full w-8 rounded hover:bg-muted"
-                        onClick={() => setShowKey((current) => !current)}
-                        aria-label={showKey ? '隐藏 API Key' : '显示 API Key'}
-                      >
-                        {showKey
-                          ? <EyeOff className="h-4 w-4 text-muted-foreground" />
-                          : <Eye className="h-4 w-4 text-muted-foreground" />}
-                      </Button>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">连接参数</span>
-                  {definition.apiKeyUrl ? (
-                    <a href={definition.apiKeyUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
-                      获取 API Key
-                    </a>
-                  ) : null}
-                </div>
-              )}
-
-              {onBaseUrlChange ? (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {apiKeyAttempt ? 'Base URL（选填）' : 'API 代理地址 (Base URL)'}
-                    </span>
-                  </div>
-                  <Input
-                    autoComplete="off"
-                    data-lpignore="true"
-                    data-1p-ignore
-                    aria-label={`${definition.name} Base URL 输入`}
-                    placeholder={definition.defaultBaseUrl || '默认服务地址'}
-                    value={baseUrl}
-                    disabled={disabled || busy || connectionSaving}
-                    onChange={(event) => onBaseUrlChange(event.target.value)}
-                    onBlur={() => {
-                      if (!apiKeyAttempt && onSaveConnection) onSaveConnection()
-                    }}
-                    className="border-border/60 bg-muted/20 font-mono text-xs transition-colors focus:border-primary/50 focus:bg-background"
-                  />
-                  <p className="break-all font-mono text-[11px] text-muted-foreground opacity-80">
-                    <span className="mr-1 select-none opacity-50">预览:</span>
-                    {(baseUrl.trim() || definition.defaultBaseUrl || '').replace(/\/+$/, '')}/chat/completions
-                  </p>
-                </div>
-              ) : null}
-
-              {apiKeyAttempt ? (
-                <Button
-                  size="sm"
-                  aria-label={`保存 ${definition.name} API Key`}
-                  disabled={!apiKey.trim() || busy || disabled}
-                  onClick={onSaveApiKey}
-                >
-                  保存 API Key
-                </Button>
-              ) : onSaveConnection ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  aria-label={`保存 ${definition.name} 连接配置`}
-                  disabled={disabled || busy || connectionSaving}
-                  onClick={onSaveConnection}
-                >
-                  {connectionSaving
-                    ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    : null}
-                  {connectionSaving ? '保存中...' : '保存连接配置'}
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-          {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
-        </section>
+        <AiCredentialPoolSection
+          definition={definition}
+          product={product}
+          status={status}
+          accountLabel={accountLabel}
+          attempt={attempt}
+          apiKey={apiKey}
+          baseUrl={baseUrl}
+          busy={busy}
+          disabled={disabled}
+          error={error}
+          onApiKeyChange={onApiKeyChange}
+          onBaseUrlChange={onBaseUrlChange}
+          onBeginApiKey={onBeginApiKey}
+          onBeginOffering={onBeginOffering}
+          onBeginBrowser={onBeginBrowser}
+          onSaveApiKey={onSaveApiKey}
+          onDisconnect={onDisconnect}
+          onCreateApiKeyCredential={product?.offerings.length ? onCreateApiKeyCredential : undefined}
+          onUpdateCredential={onUpdateCredential}
+          onDeleteCredential={onDeleteCredential}
+          onTestCredential={onTestCredential}
+          onReorderCredentials={onReorderCredentials}
+          onDismissError={onDismissError}
+        />
 
         <section className="space-y-4">
           <AiQuotaCard
@@ -362,7 +269,9 @@ export function AiProviderCard({
             <div className="flex items-center gap-2">
               <Box className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground/90">可用模型</h3>
-              <Badge variant="secondary" className="ml-2 text-xs font-normal">{models.length}</Badge>
+              <span className="ml-2 text-xs text-muted-foreground">
+                共 {models.length} · 已加入 {effectiveSelectedModelIds.length} · 已失效 {unavailableModelCount}
+              </span>
             </div>
             <div className="flex items-center gap-2">
               {(isConfigured || isConnected) && (onVerify || onAddModel) ? (
@@ -379,7 +288,7 @@ export function AiProviderCard({
                       添加模型
                     </Button>
                   ) : null}
-                  {onVerify ? (
+                  {onVerify && models.length > 0 ? (
                     <Button
                       variant="outline"
                       size="sm"
@@ -390,19 +299,32 @@ export function AiProviderCard({
                       {verifyPending
                         ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
                         : <RotateCw aria-hidden="true" className="h-3.5 w-3.5" />}
-                      {verifyPending ? '验证中...' : '验证'}
+                      {verifyPending ? '同步中...' : '刷新模型'}
+                    </Button>
+                  ) : onVerify ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs"
+                      disabled={disabled || busy || verifyPending}
+                      onClick={onVerify}
+                    >
+                      {verifyPending
+                        ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                        : <RotateCw aria-hidden="true" className="h-3.5 w-3.5" />}
+                      {verifyPending ? '同步中...' : '同步模型'}
                     </Button>
                   ) : null}
                 </>
               ) : null}
               {models.length > 0 ? (
                 <div className="relative">
-                  <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     value={modelSearch}
                     onChange={(event) => setModelSearch(event.target.value)}
                     placeholder="搜索模型..."
-                    className="h-8 w-[180px] bg-muted/20 pl-8 text-xs"
+                    className="h-8 w-[232px] bg-background pl-8 text-xs"
                     autoComplete="off"
                     data-lpignore="true"
                     data-1p-ignore
@@ -422,25 +344,74 @@ export function AiProviderCard({
             </div>
           ) : (
             <div className="grid gap-2">
+              <div className="flex items-center justify-between px-1 py-1">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-label="全选当前结果"
+                  aria-checked={someVisibleSelected ? 'mixed' : allVisibleSelected}
+                  disabled={disabled || busy || selectableVisibleModels.length === 0}
+                  onClick={toggleVisibleModels}
+                  className="flex items-center gap-2 text-xs text-muted-foreground disabled:opacity-50"
+                >
+                  <span className={cn(
+                    'flex h-4 w-4 items-center justify-center rounded border',
+                    allVisibleSelected || someVisibleSelected ? 'border-primary bg-primary text-primary-foreground' : 'border-border',
+                  )}>
+                    {someVisibleSelected ? <span aria-hidden="true">−</span> : <Check aria-hidden="true" className={cn('h-3 w-3', !allVisibleSelected && 'invisible')} />}
+                  </span>
+                  全选当前结果
+                </button>
+              </div>
               {visibleModels.map((model) => {
+                const selectionId = modelSelectionId(model)
+                const isSelected = effectiveSelectedModelIds.includes(selectionId)
+                const isUnavailable = model.availability === 'unavailable'
+                const modelLabel = model.displayName ?? model.id
                 const iconTokens = [
                   ...(model.inputModalities ?? []).filter((modality) => modality !== 'text'),
                   ...(model.capabilities ?? []),
                 ]
                 return (
                   <div
-                    key={model.id}
-                    className="group flex items-center gap-3 rounded-lg border border-border/40 bg-card p-3 transition-all duration-200 hover:border-border/60 hover:bg-accent/30"
+                    key={selectionId}
+                    className={cn(
+                      'group flex items-center gap-3 rounded-lg border bg-card p-3 transition-all duration-200 hover:border-border/60 hover:bg-accent/30',
+                      isSelected ? 'border-primary/40 bg-primary/[0.03]' : 'border-border/40',
+                      isUnavailable && 'opacity-75',
+                    )}
                   >
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={isSelected}
+                      aria-label={`${isSelected ? '取消选择' : '选择'} ${modelLabel}`}
+                      className={cn(
+                        'flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        isSelected
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border text-transparent hover:border-primary/60',
+                      )}
+                      disabled={disabled || busy || (isUnavailable && !isSelected)}
+                      onClick={() => toggleModel(selectionId)}
+                    >
+                      <Check aria-hidden="true" className="h-3.5 w-3.5" />
+                    </button>
                     <div className="shrink-0 rounded bg-muted/50 p-2 text-muted-foreground transition-colors group-hover:text-primary">
                       <Box className="h-4 w-4" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground/90">{model.displayName ?? model.id}</span>
+                        <span className="truncate text-sm font-medium text-foreground/90">{modelLabel}</span>
                         <div className="flex items-center gap-1">
                           {iconTokens.map((token) => <CapabilityIcon key={token} type={token} />)}
                         </div>
+                        {model.custom ? <Badge variant="outline" className="shrink-0 text-[10px] font-normal">手工</Badge> : null}
+                        {isUnavailable ? (
+                          <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">
+                            已失效
+                          </Badge>
+                        ) : null}
                       </div>
                       {model.displayName ? (
                         <div className="mt-0.5 flex items-center gap-1.5">
@@ -528,10 +499,12 @@ function providerMark(provider: AiProviderDefinition['id']): string {
     case 'anthropic': return 'A'
     case 'kimi': return 'K'
     case 'bailian': return '百'
-    case 'bailian-coding-plan': return '码'
-    case 'bailian-token-plan': return '量'
     case 'deepseek': return 'DS'
   }
+}
+
+function modelSelectionId(model: AiGatewayModel): string {
+  return model.resourceId ?? model.id
 }
 
 function connectionStatusLabel(status: ProviderConnectionState): string {
@@ -544,17 +517,4 @@ function connectionStatusLabel(status: ProviderConnectionState): string {
     case 'failed': return '连接失败'
     default: return '未检查'
   }
-}
-
-function maskAccountLabel(value: string): string {
-  const at = value.indexOf('@')
-  if (at > 0) {
-    const accountName = value.slice(0, at)
-    const visible = accountName.length > 1
-      ? `${accountName[0]}***${accountName[accountName.length - 1]}`
-      : `${accountName[0]}***`
-    return `${visible}${value.slice(at)}`
-  }
-  if (value.length <= 2) return `${value[0] ?? ''}***`
-  return `${value[0]}***${value[value.length - 1]}`
 }

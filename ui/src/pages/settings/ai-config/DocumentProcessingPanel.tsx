@@ -6,7 +6,13 @@ import { isPolicyValueDirty } from './form-state';
 export function DocumentProcessingPanel() {
   const { config, save, saving } = useAiConfig();
   const [value, setValue] = useState(config?.documentProcessing);
-  useEffect(() => setValue(config?.documentProcessing), [config]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setValue(config?.documentProcessing);
+    });
+    return () => { cancelled = true; };
+  }, [config]);
   if (!value) return null;
   const dirty = isPolicyValueDirty(value, config?.documentProcessing);
   const submit = async (event: FormEvent) => { event.preventDefault(); await save({ documentProcessing: value }); };

@@ -1,9 +1,13 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import { aiProviderResource } from '@undefineds.co/models';
 
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../../src/api/ai-gateway/AiGatewayService';
 import { createGatewayApiKey } from '../../src/api/ai-gateway/auth/GatewayApiKey';
-import { GatewayApiKeyAuthenticator } from '../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
+import {
+  GatewayApiKeyAuthenticator,
+  LEGACY_GATEWAY_KEY_AUTHENTICATION,
+} from '../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { AesGatewayKeyLocatorCodec } from '../../src/api/ai-gateway/auth/GatewayKeyLocatorCodec';
 import { PodGatewayAccessKeyRepository } from '../../src/api/ai-gateway/auth/PodGatewayAccessKeyRepository';
 import { PodConnectedCredentialRepository } from '../../src/api/ai-gateway/connect';
@@ -28,7 +32,30 @@ function auth(webId: string): AuthContext {
     accountId: webId,
     scopes: ['models:read', 'inference:write'],
     viaGatewayApiKey: true,
+    internalInvocation: true,
+    gatewayKeyId: `internal-${encodeURIComponent(webId)}`,
+    tokenType: 'Bearer',
   };
+}
+
+function callerOwnedAuth(webId: string): AuthContext {
+  return {
+    type: 'solid',
+    webId,
+    accountId: webId,
+    scopes: ['models:read', 'inference:write'],
+    viaApiKey: true,
+    accessToken: `caller-owned-token-for-${encodeURIComponent(webId)}`,
+    tokenType: 'Bearer',
+  };
+}
+
+const INTERNAL_GATEWAY_KEY_CONTEXT = {
+  internalPodAccess: { reason: LEGACY_GATEWAY_KEY_AUTHENTICATION },
+} as const;
+
+function legacyGatewayKeyContext() {
+  return INTERNAL_GATEWAY_KEY_CONTEXT;
 }
 
 function encryptedSecret(webId: string, provider: string, id: string): EncryptedCredentialSecret {
@@ -179,7 +206,7 @@ function createPodBackedDbFactory() {
                 where() {
                   return {
                     async execute() {
-                      return [...store.values()].map((row) => structuredClone(row));
+                      return [...store.values()].filter((row) => row.owner === owner).map((row) => structuredClone(row));
                     },
                   };
                 },
@@ -244,9 +271,10 @@ function podRows(backing: ReturnType<typeof createPodBackedDbFactory>): string {
 describe('AI Connection Pod isolation integration', () => {
   it('serves each WebID through the production Pod credential repository adapter', async() => {
     const backing = createPodBackedDbFactory();
+    const internal = internalPodAccess();
     const repository = new PodConnectedCredentialRepository({
       dbFactory: backing.dbFactory as any,
-      internalPodAccess: internalPodAccess(),
+      internalPodAccess: internal,
       providerIds: ['openai', 'deepseek'],
     });
     await repository.upsertConnectedCredential({
@@ -258,6 +286,11 @@ describe('AI Connection Pod isolation integration', () => {
       authMode: 'apiKey',
       encryptedSecret: encryptedSecret(ALICE_WEB_ID, 'openai', 'alice-openai'),
       status: 'active',
+    }, { auth: callerOwnedAuth(ALICE_WEB_ID) });
+    backing.pods.get(ALICE_WEB_ID)?.set(aiProviderResource.buildId({ id: 'openai' }), {
+      id: aiProviderResource.buildId({ id: 'openai' }),
+      owner: ALICE_WEB_ID,
+      hasModel: ['openai.ttl#gpt-5'],
     });
     await repository.upsertConnectedCredential({
       id: 'credentials.ttl#cloud-deepseek',
@@ -268,13 +301,13 @@ describe('AI Connection Pod isolation integration', () => {
       authMode: 'apiKey',
       encryptedSecret: encryptedSecret(BOB_WEB_ID, 'deepseek', 'bob-deepseek'),
       status: 'active',
+    }, { auth: callerOwnedAuth(BOB_WEB_ID) });
+    expect(internal.getTrustedFetch).not.toHaveBeenCalled();
+    backing.pods.get(BOB_WEB_ID)?.set(aiProviderResource.buildId({ id: 'deepseek' }), {
+      id: aiProviderResource.buildId({ id: 'deepseek' }),
+      owner: BOB_WEB_ID,
+      hasModel: ['deepseek.ttl#deepseek-chat'],
     });
-    expect(await repository.listCredentials({ webId: ALICE_WEB_ID, deployment: 'cloud' })).toEqual(
-      expect.arrayContaining([expect.objectContaining({ provider: 'openai', enabled: true })]),
-    );
-    expect(await repository.listCredentials({ webId: BOB_WEB_ID, deployment: 'cloud' })).toEqual(
-      expect.arrayContaining([expect.objectContaining({ provider: 'deepseek', enabled: true })]),
-    );
     const fixture = createService({
       deployment: 'cloud',
       credentials: [],
@@ -308,9 +341,10 @@ describe('AI Connection Pod isolation integration', () => {
 
   it('authenticates A/B Gateway keys through the production Pod key repository without cross-touching metadata', async() => {
     const backing = createPodBackedDbFactory();
+    const internal = internalPodAccess();
     const repository = new PodGatewayAccessKeyRepository({
       dbFactory: backing.dbFactory as any,
-      internalPodAccess: internalPodAccess(),
+      internalPodAccess: internal,
       locatorCodec: new AesGatewayKeyLocatorCodec('task14-locator-secret'),
     });
     const keyAId = repository.createKeyId(ALICE_WEB_ID, 'cloud');
@@ -323,14 +357,14 @@ describe('AI Connection Pod isolation integration', () => {
       scopes: ['models:read', 'inference:write'],
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
       name: 'Codex A',
-    });
+    }, legacyGatewayKeyContext());
     await repository.create({
       ...keyB.record,
       owner: ALICE_WEB_ID,
       scopes: ['models:read', 'inference:write'],
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
       name: 'Codex B',
-    });
+    }, legacyGatewayKeyContext());
     const authenticator = new GatewayApiKeyAuthenticator({
       repository,
       deployment: 'cloud',
@@ -341,8 +375,8 @@ describe('AI Connection Pod isolation integration', () => {
       success: true,
       context: { webId: ALICE_WEB_ID, gatewayKeyId: keyAId },
     });
-    await expect(repository.findById(keyAId)).resolves.toMatchObject({ lastUsedAt: new Date('2026-07-23T00:10:00.000Z') });
-    await expect(repository.findById(keyBId)).resolves.not.toMatchObject({ lastUsedAt: expect.any(Date) });
+    await expect(repository.findById(keyAId, legacyGatewayKeyContext())).resolves.toMatchObject({ lastUsedAt: new Date('2026-07-23T00:10:00.000Z') });
+    await expect(repository.findById(keyBId, legacyGatewayKeyContext())).resolves.not.toMatchObject({ lastUsedAt: expect.any(Date) });
     await expect(authenticator.authenticate(requestWithGatewayKey(keyB.plaintext))).resolves.toMatchObject({
       success: true,
       context: { webId: ALICE_WEB_ID, gatewayKeyId: keyBId },

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ApiServer } from '../../../src/api/ApiServer';
 import { registerStaticSpaRoutes } from '../../../src/api/handlers/StaticSpaHandler';
+import type { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 
 describe('registerStaticSpaRoutes', () => {
   let server: ApiServer;
@@ -19,7 +20,7 @@ describe('registerStaticSpaRoutes', () => {
     server = new ApiServer({
       port: 0,
       host: '127.0.0.1',
-      authMiddleware: { process: async () => true },
+      authMiddleware: { process: async () => true } as unknown as AuthMiddleware,
     });
     registerStaticSpaRoutes(server, {
       prefix: '/settings',

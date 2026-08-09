@@ -1,15 +1,20 @@
 import { createAiConnectionsExtension, type AiConnectionsController } from '@undefineds.co/ai-connections';
 import {
   mountApplet,
+  createSolidPermissionCapability,
   type AppletModule,
   type MountedTwoPaneApplet,
   type WebExtensionHost,
 } from '@undefineds.co/extension-sdk/web';
 import { useMemo } from 'react';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { createServiceAccessGatewayFetch, createXpodAiClientConfigurationBridge } from '../api/ai-connections';
-import { createServiceAccessPermissionCapability } from '../api/service-access-acp';
+import {
+  createServiceAccessGatewayFetch,
+  createXpodAiClientConfigurationBridge,
+} from '../api/ai-connections';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
+import { createXpodAiClientCredentialsCapability } from './XpodAiClientCredentials';
+import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
 
 const aiConnectionExtension = createAiConnectionsExtension();
 const aiConnectionAppletId = aiConnectionExtension.manifest.contributes.applets[0]?.appId;
@@ -30,25 +35,27 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       ? { status: 'opening' as const }
       : runtime.state.status === 'error'
         ? { status: 'error' as const, error: runtime.state.error }
-        : { status: 'unavailable' as const };
+      : { status: 'unavailable' as const };
+  const invocationFetch = window.fetch.bind(window);
+  const aiConnectionsFetch = runtime.currentPod
+    ? createServiceAccessGatewayFetch({
+      podUrl: runtime.currentPod.podUrl,
+      authenticatedFetch: runtime.fetch,
+      invocationFetch,
+    })
+    : runtime.fetch;
 
   return {
     solid: {
       session: {
         getSnapshot: runtime.session.getSnapshot,
         subscribe: runtime.session.subscribe,
-        fetch: runtime.currentPod
-          ? createServiceAccessGatewayFetch({
-            podUrl: runtime.currentPod.podUrl,
-            authenticatedFetch: runtime.fetch,
-          })
-          : runtime.fetch,
+        fetch: aiConnectionsFetch,
       },
       pod,
-      permissions: createServiceAccessPermissionCapability({
-        authenticatedFetch: runtime.fetch,
-        ownerWebId: runtime.webId,
-      }),
+      permissions: {
+        ...createSolidPermissionCapability({ fetch: runtime.fetch }),
+      },
       requireLogin: async () => runtime.login(window.location.origin),
     },
     navigation: {
@@ -57,12 +64,27 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       },
     },
     capabilities: {
+      aiClientCredentials: runtime.currentPod
+        ? createXpodAiClientCredentialsCapability({
+          accountBaseUrl: runtime.state.issuer ?? runtime.issuer,
+          webId: runtime.currentPod.webId,
+          fetch: invocationFetch,
+        })
+        : undefined,
+      aiConnectionsPodStore: runtime.currentPod
+        ? createXpodAiConnectionsPodStore({
+          database: runtime.currentPod.database,
+          podUrl: runtime.currentPod.podUrl,
+          webId: runtime.currentPod.webId,
+        })
+        : undefined,
       aiClientConfiguration: runtime.currentPod &&
         runtime.aiClientConfiguration?.available === true &&
         runtime.aiClientConfiguration.authority === 'local-filesystem'
         ? createXpodAiClientConfigurationBridge({
           podUrl: runtime.currentPod.podUrl,
           authenticatedFetch: runtime.fetch,
+          invocationFetch,
         })
         : unsupportedAiClientConfiguration,
     },

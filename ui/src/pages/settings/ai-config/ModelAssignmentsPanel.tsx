@@ -20,7 +20,13 @@ export function ModelAssignmentsPanel() {
   const [values, setValues] = useState<Partial<Record<AiConfigModelAssignment, string>>>({});
   const [testing, setTesting] = useState<string>();
   const [testResults, setTestResults] = useState<Record<string, 'ready' | 'failed'>>({});
-  useEffect(() => setValues(config?.models ?? {}), [config]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setValues(config?.models ?? {});
+    });
+    return () => { cancelled = true; };
+  }, [config]);
   const dirty = isPolicyValueDirty(values, config?.models ?? {});
 
   const submit = async (event: FormEvent) => {

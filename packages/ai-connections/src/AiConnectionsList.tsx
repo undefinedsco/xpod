@@ -114,8 +114,6 @@ function providerMark(provider: (typeof PROVIDERS)[number]['id']): string {
     case 'anthropic': return 'A'
     case 'kimi': return 'K'
     case 'bailian': return '百'
-    case 'bailian-coding-plan': return '码'
-    case 'bailian-token-plan': return '量'
     case 'deepseek': return 'DS'
   }
 }

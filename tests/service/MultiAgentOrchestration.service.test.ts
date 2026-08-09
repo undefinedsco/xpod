@@ -62,7 +62,14 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
   let store: InMemoryStore<StoreContext>;
   let service: ChatKitService<StoreContext>;
-  const context: StoreContext = { userId: 'local-user' };
+  const context: StoreContext = {
+    userId: 'local-user',
+    aiConnection: {
+      baseUrl: 'http://127.0.0.1:3000/v1',
+      gatewayKey: 'gateway-key',
+      model: 'linx',
+    },
+  };
 
   beforeAll(() => {
     store = new InMemoryStore<StoreContext>();

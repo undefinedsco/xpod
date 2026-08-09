@@ -9,6 +9,7 @@ import {
 } from './tray-menu.js'
 import { trayIconAssetName } from './tray-icon.js'
 import { RuntimeManager } from './runtime-manager.js'
+import { resolveDesktopTargetUrl } from './target-url.js'
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -22,13 +23,7 @@ process.env.CSS_SPARQL_ENDPOINT ??= `sqlite:${path.join(desktopDataRoot, 'quadst
 process.env.CSS_RDF_INDEX_PATH ??= path.join(desktopDataRoot, 'rdf-index.sqlite')
 process.env.CSS_ROOT_FILE_PATH ??= path.join(desktopDataRoot, 'data')
 
-function resolveTargetUrl(): string {
-  const argumentIndex = process.argv.findIndex((item) => item === '--url')
-  const fromArgument = argumentIndex >= 0 ? process.argv[argumentIndex + 1] : undefined
-  return fromArgument || process.env.XPOD_DESKTOP_URL || 'http://127.0.0.1:3000/status/overview'
-}
-
-const targetUrl = resolveTargetUrl()
+const targetUrl = resolveDesktopTargetUrl()
 const targetOrigin = new URL(targetUrl).origin
 const smokeMode = process.env.XPOD_DESKTOP_SMOKE === '1'
 

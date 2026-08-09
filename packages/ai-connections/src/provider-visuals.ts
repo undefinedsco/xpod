@@ -17,8 +17,6 @@ const providerAvatars: Partial<Record<AiConnectionsProvider, string>> = {
   anthropic: anthropicAvatar,
   kimi: kimiAvatar,
   bailian: bailianAvatar,
-  'bailian-coding-plan': bailianAvatar,
-  'bailian-token-plan': bailianAvatar,
   deepseek: deepseekAvatar,
 }
 

@@ -24,21 +24,29 @@ export interface GatewayAccessKeyRecord {
   name?: string;
 }
 
+export const LEGACY_GATEWAY_KEY_AUTHENTICATION = 'legacy-gateway-key-authentication';
+export type GatewayAccessKeyRepositoryInternalAccessReason =
+  typeof LEGACY_GATEWAY_KEY_AUTHENTICATION;
+
 export interface GatewayAccessKeyRepositoryContext {
   auth?: AuthContext;
+  internalPodAccess?: {
+    reason: GatewayAccessKeyRepositoryInternalAccessReason;
+  };
 }
 
 export interface GatewayAccessKeyRepository {
   createKeyId?(owner: string, deployment: GatewayDeployment): string;
   create(record: GatewayAccessKeyRecord, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord>;
-  findById(id: string): Promise<GatewayAccessKeyRecord | undefined>;
+  findById(id: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
   listByOwner(owner: string, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord[]>;
   revoke(id: string, revokedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<GatewayAccessKeyRecord | undefined>;
-  touchLastUsed(id: string, lastUsedAt: Date): Promise<void>;
+  touchLastUsed(id: string, lastUsedAt: Date, context?: GatewayAccessKeyRepositoryContext): Promise<void>;
 }
 
 export interface GatewayApiKeyAuthenticatorOptions {
-  repository: GatewayAccessKeyRepository;
+  /** Persistent key storage is optional for stateless invocation-token auth. */
+  repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   requiredScopes?: string[];
   invocationTokenCodec?: InvocationTokenCodec;
@@ -52,7 +60,7 @@ const INVALID_GATEWAY_API_KEY = 'Invalid gateway API key';
 export const DEFAULT_GATEWAY_API_KEY_SCOPES = ['models:read', 'inference:write'] as const;
 
 export class GatewayApiKeyAuthenticator implements Authenticator {
-  private readonly repository: GatewayAccessKeyRepository;
+  private readonly repository?: GatewayAccessKeyRepository;
   private readonly deployment: GatewayDeployment;
   private readonly requiredScopes: string[];
   private readonly invocationTokenCodec?: InvocationTokenCodec;
@@ -99,9 +107,19 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
       return { success: false, error: INVALID_GATEWAY_API_KEY };
     }
 
+    // A locator-less deployment can still authenticate short-lived invocation
+    // tokens. Persistent gateway keys require their backing repository and
+    // must never be accepted or fabricated when it is unavailable.
+    if (!this.repository) {
+      return infrastructureError(new Error('Gateway API key repository is not configured'));
+    }
+
+    const repositoryContext: GatewayAccessKeyRepositoryContext = {
+      internalPodAccess: { reason: LEGACY_GATEWAY_KEY_AUTHENTICATION },
+    };
     let record: GatewayAccessKeyRecord | undefined;
     try {
-      record = await this.repository.findById(parsed.keyId);
+      record = await this.repository.findById(parsed.keyId, repositoryContext);
     } catch (cause) {
       return infrastructureError(cause);
     }
@@ -124,7 +142,7 @@ export class GatewayApiKeyAuthenticator implements Authenticator {
 
     const lastUsedAt = this.now();
     try {
-      await this.repository.touchLastUsed(record.id, lastUsedAt);
+      await this.repository.touchLastUsed(record.id, lastUsedAt, repositoryContext);
     } catch (cause) {
       return infrastructureError(cause);
     }

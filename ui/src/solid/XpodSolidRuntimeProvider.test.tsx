@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { describe, expect, mock, test } from 'bun:test';
 import { JSDOM } from 'jsdom';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -15,8 +15,6 @@ import { SettingsAuthBoundary } from './SettingsAuthBoundary';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
-const mock = vi.fn;
 
 type Listener = (...args: unknown[]) => void;
 
@@ -454,7 +452,7 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(container.textContent).toContain('登录未完成');
-    expect(container.textContent).toContain('重新选择登录方式');
+    expect(container.textContent).toContain('Solid login failed. Please reconnect your Pod.');
     expect(container.textContent).not.toContain('raw internal failure');
 
     await act(async () => {
@@ -462,8 +460,9 @@ describe('Xpod Solid runtime', () => {
         .find((button) => button.textContent === '重新选择登录方式');
       dismissButton?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
-    expect(container.textContent).toContain('当前 Xpod');
-    expect(container.textContent).not.toContain('添加登录方式');
+    expect(container.textContent).toContain('使用 undefineds 账号');
+    expect(container.textContent).toContain('云端');
+    expect(container.textContent).toContain('本机');
 
     await act(async () => {
       session.expire();
@@ -473,9 +472,30 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
+  test('renders the Linx account space chooser instead of the raw Solid issuer form', async () => {
+    const session = new FakeSession();
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+
+    const { container, root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={value}>
+        <SettingsAuthBoundary>
+          <RuntimeProbe />
+        </SettingsAuthBoundary>
+      </XpodSolidRuntimeProvider>,
+    );
+
+    expect(container.textContent).toContain('使用 undefineds 账号');
+    expect(container.textContent).toContain('云端');
+    expect(container.textContent).toContain('本机');
+    expect(container.querySelector('label')).toBeNull();
+    expect(container.textContent).not.toContain('Solid Pod 地址');
+
+    await unmount(root);
+  });
+
   test('discovers AI client configuration capability from the authenticated API path and exposes the host bridge descriptor', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
-      if (String(input) === '/api/ai/client-configuration/capability') {
+      if (new URL(String(input), window.location.href).pathname === '/api/ai/client-configuration/capability') {
         return new Response(JSON.stringify({
           available: true,
           authority: 'local-filesystem',
@@ -496,7 +516,7 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(container.querySelector('[data-testid="capability"]')?.textContent).toBe('local-filesystem');
-    expect(fetchImpl).toHaveBeenCalledWith('/api/ai/client-configuration/capability', expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith(new URL('/api/ai/client-configuration/capability', window.location.href).toString(), expect.objectContaining({
       credentials: 'include',
       headers: expect.objectContaining({ accept: 'application/json' }),
     }));
@@ -505,7 +525,7 @@ describe('Xpod Solid runtime', () => {
 
   test('falls back to manual AI client configuration capability when discovery is unavailable', async () => {
     const fetchImpl = mock(async (input: RequestInfo | URL) => {
-      if (String(input) === '/api/ai/client-configuration/capability') {
+      if (new URL(String(input), window.location.href).pathname === '/api/ai/client-configuration/capability') {
         return new Response(JSON.stringify({ code: 'client_configuration_unavailable' }), {
           status: 503,
           headers: { 'content-type': 'application/json' },

@@ -5,6 +5,7 @@
  */
 
 import { asFunction, type AwilixContainer } from 'awilix';
+import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
 
@@ -30,8 +31,9 @@ import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCre
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import {
   BrowserAssistedApiKeyConnectAdapter,
-  KimiDeviceCodeConnectAdapter,
   InMemoryConnectAttemptStore,
+  KimiDeviceCodeConnectAdapter,
+  OAuthIntegrationRegistry,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
@@ -44,11 +46,15 @@ import { RedisSessionAffinityStore } from '../ai-gateway/routing/RedisSessionAff
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
+  ClaudeSubscriptionQuotaAdapter,
+  CodexSubscriptionQuotaAdapter,
   DeepSeekQuotaAdapter,
   KimiQuotaAdapter,
+  KimiCodeSubscriptionQuotaAdapter,
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
+  UnsupportedQuotaAdapter,
 } from '../ai-gateway/quota';
 import {
   AnthropicModelsAdapter,
@@ -178,23 +184,21 @@ export function registerCommonServices(
     }).singleton(),
 
     invocationTokenCodec: asFunction(({ config }: ApiContainerCradle) => {
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
+      // Invocation tokens are short-lived and process-local by default. A
+      // configured secret makes them portable across replicas, but local Xpod
+      // must remain usable without legacy Gateway locator configuration.
+      const secret = config.gatewayLocatorSecret ?? randomBytes(32).toString('hex');
       return new AesInvocationTokenCodec({
         active: {
           kid: config.gatewayLocatorKeyId ?? 'active',
-          secret: config.gatewayLocatorSecret,
+          secret,
         },
-        previous: config.gatewayPreviousLocatorSecrets,
+        previous: config.gatewayLocatorSecret ? config.gatewayPreviousLocatorSecrets : undefined,
       });
     }).singleton(),
 
     aiConnectionInvocationKeyIssuer: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
       return new AiConnectionsInvocationKeyIssuer({
         codec: cradle.invocationTokenCodec!,
         deployment: config.edition,
@@ -205,6 +209,9 @@ export function registerCommonServices(
 
     providerConnectService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
+      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
+      const vault = credentialVaultForConfig(config);
       if (!config.aiGatewayConnectEnabled) {
         return new ProviderConnectService({
           registry: createDefaultGatewayProviderRegistry({
@@ -213,22 +220,20 @@ export function registerCommonServices(
               anthropic: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               kimi: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               bailian: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              'bailian-coding-plan': { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
-              'bailian-token-plan': { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               deepseek: { configured: false },
             },
           }),
           adapters: [],
+          credentialRepository,
+          vault,
         });
       }
       const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
       if (!signingSecret) {
         throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
       }
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
-      const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
-      const vault = credentialVaultForConfig(config);
       const attempts = new InMemoryConnectAttemptStore();
+      const oauthIntegrations = createKimiOAuthIntegrations(config);
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
           provider: 'openai',
@@ -250,25 +255,7 @@ export function registerCommonServices(
         }),
         new BrowserAssistedApiKeyConnectAdapter({
           provider: 'bailian',
-          consoleUrl: 'https://bailian.console.aliyun.com/#/api-key',
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-        }),
-        new BrowserAssistedApiKeyConnectAdapter({
-          provider: 'bailian-coding-plan',
-          consoleUrl: 'https://bailian.console.aliyun.com/cn-beijing/?tab=plan#/efm/subscription/coding-plan',
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-        }),
-        new BrowserAssistedApiKeyConnectAdapter({
-          provider: 'bailian-token-plan',
-          consoleUrl: 'https://bailian.console.aliyun.com/cn-beijing/',
+          consoleUrl: 'https://bailian.console.aliyun.com/',
           attempts,
           credentialRepository,
           vault,
@@ -276,35 +263,23 @@ export function registerCommonServices(
           signingSecret,
         }),
       ];
-      if (config.aiGatewayKimiClientId) {
+      const kimiOAuth = oauthIntegrations?.require('kimi');
+      if (kimiOAuth) {
         adapters.push(new KimiDeviceCodeConnectAdapter({
           attempts,
           credentialRepository,
           vault,
           deployment: config.edition,
           signingSecret,
-          clientId: config.aiGatewayKimiClientId,
-        }));
-      } else {
-        adapters.push(new BrowserAssistedApiKeyConnectAdapter({
-          provider: 'kimi',
-          consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
+          oauthIntegration: kimiOAuth,
         }));
       }
       return new ProviderConnectService({
         registry: createDefaultGatewayProviderRegistry({
           connect: {
-            kimi: config.aiGatewayKimiClientId
-              ? { configured: true, notes: undefined }
-              : {
-                  configured: false,
-                  notes: ['not_configured: XPOD_AI_GATEWAY_KIMI_CLIENT_ID is not configured.'],
-                },
+            kimi: kimiOAuth
+              ? { configured: true }
+              : { configured: false, notes: ['auth_not_available'] },
           },
         }),
         adapters,
@@ -341,10 +316,11 @@ export function registerCommonServices(
     }).singleton(),
 
     gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
-      const secret = config.gatewayLocatorSecret;
-      if (!secret) {
-        throw new Error('AI Gateway inference requires XPOD_GATEWAY_LOCATOR_SECRET for session affinity hashing');
-      }
+      // Public /v1 routes must not disappear merely because the optional
+      // legacy opaque Gateway Key locator is disabled. Without an explicit
+      // deployment secret affinity becomes process-local (safe, but it will
+      // not survive restarts or coordinate across replicas).
+      const secret = config.gatewayLocatorSecret ?? randomBytes(32).toString('hex');
       if (config.redisUrl) {
         return new RedisSessionAffinityStore({
           client: config.redisUrl,
@@ -356,9 +332,6 @@ export function registerCommonServices(
 
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.gatewayLocatorSecret) {
-        return undefined;
-      }
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
       const gatewayCredentialStore = cradle.gatewayCredentialStore;
       const gatewayRuntimeRegistry = cradle.gatewayRuntimeRegistry;
@@ -388,21 +361,21 @@ export function registerCommonServices(
 
     providerQuotaService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
         vault: credentialVaultForConfig(config),
+        providerRegistry: cradle.gatewayProviderRegistry,
         adapters: [
+          new UnsupportedQuotaAdapter(),
+          new CodexSubscriptionQuotaAdapter(),
           new OpenAiQuotaAdapter(),
+          new ClaudeSubscriptionQuotaAdapter(),
           new AnthropicQuotaAdapter(),
+          new KimiCodeSubscriptionQuotaAdapter(),
           new KimiQuotaAdapter(),
           new BailianQuotaAdapter(),
-          new BailianQuotaAdapter('bailian-coding-plan'),
-          new BailianQuotaAdapter('bailian-token-plan'),
           new DeepSeekQuotaAdapter(),
         ],
       });
@@ -410,30 +383,49 @@ export function registerCommonServices(
 
     providerModelsService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const registry = cradle.gatewayProviderRegistry;
+      const safeBaseUrls = (provider: string): string[] => [
+        ...registry.requireProvider(provider).safeBaseUrls,
+        ...(registry.getProduct(provider)?.offerings.flatMap((offering) =>
+          offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []),
+      ];
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
         vault: credentialVaultForConfig(config),
+        providerRegistry: registry,
         adapters: [
+          new OpenAiCompatibleModelsAdapter({
+            protocol: 'openai-models',
+            registry,
+          }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',
             defaultBaseUrl: 'https://api.openai.com/v1',
+            safeBaseUrls: safeBaseUrls('openai'),
+            product: registry.requireProduct('openai'),
           }),
-          new AnthropicModelsAdapter(),
+          new AnthropicModelsAdapter({
+            safeBaseUrls: safeBaseUrls('anthropic'),
+            product: registry.requireProduct('anthropic'),
+          }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'kimi',
             defaultBaseUrl: 'https://api.moonshot.ai/v1',
+            safeBaseUrls: safeBaseUrls('kimi'),
+            product: registry.requireProduct('kimi'),
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'bailian',
             defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            safeBaseUrls: safeBaseUrls('bailian'),
+            product: registry.requireProduct('bailian'),
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'deepseek',
             defaultBaseUrl: 'https://api.deepseek.com/v1',
+            safeBaseUrls: safeBaseUrls('deepseek'),
+            product: registry.requireProduct('deepseek'),
           }),
         ],
       });
@@ -470,7 +462,7 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
-      const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository && invocationTokenCodec
+      const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository || invocationTokenCodec
         ? new GatewayApiKeyAuthenticator({
           repository: gatewayAccessKeyRepository,
           invocationTokenCodec,
@@ -664,4 +656,21 @@ export function registerCommonServices(
       });
     }).singleton(),
   });
+}
+
+function createKimiOAuthIntegrations(config: ApiContainerCradle['config']): OAuthIntegrationRegistry | undefined {
+  try {
+    return OAuthIntegrationRegistry.fromServerConfig({
+      kimi: {
+        integrationId: config.aiGatewayKimiOAuthIntegrationId,
+        issuedBy: 'xpod',
+        clientId: config.aiGatewayKimiOAuthClientId,
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'auth_not_available') {
+      return undefined;
+    }
+    throw error;
+  }
 }

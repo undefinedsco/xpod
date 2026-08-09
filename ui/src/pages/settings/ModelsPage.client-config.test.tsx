@@ -38,6 +38,19 @@ describe('ModelsPage coding-client configuration capability', () => {
           },
         });
       }
+      if (url.pathname === '/.account/') {
+        return json({
+          controls: { account: { clientCredentials: '/.account/client-credentials/' } },
+          clientCredentials: {},
+        });
+      }
+      if (url.pathname === '/.account/client-credentials/' && method === 'POST') {
+        return json({
+          id: 'client-codex',
+          secret: 'secret-codex',
+          resource: '/.account/client-credentials/client-codex/',
+        });
+      }
       if (url.pathname.endsWith('/settings/.acr')) {
         return new Response('', { status: 201 });
       }
@@ -56,7 +69,7 @@ describe('ModelsPage coding-client configuration capability', () => {
           });
         }
         if (url.pathname.endsWith('/apply')) {
-          expect(body).toContain('xpod_gw_once');
+          expect(body).toContain('sk-Y2xpZW50LWNvZGV4OnNlY3JldC1jb2RleA==');
           expect(body).not.toContain('sk-provider-secret');
           return json({ applied: true });
         }
@@ -64,12 +77,6 @@ describe('ModelsPage coding-client configuration capability', () => {
           return json({ status: 'configured', message: 'Codex verified' });
         }
         return json({ status: 'notConfigured', message: 'Codex detected' });
-      }
-      if (url.pathname === '/api/ai/gateway/keys') {
-        return json({
-          key: 'xpod_gw_once',
-          record: { id: 'gak_1', owner: WEB_ID, scopes: ['models:read', 'inference:write'], createdAt: '2026-07-31T00:00:00.000Z' },
-        }, { status: 201 });
       }
       throw new Error(`Unexpected request ${method} ${url.pathname}`);
     }) as typeof fetch;
@@ -93,7 +100,9 @@ describe('ModelsPage coding-client configuration capability', () => {
     expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', `${plannedClientPath}/apply`]);
     expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', `${plannedClientPath}/verify`]);
     expect(calls.filter((call) => call.path.startsWith('/api/ai/client-configuration/')).every((call) => call.authorization === 'Bearer xpod_inv_v1.client-config-token')).toBe(true);
-    expect(container.textContent).not.toContain('xpod_gw_once');
+    expect(calls.map((call) => [call.method, call.path])).toContainEqual(['POST', '/.account/client-credentials/']);
+    expect(calls.find((call) => call.path === '/.account/client-credentials/' && call.method === 'POST')?.authorization).toBe('CSS-Account-Token account-token');
+    expect(container.textContent).not.toContain('sk-Y2xpZW50LWNvZGV4OnNlY3JldC1jb2RleA==');
     expect(JSON.stringify(calls)).not.toContain('sk-provider-secret');
     await unmount(root);
   });
@@ -170,10 +179,11 @@ describe('ModelsPage coding-client configuration capability', () => {
   });
 });
 
-function installDom() {
+function installDom(fetchImpl: typeof fetch) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'https://pod.example/dashboard/models',
   });
+  dom.window.fetch = fetchImpl;
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
   globalThis.HTMLElement = dom.window.HTMLElement;
@@ -185,10 +195,11 @@ function installDom() {
     addEventListener: vi.fn(() => undefined),
     removeEventListener: vi.fn(() => undefined),
   })) as unknown as typeof window.matchMedia;
+  document.cookie = 'css-account=account-token; Path=/';
 }
 
 async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
-  installDom();
+  installDom(runtime.fetch);
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -221,13 +232,26 @@ function runtimeWith(fetchImpl: typeof fetch, clientConfigAvailable = false): Xp
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
     webId: WEB_ID,
     podUrl: POD_URL,
-    currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    currentPod: {
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      database: createEmptyPodDatabase(),
+    } as XpodSolidRuntimeValue['currentPod'],
     aiClientConfiguration: clientConfigAvailable
       ? { available: true, authority: 'local-filesystem' }
       : undefined,
     login: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
   } as XpodSolidRuntimeValue;
+}
+
+function createEmptyPodDatabase() {
+  return {
+    init: vi.fn(async () => undefined),
+    select: () => ({
+      from: () => ({ execute: async () => [] }),
+    }),
+  } as never;
 }
 
 function json(value: unknown, init: ResponseInit = {}) {

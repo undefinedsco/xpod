@@ -69,11 +69,15 @@ export default function ServicesPage({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     mountedRef.current = true;
-    void loadSnapshot(true);
+    queueMicrotask(() => {
+      if (!cancelled) void loadSnapshot(true);
+    });
     const interval = setInterval(() => void loadSnapshot(false), 10_000);
 
     return () => {
+      cancelled = true;
       mountedRef.current = false;
       requestIdRef.current += 1;
       abortRef.current?.abort();

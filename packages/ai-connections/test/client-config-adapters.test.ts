@@ -12,6 +12,8 @@ import {
 } from '../src/client-config'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
+const XPOD_CLIENT_CREDENTIAL = 'sk-Y2xpZW50LWlkOmNsaWVudC1zZWNyZXQ='
+const PROVIDER_API_KEY = 'sk-real-provider-secret'
 
 function tempHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'linx-ai-client-config-package-'))
@@ -20,11 +22,20 @@ function tempHome(): string {
 function profile(overrides: Record<string, unknown> = {}) {
   return {
     endpoint: 'https://pod.example/alice/api/ai',
-    gatewayKey: 'xpod-gw-secret',
+    gatewayKey: XPOD_CLIENT_CREDENTIAL,
     webId: WEB_ID,
     model: 'gpt-5.4',
     ...overrides,
   }
+}
+
+function redactGeneratedConfig<T extends Record<string, string>>(generated: T): T {
+  return Object.fromEntries(
+    Object.entries(generated).map(([key, value]) => [
+      key,
+      value.replaceAll(XPOD_CLIENT_CREDENTIAL, '[xpod-client-credential]'),
+    ]),
+  ) as T
 }
 
 describe('publishable AI client config adapters', () => {
@@ -69,14 +80,14 @@ describe('publishable AI client config adapters', () => {
       expect(codexToml).toContain('command = "keep"')
       expect(codexToml).toContain('model_provider = "xpod"')
       expect(codexToml).toContain('base_url = "https://pod.example/alice/api/ai/v1"')
-      expect(codexAuth).toMatchObject({ legacy: 'keep-me', OPENAI_API_KEY: 'xpod-gw-secret' })
+      expect(codexAuth).toMatchObject({ legacy: 'keep-me', OPENAI_API_KEY: XPOD_CLIENT_CREDENTIAL })
 
       const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
       expect(claude.model).toBe('opus')
       expect(claude.env).toMatchObject({
         KEEP_ME: 'yes',
         ANTHROPIC_BASE_URL: 'https://pod.example/alice/api/ai',
-        ANTHROPIC_AUTH_TOKEN: 'xpod-gw-secret',
+        ANTHROPIC_AUTH_TOKEN: XPOD_CLIENT_CREDENTIAL,
       })
       expect(claude.env.ANTHROPIC_API_KEY).toBeUndefined()
 
@@ -86,7 +97,7 @@ describe('publishable AI client config adapters', () => {
       expect(piModels.providers.custom.baseUrl).toBe('https://keep.example')
       expect(piModels.providers.xpod).toMatchObject({
         baseUrl: 'https://pod.example/alice/api/ai/v1',
-        apiKey: 'xpod-gw-secret',
+        apiKey: XPOD_CLIENT_CREDENTIAL,
         authHeader: true,
       })
 
@@ -95,8 +106,46 @@ describe('publishable AI client config adapters', () => {
       expect(codebuddy.env).toMatchObject({
         KEEP_ME: 'yes',
         CODEBUDDY_BASE_URL: 'https://pod.example/alice/api/ai/v1',
-        CODEBUDDY_API_KEY: 'xpod-gw-secret',
+        CODEBUDDY_API_KEY: XPOD_CLIENT_CREDENTIAL,
       })
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('projects only the Xpod-issued client credential into reviewable redacted client configs', async () => {
+    const home = tempHome()
+    try {
+      const adapters = [
+        new CodexConfigAdapter({ homeDir: home }),
+        new ClaudeCodeConfigAdapter({ homeDir: home }),
+        new PiConfigAdapter({ homeDir: home }),
+        new CodeBuddyConfigAdapter({ homeDir: home }),
+      ]
+
+      for (const adapter of adapters) {
+        const plan = await adapter.plan(profile({ providerApiKey: PROVIDER_API_KEY }))
+        await adapter.apply(plan)
+        expect((await adapter.verify(profile())).ok).toBe(true)
+      }
+
+      const generated = {
+        codexConfig: fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf8'),
+        codexAuth: fs.readFileSync(path.join(home, '.codex', 'auth.json'), 'utf8'),
+        claudeCode: fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'),
+        piSettings: fs.readFileSync(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8'),
+        piModels: fs.readFileSync(path.join(home, '.pi', 'agent', 'models.json'), 'utf8'),
+        codeBuddy: fs.readFileSync(path.join(home, '.codebuddy', 'settings.json'), 'utf8'),
+      }
+      const serialized = JSON.stringify(generated)
+      expect(serialized).toContain(XPOD_CLIENT_CREDENTIAL)
+      expect(serialized).not.toContain(PROVIDER_API_KEY)
+      expect(serialized).not.toContain('providerApiKey')
+
+      const redacted = redactGeneratedConfig(generated)
+      expect(JSON.stringify(redacted)).toContain('[xpod-client-credential]')
+      expect(JSON.stringify(redacted)).not.toContain(XPOD_CLIENT_CREDENTIAL)
+      expect(JSON.stringify(redacted)).not.toContain(PROVIDER_API_KEY)
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }

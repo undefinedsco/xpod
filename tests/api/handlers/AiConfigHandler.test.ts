@@ -2,7 +2,11 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
-import { registerAiConfigRoutes, type AiConfigPolicy } from '../../../src/api/handlers/AiConfigHandler';
+import {
+  registerAiConfigRoutes,
+  type AiConfigLifecycleService,
+  type AiConfigPolicy,
+} from '../../../src/api/handlers/AiConfigHandler';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 
@@ -156,7 +160,11 @@ describe('AiConfigHandler', () => {
     const { server, routes } = createServer();
     const store = { read: vi.fn(), update: vi.fn(async () => policy) };
     registerAiConfigRoutes(server, {
-      podLookupRepository: { findByWebId: vi.fn(async () => ({ baseUrl: 'https://storage.example/alice/' })) },
+      podLookupRepository: { findByWebId: vi.fn(async () => ({
+        podId: 'pod-alice',
+        accountId: 'account-alice',
+        baseUrl: 'https://storage.example/alice/',
+      })) },
       store,
     });
 
@@ -198,17 +206,26 @@ describe('AiConfigHandler', () => {
 
   it('reports lifecycle evidence and schedules only executor-supported rebuild targets', async () => {
     const { server, routes } = createServer();
-    const lifecycle = {
+    const lifecycle: AiConfigLifecycleService = {
       status: vi.fn(async () => ({
         configurationVersion: '2026-08-09T01:00:00.000Z',
         pending: 1,
-        recent: [{ id: 'job-1', target: 'fts', status: 'queued', createdAt: '2026-08-09T01:00:00.000Z' }],
+        recent: [{ id: 'job-1', target: 'fts' as const, status: 'queued' as const, createdAt: '2026-08-09T01:00:00.000Z' }],
       })),
-      schedule: vi.fn(async () => ({ id: 'job-2', target: 'fts', status: 'queued', createdAt: '2026-08-09T02:00:00.000Z' })),
+      schedule: vi.fn(async () => ({
+        id: 'job-2',
+        target: 'fts' as const,
+        status: 'queued' as const,
+        createdAt: '2026-08-09T02:00:00.000Z',
+      })),
       supportedTargets: vi.fn(() => ['fts' as const]),
     };
     registerAiConfigRoutes(server, {
-      podLookupRepository: { findByWebId: vi.fn(async () => ({ baseUrl: 'https://storage.example/alice/' })) },
+      podLookupRepository: { findByWebId: vi.fn(async () => ({
+        podId: 'pod-alice',
+        accountId: 'account-alice',
+        baseUrl: 'https://storage.example/alice/',
+      })) },
       store: { read: vi.fn(async () => policy), update: vi.fn() },
       lifecycle,
       capabilities: () => ({ textBackends: ['fts5'], vectorBackends: ['vec'], rebuildSupported: true }),

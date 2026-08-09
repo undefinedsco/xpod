@@ -23,6 +23,8 @@ export * from './AiConnectionsMainHeader'
 export * from './AiModelEditorDialog'
 export * from './controller'
 export * from './AiProviderCard'
+export * from './AiCredentialPoolSection'
+export * from './offering-label'
 export * from './AiQuotaCard'
 export * from './manifest'
 export * from './service-access'
@@ -33,7 +35,7 @@ export const aiConnectionApplet = defineApplet<AiConnectionsController>({
   manifest: appletManifest,
   createController: createAiConnectionsController,
   activate(controller) {
-    void controller.ensureServiceAccess()
+    void controller.loadProviders()
   },
   slots: {
     listHeader: AiConnectionsHeader,

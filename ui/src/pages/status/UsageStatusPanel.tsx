@@ -31,7 +31,17 @@ export default function UsageStatusPanel({ kind }: { kind: UsageStatusKind }) {
       setLoading(false);
     }
   }, [kind, runtime.fetch, runtime.podUrl, runtime.webId]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
+        void load();
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [load]);
 
   return <div className="space-y-4 p-6">
     <div className="flex justify-end"><Button type="button" size="sm" variant="outline" onClick={load} disabled={loading}><RefreshCw className="mr-2 h-4 w-4" />Refresh</Button></div>

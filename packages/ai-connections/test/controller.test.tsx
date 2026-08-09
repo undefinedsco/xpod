@@ -120,6 +120,350 @@ describe('AI Connection controller host.solid integration', () => {
     })
   })
 
+  it('loads interactive Provider state from the host Pod store without service delegation', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`Unexpected interactive API request: ${String(input)}`)
+    }) as unknown as typeof fetch
+    const listProviders = vi.fn(async () => [{
+      id: 'openai',
+      name: 'OpenAI',
+      offerings: [],
+      credentials: [],
+      selectedModels: [],
+      status: 'unconfigured',
+    }])
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+      permissions: undefined,
+    })) as WebExtensionHost & {
+      capabilities: WebExtensionHost['capabilities'] & {
+        aiConnectionsPodStore: { listProviders: typeof listProviders }
+      }
+    }
+    host.capabilities.aiConnectionsPodStore = { listProviders }
+
+    const controller = createAiConnectionsController(host)
+    await controller.loadProviders()
+
+    expect(listProviders).toHaveBeenCalledTimes(1)
+    expect(controller.providerSummaries.openai?.status).toBe('unconfigured')
+    expect(sessionFetch).not.toHaveBeenCalled()
+  })
+
+  it('persists a completed OAuth payload through the current Pod store exactly once', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/ai/gateway/providers/kimi/connect/poll')) {
+        return Response.json({
+          mode: 'deviceCodeOAuth',
+          status: 'completed',
+          provider: 'kimi',
+          attemptId: 'attempt-1',
+          oauthCredential: {
+            accessToken: 'kimi-access-token',
+            refreshToken: 'kimi-refresh-token',
+            expiresAt: '2026-08-09T08:00:00.000Z',
+          },
+        })
+      }
+      throw new Error(`Unexpected interactive API request: ${String(input)}`)
+    }) as unknown as typeof fetch
+    const saveOAuthCredential = vi.fn(async () => ({ id: 'credentials.ttl#kimi-oauth-1' }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => []),
+      saveOAuthCredential,
+    }
+    const controller = createAiConnectionsController(host)
+
+    const result = await controller.client!.pollDevice('kimi', {
+      attemptId: 'attempt-1',
+      state: 'state-1',
+      signature: 'signature-1',
+    })
+
+    expect(saveOAuthCredential).toHaveBeenCalledTimes(1)
+    expect(saveOAuthCredential).toHaveBeenCalledWith('kimi', expect.objectContaining({
+      accessToken: 'kimi-access-token',
+      refreshToken: 'kimi-refresh-token',
+    }))
+    expect(result).toMatchObject({
+      status: 'completed',
+      credentialId: 'credentials.ttl#kimi-oauth-1',
+    })
+    expect(result).not.toHaveProperty('oauthCredential')
+  })
+
+  it('refreshes OAuth from the current Pod and updates the same credential by version', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/kimi\/connect\/refresh$/u)
+      expect(JSON.parse(String(init?.body))).toEqual({
+        credentialId: 'credentials.ttl#kimi-oauth-1',
+        refreshToken: 'current-refresh-token',
+        expectedVersion: 3,
+      })
+      return Response.json({
+        mode: 'deviceCodeOAuth',
+        status: 'completed',
+        provider: 'kimi',
+        credentialId: 'credentials.ttl#kimi-oauth-1',
+        oauthCredential: {
+          accessToken: 'next-access-token',
+          refreshToken: 'next-refresh-token',
+        },
+      })
+    }) as unknown as typeof fetch
+    const updateOAuthCredential = vi.fn(async () => ({ id: 'credentials.ttl#kimi-oauth-1' }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'kimi',
+        credentials: [{ id: 'credentials.ttl#kimi-oauth-1', version: 3 }],
+      }]),
+      readCredentialSecret: vi.fn(async () => ({
+        type: 'deviceCodeOAuth',
+        refreshToken: 'current-refresh-token',
+      })),
+      updateOAuthCredential,
+    }
+    const controller = createAiConnectionsController(host)
+
+    const result = await controller.client!.refreshOAuthCredential(
+      'kimi',
+      'credentials.ttl#kimi-oauth-1',
+      'must-not-use-caller-argument',
+      999,
+    )
+
+    expect(updateOAuthCredential).toHaveBeenCalledWith(
+      'kimi',
+      'credentials.ttl#kimi-oauth-1',
+      3,
+      expect.objectContaining({ refreshToken: 'next-refresh-token' }),
+    )
+    expect(result).not.toHaveProperty('oauthCredential')
+  })
+
+  it('reads quota credentials from the current Pod and sends them only as a transient request', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/deepseek\/quota\/refresh$/u)
+      expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
+        credentialId: 'credentials.ttl#deepseek-primary',
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        secret: { type: 'apiKey', apiKey: 'deepseek-transient-key' },
+      }))
+      return Response.json({
+        credential: 'credentials.ttl#deepseek-primary',
+        status: 'available',
+        windows: [{ name: 'USD.total_balance', remaining: 2 }],
+        observedAt: '2026-08-09T08:00:00.000Z',
+        expiresAt: '2026-08-09T08:05:00.000Z',
+        source: 'deepseek:/user/balance',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({
+      type: 'apiKey',
+      apiKey: 'deepseek-transient-key',
+    }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'deepseek',
+        credentials: [{
+          id: 'credentials.ttl#deepseek-primary',
+          offeringId: 'api-platform',
+          authMode: 'apiKey',
+          enabled: true,
+          priority: 1,
+          baseUrl: 'https://api.deepseek.com/v1',
+        }],
+      }]),
+      readCredentialSecret,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.quota('deepseek', true)).resolves.toMatchObject({
+      status: 'available',
+      windows: [{ remaining: 2 }],
+    })
+    expect(readCredentialSecret).toHaveBeenCalledWith('deepseek', 'credentials.ttl#deepseek-primary')
+  })
+
+  it('routes provider quota through the enabled credential offering identity', async () => {
+    const requestBodies: unknown[] = []
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/bailian\/quota\/refresh$/u)
+      requestBodies.push(JSON.parse(String(init?.body)))
+      return Response.json({
+        credential: 'credentials.ttl#bailian-token',
+        status: 'unsupported',
+        windows: [],
+        observedAt: '2026-08-09T00:00:00.000Z',
+        expiresAt: '2026-08-09T01:00:00.000Z',
+        source: 'bailian:console-only',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({
+      type: 'apiKey',
+      apiKey: 'bailian-transient-key',
+    }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'bailian',
+        credentials: [
+          {
+            id: 'credentials.ttl#bailian-payg',
+            offeringId: 'pay-as-you-go',
+            authMode: 'apiKey',
+            enabled: false,
+            priority: 1,
+            baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          },
+          {
+            id: 'credentials.ttl#bailian-token',
+            offeringId: 'token-plan',
+            authMode: 'apiKey',
+            enabled: true,
+            priority: 2,
+            baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+          },
+        ],
+      }]),
+      readCredentialSecret,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.quota('bailian', true)).resolves.toMatchObject({
+      status: 'unsupported',
+    })
+
+    expect(readCredentialSecret).toHaveBeenCalledWith('bailian', 'credentials.ttl#bailian-token')
+    expect(requestBodies).toEqual([
+      expect.objectContaining({
+        offeringId: 'token-plan',
+        credentialId: 'credentials.ttl#bailian-token',
+        credentialIri: 'credentials.ttl#bailian-token',
+      }),
+    ])
+  })
+
+  it('discovers models only for the requested offering and forwards its identity', async () => {
+    const requestBodies: unknown[] = []
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/bailian\/models\/refresh$/u)
+      const body = JSON.parse(String(init?.body))
+      requestBodies.push(body)
+      return Response.json({
+        provider: 'bailian',
+        credential: body.credentialId,
+        models: [{ id: 'qwen-token-only', displayName: 'Qwen Token Only' }],
+        observedAt: '2026-08-09T08:00:00.000Z',
+        source: 'bailian:token-plan:/models',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({ type: 'apiKey', apiKey: 'transient-secret' }))
+    const saveDiscoveredModels = vi.fn(async () => undefined)
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'bailian',
+        credentials: [
+          { id: 'credentials.ttl#payg', offeringId: 'api-platform', enabled: true, priority: 1 },
+          { id: 'credentials.ttl#token', offeringId: 'token-plan', enabled: true, priority: 2 },
+        ],
+      }]),
+      readCredentialSecret,
+      saveDiscoveredModels,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.discoverModels('bailian', { offeringId: 'token-plan' })).resolves.toMatchObject({
+      models: [{ id: 'qwen-token-only' }],
+    })
+
+    expect(readCredentialSecret).toHaveBeenCalledTimes(1)
+    expect(readCredentialSecret).toHaveBeenCalledWith('bailian', 'credentials.ttl#token')
+    expect(requestBodies).toEqual([expect.objectContaining({
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#token',
+      apiKey: 'transient-secret',
+    })])
+    expect(saveDiscoveredModels).toHaveBeenCalledWith(
+      'bailian',
+      'credentials.ttl#token',
+      [{ id: 'qwen-token-only', displayName: 'Qwen Token Only' }],
+    )
+  })
+
+  it('uses host CSS client credentials for coding-client Gateway key methods', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
+      throw new Error(`Unexpected opaque Gateway request: ${String(input)}`)
+    }) as unknown as typeof fetch
+    const capability = {
+      list: vi.fn(async () => []),
+      create: vi.fn(async (input: { name?: string; webId: string }) => ({
+        plaintext: 'sk-Y2xpZW50LTE6c2VjcmV0',
+        record: {
+          id: 'client-1',
+          resourceUrl: 'https://pod.example/.account/client-credentials/client-1/',
+          owner: input.webId,
+          name: input.name,
+        },
+      })),
+      revoke: vi.fn(async () => undefined),
+    }
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiClientCredentials = capability
+
+    const controller = createAiConnectionsController(host)
+    const created = await controller.client?.createGatewayKey({ name: 'Codex' })
+
+    expect(created?.plaintext).toBe('sk-Y2xpZW50LTE6c2VjcmV0')
+    expect(capability.create).toHaveBeenCalledWith({ name: 'Codex', webId: WEB_ID })
+    expect(sessionFetch).not.toHaveBeenCalled()
+  })
+
   it('requires login through host.solid for anonymous sessions', async () => {
     const requireLogin = vi.fn(async () => undefined)
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
@@ -133,6 +477,7 @@ describe('AI Connection controller host.solid integration', () => {
     })))
 
     render(<AiConnectionsMain controller={controller} />)
+    expect(screen.getByRole('region', { name: '登录 Xpod' }).getAttribute('data-auth-boundary')).toBe('surface')
     fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
     await waitFor(() => expect(requireLogin).toHaveBeenCalledTimes(1))
@@ -162,7 +507,7 @@ describe('AI Connection controller host.solid integration', () => {
     render(<AiConnectionsMain controller={controller} />)
 
     expect(screen.getByText('Pod 打开失败')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '重试登录' }))
+    fireEvent.click(screen.getByRole('button', { name: '重新登录' }))
     expect(requireLogin).toHaveBeenCalledTimes(1)
   })
 
@@ -171,7 +516,7 @@ describe('AI Connection controller host.solid integration', () => {
     const providerLoadQueue = [staleProviderLoad]
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      if (url.endsWith('/api/ai/connections/providers')) {
+      if (url.endsWith('/api/ai/providers')) {
         const load = providerLoadQueue.shift()
         if (!load) throw new Error('Unexpected provider load')
         return await load.promise
@@ -256,7 +601,7 @@ describe('AI Connection controller host.solid integration', () => {
     expect(document.getElementById(describedBy!)?.textContent).toBe('读取中')
     await waitFor(() => {
       expect(
-        vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/connections/providers')),
+        vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/providers')),
       ).toHaveLength(1)
     })
 
@@ -310,7 +655,7 @@ describe('AI Connection controller host.solid integration', () => {
           headers: { 'content-type': 'application/json' },
         })
       }
-      if (url.endsWith('/api/ai/connections/providers')) {
+      if (url.endsWith('/api/ai/providers')) {
         return new Response(JSON.stringify({ data: [] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -346,8 +691,59 @@ describe('AI Connection controller host.solid integration', () => {
       expect.objectContaining({ appletId: 'co.undefineds.ai-connections' }),
     )
     expect(
-      vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/connections/providers')),
+      vi.mocked(fetcher).mock.calls.filter(([input]) => String(input).endsWith('/api/ai/providers')),
     ).toHaveLength(1)
+  })
+
+  it('groups Provider credentials into one controller summary per product', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/ai/providers')) {
+        return new Response(JSON.stringify({
+          data: [{
+            id: 'bailian',
+            name: 'Alibaba Bailian',
+            status: 'available',
+            offerings: [
+              { id: 'pay-as-you-go', label: 'Pay as You Go', kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'] },
+              { id: 'coding-plan', label: 'Coding Plan', kind: 'codingPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
+              { id: 'token-plan', label: 'Token Plan', kind: 'tokenPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
+            ],
+            credentials: [
+              { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey', label: 'PAYG', enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...payg', version: 1, encryptedSecret: 'ciphertext-payg' },
+              { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey', label: 'Coding', enabled: true, priority: 20, health: 'unknown', maskedHint: 'sk-...code', version: 2, apiKey: 'sk-secret-coding' },
+              { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey', label: 'Token', enabled: false, priority: 30, health: 'expired', maskedHint: 'sk-...tokn', version: 3, refreshToken: 'refresh-secret' },
+            ],
+            selectedModels: [{ id: 'qwen-max', provider: 'bailian', apiKey: 'model-secret' }],
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }) as unknown as typeof fetch
+    const controller = createAiConnectionsController(hostFromSolid(solidCapability({
+      session: {
+        fetch: fetcher,
+        getSnapshot: () => ({
+          status: 'authenticated',
+          webId: WEB_ID,
+        }),
+        subscribe: () => () => undefined,
+      },
+    })))
+
+    await controller.loadProviders()
+
+    expect(controller.providerStates.bailian).toBe('configured')
+    expect(controller.providerSummaries.bailian?.credentials).toHaveLength(3)
+    expect(controller.providerSummaries.bailian).toMatchObject({
+      id: 'bailian',
+      name: 'Alibaba Bailian',
+      status: 'available',
+    })
+    expect(JSON.stringify(controller.providerSummaries.bailian)).not.toMatch(/encryptedSecret|refreshToken|ciphertext|sk-secret|model-secret/)
   })
 
   it('revokes service access through the generic host permission capability', async () => {

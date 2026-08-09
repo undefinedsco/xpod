@@ -113,7 +113,7 @@ export class ModelRouter {
     const target = this.resolveTarget(input, candidates);
     const provider = this.registry.requireProvider(target.providerId);
     const providerCandidates = candidates
-      .filter((candidate) => normalizeProviderId(candidate.provider) === normalizeProviderId(provider.id))
+      .filter((candidate) => this.credentialMatchesProvider(candidate, provider.id))
       .filter((candidate) => !excludeCredentialIds.has(candidate.id) && !excludeCredentialIds.has(candidate.credentialIri));
     const selected = input.explicitCredentialId
       ? await this.selectExplicitCredential(input, providerCandidates, input.explicitCredentialId, target.model)
@@ -256,7 +256,7 @@ export class ModelRouter {
     if (registryMatches.length > 0) {
       const candidateMatch = registryMatches.find((match) =>
         candidates.some((candidate) =>
-          normalizeProviderId(candidate.provider) === normalizeProviderId(match.provider.id)
+          this.credentialMatchesProvider(candidate, match.provider.id)
           && credentialSupportsModel(candidate, match.model.id)));
       const match = candidateMatch ?? registryMatches[0];
       return {
@@ -269,7 +269,7 @@ export class ModelRouter {
     const candidate = candidates.find((item) => credentialSupportsModel(item, model));
     if (candidate) {
       return {
-        providerId: normalizeProviderId(candidate.provider),
+        providerId: this.routeProviderIdForCredential(candidate),
         model,
         source: 'exact-model',
       };
@@ -284,7 +284,7 @@ export class ModelRouter {
     if (!this.defaultProvider || requestedModel) {
       return undefined;
     }
-    const credential = candidates.find((item) => normalizeProviderId(item.provider) === this.defaultProvider);
+    const credential = candidates.find((item) => this.credentialMatchesProvider(item, this.defaultProvider!));
     const model = this.defaultModel
       ?? credential?.defaultModel
       ?? credential?.models?.[0]
@@ -303,8 +303,9 @@ export class ModelRouter {
     for (const candidate of candidates) {
       const model = candidate.defaultModel ?? candidate.models?.[0];
       if (model) {
+        const providerId = this.routeProviderIdForCredential(candidate);
         return {
-          providerId: normalizeProviderId(candidate.provider),
+          providerId,
           model,
           source: 'default-model',
         };
@@ -409,12 +410,43 @@ export class ModelRouter {
     return futureCooldowns.reduce((latest, value) =>
       value.getTime() > latest.getTime() ? value : latest);
   }
+
+  private credentialMatchesProvider(candidate: GatewayCredentialCandidate, providerId: string): boolean {
+    const normalizedProviderId = normalizeProviderId(providerId);
+    const candidateProviderId = normalizeProviderId(candidate.provider);
+    if (candidateProviderId === normalizedProviderId) {
+      return true;
+    }
+    const product = this.registry.getProduct(normalizedProviderId);
+    if (!product || normalizeProviderId(product.id) !== normalizedProviderId) {
+      return false;
+    }
+    const offeringId = stringMetadata(candidate.metadata, 'offeringId');
+    const offerings = offeringId
+      ? product.offerings.filter((offering) => normalizeProviderId(offering.id) === normalizeProviderId(offeringId))
+      : product.offerings;
+    return offerings.some((offering) =>
+      offering.runtimeProviderIds.some((runtimeProviderId) =>
+        normalizeProviderId(runtimeProviderId) === candidateProviderId));
+  }
+
+  private routeProviderIdForCredential(candidate: GatewayCredentialCandidate): string {
+    const providerId = normalizeProviderId(candidate.provider);
+    const product = this.registry.getProduct(providerId);
+    if (product) {
+      return normalizeProviderId(product.id);
+    }
+    return providerId;
+  }
 }
 
 function credentialSupportsModel(candidate: GatewayCredentialCandidate, model: string): boolean {
-  const models = candidate.models ?? [];
-  if (models.length === 0) {
+  const models = candidate.models;
+  if (models === undefined) {
     return true;
+  }
+  if (models.length === 0) {
+    return false;
   }
   if (models.some((candidateModel) => candidateModel === model)) {
     return true;
@@ -429,4 +461,9 @@ function compareCredentialPriority(
 ): number {
   return (left.priority ?? 100) - (right.priority ?? 100)
     || left.id.localeCompare(right.id);
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

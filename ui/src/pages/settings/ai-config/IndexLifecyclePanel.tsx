@@ -6,7 +6,13 @@ import { isPolicyValueDirty } from './form-state';
 export function IndexLifecyclePanel() {
   const { config, capabilities, lifecycle, save, rebuild, saving, rebuilding } = useAiConfig();
   const [value, setValue] = useState(config?.lifecycle);
-  useEffect(() => setValue(config?.lifecycle), [config]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setValue(config?.lifecycle);
+    });
+    return () => { cancelled = true; };
+  }, [config]);
   if (!value) return null;
   const dirty = isPolicyValueDirty(value, config?.lifecycle);
   const submit = async (event: FormEvent) => { event.preventDefault(); await save({ lifecycle: value }); };

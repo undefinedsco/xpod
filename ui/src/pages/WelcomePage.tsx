@@ -42,6 +42,12 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   const passwordsMatch = password.length > 0 && confirmPassword.length > 0 && password === confirmPassword;
   const normalizedUsername = normalizeRegistrationUsername(username);
   const usernameError = isRegister ? getRegistrationUsernameError(normalizedUsername) : undefined;
+  const displayedIsCheckingUsername = isRegister && Boolean(normalizedUsername) && !usernameError && isCheckingUsername;
+  const displayedIsUsernameAvailable = isRegister && normalizedUsername && !usernameError ? isUsernameAvailable : null;
+  const displayedUsernameSuggestions = isRegister && normalizedUsername && !usernameError ? usernameSuggestions : [];
+  const displayedUsernameAvailabilityError = isRegister && normalizedUsername && !usernameError
+    ? usernameAvailabilityError
+    : null;
 
   useEffect(() => {
     const returnTo = getReturnToFromLocation();
@@ -49,34 +55,14 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
   }, []);
 
   useEffect(() => {
-    if (!isRegister) {
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(null);
-      setUsernameSuggestions([]);
-      setUsernameAvailabilityError(null);
-      return;
-    }
-
-    if (!normalizedUsername) {
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(null);
-      setUsernameSuggestions([]);
-      setUsernameAvailabilityError(null);
-      return;
-    }
-
-    if (usernameError) {
-      setIsCheckingUsername(false);
-      setIsUsernameAvailable(false);
-      setUsernameSuggestions([]);
-      setUsernameAvailabilityError(usernameError);
+    if (!isRegister || !normalizedUsername || usernameError) {
       return;
     }
 
     let cancelled = false;
-    setIsCheckingUsername(true);
 
     const timer = window.setTimeout(async () => {
+      setIsCheckingUsername(true);
       const result = await checkRegistrationUsernameAvailability(normalizedUsername, idpIndex);
       if (cancelled) {
         return;
@@ -396,9 +382,9 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                         'block w-full pl-10 pr-4 py-2.5 bg-zinc-50 border rounded-xl text-sm placeholder:text-zinc-400 focus:outline-none transition-colors',
                         usernameError && username.length > 0
                           ? 'border-amber-300 focus:border-amber-500'
-                          : isUsernameAvailable === false
+                          : displayedIsUsernameAvailable === false
                             ? 'border-amber-300 focus:border-amber-500'
-                            : isUsernameAvailable
+                            : displayedIsUsernameAvailable
                               ? 'border-emerald-300 focus:border-emerald-500'
                               : 'border-zinc-200 focus:border-[#7C4DFF]',
                       )}
@@ -481,29 +467,29 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
                   'text-[11px] leading-relaxed',
                   usernameError && username.length > 0
                     ? 'text-amber-600'
-                    : isUsernameAvailable === false
+                    : displayedIsUsernameAvailable === false
                       ? 'text-amber-600'
-                      : isUsernameAvailable
+                      : displayedIsUsernameAvailable
                         ? 'text-emerald-600'
                         : 'text-zinc-500',
                 )}>
                   {usernameError && username.length > 0
                     ? usernameError
-                    : isCheckingUsername
+                    : displayedIsCheckingUsername
                       ? 'Checking username availability...'
-                      : usernameAvailabilityError
-                        ? usernameAvailabilityError
-                      : normalizedUsername && isUsernameAvailable === false
-                        ? 'Username is already taken.'
-                        : normalizedUsername && isUsernameAvailable
-                          ? 'Username is available.'
-                          : 'Username becomes your first Pod URL. Use 3-63 lowercase letters, numbers, or hyphens.'}
+                      : displayedUsernameAvailabilityError
+                        ? displayedUsernameAvailabilityError
+                        : normalizedUsername && displayedIsUsernameAvailable === false
+                          ? 'Username is already taken.'
+                          : normalizedUsername && displayedIsUsernameAvailable
+                            ? 'Username is available.'
+                            : 'Username becomes your first Pod URL. Use 3-63 lowercase letters, numbers, or hyphens.'}
                 </p>
               )}
 
-              {isRegister && usernameSuggestions.length > 0 && !usernameError && isUsernameAvailable === false && (
+              {isRegister && displayedUsernameSuggestions.length > 0 && !usernameError && displayedIsUsernameAvailable === false && (
                 <div className="flex flex-wrap gap-2">
-                  {usernameSuggestions.map((suggestion) => (
+                  {displayedUsernameSuggestions.map((suggestion) => (
                     <button
                       key={suggestion}
                       type="button"
@@ -526,7 +512,7 @@ export function WelcomePage({ initialIsRegister = false }: WelcomePageProps) {
 
               <button
                 type="submit"
-                disabled={isLoading || isCancelling || Boolean(isRegister && (usernameError || isCheckingUsername || isUsernameAvailable === false))}
+                disabled={isLoading || isCancelling || Boolean(isRegister && (usernameError || displayedIsCheckingUsername || displayedIsUsernameAvailable === false))}
                 className="w-full py-3 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
               >
                 {isLoading ? (

@@ -18,7 +18,10 @@ export class InMemoryGatewayAccessKeyRepository implements GatewayAccessKeyRepos
     return cloneRecord(stored);
   }
 
-  public async findById(id: string): Promise<GatewayAccessKeyRecord | undefined> {
+  public async findById(
+    id: string,
+    _context?: GatewayAccessKeyRepositoryContext,
+  ): Promise<GatewayAccessKeyRecord | undefined> {
     const record = this.records.get(id);
     return record ? cloneRecord(record) : undefined;
   }
@@ -46,7 +49,11 @@ export class InMemoryGatewayAccessKeyRepository implements GatewayAccessKeyRepos
     return cloneRecord(record);
   }
 
-  public async touchLastUsed(id: string, lastUsedAt: Date): Promise<void> {
+  public async touchLastUsed(
+    id: string,
+    lastUsedAt: Date,
+    _context?: GatewayAccessKeyRepositoryContext,
+  ): Promise<void> {
     const record = this.records.get(id);
     if (record) {
       record.lastUsedAt = new Date(lastUsedAt);

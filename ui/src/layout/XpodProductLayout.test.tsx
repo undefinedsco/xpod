@@ -2,24 +2,18 @@ import { describe, expect, test } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { XpodProductLayout } from './XpodProductLayout';
-import { dashboardNavigationItems } from './dashboard-navigation';
-import { settingsNavigationItems } from './settings-navigation';
 
-function renderProduct(
-  product: 'dashboard' | 'settings',
-  items: typeof dashboardNavigationItems | typeof settingsNavigationItems,
-  switchHref: '/dashboard/overview' | '/settings/models',
-) {
+function renderProduct(product: 'dashboard' | 'settings') {
   return renderToStaticMarkup(
     <MemoryRouter initialEntries={[product === 'dashboard' ? '/overview' : '/models']}>
-      <XpodProductLayout product={product} items={items} switchHref={switchHref} />
+      <XpodProductLayout product={product} />
     </MemoryRouter>,
   );
 }
 
 describe('XpodProductLayout', () => {
   test('renders the same global rail in Settings', () => {
-    const html = renderProduct('settings', settingsNavigationItems, '/dashboard/overview');
+    const html = renderProduct('settings');
 
     expect(html).toContain('data-app-layout="workspace"');
     expect(globalRailLabels(html)).toEqual(['Status', 'Network', 'AI Connections', 'AI Config', 'Settings']);
@@ -30,7 +24,7 @@ describe('XpodProductLayout', () => {
   });
 
   test('renders the same global rail in Dashboard', () => {
-    const html = renderProduct('dashboard', dashboardNavigationItems, '/settings/models');
+    const html = renderProduct('dashboard');
 
     expect(globalRailLabels(html)).toEqual(['Status', 'Network', 'AI Connections', 'AI Config', 'Settings']);
     expect(html).toContain('href="/status/overview"');
@@ -39,7 +33,7 @@ describe('XpodProductLayout', () => {
   });
 
   test('uses a bottom navigation on narrow screens and a left rail from sm upward', () => {
-    const html = renderProduct('dashboard', dashboardNavigationItems, '/settings/models');
+    const html = renderProduct('dashboard');
 
     expect(html).toContain('flex-row items-center px-2');
     expect(html).toContain('sm:flex-col sm:px-0');

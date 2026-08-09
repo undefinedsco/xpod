@@ -24,21 +24,21 @@
 - Test: `ui/src/routes/canonical-routes.test.ts`
 - Test: existing route and layout tests
 
-- [ ] **Step 1: Write failing canonical route and legacy redirect tests**
+- [x] **Step 1: Write failing canonical route and legacy redirect tests**
 
 Assert that Status, Network, AI Config, and Settings generate canonical paths, and that `/dashboard/*` plus legacy `/settings/models|pod|network|services` resolve to explicit redirect targets without changing AI Connections ownership.
 
-- [ ] **Step 2: Run route tests and verify RED**
+- [x] **Step 2: Run route tests and verify RED**
 
 Run: `bunx vitest run ui/src/routes/canonical-routes.test.ts ui/src/settings-routes.test.tsx ui/src/DashboardApp.test.tsx`
 
 Expected: canonical route assertions fail against the current `/dashboard/*` and mixed `/settings/*` paths.
 
-- [ ] **Step 3: Add the route constants and router aliases**
+- [x] **Step 3: Add the route constants and router aliases**
 
 Define one route contract and update rail/list links to consume it. Keep AI Connections as `/ai-connections`; add redirects from existing URLs.
 
-- [ ] **Step 4: Run route and layout tests and verify GREEN**
+- [x] **Step 4: Run route and layout tests and verify GREEN**
 
 Run: `bunx vitest run ui/src/routes/canonical-routes.test.ts ui/src/settings-routes.test.tsx ui/src/DashboardApp.test.tsx ui/src/layout/XpodProductLayout.test.tsx`
 
@@ -53,21 +53,21 @@ Expected: all selected tests pass.
 - Modify: `desktop/tsconfig.json`
 - Test: `desktop/test/runtime-manager.test.ts`
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 Cover: reuse a reachable runtime; launch once when stopped; expose `starting/running/failed`; restart only the process owned by the shell; quit leaves externally managed runtime untouched; packaged runtime entry resolution returns an actionable error when unavailable.
 
-- [ ] **Step 2: Run lifecycle tests and verify RED**
+- [x] **Step 2: Run lifecycle tests and verify RED**
 
 Run: `bun test desktop/test/runtime-manager.test.ts`
 
 Expected: tests fail because `runtime-manager.ts` does not exist.
 
-- [ ] **Step 3: Implement the runtime manager**
+- [x] **Step 3: Implement the runtime manager**
 
 Use `child_process.spawn`, `/service/status` probing, bounded startup polling, and explicit ownership. Package the required compiled runtime/config/static assets so the DMG does not depend on a source checkout. Route lifecycle errors into tray state rather than silently swallowing them.
 
-- [ ] **Step 4: Run lifecycle tests and verify GREEN**
+- [x] **Step 4: Run lifecycle tests and verify GREEN**
 
 Run: `bun test desktop/test/runtime-manager.test.ts`
 
@@ -83,21 +83,21 @@ Expected: all lifecycle tests pass without leaving child processes behind.
 - Test: `desktop/test/tray-menu.test.ts`
 - Test: `desktop/test/tray-icon.test.ts`
 
-- [ ] **Step 1: Write failing tray contract tests**
+- [x] **Step 1: Write failing tray contract tests**
 
 Assert canonical service routes, canonical workspace routes, no duplicate redesign of AI Connections, signed-in identity rows when available, Switch Account behavior, correct Start versus Restart action, and an icon state mapping for healthy/starting/degraded/failed/stopped.
 
-- [ ] **Step 2: Run tray tests and verify RED**
+- [x] **Step 2: Run tray tests and verify RED**
 
 Run: `bun test desktop/test/tray-menu.test.ts desktop/test/tray-icon.test.ts`
 
 Expected: route, identity, lifecycle action, and icon-state assertions fail.
 
-- [ ] **Step 3: Implement tray projection**
+- [x] **Step 3: Implement tray projection**
 
 Poll runtime status plus the current authenticated session summary. Build menu rows from the pure model. Navigate service rows to `/status/services/{gateway|solid-server|api-server}` and workspaces to canonical roots. Use state-specific macOS template images while retaining text labels and tooltip evidence.
 
-- [ ] **Step 4: Run tray tests and verify GREEN**
+- [x] **Step 4: Run tray tests and verify GREEN**
 
 Run: `bun test desktop/test/tray-menu.test.ts desktop/test/tray-icon.test.ts`
 
@@ -110,13 +110,13 @@ Expected: all tray tests pass.
 - Modify: `docs/cli-dev-testing.md`
 - Test: packaged DMG and extracted app
 
-- [ ] **Step 1: Build all product surfaces**
+- [x] **Step 1: Build all product surfaces**
 
 Run: `bun run build`
 
 Expected: TypeScript, Components.js, packages, and UI builds succeed.
 
-- [ ] **Step 2: Run desktop and repository tests**
+- [x] **Step 2: Run desktop and repository tests**
 
 Run: `bun test desktop/test/*.test.ts`
 
@@ -124,7 +124,7 @@ Run: `bun run test:integration`
 
 Expected: desktop tests pass; lite and full integration suites pass.
 
-- [ ] **Step 3: Build and inspect the installer**
+- [x] **Step 3: Build and inspect the installer**
 
 Run: `bun run --cwd desktop dist`
 
@@ -132,10 +132,24 @@ Run: `hdiutil verify desktop/release/Xpod-0.1.0-arm64.dmg`
 
 Expected: DMG and ZIP are generated and the disk image checksum is valid.
 
-- [ ] **Step 4: Run a packaged smoke test**
+- [x] **Step 4: Run a packaged smoke test**
 
 Launch the extracted app against a clean user-data directory, verify runtime startup, canonical Status navigation, tray menu creation, then quit and confirm owned child cleanup according to the chosen lifecycle policy.
 
-- [ ] **Step 5: Document developer-package limitations**
+- [x] **Step 5: Document developer-package limitations**
 
 Record Apple Silicon architecture, unsigned/notarized status, install/open instructions, runtime ownership behavior, and the final artifact checksum. Do not claim release readiness without Developer ID signing and notarization.
+
+## Final Acceptance Evidence
+
+- Root Vitest: 408 files total, 372 passed and 36 skipped; 3606 tests total, 3339 passed and 267 skipped.
+- Desktop tests: 19/19 passed.
+- Packages tests: 217/217 passed.
+- Network focused tests: 17/17 passed.
+- UI lint and typecheck passed.
+- Packaged Apple Silicon artifacts were produced and inspected:
+  - `desktop/release/Xpod-0.1.0-arm64.dmg` SHA256 `ce3e892cc887c4c5b28508f2cd7a358e20d65bd22b61cc61d8c9586bff45dfee`; `hdiutil verify` reported valid.
+  - `desktop/release/Xpod-0.1.0-arm64-mac.zip` SHA256 `a0ec9d2f9ba55ca17822a10491979940830ece67ae4a0a9e498783975f65befb`.
+- Packaged smoke coverage confirmed default navigation to `/network/overview`, canonical rail behavior, native 3/3 tray actions, diagnostic API behavior, and quit cleanup.
+- Runtime lifecycle acceptance covered both owned and external runtimes: the shell starts and cleans up only its owned runtime, and preserves an externally managed runtime on quit.
+- Distribution limitation: artifacts are unsigned and not notarized; this is a developer package, not a signed release-ready installer.

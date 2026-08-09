@@ -241,10 +241,18 @@ export function AccountPage() {
       setCredentials([]);
       setPodStateSettling(false);
     }
-  }, [controls?.account?.clientCredentials, controls?.account?.pod, controls?.account?.webId]);
+  }, [controls]);
 
   useEffect(() => {
-    fetchData();
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
+        void fetchData();
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [fetchData]);
 
   const handleLogout = async () => {

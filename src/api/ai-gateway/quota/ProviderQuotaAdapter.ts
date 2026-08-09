@@ -6,10 +6,17 @@ import {
   type QuotaSnapshotRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
+import {
+  callerPodAccessError,
+  createCallerAuthenticatedPodFetch,
+  isInternalPodAccessAllowed,
+} from '../auth/CallerPodAccess';
 import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
 import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
+import type { ProviderRegistry } from '../providers/ProviderRegistry';
+import { QuotaCapabilityRegistry, type QuotaHandlerCapability } from './QuotaCapabilityRegistry';
 
 export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
 
@@ -41,6 +48,7 @@ export interface NormalizedQuotaSnapshot {
 
 export interface QuotaCredentialRecord extends ConnectCredentialRecord {
   baseUrl?: string;
+  offeringId?: string;
 }
 
 export interface ProviderQuotaFetchInput {
@@ -52,6 +60,8 @@ export interface ProviderQuotaFetchInput {
 
 export interface ProviderQuotaAdapter {
   readonly provider: string;
+  readonly capability?: QuotaHandlerCapability;
+  supports?(credential: QuotaCredentialRecord): boolean;
   fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot>;
 }
 
@@ -60,20 +70,26 @@ export interface QuotaSnapshotRepository {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     credentialIri: string;
     now: Date;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined>;
   findLatest(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     credentialIri: string;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined>;
   upsert(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     snapshot: NormalizedQuotaSnapshot;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot>;
 }
 
@@ -81,8 +97,24 @@ export interface ProviderQuotaStatusInput {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  offeringId?: string;
   credentialIri?: string;
   refresh?: boolean;
+  now?: Date;
+  signal?: AbortSignal;
+  auth?: AuthContext;
+}
+
+export interface CallerOwnedQuotaInput {
+  webId: string;
+  deployment: GatewayDeployment;
+  provider: string;
+  offeringId?: string;
+  credentialId: string;
+  credentialIri: string;
+  authMode: 'apiKey' | 'deviceCodeOAuth';
+  baseUrl?: string;
+  secret: ProviderSecret;
   now?: Date;
   signal?: AbortSignal;
 }
@@ -91,6 +123,7 @@ export interface ProviderQuotaServiceOptions {
   repository: QuotaSnapshotRepository;
   vault: CredentialVault;
   adapters: ProviderQuotaAdapter[];
+  providerRegistry?: ProviderRegistry;
   credentialRepository?: PodCredentialRepository;
   credentials?: QuotaCredentialRecord[];
   now?: () => Date;
@@ -99,7 +132,9 @@ export interface ProviderQuotaServiceOptions {
 export class ProviderQuotaService {
   private readonly repository: QuotaSnapshotRepository;
   private readonly vault: CredentialVault;
-  private readonly adapters = new Map<string, ProviderQuotaAdapter>();
+  private readonly adapters = new Map<string, ProviderQuotaAdapter[]>();
+  private readonly providerRegistry?: ProviderRegistry;
+  private readonly capabilityRegistry: QuotaCapabilityRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: QuotaCredentialRecord[];
   private readonly now: () => Date;
@@ -108,11 +143,14 @@ export class ProviderQuotaService {
   public constructor(options: ProviderQuotaServiceOptions) {
     this.repository = options.repository;
     this.vault = options.vault;
+    this.providerRegistry = options.providerRegistry;
+    this.capabilityRegistry = new QuotaCapabilityRegistry(options.adapters);
     this.credentialRepository = options.credentialRepository;
     this.credentials = options.credentials ?? [];
     this.now = options.now ?? (() => new Date());
     for (const adapter of options.adapters) {
-      this.adapters.set(normalizeProvider(adapter.provider), adapter);
+      const provider = normalizeProvider(adapter.provider);
+      this.adapters.set(provider, [...(this.adapters.get(provider) ?? []), adapter]);
     }
   }
 
@@ -124,6 +162,7 @@ export class ProviderQuotaService {
         webId: input.webId,
         deployment: input.deployment,
         provider,
+        offeringId: input.offeringId,
         credentialIri: input.credentialIri,
       });
       const inFlight = this.inFlightRefreshes.get(refreshKey);
@@ -144,6 +183,36 @@ export class ProviderQuotaService {
     return this.statusAfterImplicitCredentialResolution(input, provider, now);
   }
 
+  public async statusCallerOwned(input: CallerOwnedQuotaInput): Promise<NormalizedQuotaSnapshot> {
+    const provider = normalizeProvider(input.provider);
+    const credential = {
+      id: input.credentialId,
+      credentialIri: input.credentialIri,
+      webId: input.webId,
+      provider,
+      deployment: input.deployment,
+      authMode: input.authMode,
+      encryptedSecret: {} as QuotaCredentialRecord['encryptedSecret'],
+      status: 'active' as const,
+      offeringId: input.offeringId,
+      baseUrl: input.baseUrl,
+    };
+    const adapter = this.findAdapter(provider, credential);
+    if (!adapter) throw new Error(`quota_adapter_not_found:${provider}`);
+    const now = input.now ?? this.now();
+    try {
+      return await adapter.fetch({ credential, secret: input.secret, now, signal: input.signal });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      return errorQuotaSnapshot({
+        credential: input.credentialIri,
+        source: quotaErrorSource(provider),
+        now,
+        metadata: { reason: 'provider_quota_unavailable' },
+      });
+    }
+  }
+
   private async statusAfterImplicitCredentialResolution(
     input: ProviderQuotaStatusInput,
     provider: string,
@@ -153,7 +222,9 @@ export class ProviderQuotaService {
       webId: input.webId,
       deployment: input.deployment,
       provider,
+      offeringId: input.offeringId,
       credentialIri: input.credentialIri,
+      auth: input.auth,
     });
 
     if (!input.refresh) {
@@ -161,8 +232,10 @@ export class ProviderQuotaService {
         webId: input.webId,
         deployment: input.deployment,
         provider,
+        offeringId: credential.offeringId,
         credentialIri: credential.credentialIri,
         now,
+        auth: input.auth,
       });
       if (cached) {
         return { ...cached, stale: false };
@@ -171,14 +244,16 @@ export class ProviderQuotaService {
         webId: input.webId,
         deployment: input.deployment,
         provider,
+        offeringId: credential.offeringId,
         credentialIri: credential.credentialIri,
+        auth: input.auth,
       });
       if (latest) {
         return { ...latest, stale: true };
       }
     }
 
-    const adapter = this.adapters.get(provider);
+    const adapter = this.findAdapter(provider, credential);
     if (!adapter) {
       throw new Error(`quota_adapter_not_found:${provider}`);
     }
@@ -186,6 +261,7 @@ export class ProviderQuotaService {
       webId: input.webId,
       deployment: input.deployment,
       provider,
+      offeringId: credential.offeringId,
       credentialIri: credential.credentialIri,
     });
     const inFlight = this.inFlightRefreshes.get(refreshKey);
@@ -201,6 +277,7 @@ export class ProviderQuotaService {
       adapter,
       now,
       signal: input.signal,
+      auth: input.auth,
     }).finally(() => {
       this.inFlightRefreshes.delete(refreshKey);
     });
@@ -217,9 +294,11 @@ export class ProviderQuotaService {
       webId: input.input.webId,
       deployment: input.input.deployment,
       provider: input.provider,
+      offeringId: input.input.offeringId,
       credentialIri: input.input.credentialIri,
+      auth: input.input.auth,
     });
-    const adapter = this.adapters.get(input.provider);
+    const adapter = this.findAdapter(input.provider, credential);
     if (!adapter) {
       throw new Error(`quota_adapter_not_found:${input.provider}`);
     }
@@ -231,6 +310,7 @@ export class ProviderQuotaService {
       adapter,
       now: input.now,
       signal: input.input.signal,
+      auth: input.input.auth,
     });
   }
 
@@ -242,6 +322,7 @@ export class ProviderQuotaService {
     adapter: ProviderQuotaAdapter;
     now: Date;
     signal?: AbortSignal;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot> {
     const secret = await this.vault.open(
       { webId: input.webId },
@@ -263,6 +344,7 @@ export class ProviderQuotaService {
         credentialId: input.credential.id,
         expectedVersion: input.credential.version,
         encryptedSecret: rewrapped,
+        auth: input.auth,
       });
     }
     let snapshot: NormalizedQuotaSnapshot;
@@ -288,29 +370,59 @@ export class ProviderQuotaService {
       webId: input.webId,
       deployment: input.deployment,
       provider: input.provider,
+      offeringId: input.credential.offeringId,
       snapshot,
+      auth: input.auth,
     });
+  }
+
+  private findAdapter(provider: string, credential: QuotaCredentialRecord): ProviderQuotaAdapter | undefined {
+    if (this.providerRegistry && credential.offeringId) {
+      return this.capabilityRegistry.resolve(this.providerRegistry, credential);
+    }
+    return this.adapters.get(provider)?.find((adapter) => adapter.supports?.(credential) ?? true);
   }
 
   private async resolveCredential(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     credentialIri?: string;
+    auth?: AuthContext;
   }): Promise<QuotaCredentialRecord> {
     const listed = this.credentials.find((candidate) =>
       candidate.webId === input.webId
       && candidate.deployment === input.deployment
       && normalizeProvider(candidate.provider) === input.provider
+      && (!input.offeringId || candidate.offeringId === input.offeringId)
       && (!input.credentialIri || candidate.credentialIri === input.credentialIri));
     if (listed) {
       return listed;
+    }
+
+    if (input.offeringId && this.credentialRepository) {
+      const activeForOffering = (await this.credentialRepository.listProviderCredentials({
+        webId: input.webId,
+        deployment: input.deployment,
+        provider: input.provider,
+        auth: input.auth,
+      })).find((candidate) =>
+        candidate.offeringId === input.offeringId
+        && candidate.status === 'active'
+        && candidate.enabled !== false
+        && (!input.credentialIri || candidate.credentialIri === input.credentialIri));
+      if (activeForOffering) {
+        return activeForOffering as QuotaCredentialRecord;
+      }
+      throw new Error('quota_credential_not_found');
     }
 
     const active = await this.credentialRepository?.getActiveCredential({
       webId: input.webId,
       deployment: input.deployment,
       provider: input.provider,
+      auth: input.auth,
     });
     if (
       active
@@ -327,12 +439,14 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
   }> = [];
 
   public async findFresh(input: {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     credentialIri: string;
     now: Date;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
@@ -347,6 +461,7 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     credentialIri: string;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
     const row = this.rows
@@ -354,6 +469,7 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
         candidate.webId === input.webId
         && candidate.deployment === input.deployment
         && normalizeProvider(candidate.provider) === normalizeProvider(input.provider)
+        && quotaOfferingMatches(candidate.offeringId, input.offeringId)
         && candidate.credential === input.credentialIri)
       .sort((a, b) => new Date(b.observedAt).getTime() - new Date(a.observedAt).getTime())[0];
     return row ? publicSnapshot(row) : undefined;
@@ -363,13 +479,15 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     snapshot: NormalizedQuotaSnapshot;
   }): Promise<NormalizedQuotaSnapshot> {
-    const id = input.snapshot.id ?? buildQuotaSnapshotId({
-      owner: input.webId,
+    const id = input.snapshot.id ?? quotaSnapshotCacheId({
+      webId: input.webId,
       deployment: input.deployment,
       provider: input.provider,
-      credential: input.snapshot.credential,
+      offeringId: input.offeringId,
+      credentialIri: input.snapshot.credential,
     });
     const next = {
       ...sanitizeSnapshot(input.snapshot),
@@ -377,6 +495,7 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
       webId: input.webId,
       deployment: input.deployment,
       provider: normalizeProvider(input.provider),
+      offeringId: input.offeringId,
       stale: false,
     };
     const index = this.rows.findIndex((row) => row.id === id);
@@ -387,6 +506,27 @@ export class InMemoryQuotaSnapshotRepository implements QuotaSnapshotRepository 
     }
     return publicSnapshot(next);
   }
+}
+
+function quotaSnapshotCacheId(input: {
+  webId: string;
+  deployment: GatewayDeployment;
+  provider: string;
+  credentialIri: string;
+  offeringId?: string;
+}): string {
+  return buildQuotaSnapshotId({
+    owner: input.webId,
+    deployment: input.deployment,
+    provider: input.offeringId
+      ? `${normalizeProvider(input.provider)}:${input.offeringId}`
+      : input.provider,
+    credential: input.credentialIri,
+  });
+}
+
+function quotaOfferingMatches(candidateOfferingId: string | undefined, inputOfferingId: string | undefined): boolean {
+  return inputOfferingId ? candidateOfferingId === inputOfferingId : candidateOfferingId === undefined;
 }
 
 type QuotaSnapshotDb = {
@@ -427,10 +567,16 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     credentialIri: string;
     now: Date;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
+    if (input.offeringId) {
+      const row = await db.findById<QuotaSnapshotRow>(quotaSnapshotResource, quotaSnapshotCacheId(input));
+      return row && isFreshQuotaSnapshotRow(row, input.now) ? snapshotFromRow(row, false) : undefined;
+    }
     const row = await aiGatewayRepository.findFreshQuotaSnapshot(db as never, {
       owner: input.webId,
       deployment: input.deployment,
@@ -445,9 +591,15 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     credentialIri: string;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot | undefined> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
+    if (input.offeringId) {
+      const row = await db.findById<QuotaSnapshotRow>(quotaSnapshotResource, quotaSnapshotCacheId(input));
+      return row ? snapshotFromRow(row, true) : undefined;
+    }
     const row = await aiGatewayRepository.findLatestQuotaSnapshot(db as never, {
       owner: input.webId,
       deployment: input.deployment,
@@ -461,16 +613,19 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
+    offeringId?: string;
     snapshot: NormalizedQuotaSnapshot;
+    auth?: AuthContext;
   }): Promise<NormalizedQuotaSnapshot> {
-    const db = await this.dbForOwner(input.webId);
+    const db = await this.dbForOwner(input.webId, input.auth);
     const snapshot = sanitizeSnapshot({
       ...input.snapshot,
-      id: input.snapshot.id ?? buildQuotaSnapshotId({
-        owner: input.webId,
+      id: input.snapshot.id ?? quotaSnapshotCacheId({
+        webId: input.webId,
         deployment: input.deployment,
         provider: input.provider,
-        credential: input.snapshot.credential,
+        offeringId: input.offeringId,
+        credentialIri: input.snapshot.credential,
       }),
     });
     await aiGatewayRepository.upsertQuotaSnapshot(db as never, {
@@ -490,17 +645,28 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
   }
 
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<QuotaSnapshotDb> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, auth);
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch });
     await db.init?.(quotaSnapshotResource);
     return db;
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
+  private async resolveTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch> {
+    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
+    if (callerFetch) {
+      return this.wrapPodFetch(callerFetch);
+    }
+    if (!isInternalPodAccessAllowed(auth)) {
+      throw new Error(callerPodAccessError(owner, auth));
+    }
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
+    return this.wrapPodFetch(trustedFetch);
+  }
+
+  private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {
     return async (input, init) => {
       const response = await trustedFetch(input, init);
       if (response.status === 403) {
@@ -655,12 +821,14 @@ function quotaRefreshKey(input: {
   webId: string;
   deployment: GatewayDeployment;
   provider: string;
+  offeringId?: string;
   credentialIri: string;
 }): string {
   return JSON.stringify([
     input.webId,
     input.deployment,
     normalizeProvider(input.provider),
+    input.offeringId ?? '',
     input.credentialIri,
   ]);
 }
@@ -724,6 +892,10 @@ function snapshotFromRow(row: QuotaSnapshotRow, stale: boolean): NormalizedQuota
     source: typeof row.source === 'string' ? row.source : '',
     stale,
   });
+}
+
+function isFreshQuotaSnapshotRow(row: QuotaSnapshotRow, now: Date): boolean {
+  return new Date(toIso(row.expiresAt)).getTime() > now.getTime();
 }
 
 function parseWindows(value: unknown): QuotaWindow[] {

@@ -6,7 +6,7 @@ import type { CredentialVault } from './credentials/CredentialVault';
 import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
-import type { ProviderCapabilities, ProviderRegistry } from './providers/ProviderRegistry';
+import type { ProviderCapabilities, ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
 import { normalizeProviderId } from './providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from './providers/ProviderRuntimeRegistry';
 import type { GatewayCredentialCandidate, ModelRouter, ModelRouteResult } from './routing/ModelRouter';
@@ -40,6 +40,7 @@ export interface GatewayCredentialStore {
     credentialId: string;
     expectedVersion?: number;
     encryptedSecret: EncryptedCredentialSecret;
+    auth?: AuthContext;
   }): Promise<boolean>;
 }
 
@@ -175,6 +176,8 @@ export class AiGatewayService {
     request.model = route.model;
     const events = this.executeWithCredentialFailover({
       principal,
+      auth: input.auth,
+      protocol: input.protocol,
       request,
       route,
       signal: input.signal,
@@ -213,6 +216,13 @@ export class AiGatewayService {
         continue;
       }
       const providerId = normalizeProviderId(credential.provider);
+      const allowedModels = credential.models;
+      if (allowedModels !== undefined && allowedModels.length === 0) {
+        if (!activeCredentialModels.has(providerId)) {
+          activeCredentialModels.set(providerId, new Set<string>());
+        }
+        continue;
+      }
       const customModels = credential.customModels ?? customModelsFromMetadata(credential.metadata);
       if (customModels.length > 0) {
         const existing = customCredentialModels.get(providerId) ?? [];
@@ -225,8 +235,7 @@ export class AiGatewayService {
         }
         customCredentialModels.set(providerId, existing);
       }
-      const allowedModels = credential.models ?? [];
-      if (allowedModels.length === 0) {
+      if (allowedModels === undefined) {
         activeCredentialModels.set(providerId, undefined);
         continue;
       }
@@ -353,8 +362,10 @@ export class AiGatewayService {
 
   private async *executeWithCredentialFailover(input: {
     principal: { webId: string };
+    protocol: GatewayProtocol;
     request: GatewayRequest;
     route: ModelRouteResult;
+    auth: AuthContext;
     signal?: AbortSignal;
   }): AsyncIterable<GatewayEvent> {
     let route = input.route;
@@ -366,12 +377,12 @@ export class AiGatewayService {
       const credential = route.credential as StoredGatewayCredential;
       try {
         let finalUsage: GatewayUsage | undefined;
-        const apiKey = await this.openApiKey(input.principal, route, credential);
+        const apiKey = await this.openApiKey(input.principal, route, credential, input.auth);
         const adapter = this.runtimes.get(route.provider.id);
         const upstream = adapter.execute({
           request: input.request,
           apiKey,
-          credential: credential.runtimeCredential ?? runtimeCredentialFromMetadata(credential.metadata),
+          credential: this.runtimeCredentialFor(route, credential, input.protocol),
           signal: input.signal,
         });
         for await (const event of upstream) {
@@ -389,8 +400,8 @@ export class AiGatewayService {
         return;
       } catch (error) {
         await this.recordRouteFailure(input.principal.webId, route, error);
-        if (!firstClientEventEmitted && this.router.canFailOver(route)) {
-          const nextRoute = await this.findFailoverRoute(input.principal.webId, input.request, route, attempted);
+        if (!firstClientEventEmitted && this.router.canFailOver(route) && isCredentialFailoverError(error)) {
+          const nextRoute = await this.findFailoverRoute(input.principal.webId, input.auth, input.request, route, attempted);
           if (nextRoute) {
             route = nextRoute;
             continue;
@@ -421,12 +432,13 @@ export class AiGatewayService {
         totalTokens,
       });
     } catch {
-      // Usage telemetry must never turn a completed upstream response into an inference failure.
+      // Usage accounting must not turn a completed upstream response into an inference failure.
     }
   }
 
   private async findFailoverRoute(
     webId: string,
+    auth: AuthContext,
     request: GatewayRequest,
     failedRoute: ModelRouteResult,
     attempted: Set<string>,
@@ -435,6 +447,7 @@ export class AiGatewayService {
       return await this.router.route({
         webId,
         deployment: this.deployment,
+        auth,
         model: `${failedRoute.provider.id}/${failedRoute.model}`,
         conversationId: conversationIdFor(request),
       }, attempted);
@@ -450,11 +463,12 @@ export class AiGatewayService {
     principal: { webId: string },
     route: ModelRouteResult,
     credential: StoredGatewayCredential,
+    auth: AuthContext,
   ): Promise<string> {
     const secret = await this.vault.open(
       principal,
       credential.credentialIri,
-      route.provider.id,
+      credential.provider,
       credential.encryptedSecret,
     );
     if (this.vault.needsRewrap?.(credential.encryptedSecret) && this.credentials.rewrapCredential) {
@@ -465,6 +479,7 @@ export class AiGatewayService {
         credentialId: credential.id,
         expectedVersion: credential.version,
         encryptedSecret: rewrapped,
+        auth,
       });
     }
     const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
@@ -476,6 +491,82 @@ export class AiGatewayService {
       });
     }
     return apiKey;
+  }
+
+  private runtimeCredentialFor(
+    route: ModelRouteResult,
+    credential: StoredGatewayCredential,
+    protocol: GatewayProtocol,
+  ): ProviderRuntimeCredential | undefined {
+    const configured = credential.runtimeCredential ?? runtimeCredentialFromMetadata(credential.metadata);
+    const offeringCredential = this.offeringRuntimeCredential(route, credential, protocol);
+    if (!configured) {
+      return offeringCredential;
+    }
+    if (!offeringCredential) {
+      return configured;
+    }
+    return {
+      ...offeringCredential,
+      ...configured,
+    };
+  }
+
+  private offeringRuntimeCredential(
+    route: ModelRouteResult,
+    credential: StoredGatewayCredential,
+    protocol: GatewayProtocol,
+  ): ProviderRuntimeCredential | undefined {
+    const product = this.registry.getProduct(route.provider.id) ?? this.registry.getProduct(credential.provider);
+    if (!product) {
+      return undefined;
+    }
+    const offeringId = stringMetadata(credential.metadata, 'offeringId');
+    const credentialProviderId = normalizeProviderId(credential.provider);
+    const explicitOffering = offeringId
+      ? product.offerings.find((candidate) => normalizeProviderId(candidate.id) === normalizeProviderId(offeringId))
+      : undefined;
+    if (offeringId && (!explicitOffering || !offeringMatchesCredentialAuthMode(explicitOffering, credential.authMode))) {
+      throw new GatewayProtocolError('Credential offering is not compatible with credential auth mode', {
+        code: 'credential_unavailable',
+        status: 403,
+        details: {
+          provider: route.provider.id,
+          credentialId: credential.id,
+          offeringId,
+          authMode: credential.authMode,
+        },
+      });
+    }
+    const standardOffering = credentialProviderId === normalizeProviderId(product.id)
+      ? product.offerings.find((candidate) =>
+        candidate.kind === (credential.authMode === 'apiKey' ? 'api-platform' : 'oauth-subscription')
+        && offeringMatchesCredentialAuthMode(candidate, credential.authMode))
+      : undefined;
+    const offering = explicitOffering
+      ?? standardOffering
+      ?? product.offerings.find((candidate) =>
+        offeringMatchesCredentialAuthMode(candidate, credential.authMode)
+        && candidate.runtimeProviderIds.some((runtimeProviderId) =>
+          normalizeProviderId(runtimeProviderId) === credentialProviderId))
+      ?? product.offerings.find((candidate) =>
+        offeringMatchesCredentialAuthMode(candidate, credential.authMode)
+        && normalizeProviderId(product.id) === credentialProviderId)
+      ?? product.offerings.find((candidate) =>
+        candidate.runtimeProviderIds.some((runtimeProviderId) =>
+          normalizeProviderId(runtimeProviderId) === credentialProviderId));
+    const isLegacyCodingPlan = offering?.id === 'coding-plan';
+    const endpointProtocol = isLegacyCodingPlan ? 'anthropic' : protocol;
+    const endpoint = offering?.endpoints.find((candidate) => candidate.protocol === endpointProtocol);
+    if (!endpoint) {
+      return undefined;
+    }
+    return {
+      baseUrl: endpoint.baseUrl,
+      ...(endpoint.region ? { region: endpoint.region } : {}),
+      ...(isLegacyCodingPlan ? { keyType: 'codingPlan' } : {}),
+      ...(offering?.kind === 'token-plan' && !isLegacyCodingPlan ? { keyType: 'tokenPlan' } : {}),
+    };
   }
 
   private async recordRouteFailure(webId: string, route: ModelRouteResult, error: unknown): Promise<void> {
@@ -577,9 +668,14 @@ function stringExtension(extensions: Record<string, unknown> | undefined, key: s
 
 function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undefined): ProviderRuntimeCredential | undefined {
   const runtime = metadata?.runtimeCredential;
-  return runtime && typeof runtime === 'object' && !Array.isArray(runtime)
+  const runtimeCredential = runtime && typeof runtime === 'object' && !Array.isArray(runtime)
     ? runtime as ProviderRuntimeCredential
-    : undefined;
+    : {};
+  const credential: ProviderRuntimeCredential = {
+    ...runtimeCredential,
+    ...stringMetadataFields(metadata, ['baseUrl', 'keyType', 'proxy', 'region', 'workspaceId']),
+  };
+  return Object.keys(credential).length > 0 ? credential : undefined;
 }
 
 function healthRecord(webId: string, deployment: string, route: ModelRouteResult): GatewayCredentialHealthRecord {
@@ -590,6 +686,52 @@ function healthRecord(webId: string, deployment: string, route: ModelRouteResult
     credentialId: route.credential.id,
     credentialIri: route.credential.credentialIri,
   };
+}
+
+function isCredentialFailoverError(error: unknown): boolean {
+  if (!(error instanceof GatewayProtocolError)) {
+    const normalized = normalizeGatewayError(error);
+    return normalized.error.code === 'provider_error' && normalized.error.status === 429;
+  }
+  if (error.code !== 'provider_error') {
+    return false;
+  }
+  const classification = stringMetadata(error.details, 'classification');
+  return classification === 'quota_exhausted'
+    || classification === 'rate_limited'
+    || classification === 'upstream_unavailable';
+}
+
+function offeringMatchesCredentialAuthMode(
+  offering: ProviderOfferingDescriptor,
+  authMode: StoredGatewayCredential['authMode'],
+): boolean {
+  if (authMode === 'apiKey') {
+    return offering.authModes.includes('apiKey');
+  }
+  if (authMode === 'deviceCodeOAuth') {
+    return offering.authModes.includes('oauth') || offering.authModes.includes('deviceCode');
+  }
+  return true;
+}
+
+function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function stringMetadataFields(
+  metadata: Record<string, unknown> | undefined,
+  keys: Array<'baseUrl' | 'keyType' | 'proxy' | 'region' | 'workspaceId'>,
+): ProviderRuntimeCredential {
+  const result: ProviderRuntimeCredential = {};
+  for (const key of keys) {
+    const value = stringMetadata(metadata, key);
+    if (value) {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 function aggregateEvents(

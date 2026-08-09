@@ -185,19 +185,17 @@ function registerSharedRoutes(
   registerRdfStatsRoutes(server, {
     rdfStorageStatsService,
   });
-  if (gatewayAccessKeyRepository) {
-    registerAiGatewayManagementRoutes(server, {
-      repository: gatewayAccessKeyRepository,
-      deployment: config.edition,
-      connectService: providerConnectService,
-      quotaService: providerQuotaService,
-      modelsService: providerModelsService,
-      customModelsService: providerCustomModelsService,
-      servicePrincipal: gatewayInternalPodAccess,
-      aiClientConfiguration: aiClientConfigurationService?.capability(),
-      aiConnectionInvocationKeyIssuer,
-    });
-  }
+  registerAiGatewayManagementRoutes(server, {
+    repository: gatewayAccessKeyRepository,
+    deployment: config.edition,
+    connectService: providerConnectService,
+    quotaService: providerQuotaService,
+    modelsService: providerModelsService,
+    customModelsService: providerCustomModelsService,
+    servicePrincipal: gatewayInternalPodAccess,
+    aiClientConfiguration: aiClientConfigurationService?.capability(),
+    aiConnectionInvocationKeyIssuer,
+  });
   registerAiClientConfigurationRoutes(server, {
     service: aiClientConfigurationService,
   });

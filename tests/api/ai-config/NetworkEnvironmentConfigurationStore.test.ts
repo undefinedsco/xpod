@@ -19,7 +19,9 @@ describe('NetworkEnvironmentConfigurationStore', () => {
 
   it('writes a bounded patch to the durable environment adapter', async () => {
     const current: Record<string, string> = {};
-    const write = vi.fn(async (patch: Record<string, string>) => Object.assign(current, patch));
+    const write = vi.fn(async (patch: Record<string, string>) => {
+      Object.assign(current, patch);
+    });
     const store = new NetworkEnvironmentConfigurationStore({ read: () => current, write });
     await store.update({ domainDns: { domain: 'xpod.example', recordTtl: 600, credential: 'dns-secret' }, p2p: { enabled: true } });
     expect(write).toHaveBeenCalledWith(expect.objectContaining({ XPOD_DNS_DOMAIN: 'xpod.example', XPOD_DNS_RECORD_TTL: '600', CLOUDFLARE_API_TOKEN: 'dns-secret', XPOD_P2P_ENABLED: 'true' }));

@@ -1,8 +1,79 @@
 import type { GatewayProtocol } from '../types';
 
 export type ProviderId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
+export type ProviderProductId = 'openai' | 'anthropic' | 'kimi' | 'bailian' | 'deepseek' | string;
 export type ProviderAuthMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'apiKey' | 'connectUnsupported';
 export type ProviderConnectMode = 'browserAssistedApiKey' | 'deviceCodeOAuth' | 'connectUnsupported';
+export type OfferingAuthMode = 'oauth' | 'deviceCode' | 'apiKey' | 'local';
+export type ProviderOfferingKind =
+  | 'oauth-subscription'
+  | 'api-platform'
+  | 'token-plan';
+export type ProviderOfferingLifecycle = 'active' | 'legacy' | 'unavailable';
+
+export type ProviderAuthCapabilityProtocol =
+  | 'api-key'
+  | 'subscription-key'
+  | 'oauth-device-code';
+
+export interface ProviderAuthCapabilityDescriptor {
+  protocol: ProviderAuthCapabilityProtocol;
+}
+
+export type ProviderUpstreamCapability = 'models' | 'inference' | 'quota' | 'balance';
+
+export interface ProviderUpstreamCapabilityDescriptor {
+  capability: ProviderUpstreamCapability;
+  protocol: string;
+  options?: Record<string, unknown>;
+}
+
+export interface ProviderOfferingEndpointDescriptor {
+  protocol: GatewayProtocol;
+  baseUrl: string;
+  region?: string;
+}
+
+export type ProviderModelDiscoveryStrategy = 'openaiCompatible' | 'anthropic' | 'unsupported';
+export type ProviderQuotaStrategy = 'providerApi' | 'subscription' | 'console' | 'unsupported';
+
+export interface ProviderOfferingModelDiscoveryDescriptor {
+  strategy: ProviderModelDiscoveryStrategy;
+  path: string;
+  endpointProtocol: GatewayProtocol;
+}
+
+export interface ProviderOfferingQuotaDescriptor {
+  strategy: ProviderQuotaStrategy;
+  url: string;
+}
+
+export interface ProviderOfferingDescriptor {
+  id: string;
+  runtimeProviderIds: string[];
+  label: string;
+  productLabel: string;
+  kind: ProviderOfferingKind;
+  authModes: OfferingAuthMode[];
+  auth: ProviderAuthCapabilityDescriptor[];
+  upstream: ProviderUpstreamCapabilityDescriptor[];
+  endpoints: ProviderOfferingEndpointDescriptor[];
+  credentialPrefixHints: string[];
+  consoleUrl: string;
+  subscriptionUrl: string;
+  modelDiscovery: ProviderOfferingModelDiscoveryDescriptor;
+  quota: ProviderOfferingQuotaDescriptor;
+  usagePolicyUrl: string;
+  region: string;
+  lifecycle: ProviderOfferingLifecycle;
+  oauthIntegrationId?: string;
+}
+
+export interface ProviderProductDescriptor {
+  id: ProviderProductId;
+  label: string;
+  offerings: ProviderOfferingDescriptor[];
+}
 
 export interface ProviderConnectCapability {
   mode: ProviderConnectMode;
@@ -54,6 +125,7 @@ export interface ModelAliasTarget {
 export interface ProviderRegistryOptions {
   aliases?: Record<string, ModelAliasTarget>;
   connect?: Partial<Record<string, Partial<ProviderConnectCapability>>>;
+  products?: ProviderProductDescriptor[];
 }
 
 const RESERVED_DISCOVERY_METADATA_KEYS = new Set([
@@ -68,6 +140,8 @@ const RESERVED_DISCOVERY_METADATA_KEYS = new Set([
 export class ProviderRegistry {
   private readonly providers = new Map<string, ProviderDescriptor>();
   private readonly aliases = new Map<string, ModelAliasTarget>();
+  private readonly products = new Map<string, ProviderProductDescriptor>();
+  private readonly productByRuntimeProvider = new Map<string, ProviderProductDescriptor>();
 
   public constructor(providers: ProviderDescriptor[], options: ProviderRegistryOptions = {}) {
     for (const provider of providers) {
@@ -83,6 +157,16 @@ export class ProviderRegistry {
           ],
         },
       } : provider);
+    }
+    for (const product of options.products ?? DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS) {
+      const normalizedProduct = freezeProviderProductDescriptor(product);
+      validateProviderProductDescriptor(normalizedProduct);
+      this.products.set(normalizeProviderId(normalizedProduct.id), normalizedProduct);
+      for (const offering of normalizedProduct.offerings) {
+        for (const runtimeProviderId of offering.runtimeProviderIds) {
+          this.productByRuntimeProvider.set(normalizeProviderId(runtimeProviderId), normalizedProduct);
+        }
+      }
     }
     for (const [alias, target] of Object.entries(options.aliases ?? {})) {
       this.aliases.set(normalizeKey(alias), {
@@ -118,6 +202,33 @@ export class ProviderRegistry {
 
   public listProviders(): ProviderDescriptor[] {
     return Array.from(this.providers.values());
+  }
+
+  public getProduct(product: string): ProviderProductDescriptor | undefined {
+    const normalized = normalizeProviderId(product);
+    return this.products.get(normalized) ?? this.productByRuntimeProvider.get(normalized);
+  }
+
+  public requireProduct(product: string): ProviderProductDescriptor {
+    const descriptor = this.getProduct(product);
+    if (!descriptor) {
+      throw new Error(`Unknown AI provider product "${product}"`);
+    }
+    return descriptor;
+  }
+
+  public listProducts(): ProviderProductDescriptor[] {
+    return Array.from(this.products.values());
+  }
+
+  public getOffering(product: string, offeringId: string): ProviderOfferingDescriptor | undefined {
+    return this.getProduct(product)?.offerings.find((offering) => offering.id === offeringId);
+  }
+
+  public requireOffering(product: string, offeringId: string): ProviderOfferingDescriptor {
+    const offering = this.getOffering(product, offeringId);
+    if (!offering) throw new Error(`Unknown AI provider offering "${product}/${offeringId}"`);
+    return offering;
   }
 
   public resolveAlias(model: string): ModelAliasTarget | undefined {
@@ -157,6 +268,332 @@ export class ProviderRegistry {
 export function createDefaultProviderRegistry(options: ProviderRegistryOptions = {}): ProviderRegistry {
   return new ProviderRegistry(DEFAULT_PROVIDER_DESCRIPTORS, options);
 }
+
+function catalogOffering(
+  productLabel: string,
+  input: Omit<ProviderOfferingDescriptor,
+    'productLabel' | 'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
+    'auth' | 'upstream' | 'modelDiscovery' | 'quota' | 'usagePolicyUrl' | 'region' | 'lifecycle'> &
+  Partial<Pick<ProviderOfferingDescriptor,
+    'auth' | 'upstream' | 'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
+    'modelDiscovery' | 'quota' | 'usagePolicyUrl' | 'region' | 'lifecycle'>>,
+): ProviderOfferingDescriptor {
+  const consoleUrl = input.consoleUrl ?? input.subscriptionUrl;
+  if (!consoleUrl) throw new Error(`Provider offering "${input.id}" requires a console URL`);
+  const modelDiscovery = input.modelDiscovery ?? {
+    strategy: 'openaiCompatible' as const,
+    path: '/models',
+    endpointProtocol: input.endpoints[0]?.protocol ?? 'chatCompletions',
+  };
+  const quota = input.quota ?? { strategy: 'console' as const, url: consoleUrl };
+  return {
+    ...input,
+    productLabel,
+    credentialPrefixHints: input.credentialPrefixHints ?? [],
+    consoleUrl,
+    subscriptionUrl: input.subscriptionUrl ?? consoleUrl,
+    auth: input.auth ?? defaultAuthCapabilities(input.kind, input.authModes),
+    upstream: input.upstream ?? defaultUpstreamCapabilities(input.endpoints, modelDiscovery, quota),
+    modelDiscovery,
+    quota,
+    usagePolicyUrl: input.usagePolicyUrl ?? consoleUrl,
+    region: input.region ?? 'global',
+    lifecycle: input.lifecycle ?? 'active',
+  };
+}
+
+function defaultAuthCapabilities(
+  kind: ProviderOfferingKind,
+  authModes: OfferingAuthMode[],
+): ProviderAuthCapabilityDescriptor[] {
+  return authModes.map((mode) => ({
+    protocol: mode === 'oauth' || mode === 'deviceCode'
+      ? 'oauth-device-code'
+      : kind === 'token-plan'
+        ? 'subscription-key'
+        : 'api-key',
+  }));
+}
+
+function defaultUpstreamCapabilities(
+  endpoints: ProviderOfferingEndpointDescriptor[],
+  modelDiscovery: ProviderOfferingModelDiscoveryDescriptor,
+  quota: ProviderOfferingQuotaDescriptor,
+): ProviderUpstreamCapabilityDescriptor[] {
+  const capabilities: ProviderUpstreamCapabilityDescriptor[] = [
+    {
+      capability: 'models',
+      protocol: modelDiscovery.strategy === 'anthropic' ? 'anthropic-models' : 'openai-models',
+      options: { path: modelDiscovery.path, endpointProtocol: modelDiscovery.endpointProtocol },
+    },
+    ...endpoints.map((endpoint) => ({
+      capability: 'inference' as const,
+      protocol: endpoint.protocol,
+      options: { baseUrl: endpoint.baseUrl },
+    })),
+  ];
+  if (quota.strategy === 'subscription') {
+    capabilities.push({ capability: 'quota', protocol: 'unsupported-quota' });
+  } else if (quota.strategy === 'providerApi') {
+    capabilities.push({ capability: 'balance', protocol: 'unsupported-quota' });
+  } else {
+    capabilities.push({ capability: 'balance', protocol: 'unsupported-quota' });
+  }
+  return capabilities;
+}
+
+export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    offerings: [
+      catalogOffering('OpenAI', {
+        id: 'official-subscription',
+        runtimeProviderIds: ['openai'],
+        label: 'Codex Subscription',
+        kind: 'oauth-subscription',
+        authModes: ['oauth'],
+        credentialPrefixHints: [],
+        consoleUrl: 'https://chatgpt.com/codex',
+        subscriptionUrl: 'https://chatgpt.com/codex',
+        quota: { strategy: 'subscription', url: 'https://chatgpt.com/codex' },
+        modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'responses' },
+        upstream: [
+          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'codex' } },
+        ],
+        usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
+        endpoints: [],
+      }),
+      catalogOffering('OpenAI', {
+        id: 'api-platform',
+        runtimeProviderIds: ['openai'],
+        label: 'API Platform',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://platform.openai.com/api-keys',
+        subscriptionUrl: 'https://platform.openai.com/settings/organization/billing/overview',
+        quota: { strategy: 'providerApi', url: 'https://platform.openai.com/usage' },
+        usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
+        endpoints: [
+          { protocol: 'responses', baseUrl: 'https://api.openai.com/v1' },
+          { protocol: 'chatCompletions', baseUrl: 'https://api.openai.com/v1' },
+        ],
+      }),
+    ],
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    offerings: [
+      catalogOffering('Anthropic', {
+        id: 'official-subscription',
+        runtimeProviderIds: ['anthropic'],
+        label: 'Claude Code Subscription',
+        kind: 'oauth-subscription',
+        authModes: ['oauth'],
+        credentialPrefixHints: [],
+        consoleUrl: 'https://claude.ai/',
+        subscriptionUrl: 'https://claude.ai/settings/billing',
+        quota: { strategy: 'subscription', url: 'https://claude.ai/settings/usage' },
+        modelDiscovery: { strategy: 'unsupported', path: '/models', endpointProtocol: 'anthropic' },
+        upstream: [
+          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'claude-code' } },
+        ],
+        usagePolicyUrl: 'https://www.anthropic.com/legal/aup',
+        endpoints: [],
+      }),
+      catalogOffering('Anthropic', {
+        id: 'api-platform',
+        runtimeProviderIds: ['anthropic'],
+        label: 'API Platform',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-ant-'],
+        consoleUrl: 'https://console.anthropic.com/settings/keys',
+        subscriptionUrl: 'https://console.anthropic.com/settings/plans',
+        modelDiscovery: { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' },
+        quota: { strategy: 'console', url: 'https://console.anthropic.com/settings/limits' },
+        usagePolicyUrl: 'https://www.anthropic.com/legal/aup',
+        endpoints: [
+          { protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1' },
+        ],
+      }),
+    ],
+  },
+  {
+    id: 'kimi',
+    label: 'Kimi',
+    offerings: [
+      catalogOffering('Kimi', {
+        id: 'official-subscription',
+        runtimeProviderIds: ['kimi'],
+        label: 'Official Subscription',
+        kind: 'oauth-subscription',
+        authModes: ['oauth'],
+        credentialPrefixHints: [],
+        oauthIntegrationId: 'kimi-code',
+        consoleUrl: 'https://www.kimi.com/code',
+        subscriptionUrl: 'https://www.kimi.com/code',
+        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
+        upstream: [
+          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
+          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.kimi.com/coding/v1' } },
+          { capability: 'inference', protocol: 'anthropic', options: { baseUrl: 'https://api.kimi.com/coding/' } },
+          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'kimi-code' } },
+        ],
+        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
+        ],
+      }),
+      catalogOffering('Kimi', {
+        id: 'subscription-key',
+        runtimeProviderIds: ['kimi'],
+        label: 'Token Plan',
+        kind: 'token-plan',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-kimi-'],
+        consoleUrl: 'https://www.kimi.com/code',
+        subscriptionUrl: 'https://www.kimi.com/code',
+        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
+        upstream: [
+          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
+          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.kimi.com/coding/v1' } },
+          { capability: 'inference', protocol: 'anthropic', options: { baseUrl: 'https://api.kimi.com/coding/' } },
+          { capability: 'quota', protocol: 'rolling-quota-windows', options: { profile: 'kimi-code' } },
+        ],
+        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
+        ],
+      }),
+      catalogOffering('Kimi', {
+        id: 'api-platform',
+        runtimeProviderIds: ['kimi'],
+        label: 'API Platform',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+        subscriptionUrl: 'https://platform.moonshot.cn/console/account',
+        quota: { strategy: 'console', url: 'https://platform.moonshot.cn/console/account' },
+        upstream: [
+          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
+          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.moonshot.ai/v1' } },
+          { capability: 'balance', protocol: 'api-balance', options: { profile: 'moonshot' } },
+        ],
+        usagePolicyUrl: 'https://platform.moonshot.cn/docs/intro',
+        region: 'cn',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.moonshot.ai/v1' },
+        ],
+      }),
+    ],
+  },
+  {
+    id: 'bailian',
+    label: 'Alibaba Bailian',
+    offerings: [
+      catalogOffering('Alibaba Bailian', {
+        id: 'pay-as-you-go',
+        runtimeProviderIds: ['bailian'],
+        label: 'Pay as You Go',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://bailian.console.aliyun.com/',
+        subscriptionUrl: 'https://bailian.console.aliyun.com/',
+        quota: { strategy: 'console', url: 'https://bailian.console.aliyun.com/' },
+        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
+        region: 'cn',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic' },
+        ],
+      }),
+      catalogOffering('Alibaba Bailian', {
+        id: 'token-plan',
+        runtimeProviderIds: ['bailian-token-plan'],
+        label: 'Token Plan Personal',
+        kind: 'token-plan',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://bailian.console.aliyun.com/',
+        subscriptionUrl: 'https://bailian.console.aliyun.com/',
+        quota: { strategy: 'subscription', url: 'https://bailian.console.aliyun.com/' },
+        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
+        region: 'cn-beijing',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic' },
+        ],
+      }),
+      catalogOffering('Alibaba Bailian', {
+        id: 'token-plan-team',
+        runtimeProviderIds: ['bailian-token-plan'],
+        label: 'Token Plan Team',
+        kind: 'token-plan',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://bailian.console.aliyun.com/',
+        subscriptionUrl: 'https://bailian.console.aliyun.com/',
+        quota: { strategy: 'subscription', url: 'https://bailian.console.aliyun.com/' },
+        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
+        region: 'cn-beijing',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic' },
+        ],
+      }),
+      catalogOffering('Alibaba Bailian', {
+        id: 'coding-plan',
+        runtimeProviderIds: ['bailian-coding-plan'],
+        label: 'Coding Plan Pro',
+        kind: 'token-plan',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-sp-'],
+        consoleUrl: 'https://bailian.console.aliyun.com/',
+        subscriptionUrl: 'https://bailian.console.aliyun.com/',
+        quota: { strategy: 'subscription', url: 'https://bailian.console.aliyun.com/' },
+        usagePolicyUrl: 'https://help.aliyun.com/zh/model-studio/',
+        region: 'cn',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1' },
+          { protocol: 'anthropic', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic' },
+        ],
+      }),
+    ],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    offerings: [
+      catalogOffering('DeepSeek', {
+        id: 'api-platform',
+        runtimeProviderIds: ['deepseek'],
+        label: 'API Platform',
+        kind: 'api-platform',
+        authModes: ['apiKey'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://platform.deepseek.com/api_keys',
+        subscriptionUrl: 'https://platform.deepseek.com/usage',
+        quota: { strategy: 'console', url: 'https://platform.deepseek.com/usage' },
+        upstream: [
+          { capability: 'models', protocol: 'openai-models', options: { path: '/models', endpointProtocol: 'chatCompletions' } },
+          { capability: 'inference', protocol: 'chatCompletions', options: { baseUrl: 'https://api.deepseek.com/v1' } },
+          { capability: 'balance', protocol: 'api-balance', options: { profile: 'deepseek' } },
+        ],
+        usagePolicyUrl: 'https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-use.html',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.deepseek.com/v1' },
+        ],
+      }),
+    ],
+  },
+];
 
 export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
   {
@@ -219,13 +656,13 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     authModes: ['deviceCodeOAuth', 'apiKey'],
     connect: {
       mode: 'deviceCodeOAuth',
-      label: 'Kimi device-code OAuth',
+      label: 'Kimi Code device-code OAuth',
       apiKeyManagementSupported: true,
       configured: false,
-      requiresAuthenticatedManagementApi: true,
-      publicCallbackSupported: false,
-      notes: ['Requires an Xpod/Moonshot-issued device-code OAuth client id.'],
       experimental: true,
+      publicCallbackSupported: false,
+      remoteRevocationSupported: false,
+      notes: ['Requires an Xpod/Moonshot-issued device-code OAuth client id; do not reuse the official Kimi CLI client id.'],
     },
     protocols: ['chatCompletions'],
     defaultBaseUrl: 'https://api.moonshot.ai/v1',
@@ -267,59 +704,6 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
     models: [
       { id: 'qwen-max', capabilities: { toolCalls: true, imageInput: true } },
       { id: 'qwen-coder-plus', capabilities: { toolCalls: true } },
-    ],
-  },
-  {
-    id: 'bailian-coding-plan',
-    label: 'Alibaba Bailian Coding Plan',
-    authModes: ['browserAssistedApiKey', 'apiKey'],
-    connect: {
-      mode: 'browserAssistedApiKey',
-      label: 'Open the Bailian Coding Plan subscription page, then submit the sk-sp key through Xpod management API',
-      apiKeyManagementSupported: true,
-      configured: true,
-      requiresAuthenticatedManagementApi: true,
-      publicCallbackSupported: false,
-      notes: [
-        'Coding Plan keys (sk-sp-*) only work against the plan endpoint; pay-as-you-go keys are rejected.',
-        'Alibaba restricts Coding Plan usage to interactive coding tools; automated batch API calls violate the plan terms.',
-      ],
-    },
-    protocols: ['anthropic', 'chatCompletions'],
-    defaultBaseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
-    safeBaseUrls: ['https://coding.dashscope.aliyuncs.com/v1'],
-    capabilities: {
-      toolCalls: true,
-      reasoningEffort: true,
-    },
-    models: [
-      { id: 'qwen3-coder-plus', capabilities: { toolCalls: true } },
-      { id: 'qwen3-coder-next', capabilities: { toolCalls: true } },
-    ],
-  },
-  {
-    id: 'bailian-token-plan',
-    label: 'Alibaba Bailian Token Plan',
-    authModes: ['browserAssistedApiKey', 'apiKey'],
-    connect: {
-      mode: 'browserAssistedApiKey',
-      label: 'Open the Bailian console (cn-beijing), then submit the Token Plan key through Xpod management API',
-      apiKeyManagementSupported: true,
-      configured: true,
-      requiresAuthenticatedManagementApi: true,
-      publicCallbackSupported: false,
-      notes: ['Token Plan is only available in the cn-beijing region and uses its own endpoint and keys.'],
-    },
-    protocols: ['chatCompletions'],
-    defaultBaseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
-    safeBaseUrls: ['https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'],
-    capabilities: {
-      toolCalls: true,
-      reasoningEffort: true,
-    },
-    models: [
-      { id: 'qwen3.7-plus', capabilities: { toolCalls: true, reasoningEffort: true } },
-      { id: 'glm-5', capabilities: { toolCalls: true, reasoningEffort: true } },
     ],
   },
   {
@@ -408,6 +792,58 @@ function freezeProviderDescriptor(provider: ProviderDescriptor): ProviderDescrip
       metadata: model.metadata ? { ...model.metadata } : undefined,
     })),
   };
+}
+
+function freezeProviderProductDescriptor(product: ProviderProductDescriptor): ProviderProductDescriptor {
+  return {
+    ...product,
+    id: normalizeProviderId(product.id),
+    offerings: product.offerings.map((offering) => ({
+      ...offering,
+      runtimeProviderIds: offering.runtimeProviderIds.map(normalizeProviderId),
+      authModes: [ ...offering.authModes ],
+      auth: offering.auth.map((capability) => ({ ...capability })),
+      upstream: offering.upstream.map((capability) => ({
+        ...capability,
+        options: capability.options ? { ...capability.options } : undefined,
+      })),
+      endpoints: offering.endpoints.map((endpoint) => ({ ...endpoint })),
+      credentialPrefixHints: [ ...offering.credentialPrefixHints ],
+      modelDiscovery: { ...offering.modelDiscovery },
+      quota: { ...offering.quota },
+    })),
+  };
+}
+
+function validateProviderProductDescriptor(product: ProviderProductDescriptor): void {
+  const offeringIds = new Set<string>();
+  for (const offering of product.offerings) {
+    if (offeringIds.has(offering.id)) {
+      throw new Error(`Duplicate AI provider offering "${product.id}/${offering.id}"`);
+    }
+    offeringIds.add(offering.id);
+    if (offering.auth.length === 0) {
+      throw new Error(`AI provider offering "${product.id}/${offering.id}" requires auth capability`);
+    }
+    if (offering.upstream.length === 0) {
+      throw new Error(`AI provider offering "${product.id}/${offering.id}" requires upstream capability`);
+    }
+    const authProtocols = new Set<string>();
+    for (const capability of offering.auth) {
+      if (!capability.protocol || authProtocols.has(capability.protocol)) {
+        throw new Error(`Duplicate AI auth capability "${product.id}/${offering.id}/${capability.protocol}"`);
+      }
+      authProtocols.add(capability.protocol);
+    }
+    const upstreamProtocols = new Set<string>();
+    for (const capability of offering.upstream) {
+      const key = `${capability.capability}:${capability.protocol}`;
+      if (!capability.protocol || upstreamProtocols.has(key)) {
+        throw new Error(`Duplicate AI upstream capability "${product.id}/${offering.id}/${key}"`);
+      }
+      upstreamProtocols.add(key);
+    }
+  }
 }
 
 export function normalizeProviderId(provider: string): string {

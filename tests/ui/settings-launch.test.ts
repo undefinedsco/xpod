@@ -8,7 +8,7 @@ import { createTestDir } from '../utils/sqlite';
 
 const root = path.resolve(__dirname, '../..');
 const openSettingsScript = path.join(root, 'scripts/open-settings.mjs');
-const dashboardUrlToStaticPath = (urlPath: string): string => path.join(root, 'static/dashboard', urlPath.replace(/^\/dashboard\//, ''));
+const productUrlToStaticPath = (urlPath: string): string => path.join(root, 'static', urlPath.replace(/^\//, ''));
 
 async function readRepoFile(relativePath: string): Promise<string> {
   return readFile(path.join(root, relativePath), 'utf8');
@@ -52,17 +52,17 @@ describe('settings launch scripts', () => {
   it('canonicalizes safe dashboard URLs and rejects non-browser URLs', async () => {
     const { canonicalizeSettingsUrl } = await import(openSettingsScript);
 
-    expect(canonicalizeSettingsUrl('http://127.0.0.1:6300')).toBe('http://127.0.0.1:6300/settings/models');
+    expect(canonicalizeSettingsUrl('http://127.0.0.1:6300')).toBe('http://127.0.0.1:6300/ai-connections');
     expect(canonicalizeSettingsUrl('https://xpod.local/dashboard/network?debug=1#pane', {
       allowedHosts: 'xpod.local:443',
-    })).toBe('https://xpod.local/settings/models');
+    })).toBe('https://xpod.local/ai-connections');
     expect(() => canonicalizeSettingsUrl('javascript:alert(1)')).toThrow(/http or https/);
     expect(() => canonicalizeSettingsUrl('http://user:pass@localhost:3000/dashboard/models')).toThrow(/credentials/);
     expect(() => canonicalizeSettingsUrl('http://10.0.0.5:3000')).toThrow(/not allowed/);
     expect(() => canonicalizeSettingsUrl('http://169.254.169.254/latest/meta-data')).toThrow(/not allowed/);
     expect(canonicalizeSettingsUrl('http://10.0.0.5:3000', {
       allowedHosts: '10.0.0.5:3000',
-    })).toBe('http://10.0.0.5:3000/settings/models');
+    })).toBe('http://10.0.0.5:3000/ai-connections');
   });
 
   it('does not probe non-loopback settings hosts unless explicitly allowlisted', async () => {
@@ -113,9 +113,9 @@ describe('settings launch scripts', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      url: 'http://10.0.0.5:3000/settings/models',
+      url: 'http://10.0.0.5:3000/ai-connections',
     });
-    expect(fetchFn).toHaveBeenCalledWith('http://10.0.0.5:3000/settings/models', expect.objectContaining({ method: 'HEAD' }));
+    expect(fetchFn).toHaveBeenCalledWith('http://10.0.0.5:3000/ai-connections', expect.objectContaining({ method: 'HEAD' }));
     expect(spawnFn).toHaveBeenCalled();
   });
 
@@ -140,12 +140,12 @@ describe('settings launch scripts', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      url: 'http://127.0.0.1:6300/settings/models',
+      url: 'http://127.0.0.1:6300/ai-connections',
       command: 'xdg-open',
-      args: ['http://127.0.0.1:6300/settings/models'],
+      args: ['http://127.0.0.1:6300/ai-connections'],
     });
-    expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:6300/settings/models', expect.objectContaining({ method: 'HEAD' }));
-    expect(spawnFn).toHaveBeenCalledWith('xdg-open', ['http://127.0.0.1:6300/settings/models'], expect.objectContaining({
+    expect(fetchFn).toHaveBeenCalledWith('http://127.0.0.1:6300/ai-connections', expect.objectContaining({ method: 'HEAD' }));
+    expect(spawnFn).toHaveBeenCalledWith('xdg-open', ['http://127.0.0.1:6300/ai-connections'], expect.objectContaining({
       detached: true,
       stdio: 'ignore',
     }));
@@ -183,7 +183,7 @@ describe('settings launch scripts', () => {
       code: 'open_command_failed',
       reason: 'timeout',
       command: 'xdg-open',
-      url: 'http://localhost:3000/settings/models',
+      url: 'http://localhost:3000/ai-connections',
     });
     expect(kill).toHaveBeenCalledTimes(1);
     expect(unref).toHaveBeenCalledTimes(1);
@@ -221,7 +221,7 @@ describe('settings launch scripts', () => {
     expect(result).toMatchObject({
       ok: true,
       command: 'open',
-      url: 'http://localhost:3000/settings/models',
+      url: 'http://localhost:3000/ai-connections',
     });
     expect(kill).not.toHaveBeenCalled();
     expect(unref).toHaveBeenCalledTimes(1);
@@ -250,22 +250,22 @@ describe('settings launch scripts', () => {
       code: 'open_command_failed',
       command: 'open',
       exitCode: 1,
-      url: 'http://localhost:3000/settings/models',
+      url: 'http://localhost:3000/ai-connections',
     });
   });
 });
 
 describe('settings dashboard static launch smoke', () => {
   let runtime: XpodRuntimeHandle;
-  let dashboardHtml = '';
-  let dashboardScriptPath = '';
+  let settingsHtml = '';
+  let settingsScriptPath = '';
 
   beforeAll(async () => {
-    dashboardHtml = await readRepoFile('static/dashboard/dashboard.html');
-    const scriptMatch = dashboardHtml.match(/src="(\/dashboard\/assets\/dashboard-[^"]+\.js)"/);
+    settingsHtml = await readRepoFile('static/settings/settings.html');
+    const scriptMatch = settingsHtml.match(/src="(\/settings\/assets\/settings-[^"]+\.js)"/);
     expect(scriptMatch?.[1]).toBeTruthy();
-    dashboardScriptPath = scriptMatch![1];
-    expect(fs.existsSync(dashboardUrlToStaticPath(dashboardScriptPath))).toBe(true);
+    settingsScriptPath = scriptMatch![1];
+    expect(fs.existsSync(productUrlToStaticPath(settingsScriptPath))).toBe(true);
 
     runtime = await startXpodRuntime({
       mode: 'local',
@@ -292,17 +292,17 @@ describe('settings dashboard static launch smoke', () => {
     await runtime?.stop();
   });
 
-  it('serves the current dashboard bundle for settings deep links', async () => {
+  it('serves the current settings bundle for settings deep links', async () => {
     for (const route of ['/settings/models', '/settings/pod', '/settings/network', '/settings/services']) {
       const response = await runtime.fetch(route);
       expect(response.status, route).toBe(200);
       expect(response.headers.get('content-type'), route).toContain('text/html');
-      await expect(response.text(), route).resolves.toContain(dashboardScriptPath);
+      await expect(response.text(), route).resolves.toContain(settingsScriptPath);
     }
   });
 
-  it('serves referenced dashboard assets from the packaged static directory', async () => {
-    const response = await runtime.fetch(dashboardScriptPath);
+  it('serves referenced settings assets from the packaged static directory', async () => {
+    const response = await runtime.fetch(settingsScriptPath);
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/javascript');

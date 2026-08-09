@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import { getLoggerFor } from 'global-logger-factory';
 import type { ApiServer } from '../ApiServer';
 import type { AuthenticatedRequest } from '../middleware/AuthMiddleware';
 import { readBoundedJsonBody } from '../http/readBoundedJsonBody';
@@ -23,7 +24,6 @@ import type {
   CompleteApiKeyInput,
   ConnectBeginInput,
   ProviderConnectService,
-  UpdateConnectionInput,
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
@@ -33,9 +33,13 @@ import {
   type AiClientConfigurationCapabilityDescriptor,
   unavailableAiClientConfigurationCapability,
 } from '../service/AiClientConfigurationService';
+import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
+
+const logger = getLoggerFor('AiGatewayManagementHandler');
 
 export interface AiGatewayManagementHandlerOptions {
-  repository: GatewayAccessKeyRepository;
+  /** Legacy persistent Gateway key storage. AI Connection routes do not need it. */
+  repository?: GatewayAccessKeyRepository;
   deployment: GatewayDeployment;
   connectService?: ProviderConnectService;
   quotaService?: ProviderQuotaService;
@@ -56,20 +60,17 @@ export function registerAiGatewayManagementRoutes(
   options: AiGatewayManagementHandlerOptions,
 ): void {
   const now = options.now ?? (() => new Date());
-  const createKeyId = options.keyId ?? ((owner: string) => (
-    options.repository.createKeyId?.(owner, options.deployment) ?? createGatewayKeyId()
-  ));
   const jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? 64 * 1024;
 
   server.get('/api/applets/service-access/ai-connections', async (request, response) => {
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
-    if (!options.servicePrincipal) {
-      sendJson(response, 503, { error: 'AI Connection service identity is unavailable' });
-      return;
-    }
-    const service = await options.servicePrincipal.getServicePrincipal();
+    // Interactive applet operations run as the current Solid user. A separate
+    // service principal is only needed by background/runtime Pod access.
+    const service = options.servicePrincipal
+      ? await options.servicePrincipal.getServicePrincipal()
+      : { webId: request.auth.webId };
     const descriptor = createAiConnectionsServiceAccess({
       ownerWebId: request.auth.webId,
       serviceWebId: service.webId,
@@ -77,6 +78,7 @@ export function registerAiGatewayManagementRoutes(
     const invocation = options.aiConnectionInvocationKeyIssuer
       ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
       : undefined;
+    logger.debug(`Issuing AI Connection service access for ${request.auth.webId}; invocation=${Boolean(invocation)}`);
     sendJson(response, 200, {
       ...descriptor,
       aiClientConfiguration: options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
@@ -84,10 +86,16 @@ export function registerAiGatewayManagementRoutes(
     });
   });
 
-  server.post('/api/ai/gateway/keys', async (request, response) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
+  const repository = options.repository;
+  if (repository) {
+    const createKeyId = options.keyId ?? ((owner: string) => (
+      repository.createKeyId?.(owner, options.deployment) ?? createGatewayKeyId()
+    ));
+
+    server.post('/api/ai/gateway/keys', async (request, response) => {
+      if (!authorizeGatewayKeyManagement(request, response)) {
+        return;
+      }
 
     const bodyResult = await readBoundedJsonBody(request, { limitBytes: jsonBodyLimitBytes });
     if (!bodyResult.ok) {
@@ -121,7 +129,7 @@ export function registerAiGatewayManagementRoutes(
       keyId: createKeyId(owner),
     });
     const createdAt = now();
-    const record = await options.repository.create({
+    const record = await repository.create({
       ...issued.record,
       owner,
       scopes,
@@ -134,45 +142,46 @@ export function registerAiGatewayManagementRoutes(
       key: issued.plaintext,
       record: publicRecord(record),
     });
-  });
+    });
 
-  server.get('/api/ai/gateway/keys', async (request, response) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
+    server.get('/api/ai/gateway/keys', async (request, response) => {
+      if (!authorizeGatewayKeyManagement(request, response)) {
+        return;
+      }
 
     const owner = ownerForList(request);
     if (!owner) {
       sendJson(response, 400, { error: 'Gateway key owner WebID is required' });
       return;
     }
-    const records = await options.repository.listByOwner(owner, { auth: request.auth });
+    const records = await repository.listByOwner(owner, { auth: request.auth });
     sendJson(response, 200, {
       data: records.map(publicRecord),
     });
-  });
-
-  server.delete('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
-    if (!authorizeGatewayKeyManagement(request, response)) {
-      return;
-    }
-
-    const keyId = decodeURIComponent(params.keyId);
-    const existing = await options.repository.findById(keyId);
-    if (!existing) {
-      sendJson(response, 404, { error: 'Gateway key not found' });
-      return;
-    }
-    const owner = ownerForList(request);
-    if (!owner || existing.owner !== owner) {
-      sendJson(response, 403, { error: 'Cannot revoke a gateway key owned by another WebID' });
-      return;
-    }
-    const revoked = await options.repository.revoke(keyId, now(), { auth: request.auth });
-    sendJson(response, 200, {
-      record: revoked ? publicRecord(revoked) : undefined,
     });
-  });
+
+    server.delete('/api/ai/gateway/keys/:keyId', async (request, response, params) => {
+      if (!authorizeGatewayKeyManagement(request, response)) {
+        return;
+      }
+
+      const keyId = decodeURIComponent(params.keyId);
+      const existing = await repository.findById(keyId, { auth: request.auth });
+      if (!existing) {
+        sendJson(response, 404, { error: 'Gateway key not found' });
+        return;
+      }
+      const owner = ownerForList(request);
+      if (!owner || existing.owner !== owner) {
+        sendJson(response, 403, { error: 'Cannot revoke a gateway key owned by another WebID' });
+        return;
+      }
+      const revoked = await repository.revoke(keyId, now(), { auth: request.auth });
+      sendJson(response, 200, {
+        record: revoked ? publicRecord(revoked) : undefined,
+      });
+    });
+  }
 
   server.get('/api/ai/connections/providers', async (request, response) => {
     if (!authorizeProviderConnect(request, response)) {
@@ -192,12 +201,190 @@ export function registerAiGatewayManagementRoutes(
     });
   });
 
-  server.post('/api/ai/gateway/providers/:provider/connect/begin', async (request, response, params) => {
+  server.get('/api/ai/providers', async (request, response) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const pools = await poolService.listProviderCredentialPools({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        auth: request.auth,
+      });
+      sendJson(response, 200, {
+        data: pools.map(publicProviderPool),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.post('/api/ai/providers/:provider/credentials/api-key', async (request, response, params) => {
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
+      return;
+    }
+    const apiKey = normalizeOptionalString(body.apiKey);
+    if (!apiKey) {
+      sendJson(response, 400, { error: 'apiKey is required' });
+      return;
+    }
+    const priority = normalizeOptionalNumber(body.priority);
+    if (body.priority !== undefined && priority === undefined) {
+      sendJson(response, 400, { error: 'priority must be a finite number' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const credential = await poolService.createApiKeyCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        offeringId: normalizeOptionalString(body.offeringId),
+        apiKey,
+        label: normalizeOptionalString(body.label),
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        priority,
+        auth: request.auth,
+      });
+      sendJson(response, 201, {
+        credential: publicCredentialPoolCredential(credential),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.patch('/api/ai/providers/:provider/credentials/:credentialId', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    if (typeof body.expectedVersion !== 'number' || !Number.isInteger(body.expectedVersion)) {
+      sendJson(response, 400, { error: 'expectedVersion is required' });
+      return;
+    }
+    const patch = normalizeCredentialPatch(body);
+    if (!patch) {
+      sendJson(response, 400, { error: 'Credential patch contains invalid field values' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const credential = await poolService.updateCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId: decodeURIComponent(params.credentialId),
+        expectedVersion: body.expectedVersion,
+        patch,
+        auth: request.auth,
+      });
+      if (!credential) {
+        sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+        return;
+      }
+      sendJson(response, 200, {
+        credential: publicCredentialPoolCredential(credential),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.delete('/api/ai/providers/:provider/credentials/:credentialId', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const credential = await poolService.revokeCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId: decodeURIComponent(params.credentialId),
+        auth: request.auth,
+      });
+      if (!credential) {
+        sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+        return;
+      }
+      sendJson(response, 200, {
+        credential: publicCredentialPoolCredential(credential),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.post('/api/ai/providers/:provider/credentials/test', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    const credentialId = normalizeOptionalString(body.credentialId);
+    if (!credentialId) {
+      sendJson(response, 400, { error: 'credentialId is required' });
+      return;
+    }
+    if (body.apiKey !== undefined) {
+      sendJson(response, 400, { error: 'credentialId is required' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) {
+      return;
+    }
+    try {
+      const result = await poolService.testCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId,
+        modelsService: options.modelsService,
+        auth: request.auth,
+      });
+      sendJson(response, 200, {
+        result: publicCredentialTestResult(result),
+      });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.post('/api/ai/gateway/providers/:provider/connect/begin', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) {
+      return;
+    }
+    markLegacyProviderConnectRoute(response);
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) {
+      return;
+    }
+    if (body.clientId !== undefined) {
+      sendJson(response, 400, { error: 'clientId is not accepted' });
       return;
     }
     const mode = typeof body.mode === 'string' ? body.mode : undefined;
@@ -226,6 +413,7 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     const connectService = requireConnectService(options, response);
     if (!connectService) {
@@ -247,6 +435,7 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
       return;
@@ -260,25 +449,30 @@ export function registerAiGatewayManagementRoutes(
     if (!connectService) {
       return;
     }
-    const result = await connectService.completeApiKey({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      attemptId: stringBody(body.attemptId),
-      state: stringBody(body.state),
-      signature: stringBody(body.signature),
-      apiKey,
-      accountLabel: normalizeOptionalString(body.accountLabel),
-      baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : undefined,
-      auth: request.auth,
-    } satisfies CompleteApiKeyInput);
-    sendJson(response, 200, publicConnectResult(result));
+    try {
+      const result = await connectService.completeApiKey({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        attemptId: stringBody(body.attemptId),
+        state: stringBody(body.state),
+        signature: stringBody(body.signature),
+        apiKey,
+        accountLabel: normalizeOptionalString(body.accountLabel),
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        auth: request.auth,
+      } satisfies CompleteApiKeyInput);
+      sendJson(response, 200, publicConnectResult(result));
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.post('/api/ai/gateway/providers/:provider/connect/poll', async (request, response, params) => {
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
       return;
@@ -303,37 +497,9 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const body = await readJsonObject(request, response, jsonBodyLimitBytes);
     if (!body) {
-      return;
-    }
-    const connectService = requireConnectService(options, response);
-    if (!connectService) {
-      return;
-    }
-    const record = await connectService.refresh({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      auth: request.auth,
-    });
-    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
-  });
-
-  server.patch('/api/ai/gateway/providers/:provider/connect', async (request, response, params) => {
-    if (!authorizeProviderConnect(request, response)) {
-      return;
-    }
-    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
-    if (!body) {
-      return;
-    }
-    if (!Object.prototype.hasOwnProperty.call(body, 'baseUrl')) {
-      sendJson(response, 400, { error: 'baseUrl is required' });
-      return;
-    }
-    if (typeof body.baseUrl !== 'string') {
-      sendJson(response, 400, { error: 'baseUrl must be a string' });
       return;
     }
     const connectService = requireConnectService(options, response);
@@ -341,19 +507,25 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     try {
-      const record = await connectService.updateConnection({
+      const credentialId = normalizeOptionalString(body.credentialId);
+      const refreshToken = normalizeOptionalString(body.refreshToken);
+      const expectedVersion = typeof body.expectedVersion === 'number' ? body.expectedVersion : undefined;
+      if (!credentialId || !refreshToken || expectedVersion === undefined) {
+        sendJson(response, 400, { error: 'credentialId, refreshToken and expectedVersion are required' });
+        return;
+      }
+      const result = await connectService.refreshCallerOwned({
         webId: request.auth!.webId,
         deployment: options.deployment,
         provider: params.provider,
-        baseUrl: body.baseUrl,
-        expectedVersion: typeof body.expectedVersion === 'number'
-          ? body.expectedVersion
-          : undefined,
+        credentialId,
+        refreshToken,
+        expectedVersion,
         auth: request.auth,
-      } satisfies UpdateConnectionInput);
-      sendJson(response, 200, { record: publicCredentialRecord(record) });
+      });
+      sendJson(response, 200, publicConnectResult(result));
     } catch (error) {
-      sendConnectUpdateError(response, error);
+      sendLegacyProviderConnectError(response, error);
     }
   });
 
@@ -361,17 +533,24 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    markLegacyProviderConnectRoute(response);
     const connectService = requireConnectService(options, response);
     if (!connectService) {
       return;
     }
-    const record = await connectService.disconnect({
-      webId: request.auth!.webId,
-      deployment: options.deployment,
-      provider: params.provider,
-      auth: request.auth,
-    });
-    sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    try {
+      const record = await connectService.disconnect({
+        webId: request.auth!.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        credentialId: normalizeOptionalString(url.searchParams.get('credentialId')),
+        auth: request.auth,
+      });
+      sendJson(response, 200, { record: record ? publicCredentialRecord(record) : undefined });
+    } catch (error) {
+      sendLegacyProviderConnectError(response, error);
+    }
   });
 
   server.get('/api/ai/gateway/providers/:provider/connect/callback', async (_request, response) => {
@@ -398,7 +577,9 @@ export function registerAiGatewayManagementRoutes(
         deployment: options.deployment,
         provider: params.provider,
         credentialIri: normalizeOptionalString(url.searchParams.get('credentialIri')),
+        offeringId: normalizeOptionalString(url.searchParams.get('offeringId')),
         refresh: false,
+        auth: request.auth,
       });
       sendJson(response, 200, result);
     } catch (error) {
@@ -419,12 +600,28 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     try {
-      const result = await quotaService.status({
+      const credentialId = normalizeOptionalString(body.credentialId);
+      const credentialIri = normalizeOptionalString(body.credentialIri);
+      const authMode = body.authMode === 'apiKey' || body.authMode === 'deviceCodeOAuth'
+        ? body.authMode
+        : undefined;
+      const secret = body.secret && typeof body.secret === 'object' && !Array.isArray(body.secret)
+        ? body.secret as Record<string, unknown>
+        : undefined;
+      if (!credentialId || !credentialIri || !authMode || !secret) {
+        sendJson(response, 400, { error: 'credentialId, credentialIri, authMode and secret are required' });
+        return;
+      }
+      const result = await quotaService.statusCallerOwned({
         webId: request.auth.webId,
         deployment: options.deployment,
         provider: params.provider,
-        credentialIri: normalizeOptionalString(body.credentialIri),
-        refresh: true,
+        credentialId,
+        credentialIri,
+        offeringId: normalizeOptionalString(body.offeringId),
+        authMode,
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        secret,
       });
       sendJson(response, 200, result);
     } catch (error) {
@@ -433,6 +630,8 @@ export function registerAiGatewayManagementRoutes(
   });
 
   server.post('/api/ai/gateway/providers/:provider/models/refresh', async (request, response, params) => {
+    const requester = request.auth?.type === 'solid' ? request.auth.webId : 'anonymous';
+    logger.debug(`Refreshing ${params.provider} models for ${requester}`);
     if (!authorizeProviderQuota(request, response)) {
       return;
     }
@@ -445,12 +644,25 @@ export function registerAiGatewayManagementRoutes(
       return;
     }
     try {
-      const result = await modelsService.list({
-        webId: request.auth.webId,
-        deployment: options.deployment,
-        provider: params.provider,
-        credentialIri: normalizeOptionalString(body.credentialIri),
-      });
+      const apiKey = normalizeOptionalString(body.apiKey);
+      const credentialId = normalizeOptionalString(body.credentialId);
+      logger.debug(`Model refresh credential input: apiKey=${Boolean(apiKey)} credentialId=${Boolean(credentialId)} baseUrl=${Boolean(normalizeOptionalString(body.baseUrl))}`);
+      const result = apiKey && credentialId
+        ? await modelsService.listFromSecret({
+          webId: request.auth.webId,
+          provider: params.provider,
+          offeringId: normalizeOptionalString(body.offeringId),
+          credentialId,
+          apiKey,
+          baseUrl: normalizeOptionalString(body.baseUrl),
+        })
+        : await modelsService.list({
+          webId: request.auth.webId,
+          deployment: options.deployment,
+          provider: params.provider,
+          credentialIri: normalizeOptionalString(body.credentialIri),
+          auth: request.auth,
+        });
       sendJson(response, 200, result);
     } catch (error) {
       sendModelsError(response, error);
@@ -605,6 +817,18 @@ function requireConnectService(
   return options.connectService;
 }
 
+function requireCredentialPoolManagementService(
+  options: AiGatewayManagementHandlerOptions,
+  response: ServerResponse,
+): ProviderConnectService | undefined {
+  return requireConnectService(options, response);
+}
+
+function markLegacyProviderConnectRoute(response: ServerResponse): void {
+  response.setHeader('Deprecation', 'true');
+  response.setHeader('Link', '</api/ai/providers>; rel="successor-version"');
+}
+
 function requireQuotaService(
   options: AiGatewayManagementHandlerOptions,
   response: ServerResponse,
@@ -668,6 +892,48 @@ function normalizeCustomModelInput(body: Record<string, unknown>): {
   };
 }
 
+function normalizeCredentialPatch(body: Record<string, unknown>): {
+  label?: string;
+  enabled?: boolean;
+  priority?: number;
+  baseUrl?: string;
+} | undefined {
+  const patch: {
+    label?: string;
+    enabled?: boolean;
+    priority?: number;
+    baseUrl?: string;
+  } = {};
+  if (body.label !== undefined) {
+    const label = normalizeOptionalString(body.label);
+    if (!label) {
+      return undefined;
+    }
+    patch.label = label;
+  }
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== 'boolean') {
+      return undefined;
+    }
+    patch.enabled = body.enabled;
+  }
+  if (body.priority !== undefined) {
+    const priority = normalizeOptionalNumber(body.priority);
+    if (priority === undefined) {
+      return undefined;
+    }
+    patch.priority = priority;
+  }
+  if (body.baseUrl !== undefined) {
+    const baseUrl = normalizeOptionalString(body.baseUrl);
+    if (!baseUrl) {
+      return undefined;
+    }
+    patch.baseUrl = baseUrl;
+  }
+  return patch;
+}
+
 function normalizeStringList(value: unknown): string[] | null {
   if (value === undefined) {
     return [];
@@ -694,11 +960,91 @@ function sendCustomModelsError(response: ServerResponse, error: unknown): void {
     sendJson(response, 403, { error: 'service_access_missing' });
     return;
   }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
   sendJson(response, 500, { error: 'Provider custom models update failed' });
+}
+
+function sendCredentialPoolError(response: ServerResponse, error: unknown): void {
+  if (error instanceof GatewayProtocolError) {
+    const normalized = normalizeGatewayError(error);
+    sendJson(response, normalized.error.status, normalized);
+    return;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'credential_version_conflict') {
+    sendJson(response, 409, { error: 'credential_version_conflict' });
+    return;
+  }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
+  if (message === 'credential_not_found' || message === 'provider_credential_not_found') {
+    sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+    return;
+  }
+  logger.error(`Provider credential pool operation failed: ${message}`);
+  sendJson(response, 500, { error: 'Provider credential pool operation failed' });
+}
+
+function sendLegacyProviderConnectError(response: ServerResponse, error: unknown): void {
+  if (error instanceof GatewayProtocolError) {
+    const normalized = normalizeGatewayError(error);
+    sendJson(response, normalized.error.status, normalized);
+    return;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'credential_version_conflict') {
+    sendJson(response, 409, { error: 'credential_version_conflict' });
+    return;
+  }
+  if (message === 'service_access_missing') {
+    sendJson(response, 403, { error: 'service_access_missing' });
+    return;
+  }
+  if (message === 'credential_collection_query_unsupported') {
+    sendJson(response, 501, {
+      error: 'credential_collection_query_unsupported',
+      message: 'This Pod does not expose the collection query capability required by AI Connections.',
+    });
+    return;
+  }
+  if (message === 'credential_not_found'
+    || message === 'provider_credential_not_found'
+    || message === 'oauth_credential_not_found') {
+    sendJson(response, 404, { error: 'Provider credential not found for current identity' });
+    return;
+  }
+  if (/connect attempt not found/iu.test(message)) {
+    sendJson(response, 404, { error: 'Provider Connect attempt not found' });
+    return;
+  }
+  if (/provider does not support (?:refresh|disconnect)/iu.test(message)) {
+    sendJson(response, 400, { error: message });
+    return;
+  }
+  sendJson(response, 500, { error: 'Provider Connect operation failed' });
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {
   if (error instanceof ProviderModelsFetchError) {
+    logger.warn(`Provider models request returned ${error.providerStatus}`);
     sendJson(response, 502, {
       error: 'provider_models_fetch_failed',
       providerStatus: error.providerStatus,
@@ -719,6 +1065,11 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
     sendJson(response, 500, { error: 'Provider credential secret is unavailable' });
     return;
   }
+  if (message === 'unsafe_provider_base_url') {
+    sendJson(response, 400, { error: 'unsafe_provider_base_url' });
+    return;
+  }
+  logger.error(`Provider models lookup failed: ${message}`);
   sendJson(response, 500, { error: 'Provider models lookup failed' });
 }
 
@@ -792,6 +1143,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
 function stringBody(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
@@ -818,7 +1173,6 @@ function publicCredentialRecord(record: {
   authMode: string;
   status: string;
   accountLabel?: string;
-  baseUrl?: string | null;
   expiresAt?: Date;
   version?: number;
   reauthRequired?: boolean;
@@ -831,32 +1185,120 @@ function publicCredentialRecord(record: {
     authMode: record.authMode,
     status: record.status,
     accountLabel: record.accountLabel,
-    baseUrl: record.baseUrl ?? undefined,
     expiresAt: record.expiresAt?.toISOString(),
     version: record.version,
     reauthRequired: record.reauthRequired,
   };
 }
 
-function sendConnectUpdateError(response: ServerResponse, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  if (message === 'Active provider credential not found') {
-    sendJson(response, 404, { error: 'Active provider credential not found' });
-    return;
+function publicProviderPool(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') {
+    return {};
   }
-  if (message === 'credential_version_conflict') {
-    sendJson(response, 409, { error: 'credential_version_conflict' });
-    return;
+  const record = value as Record<string, unknown>;
+  return stripUndefined({
+    id: record.id,
+    name: record.name,
+    status: record.status,
+    offerings: publicSafeArray(record.offerings),
+    credentials: Array.isArray(record.credentials)
+      ? record.credentials.map(publicCredentialPoolCredential)
+      : [],
+    selectedModels: publicSafeArray(record.selectedModels),
+  });
+}
+
+function publicCredentialPoolCredential(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object') {
+    return {};
   }
-  if (message === 'baseUrl must be a valid URL' || message === 'baseUrl must use http or https') {
-    sendJson(response, 400, { error: message });
-    return;
+  const record = value as Record<string, unknown> & {
+    label?: string;
+    accountLabel?: string;
+    status?: string;
+    expiresAt?: Date | string;
+    baseUrl?: string;
+    maskedHint?: string;
+    quota?: unknown;
+    metadata?: Record<string, unknown>;
+  };
+  const metadata = record.metadata && typeof record.metadata === 'object'
+    ? record.metadata as Record<string, unknown>
+    : {};
+  return stripUndefined({
+    id: record.id,
+    provider: record.provider,
+    offeringId: record.offeringId ?? stringMetadata(metadata, 'offeringId'),
+    authMode: record.authMode,
+    label: record.label ?? record.accountLabel,
+    enabled: record.enabled ?? (record.status ? record.status === 'active' : undefined),
+    priority: record.priority ?? numberMetadata(metadata, 'priority'),
+    health: record.health ?? stringMetadata(metadata, 'health'),
+    maskedHint: record.maskedHint ?? stringMetadata(metadata, 'maskedHint'),
+    expiresAt: record.expiresAt instanceof Date ? record.expiresAt.toISOString() : record.expiresAt,
+    baseUrl: record.baseUrl ?? stringMetadata(metadata, 'baseUrl'),
+    version: record.version,
+    quota: record.quota ?? metadata.quota ?? metadata.quotaStatus,
+  });
+}
+
+function publicCredentialTestResult(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return value;
   }
-  if (message === 'PodCredentialRepository is required for connection updates') {
-    sendJson(response, 503, { error: 'AI provider Connect service is not configured' });
-    return;
+  if (Array.isArray(value)) {
+    return value.map(publicCredentialTestResult);
   }
-  sendJson(response, 500, { error: 'Provider connection update failed' });
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !secretFieldNames.has(key))
+      .map(([key, item]) => [key, publicCredentialTestResult(item)]),
+  );
+}
+
+function publicSafeArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value.map(publicSafeObject) : [];
+}
+
+function publicSafeObject(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || value instanceof Date) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(publicSafeObject);
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !secretFieldNames.has(key))
+      .map(([key, item]) => [key, publicSafeObject(item)]),
+  );
+}
+
+const secretFieldNames = new Set([
+  'apiKey',
+  'encryptedSecret',
+  'refreshToken',
+  'accessToken',
+  'token',
+  'secret',
+  'secretHash',
+  'ciphertext',
+  'wrappedDek',
+  'wrappedDataKey',
+]);
+
+function stringMetadata(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function numberMetadata(metadata: Record<string, unknown>, key: string): number | undefined {
+  const value = metadata[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function stripUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 function publicConnectResult(value: unknown): unknown {

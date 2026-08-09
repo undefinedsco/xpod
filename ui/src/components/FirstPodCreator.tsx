@@ -20,6 +20,7 @@ interface FirstPodCreatorProps {
 }
 
 interface AvailabilityState {
+  username?: string;
   message?: string;
   status: FirstPodNameAvailabilityStatus | 'idle' | 'checking' | 'created';
 }
@@ -42,31 +43,18 @@ export function FirstPodCreator({
   const isWaitingForWebId = Boolean(normalizedName && createdPodName === normalizedName);
 
   useEffect(() => {
-    if (!normalizedName) {
-      setAvailability({ status: 'idle' });
-      return;
-    }
-    if (isWaitingForWebId) {
-      setAvailability({
-        status: 'created',
-        message: 'Storage was created. Refresh authorization when the WebID is ready.',
-      });
-      return;
-    }
-    if (nameError) {
-      setAvailability({ status: 'invalid', message: nameError });
+    if (!normalizedName || isWaitingForWebId || nameError) {
       return;
     }
 
     let cancelled = false;
-    setAvailability({ status: 'checking', message: 'Checking Pod name...' });
     const timeout = setTimeout(() => {
       void checkFirstPodNameAvailability({
         provisionCode,
         username: normalizedName,
       }).then((result) => {
         if (!cancelled) {
-          setAvailability(result);
+          setAvailability({ ...result, username: normalizedName });
         }
       });
     }, 300);
@@ -76,6 +64,25 @@ export function FirstPodCreator({
       clearTimeout(timeout);
     };
   }, [isWaitingForWebId, nameError, normalizedName, provisionCode]);
+
+  const resolvedAvailability: AvailabilityState = (() => {
+    if (!normalizedName) {
+      return { status: 'idle' };
+    }
+    if (isWaitingForWebId) {
+      return {
+        status: 'created',
+        message: 'Storage was created. Refresh authorization when the WebID is ready.',
+      };
+    }
+    if (nameError) {
+      return { status: 'invalid', message: nameError };
+    }
+    if (availability.username !== normalizedName) {
+      return { username: normalizedName, status: 'checking', message: 'Checking Pod name...' };
+    }
+    return availability;
+  })();
 
   const refreshCreatedWebIds = async () => {
     try {
@@ -108,11 +115,11 @@ export function FirstPodCreator({
       onError(nameError);
       return;
     }
-    if (availability.status === 'taken') {
-      onError(availability.message || 'This Pod name is already used on this storage.');
+    if (resolvedAvailability.status === 'taken') {
+      onError(resolvedAvailability.message || 'This Pod name is already used on this storage.');
       return;
     }
-    if (availability.status === 'checking') {
+    if (resolvedAvailability.status === 'checking') {
       onError('Please wait for the Pod name check to finish.');
       return;
     }
@@ -142,7 +149,7 @@ export function FirstPodCreator({
   };
 
   const availabilityTone = (() => {
-    switch (availability.status) {
+    switch (resolvedAvailability.status) {
       case 'available':
         return 'text-emerald-600';
       case 'taken':
@@ -157,8 +164,8 @@ export function FirstPodCreator({
     }
   })();
   const submitDisabled = isCreating ||
-    availability.status === 'checking' ||
-    (!isWaitingForWebId && availability.status === 'taken') ||
+    resolvedAvailability.status === 'checking' ||
+    (!isWaitingForWebId && resolvedAvailability.status === 'taken') ||
     Boolean(nameError);
   const submitLabel = isCreating
     ? isWaitingForWebId ? 'Refreshing...' : 'Creating...'
@@ -189,9 +196,9 @@ export function FirstPodCreator({
           autoComplete="username"
           required
         />
-        {availability.message && (
+        {resolvedAvailability.message && (
           <p className={`mt-1 text-[11px] ${availabilityTone}`}>
-            {availability.message}
+            {resolvedAvailability.message}
           </p>
         )}
       </div>

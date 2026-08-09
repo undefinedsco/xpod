@@ -12,12 +12,12 @@ const tarballDir = process.env.XPOD_APPLET_PACKAGE_TARBALL_DIR;
 const registryUrl = process.env.XPOD_APPLET_PACKAGE_REGISTRY_URL;
 const consumerIntegrationIt = tarballDir || registryUrl ? it : it.skip;
 
-const packageSpecs = {
-  '@undefineds.co/solid-sdk': '^0.1.0',
-  '@undefineds.co/shared-ui': '^0.1.0',
-  '@undefineds.co/extension-sdk': '^0.1.0',
-  '@undefineds.co/ai-connections': '^0.1.0',
-} as const;
+const appletPackageNames = [
+  '@undefineds.co/solid-sdk',
+  '@undefineds.co/shared-ui',
+  '@undefineds.co/extension-sdk',
+  '@undefineds.co/ai-connections',
+] as const;
 
 async function readJson(relativePath: string) {
   return JSON.parse(await readFile(path.join(root, relativePath), 'utf8'));
@@ -47,16 +47,30 @@ async function run(command: string, args: string[], cwd: string, context: string
   }
 }
 
-function assertRegistrySemver(specifier: unknown, packageName: string): asserts specifier is string {
-  expect(specifier, `${packageName} must be declared`).toBe(packageSpecs[packageName as keyof typeof packageSpecs]);
-  expect(specifier, `${packageName} must not use a local source specifier`).not.toMatch(/^(file|link|workspace):|\/Users\//);
+function packageDirectoryName(packageName: string): string {
+  return packageName.slice('@undefineds.co/'.length);
+}
+
+function assertWorkspaceSpecifier(specifier: unknown, packageName: string): asserts specifier is string {
+  expect(specifier, `${packageName} must be declared`).toBe('workspace:*');
+  expect(specifier, `${packageName} must not point at a mutable absolute checkout`).not.toMatch(/^(file|link):|\/Users\//);
+}
+
+async function registryDependenciesFromWorkspacePackages(): Promise<Record<string, string>> {
+  const dependencies: Record<string, string> = {};
+  for (const packageName of appletPackageNames) {
+    const manifest = await readJson(`packages/${packageDirectoryName(packageName)}/package.json`);
+    dependencies[packageName] = manifest.version;
+    expect(dependencies[packageName], `${packageName} must have a publishable version`).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  }
+  return dependencies;
 }
 
 async function resolvePackageInputs(): Promise<Record<string, string>> {
   if (tarballDir) {
     return dependenciesFromTarballs(tarballDir);
   }
-  return { ...packageSpecs };
+  return registryDependenciesFromWorkspacePackages();
 }
 
 async function dependenciesFromTarballs(directory: string): Promise<Record<string, string>> {
@@ -68,7 +82,7 @@ async function dependenciesFromTarballs(directory: string): Promise<Record<strin
     tarballs.map((tarball) => [packageNameFromTarball(tarball), `file:${tarball}`]),
   );
 
-  expect(Object.keys(dependencies).sort()).toEqual(Object.keys(packageSpecs).sort());
+  expect(Object.keys(dependencies).sort()).toEqual([...appletPackageNames].sort());
   return dependencies;
 }
 
@@ -82,11 +96,11 @@ describe('packaged applet SDK consumption', () => {
     expect(testSource).not.toContain(legacyPeerFlag);
   });
 
-  it('declares applet SDK packages as registry semver dependencies only', async () => {
+  it('declares applet SDK packages as workspace dependencies during local development', async () => {
     const manifest = await readJson('ui/package.json');
 
-    for (const [packageName] of Object.entries(packageSpecs)) {
-      assertRegistrySemver(manifest.dependencies?.[packageName], packageName);
+    for (const packageName of appletPackageNames) {
+      assertWorkspaceSpecifier(manifest.dependencies?.[packageName], packageName);
     }
 
     const sourceFiles = [
@@ -97,7 +111,7 @@ describe('packaged applet SDK consumption', () => {
 
     for (const relativePath of sourceFiles) {
       const source = await readRepoFile(relativePath);
-      expect(source, relativePath).not.toMatch(/file:\/Users|link:|workspace:|\/Users\/ganlu\/develop|src\/external\/linx|@linx\//);
+      expect(source, relativePath).not.toMatch(/file:\/Users|link:|\/Users\/ganlu\/develop|src\/external\/linx|@linx\//);
     }
   });
 
@@ -110,8 +124,8 @@ describe('packaged applet SDK consumption', () => {
 
   consumerIntegrationIt('resolves public ESM exports when XPOD_APPLET_PACKAGE_TARBALL_DIR or XPOD_APPLET_PACKAGE_REGISTRY_URL is configured', async () => {
     const manifest = await readJson('ui/package.json');
-    for (const [packageName] of Object.entries(packageSpecs)) {
-      assertRegistrySemver(manifest.dependencies?.[packageName], packageName);
+    for (const packageName of appletPackageNames) {
+      assertWorkspaceSpecifier(manifest.dependencies?.[packageName], packageName);
     }
 
     const consumerRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-sdk-consumer-'));

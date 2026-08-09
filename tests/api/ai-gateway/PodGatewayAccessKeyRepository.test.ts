@@ -6,6 +6,7 @@ import {
 } from '../../../src/api/ai-gateway/auth/GatewayApiKey';
 import {
   GatewayApiKeyAuthenticator,
+  LEGACY_GATEWAY_KEY_AUTHENTICATION,
 } from '../../../src/api/ai-gateway/auth/GatewayApiKeyAuthenticator';
 import {
   PodGatewayAccessKeyRepository,
@@ -18,6 +19,9 @@ import type { AuthContext } from '../../../src/api/auth/AuthContext';
 
 const ALICE = 'https://id.example/alice/profile/card#me';
 const BOB = 'https://id.example/bob/profile/card#me';
+const INTERNAL_GATEWAY_KEY_CONTEXT = {
+  internalPodAccess: { reason: LEGACY_GATEWAY_KEY_AUTHENTICATION },
+} as const;
 
 type Row = Record<string, any>;
 
@@ -175,6 +179,7 @@ describe('PodGatewayAccessKeyRepository', () => {
         webId: ALICE,
         accessToken: 'solid-access-token',
         tokenType: 'Bearer',
+        internalInvocation: true,
       },
     });
 
@@ -204,7 +209,7 @@ describe('PodGatewayAccessKeyRepository', () => {
       scopes: ['models:read', 'inference:write'],
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
       name: 'Codex laptop',
-    });
+    }, INTERNAL_GATEWAY_KEY_CONTEXT);
     const restarted = new PodGatewayAccessKeyRepository({
       dbFactory: backing.dbFactory as any,
       locatorCodec: codec,
@@ -222,10 +227,10 @@ describe('PodGatewayAccessKeyRepository', () => {
       success: true,
       context: { webId: ALICE },
     });
-    await expect(restarted.listByOwner(ALICE)).resolves.toEqual([
+    await expect(restarted.listByOwner(ALICE, INTERNAL_GATEWAY_KEY_CONTEXT)).resolves.toEqual([
       expect.objectContaining({ id: keyId, owner: ALICE, name: 'Codex laptop' }),
     ]);
-    await expect(restarted.revoke(keyId, new Date('2026-07-23T02:00:00.000Z'))).resolves.toMatchObject({
+    await expect(restarted.revoke(keyId, new Date('2026-07-23T02:00:00.000Z'), INTERNAL_GATEWAY_KEY_CONTEXT)).resolves.toMatchObject({
       revokedAt: new Date('2026-07-23T02:00:00.000Z'),
       name: 'Codex laptop',
     });
@@ -246,7 +251,7 @@ describe('PodGatewayAccessKeyRepository', () => {
       owner: ALICE,
       scopes: ['models:read', 'inference:write'],
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
-    });
+    }, INTERNAL_GATEWAY_KEY_CONTEXT);
 
     const restartedRepository = new PodGatewayAccessKeyRepository({
       dbFactory: backing.dbFactory as any,
@@ -282,12 +287,12 @@ describe('PodGatewayAccessKeyRepository', () => {
       locatorCodec: codec,
       internalPodAccess: internal.provider,
     });
-    await repository.create({ ...aliceKey.record, owner: ALICE, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
-    await repository.create({ ...bobKey.record, owner: BOB, scopes: ['models:read', 'inference:write'], createdAt: new Date() });
+    await repository.create({ ...aliceKey.record, owner: ALICE, scopes: ['models:read', 'inference:write'], createdAt: new Date() }, INTERNAL_GATEWAY_KEY_CONTEXT);
+    await repository.create({ ...bobKey.record, owner: BOB, scopes: ['models:read', 'inference:write'], createdAt: new Date() }, INTERNAL_GATEWAY_KEY_CONTEXT);
 
-    await expect(repository.findById(aliceKeyId)).resolves.toMatchObject({ owner: ALICE });
-    await expect(repository.findById(bobKeyId)).resolves.toMatchObject({ owner: BOB });
-    await expect(repository.listByOwner(ALICE)).resolves.toEqual([expect.objectContaining({ owner: ALICE })]);
+    await expect(repository.findById(aliceKeyId, INTERNAL_GATEWAY_KEY_CONTEXT)).resolves.toMatchObject({ owner: ALICE });
+    await expect(repository.findById(bobKeyId, INTERNAL_GATEWAY_KEY_CONTEXT)).resolves.toMatchObject({ owner: BOB });
+    await expect(repository.listByOwner(ALICE, INTERNAL_GATEWAY_KEY_CONTEXT)).resolves.toEqual([expect.objectContaining({ owner: ALICE })]);
   });
 
   it('writes revoke and lastUsedAt back to the Pod resource', async () => {
@@ -305,12 +310,12 @@ describe('PodGatewayAccessKeyRepository', () => {
       owner: ALICE,
       scopes: ['models:read', 'inference:write'],
       createdAt: new Date('2026-07-23T00:00:00.000Z'),
-    });
+    }, INTERNAL_GATEWAY_KEY_CONTEXT);
 
-    await repository.touchLastUsed(keyId, new Date('2026-07-23T01:00:00.000Z'));
-    await repository.revoke(keyId, new Date('2026-07-23T02:00:00.000Z'));
+    await repository.touchLastUsed(keyId, new Date('2026-07-23T01:00:00.000Z'), INTERNAL_GATEWAY_KEY_CONTEXT);
+    await repository.revoke(keyId, new Date('2026-07-23T02:00:00.000Z'), INTERNAL_GATEWAY_KEY_CONTEXT);
 
-    await expect(repository.findById(keyId)).resolves.toMatchObject({
+    await expect(repository.findById(keyId, INTERNAL_GATEWAY_KEY_CONTEXT)).resolves.toMatchObject({
       lastUsedAt: new Date('2026-07-23T01:00:00.000Z'),
       revokedAt: new Date('2026-07-23T02:00:00.000Z'),
     });
@@ -338,10 +343,18 @@ describe('PodGatewayAccessKeyRepository', () => {
     anonymousFetch.mockRestore();
   });
 
-  it('requires internal service Pod access instead of replaying caller DPoP tokens', async () => {
+  it.each([
+    ['missing auth', undefined, 'caller_pod_access_unavailable'],
+    ['browser Bearer token', { accessToken: 'browser-bearer-token', tokenType: 'Bearer' as const }, 'caller_pod_access_unavailable'],
+    ['browser DPoP token', { accessToken: 'browser-dpop-token', tokenType: 'DPoP' as const, dpopProof: 'proof-for-management-url' }, 'caller_dpop_replay_unsupported'],
+    ['Gateway API key principal', { viaGatewayApiKey: true, gatewayKeyId: 'gateway-key-id', scopes: ['models:read'], tokenType: 'Bearer' as const }, 'caller_pod_access_unavailable'],
+    ['owner-mismatched caller Bearer token', { webId: BOB, viaApiKey: true, accessToken: 'caller-bearer-token', tokenType: 'Bearer' as const }, 'caller_owner_mismatch'],
+  ])('rejects %s when no caller-owned reusable Pod token is available', async (_label, authPatch, expectedError) => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const internalPodAccess = {
-      getTrustedFetch: vi.fn(async () => undefined),
+      getTrustedFetch: vi.fn(async () => {
+        throw new Error('service identity must not be used for direct caller access');
+      }),
     };
     const repository = new PodGatewayAccessKeyRepository({
       dbFactory: vi.fn(async ({ fetch: podFetch }) => {
@@ -359,26 +372,67 @@ describe('PodGatewayAccessKeyRepository', () => {
       internalPodAccess,
     });
 
-    await expect(repository.listByOwner(ALICE, {
+    const context = authPatch === undefined
+      ? undefined
+      : {
+          auth: {
+            type: 'solid' as const,
+            webId: ALICE,
+            ...authPatch,
+          },
+        };
+
+    await expect(repository.listByOwner(ALICE, context)).rejects.toThrow(expectedError);
+
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    expect(browserFetch).not.toHaveBeenCalled();
+    browserFetch.mockRestore();
+  });
+
+  it('uses an owner-bound sk client-credentials Bearer token before service Pod access', async () => {
+    const internalPodAccess = {
+      getTrustedFetch: vi.fn(async () => {
+        throw new Error('service identity must not be used for caller-owned access');
+      }),
+    };
+    const repository = new PodGatewayAccessKeyRepository({
+      dbFactory: vi.fn(async ({ fetch: podFetch }) => {
+        const response = await podFetch('https://id.example/alice/settings/ai/gateway/access-keys.ttl');
+        return {
+          init: vi.fn(),
+          insert: vi.fn() as any,
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          findByIri: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          lastResponse: response,
+        };
+      }),
+      locatorCodec: codec,
+      internalPodAccess,
+    });
+    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+
+    await repository.listByOwner(ALICE, {
       auth: {
         type: 'solid',
         webId: ALICE,
-        accessToken: 'browser-dpop-token',
-        tokenType: 'DPoP',
-        dpopProof: 'proof-for-management-url',
+        viaApiKey: true,
+        accessToken: 'caller-bearer-token',
+        tokenType: 'Bearer',
       },
-    })).rejects.toThrow('AI Connection service identity is not configured');
+    });
 
-    expect(internalPodAccess.getTrustedFetch).toHaveBeenCalledWith(ALICE);
-    expect(browserFetch).not.toHaveBeenCalledWith(
-      expect.anything(),
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    expect(callerFetch).toHaveBeenCalledWith(
+      'https://id.example/alice/settings/ai/gateway/access-keys.ttl',
       expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'DPoP browser-dpop-token',
-        }),
+        headers: expect.any(Headers),
       }),
     );
-    browserFetch.mockRestore();
+    const headers = callerFetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer caller-bearer-token');
+    callerFetch.mockRestore();
   });
 
   it('normalizes service Pod 403 responses as service_access_missing', async () => {
@@ -401,7 +455,7 @@ describe('PodGatewayAccessKeyRepository', () => {
       },
     });
 
-    await expect(repository.listByOwner(ALICE)).rejects.toThrow('service_access_missing');
+    await expect(repository.listByOwner(ALICE, INTERNAL_GATEWAY_KEY_CONTEXT)).rejects.toThrow('service_access_missing');
   });
 
   it('propagates internal token and Pod read failures instead of flattening them into not-found', async () => {
@@ -414,7 +468,7 @@ describe('PodGatewayAccessKeyRepository', () => {
         getTrustedFetch: vi.fn(async () => { throw tokenFailure; }),
       },
     });
-    await expect(repository.findById(keyId)).rejects.toBe(tokenFailure);
+    await expect(repository.findById(keyId, INTERNAL_GATEWAY_KEY_CONTEXT)).rejects.toBe(tokenFailure);
 
     const podFailure = new Error('pod read down');
     const failingDb = new PodGatewayAccessKeyRepository({
@@ -429,7 +483,7 @@ describe('PodGatewayAccessKeyRepository', () => {
       locatorCodec: codec,
       internalPodAccess: createInternalPodAccess().provider,
     });
-    await expect(failingDb.findById(keyId)).rejects.toBe(podFailure);
+    await expect(failingDb.findById(keyId, INTERNAL_GATEWAY_KEY_CONTEXT)).rejects.toBe(podFailure);
   });
 });
 

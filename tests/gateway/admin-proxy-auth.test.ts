@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
+import { AuthMiddleware } from '../../src/api/middleware/AuthMiddleware';
 import { ApiServer } from '../../src/api/ApiServer';
 import { registerAdminRoutes } from '../../src/api/handlers/AdminHandler';
+import { registerNetworkSettingsRoutes } from '../../src/api/handlers/NetworkSettingsHandler';
 import { createGatewayAdminProxyHeaders, GATEWAY_ADMIN_PROXY_HEADERS } from '../../src/runtime/GatewayAdminProxyAuth';
 import { GatewayProxy, getFreePort } from '../../src/runtime';
 import { Supervisor } from '../../src/supervisor';
@@ -28,13 +29,27 @@ describe('GatewayProxy admin ingress authorization', () => {
 
     apiPort = await getFreePort(46300, '127.0.0.1');
     proxyPort = await getFreePort(apiPort + 1, '127.0.0.1');
-    const authMiddleware = { process: async () => true } as unknown as AuthMiddleware;
+    const authMiddleware = new AuthMiddleware({
+      authenticator: {
+        canAuthenticate: () => true,
+        authenticate: async () => ({
+          success: false,
+          error: 'Authentication required',
+          category: 'invalid_credentials' as const,
+          statusCode: 401,
+        }),
+      },
+    });
     api = new ApiServer({
       port: apiPort,
       host: '127.0.0.1',
       authMiddleware,
     });
     registerAdminRoutes(api, { internalAdminAuthSecret: SECRET });
+    registerNetworkSettingsRoutes(api, {
+      endpoint: () => `http://127.0.0.1:${proxyPort}/`,
+      internalAdminAuthSecret: SECRET,
+    });
     await api.start();
 
     proxy = new GatewayProxy(proxyPort, new Supervisor(), '127.0.0.1', {
@@ -85,6 +100,14 @@ describe('GatewayProxy admin ingress authorization', () => {
 
     const mutation = await gatewayConfigPatch('127.0.0.1');
     expect(mutation.status).toBe(200);
+  });
+
+  it('lets the Network authorizer accept signed loopback evidence while rejecting remote anonymous callers', async () => {
+    const local = await gatewayNetworkStatus('127.0.0.1');
+    expect(local.status).toBe(200);
+
+    const remote = await gatewayNetworkStatus('203.0.113.10');
+    expect(remote.status).toBe(401);
   });
 
   it('allows a remote client with a valid admin token through Gateway', async () => {
@@ -171,6 +194,12 @@ describe('GatewayProxy admin ingress authorization', () => {
         'x-test-remote-address': remoteAddress,
       },
       body: JSON.stringify({ env: { CSS_LOGGING_LEVEL: 'debug' } }),
+    });
+  }
+
+  async function gatewayNetworkStatus(remoteAddress: string): Promise<Response> {
+    return fetch(`http://127.0.0.1:${proxyPort}/api/network/settings/status`, {
+      headers: { 'x-test-remote-address': remoteAddress },
     });
   }
 

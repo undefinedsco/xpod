@@ -145,6 +145,36 @@ describe('AuthBoundary', () => {
     expect(login).toHaveBeenCalledWith('https://xpod.local')
   })
 
+  it('renders the Linx cloud/local chooser when the host supplies account spaces', () => {
+    const login = vi.fn()
+
+    render(
+      <AuthBoundary
+        state={{ status: 'anonymous' }}
+        login={login}
+        loginView={{
+          title: 'Xpod',
+          spaceProviders: {
+            cloud: { id: 'https://id.undefineds.co', label: 'Cloud' },
+            local: { id: 'https://xpod.local', label: 'Local' },
+          },
+          onAddProvider: (url) => void login(url),
+        }}
+      >
+        <section>Private workspace</section>
+      </AuthBoundary>,
+    )
+
+    expect(screen.getByText('使用 undefineds 账号')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '云端' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '本机' })).toBeTruthy()
+    expect(screen.queryByLabelText('Solid Pod 地址')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: '本机' }))
+    fireEvent.click(screen.getByRole('button', { name: '继续' }))
+    expect(login).toHaveBeenCalledWith('https://xpod.local')
+  })
+
   it('adds a custom login provider through the shared add form with URL validation', () => {
     const login = vi.fn()
 

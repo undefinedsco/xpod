@@ -48,6 +48,7 @@ export interface CompatibleChatAdapterOptions extends ProviderRuntimeAdapterOpti
   reasoningEffortMapper?: (effort: string, request: GatewayRequest, model?: ProviderModelDescriptor) => string | undefined;
   fallbackReasoningBody?: (effort: string, request: GatewayRequest, model?: ProviderModelDescriptor) => Record<string, unknown>;
   preserveReasoningContent?: boolean;
+  chatBodyTransform?: (body: Record<string, unknown>, input: ProviderRuntimeExecuteInput) => Record<string, unknown>;
 }
 
 export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapter {
@@ -120,6 +121,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
   private readonly reasoningEffortMapper?: CompatibleChatAdapterOptions['reasoningEffortMapper'];
   private readonly fallbackReasoningBody?: CompatibleChatAdapterOptions['fallbackReasoningBody'];
   private readonly preserveReasoningContent: boolean;
+  private readonly chatBodyTransform?: CompatibleChatAdapterOptions['chatBodyTransform'];
 
   public constructor(options: CompatibleChatAdapterOptions) {
     super(options);
@@ -133,6 +135,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
     this.reasoningEffortMapper = options.reasoningEffortMapper;
     this.fallbackReasoningBody = options.fallbackReasoningBody;
     this.preserveReasoningContent = options.preserveReasoningContent ?? false;
+    this.chatBodyTransform = options.chatBodyTransform;
   }
 
   public async *execute(input: ProviderRuntimeExecuteInput): AsyncIterable<GatewayEvent> {
@@ -143,11 +146,12 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
       safeBaseUrls: this.safeBaseUrls,
     });
     const model = this.findRegisteredModel(input.request.model);
-    const body = toChatCompletionsBody(input.request, {
+    const compatibleBody = toChatCompletionsBody(input.request, {
       reasoningEffort: this.resolveReasoningEffort(input.request, model),
       extraReasoningBody: this.resolveFallbackReasoningBody(input.request, model),
       preserveReasoningContent: this.preserveReasoningContent,
     });
+    const body = this.chatBodyTransform?.(compatibleBody, input) ?? compatibleBody;
 
     try {
       yield* parseCompatibleChatSse(this.transport.postSse({

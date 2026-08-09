@@ -130,7 +130,7 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
       logger.error(`Failed to read network settings status: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to read network settings status' });
     }
-  });
+  }, { optionalAuth: true });
 
   server.post('/api/network/settings/diagnose', async (request, response) => {
     if (!await requireNetworkPermission(request, response, authorizer, 'read', options.internalAdminAuthSecret)) {
@@ -145,7 +145,7 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
       logger.error(`Failed to run network diagnostics: ${redactSecretText(error)}`);
       sendJson(response, 500, { error: 'Failed to run network diagnostics' });
     }
-  });
+  }, { optionalAuth: true });
 
   if (options.certificateRenewer) {
     server.post('/api/network/settings/certificate/renew', async (request, response) => {
@@ -171,7 +171,7 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
           code: renewalError.code,
         });
       }
-    });
+    }, { optionalAuth: true });
   }
   if (options.configurationStore) {
     server.put('/api/network/settings/configuration', async (request, response) => {
@@ -187,7 +187,7 @@ export function registerNetworkSettingsRoutes(server: ApiServer, options: Networ
         logger.error(`Failed to update network configuration: ${redactSecretText(error)}`);
         sendJson(response, 500, { error: 'Failed to update network configuration' });
       }
-    });
+    }, { optionalAuth: true });
   }
 }
 

@@ -67,12 +67,42 @@ describe('loadConfigFromEnv', () => {
     expect(config.aiGatewayProviderBaseUrls?.openai).toBe('http://127.0.0.1:48111/v1');
   });
 
+  it('explicitly enables the local filesystem AI client configuration capability', () => {
+    process.env.XPOD_EDITION = 'local';
+    process.env.CSS_ROOT_FILE_PATH = '.test-data/api-container-config';
+    process.env.XPOD_AI_CLIENT_CONFIGURATION_ENABLED = 'true';
+    process.env.XPOD_AI_CLIENT_CONFIGURATION_HOME_DIR = '/tmp/xpod-ai-client-home';
+    process.env.XPOD_AI_CLIENT_CONFIGURATION_BACKUP_ROOT = '/tmp/xpod-ai-client-backups';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.aiClientConfiguration).toEqual({
+      enabled: true,
+      authority: 'local-filesystem',
+      homeDir: '/tmp/xpod-ai-client-home',
+      backupRoot: '/tmp/xpod-ai-client-backups',
+    });
+  });
+
+  it('does not enable a local filesystem capability for cloud edition', () => {
+    process.env.XPOD_EDITION = 'cloud';
+    process.env.XPOD_AI_CLIENT_CONFIGURATION_ENABLED = 'true';
+    process.env.XPOD_AI_CLIENT_CONFIGURATION_HOME_DIR = '/tmp/xpod-ai-client-home';
+
+    expect(loadConfigFromEnv().aiClientConfiguration).toBeUndefined();
+  });
+
   it('constructs disabled provider Connect without eagerly requiring internal service credentials', async () => {
-    const service = createApiContainer(baseConfig({
+    const container = createApiContainer(baseConfig({
       gatewayInternalClientId: undefined,
       gatewayInternalClientSecret: undefined,
       aiGatewayConnectEnabled: false,
-    })).resolve('providerConnectService');
+    }));
+    const service = container.resolve('providerConnectService');
+    const quotaService = container.resolve('providerQuotaService') as any;
+
+    expect((service as any).credentialRepository).toBeTruthy();
+    expect((service as any).vault).toBeTruthy();
 
     await expect(service.begin({
       webId: 'https://id.example/alice/profile/card#me',
@@ -80,6 +110,10 @@ describe('loadConfigFromEnv', () => {
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({ status: 'unsupported' });
+    expect(quotaService).toBeTruthy();
+    expect(quotaService.adapters.get('openai')).toHaveLength(2);
+    expect(quotaService.adapters.get('anthropic')).toHaveLength(2);
+    expect(quotaService.adapters.get('kimi')).toHaveLength(2);
   });
 
   it('injects one singleton internal Pod access provider into all gateway services that need Pod access', () => {

@@ -48,7 +48,7 @@ describe('AI Connection extension', () => {
 
   it('can render its management panel without a LinX host', () => {
     const html = renderToStaticMarkup(<AiConnectionsPanel client={client()} />)
-    expect(html).toContain('AI Connection')
+    expect(html).not.toContain('AI Connection</')
     expect(html).not.toContain(WEB_ID)
     expect(html).toContain('OpenAI')
     expect(html).not.toContain('DeepSeek')

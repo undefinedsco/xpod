@@ -53,19 +53,33 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/test/
 # 期望: 200
 ```
 
-### 打开 Settings Dashboard
+### 打开 Xpod Dashboard
 
 Dashboard 是 Xpod Web runtime 的静态页面，不需要第二个服务壳。先启动本地
-Xpod host，再打开 settings 入口：
+Xpod host，再打开 canonical 入口：
 
 ```bash
 bun run settings:open
 ```
 
-默认打开 `http://localhost:3000/settings/models`。如 host 不在默认端口，可用
+默认打开 `http://localhost:3000/ai-connections`。如 host 不在默认端口，可用
 `XPOD_SETTINGS_URL`、`XPOD_DASHBOARD_URL`、`CSS_BASE_URL` 或 `XPOD_BASE_URL`
-指定已有 Xpod 地址；脚本会规范化为 `/settings/models`，只接受 `http`/`https`
+指定已有 Xpod 地址；脚本会规范化为 `/ai-connections`，只接受 `http`/`https`
 URL，并在 host 不可达或系统 GUI open 命令失败时输出结构化 JSON 错误。
+
+Canonical Dashboard routes:
+
+| Surface | Route |
+|---------|-------|
+| Status overview | `/status/overview` |
+| Network | `/network` |
+| AI Connections | `/ai-connections` |
+| Model assignments | `/ai-config/model-assignments` |
+| Pod settings | `/settings/pod` |
+
+Legacy `/settings/models` remains only as a compatibility redirect to
+`/ai-connections`. New integrations should open or emit canonical URLs directly,
+not legacy `/settings/models`.
 
 开发 Dashboard UI 时可单独启动 Vite：
 
@@ -75,9 +89,27 @@ bun run settings:dev
 
 这只服务前端调试页面，不负责启动 Xpod。桌面版或托盘壳的边界也是如此：壳层可以
 调用 `settings:open` 或自己的 `openExternal`，并按需提供 client-config / 文件系统
-能力；Web host 的配置入口可独立访问 `/settings/models`、`/settings/pod`、
-`/settings/network` 和 `/settings/services`，状态入口为 `/dashboard/overview`。当前任务不伪造
-托盘能力。
+能力；Web host 的主要入口应使用 `/status/overview`、`/network`、
+`/ai-connections`、`/ai-config/model-assignments` 和 `/settings/pod`。
+兼容 redirect 可以接收旧 URL，但新集成不要主动发送 legacy URL。
+
+### 桌面开发包验收
+
+当前桌面产物是 Apple Silicon 开发包：
+
+| Artifact | SHA256 |
+|----------|--------|
+| `desktop/release/Xpod-0.1.0-arm64.dmg` | `ce3e892cc887c4c5b28508f2cd7a358e20d65bd22b61cc61d8c9586bff45dfee` |
+| `desktop/release/Xpod-0.1.0-arm64-mac.zip` | `a0ec9d2f9ba55ca17822a10491979940830ece67ae4a0a9e498783975f65befb` |
+
+`hdiutil verify desktop/release/Xpod-0.1.0-arm64.dmg` 已验证为 valid。
+该 DMG/ZIP 未签名、未公证；它们只适合开发验收，不应声明为正式签名发布包。
+
+桌面壳用标准 macOS LaunchServices 打开和退出。运行时生命周期规则：
+
+- 如果本机已有可达 Xpod runtime，桌面壳把它视为 external runtime，退出时不停止该进程。
+- 如果桌面壳自行启动 runtime，它把该进程视为 owned runtime，退出时负责清理。
+- 实包 smoke 已验证默认进入 `/network/overview`，canonical rail、Account/WebID/local auth 边界、原生 3/3 tray、诊断 API 和 quit cleanup 均正常。
 
 ### 常见启动问题
 

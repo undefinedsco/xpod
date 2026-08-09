@@ -1,10 +1,14 @@
+import type {
+  AiConnectionsOAuthCredential,
+  AiClientCredentialRecord,
+  AiClientCredentialsCapability,
+} from '@undefineds.co/extension-sdk/web'
+
 export const AI_CONNECTIONS_PROVIDERS = [
   'openai',
   'anthropic',
   'kimi',
   'bailian',
-  'bailian-coding-plan',
-  'bailian-token-plan',
   'deepseek',
 ] as const
 
@@ -37,6 +41,7 @@ export interface AiConnectAttempt {
   intervalSeconds?: number
   apiKeyManagementSupported?: boolean
   credentialId?: string
+  oauthCredential?: AiConnectionsOAuthCredential
   message?: string
 }
 
@@ -48,7 +53,6 @@ export interface AiConnectionsCredential {
   authMode: string
   status: string
   accountLabel?: string
-  baseUrl?: string
   expiresAt?: string
   version?: number
   reauthRequired?: boolean
@@ -88,7 +92,10 @@ export interface GatewayKeyRecord {
 export interface AiGatewayModel {
   id: string
   provider: AiConnectionsProvider
+  offeringId?: string
+  resourceId?: string
   displayName?: string
+  availability?: 'available' | 'unavailable'
   contextWindow?: number
   protocols?: string[]
   custom?: boolean
@@ -119,9 +126,78 @@ export interface ProviderModelDiscovery {
   source: string
 }
 
+export interface AiProviderOffering {
+  id: string
+  label?: string
+  kind?: 'oauth-subscription' | 'api-platform' | 'token-plan'
+  lifecycle?: 'active' | 'legacy' | 'unavailable'
+  authModes?: Array<'oauth' | 'deviceCode' | 'apiKey' | 'local'>
+  runtimeProviderIds?: string[]
+  productLabel?: string
+  credentialPrefixHints?: string[]
+  consoleUrl?: string
+  subscriptionUrl?: string
+  endpoints?: Array<{ protocol: string; baseUrl: string; region?: string }>
+  modelDiscovery?: { strategy: string; path: string; endpointProtocol: string }
+  quota?: { strategy: string; url: string }
+  usagePolicyUrl?: string
+  region?: string
+}
+
+export interface AiProviderCredentialSummary {
+  id: string
+  provider?: AiConnectionsProvider
+  offeringId: string
+  authMode: 'oauth' | 'deviceCode' | 'apiKey' | 'local'
+  label?: string
+  enabled: boolean
+  priority: number
+  health: 'healthy' | 'expired' | 'invalid' | 'unknown'
+  maskedHint?: string
+  baseUrl?: string
+  expiresAt?: string
+  version: number
+}
+
+export interface AiProviderSummary {
+  id: AiConnectionsProvider
+  name: string
+  offerings: AiProviderOffering[]
+  credentials: AiProviderCredentialSummary[]
+  selectedModels: AiGatewayModel[]
+  status: 'unconfigured' | 'configured' | 'available' | 'attention' | 'unavailable'
+}
+
+export type AiProviderSummaryStatus =
+  | 'unconfigured'
+  | 'configured'
+  | 'available'
+  | 'attention'
+  | 'unavailable'
+
 export interface CreatedGatewayKey {
   plaintext: string
   record: GatewayKeyRecord
+}
+
+export interface CreateApiKeyCredentialInput {
+  offeringId?: string
+  apiKey: string
+  label?: string
+  baseUrl?: string
+  priority?: number
+}
+
+export interface UpdateProviderCredentialInput {
+  expectedVersion: number
+  label?: string
+  enabled?: boolean
+  priority?: number
+  baseUrl?: string
+}
+
+export interface TestProviderCredentialInput {
+  credentialId: string
 }
 
 export interface AiProviderConnectionSummary {
@@ -145,7 +221,7 @@ export interface AiConnectionsClient {
   readonly webId: string
   readonly apiBase: string
   getServiceAccess(): Promise<unknown>
-  listProviders(): Promise<AiProviderConnectionSummary[]>
+  listProviders(): Promise<AiProviderSummary[]>
   listModels(): Promise<AiGatewayModel[]>
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
   createGatewayKey(input: { name?: string; scopes?: string[]; expiresAt?: string }): Promise<CreatedGatewayKey>
@@ -160,13 +236,28 @@ export interface AiConnectionsClient {
     baseUrl?: string,
   ): Promise<AiConnectAttempt>
   pollDevice(provider: AiConnectionsProvider, attempt: Pick<AiConnectAttempt, 'attemptId' | 'state' | 'signature'>): Promise<AiConnectAttempt>
-  updateConnection(
-    provider: AiConnectionsProvider,
-    input: { baseUrl: string; expectedVersion?: number },
-  ): Promise<AiConnectionsCredential | undefined>
-  disconnect(provider: AiConnectionsProvider): Promise<AiConnectionsCredential | undefined>
-  quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
-  discoverModels(provider: AiConnectionsProvider): Promise<ProviderModelDiscovery>
+  refreshOAuthCredential(provider: AiConnectionsProvider, credentialId: string, refreshToken: string, expectedVersion: number): Promise<AiConnectAttempt>
+  disconnect(provider: AiConnectionsProvider, credentialId?: string): Promise<AiConnectionsCredential | undefined>
+  createApiKeyCredential(provider: AiConnectionsProvider, input: CreateApiKeyCredentialInput): Promise<AiProviderCredentialSummary>
+  updateProviderCredential(provider: AiConnectionsProvider, credentialId: string, input: UpdateProviderCredentialInput): Promise<AiProviderCredentialSummary>
+  deleteProviderCredential(provider: AiConnectionsProvider, credentialId: string): Promise<AiProviderCredentialSummary | undefined>
+  testProviderCredential(provider: AiConnectionsProvider, input: TestProviderCredentialInput): Promise<Record<string, unknown>>
+  quota(provider: AiConnectionsProvider, refresh?: boolean, input?: { offeringId?: string; credentialId?: string; credentialIri?: string }): Promise<AiQuotaSnapshot>
+  quotaFromSecret(provider: AiConnectionsProvider, input: {
+    credentialId: string
+    credentialIri: string
+    authMode: 'apiKey' | 'deviceCodeOAuth'
+    offeringId?: string
+    baseUrl?: string
+    secret: Record<string, unknown>
+  }): Promise<AiQuotaSnapshot>
+  discoverModels(provider: AiConnectionsProvider, input?: {
+    credentialId?: string
+    offeringId?: string
+    apiKey?: string
+    baseUrl?: string
+  }): Promise<ProviderModelDiscovery>
+  saveModelSelection?(provider: AiConnectionsProvider, modelIds: string[]): Promise<void>
   saveProviderModel(provider: AiConnectionsProvider, model: CustomProviderModel): Promise<CustomProviderModel[]>
   deleteProviderModel(provider: AiConnectionsProvider, modelId: string): Promise<CustomProviderModel[]>
 }
@@ -185,6 +276,57 @@ export function resolveAiConnectionsApiBase(podBaseUrl: string): string {
     throw new Error('Current Pod URL must use HTTP or HTTPS')
   }
   return parsed.origin
+}
+
+/**
+ * Replace the legacy opaque Gateway key methods with account-owned CSS
+ * client credentials. The rest of the AI Connections client can keep its
+ * stable Gateway key-shaped interface while coding clients receive the
+ * standard `sk-base64(client_id:client_secret)` wrapper from the host.
+ */
+export function withAiClientCredentialsGatewayKeys(
+  client: AiConnectionsClient,
+  capability: AiClientCredentialsCapability,
+): AiConnectionsClient {
+  return {
+    ...client,
+    async listGatewayKeys() {
+      const records = await capability.list()
+      return records.map(gatewayKeyRecordFromClientCredential)
+    },
+
+    async createGatewayKey(input) {
+      if ((input.scopes?.length ?? 0) > 0 || input.expiresAt) {
+        throw new Error('CSS client credentials do not support scopes or expiry')
+      }
+      const created = await capability.create({
+        webId: client.webId,
+        ...(input.name ? { name: input.name } : {}),
+      })
+      return {
+        plaintext: created.plaintext,
+        record: gatewayKeyRecordFromClientCredential(created.record),
+      }
+    },
+
+    async revokeGatewayKey(keyId) {
+      const record = await capability.revoke(keyId)
+      return record ? gatewayKeyRecordFromClientCredential(record) : undefined
+    },
+  }
+}
+
+function gatewayKeyRecordFromClientCredential(
+  credential: AiClientCredentialRecord,
+): GatewayKeyRecord {
+  return {
+    id: credential.id,
+    owner: credential.owner,
+    scopes: [],
+    createdAt: credential.createdAt ?? 'unknown',
+    ...(credential.name ? { name: credential.name } : {}),
+    ...(credential.revokedAt ? { revokedAt: credential.revokedAt } : {}),
+  }
 }
 
 export function createAiConnectionsClient({
@@ -240,10 +382,8 @@ export function createAiConnectionsClient({
     },
 
     async listProviders() {
-      const payload = await request<{ data?: unknown[] }>('/api/ai/connections/providers', 'GET')
-      return Array.isArray(payload.data)
-        ? payload.data.map(parseProviderSummary).filter(isDefined)
-        : []
+      const payload = await request<{ data?: unknown[] }>('/api/ai/providers', 'GET')
+      return Array.isArray(payload.data) ? parseProviderSummaries(payload.data) : []
     },
 
     async listModels() {
@@ -337,41 +477,99 @@ export function createAiConnectionsClient({
       )
     },
 
-    async updateConnection(provider, input) {
-      const payload = await request<{ record?: unknown }>(
-        `${providerPath(provider)}/connect`,
-        'PATCH',
-        compactObject({
-          baseUrl: input.baseUrl,
-          expectedVersion: input.expectedVersion,
-        }),
-        { provider },
-      )
-      return parseCredential(payload.record)
+    refreshOAuthCredential(provider, credentialId, refreshToken, expectedVersion) {
+      return requestConnect(provider, '/connect/refresh', 'POST', {
+        credentialId,
+        refreshToken,
+        expectedVersion,
+      })
     },
 
-    async disconnect(provider) {
+    async disconnect(provider, credentialId) {
+      const query = credentialId
+        ? `?${new URLSearchParams({ credentialId })}`
+        : ''
       const payload = await request<{ record?: unknown }>(
-        `${providerPath(provider)}/connect`,
+        `${providerPath(provider)}/connect${query}`,
         'DELETE',
       )
       return parseCredential(payload.record)
     },
 
-    quota(provider, refresh = false) {
+    async createApiKeyCredential(provider, input) {
+      const payload = await request<{ credential?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/api-key`,
+        'POST',
+        compactObject({ ...input }),
+        { provider },
+      )
+      const credential = parseProviderCredentialSummary(payload.credential)
+      if (!credential) {
+        throw new Error('AI Connection returned an invalid Provider credential')
+      }
+      return credential
+    },
+
+    async updateProviderCredential(provider, credentialId, input) {
+      const payload = await request<{ credential?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/${encodeURIComponent(credentialId)}`,
+        'PATCH',
+        compactObject({ ...input }),
+        { provider },
+      )
+      const credential = parseProviderCredentialSummary(payload.credential)
+      if (!credential) {
+        throw new Error('AI Connection returned an invalid Provider credential')
+      }
+      return credential
+    },
+
+    async deleteProviderCredential(provider, credentialId) {
+      const payload = await request<{ credential?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/${encodeURIComponent(credentialId)}`,
+        'DELETE',
+        undefined,
+        { provider },
+      )
+      return parseProviderCredentialSummary(payload.credential)
+    },
+
+    async testProviderCredential(provider, input) {
+      const payload = await request<{ result?: unknown }>(
+        `/api/ai/providers/${provider}/credentials/test`,
+        'POST',
+        compactObject({ ...input }),
+        { provider },
+      )
+      return sanitizePublicObject(payload.result)
+    },
+
+    quota(provider, refresh = false, input) {
+      const query = !refresh && input?.credentialIri
+        ? `?credentialIri=${encodeURIComponent(input.credentialIri)}${input.offeringId ? `&offeringId=${encodeURIComponent(input.offeringId)}` : ''}`
+        : ''
       return request<AiQuotaSnapshot>(
-        `${providerPath(provider)}/quota/${refresh ? 'refresh' : 'status'}`,
+        `${providerPath(provider)}/quota/${refresh ? 'refresh' : 'status'}${query}`,
         refresh ? 'POST' : 'GET',
-        refresh ? {} : undefined,
+        refresh ? compactObject({ offeringId: input?.offeringId, credentialId: input?.credentialId, credentialIri: input?.credentialIri }) : undefined,
         { provider },
       )
     },
 
-    async discoverModels(provider) {
+    quotaFromSecret(provider, input) {
+      return request<AiQuotaSnapshot>(
+        `${providerPath(provider)}/quota/refresh`,
+        'POST',
+        compactObject(input),
+        { provider },
+      )
+    },
+
+    async discoverModels(provider, input) {
       const payload = await request<unknown>(
         `${providerPath(provider)}/models/refresh`,
         'POST',
-        {},
+        compactObject({ ...input }),
         { provider },
       )
       return parseModelDiscovery(payload, provider)
@@ -530,8 +728,6 @@ function providerLabel(provider: AiConnectionsProvider): string {
     case 'anthropic': return 'Anthropic'
     case 'kimi': return 'Kimi'
     case 'bailian': return 'Bailian'
-    case 'bailian-coding-plan': return 'Bailian Coding Plan'
-    case 'bailian-token-plan': return 'Bailian Token Plan'
     case 'deepseek': return 'DeepSeek'
   }
 }
@@ -652,8 +848,14 @@ function isPlatformModelId(modelId: string): boolean {
 
 function providerValue(value: unknown): AiConnectionsProvider | undefined {
   if (typeof value !== 'string') return undefined
-  const normalized = value.toLowerCase()
-  if (normalized === 'alibaba' || normalized === 'dashscope') return 'bailian'
+  const normalized = value.toLowerCase().trim()
+  if (
+    normalized === 'alibaba'
+    || normalized === 'dashscope'
+    || normalized === 'alibaba-bailian'
+    || normalized === 'bailian-coding-plan'
+    || normalized === 'bailian-token-plan'
+  ) return 'bailian'
   return (AI_CONNECTIONS_PROVIDERS as readonly string[]).includes(normalized)
     ? normalized as AiConnectionsProvider
     : undefined
@@ -668,7 +870,22 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-function parseProviderSummary(value: unknown): AiProviderConnectionSummary | undefined {
+function parseProviderSummaries(values: unknown[]): AiProviderSummary[] {
+  const grouped = new Map<AiConnectionsProvider, AiProviderSummary>()
+  for (const value of values) {
+    const summary = parseProviderSummary(value)
+    if (!summary) continue
+    const current = grouped.get(summary.id)
+    grouped.set(summary.id, current ? mergeProviderSummaries(current, summary) : summary)
+  }
+  return [...grouped.values()]
+}
+
+function parseProviderSummary(value: unknown): AiProviderSummary | undefined {
+  return parseGroupedProviderSummary(value) ?? parseLegacyProviderSummary(value)
+}
+
+function parseLegacyProviderSummary(value: unknown): AiProviderSummary | undefined {
   if (!isRecord(value)
     || typeof value.provider !== 'string'
     || !isProviderStatus(value.status)
@@ -678,23 +895,276 @@ function parseProviderSummary(value: unknown): AiProviderConnectionSummary | und
     || typeof value.connect.configured !== 'boolean') {
     return undefined
   }
-  assertProvider(value.provider)
-  return compactObject({
-    provider: value.provider,
+  const provider = providerValue(value.provider)
+  if (!provider) return undefined
+  const credential = legacyCredentialFromSummary(value, provider)
+  return {
+    id: provider,
+    name: providerDisplayName(provider),
+    offerings: [],
+    credentials: credential ? [credential] : [],
+    selectedModels: [],
+    status: providerProductStatusFromLegacy(value.status),
+  }
+}
+
+function parseGroupedProviderSummary(value: unknown): AiProviderSummary | undefined {
+  if (!isRecord(value)) return undefined
+  const provider = providerValue(value.id) ?? providerValue(value.provider)
+  if (!provider || !isProviderSummaryStatus(value.status)) return undefined
+  const offerings = arrayValue(value.offerings, parseProviderOffering)
+  const credentials = arrayValue(value.credentials, parseProviderCredentialSummary)
+  const selectedModels = arrayValue(value.selectedModels, parseGatewayModel)
+  return {
+    id: provider,
+    name: stringValue(value.name) ?? providerDisplayName(provider),
+    offerings,
+    credentials,
+    selectedModels,
     status: value.status,
-    authMode: stringValue(value.authMode),
-    accountLabel: stringValue(value.accountLabel),
+  }
+}
+
+function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return undefined
+  const authModes = arrayValue(value.authModes, offeringAuthModeValue)
+  return compactObject({
+    id: value.id,
+    label: stringValue(value.label),
+    kind: stringValue(value.kind),
+    lifecycle: offeringLifecycleValue(value.lifecycle),
+    authModes,
+    runtimeProviderIds: stringListValue(value.runtimeProviderIds),
+    productLabel: stringValue(value.productLabel),
+    credentialPrefixHints: stringListValue(value.credentialPrefixHints),
+    consoleUrl: stringValue(value.consoleUrl),
+    subscriptionUrl: stringValue(value.subscriptionUrl),
+    endpoints: arrayValue(value.endpoints, parseOfferingEndpoint),
+    modelDiscovery: parseOfferingModelDiscovery(value.modelDiscovery),
+    quota: parseOfferingQuota(value.quota),
+    usagePolicyUrl: stringValue(value.usagePolicyUrl),
+    region: stringValue(value.region),
+  }) as unknown as AiProviderOffering
+}
+
+function offeringLifecycleValue(value: unknown): AiProviderOffering['lifecycle'] | undefined {
+  return value === 'active' || value === 'legacy' || value === 'unavailable'
+    ? value
+    : undefined
+}
+
+function parseOfferingEndpoint(value: unknown): { protocol: string; baseUrl: string; region?: string } | undefined {
+  if (!isRecord(value)) return undefined
+  const protocol = stringValue(value.protocol)
+  const baseUrl = stringValue(value.baseUrl)
+  if (!protocol || !baseUrl) return undefined
+  return compactObject({ protocol, baseUrl, region: stringValue(value.region) })
+}
+
+function parseOfferingModelDiscovery(value: unknown): AiProviderOffering['modelDiscovery'] | undefined {
+  if (!isRecord(value)) return undefined
+  const strategy = stringValue(value.strategy)
+  const path = stringValue(value.path)
+  const endpointProtocol = stringValue(value.endpointProtocol)
+  return strategy && path && endpointProtocol ? { strategy, path, endpointProtocol } : undefined
+}
+
+function parseOfferingQuota(value: unknown): AiProviderOffering['quota'] | undefined {
+  if (!isRecord(value)) return undefined
+  const strategy = stringValue(value.strategy)
+  const url = stringValue(value.url)
+  return strategy && url ? { strategy, url } : undefined
+}
+
+function parseProviderCredentialSummary(value: unknown): AiProviderCredentialSummary | undefined {
+  if (!isRecord(value)
+    || typeof value.id !== 'string'
+    || !value.id
+    || typeof value.offeringId !== 'string'
+    || !value.offeringId
+    || !isOfferingAuthMode(value.authMode)
+    || typeof value.enabled !== 'boolean'
+    || typeof value.priority !== 'number'
+    || !Number.isFinite(value.priority)
+    || !isCredentialHealth(value.health)
+    || typeof value.version !== 'number'
+    || !Number.isFinite(value.version)) {
+    return undefined
+  }
+  return compactObject({
+    id: value.id,
+    provider: providerValue(value.provider),
+    offeringId: value.offeringId,
+    authMode: value.authMode,
+    label: stringValue(value.label),
+    enabled: value.enabled,
+    priority: value.priority,
+    health: value.health,
+    maskedHint: stringValue(value.maskedHint),
     baseUrl: stringValue(value.baseUrl),
     expiresAt: stringValue(value.expiresAt),
-    reauthRequired: typeof value.reauthRequired === 'boolean' ? value.reauthRequired : undefined,
-    credentialIri: stringValue(value.credentialIri),
-    version: typeof value.version === 'number' ? value.version : undefined,
-    connect: compactObject({
-      modes: [...value.connect.modes],
-      configured: value.connect.configured,
-      message: stringValue(value.connect.message),
-    }),
-  }) as unknown as AiProviderConnectionSummary
+    version: value.version,
+  }) as unknown as AiProviderCredentialSummary
+}
+
+function sanitizePublicObject(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !isSecretFieldName(key))
+      .map(([key, item]) => [key, sanitizePublicValue(item)]),
+  )
+}
+
+function sanitizePublicValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizePublicValue)
+  if (isRecord(value)) return sanitizePublicObject(value)
+  return value
+}
+
+function isSecretFieldName(value: string): boolean {
+  const normalized = value.toLocaleLowerCase()
+  return normalized.includes('secret')
+    || normalized.includes('token')
+    || normalized.includes('apikey')
+    || normalized === 'api_key'
+    || normalized === 'key'
+    || normalized === 'authorization'
+}
+
+function mergeProviderSummaries(
+  left: AiProviderSummary,
+  right: AiProviderSummary,
+): AiProviderSummary {
+  const credentials = uniqueBy(
+    [...left.credentials, ...right.credentials],
+    (credential) => credential.id,
+  )
+  const offerings = uniqueBy(
+    [...left.offerings, ...right.offerings],
+    (offering) => offering.id,
+  )
+  const selectedModels = uniqueBy(
+    [...left.selectedModels, ...right.selectedModels],
+    (model) => `${model.provider}:${model.id}`,
+  )
+  return {
+    id: left.id,
+    name: left.name ?? right.name,
+    offerings,
+    credentials,
+    selectedModels,
+    status: mergeProviderSummaryStatus(left.status, right.status),
+  }
+}
+
+function providerProductStatusFromLegacy(
+  status: AiProviderConnectionSummary['status'],
+): AiProviderSummary['status'] {
+  if (status === 'connected') return 'available'
+  if (status === 'reauthRequired') return 'attention'
+  return 'unconfigured'
+}
+
+function mergeProviderSummaryStatus(
+  left: AiProviderSummary['status'],
+  right: AiProviderSummary['status'],
+): AiProviderSummary['status'] {
+  if (left === 'available' || right === 'available') return 'available'
+  if (left === 'attention' || right === 'attention') return 'attention'
+  if (left === 'configured' || right === 'configured') return 'configured'
+  if (left === 'unconfigured' || right === 'unconfigured') return 'unconfigured'
+  return 'unavailable'
+}
+
+function legacyCredentialFromSummary(
+  value: Record<string, unknown>,
+  provider: AiConnectionsProvider,
+): AiProviderCredentialSummary | undefined {
+  if (value.status === 'disconnected') return undefined
+  const authMode = legacyCredentialAuthMode(value.authMode)
+  return compactObject({
+    id: stringValue(value.credentialIri) ?? `${provider}:current`,
+    offeringId: legacyOfferingId(authMode),
+    authMode,
+    label: stringValue(value.accountLabel),
+    enabled: value.status === 'connected',
+    priority: 0,
+    health: value.status === 'reauthRequired' || value.reauthRequired === true
+      ? 'expired'
+      : 'healthy',
+    maskedHint: stringValue(value.maskedHint),
+    baseUrl: stringValue(value.baseUrl),
+    expiresAt: stringValue(value.expiresAt),
+    version: typeof value.version === 'number' ? value.version : 0,
+  }) as AiProviderCredentialSummary
+}
+
+function legacyCredentialAuthMode(value: unknown): AiProviderCredentialSummary['authMode'] {
+  if (value === 'deviceCodeOAuth') return 'deviceCode'
+  return 'apiKey'
+}
+
+function legacyOfferingId(authMode: AiProviderCredentialSummary['authMode']): string {
+  return authMode === 'deviceCode' || authMode === 'oauth'
+    ? 'official-subscription'
+    : 'api-platform'
+}
+
+function offeringAuthModeValue(value: unknown): AiProviderCredentialSummary['authMode'] | undefined {
+  return isOfferingAuthMode(value) ? value : undefined
+}
+
+function isOfferingAuthMode(value: unknown): value is AiProviderCredentialSummary['authMode'] {
+  return value === 'oauth'
+    || value === 'deviceCode'
+    || value === 'apiKey'
+    || value === 'local'
+}
+
+function isCredentialHealth(value: unknown): value is AiProviderCredentialSummary['health'] {
+  return value === 'healthy'
+    || value === 'expired'
+    || value === 'invalid'
+    || value === 'unknown'
+}
+
+function isProviderSummaryStatus(value: unknown): value is AiProviderSummary['status'] {
+  return value === 'unconfigured'
+    || value === 'configured'
+    || value === 'available'
+    || value === 'attention'
+    || value === 'unavailable'
+}
+
+function arrayValue<T>(
+  value: unknown,
+  parseItem: (item: unknown) => T | undefined,
+): T[] {
+  if (!Array.isArray(value)) return []
+  return value.map(parseItem).filter(isDefined)
+}
+
+function uniqueBy<T>(values: T[], keyFor: (value: T) => string): T[] {
+  const seen = new Set<string>()
+  const result: T[] = []
+  for (const value of values) {
+    const key = keyFor(value)
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(value)
+  }
+  return result
+}
+
+function providerDisplayName(provider: AiConnectionsProvider): string {
+  switch (provider) {
+    case 'openai': return 'OpenAI'
+    case 'anthropic': return 'Anthropic'
+    case 'kimi': return 'Kimi'
+    case 'bailian': return 'Alibaba Bailian'
+    case 'deepseek': return 'DeepSeek'
+  }
 }
 
 function parseCredential(value: unknown): AiConnectionsCredential | undefined {
@@ -707,16 +1177,16 @@ function parseCredential(value: unknown): AiConnectionsCredential | undefined {
     || typeof value.status !== 'string') {
     return undefined
   }
-  assertProvider(value.provider)
+  const provider = providerValue(value.provider)
+  if (!provider) return undefined
   return compactObject({
     id: value.id,
     credentialIri: value.credentialIri,
     webId: value.webId,
-    provider: value.provider,
+    provider,
     authMode: value.authMode,
     status: value.status,
     accountLabel: stringValue(value.accountLabel),
-    baseUrl: stringValue(value.baseUrl),
     expiresAt: stringValue(value.expiresAt),
     version: typeof value.version === 'number' ? value.version : undefined,
     reauthRequired: typeof value.reauthRequired === 'boolean' ? value.reauthRequired : undefined,
@@ -750,8 +1220,29 @@ function parseConnectAttempt(
       ? value.apiKeyManagementSupported
       : undefined,
     credentialId: stringValue(value.credentialId),
+    oauthCredential: parseOAuthCredential(value.oauthCredential),
     message: stringValue(value.message),
   }) as unknown as AiConnectAttempt
+}
+
+function parseOAuthCredential(value: unknown): AiConnectionsOAuthCredential | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)
+    || typeof value.accessToken !== 'string'
+    || !value.accessToken
+    || typeof value.refreshToken !== 'string'
+    || !value.refreshToken) {
+    throw new Error('AI Connection returned an invalid OAuth credential payload')
+  }
+  return compactObject({
+    accessToken: value.accessToken,
+    refreshToken: value.refreshToken,
+    expiresAt: stringValue(value.expiresAt),
+    scope: stringValue(value.scope),
+    idToken: stringValue(value.idToken),
+    accountSubject: stringValue(value.accountSubject),
+    expectedVersion: typeof value.expectedVersion === 'number' ? value.expectedVersion : undefined,
+  }) as AiConnectionsOAuthCredential
 }
 
 function parseModelDiscovery(

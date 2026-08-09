@@ -26,7 +26,13 @@ export function PodSettingsSubjectPanel({ kind }: { kind: SystemSettingsSubjectK
     } catch { setError('Settings evidence could not be loaded.'); }
     finally { setLoading(false); }
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void load();
+    });
+    return () => { cancelled = true; };
+  }, [load]);
 
   const save = async (patch: Record<string, string>) => {
     setError('');
@@ -73,7 +79,13 @@ function IdentityAccessContent({ runtime }: { runtime: ReturnType<typeof useXpod
       setAccess(status.status === 'granted' ? 'granted' : 'missing');
     } catch { setAccess('error'); }
   }, [runtime.fetch, runtime.podUrl, runtime.state.status, runtime.webId]);
-  useEffect(() => { void inspect(); }, [inspect]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void inspect();
+    });
+    return () => { cancelled = true; };
+  }, [inspect]);
   const revoke = async () => {
     if (!runtime.webId || !runtime.podUrl || !window.confirm('Revoke AI Gateway service access to Xpod settings resources? Provider credentials remain stored but the service can no longer use them.')) return;
     setRevoking(true);
@@ -97,7 +109,15 @@ function IdentityAccessContent({ runtime }: { runtime: ReturnType<typeof useXpod
 function RuntimeForm({ env, admin, save }: { env: Record<string, string>; admin: AdminStatus | null; save(patch: Record<string, string>): Promise<void> }) {
   const [baseUrl, setBaseUrl] = useState(env.CSS_BASE_URL ?? '');
   const [dataDir, setDataDir] = useState(env.CSS_ROOT_FILE_PATH ?? '');
-  useEffect(() => { setBaseUrl(env.CSS_BASE_URL ?? ''); setDataDir(env.CSS_ROOT_FILE_PATH ?? ''); }, [env]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setBaseUrl(env.CSS_BASE_URL ?? '');
+      setDataDir(env.CSS_ROOT_FILE_PATH ?? '');
+    });
+    return () => { cancelled = true; };
+  }, [env]);
   return <div className="space-y-4"><EvidenceGrid rows={[
     { label: 'Edition', value: admin?.env.XPOD_EDITION ?? env.XPOD_EDITION ?? 'local' }, { label: 'Configuration source', value: '.env.local / runtime bootstrap' },
     { label: 'Service startup', value: 'Gateway supervises Solid Server and API Server' }, { label: 'Automatic restart', value: 'Enabled for managed child services' },
@@ -108,14 +128,31 @@ function CloudForm({ env, save }: { env: Record<string, string>; save(patch: Rec
   const [endpoint, setEndpoint] = useState(env.XPOD_CLOUD_API_ENDPOINT ?? '');
   const [nodeId, setNodeId] = useState(env.XPOD_NODE_ID ?? '');
   const [domain, setDomain] = useState(env.XPOD_SP_DOMAIN ?? '');
-  useEffect(() => { setEndpoint(env.XPOD_CLOUD_API_ENDPOINT ?? ''); setNodeId(env.XPOD_NODE_ID ?? ''); setDomain(env.XPOD_SP_DOMAIN ?? ''); }, [env]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setEndpoint(env.XPOD_CLOUD_API_ENDPOINT ?? '');
+      setNodeId(env.XPOD_NODE_ID ?? '');
+      setDomain(env.XPOD_SP_DOMAIN ?? '');
+    });
+    return () => { cancelled = true; };
+  }, [env]);
   return <div className="space-y-4"><EvidenceGrid rows={[{ label: 'Node registration', value: nodeId || 'Not registered' }, { label: 'Heartbeat', value: endpoint ? 'Runtime managed' : 'Not configured' }, { label: 'Cluster coordination', value: endpoint ? 'Configured' : 'Unavailable' }]} /><div className="grid gap-4 sm:grid-cols-2"><TextInput label="Cloud endpoint" value={endpoint} onChange={setEndpoint} /><TextInput label="Node ID" value={nodeId} onChange={setNodeId} /><TextInput label="Service-provider domain" value={domain} onChange={setDomain} /></div><SaveButton onClick={() => save({ XPOD_CLOUD_API_ENDPOINT: endpoint, XPOD_NODE_ID: nodeId, XPOD_SP_DOMAIN: domain })} /></div>;
 }
 
 function AdvancedForm({ env, save }: { env: Record<string, string>; save(patch: Record<string, string>): Promise<void> }) {
   const [level, setLevel] = useState(env.CSS_LOGGING_LEVEL ?? 'info');
   const [stack, setStack] = useState(env.CSS_SHOW_STACK_TRACE === 'true');
-  useEffect(() => { setLevel(env.CSS_LOGGING_LEVEL ?? 'info'); setStack(env.CSS_SHOW_STACK_TRACE === 'true'); }, [env]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setLevel(env.CSS_LOGGING_LEVEL ?? 'info');
+      setStack(env.CSS_SHOW_STACK_TRACE === 'true');
+    });
+    return () => { cancelled = true; };
+  }, [env]);
   return <div className="space-y-4"><EvidenceGrid rows={[{ label: 'Log retention', value: '30 days', detail: 'Runtime logging profile' }, { label: 'Configuration provenance', value: '.env.local allowlist' }, { label: 'Restart requirement', value: 'Required after save' }]} /><label className="block space-y-2 text-sm font-medium">Logging level<select value={level} onChange={(event) => setLevel(event.target.value)} className="block h-10 w-full rounded-md border border-input bg-background px-3 sm:max-w-xs"><option>debug</option><option>info</option><option>warn</option><option>error</option></select></label><label className="flex items-center justify-between gap-3 rounded-md border border-border p-3 text-sm font-medium">Show stack traces<input type="checkbox" checked={stack} onChange={(event) => setStack(event.target.checked)} /></label><SaveButton onClick={() => save({ CSS_LOGGING_LEVEL: level, CSS_SHOW_STACK_TRACE: String(stack) })} /></div>;
 }
 

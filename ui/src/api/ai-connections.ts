@@ -14,6 +14,7 @@ interface CreateXpodAiConnectionsClientInput {
   webId: string;
   podUrl: string;
   authenticatedFetch: typeof fetch;
+  invocationFetch?: typeof fetch;
   now?: () => Date;
 }
 
@@ -29,6 +30,7 @@ export function createXpodAiConnectionsClient({
   webId,
   podUrl,
   authenticatedFetch,
+  invocationFetch,
   now,
 }: CreateXpodAiConnectionsClientInput): AiConnectionsClient {
   return createAiConnectionsClient({
@@ -37,6 +39,7 @@ export function createXpodAiConnectionsClient({
     authenticatedFetch: createServiceAccessGatewayFetch({
       podUrl,
       authenticatedFetch,
+      invocationFetch,
       now,
     }),
   });
@@ -45,10 +48,12 @@ export function createXpodAiConnectionsClient({
 export function createServiceAccessGatewayFetch({
   podUrl,
   authenticatedFetch,
+  invocationFetch = authenticatedFetch,
   now = () => new Date(),
 }: {
   podUrl: string;
   authenticatedFetch: typeof fetch;
+  invocationFetch?: typeof fetch;
   now?: () => Date;
 }): typeof fetch {
   const apiBase = resolveAiConnectionsApiBase(podUrl);
@@ -95,7 +100,7 @@ export function createServiceAccessGatewayFetch({
     const activeInvocation = await ensureInvocation();
     const headers = new Headers(init?.headers);
     headers.set('Authorization', `Bearer ${activeInvocation.gatewayKey}`);
-    return authenticatedFetch(input, {
+    return invocationFetch(input, {
       ...init,
       credentials: 'omit',
       headers,
@@ -105,6 +110,9 @@ export function createServiceAccessGatewayFetch({
   return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     if (isServiceAccessRequest(input, apiBase)) {
       return fetchServiceAccess(input, init);
+    }
+    if (!isAiGatewayRequest(input, apiBase)) {
+      return authenticatedFetch(input, init);
     }
 
     const response = await fetchWithInvocation(input, init);
@@ -121,14 +129,16 @@ export function createServiceAccessGatewayFetch({
 export function createXpodAiClientConfigurationBridge({
   podUrl,
   authenticatedFetch,
+  invocationFetch,
   now,
 }: {
   podUrl: string;
   authenticatedFetch: typeof fetch;
+  invocationFetch?: typeof fetch;
   now?: () => Date;
 }): AiClientConfigurationCapability {
   const apiBase = resolveAiConnectionsApiBase(podUrl);
-  const gatewayFetch = createServiceAccessGatewayFetch({ podUrl, authenticatedFetch, now });
+  const gatewayFetch = createServiceAccessGatewayFetch({ podUrl, authenticatedFetch, invocationFetch, now });
 
   return {
     inspect: async (client) => {
@@ -200,7 +210,18 @@ export function createXpodAiClientConfigurationBridge({
 function isServiceAccessRequest(input: RequestInfo | URL, apiBase: string): boolean {
   try {
     const url = new URL(String(input), apiBase);
-    return url.pathname === '/api/applets/service-access/ai-connections';
+    const base = new URL(apiBase);
+    return url.origin === base.origin && url.pathname === '/api/applets/service-access/ai-connections';
+  } catch {
+    return false;
+  }
+}
+
+function isAiGatewayRequest(input: RequestInfo | URL, apiBase: string): boolean {
+  try {
+    const url = new URL(String(input), apiBase);
+    const base = new URL(apiBase);
+    return url.origin === base.origin && (url.pathname.startsWith('/api/ai/') || url.pathname.startsWith('/v1/'));
   } catch {
     return false;
   }

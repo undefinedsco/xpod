@@ -39,6 +39,7 @@ describe('AI Connection management client', () => {
         status: 'connected',
         authMode: 'deviceCodeOAuth',
         accountLabel: 'user@example.com',
+        baseUrl: 'https://proxy.example/v1',
         deployment: 'cloud',
         webId: WEB_ID,
         metadata: { token: 'secret' },
@@ -57,20 +58,226 @@ describe('AI Connection management client', () => {
     const providers = await client.listProviders()
 
     expect(authenticatedFetch).toHaveBeenCalledWith(
-      'https://pod.example/api/ai/connections/providers',
+      'https://pod.example/api/ai/providers',
       expect.objectContaining({ method: 'GET' }),
     )
-    expect(providers).toEqual([{
-      provider: 'kimi',
-      status: 'connected',
-      authMode: 'deviceCodeOAuth',
-      accountLabel: 'user@example.com',
-      connect: {
-        modes: ['deviceCodeOAuth', 'browserAssistedApiKey'],
-        configured: true,
-      },
+    expect(providers).toMatchObject([{
+      id: 'kimi',
+      name: 'Kimi',
+      credentials: [{
+        id: 'kimi:current',
+        offeringId: 'official-subscription',
+        authMode: 'deviceCode',
+        label: 'user@example.com',
+        enabled: true,
+        priority: 0,
+        health: 'healthy',
+        baseUrl: 'https://proxy.example/v1',
+        version: 0,
+      }],
+      status: 'available',
     }])
+    expect(providers[0]?.offerings).toEqual([])
+    expect(providers[0]?.selectedModels).toEqual([])
     expect(JSON.stringify(providers)).not.toMatch(/deployment|webId|metadata|secret/)
+  })
+
+  it('parses grouped Provider credentials without exposing secrets', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [{
+        id: 'bailian',
+        name: 'Alibaba Bailian',
+        status: 'available',
+        offerings: [
+          {
+            id: 'pay-as-you-go', label: 'Pay as You Go', productLabel: 'Alibaba Bailian', lifecycle: 'active',
+            kind: 'api-platform', authModes: ['apiKey'], runtimeProviderIds: ['bailian'],
+            credentialPrefixHints: ['sk-'], consoleUrl: 'https://console.example',
+            subscriptionUrl: 'https://subscribe.example',
+            endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
+            modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+            quota: { strategy: 'providerApi', url: 'https://quota.example' },
+            usagePolicyUrl: 'https://policy.example', region: 'cn',
+          },
+          { id: 'coding-plan', label: 'Coding Plan', kind: 'token-plan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
+          { id: 'token-plan', label: 'Token Plan', kind: 'token-plan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
+        ],
+        credentials: [
+          { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey', label: 'PAYG', enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...payg', version: 1, apiKey: 'sk-secret-payg' },
+          { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey', label: 'Coding', enabled: true, priority: 20, health: 'unknown', maskedHint: 'sk-...code', version: 2, encryptedSecret: 'ciphertext-coding' },
+          { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey', label: 'Token', enabled: false, priority: 30, health: 'expired', expiresAt: '2026-08-08T00:00:00.000Z', maskedHint: 'sk-...tokn', version: 3, accessToken: 'token-secret' },
+        ],
+        selectedModels: [
+          { id: 'qwen-max', provider: 'bailian', secret: 'model-secret' },
+        ],
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const providers = await client.listProviders()
+
+    expect(providers).toMatchObject([{
+      id: 'bailian',
+      name: 'Alibaba Bailian',
+      offerings: [
+        {
+          id: 'pay-as-you-go', productLabel: 'Alibaba Bailian', lifecycle: 'active', credentialPrefixHints: ['sk-'],
+          consoleUrl: 'https://console.example', subscriptionUrl: 'https://subscribe.example',
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
+          modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+          quota: { strategy: 'providerApi', url: 'https://quota.example' },
+          usagePolicyUrl: 'https://policy.example', region: 'cn',
+        },
+        { id: 'coding-plan' },
+        { id: 'token-plan' },
+      ],
+      credentials: [
+        { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey' },
+        { id: 'cred-coding', offeringId: 'coding-plan', authMode: 'apiKey' },
+        { id: 'cred-token', offeringId: 'token-plan', authMode: 'apiKey' },
+      ],
+      selectedModels: [{ id: 'qwen-max', provider: 'bailian' }],
+      status: 'available',
+    }])
+    expect(JSON.stringify(providers)).not.toMatch(/encryptedSecret|accessToken|sk-secret|ciphertext|token-secret|model-secret/)
+  })
+
+  it('creates API-key credentials through the Provider credential-pool route without exposing secrets', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      credential: {
+        id: 'openai-key-work',
+        provider: 'openai',
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        label: 'Work key',
+        enabled: true,
+        priority: 20,
+        health: 'healthy',
+        maskedHint: 'sk-...work',
+        baseUrl: 'https://proxy.example/v1',
+        version: 1,
+        encryptedSecret: 'ciphertext',
+      },
+    }), { status: 201, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const credential = await client.createApiKeyCredential('openai', {
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret',
+      label: 'Work key',
+      baseUrl: 'https://proxy.example/v1',
+      priority: 20,
+    })
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/providers/openai/credentials/api-key',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          offeringId: 'api-platform',
+          apiKey: 'sk-new-secret',
+          label: 'Work key',
+          baseUrl: 'https://proxy.example/v1',
+          priority: 20,
+        }),
+      }),
+    )
+    expect(credential).toMatchObject({
+      id: 'openai-key-work',
+      offeringId: 'api-platform',
+      authMode: 'apiKey',
+      label: 'Work key',
+      maskedHint: 'sk-...work',
+      baseUrl: 'https://proxy.example/v1',
+      version: 1,
+    })
+    expect(JSON.stringify(credential)).not.toMatch(/sk-new-secret|ciphertext/)
+  })
+
+  it('patches, deletes, and tests exact Provider credentials through credential-pool routes', async () => {
+    const authenticatedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/ai/providers/openai/credentials/openai-key-work')) {
+        return new Response(JSON.stringify({
+          credential: {
+            id: 'openai-key-work',
+            provider: 'openai',
+            offeringId: 'api-platform',
+            authMode: 'apiKey',
+            label: 'Paused key',
+            enabled: false,
+            priority: 30,
+            health: 'unknown',
+            version: 8,
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.endsWith('/api/ai/providers/openai/credentials/test')) {
+        return new Response(JSON.stringify({
+          result: {
+            status: 'ok',
+            checkedAt: '2026-08-08T00:00:00.000Z',
+            apiKey: 'must-not-return',
+          },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      throw new Error(`unexpected url: ${url}`)
+    }) as unknown as typeof fetch
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.updateProviderCredential('openai', 'openai-key-work', {
+      expectedVersion: 7,
+      label: 'Paused key',
+      enabled: false,
+      priority: 30,
+      baseUrl: 'https://proxy.example/v1',
+    })
+    await client.deleteProviderCredential('openai', 'openai-key-work')
+    const result = await client.testProviderCredential('openai', { credentialId: 'openai-key-work' })
+
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      1,
+      'https://pod.example/api/ai/providers/openai/credentials/openai-key-work',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({
+          expectedVersion: 7,
+          label: 'Paused key',
+          enabled: false,
+          priority: 30,
+          baseUrl: 'https://proxy.example/v1',
+        }),
+      }),
+    )
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      2,
+      'https://pod.example/api/ai/providers/openai/credentials/openai-key-work',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      3,
+      'https://pod.example/api/ai/providers/openai/credentials/test',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ credentialId: 'openai-key-work' }),
+      }),
+    )
+    expect(result).toEqual({
+      status: 'ok',
+      checkedAt: '2026-08-08T00:00:00.000Z',
+    })
   })
 
   it('discovers the AI Connection service-access descriptor with authenticated fetch', async () => {
@@ -164,6 +371,43 @@ describe('AI Connection management client', () => {
       'OpenAI does not support this operation.',
     ])
     expect(messages.join(' ')).not.toMatch(/sk-|token|Bearer|provider-secret/)
+  })
+
+  it('forwards offering identity through quota status and refresh requests', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      credential: 'credentials.ttl#bailian-token',
+      status: 'unsupported',
+      windows: [],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      expiresAt: '2026-08-09T01:00:00.000Z',
+      source: 'bailian:console-only',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.quota('bailian', false, {
+      offeringId: 'token-plan',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
+    await client.quota('bailian', true, {
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
+
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      1,
+      'https://pod.example/api/ai/gateway/providers/bailian/quota/status?credentialIri=credentials.ttl%23bailian-token&offeringId=token-plan',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(JSON.parse(String(authenticatedFetch.mock.calls[1]?.[1]?.body))).toMatchObject({
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
   })
 
   it('normalizes only attributable models from the current-identity model catalog', async () => {
@@ -288,6 +532,31 @@ describe('AI Connection management client', () => {
         method: 'POST',
         body: JSON.stringify({ mode: 'browserAssistedApiKey' }),
       }),
+    )
+  })
+
+  it('disconnects a specific Provider credential when credentialId is supplied', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      record: {
+        id: 'cloud-kimi-oauth',
+        credentialIri: 'https://pod.example/alice/settings/credentials/kimi.ttl#cloud-kimi-oauth',
+        webId: WEB_ID,
+        provider: 'kimi',
+        authMode: 'oauth',
+        status: 'disconnected',
+      },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.disconnect('kimi', 'cloud-kimi-oauth')
+
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      'https://pod.example/api/ai/gateway/providers/kimi/connect?credentialId=cloud-kimi-oauth',
+      expect.objectContaining({ method: 'DELETE' }),
     )
   })
 

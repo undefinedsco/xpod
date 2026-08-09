@@ -48,6 +48,29 @@ describe('PlaintextCredentialVault', () => {
     )).rejects.toThrow(/context/i);
   });
 
+  it('reads browser-written legacy base64 plaintext envelopes', async() => {
+    const vault = new PlaintextCredentialVault();
+    const principal = { webId: 'https://id.example/alice#me' };
+    const credentialIri = 'https://pod.example/settings/ai.ttl#openai';
+    const record = {
+      algorithm: 'PLAINTEXT' as const,
+      encoding: 'base64',
+      ciphertext: Buffer.from(JSON.stringify({ type: 'apiKey', apiKey: 'sk-browser' })).toString('base64'),
+      webId: principal.webId,
+      credentialIri,
+      provider: 'openai',
+      aadPurpose: 'xpod-provider-credential',
+      aadVersion: 'v1',
+      nonce: '',
+      dekWrapAlgorithm: 'PLAINTEXT',
+      keyId: 'plaintext',
+      wrappedDek: '',
+    };
+
+    await expect(vault.open(principal, credentialIri, 'openai', record as never))
+      .resolves.toEqual({ type: 'apiKey', apiKey: 'sk-browser' });
+  });
+
   it('reads a legacy encrypted record but rewrites it as plaintext', async() => {
     const legacy = {
       seal: async() => { throw new Error('new writes must not use the legacy vault'); },

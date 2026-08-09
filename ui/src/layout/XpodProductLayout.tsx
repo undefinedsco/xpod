@@ -15,8 +15,6 @@ export interface ProductNavigationItem {
 
 export interface XpodProductLayoutProps {
   product: 'dashboard' | 'settings';
-  items?: readonly ProductNavigationItem[];
-  switchHref?: '/dashboard/overview' | '/settings/models';
 }
 
 type NavigationLinkItem = Pick<ProductNavigationItem, 'id' | 'label' | 'icon'> & {

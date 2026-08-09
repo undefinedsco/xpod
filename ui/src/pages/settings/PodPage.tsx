@@ -41,8 +41,12 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
       && activeIdentityKeyRef.current === requestIdentityKey
     );
 
-    setLoading(true);
-    setError(undefined);
+    queueMicrotask(() => {
+      if (isCurrentRequest()) {
+        setLoading(true);
+        setError(undefined);
+      }
+    });
     try {
       const nextStatus = await fetchPodSettingsStatus({
         webId,
@@ -62,16 +66,26 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
       }
     }
   }, [identityKey, runtime.fetch, runtime.podUrl, runtime.webId]);
+  const loadStatusRef = useRef(loadStatus);
 
   useEffect(() => {
+    loadStatusRef.current = loadStatus;
+  }, [loadStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
     activeIdentityKeyRef.current = identityKey;
     requestIdRef.current += 1;
-    setStatus(undefined);
-    setError(undefined);
-    setLoading(false);
+    queueMicrotask(() => {
+      if (cancelled || activeIdentityKeyRef.current !== identityKey) return;
+      setStatus(undefined);
+      setError(undefined);
+      setLoading(false);
+    });
     if (identityKey) {
-      void loadStatus();
+      void loadStatusRef.current();
     }
+    return () => { cancelled = true; };
   }, [identityKey, loadStatus]);
 
   const identity = useMemo(() => ({

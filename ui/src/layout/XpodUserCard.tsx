@@ -75,6 +75,12 @@ export function XpodUserCard() {
           <a className="mt-2 inline-flex text-xs font-medium text-primary hover:underline" href={accountSignedIn ? '/.account/' : '/.account/login/password/'}>
             {accountSignedIn ? 'Account settings' : 'Sign in to Xpod'}
           </a>
+          {accountSignedIn ? (
+            <button type="button" className="mt-2 flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent" onClick={() => void signOutAccount()}>
+              <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
+              Sign out account
+            </button>
+          ) : null}
         </div>
 
         <div className="mt-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">Solid identity</div>
@@ -121,7 +127,6 @@ export function XpodUserCard() {
               <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
               Disconnect WebID
             </button>
-            {accountSignedIn ? <button type="button" className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent" onClick={() => void signOutAccount()}><LogOut className="mr-2 h-4 w-4" aria-hidden="true" />Sign out account</button> : null}
           </>
         ) : (
           <div className="mt-4">

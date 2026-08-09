@@ -205,7 +205,7 @@ export function ConsentPage() {
       console.log('[Consent] Redirect URL:', redirectUrl);
       
       if (redirectUrl) {
-        window.location.href = redirectUrl;
+        window.location.assign(redirectUrl);
       } else {
         // No redirect URL - authorization complete but nowhere to go
         // This might happen if the OIDC session was lost

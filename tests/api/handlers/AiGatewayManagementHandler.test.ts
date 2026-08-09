@@ -15,6 +15,7 @@ import {
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../../../src/api/ai-gateway/connect';
+import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
 import type {
   KeyWrapContext,
@@ -27,6 +28,16 @@ import type { ApiServer } from '../../../src/api/ApiServer';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
+
+function callerOwnedAuth(webId = WEB_ID, accessToken = 'caller-owned-access-token'): AuthenticatedRequest['auth'] {
+  return {
+    type: 'solid',
+    webId,
+    viaApiKey: true,
+    accessToken,
+    tokenType: 'Bearer',
+  };
+}
 
 class StaticKeyWrapper implements KeyWrapper {
   public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
@@ -159,7 +170,7 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Authentication required' });
   });
 
-  it('returns 503 when the AI Connection service identity is unavailable', async () => {
+  it('uses the authenticated WebID for interactive service access when no service identity is configured', async () => {
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
       repository: new InMemoryGatewayAccessKeyRepository(),
@@ -172,8 +183,17 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }), res, {});
 
-    expect(res.statusCode).toBe(503);
-    expect(JSON.parse(res.body)).toEqual({ error: 'AI Connection service identity is unavailable' });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      service: {
+        webId: WEB_ID,
+      },
+      resources: expect.arrayContaining([
+        expect.objectContaining({
+          url: 'https://id.example/alice/settings/credentials.ttl',
+        }),
+      ]),
+    });
   });
 
   it('publishes AI Connection service-access resources derived only from the authenticated WebID', async () => {
@@ -370,11 +390,12 @@ describe('AiGatewayManagementHandler', () => {
   it('creates, authenticates, lists, and revokes a locator-backed key across the real Pod repository boundary', async () => {
     const podRows = new Map<string, any>();
     const codec = new AesGatewayKeyLocatorCodec('locator-secret');
+    const internalPodAccess = {
+      getTrustedFetch: vi.fn(async () => fetch),
+    };
     const repository = new PodGatewayAccessKeyRepository({
       locatorCodec: codec,
-      internalPodAccess: {
-        getTrustedFetch: vi.fn(async () => fetch),
-      },
+      internalPodAccess,
       dbFactory: async () => ({
         init: vi.fn(),
         insert: () => ({
@@ -410,11 +431,9 @@ describe('AiGatewayManagementHandler', () => {
     });
     const createRes = response();
 
-    await routes['POST /api/ai/gateway/keys'](request({
-      type: 'solid',
-      webId: WEB_ID,
-      accessToken: 'solid-access-token',
-    }, { name: 'Codex laptop' }), createRes, {});
+    const auth = callerOwnedAuth(WEB_ID, 'solid-access-token');
+
+    await routes['POST /api/ai/gateway/keys'](request(auth, { name: 'Codex laptop' }), createRes, {});
 
     const created = JSON.parse(createRes.body);
     expect(codec.decode(created.record.id)).toMatchObject({ owner: WEB_ID, deployment: 'cloud' });
@@ -429,16 +448,17 @@ describe('AiGatewayManagementHandler', () => {
       success: true,
       context: { webId: WEB_ID },
     });
+    internalPodAccess.getTrustedFetch.mockClear();
 
     const listRes = response();
-    await routes['GET /api/ai/gateway/keys'](request({ type: 'solid', webId: WEB_ID }), listRes, {});
+    await routes['GET /api/ai/gateway/keys'](request(auth), listRes, {});
     expect(JSON.parse(listRes.body).data).toEqual([
       expect.objectContaining({ id: created.record.id, name: 'Codex laptop' }),
     ]);
     expect(JSON.parse(listRes.body).data[0]).not.toHaveProperty('deployment');
 
     const revokeRes = response();
-    await routes['DELETE /api/ai/gateway/keys/:keyId'](request({ type: 'solid', webId: WEB_ID }), revokeRes, {
+    await routes['DELETE /api/ai/gateway/keys/:keyId'](request(auth), revokeRes, {
       keyId: encodeURIComponent(created.record.id),
     });
     expect(JSON.parse(revokeRes.body).record).toMatchObject({
@@ -447,6 +467,7 @@ describe('AiGatewayManagementHandler', () => {
       name: 'Codex laptop',
     });
     expect(JSON.parse(revokeRes.body).record).not.toHaveProperty('deployment');
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
   });
 
   it('lists keys without plaintext or secret hash for the current owner', async () => {
@@ -637,6 +658,34 @@ describe('AiGatewayManagementHandler', () => {
       },
     });
     expect(JSON.parse(res.body)).not.toHaveProperty('deployment');
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('clientId');
+  });
+
+  it('rejects provider Connect begin requests that include a clientId', async () => {
+    const connectService = {
+      begin: vi.fn(),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      mode: 'deviceCodeOAuth',
+      clientId: 'attacker-client-id',
+    }), res, {
+      provider: 'kimi',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'clientId is not accepted' });
+    expect(connectService.begin).not.toHaveBeenCalled();
   });
 
   it('lists effective provider connections for the current identity without infrastructure fields', async () => {
@@ -715,6 +764,11 @@ describe('AiGatewayManagementHandler', () => {
         deployment: 'cloud',
         status: 'completed',
         credential: { id: 'cred_1', deployment: 'cloud' },
+        oauthCredential: {
+          accessToken: 'one-time-access',
+          refreshToken: 'one-time-refresh',
+          expiresAt: '2026-08-09T08:00:00.000Z',
+        },
       })),
     } as any;
     const { server, routes } = createServer();
@@ -741,6 +795,13 @@ describe('AiGatewayManagementHandler', () => {
 
     expect(JSON.stringify(JSON.parse(statusResponse.body))).not.toContain('deployment');
     expect(JSON.stringify(JSON.parse(pollResponse.body))).not.toContain('deployment');
+    expect(JSON.parse(pollResponse.body)).toMatchObject({
+      oauthCredential: {
+        accessToken: 'one-time-access',
+        refreshToken: 'one-time-refresh',
+      },
+    });
+    expect(JSON.stringify(JSON.parse(pollResponse.body))).not.toContain('client_secret');
     expect(connectService.status).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
     expect(connectService.pollDevice).toHaveBeenCalledWith(expect.objectContaining({ deployment: 'cloud' }));
   });
@@ -775,6 +836,7 @@ describe('AiGatewayManagementHandler', () => {
       signature: 'sig_1',
       apiKey: 'sk-submit-only-here',
       accountLabel: 'Alice',
+      baseUrl: 'https://gateway.example/v1',
     }), complete, {
       provider: 'openai',
     });
@@ -789,6 +851,7 @@ describe('AiGatewayManagementHandler', () => {
       signature: 'sig_1',
       apiKey: 'sk-submit-only-here',
       accountLabel: 'Alice',
+      baseUrl: 'https://gateway.example/v1',
       auth: {
         type: 'solid',
         webId: WEB_ID,
@@ -797,10 +860,102 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(complete.body)).not.toHaveProperty('deployment');
   });
 
+  it('maps legacy provider Connect operation errors instead of leaking raw route failures', async () => {
+    const auth = { type: 'solid' as const, webId: WEB_ID };
+
+    const completeService = {
+      completeApiKey: vi.fn(async () => {
+        throw new Error('Connect attempt not found');
+      }),
+    } as any;
+    const completeServer = createServer();
+    registerAiGatewayManagementRoutes(completeServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: completeService,
+    });
+    const complete = response();
+    await expect(completeServer.routes['POST /api/ai/gateway/providers/:provider/connect/complete-api-key'](
+      request(auth, {
+        attemptId: 'attempt_missing',
+        state: 'state_1',
+        signature: 'sig_1',
+        apiKey: 'sk-test',
+      }),
+      complete,
+      { provider: 'openai' },
+    )).resolves.toBeUndefined();
+    expect(complete.statusCode).toBe(404);
+    expect(JSON.parse(complete.body)).toEqual({ error: 'Provider Connect attempt not found' });
+
+    const refreshService = {
+      refreshCallerOwned: vi.fn(async () => {
+        throw new Error('provider_credential_not_found');
+      }),
+    } as any;
+    const refreshServer = createServer();
+    registerAiGatewayManagementRoutes(refreshServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: refreshService,
+    });
+    const refresh = response();
+    await expect(refreshServer.routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](
+      request(auth, { credentialId: 'missing_credential', refreshToken: 'refresh', expectedVersion: 1 }),
+      refresh,
+      { provider: 'kimi' },
+    )).resolves.toBeUndefined();
+    expect(refresh.statusCode).toBe(404);
+    expect(JSON.parse(refresh.body)).toEqual({ error: 'Provider credential not found for current identity' });
+
+    const disconnectService = {
+      disconnect: vi.fn(async () => {
+        throw new Error('service_access_missing');
+      }),
+    } as any;
+    const disconnectServer = createServer();
+    registerAiGatewayManagementRoutes(disconnectServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: disconnectService,
+    });
+    const disconnect = response();
+    await expect(disconnectServer.routes['DELETE /api/ai/gateway/providers/:provider/connect'](
+      request(auth),
+      disconnect,
+      { provider: 'kimi' },
+    )).resolves.toBeUndefined();
+    expect(disconnect.statusCode).toBe(403);
+    expect(JSON.parse(disconnect.body)).toEqual({ error: 'service_access_missing' });
+
+    const unsupportedService = {
+      refreshCallerOwned: vi.fn(async () => {
+        throw new Error('credential_collection_query_unsupported');
+      }),
+    } as any;
+    const unsupportedServer = createServer();
+    registerAiGatewayManagementRoutes(unsupportedServer.server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService: unsupportedService,
+    });
+    const unsupported = response();
+    await expect(unsupportedServer.routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](
+      request(auth, { credentialId: 'credential_1', refreshToken: 'refresh', expectedVersion: 1 }),
+      unsupported,
+      { provider: 'kimi' },
+    )).resolves.toBeUndefined();
+    expect(unsupported.statusCode).toBe(501);
+    expect(JSON.parse(unsupported.body)).toMatchObject({
+      error: 'credential_collection_query_unsupported',
+    });
+  });
+
   it('persists browser-assisted API keys through the production management handler and Pod repository without plaintext serialization', async () => {
     const rows = new Map<string, Record<string, unknown>>();
+    const internalPodAccess = { getTrustedFetch: vi.fn(async () => fetch) };
     const repository = new PodConnectedCredentialRepository({
-      internalPodAccess: { getTrustedFetch: vi.fn(async () => fetch) },
+      internalPodAccess,
       dbFactory: async () => ({
         init: vi.fn(),
         insert: () => ({
@@ -819,6 +974,21 @@ describe('AiGatewayManagementHandler', () => {
           Object.assign(row, patch);
           return jsonClone(row);
         },
+        update: () => ({
+          set: (patch: Record<string, unknown>) => ({
+            where: () => ({
+              returning: () => ({
+                execute: async () => {
+                  const row = [...rows.values()][0];
+                  if (!row) return [];
+                  Object.assign(row, patch);
+                  rows.set(String(row.id), row);
+                  return [jsonClone(row)];
+                },
+              }),
+            }),
+          }),
+        }),
       } as any),
     });
     const vault = new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
@@ -846,7 +1016,7 @@ describe('AiGatewayManagementHandler', () => {
       deployment: 'cloud',
       connectService,
     });
-    const auth = { type: 'solid' as const, webId: WEB_ID };
+    const auth = callerOwnedAuth(WEB_ID, 'solid-access-token');
     const begin = response();
     await routes['POST /api/ai/gateway/providers/:provider/connect/begin'](request(auth, {
       mode: 'browserAssistedApiKey',
@@ -887,6 +1057,21 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.stringify(provider)).not.toContain('encryptedSecret');
     expect(JSON.stringify(provider)).not.toContain('sk-production-management-path');
 
+    const pool = response();
+    await routes['GET /api/ai/providers'](request(auth), pool, {});
+    const openAiPool = JSON.parse(pool.body).data.find((item: any) => item.id === 'openai');
+    expect(openAiPool.credentials).toEqual([
+      expect.objectContaining({
+        id: 'credentials.ttl#cloud-openai',
+        provider: 'openai',
+        authMode: 'apiKey',
+        label: 'Alice OpenAI',
+        enabled: true,
+      }),
+    ]);
+    expect(JSON.stringify(openAiPool)).not.toContain('encryptedSecret');
+    expect(JSON.stringify(openAiPool)).not.toContain('sk-production-management-path');
+
     const remove = response();
     await routes['DELETE /api/ai/gateway/providers/:provider/connect'](request(auth), remove, {
       provider: 'openai',
@@ -897,6 +1082,7 @@ describe('AiGatewayManagementHandler', () => {
       status: 'revoked',
     });
     expect(JSON.stringify([...rows.values()])).not.toContain('sk-production-management-path');
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
   });
 
   it('allows owner-bound internal invocation tokens through management key, provider, quota and connect routes', async () => {
@@ -1109,9 +1295,15 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Gateway API keys cannot manage provider Connect state' });
   });
 
-  it('does not accept plaintext refresh tokens through the provider Connect refresh API', async () => {
+  it('passes only the transient refresh input through caller-owned OAuth refresh', async () => {
     const connectService = {
-      refresh: vi.fn(async () => undefined),
+      refreshCallerOwned: vi.fn(async () => ({
+        mode: 'deviceCodeOAuth',
+        status: 'completed',
+        provider: 'kimi',
+        credentialId: 'cloud-kimi-oauth',
+        oauthCredential: { accessToken: 'next-access', refreshToken: 'next-refresh', expectedVersion: 3 },
+      })),
     } as any;
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -1126,19 +1318,464 @@ describe('AiGatewayManagementHandler', () => {
       webId: WEB_ID,
     }, {
       refreshToken: 'must-not-leave-handler',
+      credentialId: 'cloud-kimi-oauth',
+      expectedVersion: 3,
     }), res, {
       provider: 'kimi',
     });
 
     expect(res.statusCode).toBe(200);
-    expect(connectService.refresh).toHaveBeenCalledWith({
+    expect(connectService.refreshCallerOwned).toHaveBeenCalledWith({
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
+      credentialId: 'cloud-kimi-oauth',
+      refreshToken: 'must-not-leave-handler',
+      expectedVersion: 3,
       auth: {
         type: 'solid',
         webId: WEB_ID,
       },
+    });
+    expect(JSON.parse(res.body)).toMatchObject({ oauthCredential: { refreshToken: 'next-refresh' } });
+    expect(res.body).not.toContain('must-not-leave-handler');
+  });
+
+  it('passes an optional credentialId through provider Connect disconnect', async () => {
+    const connectService = {
+      disconnect: vi.fn(async () => ({
+        id: 'cloud-kimi-oauth',
+        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#cloud-kimi-oauth',
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode: 'deviceCodeOAuth',
+        status: 'revoked',
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const req = request({ type: 'solid', webId: WEB_ID });
+    req.url = '/api/ai/gateway/providers/kimi/connect?credentialId=cloud-kimi-oauth';
+    const res = response();
+
+    await routes['DELETE /api/ai/gateway/providers/:provider/connect'](req, res, {
+      provider: 'kimi',
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.disconnect).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'cloud-kimi-oauth',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+      },
+    });
+  });
+
+  it('returns grouped provider credential pools without credential secrets', async () => {
+    const connectService = {
+      listProviderCredentialPools: vi.fn(async () => [
+        {
+          id: 'kimi',
+          name: 'Kimi',
+          status: 'available',
+          offerings: [{ id: 'api-platform', label: 'API Platform' }],
+          credentials: [
+            {
+              id: 'kimi-key-a',
+              credentialIri: 'https://id.example/alice/settings/credentials.ttl#kimi-key-a',
+              webId: WEB_ID,
+              provider: 'kimi',
+              deployment: 'cloud',
+              offeringId: 'api-platform',
+              authMode: 'apiKey',
+              accountLabel: 'Alice Kimi',
+              label: 'Alice Kimi',
+              enabled: true,
+              priority: 10,
+              health: 'healthy',
+              status: 'active',
+              baseUrl: 'https://api.moonshot.cn/v1',
+              maskedHint: 'sk-...abcd',
+              version: 3,
+              expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+              encryptedSecret: { algorithm: 'test', wrappedDek: 'wrapped', ciphertext: 'cipher' },
+              refreshToken: 'refresh-secret',
+              apiKey: 'sk-secret',
+              metadata: {
+                encryptedSecret: 'nested-secret',
+                apiKey: 'nested-api-key',
+                quota: { status: 'ok', remaining: 42 },
+              },
+            },
+          ],
+          selectedModels: [{ id: 'moonshot-v1-8k', provider: 'kimi' }],
+        },
+      ]),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['GET /api/ai/providers'](request({ type: 'solid', webId: WEB_ID }), res, {});
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.listProviderCredentialPools).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      data: [
+        {
+          id: 'kimi',
+          name: 'Kimi',
+          status: 'available',
+          offerings: [{ id: 'api-platform', label: 'API Platform' }],
+          credentials: [
+            {
+              id: 'kimi-key-a',
+              provider: 'kimi',
+              offeringId: 'api-platform',
+              authMode: 'apiKey',
+              label: 'Alice Kimi',
+              enabled: true,
+              priority: 10,
+              health: 'healthy',
+              maskedHint: 'sk-...abcd',
+              expiresAt: '2026-08-01T00:00:00.000Z',
+              baseUrl: 'https://api.moonshot.cn/v1',
+              version: 3,
+              quota: { status: 'ok', remaining: 42 },
+            },
+          ],
+          selectedModels: [{ id: 'moonshot-v1-8k', provider: 'kimi' }],
+        },
+      ],
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/encryptedSecret|refreshToken|sk-secret|nested-api-key|wrapped|cipher/);
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('credentialIri');
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain(WEB_ID);
+  });
+
+  it('reports an unsupported Pod collection capability without a generic 500', async () => {
+    const connectService = {
+      listProviderCredentialPools: vi.fn(async () => {
+        throw new Error('credential_collection_query_unsupported');
+      }),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['GET /api/ai/providers'](request({ type: 'solid', webId: WEB_ID }), res, {});
+
+    expect(res.statusCode).toBe(501);
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: 'credential_collection_query_unsupported',
+    });
+  });
+
+  it('creates API-key credentials in a provider pool without echoing plaintext secrets', async () => {
+    const connectService = {
+      createApiKeyCredential: vi.fn(async (input: any) => ({
+        id: 'kimi-key-new',
+        provider: input.provider,
+        offeringId: input.offeringId,
+        authMode: 'apiKey',
+        accountLabel: input.label,
+        enabled: true,
+        priority: 30,
+        health: 'healthy',
+        status: 'active',
+        maskedHint: 'sk-...tkey',
+        version: 1,
+        encryptedSecret: { ciphertext: 'cipher' },
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/api-key'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret-key',
+      label: 'Work key',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      priority: 30,
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(201);
+    expect(connectService.createApiKeyCredential).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      offeringId: 'api-platform',
+      apiKey: 'sk-new-secret-key',
+      label: 'Work key',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      priority: 30,
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      credential: expect.objectContaining({
+        id: 'kimi-key-new',
+        provider: 'kimi',
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        label: 'Work key',
+      }),
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/sk-new-secret-key|encryptedSecret|cipher/);
+  });
+
+  it('returns coded invalid_request errors for incompatible API-key offerings', async () => {
+    const connectService = {
+      createApiKeyCredential: vi.fn(async () => {
+        throw new GatewayProtocolError('Provider offering is not compatible with API key credentials', {
+          code: 'invalid_request',
+          status: 400,
+          details: { provider: 'kimi', offeringId: 'official-subscription' },
+        });
+      }),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/api-key'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      offeringId: 'official-subscription',
+      apiKey: 'sk-new-secret-key',
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: {
+        code: 'invalid_request',
+        message: 'Provider offering is not compatible with API key credentials',
+        status: 400,
+        details: { provider: 'kimi', offeringId: 'official-subscription' },
+      },
+    });
+  });
+
+  it('patches only allowlisted credential fields and requires expectedVersion', async () => {
+    const connectService = {
+      updateCredential: vi.fn(async (input: any) => ({
+        id: input.credentialId,
+        provider: input.provider,
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        accountLabel: input.patch.label,
+        enabled: input.patch.enabled,
+        priority: input.patch.priority,
+        health: 'disabled',
+        status: 'active',
+        version: 8,
+        metadata: { baseUrl: input.patch.baseUrl },
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+
+    const missingVersion = response();
+    await routes['PATCH /api/ai/providers/:provider/credentials/:credentialId'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, { enabled: false }), missingVersion, { provider: 'kimi', credentialId: 'kimi-key-a' });
+
+    const patched = response();
+    await routes['PATCH /api/ai/providers/:provider/credentials/:credentialId'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      label: 'Paused',
+      enabled: false,
+      priority: 5,
+      baseUrl: 'https://api.moonshot.cn/v1',
+      expectedVersion: 7,
+      apiKey: 'must-be-ignored',
+      status: 'revoked',
+    }), patched, { provider: 'kimi', credentialId: 'kimi-key-a' });
+
+    expect(missingVersion.statusCode).toBe(400);
+    expect(JSON.parse(missingVersion.body)).toEqual({ error: 'expectedVersion is required' });
+    expect(patched.statusCode).toBe(200);
+    expect(connectService.updateCredential).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      expectedVersion: 7,
+      patch: {
+        label: 'Paused',
+        enabled: false,
+        priority: 5,
+        baseUrl: 'https://api.moonshot.cn/v1',
+      },
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.stringify(connectService.updateCredential.mock.calls[0][0])).not.toContain('must-be-ignored');
+  });
+
+  it('deletes one credential by id', async () => {
+    const connectService = {
+      revokeCredential: vi.fn(async (input: any) => ({
+        id: input.credentialId,
+        provider: input.provider,
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        enabled: false,
+        priority: 10,
+        health: 'disabled',
+        status: 'revoked',
+        version: 4,
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['DELETE /api/ai/providers/:provider/credentials/:credentialId'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, { provider: 'kimi', credentialId: 'kimi-key-a' });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.revokeCredential).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      auth: { type: 'solid', webId: WEB_ID },
+    }));
+  });
+
+  it('tests provider credentials without exposing probe secrets', async () => {
+    const connectService = {
+      testCredential: vi.fn(async () => ({
+        status: 'ok',
+        checkedAt: '2026-08-08T00:00:00.000Z',
+        apiKey: 'must-not-return',
+      })),
+    } as any;
+    const modelsService = { list: vi.fn() } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+      modelsService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/test'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      credentialId: 'kimi-key-a',
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(200);
+    expect(connectService.testCredential).toHaveBeenCalledWith({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      modelsService,
+      auth: { type: 'solid', webId: WEB_ID },
+    });
+    expect(JSON.parse(res.body)).toEqual({
+      result: {
+        status: 'ok',
+        checkedAt: '2026-08-08T00:00:00.000Z',
+      },
+    });
+    expect(JSON.stringify(JSON.parse(res.body))).not.toContain('must-not-return');
+  });
+
+  it('rejects temporary API keys on provider credential test route', async () => {
+    const connectService = {
+      testCredential: vi.fn(),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/providers/:provider/credentials/test'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, {
+      apiKey: 'sk-temporary',
+    }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'credentialId is required' });
+    expect(connectService.testCredential).not.toHaveBeenCalled();
+  });
+
+  it('adds deprecation headers to legacy provider Connect routes', async () => {
+    const connectService = {
+      refreshCallerOwned: vi.fn(async () => ({ mode: 'deviceCodeOAuth', status: 'completed', provider: 'kimi' })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      connectService,
+    });
+    const res = response();
+
+    await routes['POST /api/ai/gateway/providers/:provider/connect/refresh'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }, { credentialId: 'credential-1', refreshToken: 'refresh', expectedVersion: 1 }), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers).toMatchObject({
+      deprecation: 'true',
+      link: '</api/ai/providers>; rel="successor-version"',
     });
   });
 });

@@ -44,26 +44,29 @@ export function AiConfigProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!runtime.webId || !runtime.currentPod) return;
     let cancelled = false;
-    setLoading(true);
-    setError(undefined);
-    const client = createXpodAiConnectionsClient({
-      webId: runtime.webId,
-      podUrl: runtime.currentPod.podUrl,
-      authenticatedFetch: runtime.fetch,
-    });
-    void Promise.all([
-      fetchAiConfig(runtime.fetch),
-      client.listModels().catch(() => []),
-    ]).then(([result, availableModels]) => {
-      if (cancelled) return;
-      setConfig(result.config);
-      setCapabilities(result.capabilities);
-      setLifecycle(result.lifecycle);
-      setModels(toAiConfigModelOptions(availableModels));
-    }).catch((reason: unknown) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-    }).finally(() => {
-      if (!cancelled) setLoading(false);
+    queueMicrotask(() => {
+      if (cancelled || !runtime.webId || !runtime.currentPod) return;
+      setLoading(true);
+      setError(undefined);
+      const client = createXpodAiConnectionsClient({
+        webId: runtime.webId,
+        podUrl: runtime.currentPod.podUrl,
+        authenticatedFetch: runtime.fetch,
+      });
+      void Promise.all([
+        fetchAiConfig(runtime.fetch),
+        client.listModels().catch(() => []),
+      ]).then(([result, availableModels]) => {
+        if (cancelled) return;
+        setConfig(result.config);
+        setCapabilities(result.capabilities);
+        setLifecycle(result.lifecycle);
+        setModels(toAiConfigModelOptions(availableModels));
+      }).catch((reason: unknown) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      }).finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     });
     return () => { cancelled = true; };
   }, [runtime.currentPod, runtime.fetch, runtime.webId]);
@@ -121,6 +124,7 @@ export interface AiConfigModelOption {
   capabilities: string[];
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- covered by focused tests and shared with non-component panels.
 export function toAiConfigModelOptions(models: AiGatewayModel[]): AiConfigModelOption[] {
   return models.map((model) => ({
     id: model.id,
@@ -131,6 +135,7 @@ export function toAiConfigModelOptions(models: AiGatewayModel[]): AiConfigModelO
   }));
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper exported for focused tests and model assignment controls.
 export function modelsForAssignment(models: AiConfigModelOption[], assignment: import('../../../api/ai-config').AiConfigModelAssignment): AiConfigModelOption[] {
   const required: Partial<Record<typeof assignment, string[]>> = {
     chatModel: ['chat'],
@@ -142,6 +147,7 @@ export function modelsForAssignment(models: AiConfigModelOption[], assignment: i
   return models.filter((model) => model.capabilities.some((capability) => accepted.includes(capability.toLowerCase())));
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- hook is intentionally colocated with its provider context.
 export function useAiConfig(): AiConfigContextValue {
   const value = useContext(AiConfigContext);
   if (!value) throw new Error('useAiConfig must be used within AiConfigProvider');

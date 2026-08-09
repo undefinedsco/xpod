@@ -102,20 +102,25 @@ export default function NetworkPage() {
   }, [identityKey, isCurrentRequest, networkBaseUrl, runtime.fetch]);
 
   useEffect(() => {
+    let cancelled = false;
     activeIdentityKeyRef.current = identityKey;
     requestIdRef.current += 1;
     diagnoseActionIdRef.current += 1;
     renewActionIdRef.current += 1;
-    setStatus(undefined);
-    setDiagnostics([]);
-    setDiagnosticsCheckedAt(undefined);
-    setError(undefined);
-    setLoading(false);
-    setDiagnosing(false);
-    setRenewing(false);
-    if (identityKey) {
-      void loadStatus();
-    }
+    queueMicrotask(() => {
+      if (cancelled || activeIdentityKeyRef.current !== identityKey) return;
+      setStatus(undefined);
+      setDiagnostics([]);
+      setDiagnosticsCheckedAt(undefined);
+      setError(undefined);
+      setLoading(false);
+      setDiagnosing(false);
+      setRenewing(false);
+      if (identityKey) {
+        void loadStatus();
+      }
+    });
+    return () => { cancelled = true; };
   }, [identityKey, loadStatus]);
 
   const runDiagnose = useCallback(async () => {
@@ -297,7 +302,13 @@ function UnavailableConfiguration({ title }: { title: string }) {
 function DnsConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {
   const [value, setValue] = useState(configuration?.domainDns);
   const [credential, setCredential] = useState('');
-  useEffect(() => setValue(configuration?.domainDns), [configuration]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setValue(configuration?.domainDns);
+    });
+    return () => { cancelled = true; };
+  }, [configuration]);
   if (!value) return <UnavailableConfiguration title="Domain & DNS" />;
   return <ConfigurationCard title="Saved configuration" applyState={applyState}>
     <div className="grid gap-4 sm:grid-cols-2">
@@ -313,7 +324,13 @@ function DnsConfigurationCard({ configuration, saving, applyState, onSave }: Con
 
 function HttpsConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {
   const [value, setValue] = useState(configuration?.https);
-  useEffect(() => setValue(configuration?.https), [configuration]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setValue(configuration?.https);
+    });
+    return () => { cancelled = true; };
+  }, [configuration]);
   if (!value) return <UnavailableConfiguration title="HTTPS" />;
   return <ConfigurationCard title="Saved configuration" applyState={applyState}>
     <ToggleField label="Enable HTTPS" checked={value.enabled} onChange={(enabled) => setValue({ ...value, enabled })} />
@@ -333,9 +350,14 @@ function TunnelConfigurationCard({ configuration, saving, applyState, onSave }: 
   const [profiles, setProfiles] = useState(configuration?.tunnelProfiles.profiles ?? []);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   useEffect(() => {
-    setActiveProfileId(configuration?.tunnelProfiles.activeProfileId ?? '');
-    setProfiles(configuration?.tunnelProfiles.profiles ?? []);
-    setCredentials({});
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setActiveProfileId(configuration?.tunnelProfiles.activeProfileId ?? '');
+      setProfiles(configuration?.tunnelProfiles.profiles ?? []);
+      setCredentials({});
+    });
+    return () => { cancelled = true; };
   }, [configuration]);
   if (!configuration) return <UnavailableConfiguration title="Tunnel Profiles" />;
   const updateProfile = (id: string, patch: Partial<NetworkDesiredConfiguration['tunnelProfiles']['profiles'][number]>) => setProfiles((current) => current.map((profile) => profile.id === id ? { ...profile, ...patch } : profile));
@@ -360,7 +382,7 @@ function TunnelConfigurationCard({ configuration, saving, applyState, onSave }: 
       <div className="flex justify-between"><span className="text-xs text-muted-foreground">{activeProfileId === profile.id ? 'Active after restart' : 'Inactive'} · credential {profile.credentialConfigured ? 'configured' : 'missing'}</span><Button type="button" size="sm" variant="ghost" onClick={() => removeProfile(profile.id)}>Remove</Button></div>
     </div>)}</div>
     <Button type="button" size="sm" variant="outline" onClick={addProfile}>Add tunnel profile</Button>
-    <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map(({ credentialConfigured: _credentialConfigured, ...profile }) => ({ ...profile, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
+    <SaveConfigurationButton label="Save tunnel profiles" saving={saving} onClick={() => onSave({ tunnelProfiles: { activeProfileId, profiles: profiles.map((profile) => ({ id: profile.id, provider: profile.provider, label: profile.label, publicEndpoint: profile.publicEndpoint, parameters: profile.parameters, ...(credentials[profile.id] ? { credential: credentials[profile.id] } : {}) })) } })} />
   </ConfigurationCard>;
 }
 
@@ -372,7 +394,13 @@ function parameterFieldsFor(provider: 'ngrok' | 'cloudflare' | 'frp'): Array<{ k
 
 function P2pConfigurationCard({ configuration, saving, applyState, onSave }: ConfigurationCardProps) {
   const [value, setValue] = useState(configuration?.p2p);
-  useEffect(() => setValue(configuration?.p2p), [configuration]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setValue(configuration?.p2p);
+    });
+    return () => { cancelled = true; };
+  }, [configuration]);
   if (!value) return <UnavailableConfiguration title="P2P" />;
   return <ConfigurationCard title="Saved P2P configuration" applyState={applyState}>
     <ToggleField label="Enable P2P fallback" checked={value.enabled} onChange={(enabled) => setValue({ ...value, enabled })} />

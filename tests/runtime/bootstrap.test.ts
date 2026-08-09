@@ -95,7 +95,7 @@ describe('runtime bootstrap helpers', () => {
       centerRegistrationEnabled: true,
     }, state, {});
 
-    expect(runtimeEnv.CSS_BASE_URL).toBe('http://127.0.0.1:5710/');
+    expect(runtimeEnv.CSS_BASE_URL).toBe('http://localhost:5710/');
     expect(runtimeEnv.API_PORT).toBe('5712');
     expect(shorthand.edition).toBe('server');
     expect(shorthand.nodeId).toBe('node-1');
@@ -260,8 +260,30 @@ describe('runtime bootstrap helpers', () => {
     });
     const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
 
-    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://127.0.0.1:5820/.oidc/token');
+    expect(runtimeEnv.CSS_TOKEN_ENDPOINT).toBe('http://localhost:5820/.oidc/token');
     expect(shorthand.oidcIssuer).toBeUndefined();
+  });
+
+  it('should expose CSS_SEED_CONFIG as the CSS seedConfig shorthand', async() => {
+    const state = await resolveRuntimeBootstrap('test-seed-config', {
+      mode: 'local',
+      transport: 'port',
+      runtimeRoot: '.test-data/runtime-bootstrap/seed-config',
+      bindHost: '127.0.0.1',
+      gatewayPort: 5830,
+      cssPort: 5831,
+      apiPort: 5832,
+    }, nodeRuntimeHost);
+
+    const runtimeEnv = buildRuntimeEnv(state, {
+      mode: 'local',
+      env: {
+        CSS_SEED_CONFIG: '/workspace/config/seed.dev.json',
+      },
+    });
+    const shorthand = buildRuntimeShorthand(runtimeEnv, { mode: 'local' }, state, {});
+
+    expect(shorthand.seedConfig).toBe('/workspace/config/seed.dev.json');
   });
 
   it('should resolve runtime paths and log level via injected platform', async() => {

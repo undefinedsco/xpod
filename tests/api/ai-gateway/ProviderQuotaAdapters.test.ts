@@ -8,9 +8,12 @@ import type { CredentialVault, ProviderSecret } from '../../../src/api/ai-gatewa
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
+  ClaudeSubscriptionQuotaAdapter,
+  CodexSubscriptionQuotaAdapter,
   DeepSeekQuotaAdapter,
   InMemoryQuotaSnapshotRepository,
   KimiQuotaAdapter,
+  KimiCodeSubscriptionQuotaAdapter,
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
@@ -22,10 +25,17 @@ import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
+import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
 const CREDENTIAL_IRI = 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi';
+const INTERNAL_INVOCATION_AUTH = {
+  type: 'solid' as const,
+  webId: WEB_ID,
+  internalInvocation: true,
+  tokenType: 'Bearer' as const,
+};
 
 class TestKeyWrapper implements KeyWrapper {
   public async wrapDek(context: KeyWrapContext, dek: Uint8Array): Promise<WrappedDataKey> {
@@ -75,6 +85,13 @@ async function credential(provider: string, secret: ProviderSecret = { type: 'ap
     authMode: 'apiKey',
     encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, provider, secret),
     status: 'active',
+  };
+}
+
+function withOffering(record: QuotaCredentialRecord, offeringId: string): QuotaCredentialRecord {
+  return {
+    ...record,
+    offeringId,
   };
 }
 
@@ -268,6 +285,96 @@ describe('ProviderQuotaAdapters', () => {
     });
   });
 
+  it('normalizes Codex subscription windows by their actual durations', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://chatgpt.com/backend-api/wham/usage');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer codex-oauth-token');
+      return {
+        body: {
+          rate_limit: {
+            primary_window: { used_percent: 25, reset_at: 1_786_320_000, limit_window_seconds: 18_000 },
+            secondary_window: { used_percent: 60, reset_at: 1_786_838_400, limit_window_seconds: 604_800 },
+          },
+        },
+      };
+    });
+    const current = {
+      ...withOffering(await credential('openai'), 'official-subscription'),
+      authMode: 'deviceCodeOAuth' as const,
+    };
+
+    const snapshot = await new CodexSubscriptionQuotaAdapter({ fetch }).fetch({
+      credential: current,
+      secret: { type: 'deviceCodeOAuth', accessToken: 'codex-oauth-token' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual([
+      { name: 'five-hour', used: 25, limit: 100, remaining: 75, resetsAt: '2026-08-10T00:00:00.000Z' },
+      { name: 'weekly', used: 60, limit: 100, remaining: 40, resetsAt: '2026-08-16T00:00:00.000Z' },
+    ]);
+  });
+
+  it('normalizes Claude Code OAuth five-hour, weekly, and model windows', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.anthropic.com/api/oauth/usage');
+      expect(new Headers(init?.headers).get('anthropic-beta')).toContain('oauth-2025-04-20');
+      return {
+        body: {
+          five_hour: { utilization: 41.5, resets_at: '2026-08-09T05:00:00.000Z' },
+          seven_day: { utilization: 20, resets_at: '2026-08-16T00:00:00.000Z' },
+          seven_day_sonnet: { utilization: 12, resets_at: '2026-08-16T00:00:00.000Z' },
+        },
+      };
+    });
+    const current = {
+      ...withOffering(await credential('anthropic'), 'official-subscription'),
+      authMode: 'deviceCodeOAuth' as const,
+    };
+
+    const snapshot = await new ClaudeSubscriptionQuotaAdapter({ fetch }).fetch({
+      credential: current,
+      secret: { type: 'deviceCodeOAuth', accessToken: 'claude-oauth-token' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual([
+      { name: 'five-hour', used: 41.5, limit: 100, remaining: 58.5, resetsAt: '2026-08-09T05:00:00.000Z' },
+      { name: 'weekly', used: 20, limit: 100, remaining: 80, resetsAt: '2026-08-16T00:00:00.000Z' },
+      { name: 'weekly-sonnet', used: 12, limit: 100, remaining: 88, resetsAt: '2026-08-16T00:00:00.000Z' },
+    ]);
+  });
+
+  it('normalizes Kimi Code managed-plan five-hour and weekly usage', async () => {
+    const fetch = jsonFetch((url) => {
+      expect(url).toBe('https://api.kimi.com/coding/v1/usages');
+      return {
+        body: {
+          usage: { used: '40', limit: '100', resetTime: '2026-08-16T00:00:00.000Z' },
+          limits: [{
+            window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' },
+            detail: { used: '10', limit: '50', resetTime: '2026-08-09T05:00:00.000Z' },
+          }],
+        },
+      };
+    });
+    const current = {
+      ...withOffering(await credential('kimi'), 'official-subscription'),
+      authMode: 'apiKey' as const,
+    };
+
+    const snapshot = await new KimiCodeSubscriptionQuotaAdapter({ fetch }).fetch({
+      credential: current,
+      secret: { type: 'apiKey', apiKey: 'sk-kimi-subscription-token' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual([
+      { name: 'five-hour', used: 10, limit: 50, remaining: 40, resetsAt: '2026-08-09T05:00:00.000Z' },
+      { name: 'weekly', used: 40, limit: 100, remaining: 60, resetsAt: '2026-08-16T00:00:00.000Z' },
+    ]);
+  });
+
   it('records 429 as cooldown metadata without fabricating remaining quota', async () => {
     const fetch = jsonFetch(() => ({
       status: 429,
@@ -344,6 +451,263 @@ describe('ProviderQuotaAdapters', () => {
     expect(repository.rows.map((row) => row.status).sort()).toEqual(['available', 'unsupported']);
   });
 
+  it('isolates cached quota snapshots by offering identity', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const paygCredential = withOffering(await credential('bailian'), 'pay-as-you-go');
+    const tokenCredentialIri = CREDENTIAL_IRI.replace('cloud-bailian', 'cloud-bailian-token');
+    const tokenCredential = withOffering({
+      ...await credential('bailian'),
+      id: 'bailian-token-credential',
+      credentialIri: tokenCredentialIri,
+      encryptedSecret: await vault.seal({ webId: WEB_ID }, tokenCredentialIri, 'bailian', {
+        type: 'apiKey',
+        apiKey: 'provider-secret',
+      }),
+    }, 'token-plan');
+    const adapter: ProviderQuotaAdapter = {
+      provider: 'bailian',
+      fetch: vi.fn(async ({ credential: current, now }): Promise<NormalizedQuotaSnapshot> => ({
+        credential: current.credentialIri,
+        status: 'unsupported' as const,
+        windows: [],
+        observedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
+        source: `bailian:${current.offeringId}:quota`,
+      })),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      adapters: [adapter],
+      credentials: [paygCredential, tokenCredential],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'bailian',
+      offeringId: 'pay-as-you-go',
+      refresh: true,
+    });
+    await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'bailian',
+      offeringId: 'token-plan',
+      refresh: true,
+    });
+    const cachedPayg = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'bailian',
+      offeringId: 'pay-as-you-go',
+      refresh: false,
+    });
+    const cachedToken = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'bailian',
+      offeringId: 'token-plan',
+      refresh: false,
+    });
+
+    expect(adapter.fetch).toHaveBeenCalledTimes(2);
+    expect(cachedPayg.source).toBe('bailian:pay-as-you-go:quota');
+    expect(cachedToken.source).toBe('bailian:token-plan:quota');
+    expect(repository.rows).toHaveLength(2);
+    expect(new Set(repository.rows.map((row) => row.id)).size).toBe(2);
+  });
+
+  it('selects quota adapters by provider offering and credential auth mode', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const apiCredential = withOffering(await credential('openai'), 'api-platform');
+    const oauthCredentialIri = `${CREDENTIAL_IRI}#openai-subscription`;
+    const oauthCredential: QuotaCredentialRecord = {
+      ...withOffering(await credential('openai'), 'official-subscription'),
+      id: 'openai-subscription',
+      credentialIri: oauthCredentialIri,
+      authMode: 'deviceCodeOAuth',
+      encryptedSecret: await vault.seal({ webId: WEB_ID }, oauthCredentialIri, 'openai', {
+        type: 'deviceCodeOAuth',
+        accessToken: 'oauth-access-token',
+      }),
+    };
+    const apiAdapter: ProviderQuotaAdapter = {
+      provider: 'openai',
+      supports: (current) => current.offeringId === 'api-platform' && current.authMode === 'apiKey',
+      fetch: vi.fn(async ({ credential: current, now }) => ({
+        credential: current.credentialIri,
+        status: 'unsupported' as const,
+        windows: [],
+        observedAt: now.toISOString(),
+        expiresAt: now.toISOString(),
+        source: 'openai:api-platform',
+      })),
+    };
+    const subscriptionAdapter: ProviderQuotaAdapter = {
+      provider: 'openai',
+      supports: (current) => current.offeringId === 'official-subscription' && current.authMode === 'deviceCodeOAuth',
+      fetch: vi.fn(async ({ credential: current, now }) => ({
+        credential: current.credentialIri,
+        status: 'available' as const,
+        windows: [{ name: 'five-hour', used: 25, limit: 100, remaining: 75 }],
+        observedAt: now.toISOString(),
+        expiresAt: now.toISOString(),
+        source: 'openai:subscription',
+      })),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      adapters: [apiAdapter, subscriptionAdapter],
+      credentials: [apiCredential, oauthCredential],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    const api = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      offeringId: 'api-platform',
+      refresh: true,
+    });
+    const subscription = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      offeringId: 'official-subscription',
+      refresh: true,
+    });
+
+    expect(api.source).toBe('openai:api-platform');
+    expect(subscription.source).toBe('openai:subscription');
+    expect(apiAdapter.fetch).toHaveBeenCalledTimes(1);
+    expect(subscriptionAdapter.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatches quota handlers from Offering capability metadata instead of Provider identity', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const makeCredential = async (
+      id: string,
+      offeringId: string,
+      authMode: QuotaCredentialRecord['authMode'],
+    ): Promise<QuotaCredentialRecord> => {
+      const credentialIri = `${CREDENTIAL_IRI}#${id}`;
+      return {
+        id,
+        credentialIri,
+        webId: WEB_ID,
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode,
+        encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, 'kimi', {
+          type: authMode,
+          apiKey: `${id}-secret`,
+          accessToken: `${id}-token`,
+        }),
+        status: 'active',
+        offeringId,
+      };
+    };
+    const adapters = [
+      ['rolling-quota-windows', 'kimi-code', 'oauth-quota'],
+      ['api-balance', 'moonshot', 'api-balance'],
+    ].map(([protocol, profile, source]) => ({
+      provider: 'not-used-for-dispatch',
+      capability: { protocol, profile },
+      fetch: vi.fn(async ({ credential: current, now }) => ({
+        credential: current.credentialIri,
+        status: 'available' as const,
+        windows: [],
+        observedAt: now.toISOString(),
+        expiresAt: now.toISOString(),
+        source,
+      })),
+    }));
+    const credentials = [
+      await makeCredential('oauth', 'official-subscription', 'deviceCodeOAuth'),
+      await makeCredential('plan', 'subscription-key', 'apiKey'),
+      await makeCredential('platform', 'api-platform', 'apiKey'),
+    ];
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      adapters,
+      providerRegistry: createDefaultProviderRegistry(),
+      credentials,
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'official-subscription', refresh: true }))
+      .resolves.toMatchObject({ source: 'oauth-quota' });
+    await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'subscription-key', refresh: true }))
+      .resolves.toMatchObject({ source: 'oauth-quota' });
+    await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'api-platform', refresh: true }))
+      .resolves.toMatchObject({ source: 'api-balance' });
+  });
+
+  it('resolves quota refresh through the requested provider offering when credentialIri is omitted', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const paygCredentialIri = 'https://id.example/alice/.data/settings/credentials.ttl#bailian-payg';
+    const tokenCredentialIri = 'https://id.example/alice/.data/settings/credentials.ttl#bailian-token';
+    const paygCredential = {
+      ...await credential('bailian', { type: 'apiKey', apiKey: 'payg-secret' }),
+      id: 'bailian-payg',
+      credentialIri: paygCredentialIri,
+      encryptedSecret: await vault.seal({ webId: WEB_ID }, paygCredentialIri, 'bailian', { type: 'apiKey', apiKey: 'payg-secret' }),
+      offeringId: 'pay-as-you-go',
+    };
+    const tokenCredential = {
+      ...await credential('bailian', { type: 'apiKey', apiKey: 'token-secret' }),
+      id: 'bailian-token',
+      credentialIri: tokenCredentialIri,
+      encryptedSecret: await vault.seal({ webId: WEB_ID }, tokenCredentialIri, 'bailian', { type: 'apiKey', apiKey: 'token-secret' }),
+      offeringId: 'token-plan',
+    };
+    const adapter: ProviderQuotaAdapter = {
+      provider: 'bailian',
+      fetch: vi.fn(async (input): Promise<NormalizedQuotaSnapshot> => ({
+        credential: input.credential.credentialIri,
+        status: 'unsupported',
+        windows: [],
+        observedAt: input.now.toISOString(),
+        expiresAt: new Date(input.now.getTime() + 60_000).toISOString(),
+        source: `bailian:${input.credential.offeringId}:quota`,
+      })),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      adapters: [adapter],
+      credentials: [paygCredential, tokenCredential],
+      now: () => new Date('2026-07-23T00:00:00.000Z'),
+    });
+
+    const snapshot = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'bailian',
+      offeringId: 'token-plan',
+      refresh: true,
+    });
+
+    expect(snapshot).toMatchObject({
+      credential: tokenCredential.credentialIri,
+      source: 'bailian:token-plan:quota',
+    });
+    expect(adapter.fetch).toHaveBeenCalledWith(expect.objectContaining({
+      credential: expect.objectContaining({
+        id: 'bailian-token',
+        offeringId: 'token-plan',
+      }),
+    }));
+  });
+
   it('marks stale cached snapshots and never leaks decrypted secrets into cache rows', async () => {
     const repository = new InMemoryQuotaSnapshotRepository();
     const vault = createVault();
@@ -376,6 +740,57 @@ describe('ProviderQuotaAdapters', () => {
 
     expect(stale).toMatchObject({ status: 'error', stale: true });
     expect(JSON.stringify(repository.rows)).not.toContain('secret-never-cache');
+  });
+
+  it('fetches caller-owned quota without reading or writing repository and vault', async () => {
+    const repository = {
+      findFresh: vi.fn(),
+      findLatest: vi.fn(),
+      upsert: vi.fn(),
+    };
+    const vault = {
+      seal: vi.fn(),
+      open: vi.fn(),
+      rewrap: vi.fn(),
+      needsRewrap: vi.fn(),
+    } as unknown as CredentialVault;
+    const adapter = {
+      provider: 'deepseek',
+      fetch: vi.fn(async ({ credential: current, secret }: any) => ({
+        credential: current.credentialIri,
+        status: 'available' as const,
+        windows: [{ name: 'USD.total_balance', remaining: 2 }],
+        observedAt: '2026-07-23T00:00:00.000Z',
+        expiresAt: '2026-07-23T00:05:00.000Z',
+        source: 'deepseek:/user/balance',
+        metadata: { receivedSecretType: secret.type },
+      })),
+    };
+    const service = new ProviderQuotaService({
+      repository: repository as never,
+      vault,
+      adapters: [adapter],
+    });
+
+    await expect(service.statusCallerOwned({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'deepseek',
+      credentialId: 'credentials.ttl#deepseek-primary',
+      credentialIri: CREDENTIAL_IRI,
+      authMode: 'apiKey',
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+      now: new Date('2026-07-23T00:00:00.000Z'),
+    })).resolves.toMatchObject({ status: 'available' });
+
+    expect(adapter.fetch).toHaveBeenCalledWith(expect.objectContaining({
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+    }));
+    expect(repository.findFresh).not.toHaveBeenCalled();
+    expect(repository.findLatest).not.toHaveBeenCalled();
+    expect(repository.upsert).not.toHaveBeenCalled();
+    expect(vault.open).not.toHaveBeenCalled();
+    expect(vault.seal).not.toHaveBeenCalled();
   });
 
   it('caches sanitized provider quota fetch failures without leaking network or parse details', async () => {
@@ -671,6 +1086,7 @@ describe('ProviderQuotaAdapters', () => {
       provider: 'kimi',
       credentialIri,
       now,
+      auth: INTERNAL_INVOCATION_AUTH,
     })).resolves.toMatchObject({
       id: scopedId,
       status: 'unsupported',
@@ -680,6 +1096,7 @@ describe('ProviderQuotaAdapters', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
+      auth: INTERNAL_INVOCATION_AUTH,
       snapshot: {
         credential: credentialIri,
         status: 'error',
@@ -731,7 +1148,51 @@ describe('ProviderQuotaAdapters', () => {
       deployment: 'cloud',
       provider: 'kimi',
       credentialIri: CREDENTIAL_IRI,
+      auth: INTERNAL_INVOCATION_AUTH,
     })).rejects.toThrow('AI Connection service identity is not configured');
+  });
+
+  it('uses an owner-bound sk client-credentials Bearer token before service Pod access for persisted quota snapshots', async () => {
+    const internalPodAccess = {
+      getTrustedFetch: vi.fn(async () => {
+        throw new Error('service identity must not be used for caller-owned quota access');
+      }),
+    };
+    const repository = new PodQuotaSnapshotRepository({
+      internalPodAccess,
+      dbFactory: async ({ fetch: podFetch }) => {
+        await podFetch('https://id.example/alice/settings/ai/quota.ttl');
+        return {
+          init: vi.fn(),
+          select: () => ({ from: () => ({ where: () => ({ execute: async () => [] }) }) }),
+          findById: vi.fn(async () => null),
+          findByIri: vi.fn(async () => null),
+          updateById: vi.fn(async () => null),
+          updateByIri: vi.fn(async () => null),
+          insert: vi.fn() as any,
+        } as any;
+      },
+    });
+    const callerFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+
+    await repository.findLatest({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialIri: CREDENTIAL_IRI,
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        viaApiKey: true,
+        accessToken: 'caller-bearer-token',
+        tokenType: 'Bearer',
+      },
+    });
+
+    expect(internalPodAccess.getTrustedFetch).not.toHaveBeenCalled();
+    const headers = callerFetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer caller-bearer-token');
+    callerFetch.mockRestore();
   });
 
   it('normalizes quota Pod 403 responses as service_access_missing', async () => {
@@ -757,6 +1218,7 @@ describe('ProviderQuotaAdapters', () => {
       deployment: 'cloud',
       provider: 'kimi',
       credentialIri: CREDENTIAL_IRI,
+      auth: INTERNAL_INVOCATION_AUTH,
     })).rejects.toThrow('service_access_missing');
   });
 });
@@ -813,6 +1275,14 @@ describe('AiGatewayManagementHandler quota routes', () => {
         windows: [{ name: 'available_balance', remaining: 1 }],
         stale: false,
       })),
+      statusCallerOwned: vi.fn(async () => ({
+        status: 'available',
+        source: 'kimi:/v1/users/me/balance',
+        observedAt: '2026-07-23T00:00:00.000Z',
+        expiresAt: '2026-07-23T00:05:00.000Z',
+        windows: [{ name: 'available_balance', remaining: 1 }],
+        stale: false,
+      })),
     };
     const { server, routes } = createServer();
     registerAiGatewayManagementRoutes(server, {
@@ -825,7 +1295,7 @@ describe('AiGatewayManagementHandler quota routes', () => {
     await routes['GET /api/ai/gateway/providers/:provider/quota/status'](request(
       { type: 'solid', webId: WEB_ID },
       undefined,
-      `/api/ai/gateway/providers/kimi/quota/status?credentialIri=${encodeURIComponent(kimiCredential.credentialIri)}`,
+      `/api/ai/gateway/providers/kimi/quota/status?credentialIri=${encodeURIComponent(kimiCredential.credentialIri)}&offeringId=api-platform`,
     ), status, { provider: 'kimi' });
 
     expect(status.statusCode).toBe(200);
@@ -835,19 +1305,29 @@ describe('AiGatewayManagementHandler quota routes', () => {
       deployment: 'cloud',
       provider: 'kimi',
       credentialIri: kimiCredential.credentialIri,
+      offeringId: 'api-platform',
       refresh: false,
     }));
 
     const refresh = response();
     await routes['POST /api/ai/gateway/providers/:provider/quota/refresh'](request(
       { type: 'solid', webId: WEB_ID },
-      { credentialIri: kimiCredential.credentialIri },
+      {
+        credentialId: kimiCredential.id,
+        credentialIri: kimiCredential.credentialIri,
+        offeringId: 'api-platform',
+        authMode: 'apiKey',
+        secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
+      },
       '/api/ai/gateway/providers/kimi/quota/refresh',
     ), refresh, { provider: 'kimi' });
     expect(refresh.statusCode).toBe(200);
-    expect(quotaService.status).toHaveBeenLastCalledWith(expect.objectContaining({
-      refresh: true,
+    expect(quotaService.statusCallerOwned).toHaveBeenCalledWith(expect.objectContaining({
+      credentialId: kimiCredential.id,
+      offeringId: 'api-platform',
+      secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
     }));
+    expect(refresh.body).not.toContain('transient-provider-key');
   });
 
   it('rejects gateway-key principals from provider quota management routes', async () => {

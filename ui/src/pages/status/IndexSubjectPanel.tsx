@@ -12,7 +12,17 @@ export default function IndexSubjectPanel({ kind }: { kind: IndexSubjectKind }) 
     setLoading(true);
     try { setSnapshot(await getRdfStats()); } finally { setLoading(false); }
   }, []);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (active) {
+        void load();
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [load]);
   return <div className="space-y-4 p-6">
     <div className="flex justify-end"><Button type="button" size="sm" variant="outline" onClick={load} disabled={loading}><RefreshCw className="mr-2 h-4 w-4" />Refresh</Button></div>
     <div role="status" aria-live="polite" className="sr-only">{loading ? 'Refreshing index evidence…' : snapshot ? 'Index evidence refreshed.' : 'Waiting for index evidence.'}</div>

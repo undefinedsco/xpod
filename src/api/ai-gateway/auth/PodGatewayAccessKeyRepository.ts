@@ -5,6 +5,11 @@ import {
   type GatewayAccessKeyRow,
 } from '@undefineds.co/models';
 import type { AuthContext } from '../../auth/AuthContext';
+import {
+  callerPodAccessError,
+  createCallerAuthenticatedPodFetch,
+  isInternalPodAccessAllowed,
+} from './CallerPodAccess';
 import { createGatewayKeyLocator, type GatewayKeyLocatorCodec } from './GatewayKeyLocatorCodec';
 import {
   type GatewayAccessKeyRecord,
@@ -73,12 +78,15 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     return recordFromRow(valid as GatewayAccessKeyRow);
   }
 
-  public async findById(id: string): Promise<GatewayAccessKeyRecord | undefined> {
+  public async findById(
+    id: string,
+    context?: GatewayAccessKeyRepositoryContext,
+  ): Promise<GatewayAccessKeyRecord | undefined> {
     const locator = this.locatorCodec.decode(id);
     if (!locator) {
       return undefined;
     }
-    const { db, resource } = await this.dbForOwner(locator.owner);
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
     const row = await db.findById<GatewayAccessKeyRow>(resource, gatewayAccessKeyStorageId(id));
     return row ? recordFromRow(row) : undefined;
   }
@@ -114,12 +122,16 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     return row ? recordFromRow(row) : undefined;
   }
 
-  public async touchLastUsed(id: string, lastUsedAt: Date): Promise<void> {
+  public async touchLastUsed(
+    id: string,
+    lastUsedAt: Date,
+    context?: GatewayAccessKeyRepositoryContext,
+  ): Promise<void> {
     const locator = this.locatorCodec.decode(id);
     if (!locator) {
       return;
     }
-    const { db, resource } = await this.dbForOwner(locator.owner);
+    const { db, resource } = await this.dbForOwner(locator.owner, context);
     await db.updateById(resource, gatewayAccessKeyStorageId(id), { lastUsedAt });
   }
 
@@ -131,7 +143,7 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     resource: GatewayAccessKeyResource;
     listResource: GatewayAccessKeyResource;
   }> {
-    const trustedFetch = await this.resolveTrustedFetch(owner);
+    const trustedFetch = await this.resolveTrustedFetch(owner, context);
     const resource = gatewayAccessKeyResource;
     const listResource = this.usesDefaultDbFactory
       ? createGatewayAccessKeyResource(owner)
@@ -147,14 +159,30 @@ export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository
     return { db, resource, listResource };
   }
 
-  private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
+  private async resolveTrustedFetch(
+    owner: string,
+    context?: GatewayAccessKeyRepositoryContext,
+  ): Promise<typeof fetch> {
+    const auth = context?.auth;
+    const callerFetch = createCallerAuthenticatedPodFetch(owner, auth);
+    if (callerFetch) {
+      return this.wrapPodFetch(callerFetch);
+    }
+    if (!isInternalPodAccessAllowed(auth, {
+      explicitInternalAccess: Boolean(context?.internalPodAccess?.reason),
+    })) {
+      throw new Error(callerPodAccessError(owner, auth));
+    }
     const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
+    return this.wrapPodFetch(trustedFetch);
+  }
+
+  private wrapPodFetch(trustedFetch: typeof fetch): typeof fetch {
     return async (input, init) => {
-      // Comunica can inject a malformed content-length (e.g. the string "undefined")
-      // which undici rejects with UND_ERR_INVALID_ARG; drop it and let the runtime recompute.
+      // Comunica can inject a malformed content-length value; let the runtime recompute it.
       const headers = new Headers(input instanceof Request ? input.headers : undefined);
       if (init?.headers) {
         new Headers(init.headers).forEach((value, key) => headers.set(key, value));

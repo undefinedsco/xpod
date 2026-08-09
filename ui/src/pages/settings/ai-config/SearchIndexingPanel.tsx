@@ -6,7 +6,13 @@ import { isPolicyValueDirty } from './form-state';
 export function SearchIndexingPanel() {
   const { config, capabilities, save, rebuild, saveAndRebuild, saving, rebuilding } = useAiConfig();
   const [value, setValue] = useState(config?.searchIndexing);
-  useEffect(() => setValue(config?.searchIndexing), [config]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setValue(config?.searchIndexing);
+    });
+    return () => { cancelled = true; };
+  }, [config]);
   if (!value) return null;
   const submit = async (event: FormEvent) => { event.preventDefault(); await save({ searchIndexing: value }); };
   const rebuildTarget = value.ftsEnabled && value.vectorEnabled ? 'all' : value.vectorEnabled ? 'vector' : 'fts';
@@ -51,4 +57,5 @@ function IndexCard({ title, enabled, onEnabled, backend, onBackend, backends }: 
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper exported for focused tests without splitting ownership.
 export function isManualBackendSelection(backend: string): boolean { return backend !== 'auto'; }
