@@ -202,6 +202,9 @@ export function registerCommonServices(
 
     providerConnectService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
+      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
+      const vault = credentialVaultForConfig(config);
       if (!config.aiGatewayConnectEnabled) {
         return new ProviderConnectService({
           registry: createDefaultGatewayProviderRegistry({
@@ -214,15 +217,14 @@ export function registerCommonServices(
             },
           }),
           adapters: [],
+          credentialRepository,
+          vault,
         });
       }
       const signingSecret = config.aiGatewayConnectSigningSecret ?? config.gatewayLocatorSecret;
       if (!signingSecret) {
         throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
       }
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
-      const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
-      const vault = credentialVaultForConfig(config);
       const attempts = new InMemoryConnectAttemptStore();
       const oauthIntegrations = createKimiOAuthIntegrations(config);
       const adapters = [

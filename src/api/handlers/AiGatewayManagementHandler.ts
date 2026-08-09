@@ -999,6 +999,7 @@ function sendCredentialPoolError(response: ServerResponse, error: unknown): void
     sendJson(response, 404, { error: 'Provider credential not found for current identity' });
     return;
   }
+  logger.error(`Provider credential pool operation failed: ${message}`);
   sendJson(response, 500, { error: 'Provider credential pool operation failed' });
 }
 

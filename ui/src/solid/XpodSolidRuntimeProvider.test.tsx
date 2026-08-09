@@ -451,13 +451,35 @@ describe('Xpod Solid runtime', () => {
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.textContent).toContain('Solid issuer');
+    expect(container.textContent).toContain('登录未完成');
+    expect(container.textContent).toContain('Solid login failed. Please reconnect your Pod.');
     expect(container.textContent).not.toContain('raw internal failure');
 
     await act(async () => {
       session.expire();
     });
-    expect(container.textContent).toContain('Solid issuer');
+    expect(container.textContent).toContain('登录未完成');
+    await unmount(root);
+  });
+
+  test('renders the Linx account space chooser instead of the raw Solid issuer form', async () => {
+    const session = new FakeSession();
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+
+    const { container, root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={value}>
+        <SettingsAuthBoundary>
+          <RuntimeProbe />
+        </SettingsAuthBoundary>
+      </XpodSolidRuntimeProvider>,
+    );
+
+    expect(container.textContent).toContain('使用 undefineds 账号');
+    expect(container.textContent).toContain('云端');
+    expect(container.textContent).toContain('本机');
+    expect(container.querySelector('label')).toBeNull();
+    expect(container.textContent).not.toContain('Solid Pod 地址');
+
     await unmount(root);
   });
 

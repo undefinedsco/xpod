@@ -115,11 +115,11 @@
 - Modify: `ui/src/settings/main.tsx`
 - Test: `ui/src/settings/main.test.tsx`
 
-- [ ] Add a failing SDK test that known Cloud and Local providers render the Linx account/space selection instead of `Solid Pod 地址`.
-- [ ] Add a failing Settings composition test that supplies the known provider list and never renders the raw issuer form.
-- [ ] Extend the SDK login view with account/provider/restoring/error presentation primitives matching the Linx reference while keeping session callbacks host-owned.
-- [ ] Configure standalone Xpod Settings with its Cloud and Local provider entries; retain the raw issuer form only as the explicit “其他账号供应商” path.
-- [ ] Run the extension-sdk and Settings-focused suites and confirm session restoration, provider selection, and error recovery pass.
+- [x] Add a failing SDK test that known Cloud and Local providers render the Linx account/space selection instead of `Solid Pod 地址`.
+- [x] Add a failing Settings composition test that supplies the known provider list and never renders the raw issuer form.
+- [x] Extend the SDK login view with account/provider/restoring/error presentation primitives matching the Linx reference while keeping session callbacks host-owned.
+- [x] Configure standalone Xpod Settings with its Cloud and Local provider entries; retain the raw issuer form only as the explicit “其他账号供应商” path.
+- [x] Run the extension-sdk and Settings-focused suites and confirm session restoration, provider selection, and error recovery pass.
 
 ### Task 8: Correct Kimi Code subscription-key routing
 
@@ -129,18 +129,18 @@
 - Modify: `src/api/ai-gateway/chat/ProviderChatAdapter.ts`
 - Test: `tests/api/ai-gateway/ProviderChatAdapters.test.ts`
 
-- [ ] Add a failing registry test proving Kimi Code accepts OAuth and `sk-kimi-*` API-key credentials while Moonshot API Platform remains API-platform-only.
-- [ ] Add a failing adapter test proving Kimi Code uses `https://api.kimi.com/coding/v1` and normalizes an incompatible temperature to `1`.
-- [ ] Update only the Kimi Code Offering metadata and its request adapter; do not infer Offering identity from Provider alone.
-- [ ] Re-run registry, Connect, model-discovery, and chat-adapter suites.
+- [x] Add a failing registry test proving Kimi Code accepts OAuth and `sk-kimi-*` API-key credentials while Moonshot API Platform remains API-platform-only.
+- [x] Add a failing adapter test proving Kimi Code uses `https://api.kimi.com/coding/v1` and normalizes an incompatible temperature to `1`.
+- [x] Update only the Kimi Code Offering metadata and its request adapter; do not infer Offering identity from Provider alone.
+- [x] Re-run registry, Connect, model-discovery, and chat-adapter suites.
 
 ### Task 9: Run live Xpod acceptance
 
 **Files:**
 - Rebuild: `static/settings/**`
 
-- [ ] Store the supplied DeepSeek and Kimi Code credentials only in the local acceptance Pod, with no repository or log persistence.
-- [ ] Verify exact Provider model catalogs through Xpod and confirm DeepSeek exposes its current two models while Kimi Code exposes its current four models.
-- [ ] Call Xpod `/v1/chat/completions` and `/v1/responses` for both Providers and require a successful semantic response.
-- [ ] Run package tests, focused Gateway tests, `bun run build:ts`, Settings production build, and complete `bun run test:integration`.
-- [ ] Run `git diff --check`, review the staged secret scan, commit with Lore trailers, and push the branch.
+- [x] Store the supplied DeepSeek and Kimi Code credentials only in the local acceptance Pod, with no repository or log persistence.
+- [x] Verify exact Provider model catalogs through Xpod and confirm DeepSeek exposes its current two models while Kimi Code exposes its current four models.
+- [x] Call Xpod `/v1/chat/completions` and `/v1/responses` for both Providers and require a successful semantic response.
+- [x] Run package tests, focused Gateway tests, `bun run build:ts`, Settings production build, and complete `bun run test:integration`.
+- [x] Run `git diff --check`, review the staged secret scan, commit with Lore trailers, and push the branch.

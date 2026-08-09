@@ -5,8 +5,10 @@ import {
   LoginFailureView,
   LoginProviderListView,
   LoginRestoringView,
+  LoginSpaceSelectionView,
   SolidConnectForm,
   type LoginProviderOption,
+  type LoginSpaceProviders,
 } from '@undefineds.co/shared-ui'
 
 export type AuthBoundaryState =
@@ -23,6 +25,7 @@ export interface LoginViewProps {
   error?: string
   onLogin: (issuer: string) => void | Promise<void>
   providers?: LoginProviderOption[]
+  spaceProviders?: LoginSpaceProviders
   providerListTitle?: string
   connectingProviderId?: string
   onAddProvider?: (url: string) => void
@@ -48,13 +51,31 @@ export function LoginView({
   error,
   onLogin,
   providers,
+  spaceProviders,
   providerListTitle,
   connectingProviderId,
   onAddProvider,
   onDismissError,
 }: LoginViewProps) {
   const titleId = useId()
+  const [showProviderList, setShowProviderList] = useState(false)
   const usesProviderList = Boolean(providers?.length || onAddProvider)
+
+  if (spaceProviders && !showProviderList) {
+    return (
+      <ConnectSurface labelledBy={titleId}>
+        <LoginSpaceSelectionView
+          productName={typeof title === 'string' ? title : 'Xpod'}
+          logo={logo}
+          providers={spaceProviders}
+          error={error}
+          onConnect={(providerId) => void onLogin(providerId)}
+          onMoreProviders={usesProviderList ? () => setShowProviderList(true) : undefined}
+          onDismissError={onDismissError}
+        />
+      </ConnectSurface>
+    )
+  }
 
   return (
     <ConnectSurface labelledBy={titleId}>
@@ -66,6 +87,7 @@ export function LoginView({
             providers={providers ?? []}
             error={error}
             connectingId={connectingProviderId}
+            onBack={spaceProviders ? () => setShowProviderList(false) : undefined}
             onConnect={(providerId) => void onLogin(providerId)}
             onAddProvider={onAddProvider}
             onDismissError={onDismissError}
@@ -130,6 +152,7 @@ export function AuthBoundary({
       defaultIssuer={loginView?.defaultIssuer}
       logo={loginView?.logo}
       providers={loginView?.providers}
+      spaceProviders={loginView?.spaceProviders}
       providerListTitle={loginView?.providerListTitle}
       connectingProviderId={loginView?.connectingProviderId}
       onAddProvider={loginView?.onAddProvider}

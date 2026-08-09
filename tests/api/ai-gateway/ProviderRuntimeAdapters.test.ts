@@ -380,11 +380,16 @@ describe('Provider runtime adapters', () => {
       provider: registry.requireProvider('kimi'),
     });
     await collect(officialAdapter.execute({
-      request: baseRequest({ model: 'kimi-k2', reasoning: undefined }),
+      request: baseRequest({
+        model: 'kimi-for-coding',
+        reasoning: undefined,
+        protocolExtensions: { chatCompletions: { temperature: 0 } },
+      }),
       apiKey: 'sk-kimi-subscription',
       credential: { baseUrl: 'https://api.kimi.com/coding/v1' },
     }));
     expect(officialSubscription.captured[0].url).toBe('https://api.kimi.com/coding/v1/chat/completions');
+    expect(officialSubscription.captured[0].body.temperature).toBe(1);
 
     await expect(collect(officialAdapter.execute({
       request: baseRequest({ model: 'kimi-k2', reasoning: undefined }),

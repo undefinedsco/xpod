@@ -99,6 +99,9 @@ describe('loadConfigFromEnv', () => {
       aiGatewayConnectEnabled: false,
     })).resolve('providerConnectService');
 
+    expect((service as any).credentialRepository).toBeTruthy();
+    expect((service as any).vault).toBeTruthy();
+
     await expect(service.begin({
       webId: 'https://id.example/alice/profile/card#me',
       deployment: 'local',

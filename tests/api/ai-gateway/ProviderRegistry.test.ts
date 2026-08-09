@@ -84,7 +84,11 @@ describe('ProviderRegistry provider catalog', () => {
     const kimi = createDefaultProviderRegistry().requireProduct('kimi');
 
     expect(kimi.offerings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'official-subscription', authModes: ['oauth'] }),
+      expect.objectContaining({
+        id: 'official-subscription',
+        authModes: ['oauth', 'apiKey'],
+        credentialPrefixHints: ['sk-kimi-'],
+      }),
       expect.objectContaining({ id: 'api-platform', authModes: ['apiKey'] }),
     ]));
   });
@@ -96,7 +100,8 @@ describe('ProviderRegistry provider catalog', () => {
 
     expect(officialSubscription).toMatchObject({
       kind: 'officialSubscription',
-      authModes: ['oauth'],
+      authModes: ['oauth', 'apiKey'],
+      credentialPrefixHints: ['sk-kimi-'],
       oauthIntegrationId: 'kimi-code',
     });
     expect(endpointMap(officialSubscription)).toEqual({

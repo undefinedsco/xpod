@@ -19,6 +19,11 @@ export interface LoginProviderOption {
   connecting?: boolean
 }
 
+export interface LoginSpaceProviders {
+  cloud?: LoginProviderOption
+  local?: LoginProviderOption
+}
+
 const badgeToneClassNames: Record<LoginBadgeTone, string> = {
   neutral: 'border-border/60 bg-muted/40 text-muted-foreground',
   primary: 'border-primary/20 bg-primary/5 text-primary',
@@ -567,5 +572,99 @@ export function LoginProviderListView({
         </div>
       ) : null}
     </div>
+  )
+}
+
+export function LoginSpaceSelectionView({
+  productName,
+  logo,
+  providers,
+  error,
+  onConnect,
+  onMoreProviders,
+  onDismissError,
+}: {
+  productName: string
+  logo?: ReactNode
+  providers: LoginSpaceProviders
+  error?: string | null
+  onConnect: (providerId: string) => void
+  onMoreProviders?: () => void
+  onDismissError?: () => void
+}) {
+  const defaultSpace = providers.cloud ? 'cloud' : 'local'
+  const [space, setSpace] = useState<'cloud' | 'local'>(defaultSpace)
+  const selectedProvider = providers[space] ?? providers.cloud ?? providers.local
+
+  return (
+    <div className="flex h-full flex-1 flex-col px-7 py-7 text-center">
+      <div className="flex flex-1 flex-col items-center justify-center gap-5">
+        {logo ? (
+          <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[18%] border border-violet-400/90 bg-violet-200/90 p-0.5 shadow-sm">
+            {logo}
+          </div>
+        ) : null}
+        <div className="space-y-2">
+          <h1 className="text-lg font-semibold text-foreground">{productName}</h1>
+          <p className="text-sm text-muted-foreground">使用 undefineds 账号</p>
+        </div>
+
+        <div className="w-full space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">数据保存位置</p>
+          <div className="grid grid-cols-2 rounded-xl border border-border/70 bg-muted/30 p-1">
+            <button
+              type="button"
+              disabled={!providers.cloud}
+              onClick={() => setSpace('cloud')}
+              className={loginSpaceSegmentClass(space === 'cloud')}
+            >
+              云端
+            </button>
+            <button
+              type="button"
+              disabled={!providers.local}
+              onClick={() => setSpace('local')}
+              className={loginSpaceSegmentClass(space === 'local')}
+            >
+              本机
+            </button>
+          </div>
+          <p className="text-xs leading-5 text-muted-foreground">
+            {space === 'local' ? '数据保存在这台电脑。' : '数据同步到云端。'}
+          </p>
+        </div>
+      </div>
+
+      <LoginErrorBanner error={error} onDismiss={onDismissError} />
+
+      <div className="shrink-0 space-y-2">
+        <button
+          type="button"
+          disabled={!selectedProvider}
+          onClick={() => selectedProvider && onConnect(selectedProvider.id)}
+          className="h-11 w-full cursor-pointer rounded-xl bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          继续
+        </button>
+        {onMoreProviders ? (
+          <button
+            type="button"
+            onClick={onMoreProviders}
+            className="h-9 w-full cursor-pointer rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
+          >
+            其他账号供应商
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+function loginSpaceSegmentClass(active: boolean): string {
+  return cn(
+    'h-9 rounded-lg text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
+    active
+      ? 'bg-background text-foreground shadow-sm'
+      : 'cursor-pointer text-muted-foreground hover:text-foreground',
   )
 }

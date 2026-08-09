@@ -34,8 +34,16 @@ export class KimiRuntimeAdapter extends OpenAiCompatibleRuntimeAdapter {
       preserveReasoningContent: true,
       reasoningEffortMapper: (effort, request, model) => mapKimiReasoningEffort(effort, request, model),
       fallbackReasoningBody: (effort, request, model) => fallbackKimiThinking(effort, request, model),
+      chatBodyTransform: (body, input) => normalizeKimiCodeBody(body, input.credential?.baseUrl),
     });
   }
+}
+
+function normalizeKimiCodeBody(body: Record<string, unknown>, baseUrl?: string): Record<string, unknown> {
+  if (baseUrl?.replace(/\/+$/u, '') !== 'https://api.kimi.com/coding/v1') {
+    return body;
+  }
+  return { ...body, temperature: 1 };
 }
 
 function offeringBaseUrls(productId: string, protocol: 'chatCompletions'): string[] {

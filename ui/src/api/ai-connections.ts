@@ -14,6 +14,7 @@ interface CreateXpodAiConnectionsClientInput {
   webId: string;
   podUrl: string;
   authenticatedFetch: typeof fetch;
+  invocationFetch?: typeof fetch;
   now?: () => Date;
 }
 
@@ -29,6 +30,7 @@ export function createXpodAiConnectionsClient({
   webId,
   podUrl,
   authenticatedFetch,
+  invocationFetch,
   now,
 }: CreateXpodAiConnectionsClientInput): AiConnectionsClient {
   return createAiConnectionsClient({
@@ -37,6 +39,7 @@ export function createXpodAiConnectionsClient({
     authenticatedFetch: createServiceAccessGatewayFetch({
       podUrl,
       authenticatedFetch,
+      invocationFetch,
       now,
     }),
   });
