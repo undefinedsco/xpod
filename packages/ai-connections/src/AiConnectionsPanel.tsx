@@ -555,7 +555,16 @@ export function AiConnectionsPanel({
     setBusy(provider, true)
     setProviderError(provider)
     try {
-      const quota = await client.quota(provider, true)
+      const credential = effectiveProviderProducts[provider]?.credentials
+        .filter((candidate) => candidate.enabled)
+        .sort((left, right) => left.priority - right.priority)[0]
+      const quota = credential
+        ? await client.quota(provider, true, {
+            offeringId: credential.offeringId,
+            credentialId: credential.id,
+            credentialIri: credential.id,
+          })
+        : await client.quota(provider, true)
       setQuotas((current) => ({ ...current, [provider]: quota }))
     } catch (error) {
       setProviderError(provider, errorMessage(error))
@@ -730,7 +739,7 @@ export function AiConnectionsPanel({
               key={definition.id}
               definition={definition}
               product={providerProduct}
-              status={connectionStates[definition.id] ?? 'unknown'}
+              status={resolvedConnectionState(connectionStates[definition.id], providerProduct)}
               accountLabel={providerSummariesInput[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
               apiKey={apiKeyInputs[definition.id] ?? ''}
@@ -896,6 +905,27 @@ export function AiConnectionsPanel({
       </details>
     </div>
   )
+}
+
+function connectionStateFromProduct(product: AiProviderSummary | undefined): ProviderConnectionState {
+  if (!product || product.status === 'unconfigured' || product.status === 'unavailable') {
+    return 'disconnected'
+  }
+  if (product.status === 'configured') return 'configured'
+  if (product.status === 'attention') return 'reauthRequired'
+  const credential = product.credentials.find((candidate) => candidate.enabled)
+    ?? product.credentials[0]
+  return credential?.authMode === 'oauth' || credential?.authMode === 'deviceCode'
+    ? 'connected'
+    : 'configured'
+}
+
+function resolvedConnectionState(
+  transientState: ProviderConnectionState | undefined,
+  product: AiProviderSummary | undefined,
+): ProviderConnectionState {
+  if (transientState === 'pending' || transientState === 'failed') return transientState
+  return product ? connectionStateFromProduct(product) : transientState ?? 'unknown'
 }
 
 async function pollDeviceConnect(

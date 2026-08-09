@@ -278,6 +278,10 @@ describe('Provider credential pool management', () => {
         id: 'kimi',
         name: 'Kimi',
         status: 'available',
+        offerings: expect.arrayContaining([
+          expect.objectContaining({ id: 'official-subscription', lifecycle: 'active' }),
+          expect.objectContaining({ id: 'api-platform', lifecycle: 'active' }),
+        ]),
         selectedModels: [
           expect.objectContaining({ id: 'moonshot-v1-8k', provider: 'kimi' }),
           expect.objectContaining({ id: 'moonshot-custom', provider: 'kimi', custom: true }),

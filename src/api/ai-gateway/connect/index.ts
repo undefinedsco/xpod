@@ -1366,6 +1366,7 @@ export interface AiProviderPoolSummary {
     id: string;
     label: string;
     kind?: string;
+    lifecycle: 'active' | 'legacy' | 'unavailable';
     authModes?: string[];
     runtimeProviderIds?: string[];
     productLabel: string;
@@ -1760,6 +1761,7 @@ function publicOfferingSummary(offering: {
   id: string;
   label: string;
   kind?: string;
+  lifecycle: 'active' | 'legacy' | 'unavailable';
   authModes?: string[];
   runtimeProviderIds?: string[];
   productLabel: string;
@@ -1776,6 +1778,7 @@ function publicOfferingSummary(offering: {
     id: offering.id,
     label: offering.label,
     kind: offering.kind,
+    lifecycle: offering.lifecycle,
     authModes: offering.authModes,
     runtimeProviderIds: offering.runtimeProviderIds,
     productLabel: offering.productLabel,

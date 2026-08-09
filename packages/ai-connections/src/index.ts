@@ -24,7 +24,7 @@ export * from './AiModelEditorDialog'
 export * from './controller'
 export * from './AiProviderCard'
 export * from './AiCredentialPoolSection'
-export * from './AiOfferingTabs'
+export * from './offering-label'
 export * from './AiQuotaCard'
 export * from './manifest'
 

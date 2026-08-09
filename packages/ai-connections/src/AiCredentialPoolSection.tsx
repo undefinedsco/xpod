@@ -34,7 +34,7 @@ import type {
   AiProviderDefinition,
 } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
-import { offeringLabel } from './AiOfferingTabs'
+import { offeringLabel } from './offering-label'
 
 export function AiCredentialPoolSection({
   definition,

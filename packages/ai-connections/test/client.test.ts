@@ -90,7 +90,7 @@ describe('AI Connection management client', () => {
         status: 'available',
         offerings: [
           {
-            id: 'pay-as-you-go', label: 'Pay as You Go', productLabel: 'Alibaba Bailian',
+            id: 'pay-as-you-go', label: 'Pay as You Go', productLabel: 'Alibaba Bailian', lifecycle: 'active',
             kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'],
             credentialPrefixHints: ['sk-'], consoleUrl: 'https://console.example',
             subscriptionUrl: 'https://subscribe.example',
@@ -125,7 +125,7 @@ describe('AI Connection management client', () => {
       name: 'Alibaba Bailian',
       offerings: [
         {
-          id: 'pay-as-you-go', productLabel: 'Alibaba Bailian', credentialPrefixHints: ['sk-'],
+          id: 'pay-as-you-go', productLabel: 'Alibaba Bailian', lifecycle: 'active', credentialPrefixHints: ['sk-'],
           consoleUrl: 'https://console.example', subscriptionUrl: 'https://subscribe.example',
           endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
           modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
@@ -371,6 +371,43 @@ describe('AI Connection management client', () => {
       'OpenAI does not support this operation.',
     ])
     expect(messages.join(' ')).not.toMatch(/sk-|token|Bearer|provider-secret/)
+  })
+
+  it('forwards offering identity through quota status and refresh requests', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      credential: 'credentials.ttl#bailian-token',
+      status: 'unsupported',
+      windows: [],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      expiresAt: '2026-08-09T01:00:00.000Z',
+      source: 'bailian:console-only',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.quota('bailian', false, {
+      offeringId: 'token-plan',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
+    await client.quota('bailian', true, {
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
+
+    expect(authenticatedFetch).toHaveBeenNthCalledWith(
+      1,
+      'https://pod.example/api/ai/gateway/providers/bailian/quota/status?credentialIri=credentials.ttl%23bailian-token&offeringId=token-plan',
+      expect.objectContaining({ method: 'GET' }),
+    )
+    expect(JSON.parse(String(authenticatedFetch.mock.calls[1]?.[1]?.body))).toMatchObject({
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token',
+      credentialIri: 'credentials.ttl#bailian-token',
+    })
   })
 
   it('normalizes only attributable models from the current-identity model catalog', async () => {

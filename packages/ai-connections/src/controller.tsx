@@ -378,6 +378,7 @@ function createInteractiveAiConnectionsClient(
             authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
               ? 'deviceCodeOAuth'
               : 'apiKey',
+            offeringId: credential.offeringId,
             baseUrl: credential.baseUrl,
             secret,
           })

@@ -90,7 +90,7 @@ export function createXpodAiConnectionsPodStore(
           offeringId: values.offeringId ?? 'api-platform',
           priority: values.priority ?? 100,
           enabled: true,
-          health: 'healthy',
+          health: 'unknown',
           baseUrl,
         },
       };
@@ -529,8 +529,8 @@ function stringListValue(value: unknown): string[] {
 function providerOfferings(provider: AiConnectionsProvider): AiProviderOffering[] {
   if (provider === 'kimi') {
     return [
-      { id: 'official-subscription', label: '官方订阅', kind: 'officialSubscription', authModes: ['oauth'] },
-      { id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', authModes: ['apiKey'] },
+      { id: 'official-subscription', label: '官方订阅', kind: 'officialSubscription', lifecycle: 'active', authModes: ['oauth'] },
+      { id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', lifecycle: 'active', authModes: ['apiKey'] },
     ];
   }
   if (provider === 'bailian') {
@@ -543,7 +543,7 @@ function providerOfferings(provider: AiConnectionsProvider): AiProviderOffering[
       bailianOffering({ id: 'coding-plan', label: 'Coding Plan Pro', kind: 'codingPlan', runtimeProviderIds: ['bailian-coding-plan'], credentialPrefixHints: ['sk-sp-'], region: 'cn', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
     ];
   }
-  return [{ id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', authModes: ['apiKey'] }];
+  return [{ id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', lifecycle: 'active', authModes: ['apiKey'] }];
 }
 
 function bailianOffering(input: {
@@ -561,6 +561,7 @@ function bailianOffering(input: {
   return {
     id: input.id,
     label: input.label,
+    lifecycle: 'active',
     productLabel: 'Alibaba Bailian',
     kind: input.kind,
     authModes: ['apiKey'],

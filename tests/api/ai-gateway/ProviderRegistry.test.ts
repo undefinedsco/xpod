@@ -52,9 +52,25 @@ describe('ProviderRegistry provider catalog', () => {
           },
           usagePolicyUrl: expect.stringMatching(/^https:\/\//u),
           region: expect.any(String),
+          lifecycle: expect.stringMatching(/^(active|legacy|unavailable)$/u),
         });
       }
     }
+  });
+
+  it('marks every current Bailian offering active and keeps Coding Plan Lite out of the current catalog', () => {
+    const bailian = createDefaultProviderRegistry().requireProduct('bailian');
+
+    expect(bailian.offerings.map((offering) => ({
+      id: offering.id,
+      lifecycle: offering.lifecycle,
+    }))).toEqual([
+      { id: 'pay-as-you-go', lifecycle: 'active' },
+      { id: 'token-plan', lifecycle: 'active' },
+      { id: 'token-plan-team', lifecycle: 'active' },
+      { id: 'coding-plan', lifecycle: 'active' },
+    ]);
+    expect(bailian.offerings.map((offering) => offering.id)).not.toContain('coding-plan-lite');
   });
 
   it('normalizes offering runtime providers to their provider product', () => {

@@ -12,6 +12,7 @@ export type ProviderOfferingKind =
   | 'officialSubscription'
   | 'local'
   | 'custom';
+export type ProviderOfferingLifecycle = 'active' | 'legacy' | 'unavailable';
 
 export interface ProviderOfferingEndpointDescriptor {
   protocol: GatewayProtocol;
@@ -48,6 +49,7 @@ export interface ProviderOfferingDescriptor {
   quota: ProviderOfferingQuotaDescriptor;
   usagePolicyUrl: string;
   region: string;
+  lifecycle: ProviderOfferingLifecycle;
   oauthIntegrationId?: string;
 }
 
@@ -244,10 +246,10 @@ function catalogOffering(
   productLabel: string,
   input: Omit<ProviderOfferingDescriptor,
     'productLabel' | 'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
-    'modelDiscovery' | 'quota' | 'usagePolicyUrl' | 'region'> &
+    'modelDiscovery' | 'quota' | 'usagePolicyUrl' | 'region' | 'lifecycle'> &
   Partial<Pick<ProviderOfferingDescriptor,
     'credentialPrefixHints' | 'consoleUrl' | 'subscriptionUrl' |
-    'modelDiscovery' | 'quota' | 'usagePolicyUrl' | 'region'>>,
+    'modelDiscovery' | 'quota' | 'usagePolicyUrl' | 'region' | 'lifecycle'>>,
 ): ProviderOfferingDescriptor {
   const consoleUrl = input.consoleUrl ?? input.subscriptionUrl;
   if (!consoleUrl) throw new Error(`Provider offering "${input.id}" requires a console URL`);
@@ -265,6 +267,7 @@ function catalogOffering(
     quota: input.quota ?? { strategy: 'console', url: consoleUrl },
     usagePolicyUrl: input.usagePolicyUrl ?? consoleUrl,
     region: input.region ?? 'global',
+    lifecycle: input.lifecycle ?? 'active',
   };
 }
 

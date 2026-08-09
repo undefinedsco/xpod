@@ -130,6 +130,7 @@ export interface AiProviderOffering {
   id: string
   label?: string
   kind?: string
+  lifecycle?: 'active' | 'legacy' | 'unavailable'
   authModes?: Array<'oauth' | 'deviceCode' | 'apiKey' | 'local'>
   runtimeProviderIds?: string[]
   productLabel?: string
@@ -241,11 +242,12 @@ export interface AiConnectionsClient {
   updateProviderCredential(provider: AiConnectionsProvider, credentialId: string, input: UpdateProviderCredentialInput): Promise<AiProviderCredentialSummary>
   deleteProviderCredential(provider: AiConnectionsProvider, credentialId: string): Promise<AiProviderCredentialSummary | undefined>
   testProviderCredential(provider: AiConnectionsProvider, input: TestProviderCredentialInput): Promise<Record<string, unknown>>
-  quota(provider: AiConnectionsProvider, refresh?: boolean): Promise<AiQuotaSnapshot>
+  quota(provider: AiConnectionsProvider, refresh?: boolean, input?: { offeringId?: string; credentialId?: string; credentialIri?: string }): Promise<AiQuotaSnapshot>
   quotaFromSecret(provider: AiConnectionsProvider, input: {
     credentialId: string
     credentialIri: string
     authMode: 'apiKey' | 'deviceCodeOAuth'
+    offeringId?: string
     baseUrl?: string
     secret: Record<string, unknown>
   }): Promise<AiQuotaSnapshot>
@@ -542,11 +544,14 @@ export function createAiConnectionsClient({
       return sanitizePublicObject(payload.result)
     },
 
-    quota(provider, refresh = false) {
+    quota(provider, refresh = false, input) {
+      const query = !refresh && input?.credentialIri
+        ? `?credentialIri=${encodeURIComponent(input.credentialIri)}${input.offeringId ? `&offeringId=${encodeURIComponent(input.offeringId)}` : ''}`
+        : ''
       return request<AiQuotaSnapshot>(
-        `${providerPath(provider)}/quota/${refresh ? 'refresh' : 'status'}`,
+        `${providerPath(provider)}/quota/${refresh ? 'refresh' : 'status'}${query}`,
         refresh ? 'POST' : 'GET',
-        refresh ? {} : undefined,
+        refresh ? compactObject({ offeringId: input?.offeringId, credentialId: input?.credentialId, credentialIri: input?.credentialIri }) : undefined,
         { provider },
       )
     },
@@ -927,6 +932,7 @@ function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
     id: value.id,
     label: stringValue(value.label),
     kind: stringValue(value.kind),
+    lifecycle: offeringLifecycleValue(value.lifecycle),
     authModes,
     runtimeProviderIds: stringListValue(value.runtimeProviderIds),
     productLabel: stringValue(value.productLabel),
@@ -939,6 +945,12 @@ function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
     usagePolicyUrl: stringValue(value.usagePolicyUrl),
     region: stringValue(value.region),
   }) as unknown as AiProviderOffering
+}
+
+function offeringLifecycleValue(value: unknown): AiProviderOffering['lifecycle'] | undefined {
+  return value === 'active' || value === 'legacy' || value === 'unavailable'
+    ? value
+    : undefined
 }
 
 function parseOfferingEndpoint(value: unknown): { protocol: string; baseUrl: string; region?: string } | undefined {

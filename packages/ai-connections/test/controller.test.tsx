@@ -264,6 +264,7 @@ describe('AI Connection controller host.solid integration', () => {
       expect(String(input)).toMatch(/\/deepseek\/quota\/refresh$/u)
       expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({
         credentialId: 'credentials.ttl#deepseek-primary',
+        offeringId: 'api-platform',
         authMode: 'apiKey',
         secret: { type: 'apiKey', apiKey: 'deepseek-transient-key' },
       }))
@@ -292,6 +293,7 @@ describe('AI Connection controller host.solid integration', () => {
         id: 'deepseek',
         credentials: [{
           id: 'credentials.ttl#deepseek-primary',
+          offeringId: 'api-platform',
           authMode: 'apiKey',
           enabled: true,
           priority: 1,
@@ -307,6 +309,71 @@ describe('AI Connection controller host.solid integration', () => {
       windows: [{ remaining: 2 }],
     })
     expect(readCredentialSecret).toHaveBeenCalledWith('deepseek', 'credentials.ttl#deepseek-primary')
+  })
+
+  it('routes provider quota through the enabled credential offering identity', async () => {
+    const requestBodies: unknown[] = []
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/bailian\/quota\/refresh$/u)
+      requestBodies.push(JSON.parse(String(init?.body)))
+      return Response.json({
+        credential: 'credentials.ttl#bailian-token',
+        status: 'unsupported',
+        windows: [],
+        observedAt: '2026-08-09T00:00:00.000Z',
+        expiresAt: '2026-08-09T01:00:00.000Z',
+        source: 'bailian:console-only',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({
+      type: 'apiKey',
+      apiKey: 'bailian-transient-key',
+    }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'bailian',
+        credentials: [
+          {
+            id: 'credentials.ttl#bailian-payg',
+            offeringId: 'pay-as-you-go',
+            authMode: 'apiKey',
+            enabled: false,
+            priority: 1,
+            baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          },
+          {
+            id: 'credentials.ttl#bailian-token',
+            offeringId: 'token-plan',
+            authMode: 'apiKey',
+            enabled: true,
+            priority: 2,
+            baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+          },
+        ],
+      }]),
+      readCredentialSecret,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.quota('bailian', true)).resolves.toMatchObject({
+      status: 'unsupported',
+    })
+
+    expect(readCredentialSecret).toHaveBeenCalledWith('bailian', 'credentials.ttl#bailian-token')
+    expect(requestBodies).toEqual([
+      expect.objectContaining({
+        offeringId: 'token-plan',
+        credentialId: 'credentials.ttl#bailian-token',
+        credentialIri: 'credentials.ttl#bailian-token',
+      }),
+    ])
   })
 
   it('discovers models only for the requested offering and forwards its identity', async () => {

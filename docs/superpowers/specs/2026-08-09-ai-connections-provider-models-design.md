@@ -60,3 +60,13 @@ AI Connections separates three concepts that must never be conflated:
 - Disabling the last enabled credential persists after reload and changes the Provider aggregate state.
 - Empty selection exposes and routes zero models.
 - An unavailable included model remains visible after refresh and can be removed.
+
+## Completion evidence
+
+- `packages/ai-connections/test/local-acceptance.test.tsx` proves disjoint Offering catalogs survive reload, unavailable selections remain removable, the last disabled credential reloads as configured, and all four coding clients receive only Xpod client credentials.
+- `packages/ai-connections/test/client-config-adapters.test.ts` generates Codex, Claude Code, Pi, and CodeBuddy files in a temporary home, verifies them, rejects Provider-key leakage, and produces a redacted review representation.
+- `tests/api/ai-gateway/ProviderRegistry.test.ts` proves every current Offering has complete operational metadata and lifecycle; Coding Plan Lite is absent from the active catalog.
+- `tests/api/ai-gateway/ProviderModelsAdapters.test.ts`, `ProviderQuotaAdapters.test.ts`, and `ProviderConnectAdapters.test.ts` prove Provider-and-Offering-specific discovery, quota caching/routing, credential ownership, and public DTO projection.
+- `ui/src/extensions/XpodAiConnectionsPodStore.test.ts` proves truthful compare-and-set updates, Offering-qualified model persistence, exact selection identity, and unverified initial API-key health.
+- The served `/settings/models` product page was exercised against fixed local Alice Pod seed data: API-key save survived discovery failure, reload retained the credential, disabling the last enabled credential rendered configured in both panes, newly saved credentials rendered unverified, Bailian rendered four vertical Offering items with zero Offering tablists, and the browser console remained error-free.
+- Required verification commands: package tests, focused Gateway/Pod/handler tests, TypeScript build, package build, Settings build, `git diff --check`, and the complete `bun run test:integration` lite/full stack.

@@ -111,7 +111,7 @@ describe('XpodAiConnectionsPodStore', () => {
       baseUrl: 'https://api.deepseek.com/v1',
       priority: 5,
     }) as { id: string; maskedHint: string; version: number };
-    expect(created).toMatchObject({ maskedHint: 'sk-...alue', version: 1 });
+    expect(created).toMatchObject({ maskedHint: 'sk-...alue', version: 1, health: 'unknown' });
     const storedEnvelope = JSON.parse(String(rows.get(created.id)?.encryptedSecret));
     expect(storedEnvelope.encoding).toBe('base64');
     expect(JSON.parse(atob(storedEnvelope.ciphertext))).toEqual({
@@ -120,6 +120,7 @@ describe('XpodAiConnectionsPodStore', () => {
     });
     expect(rows.get(created.id)?.metadata).toMatchObject({
       baseUrl: 'https://api.deepseek.com/v1',
+      health: 'unknown',
     });
     await expect(store.readCredentialSecret!('deepseek', created.id)).resolves.toEqual({
       type: 'apiKey',

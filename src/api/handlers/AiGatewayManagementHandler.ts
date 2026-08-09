@@ -577,6 +577,7 @@ export function registerAiGatewayManagementRoutes(
         deployment: options.deployment,
         provider: params.provider,
         credentialIri: normalizeOptionalString(url.searchParams.get('credentialIri')),
+        offeringId: normalizeOptionalString(url.searchParams.get('offeringId')),
         refresh: false,
         auth: request.auth,
       });
@@ -617,6 +618,7 @@ export function registerAiGatewayManagementRoutes(
         provider: params.provider,
         credentialId,
         credentialIri,
+        offeringId: normalizeOptionalString(body.offeringId),
         authMode,
         baseUrl: normalizeOptionalString(body.baseUrl),
         secret,
