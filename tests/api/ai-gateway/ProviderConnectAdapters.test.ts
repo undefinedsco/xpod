@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { WebCryptoCredentialVault } from '../../../src/api/ai-gateway/credentials/WebCryptoCredentialVault';
 import type { KeyWrapContext, KeyWrapper, WrappedDataKey } from '../../../src/api/ai-gateway/credentials/KeyWrapper';
+import type { ProviderSecret } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import { aiRuntimeRepository } from '@undefineds.co/models';
 import {
   BrowserAssistedApiKeyConnectAdapter,
@@ -171,6 +172,14 @@ function vault(): WebCryptoCredentialVault {
   return new WebCryptoCredentialVault({ keyWrapper: new StaticKeyWrapper() });
 }
 
+async function encryptedSecret(
+  provider: string,
+  credentialIri: string,
+  secret: ProviderSecret,
+) {
+  return vault().seal({ webId: WEB_ID }, credentialIri, provider, secret);
+}
+
 function kimiOAuthIntegration() {
   return OAuthIntegrationRegistry.fromServerConfig({
     kimi: {
@@ -234,6 +243,31 @@ describe('Provider Connect capabilities', () => {
 });
 
 describe('Provider credential pool management', () => {
+  it('publishes unavailable lifecycle metadata for OAuth offerings without a Connect flow', async () => {
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [],
+    });
+
+    const pools = await service.listProviderCredentialPools({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    });
+
+    for (const provider of ['openai', 'anthropic']) {
+      const offering = pools
+        .find((pool) => pool.id === provider)
+        ?.offerings.find((candidate) => candidate.id === 'official-subscription');
+      expect(offering).toMatchObject({
+        lifecycle: 'unavailable',
+        authModes: ['oauth'],
+      });
+    }
+    expect(pools.find((pool) => pool.id === 'kimi')?.offerings.find(
+      (offering) => offering.id === 'official-subscription',
+    )).toMatchObject({ lifecycle: 'active', authModes: ['oauth'] });
+  });
+
   it('lists canonical provider summaries with aggregate status and selected models', async () => {
     const repository = new RecordingCredentialRepository();
     repository.rows.push({
@@ -243,13 +277,11 @@ describe('Provider credential pool management', () => {
       provider: 'kimi',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: {
-        webId: WEB_ID,
-        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
-        provider: 'kimi',
-        type: 'apiKey',
-        apiKey: 'sk-secret',
-      },
+      encryptedSecret: await encryptedSecret(
+        'kimi',
+        'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+        { type: 'apiKey', apiKey: 'sk-secret' },
+      ),
       status: 'active',
       accountLabel: 'Kimi key',
       offeringId: 'api-platform',
@@ -404,13 +436,11 @@ describe('Provider credential pool management', () => {
       provider: 'kimi',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: {
-        webId: WEB_ID,
-        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
-        provider: 'kimi',
-        type: 'apiKey',
-        apiKey: 'sk-secret',
-      },
+      encryptedSecret: await encryptedSecret(
+        'kimi',
+        'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+        { type: 'apiKey', apiKey: 'sk-secret' },
+      ),
       status: 'active',
       offeringId: 'api-platform',
       enabled: true,
@@ -940,13 +970,11 @@ describe('KimiDeviceCodeConnectAdapter', () => {
       provider: 'kimi',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: {
-        webId: WEB_ID,
-        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#api-key',
-        provider: 'kimi',
-        type: 'apiKey',
-        apiKey: 'sk-existing',
-      },
+      encryptedSecret: await encryptedSecret(
+        'kimi',
+        'https://id.example/alice/settings/credentials/kimi.ttl#api-key',
+        { type: 'apiKey', apiKey: 'sk-existing' },
+      ),
       status: 'active',
       accountLabel: 'Existing API key',
       offeringId: 'api-platform',
@@ -2167,13 +2195,11 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: {
-        webId: WEB_ID,
-        credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-legacy',
-        provider: 'openai',
-        type: 'apiKey',
-        apiKey: 'legacy-key',
-      },
+      encryptedSecret: await encryptedSecret(
+        'openai',
+        'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-legacy',
+        { type: 'apiKey', apiKey: 'legacy-key' },
+      ),
       status: 'active',
       accountLabel: 'Defaulted',
     });
@@ -2216,13 +2242,11 @@ describe('ProviderConnectService', () => {
       provider: 'openai',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: {
-        webId: WEB_ID,
-        credentialIri: 'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-generated',
-        provider: 'openai',
-        type: 'apiKey',
-        apiKey: 'generated-key',
-      },
+      encryptedSecret: await encryptedSecret(
+        'openai',
+        'https://id.example/alice/settings/credentials/openai.ttl#cloud-openai-generated',
+        { type: 'apiKey', apiKey: 'generated-key' },
+      ),
       status: 'active',
       accountLabel: 'Generated',
       metadata: {
@@ -2247,13 +2271,11 @@ describe('ProviderConnectService', () => {
       provider: 'kimi',
       deployment: 'cloud',
       authMode: 'apiKey',
-      encryptedSecret: {
-        webId: WEB_ID,
-        credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#cloud-kimi-api-key',
-        provider: 'kimi',
-        type: 'apiKey',
-        apiKey: 'sk-kimi',
-      },
+      encryptedSecret: await encryptedSecret(
+        'kimi',
+        'https://id.example/alice/settings/credentials/kimi.ttl#cloud-kimi-api-key',
+        { type: 'apiKey', apiKey: 'sk-kimi' },
+      ),
       status: 'active',
       accountLabel: 'Kimi API key',
     });

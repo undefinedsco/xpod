@@ -463,7 +463,7 @@ describe('ProviderQuotaAdapters', () => {
       provider: 'bailian',
       fetch: vi.fn(async ({ credential: current, now }): Promise<NormalizedQuotaSnapshot> => ({
         credential: current.credentialIri,
-        status: 'unsupported',
+        status: 'unsupported' as const,
         windows: [],
         observedAt: now.toISOString(),
         expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(),
@@ -532,7 +532,7 @@ describe('ProviderQuotaAdapters', () => {
     const apiAdapter: ProviderQuotaAdapter = {
       provider: 'openai',
       supports: (current) => current.offeringId === 'api-platform' && current.authMode === 'apiKey',
-      fetch: vi.fn(async ({ credential: current, now }) => ({
+      fetch: vi.fn(async ({ credential: current, now }): Promise<NormalizedQuotaSnapshot> => ({
         credential: current.credentialIri,
         status: 'unsupported',
         windows: [],
@@ -544,9 +544,9 @@ describe('ProviderQuotaAdapters', () => {
     const subscriptionAdapter: ProviderQuotaAdapter = {
       provider: 'openai',
       supports: (current) => current.offeringId === 'official-subscription' && current.authMode === 'deviceCodeOAuth',
-      fetch: vi.fn(async ({ credential: current, now }) => ({
+      fetch: vi.fn(async ({ credential: current, now }): Promise<NormalizedQuotaSnapshot> => ({
         credential: current.credentialIri,
-        status: 'available',
+        status: 'available' as const,
         windows: [{ name: 'five-hour', used: 25, limit: 100, remaining: 75 }],
         observedAt: now.toISOString(),
         expiresAt: now.toISOString(),

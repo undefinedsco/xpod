@@ -7,7 +7,7 @@ const OWNER = 'https://id.example/alice/profile/card#me';
 
 describe('createCallerAuthenticatedPodFetch', () => {
   it('replays only the owner-bound Bearer token minted from sk client credentials', async () => {
-    const upstream = vi.fn(async () => new Response('ok'));
+    const upstream = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('ok'));
     const auth: AuthContext = {
       type: 'solid',
       webId: OWNER,
@@ -35,7 +35,7 @@ describe('createCallerAuthenticatedPodFetch', () => {
   });
 
   it('lets the runtime recalculate entity headers when replaying a Request body', async () => {
-    const upstream = vi.fn(async () => new Response('ok'));
+    const upstream = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('ok'));
     const auth: AuthContext = {
       type: 'solid',
       webId: OWNER,

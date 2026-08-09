@@ -363,6 +363,7 @@ export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
         ],
         usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
         endpoints: [],
+        lifecycle: 'unavailable',
       }),
       catalogOffering('OpenAI', {
         id: 'api-platform',
@@ -402,6 +403,7 @@ export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
         ],
         usagePolicyUrl: 'https://www.anthropic.com/legal/aup',
         endpoints: [],
+        lifecycle: 'unavailable',
       }),
       catalogOffering('Anthropic', {
         id: 'api-platform',

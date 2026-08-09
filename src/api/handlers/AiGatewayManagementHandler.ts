@@ -646,14 +646,22 @@ export function registerAiGatewayManagementRoutes(
     try {
       const apiKey = normalizeOptionalString(body.apiKey);
       const credentialId = normalizeOptionalString(body.credentialId);
-      logger.debug(`Model refresh credential input: apiKey=${Boolean(apiKey)} credentialId=${Boolean(credentialId)} baseUrl=${Boolean(normalizeOptionalString(body.baseUrl))}`);
-      const result = apiKey && credentialId
+      const authMode = body.authMode === 'apiKey' || body.authMode === 'deviceCodeOAuth'
+        ? body.authMode
+        : undefined;
+      const secret = body.secret && typeof body.secret === 'object' && !Array.isArray(body.secret)
+        ? body.secret as Record<string, unknown>
+        : undefined;
+      logger.debug(`Model refresh credential input: apiKey=${Boolean(apiKey)} authMode=${authMode ?? 'none'} secret=${Boolean(secret)} credentialId=${Boolean(credentialId)} baseUrl=${Boolean(normalizeOptionalString(body.baseUrl))}`);
+      const result = credentialId && ((authMode && secret) || apiKey)
         ? await modelsService.listFromSecret({
           webId: request.auth.webId,
           provider: params.provider,
           offeringId: normalizeOptionalString(body.offeringId),
           credentialId,
-          apiKey,
+          ...(authMode ? { authMode } : {}),
+          ...(secret ? { secret } : {}),
+          ...(apiKey ? { apiKey } : {}),
           baseUrl: normalizeOptionalString(body.baseUrl),
         })
         : await modelsService.list({

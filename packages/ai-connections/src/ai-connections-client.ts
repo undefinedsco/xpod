@@ -254,6 +254,8 @@ export interface AiConnectionsClient {
   discoverModels(provider: AiConnectionsProvider, input?: {
     credentialId?: string
     offeringId?: string
+    authMode?: 'apiKey' | 'deviceCodeOAuth'
+    secret?: Record<string, unknown>
     apiKey?: string
     baseUrl?: string
   }): Promise<ProviderModelDiscovery>

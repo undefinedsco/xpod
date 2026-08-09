@@ -264,6 +264,47 @@ describe('Provider runtime adapters', () => {
       thinking: { type: 'enabled', budget_tokens: 1024 },
     });
 
+    const historyFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const historyAdapter = new AnthropicRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: historyFixture.fetch }),
+    });
+    await collect(historyAdapter.execute({
+      request: baseRequest({
+        model: 'claude-sonnet-4-5-20250929',
+        instructions: undefined,
+        reasoning: undefined,
+        messages: [
+          {
+            role: 'assistant',
+            content: [],
+            protocolExtensions: {
+              tool_calls: [{
+                id: 'tool_read',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' },
+              }],
+            },
+          },
+          {
+            role: 'tool',
+            toolCallId: 'tool_read',
+            content: [{ type: 'text', text: 'fixture contents' }],
+          },
+        ],
+      }),
+      apiKey: 'sk-ant-secret',
+    }));
+    expect(historyFixture.captured[0].body.messages).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tool_read', name: 'read_file', input: { path: 'fixture.txt' } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool_read', content: 'fixture contents' }],
+      },
+    ]);
+
     const errorFixture = fetchFixture(new Response(jsonSse([
       { type: 'message_start', message: { id: 'msg_error' } },
       { type: 'error', error: { type: 'overloaded_error', message: 'temporarily unavailable' } },
@@ -290,6 +331,41 @@ describe('Provider runtime adapters', () => {
       request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
       apiKey: 'sk-ant-secret',
     }))).resolves.toContainEqual({ type: 'response.completed', finishReason: 'max_tokens' });
+  });
+
+  it('rejects invalid Anthropic tool_use replay arguments instead of silently sending empty input', async () => {
+    for (const argumentsValue of ['{"path":', '"primitive"', { path: 'not-a-json-string' }]) {
+      const fixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+      const adapter = new AnthropicRuntimeAdapter({
+        transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      });
+
+      await expect(collect(adapter.execute({
+        request: baseRequest({
+          model: 'claude-sonnet-4-5-20250929',
+          instructions: undefined,
+          reasoning: undefined,
+          messages: [
+            {
+              role: 'assistant',
+              content: [],
+              protocolExtensions: {
+                tool_calls: [{
+                  id: 'tool_read',
+                  type: 'function',
+                  function: { name: 'read_file', arguments: argumentsValue },
+                }],
+              },
+            },
+          ],
+        }),
+        apiKey: 'sk-ant-secret',
+      }))).rejects.toMatchObject({
+        code: 'invalid_request',
+        status: 400,
+      });
+      expect(fixture.captured).toHaveLength(0);
+    }
   });
 
   it('handles Kimi chat deltas and maps reasoning only when the live registry model allows it', async () => {
@@ -622,16 +698,70 @@ describe('Provider runtime adapters', () => {
       details: { capability: 'reasoningEffort' },
     });
 
-    await expect(collect(adapter.execute({
+    const developerFixture = fetchFixture(new Response(jsonSse([
+      { id: 'chatcmpl_deepseek_developer', choices: [{ delta: { role: 'assistant' } }] },
+      { choices: [{ delta: { content: 'final' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]), { status: 200 }));
+    const developerAdapter = new DeepSeekRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: developerFixture.fetch }),
+    });
+    await expect(collect(developerAdapter.execute({
       request: baseRequest({
         model: 'deepseek-chat',
-        messages: [{ role: 'developer', content: [{ type: 'text', text: 'not supported' }] }],
+        instructions: undefined,
+        reasoning: undefined,
+        messages: [{ role: 'developer', content: [{ type: 'text', text: 'follow the coding policy' }] }],
       }),
       apiKey: 'sk-deepseek',
-    }))).rejects.toMatchObject({
-      code: 'invalid_request',
-      status: 400,
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'final' });
+    expect(developerFixture.captured[0].body.messages).toContainEqual({
+      role: 'system',
+      content: 'follow the coding policy',
     });
+
+    const toolHistoryFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const toolHistoryAdapter = new DeepSeekRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: toolHistoryFixture.fetch }),
+    });
+    await collect(toolHistoryAdapter.execute({
+      request: baseRequest({
+        model: 'deepseek-chat',
+        instructions: undefined,
+        reasoning: undefined,
+        messages: [
+          {
+            role: 'assistant',
+            content: [],
+            protocolExtensions: {
+              tool_calls: [{
+                id: 'call_lookup',
+                type: 'function',
+                function: { name: 'lookup', arguments: '{"q":"xpod"}' },
+              }],
+            },
+          },
+          {
+            role: 'tool',
+            toolCallId: 'call_lookup',
+            content: [{ type: 'text', text: 'tool result' }],
+          },
+        ],
+      }),
+      apiKey: 'sk-deepseek',
+    }));
+    expect(toolHistoryFixture.captured[0].body.messages).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_lookup',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{"q":"xpod"}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'call_lookup', content: 'tool result' },
+    ]);
 
     await expect(collect(adapter.execute({
       request: baseRequest({

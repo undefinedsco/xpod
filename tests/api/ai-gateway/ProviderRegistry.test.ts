@@ -99,6 +99,23 @@ describe('ProviderRegistry provider catalog', () => {
     }
   });
 
+  it('marks OAuth subscription offerings unavailable until their provider Connect flow exists', () => {
+    const registry = createDefaultProviderRegistry();
+
+    expect(registry.requireOffering('openai', 'official-subscription')).toMatchObject({
+      lifecycle: 'unavailable',
+      authModes: ['oauth'],
+    });
+    expect(registry.requireOffering('anthropic', 'official-subscription')).toMatchObject({
+      lifecycle: 'unavailable',
+      authModes: ['oauth'],
+    });
+    expect(registry.requireOffering('kimi', 'official-subscription')).toMatchObject({
+      lifecycle: 'active',
+      authModes: ['oauth'],
+    });
+  });
+
   it('marks every current Bailian offering active and keeps Coding Plan Lite out of the current catalog', () => {
     const bailian = createDefaultProviderRegistry().requireProduct('bailian');
 

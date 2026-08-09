@@ -117,6 +117,16 @@ export function AiCredentialPoolSection({
             .filter((credential) => credential.offeringId === offering.id)
             .sort((left, right) => left.priority - right.priority)
 
+          if (offering.lifecycle === 'unavailable') {
+            return (
+              <OfferingItem key={offering.id} offering={offering}>
+                <p className="text-sm text-muted-foreground">
+                  暂不可用：该 Offering 尚未提供可用的连接流程。
+                </p>
+              </OfferingItem>
+            )
+          }
+
           if (error && mode === 'deviceCodeOAuth') {
             return (
               <OfferingItem key={offering.id} offering={offering}>

@@ -628,6 +628,43 @@ describe('AI Connection management client', () => {
     })
   })
 
+  it('sends caller-owned OAuth model refresh as authMode plus secret, not an apiKey alias', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      provider: 'kimi',
+      credential: 'credentials.ttl#kimi-oauth',
+      models: [{ id: 'kimi-for-coding' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'kimi:official-subscription:/models',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await client.discoverModels('kimi', {
+      credentialId: 'credentials.ttl#kimi-oauth',
+      offeringId: 'official-subscription',
+      authMode: 'deviceCodeOAuth',
+      secret: {
+        type: 'oauth',
+        accessToken: 'caller-access-token',
+      },
+    })
+
+    const requestInit = authenticatedFetch.mock.calls[0]![1] as RequestInit
+    expect(JSON.parse(String(requestInit.body))).toEqual({
+      credentialId: 'credentials.ttl#kimi-oauth',
+      offeringId: 'official-subscription',
+      authMode: 'deviceCodeOAuth',
+      secret: {
+        type: 'oauth',
+        accessToken: 'caller-access-token',
+      },
+    })
+    expect((JSON.parse(String(requestInit.body)).secret)).not.toHaveProperty('refreshToken')
+  })
+
   it('maps provider fetch failures to the LinX verification messages', async () => {
     const scenarios = [
       { providerStatus: 401, message: '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。' },

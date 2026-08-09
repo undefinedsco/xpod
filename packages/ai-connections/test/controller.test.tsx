@@ -421,12 +421,82 @@ describe('AI Connection controller host.solid integration', () => {
     expect(requestBodies).toEqual([expect.objectContaining({
       offeringId: 'token-plan',
       credentialId: 'credentials.ttl#token',
-      apiKey: 'transient-secret',
+      authMode: 'apiKey',
+      secret: {
+        type: 'apiKey',
+        apiKey: 'transient-secret',
+      },
     })])
     expect(saveDiscoveredModels).toHaveBeenCalledWith(
       'bailian',
       'credentials.ttl#token',
       [{ id: 'qwen-token-only', displayName: 'Qwen Token Only' }],
+    )
+  })
+
+  it('discovers OAuth provider models by forwarding only the discovery access token', async () => {
+    const requestBodies: unknown[] = []
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/kimi\/models\/refresh$/u)
+      requestBodies.push(JSON.parse(String(init?.body)))
+      return Response.json({
+        provider: 'kimi',
+        credential: 'credentials.ttl#kimi-oauth',
+        models: [{ id: 'kimi-for-coding', displayName: 'Kimi for Coding' }],
+        observedAt: '2026-08-09T00:00:00.000Z',
+        source: 'kimi:official-subscription:/models',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({
+      type: 'oauth',
+      accessToken: 'caller-access-token',
+      refreshToken: 'browser-owned-refresh-token',
+    }))
+    const saveDiscoveredModels = vi.fn(async () => undefined)
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'kimi',
+        credentials: [
+          {
+            id: 'credentials.ttl#kimi-oauth',
+            offeringId: 'official-subscription',
+            authMode: 'deviceCode',
+            enabled: true,
+            priority: 1,
+          },
+        ],
+      }]),
+      readCredentialSecret,
+      saveDiscoveredModels,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.discoverModels('kimi', { offeringId: 'official-subscription' })).resolves.toMatchObject({
+      models: [{ id: 'kimi-for-coding' }],
+    })
+
+    expect(requestBodies).toEqual([expect.objectContaining({
+      offeringId: 'official-subscription',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      authMode: 'deviceCodeOAuth',
+      secret: {
+        type: 'oauth',
+        accessToken: 'caller-access-token',
+      },
+    })])
+    expect((requestBodies[0] as Record<string, unknown>)).not.toHaveProperty('apiKey')
+    expect((requestBodies[0] as { secret?: Record<string, unknown> }).secret).not.toHaveProperty('refreshToken')
+    expect(saveDiscoveredModels).toHaveBeenCalledWith(
+      'kimi',
+      'credentials.ttl#kimi-oauth',
+      [{ id: 'kimi-for-coding', displayName: 'Kimi for Coding' }],
     )
   })
 

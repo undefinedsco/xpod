@@ -21,6 +21,16 @@ describe('ModelsPage coding-client configuration capability', () => {
       const method = init?.method ?? 'GET';
       const body = typeof init?.body === 'string' ? init.body : undefined;
       calls.push({ path: url.pathname, method, authorization: new Headers(init?.headers).get('authorization'), body });
+      if (url.pathname === '/.account/') {
+        return json({ clientCredentials: {} });
+      }
+      if (url.pathname === '/.account/client-credentials/' && method === 'POST') {
+        return json({
+          id: 'cc_1',
+          secret: 'cc_secret',
+          resource: 'client-credentials/cc_1/',
+        }, { status: 201 });
+      }
       if (url.pathname === '/api/applets/service-access/ai-connections') {
         return json({
           appletId: 'co.undefineds.ai-connections',
@@ -53,7 +63,7 @@ describe('ModelsPage coding-client configuration capability', () => {
           });
         }
         if (url.pathname.endsWith('/apply')) {
-          expect(body).toContain('xpod_gw_once');
+          expect(body).toMatch(/"gatewayKey":"sk-[^"]+"/u);
           expect(body).not.toContain('sk-provider-secret');
           return json({ applied: true });
         }
@@ -61,12 +71,6 @@ describe('ModelsPage coding-client configuration capability', () => {
           return json({ status: 'configured', message: 'Codex verified' });
         }
         return json({ status: 'notConfigured', message: 'Codex detected' });
-      }
-      if (url.pathname === '/api/ai/gateway/keys') {
-        return json({
-          key: 'xpod_gw_once',
-          record: { id: 'gak_1', owner: WEB_ID, scopes: ['models:read', 'inference:write'], createdAt: '2026-07-31T00:00:00.000Z' },
-        }, { status: 201 });
       }
       throw new Error(`Unexpected request ${method} ${url.pathname}`);
     }) as typeof fetch;
@@ -167,7 +171,7 @@ describe('ModelsPage coding-client configuration capability', () => {
   });
 });
 
-function installDom() {
+function installDom(fetchImpl: typeof fetch) {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'https://pod.example/dashboard/models',
   });
@@ -176,6 +180,8 @@ function installDom() {
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.Event = dom.window.Event;
   globalThis.MouseEvent = dom.window.MouseEvent;
+  window.fetch = fetchImpl;
+  globalThis.fetch = fetchImpl;
   window.matchMedia = vi.fn(() => ({
     matches: false,
     media: '(max-width: 767px)',
@@ -185,7 +191,7 @@ function installDom() {
 }
 
 async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
-  installDom();
+  installDom(runtime.fetch);
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -218,7 +224,7 @@ function runtimeWith(fetchImpl: typeof fetch, clientConfigAvailable = false): Xp
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
     webId: WEB_ID,
     podUrl: POD_URL,
-    currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    currentPod: { podUrl: POD_URL, webId: WEB_ID } as XpodSolidRuntimeValue['currentPod'],
     aiClientConfiguration: clientConfigAvailable
       ? { available: true, authority: 'local-filesystem' }
       : undefined,

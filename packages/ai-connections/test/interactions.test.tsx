@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { cleanup } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AiConnectionsPanel,
   type AiClientConfigurationBridge,
@@ -10,7 +10,14 @@ import {
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 
-afterEach(cleanup)
+beforeEach(() => {
+  vi.spyOn(window, 'open').mockImplementation(() => null)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  cleanup()
+})
 
 function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClient {
   return {
@@ -283,6 +290,30 @@ describe('AI Connection settings', () => {
     expect(screen.getByRole('link', { name: '订阅与账单' })).toHaveProperty('href', 'https://platform.openai.com/billing')
     expect(screen.getByRole('link', { name: '额度与用量' })).toHaveProperty('href', 'https://platform.openai.com/usage')
     expect(screen.getByRole('link', { name: '使用政策' })).toHaveProperty('href', 'https://openai.com/policies/usage-policies/')
+  })
+
+  it('renders unavailable offerings without login or API-key actions', async () => {
+    const current = client()
+    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted providerProducts={{
+      openai: {
+        id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
+        offerings: [{
+          id: 'official-subscription',
+          label: 'Codex Subscription',
+          kind: 'oauth-subscription',
+          lifecycle: 'unavailable',
+          authModes: ['oauth'],
+        }],
+      },
+    }} />)
+
+    expect(await screen.findByRole('heading', { name: '账号订阅' })).toBeTruthy()
+    expect(screen.getByText('暂不可用：该 Offering 尚未提供可用的连接流程。')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '登录' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '添加 API Key' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /配置 API Key/ })).toBeNull()
+    expect(current.beginConnect).not.toHaveBeenCalled()
+    expect(current.createApiKeyCredential).not.toHaveBeenCalled()
   })
 
   it('logs out the selected OAuth credential row without showing fake switch actions', async () => {
@@ -876,6 +907,36 @@ describe('AI Connection settings', () => {
     expect(screen.getByText(`重置：${new Date(weeklyReset).toLocaleString()}`)).toBeTruthy()
     expect(screen.getByText(`更新：${new Date(observedAt).toLocaleString()}`)).toBeTruthy()
     expect(screen.getByText('来源：openai:chatgpt-wham · 数据可能已过期')).toBeTruthy()
+  })
+
+  it('renders api-platform balance and currency breakdowns for cash, voucher, and available balances', async () => {
+    const current = client({
+      quota: vi.fn(async () => ({
+        credential: 'openai-api-platform',
+        status: 'available' as const,
+        balance: 18.75,
+        windows: [
+          { name: 'cash_balance', remaining: 12.5, currency: 'USD' },
+          { name: 'voucher_balance', remaining: 6.25, currency: 'USD' },
+          { name: 'available_balance', remaining: 18.75, currency: 'USD' },
+        ],
+        observedAt: '2026-08-10T00:00:00.000Z',
+        expiresAt: '2026-08-10T00:05:00.000Z',
+        source: 'openai:api-platform',
+      })),
+    })
+    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted />)
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI 额度' }))
+
+    expect(await screen.findByText('余额：18.75')).toBeTruthy()
+    expect(screen.getByText('现金余额')).toBeTruthy()
+    expect(screen.getByText('剩余 12.5 USD')).toBeTruthy()
+    expect(screen.getByText('赠送余额')).toBeTruthy()
+    expect(screen.getByText('剩余 6.25 USD')).toBeTruthy()
+    expect(screen.getByText('可用余额')).toBeTruthy()
+    expect(screen.getByText('剩余 18.75 USD')).toBeTruthy()
+    expect(screen.getByText('来源：openai:api-platform')).toBeTruthy()
   })
 
   it('renders allowlisted unsupported errors without raw details', async () => {
