@@ -70,3 +70,12 @@ AI Connections separates three concepts that must never be conflated:
 - `ui/src/extensions/XpodAiConnectionsPodStore.test.ts` proves truthful compare-and-set updates, Offering-qualified model persistence, exact selection identity, and unverified initial API-key health.
 - The served `/settings/models` product page was exercised against fixed local Alice Pod seed data: API-key save survived discovery failure, reload retained the credential, disabling the last enabled credential rendered configured in both panes, newly saved credentials rendered unverified, Bailian rendered four vertical Offering items with zero Offering tablists, and the browser console remained error-free.
 - Required verification commands: package tests, focused Gateway/Pod/handler tests, TypeScript build, package build, Settings build, `git diff --check`, and the complete `bun run test:integration` lite/full stack.
+
+## Linx login and live-provider correction
+
+- Standalone Xpod Settings and embedded Linx applets use the same SDK-owned login presentation contract. Xpod must not fall back to a raw Solid Pod URL form when the product supplies known Cloud and Local account providers.
+- The SDK owns the reusable account/provider/restoring/error views; each host supplies provider discovery and session actions. Linx remains the reference presentation, but applets do not import Linx application internals.
+- Kimi Code is one Offering that accepts both browser OAuth credentials and `sk-kimi-*` subscription API keys. Both credential forms use the Kimi Code endpoints and may coexist as independent credentials.
+- Moonshot API Platform remains a separate pay-as-you-go Offering and must not receive or test `sk-kimi-*` credentials.
+- Kimi Code chat requests normalize the upstream model constraint by sending `temperature: 1` when a caller supplies an incompatible temperature.
+- Live acceptance uses user-supplied DeepSeek and Kimi Code credentials to prove Provider model discovery and the Xpod `/v1/models`, `/v1/chat/completions`, and `/v1/responses` projections without logging or committing either secret.

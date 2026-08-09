@@ -106,3 +106,41 @@
 - [x] In the local product page, add two mocked Provider credentials with disjoint model catalogs; verify auto-sync, refresh persistence, selection, unavailable retention, disable persistence, and client-credential projection.
 - [x] Inspect generated Codex, Claude Code, Pi, and CodeBuddy configurations with secrets redacted and confirm no Provider API key is present.
 - [x] Run `git diff --check`, review generated assets, commit with Lore trailers, and push `codex/ai-provider-pool`.
+
+### Task 7: Replace the raw Xpod login form with the Linx login contract
+
+**Files:**
+- Modify: `packages/extension-sdk/src/react/auth-boundary.tsx`
+- Modify: `packages/extension-sdk/test/auth-boundary.test.tsx`
+- Modify: `ui/src/settings/main.tsx`
+- Test: `ui/src/settings/main.test.tsx`
+
+- [ ] Add a failing SDK test that known Cloud and Local providers render the Linx account/space selection instead of `Solid Pod 地址`.
+- [ ] Add a failing Settings composition test that supplies the known provider list and never renders the raw issuer form.
+- [ ] Extend the SDK login view with account/provider/restoring/error presentation primitives matching the Linx reference while keeping session callbacks host-owned.
+- [ ] Configure standalone Xpod Settings with its Cloud and Local provider entries; retain the raw issuer form only as the explicit “其他账号供应商” path.
+- [ ] Run the extension-sdk and Settings-focused suites and confirm session restoration, provider selection, and error recovery pass.
+
+### Task 8: Correct Kimi Code subscription-key routing
+
+**Files:**
+- Modify: `src/api/ai-gateway/providers/ProviderRegistry.ts`
+- Modify: `tests/api/ai-gateway/ProviderRegistry.test.ts`
+- Modify: `src/api/ai-gateway/chat/ProviderChatAdapter.ts`
+- Test: `tests/api/ai-gateway/ProviderChatAdapters.test.ts`
+
+- [ ] Add a failing registry test proving Kimi Code accepts OAuth and `sk-kimi-*` API-key credentials while Moonshot API Platform remains API-platform-only.
+- [ ] Add a failing adapter test proving Kimi Code uses `https://api.kimi.com/coding/v1` and normalizes an incompatible temperature to `1`.
+- [ ] Update only the Kimi Code Offering metadata and its request adapter; do not infer Offering identity from Provider alone.
+- [ ] Re-run registry, Connect, model-discovery, and chat-adapter suites.
+
+### Task 9: Run live Xpod acceptance
+
+**Files:**
+- Rebuild: `static/settings/**`
+
+- [ ] Store the supplied DeepSeek and Kimi Code credentials only in the local acceptance Pod, with no repository or log persistence.
+- [ ] Verify exact Provider model catalogs through Xpod and confirm DeepSeek exposes its current two models while Kimi Code exposes its current four models.
+- [ ] Call Xpod `/v1/chat/completions` and `/v1/responses` for both Providers and require a successful semantic response.
+- [ ] Run package tests, focused Gateway tests, `bun run build:ts`, Settings production build, and complete `bun run test:integration`.
+- [ ] Run `git diff --check`, review the staged secret scan, commit with Lore trailers, and push the branch.
