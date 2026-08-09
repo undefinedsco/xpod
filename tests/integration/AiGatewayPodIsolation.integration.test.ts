@@ -1,5 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import { aiProviderResource } from '@undefineds.co/models';
 
 import { AiGatewayService, type GatewayCredentialStore, type StoredGatewayCredential } from '../../src/api/ai-gateway/AiGatewayService';
 import { createGatewayApiKey } from '../../src/api/ai-gateway/auth/GatewayApiKey';
@@ -259,6 +260,11 @@ describe('AI Connection Pod isolation integration', () => {
       encryptedSecret: encryptedSecret(ALICE_WEB_ID, 'openai', 'alice-openai'),
       status: 'active',
     });
+    backing.pods.get(ALICE_WEB_ID)?.set(aiProviderResource.buildId({ id: 'openai' }), {
+      id: aiProviderResource.buildId({ id: 'openai' }),
+      owner: ALICE_WEB_ID,
+      hasModel: ['openai.ttl#gpt-5'],
+    });
     await repository.upsertConnectedCredential({
       id: 'credentials.ttl#cloud-deepseek',
       credentialIri: `https://pod.example/bob/settings/credentials.ttl#cloud-deepseek`,
@@ -268,6 +274,11 @@ describe('AI Connection Pod isolation integration', () => {
       authMode: 'apiKey',
       encryptedSecret: encryptedSecret(BOB_WEB_ID, 'deepseek', 'bob-deepseek'),
       status: 'active',
+    });
+    backing.pods.get(BOB_WEB_ID)?.set(aiProviderResource.buildId({ id: 'deepseek' }), {
+      id: aiProviderResource.buildId({ id: 'deepseek' }),
+      owner: BOB_WEB_ID,
+      hasModel: ['deepseek.ttl#deepseek-chat'],
     });
     const fixture = createService({
       deployment: 'cloud',

@@ -144,6 +144,93 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(rows.has(created.id)).toBe(false);
   });
 
+  it('derives the Token Plan Team base URL from its Offering descriptor', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('bailian', {
+      apiKey: 'sk-token-plan-team',
+      label: 'Team',
+      offeringId: 'token-plan-team',
+    });
+
+    expect(rows.get(created.id)?.baseUrl).toBe(
+      'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+    );
+  });
+
+  it.each([undefined, null] as const)(
+    'rejects credential updates when the Pod returns %s and keeps the persisted row unchanged',
+    async (updateResult) => {
+      const credentialId = 'credentials.ttl#openai-primary';
+      const rows = new Map<string, Record<string, unknown>>([
+        [credentialId, {
+          id: credentialId,
+          provider: aiProviderResource.buildId({ id: 'openai' }),
+          service: 'ai',
+          authMode: 'apiKey',
+          status: 'active',
+          accountLabel: 'Primary',
+          keyVersion: '2',
+          encryptedSecret: JSON.stringify({
+            algorithm: 'PLAINTEXT',
+            ciphertext: JSON.stringify({ type: 'apiKey', apiKey: 'sk-primary-secret' }),
+            webId: WEB_ID,
+            credentialIri: credentialResource.buildIri(POD_URL, { id: credentialId }),
+            provider: 'openai',
+          }),
+          metadata: { offeringId: 'api-platform', priority: 10, enabled: true, health: 'healthy' },
+        }],
+      ]);
+      const database = {
+        init: vi.fn(),
+        select: () => ({
+          from: (resource: unknown) => ({
+            execute: async () => resource === credentialResource ? [...rows.values()] : [],
+          }),
+        }),
+        findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
+        updateById: vi.fn(async () => updateResult),
+      };
+      const store = createXpodAiConnectionsPodStore({
+        database: database as never,
+        podUrl: POD_URL,
+        webId: WEB_ID,
+      });
+
+      await expect(store.updateProviderCredential!('openai', credentialId, {
+        expectedVersion: 2,
+        label: 'Renamed',
+        enabled: false,
+      })).rejects.toThrow('credential_update_failed');
+
+      const provider = (await store.listProviders()).find((item) => item.id === 'openai');
+      expect(provider?.credentials).toEqual([
+        expect.objectContaining({
+          id: credentialId,
+          label: 'Primary',
+          enabled: true,
+          version: 2,
+        }),
+      ]);
+    },
+  );
+
   it('persists OAuth completion as a sibling credential with the current Pod database', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     rows.set('credentials.ttl#kimi-api', {
@@ -286,5 +373,112 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
       'deepseek.ttl#deepseek-chat',
     ]);
+  });
+
+  it('keeps same-named models isolated by their offering-qualified Provider after reload', async () => {
+    const productProviderId = aiProviderResource.buildId({ id: 'bailian' });
+    const paygOfferingProviderId = aiProviderResource.buildId({ id: 'bailian-pay-as-you-go.ttl#this' });
+    const tokenOfferingProviderId = aiProviderResource.buildId({ id: 'bailian-token-plan-personal.ttl#this' });
+    const paygCredentialId = credentialResource.buildId({ id: 'bailian-payg' });
+    const tokenCredentialId = credentialResource.buildId({ id: 'bailian-token-personal' });
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map([
+        [paygCredentialId, {
+          id: paygCredentialId,
+          provider: productProviderId,
+          service: 'ai',
+          authMode: 'apiKey',
+          status: 'active',
+          accountLabel: 'Pay as you go',
+          metadata: { offeringId: 'pay-as-you-go', enabled: true },
+        }],
+        [tokenCredentialId, {
+          id: tokenCredentialId,
+          provider: productProviderId,
+          service: 'ai',
+          authMode: 'apiKey',
+          status: 'active',
+          accountLabel: 'Token Plan Personal',
+          metadata: { offeringId: 'token-plan-personal', enabled: true },
+        }],
+      ])],
+      [aiProviderResource, new Map([[productProviderId, {
+        id: productProviderId,
+        displayName: '百炼',
+      }]])],
+      [aiModelResource, new Map()],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    await store.saveDiscoveredModels!("bailian", paygCredentialId, [
+      { id: 'qwen-same', displayName: 'Qwen Pay as You Go' },
+    ]);
+    await store.saveDiscoveredModels!("bailian", tokenCredentialId, [
+      { id: 'qwen-same', displayName: 'Qwen Token Plan Personal' },
+    ]);
+
+    const persistedModels = [...rowsByResource.get(aiModelResource)!.values()];
+    expect(persistedModels).toHaveLength(2);
+    expect(persistedModels).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
+        isProvidedBy: paygOfferingProviderId,
+        displayName: 'Qwen Pay as You Go',
+      }),
+      expect.objectContaining({
+        id: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }),
+        isProvidedBy: tokenOfferingProviderId,
+        displayName: 'Qwen Token Plan Personal',
+      }),
+    ]));
+
+    const reloadedStore = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+    await expect(reloadedStore.listModels!()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'qwen-same', provider: 'bailian', offeringId: 'pay-as-you-go', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }), displayName: 'Qwen Pay as You Go' }),
+      expect.objectContaining({ id: 'qwen-same', provider: 'bailian', offeringId: 'token-plan', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }), displayName: 'Qwen Token Plan Personal' }),
+    ]));
+
+    await reloadedStore.saveModelSelection!('bailian', [
+      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
+      aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }),
+    ]);
+    const bailian = (await reloadedStore.listProviders()).find((provider) => provider.id === 'bailian');
+    expect(bailian?.selectedModels).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'qwen-same', offeringId: 'pay-as-you-go', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }) }),
+      expect.objectContaining({ id: 'qwen-same', offeringId: 'token-plan', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }) }),
+    ]));
   });
 });

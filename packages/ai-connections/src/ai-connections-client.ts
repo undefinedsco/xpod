@@ -92,6 +92,8 @@ export interface GatewayKeyRecord {
 export interface AiGatewayModel {
   id: string
   provider: AiConnectionsProvider
+  offeringId?: string
+  resourceId?: string
   displayName?: string
   availability?: 'available' | 'unavailable'
   contextWindow?: number
@@ -130,6 +132,15 @@ export interface AiProviderOffering {
   kind?: string
   authModes?: Array<'oauth' | 'deviceCode' | 'apiKey' | 'local'>
   runtimeProviderIds?: string[]
+  productLabel?: string
+  credentialPrefixHints?: string[]
+  consoleUrl?: string
+  subscriptionUrl?: string
+  endpoints?: Array<{ protocol: string; baseUrl: string; region?: string }>
+  modelDiscovery?: { strategy: string; path: string; endpointProtocol: string }
+  quota?: { strategy: string; url: string }
+  usagePolicyUrl?: string
+  region?: string
 }
 
 export interface AiProviderCredentialSummary {
@@ -153,11 +164,12 @@ export interface AiProviderSummary {
   offerings: AiProviderOffering[]
   credentials: AiProviderCredentialSummary[]
   selectedModels: AiGatewayModel[]
-  status: 'unconfigured' | 'available' | 'attention' | 'unavailable'
+  status: 'unconfigured' | 'configured' | 'available' | 'attention' | 'unavailable'
 }
 
 export type AiProviderSummaryStatus =
   | 'unconfigured'
+  | 'configured'
   | 'available'
   | 'attention'
   | 'unavailable'
@@ -239,6 +251,7 @@ export interface AiConnectionsClient {
   }): Promise<AiQuotaSnapshot>
   discoverModels(provider: AiConnectionsProvider, input?: {
     credentialId?: string
+    offeringId?: string
     apiKey?: string
     baseUrl?: string
   }): Promise<ProviderModelDiscovery>
@@ -916,7 +929,39 @@ function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
     kind: stringValue(value.kind),
     authModes,
     runtimeProviderIds: stringListValue(value.runtimeProviderIds),
+    productLabel: stringValue(value.productLabel),
+    credentialPrefixHints: stringListValue(value.credentialPrefixHints),
+    consoleUrl: stringValue(value.consoleUrl),
+    subscriptionUrl: stringValue(value.subscriptionUrl),
+    endpoints: arrayValue(value.endpoints, parseOfferingEndpoint),
+    modelDiscovery: parseOfferingModelDiscovery(value.modelDiscovery),
+    quota: parseOfferingQuota(value.quota),
+    usagePolicyUrl: stringValue(value.usagePolicyUrl),
+    region: stringValue(value.region),
   }) as unknown as AiProviderOffering
+}
+
+function parseOfferingEndpoint(value: unknown): { protocol: string; baseUrl: string; region?: string } | undefined {
+  if (!isRecord(value)) return undefined
+  const protocol = stringValue(value.protocol)
+  const baseUrl = stringValue(value.baseUrl)
+  if (!protocol || !baseUrl) return undefined
+  return compactObject({ protocol, baseUrl, region: stringValue(value.region) })
+}
+
+function parseOfferingModelDiscovery(value: unknown): AiProviderOffering['modelDiscovery'] | undefined {
+  if (!isRecord(value)) return undefined
+  const strategy = stringValue(value.strategy)
+  const path = stringValue(value.path)
+  const endpointProtocol = stringValue(value.endpointProtocol)
+  return strategy && path && endpointProtocol ? { strategy, path, endpointProtocol } : undefined
+}
+
+function parseOfferingQuota(value: unknown): AiProviderOffering['quota'] | undefined {
+  if (!isRecord(value)) return undefined
+  const strategy = stringValue(value.strategy)
+  const url = stringValue(value.url)
+  return strategy && url ? { strategy, url } : undefined
 }
 
 function parseProviderCredentialSummary(value: unknown): AiProviderCredentialSummary | undefined {
@@ -1015,6 +1060,7 @@ function mergeProviderSummaryStatus(
 ): AiProviderSummary['status'] {
   if (left === 'available' || right === 'available') return 'available'
   if (left === 'attention' || right === 'attention') return 'attention'
+  if (left === 'configured' || right === 'configured') return 'configured'
   if (left === 'unconfigured' || right === 'unconfigured') return 'unconfigured'
   return 'unavailable'
 }
@@ -1073,6 +1119,7 @@ function isCredentialHealth(value: unknown): value is AiProviderCredentialSummar
 
 function isProviderSummaryStatus(value: unknown): value is AiProviderSummary['status'] {
   return value === 'unconfigured'
+    || value === 'configured'
     || value === 'available'
     || value === 'attention'
     || value === 'unavailable'

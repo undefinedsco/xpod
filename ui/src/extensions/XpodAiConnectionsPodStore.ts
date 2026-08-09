@@ -190,7 +190,10 @@ export function createXpodAiConnectionsPodStore(
         metadata,
       };
       const updated = await input.database.updateById(credentialResource, credentialId, patch as never);
-      return credentialSummaryFromRow(input, normalizedProvider, (updated ?? { ...current, ...patch }) as Record<string, unknown>)!;
+      if (!updated) throw new Error('credential_update_failed');
+      const persisted = credentialSummaryFromRow(input, normalizedProvider, updated as Record<string, unknown>);
+      if (!persisted) throw new Error('credential_update_failed');
+      return persisted;
     },
     async deleteProviderCredential(provider, credentialId) {
       const normalizedProvider = providerValue(provider);
@@ -213,12 +216,14 @@ export function createXpodAiConnectionsPodStore(
       if (!secret) throw new Error('credential_secret_unavailable');
       return secret;
     },
-    async saveDiscoveredModels(provider, _credentialId, models) {
+    async saveDiscoveredModels(provider, credentialId, models) {
       const normalizedProvider = providerValue(provider);
       if (!normalizedProvider) throw new Error('unsupported_provider');
-      await input.database.init?.(aiProviderResource, aiModelResource);
+      await input.database.init?.(credentialResource, aiProviderResource, aiModelResource);
       await ensureProviderRow(input.database, normalizedProvider);
-      const providerId = aiProviderResource.buildId({ id: normalizedProvider });
+      const credentialRow = await input.database.findById(credentialResource, credentialId) as Record<string, unknown> | null;
+      const providerId = providerResourceIdForCredential(normalizedProvider, credentialRow);
+      await ensureProviderResourceRow(input.database, providerId, providerName(normalizedProvider));
       const existing = await input.database
         .select()
         .from(aiModelResource)
@@ -228,14 +233,14 @@ export function createXpodAiConnectionsPodStore(
         .map(discoveredModelValue)
         .filter(isDefined);
       const discoveredIds = new Set(discovered.map((model) => model.id));
-      for (const row of existing.filter((item) => providerFromRelation(stringValue(item.isProvidedBy)) === normalizedProvider)) {
-        const modelId = modelKeyFromRowId(stringValue(row.id), normalizedProvider);
+      for (const row of existing.filter((item) => providerRelationMatches(stringValue(item.isProvidedBy), providerId))) {
+        const modelId = modelKeyFromRowId(stringValue(row.id), providerId);
         if (modelId && !discoveredIds.has(modelId) && stringValue(row.status) !== 'unavailable') {
           await input.database.updateById(aiModelResource, String(row.id), { status: 'unavailable' } as never);
         }
       }
       for (const model of discovered) {
-        await upsertModelRow(input.database, normalizedProvider, providerId, model, existingIds);
+        await upsertModelRow(input.database, providerId, model, existingIds);
       }
     },
     async saveModelSelection(provider, modelIds) {
@@ -244,7 +249,9 @@ export function createXpodAiConnectionsPodStore(
       await input.database.init?.(aiProviderResource, aiModelResource);
       const providerId = aiProviderResource.buildId({ id: normalizedProvider });
       await ensureProviderRow(input.database, normalizedProvider);
-      const hasModel = [...new Set(modelIds.map((id) => modelResourceId(normalizedProvider, id)))];
+      const hasModel = [...new Set(modelIds.map((id) => id.includes('.ttl#')
+        ? id
+        : modelResourceId(normalizedProvider, id)))];
       await input.database.updateById(aiProviderResource, providerId, { hasModel } as never);
     },
   };
@@ -354,26 +361,38 @@ function modelSummaryFromRows(
   selectedId: string,
   rows: Record<string, unknown>[],
 ): AiGatewayModel {
-  const selectedKey = modelKeyFromRowId(selectedId, provider) ?? selectedId;
-  const row = rows.find((candidate) => {
+  const exactRow = rows.find((candidate) => stringValue(candidate.id) === selectedId);
+  const exactProviderResource = stringValue(exactRow?.isProvidedBy);
+  const selectedKey = exactRow
+    ? modelKeyFromRowId(selectedId, exactProviderResource ?? provider) ?? selectedId
+    : modelKeyFromRowId(selectedId, provider) ?? selectedId;
+  const row = exactRow ?? rows.find((candidate) => {
     const rowId = stringValue(candidate.id);
-    return rowId === selectedId || modelKeyFromRowId(rowId, provider) === selectedKey;
+    const rowProvider = stringValue(candidate.isProvidedBy);
+    return rowId === selectedId
+      || modelKeyFromRowId(rowId, provider) === selectedKey
+      || (providerFromRelation(rowProvider) === provider && modelKeyFromRowId(rowId, rowProvider ?? provider) === selectedKey);
   });
   return {
     id: selectedKey,
     provider,
+    offeringId: offeringFromProviderRelation(stringValue(row?.isProvidedBy)),
+    resourceId: stringValue(row?.id) ?? selectedId,
     displayName: stringValue(row?.displayName),
     availability: stringValue(row?.status) === 'unavailable' || !row ? 'unavailable' : 'available',
   };
 }
 
 function modelSummaryFromRow(row: Record<string, unknown>): AiGatewayModel | undefined {
-  const provider = providerFromRelation(stringValue(row.isProvidedBy));
-  const id = provider && modelKeyFromRowId(stringValue(row.id), provider);
+  const providerResource = stringValue(row.isProvidedBy);
+  const provider = providerFromRelation(providerResource);
+  const id = provider && modelKeyFromRowId(stringValue(row.id), providerResource ?? provider);
   if (!provider || !id) return undefined;
   return {
     id,
     provider,
+    offeringId: offeringFromProviderRelation(providerResource),
+    resourceId: stringValue(row.id),
     displayName: stringValue(row.displayName),
     availability: stringValue(row.status) === 'unavailable' ? 'unavailable' : 'available',
   };
@@ -386,24 +405,88 @@ function discoveredModelValue(value: unknown): { id: string; displayName?: strin
   return { id, displayName: stringValue(row?.displayName) };
 }
 
+function providerResourceIdForCredential(
+  provider: AiConnectionsProvider,
+  credentialRow: Record<string, unknown> | null,
+): string {
+  const rawProvider = stringValue(credentialRow?.provider);
+  const rawProviderReference = providerResourceReference(rawProvider);
+  const rawProviderKey = providerResourceKey(rawProvider);
+  if (rawProviderReference && rawProviderKey && rawProviderKey !== provider && rawProviderReference.includes('#')) {
+    return aiProviderResource.buildId({ id: rawProviderReference });
+  }
+
+  const offeringId = stringValue(objectValue(credentialRow?.metadata)?.offeringId);
+  const canonicalOfferingId = canonicalOfferingIdFor(provider, offeringId ?? runtimeOfferingIdFor(provider, rawProviderKey));
+  if (canonicalOfferingId) {
+    return aiProviderResource.buildId({ id: `${provider}-${canonicalOfferingId}.ttl#this` });
+  }
+
+  return aiProviderResource.buildId({ id: provider });
+}
+
+function canonicalOfferingIdFor(
+  provider: AiConnectionsProvider,
+  offeringId: string | undefined,
+): string | undefined {
+  if (!offeringId) return undefined;
+  const normalized = offeringId.trim().toLowerCase();
+  if (provider === 'bailian') {
+    if (normalized === 'token-plan') return 'token-plan-personal';
+    if (normalized === 'coding-plan') return 'coding-plan-pro';
+    if (normalized === 'payg') return 'pay-as-you-go';
+  }
+  return normalized;
+}
+
+function runtimeOfferingIdFor(
+  provider: AiConnectionsProvider,
+  providerKey: string | undefined,
+): string | undefined {
+  if (!providerKey || providerKey === provider) return undefined;
+  if (provider === 'bailian') {
+    if (providerKey === 'bailian-token-plan') return 'token-plan-personal';
+    if (providerKey === 'bailian-coding-plan') return 'coding-plan-pro';
+  }
+  return undefined;
+}
+
+function providerRelationMatches(value: string | undefined, expected: string): boolean {
+  const actualReference = providerResourceReference(value);
+  const expectedReference = providerResourceReference(expected);
+  return actualReference !== undefined && actualReference === expectedReference;
+}
+
 async function ensureProviderRow(database: SolidDatabase, provider: AiConnectionsProvider): Promise<void> {
   const id = aiProviderResource.buildId({ id: provider });
   const rows = await database.select().from(aiProviderResource).execute() as Record<string, unknown>[];
-  if (rows.some((row) => stringValue(row.id) === id || providerFromRelation(stringValue(row.id)) === provider)) return;
+  if (rows.some((row) => providerRelationMatches(stringValue(row.id), id))) return;
   await database.insert(aiProviderResource).values({
     id,
     displayName: providerName(provider),
   } as never).execute();
 }
 
+async function ensureProviderResourceRow(
+  database: SolidDatabase,
+  providerId: string,
+  displayName: string,
+): Promise<void> {
+  const rows = await database.select().from(aiProviderResource).execute() as Record<string, unknown>[];
+  if (rows.some((row) => providerRelationMatches(stringValue(row.id), providerId))) return;
+  await database.insert(aiProviderResource).values({
+    id: providerId,
+    displayName,
+  } as never).execute();
+}
+
 async function upsertModelRow(
   database: SolidDatabase,
-  provider: AiConnectionsProvider,
   providerId: string,
   model: { id: string; displayName?: string },
   existingIds: Set<string>,
 ): Promise<void> {
-  const id = modelResourceId(provider, model.id);
+  const id = modelResourceId(providerId, model.id);
   const patch = {
     displayName: model.displayName ?? model.id,
     isProvidedBy: providerId,
@@ -417,13 +500,17 @@ async function upsertModelRow(
   existingIds.add(id);
 }
 
-function modelResourceId(provider: AiConnectionsProvider, modelId: string): string {
-  return `${provider}.ttl#${encodeURIComponent(modelId)}`;
+function modelResourceId(provider: string, modelId: string): string {
+  const providerResource = providerResourceReference(provider) ?? `${provider}.ttl`;
+  const providerDocument = providerResource.split('#', 1)[0] ?? providerResource;
+  return `${providerDocument}#${encodeURIComponent(modelId)}`;
 }
 
-function modelKeyFromRowId(id: string | undefined, provider: AiConnectionsProvider): string | undefined {
+function modelKeyFromRowId(id: string | undefined, provider: string): string | undefined {
   if (!id) return undefined;
-  const marker = `${provider}.ttl#`;
+  const providerResource = providerResourceReference(provider);
+  const providerDocument = providerResource?.split('#', 1)[0] ?? provider;
+  const marker = providerDocument.endsWith('.ttl') ? `${providerDocument}#` : `${providerDocument}.ttl#`;
   const index = id.lastIndexOf(marker);
   if (index < 0) return undefined;
   try {
@@ -447,20 +534,54 @@ function providerOfferings(provider: AiConnectionsProvider): AiProviderOffering[
     ];
   }
   if (provider === 'bailian') {
+    const consoleUrl = 'https://bailian.console.aliyun.com/';
+    const usagePolicyUrl = 'https://help.aliyun.com/zh/model-studio/';
     return [
-      { id: 'pay-as-you-go', label: '按量付费', kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'] },
-      { id: 'coding-plan', label: 'Coding Plan', kind: 'codingPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
-      { id: 'token-plan', label: 'Token Plan', kind: 'tokenPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
+      bailianOffering({ id: 'pay-as-you-go', label: 'Pay as You Go', kind: 'payAsYouGo', runtimeProviderIds: ['bailian'], credentialPrefixHints: ['sk-'], region: 'cn', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'console', consoleUrl, usagePolicyUrl }),
+      bailianOffering({ id: 'token-plan', label: 'Token Plan Personal', kind: 'tokenPlan', runtimeProviderIds: ['bailian-token-plan'], credentialPrefixHints: ['sk-'], region: 'cn-beijing', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
+      bailianOffering({ id: 'token-plan-team', label: 'Token Plan Team', kind: 'tokenPlan', runtimeProviderIds: ['bailian-token-plan'], credentialPrefixHints: ['sk-'], region: 'cn-beijing', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
+      bailianOffering({ id: 'coding-plan', label: 'Coding Plan Pro', kind: 'codingPlan', runtimeProviderIds: ['bailian-coding-plan'], credentialPrefixHints: ['sk-sp-'], region: 'cn', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
     ];
   }
   return [{ id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', authModes: ['apiKey'] }];
+}
+
+function bailianOffering(input: {
+  id: string;
+  label: string;
+  kind: string;
+  runtimeProviderIds: string[];
+  credentialPrefixHints: string[];
+  region: string;
+  baseUrl: string;
+  quotaStrategy: string;
+  consoleUrl: string;
+  usagePolicyUrl: string;
+}): AiProviderOffering {
+  return {
+    id: input.id,
+    label: input.label,
+    productLabel: 'Alibaba Bailian',
+    kind: input.kind,
+    authModes: ['apiKey'],
+    runtimeProviderIds: input.runtimeProviderIds,
+    credentialPrefixHints: input.credentialPrefixHints,
+    consoleUrl: input.consoleUrl,
+    subscriptionUrl: input.consoleUrl,
+    endpoints: [{ protocol: 'chatCompletions', baseUrl: input.baseUrl, region: input.region }],
+    modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+    quota: { strategy: input.quotaStrategy, url: input.consoleUrl },
+    usagePolicyUrl: input.usagePolicyUrl,
+    region: input.region,
+  };
 }
 
 function providerStatus(credentials: AiProviderCredentialSummary[]): AiProviderSummary['status'] {
   if (credentials.some((credential) => credential.health === 'expired' || credential.health === 'invalid')) {
     return 'attention';
   }
-  return credentials.some((credential) => credential.enabled) ? 'available' : 'unconfigured';
+  if (credentials.some((credential) => credential.enabled)) return 'available';
+  return credentials.length > 0 ? 'configured' : 'unconfigured';
 }
 
 function providerName(provider: AiConnectionsProvider): string {
@@ -487,10 +608,12 @@ function defaultOfferingFor(provider: AiConnectionsProvider, authMode: AiProvide
 }
 
 function offeringBaseUrl(provider: AiConnectionsProvider, offeringId?: string): string | undefined {
-  if (provider !== 'bailian') return undefined;
-  if (offeringId === 'coding-plan') return 'https://coding.dashscope.aliyuncs.com/v1';
-  if (offeringId === 'token-plan') return 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1';
-  return 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+  const offering = providerOfferings(provider).find((candidate) =>
+    candidate.id === (offeringId ?? defaultOfferingFor(provider, 'apiKey')));
+  if (!offering) return undefined;
+  const discoveryProtocol = offering.modelDiscovery?.endpointProtocol;
+  return offering.endpoints?.find((endpoint) => endpoint.protocol === discoveryProtocol)?.baseUrl
+    ?? offering.endpoints?.[0]?.baseUrl;
 }
 
 function maskedHintFromEncryptedSecret(
@@ -541,10 +664,20 @@ function decodeBase64Json(value: string): unknown {
 }
 
 function providerFromRelation(value: string | undefined): AiConnectionsProvider | undefined {
-  if (!value) return undefined;
-  const withoutFragment = value.split('#', 1)[0] ?? value;
-  const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
-  return providerValue(fileName.replace(/\.ttl$/u, ''));
+  return providerValue(providerResourceKey(value));
+}
+
+function offeringFromProviderRelation(value: string | undefined): string | undefined {
+  const key = providerResourceKey(value);
+  if (!key) return undefined;
+  if (key === 'bailian-token-plan-personal') return 'token-plan';
+  if (key === 'bailian-token-plan-team') return 'token-plan-team';
+  if (key === 'bailian-coding-plan-pro') return 'coding-plan';
+  if (key === 'bailian-pay-as-you-go') return 'pay-as-you-go';
+  for (const provider of AI_CONNECTIONS_PROVIDERS) {
+    if (key.startsWith(`${provider}-`)) return key.slice(provider.length + 1);
+  }
+  return undefined;
 }
 
 function providerFromCredentialId(id: string): AiConnectionsProvider | undefined {
@@ -553,9 +686,34 @@ function providerFromCredentialId(id: string): AiConnectionsProvider | undefined
 }
 
 function providerValue(value: unknown): AiConnectionsProvider | undefined {
-  return typeof value === 'string' && (AI_CONNECTIONS_PROVIDERS as readonly string[]).includes(value)
-    ? value as AiConnectionsProvider
-    : undefined;
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if ((AI_CONNECTIONS_PROVIDERS as readonly string[]).includes(normalized)) {
+    return normalized as AiConnectionsProvider;
+  }
+  for (const provider of AI_CONNECTIONS_PROVIDERS) {
+    if (normalized.startsWith(`${provider}-`)) return provider;
+    if (provider === 'bailian' && (normalized === 'bailian-token-plan' || normalized === 'bailian-coding-plan')) {
+      return provider;
+    }
+  }
+  return undefined;
+}
+
+function providerResourceReference(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const withoutFragment = value.split('#', 1)[0] ?? value;
+  const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
+  if (!fileName) return undefined;
+  const document = fileName.endsWith('.ttl') ? fileName : `${fileName}.ttl`;
+  const fragmentIndex = value.indexOf('#');
+  return fragmentIndex < 0 ? document : `${document}${value.slice(fragmentIndex)}`;
+}
+
+function providerResourceKey(value: string | undefined): string | undefined {
+  const reference = providerResourceReference(value);
+  if (!reference) return undefined;
+  return (reference.split('#', 1)[0] ?? reference).replace(/\.ttl$/u, '');
 }
 
 function authModeValue(value: unknown): AiProviderCredentialSummary['authMode'] | undefined {

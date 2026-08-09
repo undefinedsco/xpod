@@ -10,6 +10,21 @@
 
 ---
 
+### Task 0: Lock the Offering contract
+
+**Files:**
+- Modify: `src/api/ai-gateway/providers/ProviderRegistry.ts`
+- Modify: `packages/ai-connections/src/types.ts`
+- Test: `tests/api/ai-gateway/ProviderRegistry.test.ts`
+- Modify: `packages/ai-connections/src/components/**`
+
+- [ ] Add failing registry tests proving every Bailian Offering is a distinct operational product with its own auth modes, credential prefixes, console/subscription URLs, protocol API bases, model-discovery strategy, quota strategy/URL, usage policy, region, and lifecycle state.
+- [ ] Require pay-as-you-go API, Token Plan Personal, Token Plan Team, and Coding Plan Pro; mark Coding Plan Lite legacy-only rather than presenting it as currently purchasable.
+- [ ] Add a failing component test asserting Offerings render as vertical list items and no Offering `tablist` exists.
+- [ ] Remove `AiOfferingTabs` from the product path. Authentication methods and multiple credentials render inside their owning Offering item.
+- [ ] Route discovery, quota, credential creation, and model selection using `providerId + offeringId`.
+- [ ] Run focused registry and component suites and confirm the contract remains green.
+
 ### Task 1: Make credential mutations persistence-truthful
 
 **Files:**
@@ -34,8 +49,8 @@
 - Modify: `packages/ai-connections/src/controller.tsx`
 
 - [ ] Add adapter tests with different OpenAI-compatible and Anthropic model payloads and assert exact Provider URL and authentication headers.
-- [ ] Add a controller test with two Provider credentials returning disjoint catalogs and assert each `discoverModels(provider)` result and saved rows remain Provider-qualified.
-- [ ] Add a PodStore round-trip test asserting `isProvidedBy` maps each row back to only its owning Provider after reload.
+- [ ] Add a controller test with two Offering credentials returning disjoint catalogs and assert each `discoverModels(provider, offering)` result and saved rows remain Provider-and-Offering-qualified.
+- [ ] Add a PodStore round-trip test asserting `isProvidedBy` and Offering ownership map each row back to only its owning product after reload.
 - [ ] Run the focused tests to reproduce any cross-Provider contamination before changing production code.
 - [ ] Fix the first proven boundary that loses Provider identity; do not add client-side filtering as a substitute for correcting persisted relations.
 - [ ] Re-run tests and assert OpenAI and DeepSeek catalogs remain disjoint.

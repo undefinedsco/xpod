@@ -16,6 +16,7 @@ import {
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
+import type { ProviderProductDescriptor } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const CREDENTIAL_IRI = 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi';
@@ -72,6 +73,116 @@ async function credential(provider: string, secret: ProviderSecret = { type: 'ap
 }
 
 describe('ProviderModelsAdapters', () => {
+  it('discovers isolated model catalogs from the selected offering endpoint with bearer auth', async () => {
+    const product: ProviderProductDescriptor = {
+      id: 'bailian',
+      label: 'Bailian',
+      offerings: [
+        {
+          id: 'payg', runtimeProviderIds: ['bailian'], label: 'PAYG', productLabel: 'Bailian',
+          kind: 'payAsYouGo', authModes: ['apiKey'], credentialPrefixHints: ['sk-'],
+          consoleUrl: 'https://console.example/payg', subscriptionUrl: 'https://console.example/payg/subscribe',
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://payg.example/v1' }],
+          modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+          quota: { strategy: 'providerApi', url: 'https://console.example/payg/quota' },
+          usagePolicyUrl: 'https://console.example/payg/policy', region: 'cn',
+        },
+        {
+          id: 'coding', runtimeProviderIds: ['bailian'], label: 'Coding', productLabel: 'Bailian',
+          kind: 'codingPlan', authModes: ['apiKey'], credentialPrefixHints: ['sk-'],
+          consoleUrl: 'https://console.example/coding', subscriptionUrl: 'https://console.example/coding/subscribe',
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://coding.example/v1' }],
+          modelDiscovery: { strategy: 'openaiCompatible', path: '/catalog/models', endpointProtocol: 'chatCompletions' },
+          quota: { strategy: 'providerApi', url: 'https://console.example/coding/quota' },
+          usagePolicyUrl: 'https://console.example/coding/policy', region: 'cn',
+        },
+      ],
+    };
+    const fetch = jsonFetch((url, init) => {
+      const auth = new Headers(init?.headers).get('authorization');
+      if (url === 'https://payg.example/v1/models') {
+        expect(auth).toBe('Bearer payg-secret');
+        return { body: { data: [{ id: 'payg-only' }] } };
+      }
+      expect(url).toBe('https://coding.example/v1/catalog/models');
+      expect(auth).toBe('Bearer coding-secret');
+      return { body: { data: [{ id: 'coding-only' }] } };
+    });
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      provider: 'bailian',
+      defaultBaseUrl: 'https://fallback.example/v1',
+      product,
+      fetchImpl: fetch,
+    });
+
+    const payg = await adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'payg' },
+      secret: { type: 'apiKey', apiKey: 'payg-secret' },
+    });
+    const coding = await adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'coding' },
+      secret: { type: 'apiKey', apiKey: 'coding-secret' },
+    });
+
+    expect(payg).toEqual([{ id: 'payg-only' }]);
+    expect(coding).toEqual([{ id: 'coding-only' }]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects ambiguous offering discovery instead of using the provider default catalog', async () => {
+    const product: ProviderProductDescriptor = {
+      id: 'multi', label: 'Multi', offerings: ['one', 'two'].map((id) => ({
+        id, runtimeProviderIds: ['multi'], label: id, productLabel: 'Multi', kind: 'payAsYouGo',
+        authModes: ['apiKey'], credentialPrefixHints: [], consoleUrl: 'https://console.example',
+        subscriptionUrl: 'https://console.example',
+        endpoints: [{ protocol: 'chatCompletions', baseUrl: `https://${id}.example/v1` }],
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        quota: { strategy: 'console', url: 'https://console.example' },
+        usagePolicyUrl: 'https://console.example/policy', region: 'global',
+      })),
+    };
+    const fetch = vi.fn() as unknown as typeof globalThis.fetch;
+
+    await expect(new OpenAiCompatibleModelsAdapter({
+      provider: 'multi', defaultBaseUrl: 'https://fallback.example/v1', product, fetchImpl: fetch,
+    }).fetch({
+      credential: await credential('multi'),
+      secret: { type: 'apiKey', apiKey: 'secret' },
+    })).rejects.toThrow('models_offering_required:multi');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a sibling offering endpoint while preserving an explicitly safe custom endpoint', async () => {
+    const offerings = ['payg', 'coding'].map((id) => ({
+      id, runtimeProviderIds: ['bailian'], label: id, productLabel: 'Bailian',
+      kind: 'plan', authModes: ['apiKey'] as const, credentialPrefixHints: ['sk-'],
+      consoleUrl: `https://console.example/${id}`, subscriptionUrl: `https://console.example/${id}`,
+      endpoints: [{ protocol: 'chatCompletions', baseUrl: `https://${id}.example/v1` }],
+      modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+      quota: { strategy: 'console', url: `https://console.example/${id}` },
+      usagePolicyUrl: `https://console.example/${id}/policy`, region: 'cn',
+    }));
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      provider: 'bailian',
+      defaultBaseUrl: 'https://payg.example/v1',
+      safeBaseUrls: ['https://payg.example/v1', 'https://coding.example/v1', 'https://proxy.example/v1'],
+      product: { id: 'bailian', label: 'Bailian', offerings },
+      fetchImpl: jsonFetch((url) => {
+        expect(url).toBe('https://proxy.example/v1/models');
+        return { body: { data: [{ id: 'proxy-model' }] } };
+      }),
+    });
+
+    await expect(adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'payg', baseUrl: 'https://coding.example/v1' },
+      secret: { type: 'apiKey', apiKey: 'secret' },
+    })).rejects.toThrow('unsafe_provider_base_url');
+    await expect(adapter.fetch({
+      credential: { ...await credential('bailian'), offeringId: 'payg', baseUrl: 'https://proxy.example/v1' },
+      secret: { type: 'apiKey', apiKey: 'secret' },
+    })).resolves.toEqual([{ id: 'proxy-model' }]);
+  });
+
   it('discovers OpenAI-compatible models from the credential base URL with bearer auth', async () => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://api.moonshot.ai/v1/models');
@@ -241,6 +352,44 @@ describe('ProviderModelsService', () => {
       observedAt: '2026-08-09T00:00:00.000Z',
       source: 'deepseek:/models',
     });
+  });
+
+  it('preserves the requested offering when discovering from a caller-supplied secret', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://coding.example/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer coding-secret');
+      return { body: { data: [{ id: 'coding-only' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'bailian',
+        defaultBaseUrl: 'https://fallback.example/v1',
+        product: {
+          id: 'bailian', label: 'Bailian', offerings: [{
+            id: 'coding', runtimeProviderIds: ['bailian'], label: 'Coding', productLabel: 'Bailian',
+            kind: 'codingPlan', authModes: ['apiKey'], credentialPrefixHints: ['sk-'],
+            consoleUrl: 'https://console.example', subscriptionUrl: 'https://console.example/subscribe',
+            endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://coding.example/v1' }],
+            modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+            quota: { strategy: 'providerApi', url: 'https://console.example/quota' },
+            usagePolicyUrl: 'https://console.example/policy', region: 'cn',
+          }],
+        },
+        fetchImpl: fetch,
+      })],
+    });
+
+    const result = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'coding',
+      credentialId: 'credential-coding',
+      apiKey: 'coding-secret',
+    });
+
+    expect(result.models).toEqual([{ id: 'coding-only' }]);
+    expect(result.source).toBe('bailian:coding:/models');
   });
 
   it('does not send an ephemeral caller secret to an untrusted discovery base URL', async () => {

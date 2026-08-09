@@ -1,6 +1,10 @@
 import type { ConnectCredentialRecord } from '../connect';
 import type { ProviderSecret } from '../credentials/CredentialVault';
 import { apiKeyFromSecret } from '../quota/ProviderQuotaAdapter';
+import type {
+  ProviderOfferingDescriptor,
+  ProviderProductDescriptor,
+} from '../providers/ProviderRegistry';
 
 export interface DiscoveredProviderModel {
   id: string;
@@ -50,6 +54,7 @@ export interface OpenAiCompatibleModelsAdapterOptions {
   provider: string;
   defaultBaseUrl: string;
   safeBaseUrls?: string[];
+  product?: ProviderProductDescriptor;
   fetchImpl?: typeof fetch;
 }
 
@@ -57,12 +62,14 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
   public readonly provider: string;
   private readonly defaultBaseUrl: string;
   private readonly safeBaseUrls: string[];
+  private readonly product?: ProviderProductDescriptor;
   private readonly fetchImpl: typeof fetch;
 
   public constructor(options: OpenAiCompatibleModelsAdapterOptions) {
     this.provider = options.provider;
     this.defaultBaseUrl = options.defaultBaseUrl;
     this.safeBaseUrls = options.safeBaseUrls ?? [options.defaultBaseUrl];
+    this.product = options.product;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -71,12 +78,13 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
     if (!apiKey) {
       throw new Error('models_secret_missing');
     }
-    const baseUrl = resolveSafeModelsBaseUrl(
-      input.credential.baseUrl,
+    const target = resolveOfferingDiscoveryTarget(
+      input.credential,
+      this.product,
       this.defaultBaseUrl,
       this.safeBaseUrls,
     );
-    const response = await this.fetchImpl(`${baseUrl}/models`, {
+    const response = await this.fetchImpl(`${target.baseUrl}${target.path}`, {
       method: 'GET',
       headers: { authorization: `Bearer ${apiKey}` },
       signal: input.signal,
@@ -92,6 +100,75 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
   }
 }
 
+function resolveOfferingDiscoveryTarget(
+  credential: ModelsCredentialRecord,
+  product: ProviderProductDescriptor | undefined,
+  defaultBaseUrl: string,
+  safeBaseUrls: readonly string[],
+): { baseUrl: string; path: string } {
+  const offering = resolveCredentialOffering(credential, product);
+  if (offering?.modelDiscovery.strategy === 'unsupported') {
+    throw new Error(`models_discovery_unsupported:${offering.id}`);
+  }
+  const endpoint = offering
+    ? offering.endpoints.find((candidate) => candidate.protocol === offering.modelDiscovery.endpointProtocol)
+    : undefined;
+  if (offering && !endpoint) {
+    throw new Error(`models_discovery_endpoint_not_found:${offering.id}`);
+  }
+  const siblingBaseUrls = new Set(product?.offerings
+    .filter((candidate) => candidate.id !== offering?.id)
+    .flatMap((candidate) => candidate.endpoints.map((item) => item.baseUrl)) ?? []);
+  const allowedBaseUrls = offering && endpoint
+    ? [endpoint.baseUrl, ...safeBaseUrls.filter((baseUrl) => !siblingBaseUrls.has(baseUrl))]
+    : safeBaseUrls;
+  return {
+    baseUrl: resolveSafeModelsBaseUrl(
+      credential.baseUrl,
+      endpoint?.baseUrl ?? defaultBaseUrl,
+      allowedBaseUrls,
+    ),
+    path: normalizeDiscoveryPath(offering?.modelDiscovery.path ?? '/models'),
+  };
+}
+
+function resolveCredentialOffering(
+  credential: ModelsCredentialRecord,
+  product: ProviderProductDescriptor | undefined,
+): ProviderOfferingDescriptor | undefined {
+  if (!product) return undefined;
+  if (credential.offeringId) {
+    const offering = product.offerings.find((candidate) => candidate.id === credential.offeringId);
+    if (!offering) throw new Error(`models_offering_not_found:${credential.offeringId}`);
+    return offering;
+  }
+  const provider = credential.provider.trim().toLowerCase();
+  const candidates = product.offerings.filter((candidate) =>
+    candidate.runtimeProviderIds.some((runtimeProviderId) => runtimeProviderId === provider)
+    && offeringAcceptsCredential(candidate, credential.authMode));
+  if (candidates.length === 1) return candidates[0];
+  throw new Error(`models_offering_required:${product.id}`);
+}
+
+function offeringAcceptsCredential(
+  offering: ProviderOfferingDescriptor,
+  authMode: ModelsCredentialRecord['authMode'],
+): boolean {
+  if (authMode === 'apiKey') return offering.authModes.includes('apiKey');
+  if (authMode === 'deviceCodeOAuth') {
+    return offering.authModes.includes('deviceCode') || offering.authModes.includes('oauth');
+  }
+  return offering.authModes.includes('oauth');
+}
+
+function normalizeDiscoveryPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed || trimmed.includes('?') || trimmed.includes('#')) {
+    throw new Error('invalid_models_discovery_path');
+  }
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
 export const ANTHROPIC_MODELS_BASE_URL = 'https://api.anthropic.com/v1';
 export const ANTHROPIC_MODELS_VERSION = '2023-06-01';
 
@@ -99,11 +176,13 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
   public readonly provider = 'anthropic';
   private readonly defaultBaseUrl: string;
   private readonly safeBaseUrls: string[];
+  private readonly product?: ProviderProductDescriptor;
   private readonly fetchImpl: typeof fetch;
 
-  public constructor(options: { defaultBaseUrl?: string; safeBaseUrls?: string[]; fetchImpl?: typeof fetch } = {}) {
+  public constructor(options: { defaultBaseUrl?: string; safeBaseUrls?: string[]; product?: ProviderProductDescriptor; fetchImpl?: typeof fetch } = {}) {
     this.defaultBaseUrl = options.defaultBaseUrl ?? ANTHROPIC_MODELS_BASE_URL;
     this.safeBaseUrls = options.safeBaseUrls ?? [this.defaultBaseUrl];
+    this.product = options.product;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -112,12 +191,13 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
     if (!apiKey) {
       throw new Error('models_secret_missing');
     }
-    const baseUrl = resolveSafeModelsBaseUrl(
-      input.credential.baseUrl,
+    const target = resolveOfferingDiscoveryTarget(
+      input.credential,
+      this.product,
       this.defaultBaseUrl,
       this.safeBaseUrls,
     );
-    const response = await this.fetchImpl(`${baseUrl}/models`, {
+    const response = await this.fetchImpl(`${target.baseUrl}${target.path}`, {
       method: 'GET',
       headers: {
         'x-api-key': apiKey,

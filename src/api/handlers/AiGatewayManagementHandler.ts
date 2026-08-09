@@ -649,6 +649,7 @@ export function registerAiGatewayManagementRoutes(
         ? await modelsService.listFromSecret({
           webId: request.auth.webId,
           provider: params.provider,
+          offeringId: normalizeOptionalString(body.offeringId),
           credentialId,
           apiKey,
           baseUrl: normalizeOptionalString(body.baseUrl),

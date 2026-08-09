@@ -1361,13 +1361,22 @@ export interface AiGatewayModelSummary {
 export interface AiProviderPoolSummary {
   id: string;
   name: string;
-  status: 'unconfigured' | 'available' | 'attention' | 'unavailable';
+  status: 'unconfigured' | 'configured' | 'available' | 'attention' | 'unavailable';
   offerings: Array<{
     id: string;
     label: string;
     kind?: string;
     authModes?: string[];
     runtimeProviderIds?: string[];
+    productLabel: string;
+    credentialPrefixHints: string[];
+    consoleUrl: string;
+    subscriptionUrl: string;
+    endpoints: Array<{ protocol: string; baseUrl: string; region?: string }>;
+    modelDiscovery: { strategy: string; path: string; endpointProtocol: string };
+    quota: { strategy: string; url: string };
+    usagePolicyUrl: string;
+    region: string;
   }>;
   credentials: AiProviderCredentialSummary[];
   selectedModels: AiGatewayModelSummary[];
@@ -1753,6 +1762,15 @@ function publicOfferingSummary(offering: {
   kind?: string;
   authModes?: string[];
   runtimeProviderIds?: string[];
+  productLabel: string;
+  credentialPrefixHints: string[];
+  consoleUrl: string;
+  subscriptionUrl: string;
+  endpoints: Array<{ protocol: string; baseUrl: string; region?: string }>;
+  modelDiscovery: { strategy: string; path: string; endpointProtocol: string };
+  quota: { strategy: string; url: string };
+  usagePolicyUrl: string;
+  region: string;
 }): AiProviderPoolSummary['offerings'][number] {
   return metadataWithoutUndefined({
     id: offering.id,
@@ -1760,6 +1778,15 @@ function publicOfferingSummary(offering: {
     kind: offering.kind,
     authModes: offering.authModes,
     runtimeProviderIds: offering.runtimeProviderIds,
+    productLabel: offering.productLabel,
+    credentialPrefixHints: offering.credentialPrefixHints,
+    consoleUrl: offering.consoleUrl,
+    subscriptionUrl: offering.subscriptionUrl,
+    endpoints: offering.endpoints,
+    modelDiscovery: offering.modelDiscovery,
+    quota: offering.quota,
+    usagePolicyUrl: offering.usagePolicyUrl,
+    region: offering.region,
   }) as AiProviderPoolSummary['offerings'][number];
 }
 
@@ -1829,7 +1856,7 @@ function aggregateProviderPoolStatus(credentials: AiProviderCredentialSummary[])
   if (credentials.some((credential) => credential.health === 'expired' || credential.health === 'invalid')) {
     return 'attention';
   }
-  return 'unavailable';
+  return 'configured';
 }
 
 function selectedModelsFromCredentials(credentials: ConnectCredentialRecord[]): AiGatewayModelSummary[] {

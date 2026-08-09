@@ -209,7 +209,7 @@ describe('AI Connection settings', () => {
     ))
   })
 
-  it('renders Provider offerings as credential-pool tabs without asking for an OAuth client id', async () => {
+  it('renders every Provider offering as an independent credential list without tabs', async () => {
     render(
       <AiConnectionsPanel
         client={client()}
@@ -248,11 +248,41 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    expect(await screen.findByRole('tab', { name: 'Kimi 账号' })).toBeTruthy()
-    expect(screen.getByRole('tab', { name: 'API Key' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Kimi 账号' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'API Key' })).toBeTruthy()
+    expect(screen.queryByRole('tab')).toBeNull()
     expect(screen.getByText('a***e@example.com')).toBeTruthy()
     expect(screen.getByRole('button', { name: '添加账号' })).toBeTruthy()
     expect(screen.queryByLabelText(/client.?id/i)).toBeNull()
+  })
+
+  it('shows operational metadata and management links for each offering', async () => {
+    render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted providerProducts={{
+      openai: {
+        id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
+        offerings: [{
+          id: 'api-platform', label: 'API Platform', productLabel: 'OpenAI Platform', kind: 'payAsYouGo',
+          authModes: ['apiKey'],
+          endpoints: [
+            { protocol: 'responses', baseUrl: 'https://api.openai.com/v1' },
+            { protocol: 'chatCompletions', baseUrl: 'https://api.openai.com/v1' },
+          ],
+          consoleUrl: 'https://platform.openai.com/api-keys',
+          subscriptionUrl: 'https://platform.openai.com/billing',
+          quota: { strategy: 'providerApi', url: 'https://platform.openai.com/usage' },
+          usagePolicyUrl: 'https://openai.com/policies/usage-policies/',
+        }],
+      },
+    }} />)
+
+    expect(await screen.findByText('OpenAI Platform')).toBeTruthy()
+    expect(screen.getByText('按量付费')).toBeTruthy()
+    expect(screen.getByText(/Responses.*Chat Completions/)).toBeTruthy()
+    expect(screen.getByText('https://api.openai.com/v1')).toBeTruthy()
+    expect(screen.getByRole('link', { name: '控制台' })).toHaveProperty('href', 'https://platform.openai.com/api-keys')
+    expect(screen.getByRole('link', { name: '订阅与账单' })).toHaveProperty('href', 'https://platform.openai.com/billing')
+    expect(screen.getByRole('link', { name: '额度与用量' })).toHaveProperty('href', 'https://platform.openai.com/usage')
+    expect(screen.getByRole('link', { name: '使用政策' })).toHaveProperty('href', 'https://openai.com/policies/usage-policies/')
   })
 
   it('logs out the selected OAuth credential row without showing fake switch actions', async () => {
@@ -400,6 +430,14 @@ describe('AI Connection settings', () => {
     expect(await screen.findByText('Primary key')).toBeTruthy()
     expect(screen.getByText('Backup key')).toBeTruthy()
     expect(screen.getByText('sk-...prod')).toBeTruthy()
+    expect(screen.getAllByText('启用').length).toBeGreaterThan(0)
+    expect(screen.getByText('有效')).toBeTruthy()
+    expect(screen.getAllByText('停用').length).toBeGreaterThan(0)
+    expect(screen.getByText('未验证')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '停用 Primary key' }).textContent).toContain('停用')
+    expect(screen.getByRole('button', { name: '启用 Backup key' }).textContent).toContain('启用')
+    expect(screen.getByRole('button', { name: '测试连接 Primary key' })).toBeTruthy()
+    expect(screen.getByText('Backup key').closest('[data-credential-state]')?.getAttribute('data-credential-state')).toBe('disabled')
     expect(document.body.textContent).not.toContain('sk-provider-secret')
   })
 
@@ -446,9 +484,47 @@ describe('AI Connection settings', () => {
       baseUrl: 'https://proxy.example/v1',
       priority: 20,
     }))
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai', {
+      offeringId: 'api-platform',
+      credentialId: 'openai-key-new',
+    }))
     expect(screen.getByText('Primary key')).toBeTruthy()
     expect(await screen.findByText('Work key')).toBeTruthy()
+    expect(await screen.findByText('openai Model 1')).toBeTruthy()
     expect(document.body.textContent).not.toContain('sk-work-secret')
+  })
+
+  it('keeps a saved credential and exposes retry when automatic model sync fails', async () => {
+    const current = client({
+      discoverModels: vi.fn(async () => {
+        throw new Error('模型目录暂时不可用')
+      }),
+    })
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerProducts={{
+          openai: {
+            id: 'openai',
+            name: 'OpenAI',
+            status: 'unconfigured',
+            offerings: [{ id: 'api-platform', label: 'API Key', authModes: ['apiKey'] }],
+            credentials: [],
+            selectedModels: [],
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '添加 API Key' }))
+    fireEvent.change(screen.getByLabelText('OpenAI API Key 输入'), { target: { value: 'sk-work-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
+
+    expect(await screen.findByText('openai-key-new')).toBeTruthy()
+    expect(await screen.findByText('AI Connection request failed. Please try again.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '同步模型' })).toBeTruthy()
   })
 
   it('edits, toggles, deletes, tests, and reorders individual API key credentials', async () => {
@@ -504,6 +580,10 @@ describe('AI Connection settings', () => {
       label: 'Primary renamed',
       baseUrl: 'https://proxy.example/v1',
     }))
+    await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai', {
+      offeringId: 'api-platform',
+      credentialId: 'openai-key-primary',
+    }))
 
     fireEvent.click(screen.getByRole('button', { name: '停用 Primary renamed' }))
     await waitFor(() => expect(current.updateProviderCredential).toHaveBeenCalledWith('openai', 'openai-key-primary', {
@@ -511,7 +591,7 @@ describe('AI Connection settings', () => {
       enabled: false,
     }))
 
-    fireEvent.click(screen.getByRole('button', { name: '测试 Primary renamed' }))
+    fireEvent.click(screen.getByRole('button', { name: '测试连接 Primary renamed' }))
     await waitFor(() => expect(current.testProviderCredential).toHaveBeenCalledWith('openai', {
       credentialId: 'openai-key-primary',
     }))
@@ -568,7 +648,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /验证/ }))
+    fireEvent.click(screen.getByRole('button', { name: '同步模型' }))
 
     await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('deepseek'))
     expect(await screen.findByText('连接成功，已同步 2 个模型')).toBeTruthy()
@@ -602,7 +682,7 @@ describe('AI Connection settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /验证/ }))
+    fireEvent.click(screen.getByRole('button', { name: '同步模型' }))
 
     expect(await screen.findByText('密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。')).toBeTruthy()
   })
@@ -610,7 +690,7 @@ describe('AI Connection settings', () => {
   it('hides verification for providers without a credential', async () => {
     render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
 
-    expect(screen.queryByRole('button', { name: /验证/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: '同步模型' })).toBeNull()
   })
 
   it('adds a custom model through the editor dialog and refreshes the catalog', async () => {
@@ -799,15 +879,24 @@ describe('AI Connection settings', () => {
     const current = client()
     render(<AiConnectionsPanel client={current} serviceAccessGranted />)
 
-    fireEvent.change(screen.getByLabelText('Gateway Key 名称'), {
+    fireEvent.change(screen.getByLabelText('客户端凭证名称'), {
       target: { value: 'Codex' },
     })
-    fireEvent.click(screen.getByRole('button', { name: '创建 Gateway Key' }))
+    fireEvent.click(screen.getByRole('button', { name: '创建客户端凭证' }))
 
     expect(await screen.findByText('xpod_once_secret')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '我已保存，隐藏密钥' }))
     expect(screen.queryByText('xpod_once_secret')).toBeNull()
     expect(screen.getAllByText('Codex')).toHaveLength(2)
+  })
+
+  it('uses client credential terminology throughout the user-facing advanced path', async () => {
+    render(<AiConnectionsPanel client={client()} serviceAccessGranted />)
+    expect(await screen.findByText('高级：客户端凭证管理')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '客户端凭证管理' })).toBeTruthy()
+    expect(screen.getByLabelText('客户端凭证名称')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '创建客户端凭证' })).toBeTruthy()
+    expect(document.body.textContent).not.toContain('Gateway Key')
   })
 
   it('creates a managed Gateway key when configuring a client without exposing it', async () => {
@@ -831,6 +920,10 @@ describe('AI Connection settings', () => {
     }
     const current = client()
     render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} serviceAccessGranted />)
+
+    expect(screen.getByRole('heading', { name: '客户端凭证' })).toBeTruthy()
+    expect(screen.getAllByText(/访问 Xpod/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/不是真实的 Provider API Key/).length).toBeGreaterThan(0)
 
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
 
@@ -984,8 +1077,8 @@ describe('AI Connection settings', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
     fireEvent.click(await screen.findByRole('button', { name: '应用 Codex 配置' }))
 
-    expect(await screen.findByText(/自动撤销 Gateway Key 失败/)).toBeTruthy()
-    expect(screen.getByText(/请在“高级：Gateway Keys”中手动撤销/)).toBeTruthy()
+    expect(await screen.findByText(/自动撤销客户端凭证失败/)).toBeTruthy()
+    expect(screen.getByText(/请在“高级：客户端凭证管理”中手动撤销/)).toBeTruthy()
   })
 
   it('does not open or poll a terminal Kimi device-code attempt', async () => {
@@ -1059,7 +1152,7 @@ describe('AI Connection settings', () => {
     render(<AiConnectionsPanel client={current} clientConfigurationBridge={bridge} />)
 
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI API Key' }))
-    fireEvent.click(screen.getByRole('button', { name: '创建 Gateway Key' }))
+    fireEvent.click(screen.getByRole('button', { name: '创建客户端凭证' }))
     fireEvent.click(await screen.findByRole('button', { name: '撤销 Codex' }))
     fireEvent.click(screen.getAllByRole('button', { name: '配置' })[0])
     await waitFor(() => expect(plan).toHaveBeenCalled())

@@ -391,10 +391,14 @@ function createInteractiveAiConnectionsClient(
       return deleted as Awaited<ReturnType<AiConnectionsClient['disconnect']>>
     },
     discoverModels: podStore.readCredentialSecret
-      ? async (provider) => {
+      ? async (provider, input) => {
           const summaries = await podStore.listProviders() as AiProviderSummary[]
           const product = summaries.find((item) => item.id === provider)
-          const credentials = product?.credentials.filter((item) => item.enabled) ?? []
+          const credentials = product?.credentials.filter((item) => (
+            item.enabled
+            && (!input?.offeringId || item.offeringId === input.offeringId)
+            && (!input?.credentialId || item.id === input.credentialId)
+          )) ?? []
           if (credentials.length === 0) throw new Error('models_credential_not_found')
           const settled = await Promise.allSettled(credentials.map(async (credential) => {
             const secret = await podStore.readCredentialSecret!(provider, credential.id)
@@ -402,6 +406,7 @@ function createInteractiveAiConnectionsClient(
             if (!apiKey) throw new Error('models_secret_missing')
             return operationsClient.discoverModels(provider, {
               credentialId: credential.id,
+              offeringId: credential.offeringId,
               apiKey,
               baseUrl: credential.baseUrl,
             })
@@ -412,10 +417,11 @@ function createInteractiveAiConnectionsClient(
           if (successful.length === 0) {
             throw (settled[0] as PromiseRejectedResult).reason
           }
-          const models = [...new Map(successful.flatMap((result) => result.models).map((model) => [model.id, model])).values()]
           if (podStore.saveDiscoveredModels) {
-            await podStore.saveDiscoveredModels(provider, successful[0]!.credential, models)
+            await Promise.all(successful.map((result) =>
+              podStore.saveDiscoveredModels!(provider, result.credential, result.models)))
           }
+          const models = [...new Map(successful.flatMap((result) => result.models).map((model) => [model.id, model])).values()]
           return { ...successful[0]!, models }
         }
       : operationsClient.discoverModels,
@@ -492,6 +498,7 @@ function productStateFromProvider(
   if (!product || product.status === 'unconfigured' || product.status === 'unavailable') {
     return 'unconfigured'
   }
+  if (product.status === 'configured') return 'configured'
   if (product.status === 'attention') return 'attention'
   const credential = primaryCredential(product)
   return credential?.authMode === 'oauth' || credential?.authMode === 'deviceCode'

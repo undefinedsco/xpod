@@ -146,6 +146,11 @@ export function AiProviderCard({
       model.id.toLocaleLowerCase().includes(query)
       || model.displayName?.toLocaleLowerCase().includes(query))
   }, [models, modelSearch])
+  const selectableVisibleModels = visibleModels.filter((model) => model.availability !== 'unavailable')
+  const selectedVisibleCount = selectableVisibleModels.filter((model) => effectiveSelectedModelIds.includes(modelSelectionId(model))).length
+  const allVisibleSelected = selectableVisibleModels.length > 0 && selectedVisibleCount === selectableVisibleModels.length
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected
+  const unavailableModelCount = models.filter((model) => model.availability === 'unavailable').length
 
   const copyModelId = async (modelId: string) => {
     try {
@@ -161,6 +166,18 @@ export function AiProviderCard({
     const next = new Set(effectiveSelectedModelIds)
     if (next.has(modelId)) next.delete(modelId)
     else next.add(modelId)
+    const nextModelIds = [...next]
+    if (selectedModelIds === undefined) setLocalSelectedModelIds(nextModelIds)
+    onModelSelectionChange?.(definition.id, nextModelIds)
+  }
+
+  const toggleVisibleModels = () => {
+    const next = new Set(effectiveSelectedModelIds)
+    for (const model of selectableVisibleModels) {
+      const selectionId = modelSelectionId(model)
+      if (allVisibleSelected) next.delete(selectionId)
+      else next.add(selectionId)
+    }
     const nextModelIds = [...next]
     if (selectedModelIds === undefined) setLocalSelectedModelIds(nextModelIds)
     onModelSelectionChange?.(definition.id, nextModelIds)
@@ -252,10 +269,9 @@ export function AiProviderCard({
             <div className="flex items-center gap-2">
               <Box className="h-4 w-4 text-primary" />
               <h3 className="text-sm font-medium text-foreground/90">可用模型</h3>
-              <Badge variant="secondary" className="ml-2 text-xs font-normal">{models.length}</Badge>
-              <Badge variant="outline" className="text-xs font-normal">
-                已选择 {effectiveSelectedModelIds.length}
-              </Badge>
+              <span className="ml-2 text-xs text-muted-foreground">
+                共 {models.length} · 已加入 {effectiveSelectedModelIds.length} · 已失效 {unavailableModelCount}
+              </span>
             </div>
             <div className="flex items-center gap-2">
               {(isConfigured || isConnected) && (onVerify || onAddModel) ? (
@@ -272,7 +288,7 @@ export function AiProviderCard({
                       添加模型
                     </Button>
                   ) : null}
-                  {onVerify ? (
+                  {onVerify && models.length > 0 ? (
                     <Button
                       variant="outline"
                       size="sm"
@@ -283,19 +299,32 @@ export function AiProviderCard({
                       {verifyPending
                         ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
                         : <RotateCw aria-hidden="true" className="h-3.5 w-3.5" />}
-                      {verifyPending ? '验证中...' : '验证'}
+                      {verifyPending ? '同步中...' : '刷新模型'}
+                    </Button>
+                  ) : onVerify ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 gap-1.5 text-xs"
+                      disabled={disabled || busy || verifyPending}
+                      onClick={onVerify}
+                    >
+                      {verifyPending
+                        ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                        : <RotateCw aria-hidden="true" className="h-3.5 w-3.5" />}
+                      {verifyPending ? '同步中...' : '同步模型'}
                     </Button>
                   ) : null}
                 </>
               ) : null}
               {models.length > 0 ? (
                 <div className="relative">
-                  <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     value={modelSearch}
                     onChange={(event) => setModelSearch(event.target.value)}
                     placeholder="搜索模型..."
-                    className="h-8 w-[180px] bg-muted/20 pl-8 text-xs"
+                    className="h-8 w-[232px] bg-background pl-8 text-xs"
                     autoComplete="off"
                     data-lpignore="true"
                     data-1p-ignore
@@ -315,8 +344,28 @@ export function AiProviderCard({
             </div>
           ) : (
             <div className="grid gap-2">
+              <div className="flex items-center justify-between px-1 py-1">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-label="全选当前结果"
+                  aria-checked={someVisibleSelected ? 'mixed' : allVisibleSelected}
+                  disabled={disabled || busy || selectableVisibleModels.length === 0}
+                  onClick={toggleVisibleModels}
+                  className="flex items-center gap-2 text-xs text-muted-foreground disabled:opacity-50"
+                >
+                  <span className={cn(
+                    'flex h-4 w-4 items-center justify-center rounded border',
+                    allVisibleSelected || someVisibleSelected ? 'border-primary bg-primary text-primary-foreground' : 'border-border',
+                  )}>
+                    {someVisibleSelected ? <span aria-hidden="true">−</span> : <Check aria-hidden="true" className={cn('h-3 w-3', !allVisibleSelected && 'invisible')} />}
+                  </span>
+                  全选当前结果
+                </button>
+              </div>
               {visibleModels.map((model) => {
-                const isSelected = effectiveSelectedModelIds.includes(model.id)
+                const selectionId = modelSelectionId(model)
+                const isSelected = effectiveSelectedModelIds.includes(selectionId)
                 const isUnavailable = model.availability === 'unavailable'
                 const modelLabel = model.displayName ?? model.id
                 const iconTokens = [
@@ -325,7 +374,7 @@ export function AiProviderCard({
                 ]
                 return (
                   <div
-                    key={model.id}
+                    key={selectionId}
                     className={cn(
                       'group flex items-center gap-3 rounded-lg border bg-card p-3 transition-all duration-200 hover:border-border/60 hover:bg-accent/30',
                       isSelected ? 'border-primary/40 bg-primary/[0.03]' : 'border-border/40',
@@ -343,8 +392,8 @@ export function AiProviderCard({
                           ? 'border-primary bg-primary text-primary-foreground'
                           : 'border-border text-transparent hover:border-primary/60',
                       )}
-                      disabled={disabled || busy}
-                      onClick={() => toggleModel(model.id)}
+                      disabled={disabled || busy || (isUnavailable && !isSelected)}
+                      onClick={() => toggleModel(selectionId)}
                     >
                       <Check aria-hidden="true" className="h-3.5 w-3.5" />
                     </button>
@@ -357,15 +406,10 @@ export function AiProviderCard({
                         <div className="flex items-center gap-1">
                           {iconTokens.map((token) => <CapabilityIcon key={token} type={token} />)}
                         </div>
-                        <Badge variant={isSelected ? 'default' : 'secondary'} className="shrink-0 text-[10px] font-normal">
-                          {isSelected ? '已选择' : '未选择'}
-                        </Badge>
-                        <Badge variant="outline" className="shrink-0 text-[10px] font-normal">
-                          {model.custom ? '手工' : '上游'}
-                        </Badge>
+                        {model.custom ? <Badge variant="outline" className="shrink-0 text-[10px] font-normal">手工</Badge> : null}
                         {isUnavailable ? (
                           <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">
-                            不可用
+                            已失效
                           </Badge>
                         ) : null}
                       </div>
@@ -457,6 +501,10 @@ function providerMark(provider: AiProviderDefinition['id']): string {
     case 'bailian': return '百'
     case 'deepseek': return 'DS'
   }
+}
+
+function modelSelectionId(model: AiGatewayModel): string {
+  return model.resourceId ?? model.id
 }
 
 function connectionStatusLabel(status: ProviderConnectionState): string {

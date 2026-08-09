@@ -148,7 +148,7 @@ export function AiConnectionsPanel({
         AiProviderSummary | undefined,
       ]>) {
         if (!product) continue
-        const ids = product.selectedModels.map((model) => model.id)
+        const ids = product.selectedModels.map(modelSelectionId)
         const previous = current[provider]
         if (!previous || previous.join('\u0000') !== ids.join('\u0000')) {
           next[provider] = ids
@@ -362,6 +362,42 @@ export function AiConnectionsPanel({
       : 'connected')
   }
 
+  const syncProviderModels = async (
+    provider: AiConnectionsProvider,
+    input?: { offeringId?: string; credentialId?: string },
+    announceSuccess = false,
+  ): Promise<boolean> => {
+    setVerifyingProviders((current) => ({ ...current, [provider]: true }))
+    setProviderError(provider)
+    try {
+      const discovery = input
+        ? await client.discoverModels(provider, input)
+        : await client.discoverModels(provider)
+      try {
+        const persisted = await client.listModels()
+        setModels(mergeDiscoveredModels(persisted, provider, discovery.models))
+      } catch {
+        setModels((current) => mergeDiscoveredModels(current, provider, discovery.models))
+      }
+      if (announceSuccess) {
+        toast({
+          variant: 'success',
+          description: discovery.models.length > 0
+            ? `连接成功，已同步 ${discovery.models.length} 个模型`
+            : '连接成功',
+        })
+      }
+      return true
+    } catch (error) {
+      const message = errorMessage(error)
+      setProviderError(provider, message)
+      toast({ variant: 'destructive', description: `模型同步失败：${message}` })
+      return false
+    } finally {
+      setVerifyingProviders((current) => ({ ...current, [provider]: false }))
+    }
+  }
+
   const createApiKeyCredential = async (
     provider: AiConnectionsProvider,
     offering: AiProviderOffering,
@@ -385,6 +421,10 @@ export function AiConnectionsPanel({
       })
       mergeProviderCredential(provider, credential)
       toast({ description: 'API Key 已添加' })
+      await syncProviderModels(provider, {
+        offeringId: credential.offeringId,
+        credentialId: credential.id,
+      })
     } catch (error) {
       setProviderError(provider, errorMessage(error))
     } finally {
@@ -412,6 +452,12 @@ export function AiConnectionsPanel({
       })
       mergeProviderCredential(provider, updated)
       toast({ description: '凭证已更新' })
+      if (updated.enabled) {
+        await syncProviderModels(provider, {
+          offeringId: updated.offeringId,
+          credentialId: updated.id,
+        })
+      }
     } catch (error) {
       setProviderError(provider, errorMessage(error))
     } finally {
@@ -520,24 +566,7 @@ export function AiConnectionsPanel({
 
   const verifyProvider = async (provider: AiConnectionsProvider) => {
     if (!serviceAccessGranted) return
-    setVerifyingProviders((current) => ({ ...current, [provider]: true }))
-    setProviderError(provider)
-    try {
-      const discovery = await client.discoverModels(provider)
-      setModels((current) => mergeDiscoveredModels(current, provider, discovery.models))
-      toast({
-        variant: 'success',
-        description: discovery.models.length > 0
-          ? `连接成功，已同步 ${discovery.models.length} 个模型`
-          : '连接成功',
-      })
-    } catch (error) {
-      const message = errorMessage(error)
-      setProviderError(provider, message)
-      toast({ variant: 'destructive', description: `连接失败：${message}` })
-    } finally {
-      setVerifyingProviders((current) => ({ ...current, [provider]: false }))
-    }
+    await syncProviderModels(provider, undefined, true)
   }
 
   const reloadModels = useCallback(async () => {
@@ -594,7 +623,7 @@ export function AiConnectionsPanel({
   ) => {
     const ids = [...new Set(modelIds)]
     const previousIds = selectedModelIds[provider]
-      ?? effectiveProviderProducts[provider]?.selectedModels.map((model) => model.id)
+      ?? effectiveProviderProducts[provider]?.selectedModels.map(modelSelectionId)
       ?? []
     const generation = (modelSelectionGeneration.current[provider] ?? 0) + 1
     modelSelectionGeneration.current[provider] = generation
@@ -626,7 +655,7 @@ export function AiConnectionsPanel({
       setOneTimeKey(created.plaintext)
       setKeys((current) => [created.record, ...current])
       setKeyName('')
-      toast({ description: 'Gateway Key 已创建' })
+      toast({ description: '客户端凭证已创建' })
     } catch (error) {
       setKeyError(errorMessage(error))
     } finally {
@@ -642,7 +671,7 @@ export function AiConnectionsPanel({
       setKeys((current) => current.map((item) => item.id === keyId
         ? (record ?? { ...item, revokedAt: new Date().toISOString() })
         : item))
-      toast({ description: 'Gateway Key 已撤销' })
+      toast({ description: '客户端凭证已撤销' })
     } catch (error) {
       setKeyError(errorMessage(error))
     }
@@ -694,7 +723,7 @@ export function AiConnectionsPanel({
               providerProduct?.selectedModels ?? [],
             )
             const providerSelectedModelIds = selectedModelIds[definition.id]
-              ?? providerProduct?.selectedModels.map((model) => model.id)
+              ?? providerProduct?.selectedModels.map(modelSelectionId)
               ?? []
             return (
             <AiProviderCard
@@ -783,29 +812,29 @@ export function AiConnectionsPanel({
 
           <details className="space-y-4 border-t border-border/40 pt-4">
             <summary className="cursor-pointer text-sm font-medium text-muted-foreground">
-              高级：Gateway Keys
+              高级：客户端凭证管理
             </summary>
             <section className="mt-3 space-y-4">
         <div className="border-b border-border/40 pb-2">
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-primary" />
-            <h3 className="text-sm font-medium text-foreground/90">Gateway Keys</h3>
+            <h3 className="text-sm font-medium text-foreground/90">客户端凭证管理</h3>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            编码客户端只使用 Gateway Key；新密钥明文仅在创建后显示一次。
+            编码客户端使用此凭证访问 Xpod；它不是真实的 Provider API Key，明文仅在创建后显示一次。
           </p>
         </div>
         <div className="space-y-4">
           <div className="flex gap-2">
             <Input
-              aria-label="Gateway Key 名称"
+              aria-label="客户端凭证名称"
               placeholder="名称，例如 Codex"
               value={keyName}
               onChange={(event) => setKeyName(event.target.value)}
             />
             <Button onClick={() => void createKey()} disabled={creatingKey || !serviceAccessGranted}>
               {creatingKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
-              创建 Gateway Key
+              创建客户端凭证
             </Button>
           </div>
 
@@ -832,10 +861,10 @@ export function AiConnectionsPanel({
           {keysLoading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              正在读取 Gateway Keys
+              正在读取客户端凭证
             </div>
           ) : keys.length === 0 ? (
-            <p className="text-sm text-muted-foreground">尚未创建 Gateway Key。</p>
+            <p className="text-sm text-muted-foreground">尚未创建客户端凭证。</p>
           ) : (
             <div className="space-y-2">
               {keys.map((key) => (
@@ -929,13 +958,14 @@ function providerProductWithCredential(
   credential: AiProviderCredentialSummary,
 ): AiProviderSummary {
   const base = product ?? emptyProviderProduct(provider)
+  const credentials = sortCredentialsByPriority([
+    ...base.credentials.filter((item) => item.id !== credential.id),
+    credential,
+  ])
   return {
     ...base,
-    credentials: sortCredentialsByPriority([
-      ...base.credentials.filter((item) => item.id !== credential.id),
-      credential,
-    ]),
-    status: credential.enabled ? 'available' : base.status,
+    credentials,
+    status: providerStatusFromCredentials(credentials),
   }
 }
 
@@ -949,8 +979,20 @@ function providerProductWithoutCredential(
   return {
     ...base,
     credentials,
-    status: credentials.length > 0 ? base.status : 'unconfigured',
+    status: providerStatusFromCredentials(credentials),
   }
+}
+
+function providerStatusFromCredentials(
+  credentials: AiProviderCredentialSummary[],
+): AiProviderSummary['status'] {
+  if (credentials.length === 0) return 'unconfigured'
+  const enabled = credentials.filter((credential) => credential.enabled)
+  if (enabled.length === 0) return 'configured'
+  if (enabled.some((credential) => credential.health === 'expired' || credential.health === 'invalid')) {
+    return 'attention'
+  }
+  return 'available'
 }
 
 function providerProductWithCredentialList(
@@ -1031,7 +1073,7 @@ function mergeProviderModelCatalog(
 ): AiGatewayModel[] {
   const merged = [...catalog]
   for (const selectedModel of selectedModels) {
-    const index = merged.findIndex((model) => model.id === selectedModel.id)
+    const index = merged.findIndex((model) => modelSelectionId(model) === modelSelectionId(selectedModel))
     if (index === -1) {
       merged.push(selectedModel)
       continue
@@ -1049,6 +1091,10 @@ function compactModel(model: AiGatewayModel): AiGatewayModel {
   return Object.fromEntries(
     Object.entries(model).filter(([, value]) => value !== undefined),
   ) as AiGatewayModel
+}
+
+function modelSelectionId(model: AiGatewayModel): string {
+  return model.resourceId ?? model.id
 }
 
 function isDefined<T>(value: T | undefined): value is T {

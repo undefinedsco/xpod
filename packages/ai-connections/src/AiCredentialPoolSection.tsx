@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
+  Badge,
   Button,
   Input,
   LoginConnectingView,
   LoginFailureView,
-  LoginProviderListView,
-  type LoginProviderOption,
+  cn,
 } from '@undefineds.co/shared-ui'
 import {
   ArrowDown,
@@ -34,7 +34,7 @@ import type {
   AiProviderDefinition,
 } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
-import { AiOfferingTabs, offeringLabel } from './AiOfferingTabs'
+import { offeringLabel } from './AiOfferingTabs'
 
 export function AiCredentialPoolSection({
   definition,
@@ -101,6 +101,7 @@ export function AiCredentialPoolSection({
     authModes: ['apiKey' as const],
   }]
   const credentials = product?.credentials ?? []
+  const offerings = product?.offerings.length ? product.offerings : fallbackOfferings
 
   return (
     <section className="space-y-4" aria-label="当前连接">
@@ -109,8 +110,8 @@ export function AiCredentialPoolSection({
         <h3 className="text-sm font-medium text-foreground/90">当前连接</h3>
       </div>
 
-      <AiOfferingTabs product={product} fallbackOfferings={fallbackOfferings}>
-        {(offering) => {
+      <div className="space-y-3">
+        {offerings.map((offering) => {
           const mode = modeForOffering(offering, definition)
           const offeringCredentials = credentials
             .filter((credential) => credential.offeringId === offering.id)
@@ -118,6 +119,7 @@ export function AiCredentialPoolSection({
 
           if (error && mode === 'deviceCodeOAuth') {
             return (
+              <OfferingItem key={offering.id} offering={offering}>
               <LoginFailureView
                 description={error}
                 primaryLabel="重试登录"
@@ -125,36 +127,41 @@ export function AiCredentialPoolSection({
                 secondaryLabel="关闭"
                 onSecondary={onDismissError ?? (() => undefined)}
               />
+              </OfferingItem>
             )
           }
 
           if (isPendingAttempt(attempt) && mode === 'deviceCodeOAuth') {
             return (
+              <OfferingItem key={offering.id} offering={offering}>
               <LoginConnectingView
                 title="正在连接"
                 detail={attempt?.userCode ? `验证码：${attempt.userCode}` : '请在打开的页面完成授权。'}
                 providerLabel={offeringLabel(offering)}
                 providerHost={definition.name}
               />
+              </OfferingItem>
             )
           }
 
           if (mode === 'deviceCodeOAuth') {
             return (
-              <div className="space-y-3">
-                <LoginProviderListView
-                  title={offeringLabel(offering)}
-                  providers={oauthProviderOptions(offering, offeringCredentials)}
-                  connectingId={isPendingAttempt(attempt) ? definition.id : undefined}
-                  onConnect={(credentialId) => {
-                    const credential = offeringCredentials.find((item) => item.id === credentialId)
-                    if (credential) {
-                      onDisconnect(credential)
-                      return
-                    }
-                    onBeginOffering?.(offering, mode)
-                  }}
-                />
+              <OfferingItem key={offering.id} offering={offering}>
+                <div className="space-y-2">
+                  {offeringCredentials.map((credential) => (
+                    <CredentialRow
+                      key={credential.id}
+                      credential={credential}
+                      label={credential.label ? maskAccountLabel(credential.label) : credential.id}
+                      busy={busy}
+                      disabled={disabled}
+                      onToggle={onUpdateCredential}
+                      onTest={onTestCredential}
+                      onDelete={() => onDisconnect(credential)}
+                      deleteAriaLabel={`${credential.label ? maskAccountLabel(credential.label) : credential.id} 移除`}
+                    />
+                  ))}
+                </div>
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" disabled={busy || disabled} onClick={() => onBeginOffering?.(offering, mode)}>
                     {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
@@ -162,11 +169,12 @@ export function AiCredentialPoolSection({
                   </Button>
                 </div>
                 {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              </div>
+              </OfferingItem>
             )
           }
 
           return (
+            <OfferingItem key={offering.id} offering={offering}>
             <ApiKeyPool
               definition={definition}
               status={status}
@@ -197,11 +205,69 @@ export function AiCredentialPoolSection({
                 toIndex,
               )}
             />
+            </OfferingItem>
           )
-        }}
-      </AiOfferingTabs>
+        })}
+      </div>
     </section>
   )
+}
+
+function OfferingItem({ offering, children }: { offering: AiProviderOffering; children: ReactNode }) {
+  const endpoints = offering.endpoints ?? []
+  return (
+    <section className="space-y-3 rounded-lg border border-border/50 bg-card p-3" aria-labelledby={`offering-${offering.id}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h4 id={`offering-${offering.id}`} className="text-sm font-medium text-foreground">{offeringLabel(offering)}</h4>
+          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+            {offering.productLabel ? <span>{offering.productLabel}</span> : null}
+            {offering.kind ? <span>{offeringKindLabel(offering.kind)}</span> : null}
+          </div>
+        </div>
+        <span className="text-xs text-muted-foreground">{authMethodLabel(offering)}</span>
+      </div>
+      {endpoints.length ? (
+        <div className="space-y-1 rounded-md bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground">
+          <div>{endpoints.map((endpoint) => protocolLabel(endpoint.protocol)).join(' · ')}</div>
+          {[...new Set(endpoints.map((endpoint) => endpoint.baseUrl))].map((baseUrl) => (
+            <code key={baseUrl} className="block break-all font-mono text-[11px] text-foreground/70">{baseUrl}</code>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+        {offering.consoleUrl ? <OfferingLink href={offering.consoleUrl} label="控制台" /> : null}
+        {offering.subscriptionUrl ? <OfferingLink href={offering.subscriptionUrl} label="订阅与账单" /> : null}
+        {offering.quota?.url ? <OfferingLink href={offering.quota.url} label="额度与用量" /> : null}
+        {offering.usagePolicyUrl ? <OfferingLink href={offering.usagePolicyUrl} label="使用政策" /> : null}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function OfferingLink({ href, label }: { href: string; label: string }) {
+  return <a href={href} target="_blank" rel="noreferrer" className="text-primary hover:underline">{label}</a>
+}
+
+function offeringKindLabel(kind: string): string {
+  if (kind === 'payAsYouGo') return '按量付费'
+  if (kind === 'officialSubscription') return '官方订阅'
+  if (kind === 'tokenPlan') return 'Token 套餐'
+  if (kind === 'codingPlan') return '编码套餐'
+  return kind
+}
+
+function protocolLabel(protocol: string): string {
+  if (protocol === 'responses') return 'Responses'
+  if (protocol === 'chatCompletions') return 'Chat Completions'
+  if (protocol === 'anthropic') return 'Anthropic Messages'
+  return protocol
+}
+
+function authMethodLabel(offering: AiProviderOffering): string {
+  const labels = (offering.authModes ?? []).map((mode) => mode === 'oauth' || mode === 'deviceCode' ? '账号授权' : 'API Key')
+  return [...new Set(labels)].join(' / ')
 }
 
 function ApiKeyPool({
@@ -322,17 +388,18 @@ function ApiKeyPool({
         {credentials.length > 0 ? (
           <div className="space-y-2">
             {credentials.map((credential, index) => (
-              <div key={credential.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/50 bg-card p-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">{credential.label ?? credential.id}</p>
-                  {credential.maskedHint ? (
-                    <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{credential.maskedHint}</p>
-                  ) : null}
-                </div>
-                <span className="shrink-0 rounded-full border border-border/60 bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                  {credential.enabled ? '启用' : '停用'}
-                </span>
-                <div className="flex shrink-0 items-center gap-1">
+              <CredentialRow
+                key={credential.id}
+                credential={credential}
+                label={credential.label ?? credential.id}
+                busy={busy}
+                disabled={disabled}
+                onToggle={onUpdateCredential}
+                onTest={onTestCredential}
+                onEdit={() => openEditForm(credential)}
+                onDelete={() => onDeleteCredential?.(credential)}
+                deleteAriaLabel={`删除 ${credential.label ?? credential.id}`}
+                beforeActions={<>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -353,48 +420,8 @@ function ApiKeyPool({
                   >
                     <ArrowDown aria-hidden="true" className="h-3.5 w-3.5" />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label={`测试 ${credential.label ?? credential.id}`}
-                    disabled={disabled || busy}
-                    onClick={() => onTestCredential?.(credential)}
-                  >
-                    <Check aria-hidden="true" className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label={`编辑 ${credential.label ?? credential.id}`}
-                    disabled={disabled || busy}
-                    onClick={() => openEditForm(credential)}
-                  >
-                    <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label={`${credential.enabled ? '停用' : '启用'} ${credential.label ?? credential.id}`}
-                    disabled={disabled || busy}
-                    onClick={() => onUpdateCredential?.(credential, { enabled: !credential.enabled })}
-                  >
-                    {credential.enabled ? '停' : '启'}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label={`删除 ${credential.label ?? credential.id}`}
-                    disabled={disabled || busy}
-                    onClick={() => onDeleteCredential?.(credential)}
-                  >
-                    <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
+                </>}
+              />
             ))}
           </div>
         ) : accountLabel ? (
@@ -577,30 +604,84 @@ function ApiKeyPool({
   )
 }
 
-function oauthProviderOptions(
-  offering: AiProviderOffering,
-  credentials: AiProviderCredentialSummary[],
-): LoginProviderOption[] {
-  if (credentials.length === 0) {
-    return [{
-      id: offering.id,
-      label: offeringLabel(offering),
-      subtitle: '使用官方账号授权',
-      actionLabel: '登录',
-    }]
-  }
+function CredentialRow({
+  credential,
+  label,
+  busy,
+  disabled,
+  beforeActions,
+  onToggle,
+  onTest,
+  onEdit,
+  onDelete,
+  deleteAriaLabel,
+}: {
+  credential: AiProviderCredentialSummary
+  label: string
+  busy: boolean
+  disabled: boolean
+  beforeActions?: ReactNode
+  onToggle?: (credential: AiProviderCredentialSummary, patch: { enabled?: boolean }) => void
+  onTest?: (credential: AiProviderCredentialSummary) => void
+  onEdit?: () => void
+  onDelete?: () => void
+  deleteAriaLabel?: string
+}) {
+  const actionDisabled = disabled || busy
+  return (
+    <div
+      data-credential-state={credential.enabled ? 'enabled' : 'disabled'}
+      className={cn(
+        'flex items-center justify-between gap-3 rounded-lg border border-border/50 p-3',
+        credential.enabled ? 'bg-background' : 'bg-muted/40 text-muted-foreground',
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-foreground">{label}</p>
+        {credential.maskedHint ? <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{credential.maskedHint}</p> : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Badge variant={credential.enabled ? 'secondary' : 'outline'}>{credential.enabled ? '启用' : '停用'}</Badge>
+        <Badge variant={healthBadgeVariant(credential.health)}>{healthLabel(credential.health)}</Badge>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">
+        {beforeActions}
+        {onTest ? (
+          <Button variant="ghost" size="sm" aria-label={`测试连接 ${label}`} disabled={actionDisabled} onClick={() => onTest(credential)}>
+            <Check aria-hidden="true" className="mr-1 h-3.5 w-3.5" />测试连接
+          </Button>
+        ) : null}
+        {onEdit ? (
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`编辑 ${label}`} disabled={actionDisabled} onClick={onEdit}>
+            <Pencil aria-hidden="true" className="h-3.5 w-3.5" />
+          </Button>
+        ) : null}
+        {onToggle ? (
+          <Button variant="ghost" size="sm" aria-label={`${credential.enabled ? '停用' : '启用'} ${label}`} disabled={actionDisabled} onClick={() => onToggle(credential, { enabled: !credential.enabled })}>
+            {credential.enabled ? '停用' : '启用'}
+          </Button>
+        ) : null}
+        {onDelete ? (
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={deleteAriaLabel ?? `删除 ${label}`} disabled={actionDisabled} onClick={onDelete}>
+            <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
 
-  return credentials.map((credential) => ({
-    id: credential.id,
-    label: credential.label ? maskAccountLabel(credential.label) : credential.id,
-    subtitle: credential.maskedHint,
-    actionLabel: '移除',
-    badge: {
-      label: credential.enabled ? '启用' : '停用',
-      tone: credential.health === 'healthy' ? 'success' : credential.health === 'unknown' ? 'neutral' : 'warning',
-    },
-    disabled: !credential.enabled && credential.health === 'unknown',
-  }))
+function healthLabel(health: AiProviderCredentialSummary['health']): string {
+  if (health === 'healthy') return '有效'
+  if (health === 'unknown') return '未验证'
+  if (health === 'expired') return '已过期'
+  return '错误'
+}
+
+function healthBadgeVariant(health: AiProviderCredentialSummary['health']): 'secondary' | 'outline' | 'destructive' {
+  if (health === 'healthy') return 'secondary'
+  if (health === 'unknown') return 'outline'
+  return 'destructive'
 }
 
 function modeForOffering(

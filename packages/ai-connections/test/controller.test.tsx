@@ -309,6 +309,60 @@ describe('AI Connection controller host.solid integration', () => {
     expect(readCredentialSecret).toHaveBeenCalledWith('deepseek', 'credentials.ttl#deepseek-primary')
   })
 
+  it('discovers models only for the requested offering and forwards its identity', async () => {
+    const requestBodies: unknown[] = []
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/bailian\/models\/refresh$/u)
+      const body = JSON.parse(String(init?.body))
+      requestBodies.push(body)
+      return Response.json({
+        provider: 'bailian',
+        credential: body.credentialId,
+        models: [{ id: 'qwen-token-only', displayName: 'Qwen Token Only' }],
+        observedAt: '2026-08-09T08:00:00.000Z',
+        source: 'bailian:token-plan:/models',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({ type: 'apiKey', apiKey: 'transient-secret' }))
+    const saveDiscoveredModels = vi.fn(async () => undefined)
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'bailian',
+        credentials: [
+          { id: 'credentials.ttl#payg', offeringId: 'api-platform', enabled: true, priority: 1 },
+          { id: 'credentials.ttl#token', offeringId: 'token-plan', enabled: true, priority: 2 },
+        ],
+      }]),
+      readCredentialSecret,
+      saveDiscoveredModels,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await expect(controller.client!.discoverModels('bailian', { offeringId: 'token-plan' })).resolves.toMatchObject({
+      models: [{ id: 'qwen-token-only' }],
+    })
+
+    expect(readCredentialSecret).toHaveBeenCalledTimes(1)
+    expect(readCredentialSecret).toHaveBeenCalledWith('bailian', 'credentials.ttl#token')
+    expect(requestBodies).toEqual([expect.objectContaining({
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#token',
+      apiKey: 'transient-secret',
+    })])
+    expect(saveDiscoveredModels).toHaveBeenCalledWith(
+      'bailian',
+      'credentials.ttl#token',
+      [{ id: 'qwen-token-only', displayName: 'Qwen Token Only' }],
+    )
+  })
+
   it('uses host CSS client credentials for coding-client Gateway key methods', async () => {
     const sessionFetch = vi.fn(async (input: RequestInfo | URL) => {
       throw new Error(`Unexpected opaque Gateway request: ${String(input)}`)

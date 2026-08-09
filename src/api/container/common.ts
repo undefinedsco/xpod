@@ -375,22 +375,29 @@ export function registerCommonServices(
             provider: 'openai',
             defaultBaseUrl: 'https://api.openai.com/v1',
             safeBaseUrls: safeBaseUrls('openai'),
+            product: registry.requireProduct('openai'),
           }),
-          new AnthropicModelsAdapter({ safeBaseUrls: safeBaseUrls('anthropic') }),
+          new AnthropicModelsAdapter({
+            safeBaseUrls: safeBaseUrls('anthropic'),
+            product: registry.requireProduct('anthropic'),
+          }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'kimi',
             defaultBaseUrl: 'https://api.moonshot.ai/v1',
             safeBaseUrls: safeBaseUrls('kimi'),
+            product: registry.requireProduct('kimi'),
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'bailian',
             defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
             safeBaseUrls: safeBaseUrls('bailian'),
+            product: registry.requireProduct('bailian'),
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'deepseek',
             defaultBaseUrl: 'https://api.deepseek.com/v1',
             safeBaseUrls: safeBaseUrls('deepseek'),
+            product: registry.requireProduct('deepseek'),
           }),
         ],
       });

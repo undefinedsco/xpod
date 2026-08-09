@@ -89,7 +89,16 @@ describe('AI Connection management client', () => {
         name: 'Alibaba Bailian',
         status: 'available',
         offerings: [
-          { id: 'pay-as-you-go', label: 'Pay as You Go', kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'] },
+          {
+            id: 'pay-as-you-go', label: 'Pay as You Go', productLabel: 'Alibaba Bailian',
+            kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'],
+            credentialPrefixHints: ['sk-'], consoleUrl: 'https://console.example',
+            subscriptionUrl: 'https://subscribe.example',
+            endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
+            modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+            quota: { strategy: 'providerApi', url: 'https://quota.example' },
+            usagePolicyUrl: 'https://policy.example', region: 'cn',
+          },
           { id: 'coding-plan', label: 'Coding Plan', kind: 'codingPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
           { id: 'token-plan', label: 'Token Plan', kind: 'tokenPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
         ],
@@ -115,7 +124,14 @@ describe('AI Connection management client', () => {
       id: 'bailian',
       name: 'Alibaba Bailian',
       offerings: [
-        { id: 'pay-as-you-go' },
+        {
+          id: 'pay-as-you-go', productLabel: 'Alibaba Bailian', credentialPrefixHints: ['sk-'],
+          consoleUrl: 'https://console.example', subscriptionUrl: 'https://subscribe.example',
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
+          modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+          quota: { strategy: 'providerApi', url: 'https://quota.example' },
+          usagePolicyUrl: 'https://policy.example', region: 'cn',
+        },
         { id: 'coding-plan' },
         { id: 'token-plan' },
       ],

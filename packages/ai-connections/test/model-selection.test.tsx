@@ -51,7 +51,7 @@ function openAiProduct(selectedModels: AiGatewayModel[]): AiProviderSummary {
 }
 
 describe('AI Connection model selection', () => {
-  it('shows selected and unavailable picked models while keeping upstream models selectable', async () => {
+  it('shows joined and expired models with a filtered tri-state select-all control', async () => {
     const onModelSelectionChange = vi.fn()
     const current = client([
       { id: 'gpt-5', provider: 'openai', displayName: 'GPT-5' },
@@ -73,11 +73,25 @@ describe('AI Connection model selection', () => {
     )
 
     expect(await screen.findByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
-    expect(screen.getByText('不可用')).toBeTruthy()
+    expect(screen.getByText('已失效')).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' })).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: '取消选择 Legacy Model' })).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: '取消选择 Legacy Model' })).not.toHaveProperty('disabled', true)
+    expect(screen.queryByText('已选择')).toBeNull()
+    expect(screen.queryByText('未选择')).toBeNull()
+    expect(screen.queryByText('上游')).toBeNull()
+    const selectAll = screen.getByRole('checkbox', { name: '全选当前结果' })
+    expect(selectAll.getAttribute('aria-checked')).toBe('mixed')
 
-    fireEvent.click(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' }))
+    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'mini' } })
+    expect(selectAll.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(selectAll)
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
+      'openai',
+      ['gpt-5', 'legacy-model', 'gpt-5-mini'],
+    ))
+
+    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: '' } })
     await waitFor(() => expect(onModelSelectionChange).toHaveBeenLastCalledWith(
       'openai',
       ['gpt-5', 'legacy-model', 'gpt-5-mini'],
@@ -92,6 +106,30 @@ describe('AI Connection model selection', () => {
       'openai',
       ['legacy-model', 'gpt-5-mini'],
     ))
+  })
+
+  it('disables unavailable catalog models that were never joined and shows counts plus refresh state', async () => {
+    render(<AiConnectionsPanel
+      client={client([
+        { id: 'gpt-5', provider: 'openai', availability: 'available' },
+        { id: 'retired', provider: 'openai', availability: 'unavailable' },
+      ])}
+      selectedProvider="openai"
+      serviceAccessGranted
+      providerSummaries={{
+        openai: {
+          provider: 'openai',
+          status: 'connected',
+          authMode: 'apiKey',
+          connect: { modes: ['apiKey'], configured: true },
+        },
+      }}
+      providerProducts={{ openai: openAiProduct([{ id: 'gpt-5', provider: 'openai', availability: 'available' }]) }}
+    />)
+
+    expect(await screen.findByText('共 2 · 已加入 1 · 已失效 1')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: '选择 retired' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '刷新模型' })).toBeTruthy()
   })
 
   it('rolls selection back and reports an error when Pod selection persistence fails', async () => {
@@ -125,7 +163,7 @@ describe('AI Connection model selection', () => {
     expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()
   })
 
-  it('labels manual models separately from upstream models', async () => {
+  it('labels only manually added models', async () => {
     render(
       <AiConnectionsPanel
         client={client([
@@ -138,7 +176,8 @@ describe('AI Connection model selection', () => {
       />,
     )
 
-    expect(await screen.findByText('上游')).toBeTruthy()
+    expect(await screen.findByText('GPT-5')).toBeTruthy()
+    expect(screen.queryByText('上游')).toBeNull()
     expect(screen.getByText('手工')).toBeTruthy()
   })
 })

@@ -86,13 +86,14 @@ export class ProviderModelsService {
       credential: credential.credentialIri,
       models,
       observedAt: this.now().toISOString(),
-      source: `${provider}:/models`,
+      source: discoverySource(provider, credential.offeringId),
     };
   }
 
   public async listFromSecret(input: {
     webId: string;
     provider: string;
+    offeringId?: string;
     credentialId: string;
     apiKey: string;
     baseUrl?: string;
@@ -108,6 +109,7 @@ export class ProviderModelsService {
         webId: input.webId,
         deployment: 'local',
         provider,
+        offeringId: input.offeringId,
         authMode: 'apiKey',
         status: 'active',
         reauthRequired: false,
@@ -122,7 +124,7 @@ export class ProviderModelsService {
       credential: input.credentialId,
       models,
       observedAt: this.now().toISOString(),
-      source: `${provider}:/models`,
+      source: discoverySource(provider, input.offeringId),
     };
   }
 
@@ -179,12 +181,13 @@ export class ProviderModelsService {
         return;
       }
       for (const model of result.value.models) {
+        const credentialSource = discoverySource(input.provider, result.value.credential.offeringId);
         const existing = merged.get(model.id);
         const sources = [
           ...existing?.metadata?.sources ?? [],
           {
             credential: result.value.credential.credentialIri,
-            source,
+            source: credentialSource,
             status: 'available' as const,
           },
         ];
@@ -280,6 +283,10 @@ export class ProviderModelsService {
     }
     throw new Error('models_credential_not_found');
   }
+}
+
+function discoverySource(provider: string, offeringId?: string): string {
+  return offeringId ? `${provider}:${offeringId}:/models` : `${provider}:/models`;
 }
 
 function isEligibleCredential(credential: ModelsCredentialRecord): boolean {
