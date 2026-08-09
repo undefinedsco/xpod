@@ -1,0 +1,50 @@
+# AI Connections Provider Models Design
+
+## Outcome
+
+AI Connections separates three concepts that must never be conflated:
+
+1. A Provider credential is the user's real upstream API key or OAuth token and remains in the user's Pod.
+2. A client credential is issued by Xpod for the current WebID and is projected into Codex, Claude Code, Pi, or CodeBuddy.
+3. A Provider model catalog is discovered with that Provider's enabled credentials and stored under that Provider in the Pod.
+
+## Credential behavior
+
+- Coding clients receive only the Xpod-issued client credential (`sk-base64(client_id:client_secret)`).
+- Provider secrets never enter coding-client configuration.
+- Product copy uses “客户端凭证” rather than the legacy “Gateway Key”.
+- A credential row exposes two independent states: enabled/disabled and healthy/unverified/expired/error.
+- Disabling or enabling succeeds only when the Pod update returns the persisted row. A missing update result is an error, never an optimistic success.
+- Provider aggregate state is recomputed from the entire credential pool after every mutation.
+
+## Model discovery and selection
+
+- Saving or updating a Provider credential automatically requests that Provider's official model endpoint with that credential and base URL.
+- A failed model sync does not discard the saved credential. The UI reports the failure and offers “刷新模型”.
+- Each discovered model is stored with its Provider relation. Provider pages never consume the global Gateway `/v1/models` projection as their catalog.
+- Models no longer display redundant “已选择” or implementation-oriented “上游” badges. The checkbox itself means the model is included.
+- A model previously included but absent from the latest Provider response remains visible as “已失效”. It may be removed but cannot be newly included.
+- The header checkbox selects or clears only currently filtered, available models and supports checked, unchecked, and indeterminate states.
+- Counts read “共 N · 已加入 M · 已失效 K”.
+- “验证” becomes “同步模型” before the first sync and “刷新模型” afterward. Credential rows retain a separate “测试连接” action.
+
+## Visual behavior
+
+- Enabled credential rows use the normal surface; disabled rows use a muted background.
+- Health failures use a warning/destructive badge rather than coloring the whole row.
+- Action labels are complete words: “启用”, “停用”, “测试连接”, and “删除”.
+- Model search reuses the opaque Linx list-search treatment with standard border, focus ring, and 220–240px width.
+
+## Error handling
+
+- Pod compare-and-set/update failures surface a specific conflict or persistence error and the UI reloads the persisted state.
+- Provider discovery errors are sanitized but remain Provider-specific.
+- Automatic sync and manual refresh use the same discovery path so their results cannot diverge.
+
+## Acceptance
+
+- Inspecting all four generated client configurations shows only an Xpod-issued client credential.
+- Two Providers with different mocked `/models` responses show different model lists after sync and after reload.
+- Disabling the last enabled credential persists after reload and changes the Provider aggregate state.
+- Empty selection exposes and routes zero models.
+- An unavailable included model remains visible after refresh and can be removed.
