@@ -221,7 +221,7 @@ export function createXpodAiConnectionsPodStore(
       if (!normalizedProvider) throw new Error('unsupported_provider');
       await input.database.init?.(credentialResource, aiProviderResource, aiModelResource);
       await ensureProviderRow(input.database, normalizedProvider);
-      const credentialRow = await input.database.findById(credentialResource, credentialId) as Record<string, unknown> | null;
+      const credentialRow = await findCredentialRow(input, credentialId);
       const providerId = providerResourceIdForCredential(normalizedProvider, credentialRow);
       await ensureProviderResourceRow(input.database, providerId, providerName(normalizedProvider));
       const existing = await input.database
@@ -255,6 +255,23 @@ export function createXpodAiConnectionsPodStore(
       await input.database.updateById(aiProviderResource, providerId, { hasModel } as never);
     },
   };
+}
+
+async function findCredentialRow(
+  input: CreateXpodAiConnectionsPodStoreInput,
+  credentialIdOrIri: string,
+): Promise<Record<string, unknown> | null> {
+  const direct = await input.database.findById(credentialResource, credentialIdOrIri) as Record<string, unknown> | null;
+  if (direct) return direct;
+  const rows = await input.database
+    .select()
+    .from(credentialResource)
+    .execute() as Record<string, unknown>[];
+  return rows.find((row) => {
+    const id = stringValue(row.id);
+    return id === credentialIdOrIri
+      || (id ? credentialResource.buildIri(input.podUrl, { id }) === credentialIdOrIri : false);
+  }) ?? null;
 }
 
 function patchBrowserComunicaObserver(): void {

@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
+import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react'
 import type { WebExtensionSolidCapability } from '@undefineds.co/extension-sdk/web'
 import { mountTwoPaneApplet } from '@undefineds.co/extension-sdk/web'
 import { aiConnectionApplet } from '../src'
@@ -94,6 +95,39 @@ describe('AI Connection two-pane contribution', () => {
 
     expect(screen.getByRole('region', { name: 'Kimi 详情' })).toBeTruthy()
     expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Kimi' })).toBeTruthy()
+  })
+
+  it('opens the main pane when a Provider is activated in stack mode', () => {
+    const mounted = mountTwoPaneApplet(
+      aiConnectionApplet,
+      createMockWebExtensionHost({
+        solid: readySolid(),
+      }),
+    )
+
+    render(
+      <TwoPaneLayout
+        mode="stack"
+        listHeader={mounted.listHeader}
+        list={mounted.list}
+        mainHeader={mounted.mainHeader}
+        main={mounted.main}
+      />,
+    )
+
+    const kimi = screen.getByRole('option', { name: 'Kimi' })
+    fireEvent.click(kimi)
+
+    const mainPane = screen.getByTestId('workspace-main-pane')
+    expect(mainPane).not.toHaveProperty('hidden', true)
+    expect(document.activeElement).toBe(mainPane)
+
+    fireEvent.click(within(mainPane).getByRole('button', { name: '返回列表' }))
+    const anthropic = screen.getByRole('option', { name: 'Anthropic' })
+    anthropic.focus()
+    fireEvent.keyDown(anthropic, { key: 'Enter' })
+    expect(mainPane).not.toHaveProperty('hidden', true)
+    expect(document.activeElement).toBe(mainPane)
   })
 
   it('uses Add to open the first unconfigured Provider', () => {

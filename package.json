@@ -86,6 +86,7 @@
     "settings:open": "node scripts/open-settings.mjs",
     "settings:test": "bun run test -- tests/ui/settings-launch.test.ts",
     "settings:accept": "bun scripts/accept-xpod-settings.ts",
+    "ai-connections:accept:browser": "bun run build:packages && bun run build:ui && bunx playwright test tests/e2e/xpod-settings.spec.ts",
     "ai-connections:accept:live": "bun scripts/accept-live-ai-connections.ts",
     "dev:seed": "NODE_ENV=development CSS_SEED_CONFIG=$PWD/config/seed.dev.json dotenv -e .env.local -o -- env -u CSS_REDIS_CLIENT -u REDIS_URL -u CSS_REDIS_USERNAME -u CSS_REDIS_PASSWORD -u CSS_MINIO_ACCESS_KEY -u CSS_MINIO_SECRET_KEY -u CSS_MINIO_ENDPOINT -u CSS_MINIO_BUCKET_NAME bun --no-env-file src/main.ts -e .env.local -c config/local.json",
     "dev:cloud": "NODE_ENV=development CSS_SEED_CONFIG=$PWD/config/seed.dev.json dotenv -e .env.cloud -o -- bun --no-env-file src/main.ts -e .env.cloud -c config/cloud.json",

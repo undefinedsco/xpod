@@ -34,6 +34,7 @@ function installDom() {
 
 async function renderModelsPage(runtime: XpodSolidRuntimeValue) {
   installDom();
+  window.fetch = runtime.fetch;
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -55,6 +56,14 @@ async function unmount(root: Root) {
 }
 
 function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
+  const emptyDatabase = {
+    init: mock(async () => undefined),
+    select: mock(() => ({
+      from: mock(() => ({
+        execute: mock(async () => []),
+      })),
+    })),
+  };
   return {
     session: {
       fetch: fetchImpl,
@@ -66,7 +75,11 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
     webId: WEB_ID,
     podUrl: POD_URL,
-    currentPod: { podUrl: POD_URL } as XpodSolidRuntimeValue['currentPod'],
+    currentPod: {
+      podUrl: POD_URL,
+      webId: WEB_ID,
+      database: emptyDatabase,
+    } as unknown as XpodSolidRuntimeValue['currentPod'],
     login: mock(async () => undefined),
     logout: mock(async () => undefined),
   };
@@ -131,7 +144,7 @@ describe('ModelsPage AI Connection host', () => {
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('Kimi');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('百炼');
     expect(container.querySelector('[data-testid="workspace-list-pane"]')?.textContent).toContain('DeepSeek');
-    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('服务访问已授权');
+    expect(container.querySelector('[data-testid="workspace-main-pane"]')?.textContent).toContain('Provider 凭证保存在当前 Pod');
     expect(container.querySelector('[data-workspace-main-header="true"]')?.textContent).toContain('OpenAI');
     await unmount(root);
   });

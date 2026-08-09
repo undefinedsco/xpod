@@ -376,6 +376,76 @@ describe('XpodAiConnectionsPodStore', () => {
     ]);
   });
 
+  it('uses credential IRIs from gateway model discovery when updating offering-scoped catalogs', async () => {
+    const productProviderId = aiProviderResource.buildId({ id: 'openai' });
+    const offeringProviderId = aiProviderResource.buildId({ id: 'openai-api-platform.ttl#this' });
+    const credentialId = credentialResource.buildId({ id: 'openai-primary' });
+    const selectedModelId = 'openai.ttl#fixture-gpt-acceptance';
+    const offeringModelId = 'openai-api-platform.ttl#fixture-gpt-acceptance';
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map([[credentialId, {
+        id: credentialId,
+        provider: productProviderId,
+        service: 'ai',
+        authMode: 'apiKey',
+        status: 'active',
+        metadata: { offeringId: 'api-platform', priority: 10, enabled: true },
+      }]])],
+      [aiProviderResource, new Map([
+        [productProviderId, { id: productProviderId, displayName: 'OpenAI', hasModel: [selectedModelId] }],
+        [offeringProviderId, { id: offeringProviderId, displayName: 'OpenAI API Platform' }],
+      ])],
+      [aiModelResource, new Map([[offeringModelId, {
+        id: offeringModelId,
+        displayName: 'Fixture GPT Acceptance',
+        isProvidedBy: offeringProviderId,
+        status: 'active',
+      }]])],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])],
+        }),
+      }),
+      findById: vi.fn(async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null),
+      insert: (resource: unknown) => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rowsByResource.get(resource)?.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const rows = rowsByResource.get(resource)!;
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    await store.saveDiscoveredModels!(
+      'openai',
+      credentialResource.buildIri(POD_URL, { id: credentialId }),
+      [],
+    );
+
+    expect(rowsByResource.get(aiModelResource)?.get(offeringModelId)?.status).toBe('unavailable');
+    const provider = (await store.listProviders()).find((item) => item.id === 'openai')!;
+    expect(provider.selectedModels).toEqual([
+      expect.objectContaining({ id: 'fixture-gpt-acceptance', availability: 'unavailable' }),
+    ]);
+  });
+
   it('keeps same-named models isolated by their offering-qualified Provider after reload', async () => {
     const productProviderId = aiProviderResource.buildId({ id: 'bailian' });
     const paygOfferingProviderId = aiProviderResource.buildId({ id: 'bailian-pay-as-you-go.ttl#this' });

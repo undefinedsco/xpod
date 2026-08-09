@@ -52,6 +52,10 @@ function assertRegistrySemver(specifier: unknown, packageName: string): asserts 
   expect(specifier, `${packageName} must not use a local source specifier`).not.toMatch(/^(file|link|workspace):|\/Users\//);
 }
 
+function assertWorkspaceDependency(specifier: unknown, packageName: string): asserts specifier is string {
+  expect(specifier, `${packageName} must be declared`).toBe('workspace:*');
+}
+
 async function resolvePackageInputs(): Promise<Record<string, string>> {
   if (tarballDir) {
     return dependenciesFromTarballs(tarballDir);
@@ -82,15 +86,14 @@ describe('packaged applet SDK consumption', () => {
     expect(testSource).not.toContain(legacyPeerFlag);
   });
 
-  it('declares applet SDK packages as registry semver dependencies only', async () => {
+  it('declares editable applet SDK packages from the Xpod workspace', async () => {
     const manifest = await readJson('ui/package.json');
 
     for (const [packageName] of Object.entries(packageSpecs)) {
-      assertRegistrySemver(manifest.dependencies?.[packageName], packageName);
+      assertWorkspaceDependency(manifest.dependencies?.[packageName], packageName);
     }
 
     const sourceFiles = [
-      'ui/package.json',
       'ui/tsconfig.app.json',
       'ui/vite.config.ts',
     ];
@@ -111,7 +114,7 @@ describe('packaged applet SDK consumption', () => {
   consumerIntegrationIt('resolves public ESM exports when XPOD_APPLET_PACKAGE_TARBALL_DIR or XPOD_APPLET_PACKAGE_REGISTRY_URL is configured', async () => {
     const manifest = await readJson('ui/package.json');
     for (const [packageName] of Object.entries(packageSpecs)) {
-      assertRegistrySemver(manifest.dependencies?.[packageName], packageName);
+      assertWorkspaceDependency(manifest.dependencies?.[packageName], packageName);
     }
 
     const consumerRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-sdk-consumer-'));

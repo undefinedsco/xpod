@@ -95,10 +95,10 @@ export function AiCredentialPoolSection({
   onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
   onDismissError?: () => void
 }) {
-  const fallbackOfferings = [{
+  const fallbackOfferings: AiProviderOffering[] = [{
     id: 'api-platform',
     label: 'API Key',
-    authModes: ['apiKey' as const],
+    authModes: ['apiKey'],
   }]
   const credentials = product?.credentials ?? []
   const offerings = product?.offerings.length ? product.offerings : fallbackOfferings

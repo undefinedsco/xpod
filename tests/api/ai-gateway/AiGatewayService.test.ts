@@ -319,6 +319,157 @@ describe('AiGatewayService', () => {
     }));
   });
 
+  it('passes Kimi Token Plan message-role capabilities to the runtime', async() => {
+    const runtimeExecute = vi.fn(async function* () {
+      yield { type: 'response.started' as const, id: 'resp_1' };
+      yield { type: 'response.completed' as const, finishReason: 'stop' };
+    });
+    const registry = createDefaultProviderRegistry();
+    const credentials = [
+      credential({
+        id: 'kimi_token_plan',
+        provider: 'kimi',
+        authMode: 'apiKey',
+        models: ['kimi-for-coding'],
+        metadata: { offeringId: 'subscription-key' },
+        encryptedSecret: encrypted('kimi_token_plan', 'kimi'),
+      }),
+    ];
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async() => credentials),
+    };
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+      }),
+      credentials: store,
+      vault: {
+        seal: vi.fn(),
+        rewrap: vi.fn(),
+        open: vi.fn(async() => ({ apiKey: 'sk-kimi-token-plan' })),
+      },
+      runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+    });
+
+    await service.complete({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: {
+        model: 'kimi/kimi-for-coding',
+        messages: [
+          { role: 'developer', content: 'Follow the coding policy.' },
+          { role: 'user', content: 'Hello.' },
+        ],
+      },
+    });
+
+    expect(runtimeExecute).toHaveBeenCalledWith(expect.objectContaining({
+      credential: expect.objectContaining({
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        keyType: 'tokenPlan',
+        supportsDeveloperMessages: false,
+      }),
+    }));
+  });
+
+  it('routes Bailian Token Plan Team through the shared runtime endpoint without collapsing its offering identity', async() => {
+    const runtimeExecute = vi.fn(async function* () {
+      yield { type: 'response.started' as const, id: 'resp_1' };
+      yield { type: 'text.delta' as const, text: 'ok' };
+      yield { type: 'response.completed' as const, finishReason: 'stop' };
+    });
+    const registry = createDefaultProviderRegistry();
+    const credentials = [
+      credential({
+        id: 'token_plan_personal',
+        provider: 'bailian-token-plan',
+        models: ['qwen-max'],
+        metadata: { offeringId: 'token-plan' },
+        encryptedSecret: encrypted('token_plan_personal', 'bailian-token-plan'),
+      }),
+      credential({
+        id: 'token_plan_team',
+        provider: 'bailian-token-plan',
+        models: ['qwen-max'],
+        metadata: { offeringId: 'token-plan-team' },
+        priority: 200,
+        encryptedSecret: encrypted('token_plan_team', 'bailian-token-plan'),
+      }),
+    ];
+    const store: GatewayCredentialStore = {
+      listCredentials: vi.fn(async() => credentials),
+    };
+    const service = new AiGatewayService({
+      deployment: 'cloud',
+      registry,
+      router: new ModelRouter({
+        registry,
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        credentials: store.listCredentials,
+      }),
+      credentials: store,
+      vault: {
+        seal: vi.fn(),
+        rewrap: vi.fn(),
+        open: vi.fn(async(_principal, credentialIri) => ({
+          apiKey: credentialIri.includes('team') ? 'sk-token-plan-team' : 'sk-token-plan-personal',
+        })),
+      },
+      runtimes: { get: vi.fn(() => ({ execute: runtimeExecute })) } as unknown as ProviderRuntimeRegistry,
+    });
+
+    const body = (credentialId: string) => ({
+      model: 'bailian/qwen-max',
+      messages: [{ role: 'user', content: 'hi' }],
+      xpod_credential_id: credentialId,
+    });
+    const personalExecution = await service.execute({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: body('token_plan_personal'),
+    });
+    expect(personalExecution.route.credential).toMatchObject({
+      provider: 'bailian-token-plan',
+      metadata: { offeringId: 'token-plan' },
+    });
+    for await (const _event of personalExecution.events) {
+      // Drain the stream so runtime dispatch and credential health bookkeeping complete.
+    }
+
+    const teamExecution = await service.execute({
+      auth: AUTH,
+      protocol: 'chatCompletions',
+      body: body('token_plan_team'),
+    });
+    expect(teamExecution.route.credential).toMatchObject({
+      provider: 'bailian-token-plan',
+      metadata: { offeringId: 'token-plan-team' },
+    });
+    for await (const _event of teamExecution.events) {
+      // Drain the stream so runtime dispatch and credential health bookkeeping complete.
+    }
+
+    expect(runtimeExecute).toHaveBeenCalledTimes(2);
+    expect(runtimeExecute).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      apiKey: 'sk-token-plan-personal',
+      credential: {
+        baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+        keyType: 'tokenPlan',
+      },
+    }));
+    expect(runtimeExecute).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      apiKey: 'sk-token-plan-team',
+      credential: {
+        baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+        keyType: 'tokenPlan',
+      },
+    }));
+  });
+
   it('passes Bailian Coding Plan through the Anthropic-compatible offering endpoint', async() => {
     const runtimeExecute = vi.fn(async function* () {
       yield { type: 'response.started' as const, id: 'resp_1' };

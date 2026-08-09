@@ -552,6 +552,55 @@ describe('ProviderModelsService', () => {
     expect(result.source).toBe('bailian:coding:/models');
   });
 
+  it('keeps Bailian Token Plan personal and team discovery isolated on their shared endpoint', async () => {
+    const registry = createDefaultProviderRegistry();
+    const sharedEndpoint = 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models';
+    let callIndex = 0;
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe(sharedEndpoint);
+      const authorization = new Headers(init?.headers).get('authorization');
+      expect(authorization).toBe(callIndex++ === 0 ? 'Bearer personal-secret' : 'Bearer team-secret');
+      return {
+        body: {
+          data: [{ id: authorization === 'Bearer personal-secret' ? 'personal-model' : 'team-model' }],
+        },
+      };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: registry,
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'bailian',
+        registry,
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    const personal = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token-plan-personal',
+      apiKey: 'personal-secret',
+    });
+    const team = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'token-plan-team',
+      credentialId: 'credentials.ttl#bailian-token-plan-team',
+      apiKey: 'team-secret',
+    });
+
+    expect(personal.models).toEqual([{ id: 'personal-model' }]);
+    expect(team.models).toEqual([{ id: 'team-model' }]);
+    expect(personal.source).toBe('bailian:token-plan:/models');
+    expect(team.source).toBe('bailian:token-plan-team:/models');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenNthCalledWith(1, sharedEndpoint, expect.any(Object));
+    expect(fetch).toHaveBeenNthCalledWith(2, sharedEndpoint, expect.any(Object));
+  });
+
   it('does not send an ephemeral caller secret to an untrusted discovery base URL', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,

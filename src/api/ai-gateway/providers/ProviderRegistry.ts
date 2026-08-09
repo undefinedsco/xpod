@@ -32,6 +32,7 @@ export interface ProviderOfferingEndpointDescriptor {
   protocol: GatewayProtocol;
   baseUrl: string;
   region?: string;
+  supportsDeveloperMessages?: boolean;
 }
 
 export type ProviderModelDiscoveryStrategy = 'openaiCompatible' | 'anthropic' | 'unsupported';
@@ -446,7 +447,11 @@ export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
         ],
         usagePolicyUrl: 'https://www.kimi.com/user/agreement',
         endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1' },
+          {
+            protocol: 'chatCompletions',
+            baseUrl: 'https://api.kimi.com/coding/v1',
+            supportsDeveloperMessages: false,
+          },
           { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
         ],
       }),
@@ -468,7 +473,11 @@ export const DEFAULT_PROVIDER_PRODUCT_DESCRIPTORS: ProviderProductDescriptor[] =
         ],
         usagePolicyUrl: 'https://www.kimi.com/user/agreement',
         endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1' },
+          {
+            protocol: 'chatCompletions',
+            baseUrl: 'https://api.kimi.com/coding/v1',
+            supportsDeveloperMessages: false,
+          },
           { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/' },
         ],
       }),

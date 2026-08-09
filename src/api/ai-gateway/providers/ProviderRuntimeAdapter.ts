@@ -14,6 +14,7 @@ import type { ProviderDescriptor, ProviderModelDescriptor } from './ProviderRegi
 export interface ProviderRuntimeCredential {
   baseUrl?: string;
   keyType?: 'apiKey' | 'dashscope' | 'codingPlan' | string;
+  supportsDeveloperMessages?: boolean;
   proxy?: string;
   region?: string;
   workspaceId?: string;
@@ -139,7 +140,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
   }
 
   public async *execute(input: ProviderRuntimeExecuteInput): AsyncIterable<GatewayEvent> {
-    const request = this.toProviderCompatibleRequest(input.request);
+    const request = this.toProviderCompatibleRequest(input.request, input.credential);
     this.validateRequest(request);
     const baseUrl = this.resolveBaseUrl({
       configuredBaseUrl: input.credential?.baseUrl,
@@ -185,8 +186,13 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
     }
   }
 
-  private toProviderCompatibleRequest(request: GatewayRequest): GatewayRequest {
-    if (this.supportsDeveloperMessages || !request.messages.some((message) => message.role === 'developer')) {
+  private toProviderCompatibleRequest(
+    request: GatewayRequest,
+    credential?: ProviderRuntimeCredential,
+  ): GatewayRequest {
+    const supportsDeveloperMessages = credential?.supportsDeveloperMessages
+      ?? this.supportsDeveloperMessages;
+    if (supportsDeveloperMessages || !request.messages.some((message) => message.role === 'developer')) {
       return request;
     }
     return {

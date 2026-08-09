@@ -23,7 +23,9 @@ if (!deepseekApiKey || !kimiApiKey) {
   throw new Error('DEEPSEEK_API_KEY and KIMI_API_KEY are required');
 }
 
+const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-live-ai-acceptance-'));
 const stack = new XpodTestStack();
+const liveClientModels = ['deepseek-v4-flash', 'kimi-for-coding'];
 
 try {
   await stack.start('local', {
@@ -32,6 +34,7 @@ try {
     apiOpen: false,
     envFile: undefined,
     logLevel: 'error',
+    runtimeRoot,
     env: { XPOD_ACCEPTANCE_ENDPOINTS_ENABLED: 'true' },
   });
   const account = await setupAccount(stack.baseUrl, `live-ai-${Date.now().toString(36)}`);
@@ -71,6 +74,7 @@ try {
       baseUrl: 'https://api.deepseek.com/v1',
       apiKey: deepseekApiKey,
       expectedModels: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      expectedQuotaWindows: ['total_balance', 'granted_balance', 'topped_up_balance'],
     },
     {
       id: 'kimi' as const,
@@ -78,6 +82,7 @@ try {
       baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: kimiApiKey,
       expectedModels: ['kimi-for-coding', 'kimi-for-coding-highspeed', 'k3', 'k3-256k'],
+      expectedQuotaWindows: ['weekly'],
     },
   ];
 
@@ -113,6 +118,12 @@ try {
     if (quota.status !== 'available' || quota.windows.length === 0) {
       throw new Error(`${provider.id} quota was not available`);
     }
+    for (const expected of provider.expectedQuotaWindows) {
+      const observed = quota.windows.some((window) => window.name === expected || window.name.endsWith(`.${expected}`));
+      if (!observed) {
+        throw new Error(`${provider.id} quota did not return ${expected}`);
+      }
+    }
     console.log(JSON.stringify({
       provider: provider.id,
       step: 'xpod-model-discovery',
@@ -143,7 +154,7 @@ try {
   }
   console.log(JSON.stringify({ step: 'xpod-models', status: modelsResponse.status, models: projectedModelIds }));
 
-  for (const model of ['deepseek-v4-flash', 'kimi-for-coding']) {
+  for (const model of liveClientModels) {
     const chatResponse = await stack.runtimeFetch('/v1/chat/completions', {
       method: 'POST',
       headers: gatewayHeaders,
@@ -192,14 +203,20 @@ try {
     console.log(JSON.stringify({ step: 'xpod-messages', status: messagesResponse.status, model, ok: true }));
   }
 
-  await acceptRealClientMatrix({
-    baseUrl: stack.baseUrl,
-    gatewayKey: clientApiKey,
-    model: 'deepseek-v4-flash',
-    webId: account.webId,
-  });
+  for (const model of liveClientModels) {
+    await acceptRealClientMatrix({
+      baseUrl: stack.baseUrl,
+      gatewayKey: clientApiKey,
+      model,
+      webId: account.webId,
+    });
+  }
 } finally {
-  await stack.stop();
+  try {
+    await stack.stop();
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
 }
 
 async function acceptRealClientMatrix(input: {
@@ -324,6 +341,7 @@ async function acceptRealClientMatrix(input: {
         console.log(JSON.stringify({
           step: 'real-client',
           client: client.id,
+          model: input.model,
           inference: requestedSteps.has('inference'),
           tool: requestedSteps.has('tool'),
           projection: true,

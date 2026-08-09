@@ -23,7 +23,7 @@ describe('runtime environment session', () => {
       transport: 'port',
     });
 
-    expect(process.env.CSS_BASE_URL).toBe('http://127.0.0.1:5810/');
+    expect(process.env.CSS_BASE_URL).toBe('http://localhost:5810/');
     expect(session.shorthand.edition).toBe('local');
 
     session.restore();

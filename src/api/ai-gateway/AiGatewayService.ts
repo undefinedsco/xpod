@@ -523,6 +523,9 @@ export class AiGatewayService {
     return {
       baseUrl: endpoint.baseUrl,
       ...(endpoint.region ? { region: endpoint.region } : {}),
+      ...(endpoint.supportsDeveloperMessages !== undefined
+        ? { supportsDeveloperMessages: endpoint.supportsDeveloperMessages }
+        : {}),
       ...(isLegacyCodingPlan ? { keyType: 'codingPlan' } : {}),
       ...(offering?.kind === 'token-plan' && !isLegacyCodingPlan ? { keyType: 'tokenPlan' } : {}),
     };

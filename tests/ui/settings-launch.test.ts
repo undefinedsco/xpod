@@ -9,6 +9,7 @@ import { createTestDir } from '../utils/sqlite';
 const root = path.resolve(__dirname, '../..');
 const openSettingsScript = path.join(root, 'scripts/open-settings.mjs');
 const dashboardUrlToStaticPath = (urlPath: string): string => path.join(root, 'static/dashboard', urlPath.replace(/^\/dashboard\//, ''));
+const settingsUrlToStaticPath = (urlPath: string): string => path.join(root, 'static/settings', urlPath.replace(/^\/settings\//, ''));
 
 async function readRepoFile(relativePath: string): Promise<string> {
   return readFile(path.join(root, relativePath), 'utf8');
@@ -259,6 +260,7 @@ describe('settings dashboard static launch smoke', () => {
   let runtime: XpodRuntimeHandle;
   let dashboardHtml = '';
   let dashboardScriptPath = '';
+  let settingsScriptPath = '';
 
   beforeAll(async () => {
     dashboardHtml = await readRepoFile('static/dashboard/dashboard.html');
@@ -266,6 +268,11 @@ describe('settings dashboard static launch smoke', () => {
     expect(scriptMatch?.[1]).toBeTruthy();
     dashboardScriptPath = scriptMatch![1];
     expect(fs.existsSync(dashboardUrlToStaticPath(dashboardScriptPath))).toBe(true);
+    const settingsHtml = await readRepoFile('static/settings/settings.html');
+    const settingsScriptMatch = settingsHtml.match(/src="(\/settings\/assets\/settings-[^"]+\.js)"/);
+    expect(settingsScriptMatch?.[1]).toBeTruthy();
+    settingsScriptPath = settingsScriptMatch![1];
+    expect(fs.existsSync(settingsUrlToStaticPath(settingsScriptPath))).toBe(true);
 
     runtime = await startXpodRuntime({
       mode: 'local',
@@ -292,17 +299,25 @@ describe('settings dashboard static launch smoke', () => {
     await runtime?.stop();
   });
 
-  it('serves the current dashboard bundle for settings deep links', async () => {
+  it('serves the independent settings bundle for settings deep links', async () => {
     for (const route of ['/settings/models', '/settings/pod', '/settings/network', '/settings/services']) {
       const response = await runtime.fetch(route);
       expect(response.status, route).toBe(200);
       expect(response.headers.get('content-type'), route).toContain('text/html');
-      await expect(response.text(), route).resolves.toContain(dashboardScriptPath);
+      await expect(response.text(), route).resolves.toContain(settingsScriptPath);
     }
   });
 
   it('serves referenced dashboard assets from the packaged static directory', async () => {
     const response = await runtime.fetch(dashboardScriptPath);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/javascript');
+    await expect(response.text()).resolves.toContain('createRoot');
+  });
+
+  it('serves referenced settings assets from the packaged static directory', async () => {
+    const response = await runtime.fetch(settingsScriptPath);
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/javascript');

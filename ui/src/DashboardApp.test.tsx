@@ -140,7 +140,8 @@ describe('dashboard routes', () => {
       const { container, root, session, sessionConstructions } = await renderDashboardRoute(from);
 
       expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(to);
-      expect(container.textContent).toContain('Solid issuer');
+      expect(container.textContent).toContain('使用 undefineds 账号');
+      expect(container.textContent).not.toContain('Solid issuer');
       expect(sessionConstructions).toBe(1);
       expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
       await unmount(root);

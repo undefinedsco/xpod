@@ -27,6 +27,8 @@ export default defineConfig({
       '**/.worktrees/**',
       '**/_deprecated/**',
       '**/_deprecated_quadstore/**',
+      'tests/e2e/**',
+      'tests/package/**/*.test.mjs',
       'tests/terminal/*.integration.test.ts',
       'ui/src/external/**',
     ],

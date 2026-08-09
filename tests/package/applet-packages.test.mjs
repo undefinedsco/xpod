@@ -3,14 +3,14 @@ import { readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
 
 const packageNames = [
-  'ai-connection',
+  'ai-connections',
   'extension-sdk',
   'shared-ui',
   'solid-sdk',
 ];
 
 const dependencyNames = [
-  '@undefineds.co/ai-connection',
+  '@undefineds.co/ai-connections',
   '@undefineds.co/extension-sdk',
   '@undefineds.co/shared-ui',
   '@undefineds.co/solid-sdk',

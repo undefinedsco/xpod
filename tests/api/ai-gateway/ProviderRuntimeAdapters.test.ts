@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import type { GatewayEvent, GatewayRequest } from '../../../src/api/ai-gateway/types';
+import { ChatCompletionsFrontend } from '../../../src/api/ai-gateway/protocol/ChatCompletionsFrontend';
 import { AnthropicRuntimeAdapter } from '../../../src/api/ai-gateway/providers/AnthropicRuntimeAdapter';
 import { BailianRuntimeAdapter } from '../../../src/api/ai-gateway/providers/BailianRuntimeAdapter';
 import { DeepSeekRuntimeAdapter } from '../../../src/api/ai-gateway/providers/DeepSeekRuntimeAdapter';
@@ -220,6 +221,44 @@ describe('Provider runtime adapters', () => {
         },
       ],
     });
+  });
+
+  it('projects a Chat Completions frontend request onto the OpenAI Responses upstream', async () => {
+    const frontend = new ChatCompletionsFrontend();
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_chat_projection' } },
+      { type: 'response.output_text.delta', delta: 'projected' },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    const request = frontend.parseRequest({
+      model: 'gpt-5',
+      messages: [
+        { role: 'system', content: 'Answer with strict JSON.' },
+        { role: 'user', content: 'hello from chat completions' },
+      ],
+      stream: true,
+    });
+    await expect(collect(adapter.execute({
+      request,
+      apiKey: 'sk-openai-chat-projection',
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'projected' });
+
+    expect(fixture.captured[0].url).toBe('https://api.openai.com/v1/responses');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'gpt-5',
+      stream: true,
+      instructions: 'Answer with strict JSON.',
+      input: [{
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hello from chat completions' }],
+      }],
+    });
+    expect(fixture.captured[0].body).not.toHaveProperty('messages');
   });
 
   it('streams Anthropic Messages events including thinking, signatures, partial tool JSON, usage and midstream errors', async () => {
@@ -458,7 +497,12 @@ describe('Provider runtime adapters', () => {
     await collect(officialAdapter.execute({
       request: baseRequest({
         model: 'kimi-for-coding',
+        instructions: undefined,
         reasoning: undefined,
+        messages: [{
+          role: 'developer',
+          content: [{ type: 'text', text: 'Follow the coding policy.' }],
+        }],
         protocolExtensions: { chatCompletions: { temperature: 0 } },
       }),
       apiKey: 'sk-kimi-subscription',
@@ -466,6 +510,10 @@ describe('Provider runtime adapters', () => {
     }));
     expect(officialSubscription.captured[0].url).toBe('https://api.kimi.com/coding/v1/chat/completions');
     expect(officialSubscription.captured[0].body.temperature).toBe(1);
+    expect(officialSubscription.captured[0].body.messages).toContainEqual({
+      role: 'system',
+      content: 'Follow the coding policy.',
+    });
 
     await expect(collect(officialAdapter.execute({
       request: baseRequest({ model: 'kimi-k2', reasoning: undefined }),
@@ -570,6 +618,49 @@ describe('Provider runtime adapters', () => {
       code: 'invalid_request',
       status: 400,
     });
+  });
+
+  it('projects a Chat Completions frontend request onto the Bailian Coding Plan Anthropic Messages upstream', async () => {
+    const frontend = new ChatCompletionsFrontend();
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'message_start', message: { id: 'msg_coding_projection' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'projected' } },
+      { type: 'message_stop', stop_reason: 'end_turn' },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new BailianRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    const request = frontend.parseRequest({
+      model: 'qwen-coder-plus',
+      messages: [
+        { role: 'system', content: 'Follow the coding policy.' },
+        { role: 'user', content: 'hello from chat completions' },
+      ],
+      stream: true,
+    });
+    await expect(collect(adapter.execute({
+      request,
+      apiKey: 'sk-sp-coding-projection',
+      credential: {
+        keyType: 'codingPlan',
+        baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
+      },
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'projected' });
+
+    expect(fixture.captured[0].url).toBe('https://coding.dashscope.aliyuncs.com/apps/anthropic/messages');
+    expect(fixture.captured[0].headers.get('x-api-key')).toBe('sk-sp-coding-projection');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'qwen-coder-plus',
+      stream: true,
+      system: 'Follow the coding policy.',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'text', text: 'hello from chat completions' }],
+      }],
+    });
+    expect(fixture.captured[0].body).not.toHaveProperty('input');
   });
 
   it('constructs Bailian regional workspace endpoints from enums and rejects SSRF strings or endpoint/key mismatches', async () => {

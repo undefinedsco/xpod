@@ -8,6 +8,12 @@ function repoRoot(): string {
   return path.resolve(__dirname, '../..');
 }
 
+const fixtureAiConnection = {
+  baseUrl: 'http://127.0.0.1:3000/v1',
+  gatewayKey: 'sk-xpod-multi-agent-fixture',
+  model: 'fixture-model',
+};
+
 function decodeSseEvents(chunks: Uint8Array[]): any[] {
   const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
   const events: any[] = [];
@@ -62,7 +68,10 @@ describe('Multi-agent orchestration over ChatKit threads (service)', () => {
 
   let store: InMemoryStore<StoreContext>;
   let service: ChatKitService<StoreContext>;
-  const context: StoreContext = { userId: 'local-user' };
+  const context: StoreContext = {
+    userId: 'local-user',
+    aiConnection: fixtureAiConnection,
+  };
 
   beforeAll(() => {
     store = new InMemoryStore<StoreContext>();

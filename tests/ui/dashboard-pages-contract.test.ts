@@ -17,7 +17,7 @@ describe('dashboard runtime console routes', () => {
     expect(app).not.toContain('/.account/settings/');
   });
 
-  it('uses deep-linkable dashboard routes for status, logs and settings', async () => {
+  it('keeps dashboard observability routes separate from settings navigation', async () => {
     const dashboardApp = await readRepoFile('ui/src/DashboardApp.tsx');
     const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
     const settingsNavigation = await readRepoFile('ui/src/layout/settings-navigation.ts');
@@ -26,15 +26,16 @@ describe('dashboard runtime console routes', () => {
 
     expect(dashboardApp).toContain('BrowserRouter');
     expect(dashboardApp).toContain('basename="/dashboard"');
-    expect(dashboardRoutes).toContain("path: 'models'");
-    expect(dashboardRoutes).toContain("path: 'pod'");
+    expect(dashboardRoutes).toContain("path: 'overview'");
     expect(dashboardRoutes).toContain("path: 'network'");
-    expect(dashboardRoutes).toContain("path: 'services'");
     expect(dashboardRoutes).toContain("path: 'runtime'");
     expect(dashboardRoutes).toContain("path: 'logs'");
-    expect(dashboardRoutes).toContain("path: 'configuration'");
+    expect(dashboardRoutes).toContain("path: 'rdf'");
+    expect(dashboardRoutes).toContain("path: 'usage'");
     expect(dashboardRoutes).toContain("path: 'status'");
-    expect(dashboardRoutes).toContain('legacyDashboardRedirects.status');
+    expect(dashboardRoutes).not.toContain("path: 'models'");
+    expect(dashboardRoutes).not.toContain("path: 'pod'");
+    expect(dashboardRoutes).not.toContain("path: 'services'");
     expect(settingsNavigation).toContain("status: '/services/runtime'");
     expect(settingsNavigation).toContain("logs: '/services/logs'");
     expect(settingsNavigation).toContain("settings: '/services/configuration'");
@@ -65,10 +66,13 @@ describe('upgraded dashboard pages', () => {
     expect(button).toContain('active:translate-y-px');
   });
 
-  it('keeps the compact settings navigation inside the narrow header viewport', async () => {
-    const indexCss = await readRepoFile('ui/src/index.css');
+  it('uses the shared icon-only product layout instead of a page-specific navigation height', async () => {
+    const productLayout = await readRepoFile('ui/src/layout/XpodProductLayout.tsx');
 
-    expect(indexCss).toContain('min-height: 11.75rem;');
+    expect(productLayout).toContain("import { AppLayout }");
+    expect(productLayout).toContain("'flex h-9 w-9 items-center justify-center");
+    expect(productLayout).toContain('ProductNavLinks');
+    expect(productLayout).not.toContain('min-height: 11.75rem;');
   });
 
   it('has a status page centered on reachability, routes and diagnostics evidence', async () => {
