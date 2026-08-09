@@ -35,6 +35,7 @@ function credential(input: Partial<GatewayCredentialCandidate> & {
     quota: input.quota ?? { status: 'available' },
     cooldownUntil: input.cooldownUntil,
     customModels: input.customModels,
+    runtimeCredential: input.runtimeCredential,
     metadata: input.metadata,
   };
 }
@@ -226,6 +227,34 @@ describe('ModelRouter', () => {
       model: 'qwen-max',
       credential: { id: 'cred_bailian' },
       source: 'default-model',
+    });
+  });
+
+  it('registers an OpenAI-compatible custom provider from an explicit Pod credential route', async () => {
+    const registry = createDefaultProviderRegistry();
+    const modelRouter = router({
+      registry,
+      credentials: [credential({
+        id: 'cred_timecc',
+        provider: 'timecc',
+        models: ['codex-auto-review'],
+        runtimeCredential: { baseUrl: 'https://timicc.example/v1' },
+      })],
+    });
+
+    await expect(modelRouter.route({
+      webId: WEB_ID,
+      deployment: 'local',
+      model: 'timecc/codex-auto-review',
+    })).resolves.toMatchObject({
+      provider: { id: 'timecc' },
+      model: 'codex-auto-review',
+      credential: { id: 'cred_timecc' },
+      source: 'explicit-provider',
+    });
+    expect(registry.requireProvider('timecc')).toMatchObject({
+      protocols: ['chatCompletions'],
+      safeBaseUrls: ['https://timicc.example/v1'],
     });
   });
 

@@ -210,7 +210,16 @@ export class AiGatewayHandler {
 
   private sendGatewayError(response: ServerResponse, error: unknown): void {
     const payload = normalizeGatewayError(error);
-    this.logger.warn(`AI Gateway request failed: ${payload.error.code}`);
+    const routeDetails = payload.error.details && typeof payload.error.details === 'object'
+      ? payload.error.details as Record<string, unknown>
+      : undefined;
+    const provider = typeof routeDetails?.provider === 'string' ? routeDetails.provider : undefined;
+    const model = typeof routeDetails?.model === 'string' ? routeDetails.model : undefined;
+    const route = [provider && `provider=${provider}`, model && `model=${model}`]
+      .filter(Boolean)
+      .join(' ');
+    const reason = payload.error.message ? `: ${payload.error.message}` : '';
+    this.logger.warn(`AI Gateway request failed: ${payload.error.code}${route ? ` (${route})` : ''}${reason}`);
     sendJson(response, payload.error.status, {
       error: {
         code: payload.error.code,

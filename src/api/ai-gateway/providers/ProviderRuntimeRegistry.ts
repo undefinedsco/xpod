@@ -5,6 +5,7 @@ import { BailianRuntimeAdapter } from './BailianRuntimeAdapter';
 import { DeepSeekRuntimeAdapter } from './DeepSeekRuntimeAdapter';
 import { KimiRuntimeAdapter } from './KimiRuntimeAdapter';
 import { OpenAiRuntimeAdapter } from './OpenAiRuntimeAdapter';
+import { OpenAiCompatibleRuntimeAdapter } from './ProviderRuntimeAdapter';
 import {
   createDefaultProviderRegistry,
   normalizeProviderId,
@@ -19,10 +20,14 @@ export interface ProviderRuntimeRegistryOptions {
 
 export class ProviderRuntimeRegistry {
   private readonly adapters = new Map<string, ProviderRuntimeAdapter>();
+  private readonly registry: ProviderRegistry;
+  private readonly transport: ProviderHttpTransport;
 
   public constructor(options: ProviderRuntimeRegistryOptions = {}) {
     const registry = options.registry ?? createDefaultProviderRegistry();
     const transport = options.transport ?? new ProviderHttpTransport();
+    this.registry = registry;
+    this.transport = transport;
     this.adapters.set('openai', new OpenAiRuntimeAdapter({
       transport,
       provider: registry.requireProvider('openai'),
@@ -40,14 +45,27 @@ export class ProviderRuntimeRegistry {
   }
 
   public get(provider: string): ProviderRuntimeAdapter {
-    const adapter = this.adapters.get(normalizeProviderId(provider));
-    if (!adapter) {
+    const providerId = normalizeProviderId(provider);
+    const existing = this.adapters.get(providerId);
+    if (existing) {
+      return existing;
+    }
+    const descriptor = this.registry.getProvider(providerId);
+    if (!descriptor) {
       throw new GatewayProtocolError('Unknown provider runtime adapter', {
         code: 'invalid_request',
         status: 400,
         details: { provider },
       });
     }
+    const adapter = new OpenAiCompatibleRuntimeAdapter({
+      provider: providerId,
+      defaultBaseUrl: descriptor.defaultBaseUrl,
+      safeBaseUrls: descriptor.safeBaseUrls,
+      descriptor,
+      transport: this.transport,
+    });
+    this.adapters.set(providerId, adapter);
     return adapter;
   }
 

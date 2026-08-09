@@ -10,6 +10,7 @@ import {
   type SessionAffinityStore,
 } from './SessionAffinityStore';
 import type { AuthContext } from '../../auth/AuthContext';
+import type { ProviderRuntimeCredential } from '../providers/ProviderRuntimeAdapter';
 
 export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error';
 export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
@@ -35,6 +36,7 @@ export interface GatewayCredentialCandidate {
     status: GatewayQuotaStatus;
   };
   cooldownUntil?: Date;
+  runtimeCredential?: ProviderRuntimeCredential;
   metadata?: Record<string, unknown>;
 }
 
@@ -42,6 +44,7 @@ export interface ModelRouterCredentialLookupInput {
   webId: string;
   deployment: string;
   auth?: AuthContext;
+  provider?: string;
 }
 
 export interface ModelRouterOptions {
@@ -105,10 +108,12 @@ export class ModelRouter {
     input: ModelRouteInput,
     excludeCredentialIds: ReadonlySet<string> = new Set(),
   ): Promise<ModelRouteResult> {
+    const explicitProvider = input.model ? this.parseExplicitProviderModel(input.model)?.providerId : undefined;
     const candidates = await this.credentials({
       webId: input.webId,
       deployment: input.deployment,
       auth: input.auth,
+      provider: explicitProvider,
     });
     const target = this.resolveTarget(input, candidates);
     const provider = this.registry.requireProvider(target.providerId);
@@ -198,13 +203,33 @@ export class ModelRouter {
 
       const explicit = this.parseExplicitProviderModel(requestedModel);
       if (explicit && !this.registry.getProvider(explicit.providerId)) {
-        throw new GatewayProtocolError('Unknown provider in explicit model route', {
-          code: 'invalid_request',
-          status: 400,
-          details: {
-            provider: explicit.providerId,
-            model: explicit.model,
+        const credential = candidates.find((candidate) =>
+          normalizeProviderId(candidate.provider) === explicit.providerId
+          && typeof candidate.runtimeCredential?.baseUrl === 'string'
+          && candidate.runtimeCredential.baseUrl.length > 0);
+        const baseUrl = credential?.runtimeCredential?.baseUrl;
+        if (!baseUrl) {
+          throw new GatewayProtocolError('Unknown provider in explicit model route', {
+            code: 'invalid_request',
+            status: 400,
+            details: {
+              provider: explicit.providerId,
+              model: explicit.model,
+            },
+          });
+        }
+        this.registry.register({
+          id: explicit.providerId,
+          label: explicit.providerId,
+          authModes: ['apiKey'],
+          protocols: ['chatCompletions'],
+          defaultBaseUrl: baseUrl,
+          safeBaseUrls: [baseUrl],
+          capabilities: {
+            toolCalls: true,
+            imageInput: true,
           },
+          models: [{ id: explicit.model }],
         });
       }
       if (explicit) {

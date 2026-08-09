@@ -152,7 +152,8 @@ type ConnectedCredentialDb = {
       where(condition: unknown): { execute(): Promise<Record<string, unknown>[]> };
     };
   };
-  findById<TRow>(resource: typeof credentialResource, id: string): Promise<TRow | null>;
+  findById<TRow>(resource: typeof credentialResource | typeof aiProviderResource, id: string): Promise<TRow | null>;
+  resolveRowIri?(resource: typeof credentialResource, row: Record<string, unknown>): string;
   updateById<TRow>(resource: typeof credentialResource, id: string, patch: unknown): Promise<TRow | null>;
   update(resource: typeof credentialResource): {
     set(patch: unknown): {
@@ -221,6 +222,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     webId: string;
     deployment: GatewayDeployment;
     auth?: AuthContext;
+    provider?: string;
   }): Promise<Array<{
     id: string;
     credentialIri: string;
@@ -238,14 +240,31 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     runtimeCredential?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   }>> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
+    const providerIds = Array.from(new Set([
+      ...this.providerIds,
+      ...(input.provider ? [normalizeProvider(input.provider)] : []),
+    ]));
     const rows = (await Promise.all(
-      this.providerIds.map(async (provider) => {
+      providerIds.map(async (provider) => {
         try {
-          return await db.findById<Record<string, unknown>>(
-            credential,
-            aiRuntimeRepository.credentialId({ deployment: input.deployment, provider }),
+          const runtimeCredentialId = aiRuntimeRepository.credentialId({ deployment: input.deployment, provider });
+          const defaultCredentialId = credential.buildId({ id: `${provider}-default` });
+          const row = await db.findById<Record<string, unknown>>(credential, runtimeCredentialId)
+            ?? await db.findById<Record<string, unknown>>(credential, defaultCredentialId);
+          if (!row) return null;
+          const providerRow = await db.findById<Record<string, unknown>>(
+            aiProvider,
+            aiProvider.buildId({ id: provider }),
           );
+          return {
+            row: withLegacyPlaintextSecret(row, {
+              webId: input.webId,
+              provider,
+              credentialIri: db.resolveRowIri?.(credential, row),
+            }),
+            providerRow,
+          };
         } catch (error) {
           if (isPodResourceNotFound(error)) {
             return null;
@@ -253,13 +272,20 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
           throw error;
         }
       }),
-    )).filter((row): row is Record<string, unknown> => row !== null);
+    )).filter((entry): entry is { row: Record<string, unknown>; providerRow: Record<string, unknown> | null } => entry !== null);
     return rows
-      .map(recordFromCredentialRow)
-      .filter((record) => record.webId === input.webId)
-      .filter((record) => record.deployment === input.deployment)
-      .filter((record) => record.status === 'active')
-      .map((record) => ({
+      .map(({ row, providerRow }) => ({ record: recordFromCredentialRow(row), providerRow }))
+      .filter(({ record }) => record.webId === input.webId)
+      .filter(({ record }) => record.deployment === input.deployment)
+      .filter(({ record }) => record.status === 'active')
+      .map(({ record, providerRow }) => ({
+        record,
+        runtimeCredential: {
+          ...runtimeCredentialFromMetadata(record.metadata),
+          ...(typeof providerRow?.baseUrl === 'string' ? { baseUrl: providerRow.baseUrl } : {}),
+        },
+      }))
+      .map(({ record, runtimeCredential }) => ({
         id: record.id,
         credentialIri: record.credentialIri,
         provider: record.provider,
@@ -273,7 +299,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         quota: { status: 'available' },
         encryptedSecret: record.encryptedSecret,
         version: record.version,
-        runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
+        runtimeCredential,
         metadata: record.metadata,
       }));
   }
@@ -381,13 +407,14 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
   private async dbForOwner(owner: string, auth?: AuthContext): Promise<{
     db: ConnectedCredentialDb;
     credential: typeof credentialResource;
+    aiProvider: typeof aiProviderResource;
   }> {
     const trustedFetch = await this.resolveTrustedFetch(owner);
     const credential = alias(this.credentialTemplate, 'credential');
     const aiProvider = alias(this.aiProviderTemplate, 'aiProvider');
     const db = await this.dbFactory({ owner, auth, fetch: trustedFetch, credential, aiProvider });
     await db.init?.(credential, aiProvider);
-    return { db, credential };
+    return { db, credential, aiProvider };
   }
 
   private async resolveTrustedFetch(owner: string): Promise<typeof fetch> {
@@ -1367,6 +1394,38 @@ function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
     throw new Error('Credential row encrypted secret payload is invalid');
   }
   return parsed as EncryptedCredentialSecret;
+}
+
+function withLegacyPlaintextSecret(
+  row: Record<string, unknown>,
+  context: { webId: string; provider: string; credentialIri?: string },
+): Record<string, unknown> {
+  if (typeof row.encryptedSecret === 'string' && row.encryptedSecret.trim()) {
+    return row;
+  }
+  if (typeof row.apiKey !== 'string' || !row.apiKey.trim()) {
+    return row;
+  }
+  const id = stringFrom(row.id);
+  const credentialIri = context.credentialIri
+    ?? `${context.webId.split('#', 1)[0]}#credential-${encodeURIComponent(id)}`;
+  const encryptedSecret: EncryptedCredentialSecret = {
+    algorithm: 'PLAINTEXT',
+    aadPurpose: 'xpod-provider-credential',
+    aadVersion: 'v1',
+    ciphertext: JSON.stringify({ apiKey: row.apiKey }),
+    nonce: '',
+    webId: context.webId,
+    credentialIri,
+    provider: context.provider,
+    dekWrapAlgorithm: 'PLAINTEXT',
+    keyId: 'plaintext',
+    wrappedDek: '',
+  };
+  return {
+    ...row,
+    encryptedSecret: JSON.stringify(encryptedSecret),
+  };
 }
 
 function versionFromRow(row: Record<string, unknown>): number {

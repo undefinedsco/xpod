@@ -93,6 +93,24 @@ async function collect(iterable: AsyncIterable<GatewayEvent>): Promise<GatewayEv
 }
 
 describe('Provider runtime adapters', () => {
+  it('creates a generic OpenAI-compatible runtime for a registered custom provider', () => {
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { toolCalls: true },
+      models: [{ id: 'codex-auto-review' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({ registry });
+
+    expect(runtimes.get('timecc').provider).toBe('timecc');
+    expect(runtimes.get('timecc')).toBe(runtimes.get('timecc'));
+  });
+
   it('creates adapters by provider id through a shared runtime registry and fails unknown providers', async () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { id: 'chatcmpl_factory', choices: [{ delta: { role: 'assistant' } }] },

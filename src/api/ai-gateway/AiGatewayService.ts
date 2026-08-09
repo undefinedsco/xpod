@@ -31,6 +31,7 @@ export interface GatewayCredentialStore {
     webId: string;
     deployment: string;
     auth?: AuthContext;
+    provider?: string;
   }): Promise<StoredGatewayCredential[]>;
   recordSuccess?(input: GatewayCredentialHealthRecord): Promise<void>;
   recordFailure?(input: GatewayCredentialHealthRecord): Promise<void>;

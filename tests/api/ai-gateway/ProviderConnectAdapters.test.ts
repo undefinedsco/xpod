@@ -956,6 +956,58 @@ describe('ProviderConnectService', () => {
     })).resolves.toMatchObject({ status: 'revoked', version: 4 });
   });
 
+  it('loads a legacy plaintext custom-provider credential without scanning unrelated Pod rows', async () => {
+    const requestedIds: string[] = [];
+    const repository = new PodConnectedCredentialRepository({
+      providers: ['openai'],
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn() as any,
+        select: vi.fn() as any,
+        resolveRowIri: () => `${WEB_ID.split('#', 1)[0]}#timecc-default`,
+        findById: async (resource: { buildId(input: { id: string }): string }, id: string) => {
+          requestedIds.push(id);
+          if (id === resource.buildId({ id: 'timecc-default' })) {
+            return {
+              id,
+              provider: 'timecc.ttl',
+              service: 'ai',
+              authMode: 'apiKey',
+              status: 'active',
+              apiKey: 'legacy-secret-for-test',
+            };
+          }
+          if (id === resource.buildId({ id: 'timecc' })) {
+            return { id, baseUrl: 'https://timicc.com' };
+          }
+          return null;
+        },
+        updateById: vi.fn(async () => null),
+        update: vi.fn() as any,
+      } as any),
+    });
+
+    const credentials = await repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'timecc',
+    });
+
+    expect(credentials).toEqual([
+      expect.objectContaining({
+        provider: 'timecc',
+        runtimeCredential: { baseUrl: 'https://timicc.com' },
+        encryptedSecret: expect.objectContaining({
+          algorithm: 'PLAINTEXT',
+          provider: 'timecc',
+          webId: WEB_ID,
+        }),
+      }),
+    ]);
+    expect(requestedIds.some((id) => id.endsWith('timecc-default'))).toBe(true);
+  });
+
   it('does not fall back to caller management tokens when service Pod identity is mismatched', async () => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 404 }));
     const ownerMismatch = new Error('Gateway internal Pod token WebID does not match requested owner');
