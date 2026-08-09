@@ -161,6 +161,33 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
       safeBaseUrls: this.safeBaseUrls,
       allowCredentialBaseUrl: this.allowCredentialBaseUrl,
     });
+    const requiresResponsesApi = input.request.tools.some((tool) => tool.type === 'web_search');
+
+    if (requiresResponsesApi) {
+      if (!this.descriptor?.protocols.includes('responses')) {
+        throw new GatewayProtocolError(`${this.provider} does not support Responses web search`, {
+          code: 'invalid_request',
+          status: 400,
+          details: {
+            provider: this.provider,
+            capability: 'responses.web_search',
+          },
+        });
+      }
+      try {
+        yield* parseOpenAiResponsesSse(this.transport.postSse({
+          url: `${baseUrl}/responses`,
+          apiKey: input.apiKey,
+          body: toResponsesBody(input.request),
+          proxy: input.credential?.proxy,
+          signal: input.signal,
+        }), input.apiKey);
+        return;
+      } catch (error) {
+        this.handleTransportError(error, input.apiKey);
+      }
+    }
+
     const model = this.findRegisteredModel(request.model);
     const compatibleBody = toChatCompletionsBody(request, {
       reasoningEffort: this.resolveReasoningEffort(request, model),
