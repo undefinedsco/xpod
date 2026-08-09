@@ -54,6 +54,7 @@ abstract class SubscriptionQuotaAdapter implements ProviderQuotaAdapter {
 
 export class CodexSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public readonly provider = 'openai';
+  public readonly capability = { protocol: 'rolling-quota-windows', profile: 'codex' } as const;
 
   public supports(credential: QuotaCredentialRecord): boolean {
     return credential.offeringId === 'official-subscription' && credential.authMode === 'deviceCodeOAuth';
@@ -73,6 +74,7 @@ export class CodexSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
 
 export class ClaudeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public readonly provider = 'anthropic';
+  public readonly capability = { protocol: 'rolling-quota-windows', profile: 'claude-code' } as const;
 
   public supports(credential: QuotaCredentialRecord): boolean {
     return credential.offeringId === 'official-subscription' && credential.authMode === 'deviceCodeOAuth';
@@ -93,6 +95,7 @@ export class ClaudeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
 
 export class KimiCodeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public readonly provider = 'kimi';
+  public readonly capability = { protocol: 'rolling-quota-windows', profile: 'kimi-code' } as const;
 
   public supports(credential: QuotaCredentialRecord): boolean {
     return credential.offeringId === 'official-subscription'

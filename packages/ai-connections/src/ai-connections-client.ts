@@ -129,7 +129,7 @@ export interface ProviderModelDiscovery {
 export interface AiProviderOffering {
   id: string
   label?: string
-  kind?: string
+  kind?: 'oauth-subscription' | 'api-platform' | 'token-plan'
   lifecycle?: 'active' | 'legacy' | 'unavailable'
   authModes?: Array<'oauth' | 'deviceCode' | 'apiKey' | 'local'>
   runtimeProviderIds?: string[]

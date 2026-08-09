@@ -2489,6 +2489,12 @@ function defaultOfferingFor(provider: string, authMode?: ConnectCredentialRecord
   if (!product) {
     return undefined;
   }
+  if (normalized === normalizeProvider(product.id)) {
+    const preferredKind = authMode === 'apiKey' ? 'api-platform' : 'oauth-subscription';
+    const standardOffering = product.offerings.find((offering) =>
+      offering.kind === preferredKind && offeringMatchesAuthMode(offering.authModes, authMode));
+    if (standardOffering) return standardOffering.id;
+  }
   const runtimeOffering = product.offerings.find((offering) =>
     offering.runtimeProviderIds.some((runtimeProviderId) => normalizeProvider(runtimeProviderId) === normalized)
     && offeringMatchesAuthMode(offering.authModes, authMode));

@@ -91,7 +91,7 @@ describe('AI Connection management client', () => {
         offerings: [
           {
             id: 'pay-as-you-go', label: 'Pay as You Go', productLabel: 'Alibaba Bailian', lifecycle: 'active',
-            kind: 'payAsYouGo', authModes: ['apiKey'], runtimeProviderIds: ['bailian'],
+            kind: 'api-platform', authModes: ['apiKey'], runtimeProviderIds: ['bailian'],
             credentialPrefixHints: ['sk-'], consoleUrl: 'https://console.example',
             subscriptionUrl: 'https://subscribe.example',
             endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.example/v1', region: 'cn' }],
@@ -99,8 +99,8 @@ describe('AI Connection management client', () => {
             quota: { strategy: 'providerApi', url: 'https://quota.example' },
             usagePolicyUrl: 'https://policy.example', region: 'cn',
           },
-          { id: 'coding-plan', label: 'Coding Plan', kind: 'codingPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
-          { id: 'token-plan', label: 'Token Plan', kind: 'tokenPlan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
+          { id: 'coding-plan', label: 'Coding Plan', kind: 'token-plan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-coding-plan'] },
+          { id: 'token-plan', label: 'Token Plan', kind: 'token-plan', authModes: ['apiKey'], runtimeProviderIds: ['bailian-token-plan'] },
         ],
         credentials: [
           { id: 'cred-payg', offeringId: 'pay-as-you-go', authMode: 'apiKey', label: 'PAYG', enabled: true, priority: 10, health: 'healthy', maskedHint: 'sk-...payg', version: 1, apiKey: 'sk-secret-payg' },

@@ -25,6 +25,7 @@ import { quotaSnapshotId, quotaSnapshotResource } from '@undefineds.co/models';
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
+import { createDefaultProviderRegistry } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const OTHER_WEB_ID = 'https://id.example/bob/profile/card#me';
@@ -579,6 +580,68 @@ describe('ProviderQuotaAdapters', () => {
     expect(subscription.source).toBe('openai:subscription');
     expect(apiAdapter.fetch).toHaveBeenCalledTimes(1);
     expect(subscriptionAdapter.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispatches quota handlers from Offering capability metadata instead of Provider identity', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const makeCredential = async (
+      id: string,
+      offeringId: string,
+      authMode: QuotaCredentialRecord['authMode'],
+    ): Promise<QuotaCredentialRecord> => {
+      const credentialIri = `${CREDENTIAL_IRI}#${id}`;
+      return {
+        id,
+        credentialIri,
+        webId: WEB_ID,
+        provider: 'kimi',
+        deployment: 'cloud',
+        authMode,
+        encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, 'kimi', {
+          type: authMode,
+          apiKey: `${id}-secret`,
+          accessToken: `${id}-token`,
+        }),
+        status: 'active',
+        offeringId,
+      };
+    };
+    const adapters = [
+      ['rolling-quota-windows', 'kimi-code', 'oauth-quota'],
+      ['api-balance', 'moonshot', 'api-balance'],
+    ].map(([protocol, profile, source]) => ({
+      provider: 'not-used-for-dispatch',
+      capability: { protocol, profile },
+      fetch: vi.fn(async ({ credential: current, now }) => ({
+        credential: current.credentialIri,
+        status: 'available' as const,
+        windows: [],
+        observedAt: now.toISOString(),
+        expiresAt: now.toISOString(),
+        source,
+      })),
+    }));
+    const credentials = [
+      await makeCredential('oauth', 'official-subscription', 'deviceCodeOAuth'),
+      await makeCredential('plan', 'subscription-key', 'apiKey'),
+      await makeCredential('platform', 'api-platform', 'apiKey'),
+    ];
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      adapters,
+      providerRegistry: createDefaultProviderRegistry(),
+      credentials,
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'official-subscription', refresh: true }))
+      .resolves.toMatchObject({ source: 'oauth-quota' });
+    await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'subscription-key', refresh: true }))
+      .resolves.toMatchObject({ source: 'oauth-quota' });
+    await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'api-platform', refresh: true }))
+      .resolves.toMatchObject({ source: 'api-balance' });
   });
 
   it('resolves quota refresh through the requested provider offering when credentialIri is omitted', async () => {

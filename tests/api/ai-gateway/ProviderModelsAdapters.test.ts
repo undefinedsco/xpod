@@ -16,7 +16,7 @@ import {
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
-import type { ProviderProductDescriptor } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { createDefaultProviderRegistry, type ProviderProductDescriptor } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
 const WEB_ID = 'https://id.example/alice/profile/card#me';
 const CREDENTIAL_IRI = 'https://id.example/alice/.data/settings/credentials.ttl#cloud-kimi';
@@ -73,6 +73,34 @@ async function credential(provider: string, secret: ProviderSecret = { type: 'ap
 }
 
 describe('ProviderModelsAdapters', () => {
+  it('reuses one OpenAI models protocol handler across Provider metadata endpoints', async () => {
+    const fetch = jsonFetch((url) => ({ body: { data: [{ id: url.includes('deepseek') ? 'deepseek-chat' : 'moonshot-v1' }] } }));
+    const registry = createDefaultProviderRegistry();
+    const vault = createVault();
+    const deepseek = { ...await credential('deepseek'), offeringId: 'api-platform' };
+    const kimi = { ...await credential('kimi'), offeringId: 'api-platform' };
+    const handler = new OpenAiCompatibleModelsAdapter({
+      protocol: 'openai-models',
+      registry,
+      fetchImpl: fetch,
+    });
+    const service = new ProviderModelsService({
+      vault,
+      providerRegistry: registry,
+      adapters: [handler],
+      credentials: [deepseek, kimi],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    await expect(service.list({ webId: WEB_ID, deployment: 'cloud', provider: 'deepseek' }))
+      .resolves.toMatchObject({ models: [{ id: 'deepseek-chat' }] });
+    await expect(service.list({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi' }))
+      .resolves.toMatchObject({ models: [{ id: 'moonshot-v1' }] });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenNthCalledWith(1, 'https://api.deepseek.com/v1/models', expect.any(Object));
+    expect(fetch).toHaveBeenNthCalledWith(2, 'https://api.moonshot.ai/v1/models', expect.any(Object));
+  });
+
   it('discovers isolated model catalogs from the selected offering endpoint with bearer auth', async () => {
     const product: ProviderProductDescriptor = {
       id: 'bailian',

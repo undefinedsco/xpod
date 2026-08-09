@@ -261,7 +261,7 @@ describe('AI Connection settings', () => {
       openai: {
         id: 'openai', name: 'OpenAI', status: 'unconfigured', credentials: [], selectedModels: [],
         offerings: [{
-          id: 'api-platform', label: 'API Platform', productLabel: 'OpenAI Platform', kind: 'payAsYouGo',
+          id: 'api-platform', productLabel: 'OpenAI Platform', kind: 'api-platform',
           authModes: ['apiKey'],
           endpoints: [
             { protocol: 'responses', baseUrl: 'https://api.openai.com/v1' },
@@ -276,9 +276,9 @@ describe('AI Connection settings', () => {
     }} />)
 
     expect(await screen.findByText('OpenAI Platform')).toBeTruthy()
-    expect(screen.getByText('按量付费')).toBeTruthy()
-    expect(screen.getByText(/Responses.*Chat Completions/)).toBeTruthy()
-    expect(screen.getByText('https://api.openai.com/v1')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'API 平台' })).toBeTruthy()
+    expect(screen.queryByText(/Responses.*Chat Completions/)).toBeNull()
+    expect(screen.queryByText('https://api.openai.com/v1')).toBeNull()
     expect(screen.getByRole('link', { name: '控制台' })).toHaveProperty('href', 'https://platform.openai.com/api-keys')
     expect(screen.getByRole('link', { name: '订阅与账单' })).toHaveProperty('href', 'https://platform.openai.com/billing')
     expect(screen.getByRole('link', { name: '额度与用量' })).toHaveProperty('href', 'https://platform.openai.com/usage')

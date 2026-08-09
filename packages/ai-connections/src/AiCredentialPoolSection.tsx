@@ -214,7 +214,6 @@ export function AiCredentialPoolSection({
 }
 
 function OfferingItem({ offering, children }: { offering: AiProviderOffering; children: ReactNode }) {
-  const endpoints = offering.endpoints ?? []
   return (
     <section className="space-y-3 rounded-lg border border-border/50 bg-card p-3" aria-labelledby={`offering-${offering.id}`}>
       <div className="flex items-center justify-between gap-3">
@@ -227,14 +226,6 @@ function OfferingItem({ offering, children }: { offering: AiProviderOffering; ch
         </div>
         <span className="text-xs text-muted-foreground">{authMethodLabel(offering)}</span>
       </div>
-      {endpoints.length ? (
-        <div className="space-y-1 rounded-md bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground">
-          <div>{endpoints.map((endpoint) => protocolLabel(endpoint.protocol)).join(' · ')}</div>
-          {[...new Set(endpoints.map((endpoint) => endpoint.baseUrl))].map((baseUrl) => (
-            <code key={baseUrl} className="block break-all font-mono text-[11px] text-foreground/70">{baseUrl}</code>
-          ))}
-        </div>
-      ) : null}
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
         {offering.consoleUrl ? <OfferingLink href={offering.consoleUrl} label="控制台" /> : null}
         {offering.subscriptionUrl ? <OfferingLink href={offering.subscriptionUrl} label="订阅与账单" /> : null}
@@ -251,18 +242,10 @@ function OfferingLink({ href, label }: { href: string; label: string }) {
 }
 
 function offeringKindLabel(kind: string): string {
-  if (kind === 'payAsYouGo') return '按量付费'
-  if (kind === 'officialSubscription') return '官方订阅'
-  if (kind === 'tokenPlan') return 'Token 套餐'
-  if (kind === 'codingPlan') return '编码套餐'
+  if (kind === 'oauth-subscription') return '账号订阅'
+  if (kind === 'api-platform') return 'API 平台'
+  if (kind === 'token-plan') return 'Token 套餐'
   return kind
-}
-
-function protocolLabel(protocol: string): string {
-  if (protocol === 'responses') return 'Responses'
-  if (protocol === 'chatCompletions') return 'Chat Completions'
-  if (protocol === 'anthropic') return 'Anthropic Messages'
-  return protocol
 }
 
 function authMethodLabel(offering: AiProviderOffering): string {

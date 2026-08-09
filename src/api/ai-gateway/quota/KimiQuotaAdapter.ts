@@ -18,6 +18,7 @@ export interface KimiQuotaAdapterOptions {
 
 export class KimiQuotaAdapter implements ProviderQuotaAdapter {
   public readonly provider = 'kimi';
+  public readonly capability = { protocol: 'api-balance', profile: 'moonshot' } as const;
   private readonly fetchFn: typeof fetch;
 
   public constructor(options: KimiQuotaAdapterOptions = {}) {

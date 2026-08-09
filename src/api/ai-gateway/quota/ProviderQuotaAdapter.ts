@@ -15,6 +15,8 @@ import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { InternalPodAccessTokenProvider } from '../auth/PodGatewayAccessKeyRepository';
 import type { ConnectCredentialRecord, PodCredentialRepository } from '../connect';
 import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
+import type { ProviderRegistry } from '../providers/ProviderRegistry';
+import { QuotaCapabilityRegistry, type QuotaHandlerCapability } from './QuotaCapabilityRegistry';
 
 export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
 
@@ -58,6 +60,7 @@ export interface ProviderQuotaFetchInput {
 
 export interface ProviderQuotaAdapter {
   readonly provider: string;
+  readonly capability?: QuotaHandlerCapability;
   supports?(credential: QuotaCredentialRecord): boolean;
   fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot>;
 }
@@ -120,6 +123,7 @@ export interface ProviderQuotaServiceOptions {
   repository: QuotaSnapshotRepository;
   vault: CredentialVault;
   adapters: ProviderQuotaAdapter[];
+  providerRegistry?: ProviderRegistry;
   credentialRepository?: PodCredentialRepository;
   credentials?: QuotaCredentialRecord[];
   now?: () => Date;
@@ -129,6 +133,8 @@ export class ProviderQuotaService {
   private readonly repository: QuotaSnapshotRepository;
   private readonly vault: CredentialVault;
   private readonly adapters = new Map<string, ProviderQuotaAdapter[]>();
+  private readonly providerRegistry?: ProviderRegistry;
+  private readonly capabilityRegistry: QuotaCapabilityRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: QuotaCredentialRecord[];
   private readonly now: () => Date;
@@ -137,6 +143,8 @@ export class ProviderQuotaService {
   public constructor(options: ProviderQuotaServiceOptions) {
     this.repository = options.repository;
     this.vault = options.vault;
+    this.providerRegistry = options.providerRegistry;
+    this.capabilityRegistry = new QuotaCapabilityRegistry(options.adapters);
     this.credentialRepository = options.credentialRepository;
     this.credentials = options.credentials ?? [];
     this.now = options.now ?? (() => new Date());
@@ -369,6 +377,9 @@ export class ProviderQuotaService {
   }
 
   private findAdapter(provider: string, credential: QuotaCredentialRecord): ProviderQuotaAdapter | undefined {
+    if (this.providerRegistry && credential.offeringId) {
+      return this.capabilityRegistry.resolve(this.providerRegistry, credential);
+    }
     return this.adapters.get(provider)?.find((adapter) => adapter.supports?.(credential) ?? true);
   }
 

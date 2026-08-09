@@ -4,6 +4,7 @@ import { apiKeyFromSecret } from '../quota/ProviderQuotaAdapter';
 import type {
   ProviderOfferingDescriptor,
   ProviderProductDescriptor,
+  ProviderRegistry,
 } from '../providers/ProviderRegistry';
 
 export interface DiscoveredProviderModel {
@@ -34,7 +35,8 @@ export interface ProviderModelsFetchInput {
 }
 
 export interface ProviderModelsAdapter {
-  readonly provider: string;
+  readonly provider?: string;
+  readonly protocol?: string;
   fetch(input: ProviderModelsFetchInput): Promise<DiscoveredProviderModel[]>;
 }
 
@@ -51,24 +53,30 @@ export class ProviderModelsFetchError extends Error {
 }
 
 export interface OpenAiCompatibleModelsAdapterOptions {
-  provider: string;
-  defaultBaseUrl: string;
+  provider?: string;
+  protocol?: 'openai-models';
+  registry?: ProviderRegistry;
+  defaultBaseUrl?: string;
   safeBaseUrls?: string[];
   product?: ProviderProductDescriptor;
   fetchImpl?: typeof fetch;
 }
 
 export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
-  public readonly provider: string;
-  private readonly defaultBaseUrl: string;
+  public readonly provider?: string;
+  public readonly protocol: string;
+  private readonly registry?: ProviderRegistry;
+  private readonly defaultBaseUrl?: string;
   private readonly safeBaseUrls: string[];
   private readonly product?: ProviderProductDescriptor;
   private readonly fetchImpl: typeof fetch;
 
   public constructor(options: OpenAiCompatibleModelsAdapterOptions) {
     this.provider = options.provider;
+    this.protocol = options.protocol ?? 'openai-models';
+    this.registry = options.registry;
     this.defaultBaseUrl = options.defaultBaseUrl;
-    this.safeBaseUrls = options.safeBaseUrls ?? [options.defaultBaseUrl];
+    this.safeBaseUrls = options.safeBaseUrls ?? (options.defaultBaseUrl ? [options.defaultBaseUrl] : []);
     this.product = options.product;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
@@ -78,11 +86,15 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
     if (!apiKey) {
       throw new Error('models_secret_missing');
     }
+    const product = this.registry?.getProduct(input.credential.provider) ?? this.product;
+    const provider = this.registry?.getProvider(input.credential.provider);
     const target = resolveOfferingDiscoveryTarget(
       input.credential,
-      this.product,
-      this.defaultBaseUrl,
-      this.safeBaseUrls,
+      product,
+      this.defaultBaseUrl ?? provider?.defaultBaseUrl ?? '',
+      this.registry
+        ? [ ...(provider?.safeBaseUrls ?? []), ...(product?.offerings.flatMap((offering) => offering.endpoints.map((endpoint) => endpoint.baseUrl)) ?? []) ]
+        : this.safeBaseUrls,
     );
     const response = await this.fetchImpl(`${target.baseUrl}${target.path}`, {
       method: 'GET',
@@ -174,6 +186,7 @@ export const ANTHROPIC_MODELS_VERSION = '2023-06-01';
 
 export class AnthropicModelsAdapter implements ProviderModelsAdapter {
   public readonly provider = 'anthropic';
+  public readonly protocol = 'anthropic-models';
   private readonly defaultBaseUrl: string;
   private readonly safeBaseUrls: string[];
   private readonly product?: ProviderProductDescriptor;

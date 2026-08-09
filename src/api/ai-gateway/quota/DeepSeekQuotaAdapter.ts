@@ -18,6 +18,7 @@ export interface DeepSeekQuotaAdapterOptions {
 
 export class DeepSeekQuotaAdapter implements ProviderQuotaAdapter {
   public readonly provider = 'deepseek';
+  public readonly capability = { protocol: 'api-balance', profile: 'deepseek' } as const;
   private readonly fetchFn: typeof fetch;
 
   public constructor(options: DeepSeekQuotaAdapterOptions = {}) {

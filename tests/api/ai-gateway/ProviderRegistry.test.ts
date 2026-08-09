@@ -18,6 +18,47 @@ function endpointMap(offering: ProviderOfferingDescriptor): Record<string, strin
 }
 
 describe('ProviderRegistry provider catalog', () => {
+  it('uses only the three standardized Offering kinds', () => {
+    const kinds = createDefaultProviderRegistry()
+      .listProducts()
+      .flatMap((product) => product.offerings.map((offering) => offering.kind));
+
+    expect(new Set(kinds)).toEqual(new Set([
+      'oauth-subscription',
+      'api-platform',
+      'token-plan',
+    ]));
+  });
+
+  it('composes auth and upstream capabilities independently on every Offering', () => {
+    const products = createDefaultProviderRegistry().listProducts();
+
+    for (const product of products) {
+      for (const offering of product.offerings) {
+        expect(offering.auth.length).toBeGreaterThan(0);
+        expect(offering.upstream.length).toBeGreaterThan(0);
+        expect(new Set(offering.auth.map((capability) => capability.protocol)).size)
+          .toBe(offering.auth.length);
+        expect(new Set(offering.upstream.map((capability) => `${capability.capability}:${capability.protocol}`)).size)
+          .toBe(offering.upstream.length);
+      }
+    }
+  });
+
+  it('separates Kimi OAuth, subscription key, and API platform into distinct Offerings', () => {
+    const kimi = createDefaultProviderRegistry().requireProduct('kimi');
+
+    expect(kimi.offerings.map((offering) => ({
+      id: offering.id,
+      kind: offering.kind,
+      auth: offering.auth.map((capability) => capability.protocol),
+    }))).toEqual([
+      { id: 'official-subscription', kind: 'oauth-subscription', auth: ['oauth-device-code'] },
+      { id: 'subscription-key', kind: 'token-plan', auth: ['subscription-key'] },
+      { id: 'api-platform', kind: 'api-platform', auth: ['api-key'] },
+    ]);
+  });
+
   it('groups offerings under one provider product', () => {
     const registry = createDefaultProviderRegistry();
 
@@ -86,7 +127,11 @@ describe('ProviderRegistry provider catalog', () => {
     expect(kimi.offerings).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'official-subscription',
-        authModes: ['oauth', 'apiKey'],
+        authModes: ['oauth'],
+      }),
+      expect.objectContaining({
+        id: 'subscription-key',
+        authModes: ['apiKey'],
         credentialPrefixHints: ['sk-kimi-'],
       }),
       expect.objectContaining({ id: 'api-platform', authModes: ['apiKey'] }),
@@ -99,9 +144,8 @@ describe('ProviderRegistry provider catalog', () => {
     const apiPlatform = offeringById(kimi.offerings, 'api-platform');
 
     expect(officialSubscription).toMatchObject({
-      kind: 'officialSubscription',
-      authModes: ['oauth', 'apiKey'],
-      credentialPrefixHints: ['sk-kimi-'],
+      kind: 'oauth-subscription',
+      authModes: ['oauth'],
       oauthIntegrationId: 'kimi-code',
     });
     expect(endpointMap(officialSubscription)).toEqual({
@@ -109,7 +153,7 @@ describe('ProviderRegistry provider catalog', () => {
       anthropic: 'https://api.kimi.com/coding/',
     });
     expect(apiPlatform).toMatchObject({
-      kind: 'payAsYouGo',
+      kind: 'api-platform',
       authModes: ['apiKey'],
     });
     expect(apiPlatform.oauthIntegrationId).toBeUndefined();
@@ -129,7 +173,7 @@ describe('ProviderRegistry provider catalog', () => {
     }))).toEqual([
       {
         id: 'pay-as-you-go',
-        kind: 'payAsYouGo',
+        kind: 'api-platform',
         authModes: ['apiKey'],
         endpoints: {
           chatCompletions: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
@@ -138,7 +182,7 @@ describe('ProviderRegistry provider catalog', () => {
       },
       {
         id: 'token-plan',
-        kind: 'tokenPlan',
+        kind: 'token-plan',
         authModes: ['apiKey'],
         endpoints: {
           chatCompletions: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
@@ -147,7 +191,7 @@ describe('ProviderRegistry provider catalog', () => {
       },
       {
         id: 'token-plan-team',
-        kind: 'tokenPlan',
+        kind: 'token-plan',
         authModes: ['apiKey'],
         endpoints: {
           chatCompletions: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
@@ -156,7 +200,7 @@ describe('ProviderRegistry provider catalog', () => {
       },
       {
         id: 'coding-plan',
-        kind: 'codingPlan',
+        kind: 'token-plan',
         authModes: ['apiKey'],
         endpoints: {
           chatCompletions: 'https://coding.dashscope.aliyuncs.com/v1',

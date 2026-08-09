@@ -497,7 +497,13 @@ export class AiGatewayService {
         },
       });
     }
+    const standardOffering = credentialProviderId === normalizeProviderId(product.id)
+      ? product.offerings.find((candidate) =>
+        candidate.kind === (credential.authMode === 'apiKey' ? 'api-platform' : 'oauth-subscription')
+        && offeringMatchesCredentialAuthMode(candidate, credential.authMode))
+      : undefined;
     const offering = explicitOffering
+      ?? standardOffering
       ?? product.offerings.find((candidate) =>
         offeringMatchesCredentialAuthMode(candidate, credential.authMode)
         && candidate.runtimeProviderIds.some((runtimeProviderId) =>
@@ -508,7 +514,8 @@ export class AiGatewayService {
       ?? product.offerings.find((candidate) =>
         candidate.runtimeProviderIds.some((runtimeProviderId) =>
           normalizeProviderId(runtimeProviderId) === credentialProviderId));
-    const endpointProtocol = offering?.kind === 'codingPlan' ? 'anthropic' : protocol;
+    const isLegacyCodingPlan = offering?.id === 'coding-plan';
+    const endpointProtocol = isLegacyCodingPlan ? 'anthropic' : protocol;
     const endpoint = offering?.endpoints.find((candidate) => candidate.protocol === endpointProtocol);
     if (!endpoint) {
       return undefined;
@@ -516,8 +523,8 @@ export class AiGatewayService {
     return {
       baseUrl: endpoint.baseUrl,
       ...(endpoint.region ? { region: endpoint.region } : {}),
-      ...(offering?.kind === 'codingPlan' ? { keyType: 'codingPlan' } : {}),
-      ...(offering?.kind === 'tokenPlan' ? { keyType: 'tokenPlan' } : {}),
+      ...(isLegacyCodingPlan ? { keyType: 'codingPlan' } : {}),
+      ...(offering?.kind === 'token-plan' && !isLegacyCodingPlan ? { keyType: 'tokenPlan' } : {}),
     };
   }
 

@@ -529,27 +529,28 @@ function stringListValue(value: unknown): string[] {
 function providerOfferings(provider: AiConnectionsProvider): AiProviderOffering[] {
   if (provider === 'kimi') {
     return [
-      { id: 'official-subscription', label: '官方订阅', kind: 'officialSubscription', lifecycle: 'active', authModes: ['oauth'] },
-      { id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', lifecycle: 'active', authModes: ['apiKey'] },
+      { id: 'official-subscription', label: '官方订阅', kind: 'oauth-subscription', lifecycle: 'active', authModes: ['oauth'] },
+      { id: 'subscription-key', label: 'Token 套餐', kind: 'token-plan', lifecycle: 'active', authModes: ['apiKey'] },
+      { id: 'api-platform', label: 'API 平台', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] },
     ];
   }
   if (provider === 'bailian') {
     const consoleUrl = 'https://bailian.console.aliyun.com/';
     const usagePolicyUrl = 'https://help.aliyun.com/zh/model-studio/';
     return [
-      bailianOffering({ id: 'pay-as-you-go', label: 'Pay as You Go', kind: 'payAsYouGo', runtimeProviderIds: ['bailian'], credentialPrefixHints: ['sk-'], region: 'cn', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'console', consoleUrl, usagePolicyUrl }),
-      bailianOffering({ id: 'token-plan', label: 'Token Plan Personal', kind: 'tokenPlan', runtimeProviderIds: ['bailian-token-plan'], credentialPrefixHints: ['sk-'], region: 'cn-beijing', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
-      bailianOffering({ id: 'token-plan-team', label: 'Token Plan Team', kind: 'tokenPlan', runtimeProviderIds: ['bailian-token-plan'], credentialPrefixHints: ['sk-'], region: 'cn-beijing', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
-      bailianOffering({ id: 'coding-plan', label: 'Coding Plan Pro', kind: 'codingPlan', runtimeProviderIds: ['bailian-coding-plan'], credentialPrefixHints: ['sk-sp-'], region: 'cn', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
+      bailianOffering({ id: 'pay-as-you-go', label: 'Pay as You Go', kind: 'api-platform', runtimeProviderIds: ['bailian'], credentialPrefixHints: ['sk-'], region: 'cn', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'console', consoleUrl, usagePolicyUrl }),
+      bailianOffering({ id: 'token-plan', label: 'Token Plan Personal', kind: 'token-plan', runtimeProviderIds: ['bailian-token-plan'], credentialPrefixHints: ['sk-'], region: 'cn-beijing', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
+      bailianOffering({ id: 'token-plan-team', label: 'Token Plan Team', kind: 'token-plan', runtimeProviderIds: ['bailian-token-plan'], credentialPrefixHints: ['sk-'], region: 'cn-beijing', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
+      bailianOffering({ id: 'coding-plan', label: 'Coding Plan Pro', kind: 'token-plan', runtimeProviderIds: ['bailian-coding-plan'], credentialPrefixHints: ['sk-sp-'], region: 'cn', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', quotaStrategy: 'subscription', consoleUrl, usagePolicyUrl }),
     ];
   }
-  return [{ id: 'api-platform', label: 'API 平台', kind: 'payAsYouGo', lifecycle: 'active', authModes: ['apiKey'] }];
+  return [{ id: 'api-platform', label: 'API 平台', kind: 'api-platform', lifecycle: 'active', authModes: ['apiKey'] }];
 }
 
 function bailianOffering(input: {
   id: string;
   label: string;
-  kind: string;
+  kind: NonNullable<AiProviderOffering['kind']>;
   runtimeProviderIds: string[];
   credentialPrefixHints: string[];
   region: string;

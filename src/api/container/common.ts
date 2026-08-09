@@ -51,6 +51,7 @@ import {
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
+  UnsupportedQuotaAdapter,
 } from '../ai-gateway/quota';
 import {
   AnthropicModelsAdapter,
@@ -350,7 +351,9 @@ export function registerCommonServices(
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
         vault: credentialVaultForConfig(config),
+        providerRegistry: cradle.gatewayProviderRegistry,
         adapters: [
+          new UnsupportedQuotaAdapter(),
           new CodexSubscriptionQuotaAdapter(),
           new OpenAiQuotaAdapter(),
           new ClaudeSubscriptionQuotaAdapter(),
@@ -375,7 +378,12 @@ export function registerCommonServices(
       return new ProviderModelsService({
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
         vault: credentialVaultForConfig(config),
+        providerRegistry: registry,
         adapters: [
+          new OpenAiCompatibleModelsAdapter({
+            protocol: 'openai-models',
+            registry,
+          }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',
             defaultBaseUrl: 'https://api.openai.com/v1',

@@ -2,6 +2,7 @@ import type { GatewayDeployment } from '../auth/GatewayApiKey';
 import type { AuthContext } from '../../auth/AuthContext';
 import type { PodCredentialRepository } from '../connect';
 import type { CredentialVault } from '../credentials/CredentialVault';
+import type { ProviderRegistry } from '../providers/ProviderRegistry';
 import { normalizeProvider } from '../quota/ProviderQuotaAdapter';
 import {
   type DiscoveredProviderModel,
@@ -21,6 +22,7 @@ export interface ProviderModelDiscovery {
 export interface ProviderModelsServiceOptions {
   vault: CredentialVault;
   adapters: ProviderModelsAdapter[];
+  providerRegistry?: ProviderRegistry;
   credentialRepository?: PodCredentialRepository;
   credentials?: ModelsCredentialRecord[];
   now?: () => Date;
@@ -29,17 +31,23 @@ export interface ProviderModelsServiceOptions {
 export class ProviderModelsService {
   private readonly vault: CredentialVault;
   private readonly adapters = new Map<string, ProviderModelsAdapter>();
+  private readonly protocolHandlers = new Map<string, ProviderModelsAdapter>();
+  private readonly providerRegistry?: ProviderRegistry;
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: ModelsCredentialRecord[];
   private readonly now: () => Date;
 
   public constructor(options: ProviderModelsServiceOptions) {
     this.vault = options.vault;
+    this.providerRegistry = options.providerRegistry;
     this.credentialRepository = options.credentialRepository;
     this.credentials = options.credentials ?? [];
     this.now = options.now ?? (() => new Date());
     for (const adapter of options.adapters) {
-      this.adapters.set(normalizeProvider(adapter.provider), adapter);
+      if (adapter.provider) this.adapters.set(normalizeProvider(adapter.provider), adapter);
+      if (adapter.protocol && !this.protocolHandlers.has(adapter.protocol)) {
+        this.protocolHandlers.set(adapter.protocol, adapter);
+      }
     }
   }
 
@@ -52,15 +60,13 @@ export class ProviderModelsService {
     signal?: AbortSignal;
   }): Promise<ProviderModelDiscovery> {
     const provider = normalizeProvider(input.provider);
-    const adapter = this.adapters.get(provider);
-    if (!adapter) {
+    if (!this.providerRegistry && !this.adapters.has(provider)) {
       throw new Error(`models_adapter_not_found:${provider}`);
     }
     if (!input.credentialIri && this.credentialRepository) {
       return this.listAcrossCredentials({
         ...input,
         provider,
-        adapter,
       });
     }
     const credential = await this.resolveCredential({
@@ -70,6 +76,7 @@ export class ProviderModelsService {
       credentialIri: input.credentialIri,
       auth: input.auth,
     });
+    const adapter = this.findAdapter(provider, credential);
     const secret = await this.vault.open(
       { webId: input.webId },
       credential.credentialIri,
@@ -100,10 +107,10 @@ export class ProviderModelsService {
     signal?: AbortSignal;
   }): Promise<ProviderModelDiscovery> {
     const provider = normalizeProvider(input.provider);
-    const adapter = this.adapters.get(provider);
-    if (!adapter) throw new Error(`models_adapter_not_found:${provider}`);
-    const models = await adapter.fetch({
-      credential: {
+    if (!this.providerRegistry && !this.adapters.has(provider)) {
+      throw new Error(`models_adapter_not_found:${provider}`);
+    }
+    const credential: ModelsCredentialRecord = {
         id: input.credentialId,
         credentialIri: input.credentialId,
         webId: input.webId,
@@ -115,7 +122,10 @@ export class ProviderModelsService {
         reauthRequired: false,
         encryptedSecret: {} as never,
         baseUrl: input.baseUrl,
-      },
+      };
+    const adapter = this.findAdapter(provider, credential);
+    const models = await adapter.fetch({
+      credential,
       secret: { type: 'apiKey', apiKey: input.apiKey },
       signal: input.signal,
     });
@@ -132,7 +142,6 @@ export class ProviderModelsService {
     webId: string;
     deployment: GatewayDeployment;
     provider: string;
-    adapter: ProviderModelsAdapter;
     auth?: AuthContext;
     signal?: AbortSignal;
   }): Promise<ProviderModelDiscovery> {
@@ -157,7 +166,7 @@ export class ProviderModelsService {
       );
       return {
         credential,
-        models: await input.adapter.fetch({
+        models: await this.findAdapter(input.provider, credential).fetch({
           credential,
           secret,
           signal: input.signal,
@@ -236,6 +245,20 @@ export class ProviderModelsService {
       observedAt: this.now().toISOString(),
       source,
     };
+  }
+
+  private findAdapter(provider: string, credential: ModelsCredentialRecord): ProviderModelsAdapter {
+    if (this.providerRegistry && credential.offeringId) {
+      const offering = this.providerRegistry.requireOffering(provider, credential.offeringId);
+      const capability = offering.upstream.find((candidate) => candidate.capability === 'models');
+      if (!capability) throw new Error(`models_capability_not_found:${provider}/${credential.offeringId}`);
+      const handler = this.protocolHandlers.get(capability.protocol);
+      if (!handler) throw new Error(`models_protocol_handler_not_found:${capability.protocol}`);
+      return handler;
+    }
+    const adapter = this.adapters.get(provider);
+    if (!adapter) throw new Error(`models_adapter_not_found:${provider}`);
+    return adapter;
   }
 
   private async resolveCredential(input: {
