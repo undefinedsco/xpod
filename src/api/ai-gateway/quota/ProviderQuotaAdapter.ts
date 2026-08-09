@@ -58,6 +58,7 @@ export interface ProviderQuotaFetchInput {
 
 export interface ProviderQuotaAdapter {
   readonly provider: string;
+  supports?(credential: QuotaCredentialRecord): boolean;
   fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot>;
 }
 
@@ -127,7 +128,7 @@ export interface ProviderQuotaServiceOptions {
 export class ProviderQuotaService {
   private readonly repository: QuotaSnapshotRepository;
   private readonly vault: CredentialVault;
-  private readonly adapters = new Map<string, ProviderQuotaAdapter>();
+  private readonly adapters = new Map<string, ProviderQuotaAdapter[]>();
   private readonly credentialRepository?: PodCredentialRepository;
   private readonly credentials: QuotaCredentialRecord[];
   private readonly now: () => Date;
@@ -140,7 +141,8 @@ export class ProviderQuotaService {
     this.credentials = options.credentials ?? [];
     this.now = options.now ?? (() => new Date());
     for (const adapter of options.adapters) {
-      this.adapters.set(normalizeProvider(adapter.provider), adapter);
+      const provider = normalizeProvider(adapter.provider);
+      this.adapters.set(provider, [...(this.adapters.get(provider) ?? []), adapter]);
     }
   }
 
@@ -175,9 +177,6 @@ export class ProviderQuotaService {
 
   public async statusCallerOwned(input: CallerOwnedQuotaInput): Promise<NormalizedQuotaSnapshot> {
     const provider = normalizeProvider(input.provider);
-    const adapter = this.adapters.get(provider);
-    if (!adapter) throw new Error(`quota_adapter_not_found:${provider}`);
-    const now = input.now ?? this.now();
     const credential = {
       id: input.credentialId,
       credentialIri: input.credentialIri,
@@ -190,6 +189,9 @@ export class ProviderQuotaService {
       offeringId: input.offeringId,
       baseUrl: input.baseUrl,
     };
+    const adapter = this.findAdapter(provider, credential);
+    if (!adapter) throw new Error(`quota_adapter_not_found:${provider}`);
+    const now = input.now ?? this.now();
     try {
       return await adapter.fetch({ credential, secret: input.secret, now, signal: input.signal });
     } catch (error) {
@@ -243,7 +245,7 @@ export class ProviderQuotaService {
       }
     }
 
-    const adapter = this.adapters.get(provider);
+    const adapter = this.findAdapter(provider, credential);
     if (!adapter) {
       throw new Error(`quota_adapter_not_found:${provider}`);
     }
@@ -288,7 +290,7 @@ export class ProviderQuotaService {
       credentialIri: input.input.credentialIri,
       auth: input.input.auth,
     });
-    const adapter = this.adapters.get(input.provider);
+    const adapter = this.findAdapter(input.provider, credential);
     if (!adapter) {
       throw new Error(`quota_adapter_not_found:${input.provider}`);
     }
@@ -364,6 +366,10 @@ export class ProviderQuotaService {
       snapshot,
       auth: input.auth,
     });
+  }
+
+  private findAdapter(provider: string, credential: QuotaCredentialRecord): ProviderQuotaAdapter | undefined {
+    return this.adapters.get(provider)?.find((adapter) => adapter.supports?.(credential) ?? true);
   }
 
   private async resolveCredential(input: {

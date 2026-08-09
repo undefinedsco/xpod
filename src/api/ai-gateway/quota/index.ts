@@ -22,3 +22,8 @@ export { AnthropicQuotaAdapter } from './AnthropicQuotaAdapter';
 export { KimiQuotaAdapter } from './KimiQuotaAdapter';
 export { BailianQuotaAdapter } from './BailianQuotaAdapter';
 export { DeepSeekQuotaAdapter } from './DeepSeekQuotaAdapter';
+export {
+  ClaudeSubscriptionQuotaAdapter,
+  CodexSubscriptionQuotaAdapter,
+  KimiCodeSubscriptionQuotaAdapter,
+} from './SubscriptionQuotaAdapters';

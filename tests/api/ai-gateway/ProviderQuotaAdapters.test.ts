@@ -8,9 +8,12 @@ import type { CredentialVault, ProviderSecret } from '../../../src/api/ai-gatewa
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
+  ClaudeSubscriptionQuotaAdapter,
+  CodexSubscriptionQuotaAdapter,
   DeepSeekQuotaAdapter,
   InMemoryQuotaSnapshotRepository,
   KimiQuotaAdapter,
+  KimiCodeSubscriptionQuotaAdapter,
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
@@ -275,6 +278,96 @@ describe('ProviderQuotaAdapters', () => {
     });
   });
 
+  it('normalizes Codex subscription windows by their actual durations', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://chatgpt.com/backend-api/wham/usage');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer codex-oauth-token');
+      return {
+        body: {
+          rate_limit: {
+            primary_window: { used_percent: 25, reset_at: 1_786_320_000, limit_window_seconds: 18_000 },
+            secondary_window: { used_percent: 60, reset_at: 1_786_838_400, limit_window_seconds: 604_800 },
+          },
+        },
+      };
+    });
+    const current = {
+      ...withOffering(await credential('openai'), 'official-subscription'),
+      authMode: 'deviceCodeOAuth' as const,
+    };
+
+    const snapshot = await new CodexSubscriptionQuotaAdapter({ fetch }).fetch({
+      credential: current,
+      secret: { type: 'deviceCodeOAuth', accessToken: 'codex-oauth-token' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual([
+      { name: 'five-hour', used: 25, limit: 100, remaining: 75, resetsAt: '2026-08-10T00:00:00.000Z' },
+      { name: 'weekly', used: 60, limit: 100, remaining: 40, resetsAt: '2026-08-16T00:00:00.000Z' },
+    ]);
+  });
+
+  it('normalizes Claude Code OAuth five-hour, weekly, and model windows', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.anthropic.com/api/oauth/usage');
+      expect(new Headers(init?.headers).get('anthropic-beta')).toContain('oauth-2025-04-20');
+      return {
+        body: {
+          five_hour: { utilization: 41.5, resets_at: '2026-08-09T05:00:00.000Z' },
+          seven_day: { utilization: 20, resets_at: '2026-08-16T00:00:00.000Z' },
+          seven_day_sonnet: { utilization: 12, resets_at: '2026-08-16T00:00:00.000Z' },
+        },
+      };
+    });
+    const current = {
+      ...withOffering(await credential('anthropic'), 'official-subscription'),
+      authMode: 'deviceCodeOAuth' as const,
+    };
+
+    const snapshot = await new ClaudeSubscriptionQuotaAdapter({ fetch }).fetch({
+      credential: current,
+      secret: { type: 'deviceCodeOAuth', accessToken: 'claude-oauth-token' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual([
+      { name: 'five-hour', used: 41.5, limit: 100, remaining: 58.5, resetsAt: '2026-08-09T05:00:00.000Z' },
+      { name: 'weekly', used: 20, limit: 100, remaining: 80, resetsAt: '2026-08-16T00:00:00.000Z' },
+      { name: 'weekly-sonnet', used: 12, limit: 100, remaining: 88, resetsAt: '2026-08-16T00:00:00.000Z' },
+    ]);
+  });
+
+  it('normalizes Kimi Code managed-plan five-hour and weekly usage', async () => {
+    const fetch = jsonFetch((url) => {
+      expect(url).toBe('https://api.kimi.com/coding/v1/usages');
+      return {
+        body: {
+          usage: { used: '40', limit: '100', resetTime: '2026-08-16T00:00:00.000Z' },
+          limits: [{
+            window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' },
+            detail: { used: '10', limit: '50', resetTime: '2026-08-09T05:00:00.000Z' },
+          }],
+        },
+      };
+    });
+    const current = {
+      ...withOffering(await credential('kimi'), 'official-subscription'),
+      authMode: 'apiKey' as const,
+    };
+
+    const snapshot = await new KimiCodeSubscriptionQuotaAdapter({ fetch }).fetch({
+      credential: current,
+      secret: { type: 'apiKey', apiKey: 'sk-kimi-subscription-token' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    expect(snapshot.windows).toEqual([
+      { name: 'five-hour', used: 10, limit: 50, remaining: 40, resetsAt: '2026-08-09T05:00:00.000Z' },
+      { name: 'weekly', used: 40, limit: 100, remaining: 60, resetsAt: '2026-08-16T00:00:00.000Z' },
+    ]);
+  });
+
   it('records 429 as cooldown metadata without fabricating remaining quota', async () => {
     const fetch = jsonFetch(() => ({
       status: 429,
@@ -418,6 +511,74 @@ describe('ProviderQuotaAdapters', () => {
     expect(cachedToken.source).toBe('bailian:token-plan:quota');
     expect(repository.rows).toHaveLength(2);
     expect(new Set(repository.rows.map((row) => row.id)).size).toBe(2);
+  });
+
+  it('selects quota adapters by provider offering and credential auth mode', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const apiCredential = withOffering(await credential('openai'), 'api-platform');
+    const oauthCredentialIri = `${CREDENTIAL_IRI}#openai-subscription`;
+    const oauthCredential: QuotaCredentialRecord = {
+      ...withOffering(await credential('openai'), 'official-subscription'),
+      id: 'openai-subscription',
+      credentialIri: oauthCredentialIri,
+      authMode: 'deviceCodeOAuth',
+      encryptedSecret: await vault.seal({ webId: WEB_ID }, oauthCredentialIri, 'openai', {
+        type: 'deviceCodeOAuth',
+        accessToken: 'oauth-access-token',
+      }),
+    };
+    const apiAdapter: ProviderQuotaAdapter = {
+      provider: 'openai',
+      supports: (current) => current.offeringId === 'api-platform' && current.authMode === 'apiKey',
+      fetch: vi.fn(async ({ credential: current, now }) => ({
+        credential: current.credentialIri,
+        status: 'unsupported',
+        windows: [],
+        observedAt: now.toISOString(),
+        expiresAt: now.toISOString(),
+        source: 'openai:api-platform',
+      })),
+    };
+    const subscriptionAdapter: ProviderQuotaAdapter = {
+      provider: 'openai',
+      supports: (current) => current.offeringId === 'official-subscription' && current.authMode === 'deviceCodeOAuth',
+      fetch: vi.fn(async ({ credential: current, now }) => ({
+        credential: current.credentialIri,
+        status: 'available',
+        windows: [{ name: 'five-hour', used: 25, limit: 100, remaining: 75 }],
+        observedAt: now.toISOString(),
+        expiresAt: now.toISOString(),
+        source: 'openai:subscription',
+      })),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      adapters: [apiAdapter, subscriptionAdapter],
+      credentials: [apiCredential, oauthCredential],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    const api = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      offeringId: 'api-platform',
+      refresh: true,
+    });
+    const subscription = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'openai',
+      offeringId: 'official-subscription',
+      refresh: true,
+    });
+
+    expect(api.source).toBe('openai:api-platform');
+    expect(subscription.source).toBe('openai:subscription');
+    expect(apiAdapter.fetch).toHaveBeenCalledTimes(1);
+    expect(subscriptionAdapter.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('resolves quota refresh through the requested provider offering when credentialIri is omitted', async () => {

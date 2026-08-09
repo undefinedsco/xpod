@@ -202,6 +202,8 @@ Kimi device-code Connect 只允许使用 Xpod/Moonshot 签发给本产品的 cli
 
 额度查询只使用供应商正式提供且当前 Credential 有权调用的接口。支持多个限制窗口、余额、重置时间、观测时间和过期时间。无正式查询能力时返回 `unsupported`；429 cooldown 不得伪装成精确剩余额度。
 
+额度能力归属于 `Provider + Offering + authMode`，不能只按 Provider 选择 adapter。同一 Provider 的订阅 OAuth/Token Plan 与 API 平台 Key 可以并存：Codex、Claude Code 和 Kimi Code 订阅凭证标准化为 5 小时、周及供应商额外窗口；Moonshot、DeepSeek 等 API 平台凭证只展示官方余额或明确 `unsupported`，不得把金额余额与套餐使用率混为一谈。
+
 额度查询失败不影响推理。LinX 显示数据来源、最后刷新时间和 stale 状态。
 
 ## LinX 与客户端配置

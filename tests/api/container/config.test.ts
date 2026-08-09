@@ -93,11 +93,13 @@ describe('loadConfigFromEnv', () => {
   });
 
   it('constructs disabled provider Connect without eagerly requiring internal service credentials', async () => {
-    const service = createApiContainer(baseConfig({
+    const container = createApiContainer(baseConfig({
       gatewayInternalClientId: undefined,
       gatewayInternalClientSecret: undefined,
       aiGatewayConnectEnabled: false,
-    })).resolve('providerConnectService');
+    }));
+    const service = container.resolve('providerConnectService');
+    const quotaService = container.resolve('providerQuotaService') as any;
 
     expect((service as any).credentialRepository).toBeTruthy();
     expect((service as any).vault).toBeTruthy();
@@ -108,6 +110,10 @@ describe('loadConfigFromEnv', () => {
       provider: 'openai',
       requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({ status: 'unsupported' });
+    expect(quotaService).toBeTruthy();
+    expect(quotaService.adapters.get('openai')).toHaveLength(2);
+    expect(quotaService.adapters.get('anthropic')).toHaveLength(2);
+    expect(quotaService.adapters.get('kimi')).toHaveLength(2);
   });
 
   it('injects one singleton internal Pod access provider into all gateway services that need Pod access', () => {

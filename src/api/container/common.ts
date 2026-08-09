@@ -43,8 +43,11 @@ import { RedisSessionAffinityStore } from '../ai-gateway/routing/RedisSessionAff
 import {
   AnthropicQuotaAdapter,
   BailianQuotaAdapter,
+  ClaudeSubscriptionQuotaAdapter,
+  CodexSubscriptionQuotaAdapter,
   DeepSeekQuotaAdapter,
   KimiQuotaAdapter,
+  KimiCodeSubscriptionQuotaAdapter,
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
@@ -342,17 +345,17 @@ export function registerCommonServices(
 
     providerQuotaService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      if (!config.aiGatewayConnectEnabled) {
-        return undefined;
-      }
       const internalPodAccess = cradle.gatewayInternalPodAccess;
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
         vault: credentialVaultForConfig(config),
         adapters: [
+          new CodexSubscriptionQuotaAdapter(),
           new OpenAiQuotaAdapter(),
+          new ClaudeSubscriptionQuotaAdapter(),
           new AnthropicQuotaAdapter(),
+          new KimiCodeSubscriptionQuotaAdapter(),
           new KimiQuotaAdapter(),
           new BailianQuotaAdapter(),
           new DeepSeekQuotaAdapter(),

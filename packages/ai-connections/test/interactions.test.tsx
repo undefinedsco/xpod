@@ -846,6 +846,38 @@ describe('AI Connection settings', () => {
     expect(screen.getByText('来源：openai:console-only')).toBeTruthy()
   })
 
+  it('renders subscription remaining percentages and reset times for every quota window', async () => {
+    const observedAt = '2026-08-09T00:00:00.000Z'
+    const fiveHourReset = '2026-08-09T05:00:00.000Z'
+    const weeklyReset = '2026-08-16T00:00:00.000Z'
+    const current = client({
+      quota: vi.fn(async () => ({
+        credential: 'openai-subscription',
+        status: 'available' as const,
+        windows: [
+          { name: 'five-hour', used: 25, limit: 100, remaining: 75, resetsAt: fiveHourReset },
+          { name: 'weekly', used: 60, limit: 100, remaining: 40, resetsAt: weeklyReset },
+        ],
+        observedAt,
+        expiresAt: '2026-08-09T00:05:00.000Z',
+        source: 'openai:chatgpt-wham',
+        stale: true,
+      })),
+    })
+    render(<AiConnectionsPanel client={current} selectedProvider="openai" serviceAccessGranted />)
+
+    fireEvent.click(screen.getByRole('button', { name: '刷新 OpenAI 额度' }))
+
+    expect(await screen.findByText('5 小时限制')).toBeTruthy()
+    expect(screen.getByText('剩余 75%')).toBeTruthy()
+    expect(screen.getByText('周限制')).toBeTruthy()
+    expect(screen.getByText('剩余 40%')).toBeTruthy()
+    expect(screen.getByText(`重置：${new Date(fiveHourReset).toLocaleString()}`)).toBeTruthy()
+    expect(screen.getByText(`重置：${new Date(weeklyReset).toLocaleString()}`)).toBeTruthy()
+    expect(screen.getByText(`更新：${new Date(observedAt).toLocaleString()}`)).toBeTruthy()
+    expect(screen.getByText('来源：openai:chatgpt-wham · 数据可能已过期')).toBeTruthy()
+  })
+
   it('renders allowlisted unsupported errors without raw details', async () => {
     const current = client({
       quota: vi.fn(async () => {
