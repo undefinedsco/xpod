@@ -26,7 +26,7 @@ suite('Cloud PG quota regression', () => {
       password: 'xpod',
       host: 'localhost',
       database: 'xpod',
-      port: 5432,
+      port: Number(process.env.XPOD_FULL_PG_PORT || '5432'),
     });
     await pgClient.connect();
 

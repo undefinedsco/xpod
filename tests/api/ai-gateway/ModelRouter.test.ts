@@ -253,7 +253,7 @@ describe('ModelRouter', () => {
       source: 'explicit-provider',
     });
     expect(registry.requireProvider('timecc')).toMatchObject({
-      protocols: ['chatCompletions'],
+      protocols: ['responses', 'chatCompletions'],
       safeBaseUrls: ['https://timicc.example/v1'],
     });
   });

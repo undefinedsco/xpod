@@ -38,7 +38,14 @@ async function main() {
 
   try {
     console.log('Starting xpod stack...');
-    const liteRuntimeEnv = { XPOD_LOCAL_AUTO_PROVISION: 'false', ...TEST_GATEWAY_ENV };
+    const liteRuntimeEnv = {
+      XPOD_LOCAL_AUTO_PROVISION: 'false',
+      // Lite tests do not exercise Redis-backed coordination. Explicitly
+      // disable inherited local Redis settings so the stack stays hermetic.
+      CSS_REDIS_CLIENT: '',
+      REDIS_URL: '',
+      ...TEST_GATEWAY_ENV,
+    };
     await stack.start('local', { env: liteRuntimeEnv, transport: 'port' });
     console.log(`Stack ready on ${stack.baseUrl}${stack.socketPath ? ` via ${stack.socketPath}` : ''}`);
 
@@ -54,6 +61,10 @@ async function main() {
     if (exitCode === 0) {
       exitCode = await runCommand('bun', [ 'run', 'vitest', '--run',
           'tests/integration',
+          // Several legacy integration fixtures reserve a free port and then
+          // start listening in a later hook. Running files concurrently makes
+          // that check/listen gap race on port 10000 and flakes the full gate.
+          '--no-file-parallelism',
           '--exclude', 'tests/integration/{DockerCluster,MultiNodeCluster,ProvisionFlow,CloudQuotaBusinessToken}*',
         ], sharedEnv);
     }

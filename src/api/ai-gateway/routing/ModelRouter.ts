@@ -222,7 +222,7 @@ export class ModelRouter {
           id: explicit.providerId,
           label: explicit.providerId,
           authModes: ['apiKey'],
-          protocols: ['chatCompletions'],
+          protocols: ['responses', 'chatCompletions'],
           defaultBaseUrl: baseUrl,
           safeBaseUrls: [baseUrl],
           capabilities: {

@@ -11,7 +11,6 @@ services:
       PGDATA: /var/lib/postgresql/tmpdata/pgdata
     tmpfs:
       - /var/lib/postgresql/tmpdata:rw,size=512m
-
   minio:
     tmpfs:
       - /tmp/minio-data:rw,size=512m

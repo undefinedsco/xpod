@@ -111,6 +111,85 @@ describe('Provider runtime adapters', () => {
     expect(runtimes.get('timecc')).toBe(runtimes.get('timecc'));
   });
 
+  it('uses Responses for web search on an OpenAI-compatible custom provider', async () => {
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_search' } },
+      { type: 'response.output_text.delta', delta: 'search result' },
+      {
+        type: 'response.output_text.done',
+        annotations: [{
+          type: 'url_citation',
+          url: 'https://example.test/source',
+          title: 'Source',
+          start_index: 0,
+          end_index: 6,
+        }],
+      },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['responses', 'chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { toolCalls: true },
+      models: [{ id: 'gpt-5.4-mini' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('timecc').execute({
+      request: baseRequest({
+        model: 'gpt-5.4-mini',
+        tools: [{
+          type: 'web_search',
+          protocolExtensions: { responses: { type: 'web_search' } },
+        }],
+      }),
+      apiKey: 'sk-custom-secret',
+    }))).resolves.toEqual(expect.arrayContaining([
+      { type: 'text.delta', text: 'search result' },
+      expect.objectContaining({ type: 'text.annotations' }),
+    ]));
+
+    expect(fixture.captured[0].url).toBe('https://timicc.example/v1/responses');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'gpt-5.4-mini',
+      stream: true,
+      tools: [{ type: 'web_search' }],
+    });
+  });
+
+  it('rejects Responses web search before transport when the provider does not declare support', async () => {
+    const fixture = fetchFixture(new Response(null, { status: 500 }));
+    const runtimes = new ProviderRuntimeRegistry({
+      registry: createDefaultProviderRegistry(),
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(runtimes.get('kimi').execute({
+      request: baseRequest({
+        model: 'kimi-k2',
+        tools: [{ type: 'web_search' }],
+      }),
+      apiKey: 'sk-kimi',
+    }))).rejects.toMatchObject({
+      code: 'invalid_request',
+      status: 400,
+      details: {
+        provider: 'kimi',
+        capability: 'responses.web_search',
+      },
+    });
+    expect(fixture.captured).toHaveLength(0);
+  });
+
   it('creates adapters by provider id through a shared runtime registry and fails unknown providers', async () => {
     const fixture = fetchFixture(() => new Response(jsonSse([
       { id: 'chatcmpl_factory', choices: [{ delta: { role: 'assistant' } }] },
