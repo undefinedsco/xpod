@@ -1,5 +1,11 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
   ConnectSurface,
   StorageBootstrapView,
   WebIdLoginRouteView,
@@ -10,6 +16,7 @@ import {
 } from '@undefineds.co/shared-ui'
 import type {
   StorageSelectionState,
+  StorageBinding,
   WebIdAuthState,
   WebIdLoginRouteDescriptor,
 } from '@undefineds.co/solid-sdk'
@@ -19,6 +26,9 @@ export interface SolidAuthBoundaryProps {
   storageState?: StorageSelectionState
   routes: readonly WebIdLoginRouteDescriptor[]
   storageRouteId?: string
+  onCreateStorage?: () => void | Promise<void>
+  onContinueStorage?: (binding: StorageBinding) => void | Promise<void>
+  onSelectStorage?: (binding: StorageBinding) => void | Promise<void>
   copy?: {
     route?: Partial<WebIdLoginRouteCopy>
     storage?: Partial<StorageBootstrapCopy>
@@ -27,6 +37,7 @@ export interface SolidAuthBoundaryProps {
   onRetry?: (routeId: string) => void | Promise<void>
   onCancel?: () => void | Promise<void>
   onSwitchAccount?: () => void | Promise<void>
+  auxiliary?: ReactNode
   children: ReactNode
 }
 
@@ -117,16 +128,99 @@ function isStorageReady(state: StorageSelectionState | undefined): boolean {
   return state === undefined || state.status === 'ready'
 }
 
+function storageBindingLabel(binding: StorageBinding): string {
+  if (binding.label?.trim()) return binding.label
+  return binding.storageUrl
+}
+
+function storageBindingKey(binding: StorageBinding): string {
+  return `${binding.storageUrl}\u0000${binding.webId}`
+}
+
+function StorageSelectionView({
+  state,
+  copy,
+  onSelectStorage,
+  onContinueStorage,
+}: {
+  state: Extract<StorageSelectionState, { status: 'selecting' }>
+  copy: StorageBootstrapCopy
+  onSelectStorage?: (binding: StorageBinding) => void | Promise<void>
+  onContinueStorage?: (binding: StorageBinding) => void | Promise<void>
+}) {
+  const [selectedKey, setSelectedKey] = useState<string>()
+  const selected = state.candidates.find((candidate) => storageBindingKey(candidate) === selectedKey)
+  const canSelect = Boolean(onSelectStorage || onContinueStorage)
+
+  return (
+    <Card className="w-full border-border bg-card text-card-foreground">
+      <CardHeader>
+        <CardTitle>{copy.title}</CardTitle>
+        {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p role="status" aria-live="polite" className="text-sm text-foreground">
+          Choose a storage binding to continue.
+        </p>
+        <div className="space-y-2">
+          {state.candidates.map((candidate) => {
+            const key = storageBindingKey(candidate)
+            const label = storageBindingLabel(candidate)
+            const isSelected = key === selectedKey
+            const content = (
+              <>
+                <span className="min-w-0 truncate">{label}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {isSelected ? 'Selected' : 'Select'}
+                </span>
+              </>
+            )
+            return canSelect ? (
+              <Button
+                key={key}
+                type="button"
+                variant={isSelected ? 'secondary' : 'outline'}
+                className="h-auto w-full justify-between gap-3 px-3 py-3 text-left"
+                aria-label={`${isSelected ? 'Selected' : 'Select'} ${label}`}
+                aria-pressed={isSelected}
+                onClick={() => {
+                  setSelectedKey(key)
+                  if (onSelectStorage) void onSelectStorage(candidate)
+                }}
+              >
+                {content}
+              </Button>
+            ) : (
+              <div key={key} className="flex items-center justify-between gap-3 rounded-md border border-border/60 px-3 py-3 text-sm">
+                {content}
+              </div>
+            )
+          })}
+        </div>
+        {selected && onContinueStorage ? (
+          <Button type="button" className="w-full" onClick={() => void onContinueStorage(selected)}>
+            {copy.continueLabel}
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function SolidAuthBoundary({
   state,
   storageState,
   routes,
   storageRouteId,
+  onCreateStorage,
+  onContinueStorage,
+  onSelectStorage,
   copy,
   onLogin,
   onRetry,
   onCancel,
   onSwitchAccount,
+  auxiliary,
   children,
 }: SolidAuthBoundaryProps) {
   const visibleRouteCopy: WebIdLoginRouteCopy = { ...routeCopy, ...copy?.route }
@@ -134,6 +228,19 @@ export function SolidAuthBoundary({
 
   if (state.status === 'authenticated' && isStorageReady(storageState)) {
     return <>{children}</>
+  }
+
+  if (state.status === 'authenticated' && storageState?.status === 'selecting') {
+    return (
+      <ConnectSurface>
+        <StorageSelectionView
+          state={storageState}
+          copy={visibleStorageCopy}
+          onSelectStorage={onSelectStorage}
+          onContinueStorage={onContinueStorage}
+        />
+      </ConnectSurface>
+    )
   }
 
   if (state.status === 'authenticated' && storageState) {
@@ -148,6 +255,7 @@ export function SolidAuthBoundary({
         <StorageBootstrapView
           state={storageStateView}
           copy={visibleStorageCopy}
+          onCreate={storageState.status === 'empty' ? onCreateStorage : undefined}
           onRetry={canRetryStorage ? () => void onRetry?.(storageRouteId!) : undefined}
           onCancel={canCancelStorage ? onCancel : undefined}
         />
@@ -155,10 +263,10 @@ export function SolidAuthBoundary({
     )
   }
 
-  const routeList = routes.length > 0
-    ? routes
-    : state.status === 'connecting'
-      ? [state.route]
+  const routeList = state.status === 'connecting'
+    ? [state.route]
+    : routes.length > 0
+      ? routes
       : []
   const mappedState = presentationState(state, storageState)
 
@@ -192,6 +300,7 @@ export function SolidAuthBoundary({
             />
           )
         })}
+        {auxiliary ? <div>{auxiliary}</div> : null}
       </div>
     </ConnectSurface>
   )

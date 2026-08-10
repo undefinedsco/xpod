@@ -188,8 +188,9 @@ describe('AuthBoundary', () => {
     expect(login).toHaveBeenCalledWith('https://xpod.local')
   })
 
-  it('keeps custom-provider props source-compatible without reopening the issuer form', () => {
+  it('adapts the legacy custom-provider affordance without routing issuer strings through the canonical action', () => {
     const login = vi.fn()
+    const onAddProvider = vi.fn()
 
     render(
       <AuthBoundary
@@ -198,15 +199,23 @@ describe('AuthBoundary', () => {
         loginView={{
           title: '登录 Xpod 设置',
           providers: [],
-          onAddProvider: (url) => void login(url),
+          onAddProvider,
         }}
       >
         <section>Private workspace</section>
       </AuthBoundary>,
     )
 
-    expect(screen.queryByRole('button', { name: 'Add provider' })).toBeNull()
-    expect(screen.queryByLabelText('Provider URL')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider' }))
+    const input = screen.getByLabelText('Provider URL')
+    fireEvent.change(input, { target: { value: 'not a url' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(screen.getByRole('alert').textContent).toContain('Enter a valid provider URL.')
+    expect(onAddProvider).not.toHaveBeenCalled()
+
+    fireEvent.change(input, { target: { value: 'pod.example.org' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(onAddProvider).toHaveBeenCalledWith('https://pod.example.org')
     expect(login).not.toHaveBeenCalled()
   })
 })

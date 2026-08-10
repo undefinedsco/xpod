@@ -121,6 +121,107 @@ describe('SolidAuthBoundary', () => {
     expect(onSwitchAccount).toHaveBeenCalledTimes(1)
   })
 
+  it('renders only the active route while connecting across multiple routes', () => {
+    const onCancel = vi.fn()
+    render(
+      <SolidAuthBoundary
+        state={{ status: 'connecting', route: secondaryRoute }}
+        routes={[route, secondaryRoute]}
+        onLogin={() => undefined}
+        onCancel={onCancel}
+      >
+        {children}
+      </SolidAuthBoundary>,
+    )
+
+    expect(screen.getByText(secondaryRoute.label)).toBeTruthy()
+    expect(screen.queryByText(route.label)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('exposes host storage callbacks for empty, creating, and ready states', () => {
+    const onCreateStorage = vi.fn()
+    const onContinueStorage = vi.fn()
+    const { rerender } = render(
+      <SolidAuthBoundary
+        state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
+        storageState={{ status: 'empty' }}
+        routes={[route]}
+        onLogin={() => undefined}
+        onCreateStorage={onCreateStorage}
+        onContinueStorage={onContinueStorage}
+      >
+        {children}
+      </SolidAuthBoundary>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create storage' }))
+    expect(onCreateStorage).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <SolidAuthBoundary
+        state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
+        storageState={{ status: 'creating' }}
+        routes={[route]}
+        onLogin={() => undefined}
+        onCreateStorage={onCreateStorage}
+        onContinueStorage={onContinueStorage}
+      >
+        {children}
+      </SolidAuthBoundary>,
+    )
+    expect(screen.queryByRole('button', { name: 'Create storage' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
+
+    rerender(
+      <SolidAuthBoundary
+        state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
+        storageState={{
+          status: 'ready',
+          selected: { storageUrl: 'https://pod.example/alice/', webId: 'https://pod.example/alice#me' },
+        }}
+        routes={[route]}
+        onLogin={() => undefined}
+        onCreateStorage={onCreateStorage}
+        onContinueStorage={onContinueStorage}
+      >
+        {children}
+      </SolidAuthBoundary>,
+    )
+    expect(screen.getByRole('region', { name: 'private workspace' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
+    expect(onContinueStorage).not.toHaveBeenCalled()
+  })
+
+  it('renders selecting candidates and forwards selection and continuation bindings', () => {
+    const candidates = [
+      { storageUrl: 'https://pod.example/alice/', webId: 'https://pod.example/alice#me', label: 'Alice storage' },
+      { storageUrl: 'https://pod.example/shared/', webId: 'https://pod.example/alice#me', label: 'Shared storage' },
+    ]
+    const onSelectStorage = vi.fn()
+    const onContinueStorage = vi.fn()
+    render(
+      <SolidAuthBoundary
+        state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
+        storageState={{ status: 'selecting', candidates }}
+        routes={[route]}
+        onLogin={() => undefined}
+        onSelectStorage={onSelectStorage}
+        onContinueStorage={onContinueStorage}
+      >
+        {children}
+      </SolidAuthBoundary>,
+    )
+
+    expect(screen.getByText('Alice storage')).toBeTruthy()
+    expect(screen.getByText('Shared storage')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Select Alice storage' }))
+    expect(onSelectStorage).toHaveBeenCalledWith(candidates[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(onContinueStorage).toHaveBeenCalledWith(candidates[0])
+  })
+
   it('does not guess a storage conflict retry route when multiple routes are available', () => {
     const storageState: StorageSelectionState = { status: 'conflict', message: 'Storage belongs to another WebID' }
     const { rerender } = render(

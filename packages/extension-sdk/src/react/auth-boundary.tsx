@@ -1,9 +1,12 @@
 import { useId, useState, type ReactNode } from 'react'
 import {
+  Button,
   ConnectHeader,
   ConnectSurface,
+  Input,
   LoginProviderListView,
   LoginSpaceSelectionView,
+  normalizeLoginProviderUrl,
   SolidConnectForm,
   type LoginProviderOption,
   type LoginSpaceProviders,
@@ -119,6 +122,71 @@ function legacyStateToSolidState(
   }
 }
 
+function LegacyCustomProviderAffordance({
+  onAddProvider,
+}: {
+  onAddProvider: (url: string) => void
+}) {
+  const [isAdding, setIsAdding] = useState(false)
+  const [customUrl, setCustomUrl] = useState('')
+  const [customUrlError, setCustomUrlError] = useState<string | null>(null)
+
+  const handleAdd = () => {
+    if (!customUrl.trim()) return
+    try {
+      onAddProvider(normalizeLoginProviderUrl(customUrl))
+      setCustomUrl('')
+      setCustomUrlError(null)
+      setIsAdding(false)
+    } catch {
+      setCustomUrlError('Enter a valid provider URL.')
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-3">
+      {isAdding ? (
+        <div className="space-y-2">
+          <Input
+            autoFocus
+            type="url"
+            aria-label="Provider URL"
+            aria-invalid={customUrlError ? true : undefined}
+            placeholder="https://example.com"
+            value={customUrl}
+            onChange={(event) => {
+              setCustomUrl(event.target.value)
+              setCustomUrlError(null)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') handleAdd()
+            }}
+          />
+          {customUrlError ? <p role="alert" className="text-xs text-destructive">{customUrlError}</p> : null}
+          <div className="grid grid-cols-2 gap-2">
+            <Button type="button" onClick={handleAdd} disabled={!customUrl.trim()}>Connect</Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setIsAdding(false)
+                setCustomUrl('')
+                setCustomUrlError(null)
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button type="button" variant="ghost" className="w-full" onClick={() => setIsAdding(true)}>
+          Add provider
+        </Button>
+      )}
+    </div>
+  )
+}
+
 export function LoginView({
   title,
   description,
@@ -201,6 +269,9 @@ export function AuthBoundary({
       routes={bindings.map((binding) => binding.route)}
       onLogin={loginByRoute}
       onRetry={loginByRoute}
+      auxiliary={state.status === 'anonymous' && loginView?.onAddProvider ? (
+        <LegacyCustomProviderAffordance onAddProvider={loginView.onAddProvider} />
+      ) : undefined}
       copy={{
         route: {
           title: typeof loginView?.title === 'string' ? loginView.title : defaultLoginTitle,
