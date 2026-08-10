@@ -91,6 +91,8 @@ jobs:
   integration-full:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      XPOD_FULL_POSTGRES_IMAGE: ghcr.io/undefinedsco/xpod-rdf-postgres@sha256:9e110480035420481658b4fd90d6216cee6e1ea0cc3496902d1b3f73f5679ea9
     steps:
       - uses: actions/checkout@v4
 

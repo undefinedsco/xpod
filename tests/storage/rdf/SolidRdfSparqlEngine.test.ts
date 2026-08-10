@@ -360,7 +360,7 @@ describe('SolidRdfSparqlEngine', () => {
     });
   });
 
-  it('falls through to the RDF3X query path when QLever reports an unsupported shape', async () => {
+  it('does not fall through to the RDF3X query path when QLever reports an unsupported shape', async () => {
     const nativeEngine = new UnsupportedNativeSparqlEngineFake({
       bindings: [{ message: namedNode(`${BASE}message`) }],
       metrics: {
@@ -377,17 +377,15 @@ describe('SolidRdfSparqlEngine', () => {
     });
     engine = new SolidRdfSparqlEngine(nativeEngine as unknown as RdfEngineLike);
 
-    const results = await arrayFromStream(await engine.queryBindings(
+    await expect(engine.queryBindings(
       `SELECT ?message WHERE { ?message <${CONTENT}> ?content }`,
       BASE,
-    ));
+    )).rejects.toThrow('unsupported-expression');
 
-    expect(results[0].get('message')?.value).toBe(`${BASE}message`);
-    expect(nativeEngine.calls).toEqual(['sparqlQuery', 'query']);
-    expect(engine.getMetrics().lastPrimary?.plan).toContain('PostgresRdf3xJoin');
+    expect(nativeEngine.calls).toEqual(['sparqlQuery']);
   });
 
-  it('bypasses native QLever for query shapes assigned to the RDF3X compatibility path', async () => {
+  it('routes formerly gated query shapes through native QLever without compatibility fallback', async () => {
     const nativeEngine = new NativeSparqlEngineFake({
       status: 'ok',
       mediaType: 'application/sparql-results+json',
@@ -412,9 +410,9 @@ describe('SolidRdfSparqlEngine', () => {
       }
     `, BASE));
 
-    expect(results).toHaveLength(1);
-    expect(nativeEngine.calls).toEqual([]);
-    expect(fallbackStub.queryBindings).toHaveBeenCalledOnce();
+    expect(results).toEqual([]);
+    expect(nativeEngine.calls).toEqual(['sparqlQuery']);
+    expect(fallbackStub.queryBindings).not.toHaveBeenCalled();
   });
 
   it('routes ASK through native SPARQL when the RDF engine exposes it', async () => {

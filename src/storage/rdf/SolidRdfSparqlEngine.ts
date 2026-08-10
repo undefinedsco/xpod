@@ -506,6 +506,9 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     if (cause instanceof NativeSparqlExecutionError) {
       throw cause;
     }
+    if (typeof this.rdfEngine.sparqlQuery === 'function' && cause instanceof UnsupportedSparqlQueryError) {
+      throw cause;
+    }
     const inherited = cause instanceof UnsupportedSparqlQueryError
       ? {
           code: cause.code,
@@ -802,7 +805,7 @@ export class SolidRdfSparqlEngine implements SparqlEngine {
     if (result.status === 'error') {
       throw new NativeSparqlExecutionError(result.error || 'native SPARQL engine returned error status');
     }
-    return undefined;
+    throw new UnsupportedSparqlQueryError(result.error || 'native SPARQL engine returned unsupported status');
   }
 
   private recordPrimary(

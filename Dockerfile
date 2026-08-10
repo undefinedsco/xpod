@@ -25,6 +25,8 @@ RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
 RUN bun run build:ts && bun run build:components && node scripts/check-components-runtime-metadata.cjs && bun run build:packages && bun run build:ui
+RUN rm -rf /app/node_modules \
+ && NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --production --frozen-lockfile
 
 # Runtime
 FROM node:22-alpine

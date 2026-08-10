@@ -174,6 +174,7 @@
       "@id": "urn:undefineds:xpod:PostgresRdfTextIndex",
       "@type": "PostgresRdfTextIndex",
       "options_driver": "pg",
+      "options_textSearchBackend": "pg-native-fts",
       "options_connectionString": {
         "@id": "urn:solid-server:default:variable:sparqlEndpoint",
         "@type": "Variable"
@@ -225,7 +226,7 @@
       "@type": "ProviderRegistryImpl"
     },
     {
-      "comment": "RDF query engine backed by PostgreSQL facts plus PostgreSQL RDF-3X derived stats.",
+      "comment": "RDF query engine backed by PostgreSQL facts and the required native QLever runtime.",
       "@id": "urn:undefineds:xpod:SolidRdfEngine",
       "@type": "PostgresRdfEngine",
       "options_driver": "pg",
@@ -241,7 +242,7 @@
       },
       "options_rdfAccelerationProfile": "pg-hot-operators",
       "options_nativeSparqlEnabled": true,
-      "options_nativeSparqlRequired": false,
+      "options_nativeSparqlRequired": true,
       "options_autoOpen": true,
       "options_maintenanceIntervalMs": 60000,
       "options_maintenanceSourceBatchSize": 256

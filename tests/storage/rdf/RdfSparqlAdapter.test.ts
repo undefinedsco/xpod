@@ -56,7 +56,7 @@ describe('RdfSparqlAdapter', () => {
     expect(missingFallback.message).not.toMatch(/compatibility|fallback/i);
   });
 
-  it('keeps native QLever on verified query shapes and rejects shapes that require the compatibility path', () => {
+  it('allows server-owned query shapes through the native QLever boundary', () => {
     expect(() => adapter.assertServerOwnedNativeQuery(`
       SELECT ?message WHERE {
         ?message a <${MESSAGE}> .
@@ -72,7 +72,7 @@ describe('RdfSparqlAdapter', () => {
       }
     `, BASE)).not.toThrow();
 
-    const compatibilityQueries = [
+    const nativeQueries = [
       `SELECT ?message WHERE {
         { SELECT ?message WHERE { ?message a <${MESSAGE}> . } }
       }`,
@@ -110,8 +110,8 @@ describe('RdfSparqlAdapter', () => {
       }`,
     ];
 
-    for (const query of compatibilityQueries) {
-      expect(() => adapter.assertServerOwnedNativeQuery(query, BASE)).toThrow(UnsupportedSparqlQueryError);
+    for (const query of nativeQueries) {
+      expect(() => adapter.assertServerOwnedNativeQuery(query, BASE)).not.toThrow();
     }
   });
 

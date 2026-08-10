@@ -6185,7 +6185,7 @@ it('keeps PostgreSQL RDF planning statistics exact without an asynchronous proje
       },
       options_rdfAccelerationProfile: 'pg-hot-operators',
       options_nativeSparqlEnabled: true,
-      options_nativeSparqlRequired: false,
+      options_nativeSparqlRequired: true,
       options_autoOpen: true,
     });
     expect(textIndex).toMatchObject({
