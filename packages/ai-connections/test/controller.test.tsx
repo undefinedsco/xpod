@@ -101,6 +101,30 @@ function deferred<T>() {
 }
 
 describe('AI Connection controller host.solid integration', () => {
+  it('treats an authenticated WebID-only host without Pod as unavailable', async () => {
+    const sessionFetch = vi.fn(async () => {
+      throw new Error('Pod-backed API must not be called without a Pod capability')
+    }) as unknown as typeof fetch
+    const solid = solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+      pod: undefined,
+    })
+
+    const controller = createAiConnectionsController(hostFromSolid(solid))
+
+    expect(controller.sessionStatus).toBe('authenticated')
+    expect(controller.podStatus).toBe('unavailable')
+    expect(controller.client).toBeNull()
+    expect(controller.serviceAccessState).toBe('missing')
+
+    await controller.loadProviders()
+    expect(sessionFetch).not.toHaveBeenCalled()
+  })
+
   it('creates the API client from host.solid session fetch and ready Pod URL', async () => {
     const solid = solidCapability()
 

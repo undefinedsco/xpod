@@ -3,13 +3,17 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  AiConnectionsMain,
   AiCredentialPoolSection,
   AiConnectionsPanel,
   PROVIDERS,
+  type AiConnectionsController,
   type AiClientConfigurationBridge,
   type AiConnectionsClient,
   type AiProviderSummary,
 } from '../src'
+import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
+import { createAiConnectionsController } from '../src/controller'
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 
@@ -139,6 +143,25 @@ function openAiApiPlatformProduct(): AiProviderSummary {
 }
 
 describe('AI Connection settings', () => {
+  it('renders a deterministic unavailable state for an authenticated WebID-only host', () => {
+    const host = createMockWebExtensionHost({
+      solid: {
+        session: {
+          fetch: vi.fn(async () => new Response('{}')) as unknown as typeof fetch,
+          getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+          subscribe: () => () => undefined,
+        },
+        requireLogin: vi.fn(async () => undefined),
+      },
+    })
+    const controller = createAiConnectionsController(host)
+
+    render(<AiConnectionsMain controller={controller} />)
+
+    expect(screen.getByRole('alert').textContent).toContain('当前 Pod 尚未就绪')
+    expect(screen.queryByRole('region', { name: /详情/u })).toBeNull()
+  })
+
   it('describes the current Pod protection accurately before a credential is added', () => {
     render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
 

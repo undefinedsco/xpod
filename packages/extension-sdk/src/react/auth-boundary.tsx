@@ -10,6 +10,7 @@ import {
   type LoginProviderOption,
   type LoginSpaceProviders,
 } from '@undefineds.co/shared-ui'
+import type { WebIdAuthState, WebIdLoginRouteDescriptor } from '@undefineds.co/solid-sdk'
 
 export type AuthBoundaryState =
   | { status: 'loading' }
@@ -42,6 +43,46 @@ export interface AuthBoundaryProps {
 
 const defaultLoginTitle = '连接 Solid Pod'
 const safeLoginErrorMessage = '登录失败，请重试。'
+
+/**
+ * Compatibility-only mapping for the pre-route AuthBoundary contract.
+ * New hosts should render SolidAuthBoundary with opaque route ids directly;
+ * this adapter keeps issuer/provider strings working for existing consumers.
+ */
+function legacyRoute(loginView?: AuthBoundaryProps['loginView']): WebIdLoginRouteDescriptor {
+  const issuer = loginView?.defaultIssuer?.trim() || loginView?.providers?.[0]?.id || 'legacy'
+  return {
+    id: issuer,
+    label: loginView?.title
+      ? typeof loginView.title === 'string' ? loginView.title : 'Solid login'
+      : 'Solid login',
+    identityProvider: {
+      url: issuer.startsWith('http://') || issuer.startsWith('https://') ? issuer : 'https://example.invalid',
+      label: issuer,
+    },
+    availability: 'ready',
+  }
+}
+
+function legacyStateToSolidState(
+  state: AuthBoundaryState,
+  loginView?: AuthBoundaryProps['loginView'],
+): WebIdAuthState {
+  switch (state.status) {
+    case 'loading':
+      return { status: 'restoring' }
+    case 'anonymous':
+      return { status: 'anonymous' }
+    case 'authenticated':
+      return { status: 'authenticated', webId: 'legacy' }
+    case 'error':
+      return {
+        status: 'error',
+        message: state.message,
+        retryRouteId: legacyRoute(loginView).id,
+      }
+  }
+}
 
 export function LoginView({
   title,
@@ -113,12 +154,13 @@ export function AuthBoundary({
   restoringLabel = '正在检查登录状态',
 }: AuthBoundaryProps) {
   const [dismissedError, setDismissedError] = useState<string | null>(null)
+  const solidState = legacyStateToSolidState(state, loginView)
 
   if (state.status === 'authenticated') {
     return <>{children}</>
   }
 
-  if (state.status === 'loading') {
+  if (solidState.status === 'restoring') {
     return (
       <ConnectSurface>
         <LoginRestoringView label={`${restoringLabel}...`} />
@@ -126,7 +168,7 @@ export function AuthBoundary({
     )
   }
 
-  const errorMessage = state.status === 'error' ? state.message : undefined
+  const errorMessage = solidState.status === 'error' ? solidState.message : undefined
 
   if (errorMessage && dismissedError !== errorMessage) {
     const retryIssuer = loginView?.defaultIssuer ?? loginView?.providers?.[0]?.id

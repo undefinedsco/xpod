@@ -10,6 +10,17 @@ import {
 } from './layout';
 import type { AppletManifest, ExtensionManifest } from './manifest';
 
+export type {
+  LoginEndpointDescriptor,
+  RememberedWebIdLogin,
+  StorageBinding,
+  StorageSelectionState,
+  WebIdAuthState,
+  WebIdLoginActions,
+  WebIdLoginRouteDescriptor,
+  WebIdLoginTransaction,
+} from '@undefineds.co/solid-sdk';
+
 export { defineAppletLayout } from './layout';
 export type { AppletLayoutDescriptor } from './layout';
 
@@ -79,7 +90,9 @@ export interface AiConnectionsPodStore {
     apiKey: string;
     label?: string;
     baseUrl?: string;
+    proxyUrl?: string;
     priority?: number;
+    compatibility?: 'auto' | 'openai' | 'anthropic';
   }): Promise<unknown>;
   saveOAuthCredential?(provider: string, input: AiConnectionsOAuthCredential): Promise<unknown>;
   updateOAuthCredential?(
@@ -94,6 +107,7 @@ export interface AiConnectionsPodStore {
     enabled?: boolean;
     priority?: number;
     baseUrl?: string;
+    proxyUrl?: string;
   }): Promise<unknown>;
   deleteProviderCredential?(provider: string, credentialId: string): Promise<unknown | undefined>;
   readCredentialSecret?(provider: string, credentialId: string): Promise<Record<string, unknown>>;
@@ -211,7 +225,7 @@ export interface SolidPermissionCapability {
 
 export interface WebExtensionSolidCapability<Database = unknown> {
   readonly session: WebExtensionSolidSession;
-  readonly pod: WebExtensionSolidPod<Database>;
+  readonly pod?: WebExtensionSolidPod<Database>;
   readonly permissions?: SolidPermissionCapability;
   requireLogin(): Promise<void>;
 }

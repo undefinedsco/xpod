@@ -88,19 +88,20 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   const sessionSnapshot = host.solid.session.getSnapshot()
   const sessionStatus = sessionStatusFromSnapshot(sessionSnapshot)
   const pod = host.solid.pod
+  const readyPod = pod?.status === 'ready' ? pod : undefined
   const authenticated = sessionSnapshot.status === 'authenticated'
-    && pod.status === 'ready'
+    && readyPod !== undefined
   const client = authenticated
     ? createInteractiveAiConnectionsClient(
       host.capabilities.aiClientCredentials
         ? withAiClientCredentialsGatewayKeys(createAiConnectionsClient({
           webId: sessionSnapshot.webId,
-          podBaseUrl: pod.current.podUrl,
+          podBaseUrl: readyPod.current.podUrl,
           authenticatedFetch: host.solid.session.fetch,
         }), host.capabilities.aiClientCredentials)
         : createAiConnectionsClient({
         webId: sessionSnapshot.webId,
-        podBaseUrl: pod.current.podUrl,
+        podBaseUrl: readyPod.current.podUrl,
         authenticatedFetch: host.solid.session.fetch,
       }),
       host.capabilities.aiConnectionsPodStore,
@@ -121,8 +122,8 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
   const controller: AiConnectionsController = {
     client,
     sessionStatus,
-    podStatus: pod.status,
-    error: pod.status === 'error'
+    podStatus: pod?.status ?? 'unavailable',
+    error: pod?.status === 'error'
       ? pod.error
       : sessionSnapshot.status === 'error' && !sessionSnapshot.webId
         ? sessionSnapshot.error
@@ -196,7 +197,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
           notify()
           return
         }
-        if (host.solid.pod.status !== 'ready') {
+        if (!host.solid.pod || host.solid.pod.status !== 'ready') {
           serviceAccessState = 'missing'
           notify()
           return
@@ -238,7 +239,7 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
         notify()
         return
       }
-      if (host.solid.pod.status !== 'ready') {
+      if (!host.solid.pod || host.solid.pod.status !== 'ready') {
         serviceAccessState = 'missing'
         notify()
         return
