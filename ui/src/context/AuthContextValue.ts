@@ -11,6 +11,7 @@ export interface Controls {
     logout?: string;
     webId?: string;
     pod?: string;
+    bindings?: string;
     clientCredentials?: string;
   };
   html?: { password?: { login?: string; register?: string; forgot?: string }; account?: { account?: string } };
