@@ -4,6 +4,7 @@ import type {
   WebExtensionHost,
   WebExtensionSessionStatus,
   WebExtensionSolidPodStatus,
+  WebIdLoginRouteDescriptor,
 } from '@undefineds.co/extension-sdk/web'
 import {
   AI_CONNECTIONS_PROVIDERS,
@@ -65,7 +66,8 @@ export interface AiConnectionsController {
   readonly sessionStatus: WebExtensionSessionStatus
   readonly podStatus: WebExtensionSolidPodStatus
   readonly error?: Error
-  readonly login: () => Promise<void>
+  readonly loginRoutes: readonly WebIdLoginRouteDescriptor[]
+  readonly login: (routeId: string) => Promise<void>
   readonly openExternal: (url: string) => Promise<void>
   readonly clientConfigurationBridge?: AiClientConfigurationBridge
   readonly selectedProvider: AiConnectionsProvider
@@ -84,11 +86,39 @@ export interface AiConnectionsController {
   subscribe(listener: () => void): () => void
 }
 
+export const AI_CONNECTIONS_LOGIN_ROUTE_ID = 'xpod-current-origin'
+
+function currentOrigin(): string {
+  if (typeof globalThis.location?.origin === 'string' && globalThis.location.origin) {
+    return globalThis.location.origin
+  }
+  return 'http://localhost'
+}
+
+export function createAiConnectionsLoginRoute(origin = currentOrigin()): WebIdLoginRouteDescriptor {
+  const normalizedOrigin = origin.endsWith('/') ? origin : `${origin}/`
+  return {
+    id: AI_CONNECTIONS_LOGIN_ROUTE_ID,
+    label: 'Xpod 当前身份',
+    description: '使用当前 Xpod 主机的 WebID 登录。',
+    identityProvider: {
+      url: new URL('.account/', normalizedOrigin).href,
+      label: '当前 Xpod',
+    },
+    storageProvider: {
+      url: normalizedOrigin,
+      label: '当前 Xpod Pod',
+    },
+    availability: 'ready',
+  }
+}
+
 export function createAiConnectionsController(host: WebExtensionHost): AiConnectionsController {
   const sessionSnapshot = host.solid.session.getSnapshot()
   const sessionStatus = sessionStatusFromSnapshot(sessionSnapshot)
   const pod = host.solid.pod
   const readyPod = pod?.status === 'ready' ? pod : undefined
+  const loginRoutes = [createAiConnectionsLoginRoute()] as const
   const authenticated = sessionSnapshot.status === 'authenticated'
     && readyPod !== undefined
   const client = authenticated
@@ -128,7 +158,13 @@ export function createAiConnectionsController(host: WebExtensionHost): AiConnect
       : sessionSnapshot.status === 'error' && !sessionSnapshot.webId
         ? sessionSnapshot.error
         : undefined,
-    login: host.solid.requireLogin,
+    loginRoutes,
+    async login(routeId) {
+      if (!loginRoutes.some((route) => route.id === routeId)) {
+        throw new Error(`Unknown AI Connections login route: ${routeId}`)
+      }
+      await host.solid.requireLogin()
+    },
     openExternal: host.navigation.openExternal,
     clientConfigurationBridge: host.capabilities.aiClientConfiguration,
     get selectedProvider() {

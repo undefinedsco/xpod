@@ -707,7 +707,7 @@ describe('AI Connection controller host.solid integration', () => {
     expect(sessionFetch).not.toHaveBeenCalled()
   })
 
-  it('requires login through host.solid for anonymous sessions', async () => {
+  it('renders the canonical SolidAuthBoundary and passes an opaque route id to the host', async () => {
     const requireLogin = vi.fn(async () => undefined)
     const controller = createAiConnectionsController(hostFromSolid(solidCapability({
       session: {
@@ -718,12 +718,18 @@ describe('AI Connection controller host.solid integration', () => {
       pod: { status: 'unavailable' },
       requireLogin,
     })))
+    const login = vi.spyOn(controller, 'login')
 
     render(<AiConnectionsMain controller={controller} />)
-    expect(screen.getByRole('region', { name: '登录 Xpod' }).getAttribute('data-auth-boundary')).toBe('surface')
+    expect(controller.loginRoutes).toHaveLength(1)
+    expect(controller.loginRoutes[0]?.id).toBe('xpod-current-origin')
+    expect(controller.loginRoutes[0]?.identityProvider.url).toBe(`${window.location.origin}/.account/`)
+    expect(screen.getByText('登录 Xpod')).toBeTruthy()
+    expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '登录' }))
 
-    await waitFor(() => expect(requireLogin).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(login).toHaveBeenCalledWith('xpod-current-origin'))
+    expect(requireLogin).toHaveBeenCalledTimes(1)
   })
 
   it('shows loading while the host-owned Pod is opening', () => {

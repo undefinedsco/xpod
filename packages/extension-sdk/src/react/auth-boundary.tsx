@@ -2,15 +2,14 @@ import { useId, useState, type ReactNode } from 'react'
 import {
   ConnectHeader,
   ConnectSurface,
-  LoginFailureView,
   LoginProviderListView,
-  LoginRestoringView,
   LoginSpaceSelectionView,
   SolidConnectForm,
   type LoginProviderOption,
   type LoginSpaceProviders,
 } from '@undefineds.co/shared-ui'
 import type { WebIdAuthState, WebIdLoginRouteDescriptor } from '@undefineds.co/solid-sdk'
+import { SolidAuthBoundary } from './solid-auth-boundary'
 
 export type AuthBoundaryState =
   | { status: 'loading' }
@@ -47,26 +46,62 @@ const safeLoginErrorMessage = '登录失败，请重试。'
 /**
  * Compatibility-only mapping for the pre-route AuthBoundary contract.
  * New hosts should render SolidAuthBoundary with opaque route ids directly;
- * this adapter keeps issuer/provider strings working for existing consumers.
+ * this adapter maps legacy issuer/provider values to host actions without
+ * exposing those values as route identifiers.
  */
-function legacyRoute(loginView?: AuthBoundaryProps['loginView']): WebIdLoginRouteDescriptor {
-  const issuer = loginView?.defaultIssuer?.trim() || loginView?.providers?.[0]?.id || 'legacy'
-  return {
-    id: issuer,
-    label: loginView?.title
-      ? typeof loginView.title === 'string' ? loginView.title : 'Solid login'
-      : 'Solid login',
-    identityProvider: {
-      url: issuer.startsWith('http://') || issuer.startsWith('https://') ? issuer : 'https://example.invalid',
-      label: issuer,
-    },
-    availability: 'ready',
+interface LegacyRouteBinding {
+  route: WebIdLoginRouteDescriptor
+  loginValue: string
+}
+
+function legacyEndpoint(value: string, label: string): { url: string; label: string } {
+  const candidate = value.trim()
+  try {
+    const normalized = /^https?:\/\//iu.test(candidate) ? candidate : `https://${candidate}`
+    return { url: new URL(normalized).href, label }
+  } catch {
+    return { url: 'https://legacy.invalid/', label }
   }
+}
+
+function legacyRouteBindings(loginView?: AuthBoundaryProps['loginView']): LegacyRouteBinding[] {
+  const spaceProviders = loginView?.spaceProviders
+    ? [loginView.spaceProviders.cloud, loginView.spaceProviders.local].filter(
+      (provider): provider is LoginProviderOption => provider !== undefined,
+    )
+    : []
+  const providers = spaceProviders.length > 0 ? spaceProviders : loginView?.providers ?? []
+  if (providers.length === 0) {
+    const loginValue = loginView?.defaultIssuer?.trim() || ''
+    return [{
+      route: {
+        id: 'legacy-default',
+        label: typeof loginView?.title === 'string' ? loginView.title : 'Solid login',
+        identityProvider: legacyEndpoint(loginValue, 'Legacy identity provider'),
+        availability: loginValue ? 'ready' : 'unavailable',
+        ...(loginValue ? {} : { unavailableReason: 'No legacy identity provider was configured.' }),
+      },
+      loginValue,
+    }]
+  }
+
+  return providers.map((provider, index) => ({
+    route: {
+      id: `legacy-provider-${index + 1}`,
+      label: provider.label,
+      ...(provider.subtitle === undefined ? {} : { description: provider.subtitle }),
+      ...(provider.badge === undefined ? {} : { badge: provider.badge }),
+      identityProvider: legacyEndpoint(provider.id, provider.label),
+      availability: provider.disabled ? 'unavailable' : 'ready',
+      ...(provider.disabled ? { unavailableReason: 'This provider is unavailable.' } : {}),
+    },
+    loginValue: provider.id,
+  }))
 }
 
 function legacyStateToSolidState(
   state: AuthBoundaryState,
-  loginView?: AuthBoundaryProps['loginView'],
+  bindings: readonly LegacyRouteBinding[],
 ): WebIdAuthState {
   switch (state.status) {
     case 'loading':
@@ -79,7 +114,7 @@ function legacyStateToSolidState(
       return {
         status: 'error',
         message: state.message,
-        retryRouteId: legacyRoute(loginView).id,
+        retryRouteId: bindings.length === 1 ? bindings[0]?.route.id : undefined,
       }
   }
 }
@@ -153,54 +188,29 @@ export function AuthBoundary({
   loginView,
   restoringLabel = '正在检查登录状态',
 }: AuthBoundaryProps) {
-  const [dismissedError, setDismissedError] = useState<string | null>(null)
-  const solidState = legacyStateToSolidState(state, loginView)
-
-  if (state.status === 'authenticated') {
-    return <>{children}</>
-  }
-
-  if (solidState.status === 'restoring') {
-    return (
-      <ConnectSurface>
-        <LoginRestoringView label={`${restoringLabel}...`} />
-      </ConnectSurface>
-    )
-  }
-
-  const errorMessage = solidState.status === 'error' ? solidState.message : undefined
-
-  if (errorMessage && dismissedError !== errorMessage) {
-    const retryIssuer = loginView?.defaultIssuer ?? loginView?.providers?.[0]?.id
-    return (
-      <ConnectSurface>
-        <LoginFailureView
-          description={errorMessage}
-          primaryLabel="重新登录"
-          onPrimary={() => {
-            if (retryIssuer) void login(retryIssuer)
-          }}
-          secondaryLabel="重新选择登录方式"
-          onSecondary={() => setDismissedError(errorMessage)}
-        />
-      </ConnectSurface>
-    )
+  const bindings = legacyRouteBindings(loginView)
+  const solidState = legacyStateToSolidState(state, bindings)
+  const loginByRoute = (routeId: string) => {
+    const binding = bindings.find((candidate) => candidate.route.id === routeId)
+    if (binding) void login(binding.loginValue)
   }
 
   return (
-    <LoginView
-      title={loginView?.title ?? defaultLoginTitle}
-      description={loginView?.description}
-      defaultIssuer={loginView?.defaultIssuer}
-      logo={loginView?.logo}
-      providers={loginView?.providers}
-      spaceProviders={loginView?.spaceProviders}
-      providerListTitle={loginView?.providerListTitle}
-      connectingProviderId={loginView?.connectingProviderId}
-      onAddProvider={loginView?.onAddProvider}
-      onDismissError={() => setDismissedError(null)}
-      error={errorMessage}
-      onLogin={login}
-    />
+    <SolidAuthBoundary
+      state={solidState}
+      routes={bindings.map((binding) => binding.route)}
+      onLogin={loginByRoute}
+      onRetry={loginByRoute}
+      copy={{
+        route: {
+          title: typeof loginView?.title === 'string' ? loginView.title : defaultLoginTitle,
+          description: typeof loginView?.description === 'string' ? loginView.description : undefined,
+          restoringLabel: `${restoringLabel}...`,
+          failureTitle: 'Sign-in failed',
+        },
+      }}
+    >
+      {children}
+    </SolidAuthBoundary>
   )
 }

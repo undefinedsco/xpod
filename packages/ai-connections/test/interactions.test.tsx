@@ -162,6 +162,44 @@ describe('AI Connection settings', () => {
     expect(screen.queryByRole('region', { name: /详情/u })).toBeNull()
   })
 
+  it('uses the typed AI Connections failure copy for expired OAuth attempts', () => {
+    const definition = PROVIDERS.find((candidate) => candidate.id === 'kimi')!
+    const offering = {
+      id: 'official-subscription',
+      label: 'Kimi 账号',
+      kind: 'official-subscription' as const,
+      authModes: ['oauth' as const],
+    }
+
+    render(
+      <AiCredentialPoolSection
+        definition={definition}
+        product={{
+          id: 'kimi',
+          name: 'Kimi',
+          status: 'unconfigured',
+          offerings: [offering],
+          credentials: [],
+          selectedModels: [],
+        }}
+        status="disconnected"
+        attempt={{ mode: 'deviceCodeOAuth', provider: 'kimi', status: 'expired', message: 'Kimi 账号登录已过期' }}
+        attemptOfferingId={offering.id}
+        apiKey=""
+        busy={false}
+        error={{ offeringId: offering.id, message: 'Kimi 账号登录已过期' }}
+        onApiKeyChange={() => undefined}
+        onBeginApiKey={() => undefined}
+        onBeginBrowser={() => undefined}
+        onSaveApiKey={() => undefined}
+        onDisconnect={() => undefined}
+        onBeginOffering={() => undefined}
+      />,
+    )
+
+    expect(screen.getByText('登录未完成')).toBeTruthy()
+  })
+
   it('describes the current Pod protection accurately before a credential is added', () => {
     render(<AiConnectionsPanel client={client()} selectedProvider="openai" serviceAccessGranted />)
 

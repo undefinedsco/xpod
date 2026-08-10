@@ -18,6 +18,13 @@ const route: WebIdLoginRouteDescriptor = {
   availability: 'ready',
 }
 
+const secondaryRoute: WebIdLoginRouteDescriptor = {
+  id: 'cloud',
+  label: 'Cloud Xpod',
+  identityProvider: { url: 'https://cloud.example/.account', label: 'Cloud host' },
+  availability: 'ready',
+}
+
 const children = <section aria-label="private workspace">Private workspace</section>
 
 describe('SolidAuthBoundary', () => {
@@ -114,13 +121,13 @@ describe('SolidAuthBoundary', () => {
     expect(onSwitchAccount).toHaveBeenCalledTimes(1)
   })
 
-  it('maps optional storage conflict state and only exposes conflict retry when supplied', () => {
+  it('does not guess a storage conflict retry route when multiple routes are available', () => {
     const storageState: StorageSelectionState = { status: 'conflict', message: 'Storage belongs to another WebID' }
     const { rerender } = render(
       <SolidAuthBoundary
         state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
         storageState={storageState}
-        routes={[route]}
+        routes={[route, secondaryRoute]}
         onLogin={() => undefined}
       >
         {children}
@@ -134,7 +141,22 @@ describe('SolidAuthBoundary', () => {
       <SolidAuthBoundary
         state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
         storageState={storageState}
-        routes={[route]}
+        routes={[route, secondaryRoute]}
+        onLogin={() => undefined}
+        onRetry={onRetry}
+      >
+        {children}
+      </SolidAuthBoundary>,
+    )
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+    expect(onRetry).not.toHaveBeenCalled()
+
+    rerender(
+      <SolidAuthBoundary
+        state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
+        storageState={storageState}
+        routes={[route, secondaryRoute]}
+        storageRouteId={secondaryRoute.id}
         onLogin={() => undefined}
         onRetry={onRetry}
       >
@@ -142,7 +164,22 @@ describe('SolidAuthBoundary', () => {
       </SolidAuthBoundary>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    expect(onRetry).toHaveBeenCalledWith(route.id)
+    expect(onRetry).toHaveBeenCalledWith(secondaryRoute.id)
+
     expect(screen.queryByRole('region', { name: 'private workspace' })).toBeNull()
+
+    rerender(
+      <SolidAuthBoundary
+        state={{ status: 'authenticated', webId: 'https://pod.example/alice#me' }}
+        storageState={{ status: 'error', message: 'Storage could not be prepared' }}
+        routes={[route, secondaryRoute]}
+        onLogin={() => undefined}
+        onRetry={onRetry}
+      >
+        {children}
+      </SolidAuthBoundary>,
+    )
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+    expect(onRetry).toHaveBeenCalledTimes(1)
   })
 })

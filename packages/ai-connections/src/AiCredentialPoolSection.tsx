@@ -184,6 +184,7 @@ export function AiCredentialPoolSection({
             return (
               <OfferingItem key={offering.id} offering={offering}>
                 <LoginFailureView
+                  title="登录未完成"
                   description={offeringError}
                   primaryLabel="重试登录"
                   onPrimary={() => onBeginOffering?.(offering, mode)}

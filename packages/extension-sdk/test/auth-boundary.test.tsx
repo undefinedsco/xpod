@@ -21,6 +21,27 @@ describe('AuthBoundary', () => {
     expect(login).not.toHaveBeenCalled()
   })
 
+  it('delegates legacy anonymous state to the canonical route surface with an opaque action id', () => {
+    const login = vi.fn()
+
+    render(
+      <AuthBoundary
+        state={{ status: 'anonymous' }}
+        login={login}
+        loginView={{
+          title: 'Connect Solid Pod',
+          defaultIssuer: 'https://solid.example.com',
+        }}
+      >
+        <section>Private workspace</section>
+      </AuthBoundary>,
+    )
+
+    expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(login).toHaveBeenCalledWith('https://solid.example.com')
+  })
+
   it('renders a reusable issuer login surface for anonymous state', () => {
     const login = vi.fn()
 
@@ -41,12 +62,9 @@ describe('AuthBoundary', () => {
     expect(screen.getByRole('heading', { name: 'Connect Solid Pod' })).toBeTruthy()
     expect(screen.getByText('Use the issuer selected by the host.')).toBeTruthy()
 
-    fireEvent.change(screen.getByLabelText('Identity provider URL'), {
-      target: { value: ' https://issuer.example.org ' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
-    expect(login).toHaveBeenCalledWith('https://issuer.example.org')
+    expect(login).toHaveBeenCalledWith('https://solid.example.com')
     expect(screen.queryByText('Private workspace')).toBeNull()
   })
 
@@ -92,26 +110,23 @@ describe('AuthBoundary', () => {
     )
 
     const alert = screen.getByRole('alert')
-    expect(alert.textContent).toBe('Pod host rejected the issuer.')
+    expect(alert.textContent).toContain('Pod host rejected the issuer.')
     expect(alert.textContent).not.toContain('Internal Server Error')
     expect(screen.getByText('Sign-in failed')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: '重新登录' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(login).toHaveBeenCalledWith('https://solid.example.com')
-
-    fireEvent.click(screen.getByRole('button', { name: '重新选择登录方式' }))
-    expect(screen.getByLabelText('Identity provider URL')).toBeTruthy()
 
     rerender(
       <AuthBoundary
-        state={{ status: 'error', message: 'Pod host rejected the issuer.' }}
+        state={{ status: 'anonymous' }}
         login={login}
         loginView={{ title: 'Reconnect Pod', defaultIssuer: 'https://solid.example.com' }}
       >
         <section>Private workspace</section>
       </AuthBoundary>,
     )
-    expect(screen.getByLabelText('Identity provider URL')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeTruthy()
   })
 
   it('renders the shared provider list login and connects through the selected provider', () => {
@@ -137,11 +152,11 @@ describe('AuthBoundary', () => {
       </AuthBoundary>,
     )
 
-    expect(screen.getByText('当前 Xpod')).toBeTruthy()
+    expect(screen.getAllByText('当前 Xpod').length).toBeGreaterThan(0)
     expect(screen.getByText('本机')).toBeTruthy()
     expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: /当前 Xpod/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(login).toHaveBeenCalledWith('https://xpod.local')
   })
 
@@ -165,17 +180,15 @@ describe('AuthBoundary', () => {
       </AuthBoundary>,
     )
 
-    expect(screen.getByText('Account')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Remote' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Local' })).toBeTruthy()
+    expect(screen.getAllByText('Cloud').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Local').length).toBeGreaterThan(0)
     expect(screen.queryByLabelText('Identity provider URL')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Local' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Continue' })[1]!)
     expect(login).toHaveBeenCalledWith('https://xpod.local')
   })
 
-  it('adds a custom login provider through the shared add form with URL validation', () => {
+  it('keeps custom-provider props source-compatible without reopening the issuer form', () => {
     const login = vi.fn()
 
     render(
@@ -192,17 +205,9 @@ describe('AuthBoundary', () => {
       </AuthBoundary>,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add provider' }))
-
-    const input = screen.getByLabelText('Provider URL')
-    fireEvent.change(input, { target: { value: 'not a url' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
-    expect(screen.getByRole('alert').textContent).toContain('Enter a valid provider URL.')
+    expect(screen.queryByRole('button', { name: 'Add provider' })).toBeNull()
+    expect(screen.queryByLabelText('Provider URL')).toBeNull()
     expect(login).not.toHaveBeenCalled()
-
-    fireEvent.change(input, { target: { value: 'pod.example.org' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
-    expect(login).toHaveBeenCalledWith('https://pod.example.org')
   })
 })
 

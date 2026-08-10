@@ -18,6 +18,11 @@ export interface SolidAuthBoundaryProps {
   state: WebIdAuthState
   storageState?: StorageSelectionState
   routes: readonly WebIdLoginRouteDescriptor[]
+  storageRouteId?: string
+  copy?: {
+    route?: Partial<WebIdLoginRouteCopy>
+    storage?: Partial<StorageBootstrapCopy>
+  }
   onLogin: (routeId: string) => void | Promise<void>
   onRetry?: (routeId: string) => void | Promise<void>
   onCancel?: () => void | Promise<void>
@@ -116,20 +121,24 @@ export function SolidAuthBoundary({
   state,
   storageState,
   routes,
+  storageRouteId,
+  copy,
   onLogin,
   onRetry,
   onCancel,
   onSwitchAccount,
   children,
 }: SolidAuthBoundaryProps) {
+  const visibleRouteCopy: WebIdLoginRouteCopy = { ...routeCopy, ...copy?.route }
+  const visibleStorageCopy: StorageBootstrapCopy = { ...storageCopy, ...copy?.storage }
+
   if (state.status === 'authenticated' && isStorageReady(storageState)) {
     return <>{children}</>
   }
 
   if (state.status === 'authenticated' && storageState) {
-    const routeId = routes[0]?.id
     const storageStateView = storageViewState(storageState)
-    const canRetryStorage = Boolean(onRetry && routeId
+    const canRetryStorage = Boolean(onRetry && storageRouteId
       && (storageState.status === 'conflict' || storageState.status === 'error'))
     const canCancelStorage = Boolean(onCancel
       && (storageState.status === 'creating' || storageState.status === 'waiting_for_binding'))
@@ -138,8 +147,8 @@ export function SolidAuthBoundary({
       <ConnectSurface>
         <StorageBootstrapView
           state={storageStateView}
-          copy={storageCopy}
-          onRetry={canRetryStorage ? () => void onRetry?.(routeId!) : undefined}
+          copy={visibleStorageCopy}
+          onRetry={canRetryStorage ? () => void onRetry?.(storageRouteId!) : undefined}
           onCancel={canCancelStorage ? onCancel : undefined}
         />
       </ConnectSurface>
@@ -157,11 +166,15 @@ export function SolidAuthBoundary({
     <ConnectSurface>
       <div className="flex w-full flex-col gap-4">
         {routeList.map((route) => {
-          const retryRouteId = state.status === 'error' ? state.retryRouteId : undefined
+          const retryRouteId = state.status === 'error'
+            ? state.retryRouteId
+            : state.status === 'expired'
+              ? state.remembered?.routeId ?? (routes.length === 1 ? routes[0]?.id : undefined)
+              : undefined
           const canRetry = Boolean(onRetry && (
             retryRouteId === route.id
-            || storageState?.status === 'conflict'
-            || storageState?.status === 'error'
+            || (storageRouteId === route.id
+              && (storageState?.status === 'conflict' || storageState?.status === 'error'))
           ))
           const canStart = state.status === 'anonymous'
           const canCancel = state.status === 'connecting'
@@ -171,7 +184,7 @@ export function SolidAuthBoundary({
               key={route.id}
               route={route}
               state={mappedState}
-              copy={routeCopy}
+              copy={visibleRouteCopy}
               onStart={canStart ? onLogin : undefined}
               onRetry={canRetry ? onRetry : undefined}
               onCancel={canCancel ? onCancel : undefined}

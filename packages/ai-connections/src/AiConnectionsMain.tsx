@@ -6,7 +6,8 @@ import {
   type AiConnectionsController,
 } from './controller'
 import { AiConnectionsPanel } from './AiConnectionsPanel'
-import { AuthBoundary, type AuthBoundaryState } from '@undefineds.co/extension-sdk/react'
+import { SolidAuthBoundary } from '@undefineds.co/extension-sdk/react'
+import type { WebIdAuthState } from '@undefineds.co/solid-sdk'
 import { useEffect } from 'react'
 
 export function AiConnectionsMain({ controller }: { controller: AiConnectionsController }) {
@@ -21,22 +22,25 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
 
   if (!controller.client) {
     return (
-      <AuthBoundary
-        state={authBoundaryState(controller)}
-        login={() => void controller.login()}
-        restoringLabel="正在打开当前 Pod"
-        loginView={{
-          title: '登录 Xpod',
-          description: '登录后即可管理当前 Pod 的 AI 连接。',
-          providers: [{
-            id: 'xpod',
-            label: '登录',
-          }],
-          providerListTitle: '选择登录方式',
+      <SolidAuthBoundary
+        state={authState(controller)}
+        routes={controller.loginRoutes}
+        onLogin={(routeId) => void controller.login(routeId)}
+        onRetry={(routeId) => void controller.login(routeId)}
+        copy={{
+          route: {
+            title: '登录 Xpod',
+            description: '登录后即可管理当前 Pod 的 AI 连接。',
+            startLabel: '登录',
+            restoringLabel: '正在打开当前 Pod',
+            retryLabel: '重新登录',
+            failureTitle: '登录未完成',
+            expiredTitle: '登录已过期',
+          },
         }}
       >
         {null}
-      </AuthBoundary>
+      </SolidAuthBoundary>
     )
   }
 
@@ -57,16 +61,25 @@ export function AiConnectionsMain({ controller }: { controller: AiConnectionsCon
   )
 }
 
-function authBoundaryState(controller: AiConnectionsController): AuthBoundaryState {
+function authState(controller: AiConnectionsController): WebIdAuthState {
   if (controller.sessionStatus === 'authenticating' || controller.podStatus === 'opening') {
-    return { status: 'loading' }
+    return { status: 'restoring' }
+  }
+  if (controller.sessionStatus === 'expired') {
+    return {
+      status: 'expired',
+    }
   }
   const error = controller.error
-    ?? (controller.sessionStatus === 'expired'
-      ? new Error('当前登录已过期，请重新登录后继续。')
-      : controller.sessionStatus === 'authenticated' && controller.podStatus !== 'ready'
-        ? new Error('当前 Pod 尚未就绪')
-        : undefined)
-  if (error) return { status: 'error', message: error.message }
+    ?? (controller.sessionStatus === 'authenticated' && controller.podStatus !== 'ready'
+      ? new Error('当前 Pod 尚未就绪')
+      : undefined)
+  if (error) {
+    return {
+      status: 'error',
+      message: error.message,
+      retryRouteId: controller.loginRoutes.length === 1 ? controller.loginRoutes[0]?.id : undefined,
+    }
+  }
   return { status: 'anonymous' }
 }
