@@ -78,6 +78,9 @@
           "@id": "urn:solid-server:default:SeededAccountInitializer"
         },
         {
+          "@id": "urn:undefineds:xpod:DerivedIndexChangeJournal"
+        },
+        {
           "@id": "urn:undefineds:xpod:CenterNodeRegistrationService"
         }
       ]

@@ -39,6 +39,19 @@ async function waitUntilAsync(predicate: () => Promise<boolean>, timeoutMs: numb
 }
 
 describe('PostgresDerivedIndexJournal', () => {
+  it('creates the journal schema when the CSS initializer handles startup', async () => {
+    const executor = new PgliteRdfSqlExecutor(new PGlite());
+    const journal = createJournal({ executor });
+
+    await journal.handle();
+
+    const tables = await executor.query<{ relation: string | null }>(`
+      SELECT to_regclass('derived_index_change_journal')::text AS relation
+    `);
+    expect(tables).toEqual([{ relation: 'derived_index_change_journal' }]);
+    await journal.close();
+  });
+
   it('rejects empty and duplicate configured consumer IDs', () => {
     const db = new PGlite();
     expect(() => createJournal({
@@ -422,6 +435,14 @@ describe('PostgresDerivedIndexJournal', () => {
       options_recorders: [{ '@id': 'urn:undefineds:xpod:DerivedIndexChangeJournal' }],
     });
     expect(JSON.stringify(override)).not.toContain('SqliteSolidFsSyncJournal');
+    const primaryInitializer = graph.find((entry) =>
+      entry['@id'] === 'urn:solid-server:default:PrimarySequenceInitializer');
+    const handlers = primaryInitializer?.[
+      'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/SequenceHandler.jsonld#SequenceHandler_handlers'
+    ];
+    expect(handlers).toContainEqual({
+      '@id': 'urn:undefineds:xpod:DerivedIndexChangeJournal',
+    });
   });
 
   it('replays automatically after construction and recovers an expired processing lease', async () => {

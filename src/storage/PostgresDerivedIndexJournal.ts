@@ -1,3 +1,4 @@
+import { Initializer } from '@solid/community-server';
 import type {
   ResourceChangeEvent,
   ResourceChangeListener,
@@ -38,7 +39,7 @@ export interface DerivedIndexReplayResult {
 }
 
 /** PostgreSQL outbox for CSS subscribe events consumed by FTS/VEC derivations. */
-export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
+export class PostgresDerivedIndexJournal extends Initializer implements ResourceChangeRecorder {
   private readonly options: PostgresDerivedIndexJournalOptions;
   private readonly retryDelayMs: number;
   private readonly leaseMs: number;
@@ -59,6 +60,7 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
     consumers: ResourceChangeListener[] = [],
     pollIntervalMs = 1_000,
   ) {
+    super();
     const durableConsumers: DurableResourceChangeConsumer[] = [];
     const consumerIds = new Set<string>();
     for (const consumer of consumers) {
@@ -106,6 +108,10 @@ export class PostgresDerivedIndexJournal implements ResourceChangeRecorder {
   public async open(): Promise<void> {
     this.opening ??= this.initialize();
     await this.opening;
+  }
+
+  public async handle(): Promise<void> {
+    await this.open();
   }
 
   private async initialize(): Promise<void> {
