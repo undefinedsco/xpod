@@ -47,13 +47,21 @@ describe('Xpod storage selection', () => {
     expect((stale as Extract<StorageSelectionState, { status: 'selecting' }>).candidates[0]).toEqual(binding(alice, aliceStorage));
   });
 
+  it('treats one storage owned by several WebIDs as separate exact candidates', () => {
+    const aliceOnSharedStorage = binding(alice, 'https://app.example/shared/');
+    const bobOnSharedStorage = binding(bob, 'https://app.example/shared/');
+
+    expect(reconcileXpodStorageSelection({
+      bindings: [aliceOnSharedStorage, bobOnSharedStorage, aliceOnSharedStorage],
+    })).toEqual({
+      status: 'selecting',
+      candidates: [aliceOnSharedStorage, bobOnSharedStorage],
+    });
+  });
+
   it('reports empty, conflict, loading, and transport error states deterministically', () => {
     expect(reconcileXpodStorageSelection({ bindings: [] })).toEqual({ status: 'empty' });
     expect(reconcileXpodStorageSelection({ bindings: undefined })).toEqual({ status: 'loading' });
-    expect(reconcileXpodStorageSelection({ bindings: [
-      binding(alice, aliceStorage),
-      binding(bob, aliceStorage),
-    ] })).toMatchObject({ status: 'conflict' });
     expect(reconcileXpodStorageSelection({ error: new Error('403') })).toEqual({
       status: 'error',
       message: 'Unable to enumerate Account storage bindings.',
@@ -62,6 +70,13 @@ describe('Xpod storage selection', () => {
       status: 'error',
       message: 'Account storage bindings are malformed.',
     });
+  });
+
+  it('reports a conflict only when one exact pair has incompatible metadata', () => {
+    expect(reconcileXpodStorageSelection({ bindings: [
+      { ...binding(alice, aliceStorage), label: 'Alice Pod' },
+      { ...binding(alice, aliceStorage), label: 'A different Pod' },
+    ] })).toMatchObject({ status: 'conflict' });
   });
 
   it('persists only the public exact binding key', () => {

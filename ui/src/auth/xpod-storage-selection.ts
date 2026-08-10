@@ -33,40 +33,39 @@ export function reconcileXpodStorageSelection(
   }
 
   const candidates: StorageBinding[] = [];
-  const seen = new Set<string>();
-  const storageOwners = new Map<string, string>();
+  const seen = new Map<string, StorageBinding>();
   for (const candidate of options.bindings) {
     const normalized = normalizeBinding(candidate);
     if (!normalized) {
       return { status: 'error', message: 'Account storage bindings are malformed.' };
     }
 
-    const existingOwner = storageOwners.get(normalized.storageUrl);
-    if (existingOwner && existingOwner !== normalized.webId) {
-      return {
-        status: 'conflict',
-        message: `Storage URL ${normalized.storageUrl} is bound to incompatible WebIDs`,
-      };
-    }
-    storageOwners.set(normalized.storageUrl, normalized.webId);
-
     const key = storageBindingKey(normalized);
-    if (!seen.has(key)) {
-      seen.add(key);
-      candidates.push(normalized);
+    const existing = seen.get(key);
+    if (existing) {
+      if (!areBindingMetadataCompatible(existing, normalized)) {
+        return {
+          status: 'conflict',
+          message: `Storage binding ${normalized.storageUrl} is duplicated with incompatible metadata`,
+        };
+      }
+      // An exact duplicate is not another candidate. Prefer the row carrying
+      // the display metadata when one duplicate omits it.
+      if (existing.label === undefined && normalized.label !== undefined) {
+        const index = candidates.indexOf(existing);
+        const merged = { ...existing, label: normalized.label };
+        seen.set(key, merged);
+        candidates[index] = merged;
+      }
+      continue;
     }
+    seen.set(key, normalized);
+    candidates.push(normalized);
   }
 
   if (options.remembered) {
     const remembered = normalizeBinding(options.remembered);
     if (remembered) {
-      const owner = storageOwners.get(remembered.storageUrl);
-      if (owner && owner !== remembered.webId) {
-        return {
-          status: 'conflict',
-          message: `Remembered storage ${remembered.storageUrl} belongs to another WebID`,
-        };
-      }
       const exact = candidates.find((candidate) => storageBindingKey(candidate) === storageBindingKey(remembered));
       if (exact) {
         return { status: 'ready', selected: { ...exact } };
@@ -144,6 +143,12 @@ function normalizeBinding(binding: StorageBinding): StorageBinding | undefined {
   } catch {
     return undefined;
   }
+}
+
+function areBindingMetadataCompatible(left: StorageBinding, right: StorageBinding): boolean {
+  return left.label === undefined
+    || right.label === undefined
+    || left.label === right.label;
 }
 
 function defaultSessionStorage(): Storage {
