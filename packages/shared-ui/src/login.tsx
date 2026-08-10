@@ -46,6 +46,7 @@ export interface LoginProviderListCopy {
   connectLabel: string
   cancelLabel: string
   emptyMessage: string
+  dismissErrorLabel?: string
 }
 
 export interface LoginSpaceSelectionCopy {
@@ -57,6 +58,7 @@ export interface LoginSpaceSelectionCopy {
   localDescription: string
   continueLabel: string
   moreProvidersLabel: string
+  dismissErrorLabel?: string
 }
 
 // These defaults belong only to the legacy compatibility wrappers below. The
@@ -304,6 +306,7 @@ export function LoginAccountView({
   switchLabel,
   error,
   onDismissError,
+  dismissErrorLabel,
   onEnter,
   onSwitchAccount,
 }: {
@@ -317,6 +320,7 @@ export function LoginAccountView({
   switchLabel?: string
   error?: string | null
   onDismissError?: () => void
+  dismissErrorLabel?: string
   onEnter: () => void
   onSwitchAccount?: () => void
 }) {
@@ -341,7 +345,13 @@ export function LoginAccountView({
         ) : null}
       </div>
 
-      {!expired ? <LoginErrorBanner error={error} onDismiss={onDismissError} /> : null}
+      {!expired ? (
+        <LoginErrorBanner
+          error={error}
+          onDismiss={onDismissError}
+          dismissLabel={dismissErrorLabel}
+        />
+      ) : null}
 
       <div className="shrink-0 space-y-2 px-5 pb-5 pt-2">
         <button
@@ -557,6 +567,7 @@ export function LoginProviderListView({
     connectLabel: legacyLoginLabel(copy?.connectLabel, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.connectLabel),
     cancelLabel: legacyLoginLabel(copy?.cancelLabel, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.cancelLabel),
     emptyMessage: legacyLoginLabel(copy?.emptyMessage, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.emptyMessage),
+    dismissErrorLabel: legacyLoginLabel(copy?.dismissErrorLabel, LEGACY_LOGIN_ERROR_DEFAULT_COPY.dismissLabel),
   }
   const visibleTitle = legacyLoginLabel(title, visibleCopy.title)
   const visibleBackLabel = visibleCopy.backLabel
@@ -597,7 +608,11 @@ export function LoginProviderListView({
       ) : null}
       {visibleTitle ? <h2 className="mt-3 text-base font-semibold text-foreground">{visibleTitle}</h2> : null}
 
-      <LoginErrorBanner error={error} onDismiss={onDismissError} />
+      <LoginErrorBanner
+        error={error}
+        onDismiss={onDismissError}
+        dismissLabel={visibleCopy.dismissErrorLabel}
+      />
 
       <div className="mt-4 flex-1 space-y-2 overflow-y-auto">
         {providers.map((provider) => {
@@ -740,6 +755,7 @@ export function LoginSpaceSelectionView({
     localDescription: legacyLoginLabel(copy?.localDescription, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.localDescription),
     continueLabel: legacyLoginLabel(copy?.continueLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.continueLabel),
     moreProvidersLabel: legacyLoginLabel(copy?.moreProvidersLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.moreProvidersLabel),
+    dismissErrorLabel: legacyLoginLabel(copy?.dismissErrorLabel, LEGACY_LOGIN_ERROR_DEFAULT_COPY.dismissLabel),
   }
   const visibleDescription = space === 'local' ? visibleCopy.localDescription : visibleCopy.cloudDescription
 
@@ -780,7 +796,11 @@ export function LoginSpaceSelectionView({
         </div>
       </div>
 
-      <LoginErrorBanner error={error} onDismiss={onDismissError} />
+      <LoginErrorBanner
+        error={error}
+        onDismiss={onDismissError}
+        dismissLabel={visibleCopy.dismissErrorLabel}
+      />
 
       <div className="shrink-0 space-y-2">
         <button

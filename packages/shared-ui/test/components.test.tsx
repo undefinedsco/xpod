@@ -249,8 +249,10 @@ describe('@undefineds.co/shared-ui', () => {
         <LoginSpaceSelectionView
           productName="Host product"
           providers={{ cloud: { id: 'cloud-id', label: 'Remote choice' }, local: { id: 'local-id', label: 'Local choice' } }}
+          error="Host space error"
           onConnect={() => undefined}
           onMoreProviders={() => undefined}
+          onDismissError={() => undefined}
           copy={{
             accountLabel: 'Host account',
             storageLabel: 'Host storage',
@@ -260,11 +262,15 @@ describe('@undefineds.co/shared-ui', () => {
             localDescription: 'Host local description',
             continueLabel: 'Host continue',
             moreProvidersLabel: 'Host more',
+            dismissErrorLabel: 'Host space dismiss',
           }}
         />
         <LoginAccountView
           name="User"
           enterLabel="Host enter"
+          error="Host account error"
+          onDismissError={() => undefined}
+          dismissErrorLabel="Host account dismiss"
           onEnter={() => undefined}
         />
         <LoginErrorBanner
@@ -274,8 +280,10 @@ describe('@undefineds.co/shared-ui', () => {
         />
         <LoginProviderListView
           providers={[]}
+          error="Host provider error"
           onConnect={() => undefined}
           onAddProvider={() => undefined}
+          onDismissError={() => undefined}
           copy={{
             title: 'Host providers',
             backLabel: 'Host back',
@@ -286,6 +294,7 @@ describe('@undefineds.co/shared-ui', () => {
             connectLabel: 'Host connect',
             cancelLabel: 'Host cancel',
             emptyMessage: 'Host empty',
+            dismissErrorLabel: 'Host provider dismiss',
           }}
         />
       </>,
@@ -295,10 +304,13 @@ describe('@undefineds.co/shared-ui', () => {
     expect(html).toContain('Host remote')
     expect(html).toContain('Host enter')
     expect(html).toContain('Host dismiss')
+    expect(html).toContain('Host space dismiss')
+    expect(html).toContain('Host account dismiss')
+    expect(html).toContain('Host provider dismiss')
     expect(html).toContain('Host add')
     expect(html).not.toContain('Identity provider URL')
     expect(html).not.toContain('More options')
     expect(html).not.toContain('Add provider')
-    expect(html).not.toContain('Dismiss')
+    expect(html).not.toContain('aria-label="Dismiss"')
   })
 })
