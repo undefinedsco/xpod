@@ -30,7 +30,7 @@ export interface SolidConnectFormProps {
   pending?: boolean
   error?: string
   submitErrorMessage?: string
-  copy?: SolidConnectCopy
+  copy?: Partial<SolidConnectCopy>
   onConnect: (issuer: string) => void | Promise<void>
 }
 
@@ -40,6 +40,20 @@ export interface SolidConnectCopy {
   submitLabel: string
   pendingLabel: string
   errorMessage: string
+}
+
+// Legacy compatibility defaults intentionally stay here, outside the canonical
+// typed auth surfaces, so old hosts remain usable without product branding.
+const LEGACY_SOLID_CONNECT_DEFAULT_COPY: SolidConnectCopy = {
+  issuerLabel: 'Identity provider URL',
+  issuerPlaceholder: 'https://example.com',
+  submitLabel: 'Connect',
+  pendingLabel: 'Connecting…',
+  errorMessage: 'Unable to connect',
+}
+
+function legacyConnectLabel(value: string | null | undefined, fallback: string): string {
+  return value?.trim() ? value : fallback
 }
 
 export function SolidConnectForm({
@@ -58,13 +72,21 @@ export function SolidConnectForm({
   const normalizedIssuer = issuer.trim()
   const pending = pendingExternal || pendingInternal
   const visibleError = submitError || error
-  const submitLabel = pending ? copy?.pendingLabel : copy?.submitLabel
+  const visibleCopy: SolidConnectCopy = {
+    issuerLabel: legacyConnectLabel(copy?.issuerLabel, LEGACY_SOLID_CONNECT_DEFAULT_COPY.issuerLabel),
+    issuerPlaceholder: legacyConnectLabel(copy?.issuerPlaceholder, LEGACY_SOLID_CONNECT_DEFAULT_COPY.issuerPlaceholder),
+    submitLabel: legacyConnectLabel(copy?.submitLabel, LEGACY_SOLID_CONNECT_DEFAULT_COPY.submitLabel),
+    pendingLabel: legacyConnectLabel(copy?.pendingLabel, LEGACY_SOLID_CONNECT_DEFAULT_COPY.pendingLabel),
+    errorMessage: legacyConnectLabel(
+      copy?.errorMessage,
+      legacyConnectLabel(submitErrorMessage, LEGACY_SOLID_CONNECT_DEFAULT_COPY.errorMessage),
+    ),
+  }
+  const submitLabel = pending ? visibleCopy.pendingLabel : visibleCopy.submitLabel
 
   const describedBy = useMemo(() => (
     visibleError ? errorId : undefined
   ), [errorId, visibleError])
-
-  if (!copy) return null
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -79,7 +101,7 @@ export function SolidConnectForm({
     try {
       await onConnect(normalizedIssuer)
     } catch {
-      setSubmitError(copy?.errorMessage ?? submitErrorMessage)
+      setSubmitError(visibleCopy.errorMessage)
     } finally {
       setPendingInternal(false)
     }
@@ -88,7 +110,7 @@ export function SolidConnectForm({
   return (
     <form className="flex flex-col gap-4" onSubmit={(event) => void handleSubmit(event)}>
       <div className="flex flex-col gap-2 text-left">
-        <Label htmlFor={issuerId}>{copy.issuerLabel}</Label>
+        <Label htmlFor={issuerId}>{visibleCopy.issuerLabel}</Label>
         <Input
           id={issuerId}
           type="url"
@@ -96,7 +118,7 @@ export function SolidConnectForm({
           disabled={pending}
           aria-invalid={visibleError ? true : undefined}
           aria-describedby={describedBy}
-          placeholder={copy.issuerPlaceholder}
+          placeholder={visibleCopy.issuerPlaceholder}
           className="border-border/60 bg-background focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           onChange={(event) => setIssuer(event.currentTarget.value)}
         />

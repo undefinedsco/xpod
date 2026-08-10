@@ -59,6 +59,65 @@ export interface LoginSpaceSelectionCopy {
   moreProvidersLabel: string
 }
 
+// These defaults belong only to the legacy compatibility wrappers below. The
+// canonical authentication surfaces require hosts to provide typed copy.
+const LEGACY_LOGIN_ERROR_DEFAULT_COPY = {
+  dismissLabel: 'Dismiss',
+} as const
+
+const LEGACY_LOGIN_RESTORING_DEFAULT_COPY = {
+  label: 'Restoring session…',
+} as const
+
+const LEGACY_LOGIN_CONNECTING_DEFAULT_COPY = {
+  title: 'Connecting…',
+  detail: 'Waiting for the provider',
+  cancelLabel: 'Cancel',
+} as const
+
+const LEGACY_LOGIN_ACCOUNT_DEFAULT_COPY = {
+  enterLabel: 'Continue',
+  switchLabel: 'Switch account',
+} as const
+
+const LEGACY_LOGIN_FAILURE_DEFAULT_COPY = {
+  title: 'Sign-in failed',
+  primaryLabel: 'Retry',
+  secondaryLabel: 'Back',
+} as const
+
+const LEGACY_LOGIN_STORAGE_CONFLICT_DEFAULT_COPY = {
+  primaryLabel: 'Use expected space',
+  secondaryLabel: 'Return',
+} as const
+
+const LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY: LoginProviderListCopy = {
+  title: 'Sign in',
+  backLabel: 'Back',
+  addLabel: 'Add provider',
+  addPlaceholder: 'https://example.com',
+  addInputLabel: 'Provider URL',
+  invalidUrlMessage: 'Enter a valid provider URL.',
+  connectLabel: 'Connect',
+  cancelLabel: 'Cancel',
+  emptyMessage: 'No providers available',
+}
+
+const LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY: LoginSpaceSelectionCopy = {
+  accountLabel: 'Account',
+  storageLabel: 'Storage',
+  cloudLabel: 'Remote',
+  localLabel: 'Local',
+  cloudDescription: 'Use remote storage.',
+  localDescription: 'Use local storage.',
+  continueLabel: 'Continue',
+  moreProvidersLabel: 'More options',
+}
+
+function legacyLoginLabel(value: string | null | undefined, fallback: string): string {
+  return value?.trim() ? value : fallback
+}
+
 export function LoginCardShell({
   children,
   ariaLabel,
@@ -103,14 +162,18 @@ export function LoginErrorBanner({
   dismissLabel?: string
 }) {
   if (!error) return null
+  const visibleDismissLabel = legacyLoginLabel(
+    dismissLabel,
+    LEGACY_LOGIN_ERROR_DEFAULT_COPY.dismissLabel,
+  )
   return (
     <div role="alert" className="mx-5 mb-3 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2">
       <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" aria-hidden="true" />
       <p className="flex-1 text-xs leading-relaxed text-destructive">{error}</p>
-      {onDismiss && dismissLabel ? (
+      {onDismiss ? (
         <button
           type="button"
-          aria-label={dismissLabel}
+          aria-label={visibleDismissLabel}
           onClick={onDismiss}
           className="shrink-0 cursor-pointer text-destructive/60 hover:text-destructive"
         >
@@ -165,6 +228,7 @@ export function LoginRestoringView({
   avatarUrl?: string
   label?: string
 }) {
+  const visibleLabel = legacyLoginLabel(label, LEGACY_LOGIN_RESTORING_DEFAULT_COPY.label)
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6" role="status">
       {accountName ? (
@@ -174,7 +238,7 @@ export function LoginRestoringView({
         </>
       ) : null}
       <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
-      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="text-xs text-muted-foreground">{visibleLabel}</p>
     </div>
   )
 }
@@ -194,12 +258,15 @@ export function LoginConnectingView({
   onCancel?: () => void
   cancelLabel?: string
 }) {
+  const visibleTitle = legacyLoginLabel(title, LEGACY_LOGIN_CONNECTING_DEFAULT_COPY.title)
+  const visibleDetail = legacyLoginLabel(detail, LEGACY_LOGIN_CONNECTING_DEFAULT_COPY.detail)
+  const visibleCancelLabel = legacyLoginLabel(cancelLabel, LEGACY_LOGIN_CONNECTING_DEFAULT_COPY.cancelLabel)
   return (
     <div className="flex h-full flex-1 flex-col">
       <div className="flex flex-1 flex-col items-center justify-center px-6 py-8 text-center" role="status">
         <Loader2 className="mb-4 h-8 w-8 animate-spin text-primary" aria-hidden="true" />
-        <p className="text-sm font-medium text-foreground">{title}</p>
-        <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+        <p className="text-sm font-medium text-foreground">{visibleTitle}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{visibleDetail}</p>
         {providerLabel || providerHost ? (
           <div className="mt-4 w-full max-w-[18rem] rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
             {providerLabel ? (
@@ -211,14 +278,14 @@ export function LoginConnectingView({
           </div>
         ) : null}
       </div>
-      {onCancel && cancelLabel ? (
+      {onCancel ? (
         <div className="shrink-0 px-5 pb-5">
           <button
             type="button"
             onClick={onCancel}
             className="h-9 w-full cursor-pointer rounded-md text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
           >
-            {cancelLabel}
+            {visibleCancelLabel}
           </button>
         </div>
       ) : null}
@@ -253,6 +320,8 @@ export function LoginAccountView({
   onEnter: () => void
   onSwitchAccount?: () => void
 }) {
+  const visibleEnterLabel = legacyLoginLabel(enterLabel, LEGACY_LOGIN_ACCOUNT_DEFAULT_COPY.enterLabel)
+  const visibleSwitchLabel = legacyLoginLabel(switchLabel, LEGACY_LOGIN_ACCOUNT_DEFAULT_COPY.switchLabel)
   return (
     <div className="flex h-full flex-1 flex-col">
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-5 py-8">
@@ -275,20 +344,20 @@ export function LoginAccountView({
       {!expired ? <LoginErrorBanner error={error} onDismiss={onDismissError} /> : null}
 
       <div className="shrink-0 space-y-2 px-5 pb-5 pt-2">
-        {enterLabel ? <button
+        <button
           type="button"
           onClick={onEnter}
           className="h-9 w-full cursor-pointer rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
         >
-          {enterLabel}
-        </button> : null}
-        {onSwitchAccount && switchLabel ? (
+          {visibleEnterLabel}
+        </button>
+        {onSwitchAccount ? (
           <button
             type="button"
             onClick={onSwitchAccount}
             className="h-9 w-full cursor-pointer rounded-md text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
           >
-            {switchLabel}
+            {visibleSwitchLabel}
           </button>
         ) : null}
       </div>
@@ -321,13 +390,16 @@ export function LoginFailureView({
   secondaryLabel?: string
   onSecondary?: () => void
 }) {
+  const visibleTitle = legacyLoginLabel(title, LEGACY_LOGIN_FAILURE_DEFAULT_COPY.title)
+  const visiblePrimaryLabel = legacyLoginLabel(primaryLabel, LEGACY_LOGIN_FAILURE_DEFAULT_COPY.primaryLabel)
+  const visibleSecondaryLabel = legacyLoginLabel(secondaryLabel, LEGACY_LOGIN_FAILURE_DEFAULT_COPY.secondaryLabel)
   return (
     <div className="flex h-full flex-1 flex-col">
       <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 pb-5 pt-7 text-center">
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
           <AlertTriangle className="h-6 w-6 text-destructive" aria-hidden="true" />
         </div>
-        {title ? <p className="text-base font-semibold text-foreground">{title}</p> : null}
+        <p className="text-base font-semibold text-foreground">{visibleTitle}</p>
         {description ? (
           <p className="max-w-[19rem] text-sm leading-6 text-muted-foreground" role="alert">
             {description}
@@ -335,20 +407,20 @@ export function LoginFailureView({
         ) : null}
       </div>
       <div className="shrink-0 space-y-2 px-4 pb-5">
-        {primaryLabel ? <button
+        <button
           type="button"
           onClick={onPrimary}
           className="h-9 w-full cursor-pointer rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {primaryLabel}
-        </button> : null}
-        {secondaryLabel && onSecondary ? (
+          {visiblePrimaryLabel}
+        </button>
+        {onSecondary ? (
           <button
             type="button"
             onClick={onSecondary}
             className="h-9 w-full cursor-pointer rounded-md border border-border/60 bg-muted/30 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
           >
-            {secondaryLabel}
+            {visibleSecondaryLabel}
           </button>
         ) : null}
       </div>
@@ -380,9 +452,17 @@ export function LoginStorageConflictView({
   actualValue?: string
   primaryLabel?: string
   onPrimary?: () => void
-  secondaryLabel: string
+  secondaryLabel?: string
   onSecondary: () => void
 }) {
+  const visiblePrimaryLabel = legacyLoginLabel(
+    primaryLabel,
+    LEGACY_LOGIN_STORAGE_CONFLICT_DEFAULT_COPY.primaryLabel,
+  )
+  const visibleSecondaryLabel = legacyLoginLabel(
+    secondaryLabel,
+    LEGACY_LOGIN_STORAGE_CONFLICT_DEFAULT_COPY.secondaryLabel,
+  )
   return (
     <div className="flex h-full flex-1 flex-col">
       <div className="shrink-0 px-5 pb-4 pt-6">
@@ -405,24 +485,22 @@ export function LoginStorageConflictView({
       </div>
 
       <div className="mt-auto space-y-2 px-4 pb-4 pt-5">
-        {primaryLabel && onPrimary ? (
+        {onPrimary ? (
           <button
             type="button"
             onClick={onPrimary}
             className="h-9 w-full cursor-pointer rounded-md border border-border/60 bg-muted/30 text-sm font-medium text-foreground transition-colors hover:bg-muted/50"
           >
-            {primaryLabel}
+            {visiblePrimaryLabel}
           </button>
         ) : null}
-        {secondaryLabel.trim() ? (
-          <button
-            type="button"
-            onClick={onSecondary}
-            className="h-9 w-full cursor-pointer rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            {secondaryLabel}
-          </button>
-        ) : null}
+        <button
+          type="button"
+          onClick={onSecondary}
+          className="h-9 w-full cursor-pointer rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+        >
+          {visibleSecondaryLabel}
+        </button>
       </div>
     </div>
   )
@@ -469,15 +547,26 @@ export function LoginProviderListView({
   const [customUrl, setCustomUrl] = useState('')
   const [customUrlError, setCustomUrlError] = useState<string | null>(null)
   const errorId = useId()
-  const visibleTitle = title ?? copy?.title
-  const visibleBackLabel = copy?.backLabel
-  const visibleAddLabel = addLabel ?? copy?.addLabel
-  const visibleAddPlaceholder = addPlaceholder ?? copy?.addPlaceholder
-  const visibleInputLabel = copy?.addInputLabel
-  const visibleInvalidUrlMessage = copy?.invalidUrlMessage
-  const visibleConnectLabel = copy?.connectLabel
-  const visibleCancelLabel = copy?.cancelLabel
-  const visibleEmptyMessage = copy?.emptyMessage
+  const visibleCopy: LoginProviderListCopy = {
+    title: legacyLoginLabel(copy?.title, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.title),
+    backLabel: legacyLoginLabel(copy?.backLabel, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.backLabel),
+    addLabel: legacyLoginLabel(copy?.addLabel, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.addLabel),
+    addPlaceholder: legacyLoginLabel(copy?.addPlaceholder, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.addPlaceholder),
+    addInputLabel: legacyLoginLabel(copy?.addInputLabel, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.addInputLabel),
+    invalidUrlMessage: legacyLoginLabel(copy?.invalidUrlMessage, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.invalidUrlMessage),
+    connectLabel: legacyLoginLabel(copy?.connectLabel, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.connectLabel),
+    cancelLabel: legacyLoginLabel(copy?.cancelLabel, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.cancelLabel),
+    emptyMessage: legacyLoginLabel(copy?.emptyMessage, LEGACY_LOGIN_PROVIDER_LIST_DEFAULT_COPY.emptyMessage),
+  }
+  const visibleTitle = legacyLoginLabel(title, visibleCopy.title)
+  const visibleBackLabel = visibleCopy.backLabel
+  const visibleAddLabel = legacyLoginLabel(addLabel, visibleCopy.addLabel)
+  const visibleAddPlaceholder = legacyLoginLabel(addPlaceholder, visibleCopy.addPlaceholder)
+  const visibleInputLabel = visibleCopy.addInputLabel
+  const visibleInvalidUrlMessage = visibleCopy.invalidUrlMessage
+  const visibleConnectLabel = visibleCopy.connectLabel
+  const visibleCancelLabel = visibleCopy.cancelLabel
+  const visibleEmptyMessage = visibleCopy.emptyMessage
 
   const handleAdd = () => {
     if (!customUrl.trim() || !onAddProvider) return
@@ -488,7 +577,7 @@ export function LoginProviderListView({
       setCustomUrlError(null)
       setIsAdding(false)
     } catch {
-      setCustomUrlError(visibleInvalidUrlMessage ?? '')
+      setCustomUrlError(visibleInvalidUrlMessage)
     }
   }
 
@@ -642,7 +731,17 @@ export function LoginSpaceSelectionView({
   const defaultSpace = providers.cloud ? 'cloud' : 'local'
   const [space, setSpace] = useState<'cloud' | 'local'>(defaultSpace)
   const selectedProvider = providers[space] ?? providers.cloud ?? providers.local
-  const visibleDescription = space === 'local' ? copy?.localDescription : copy?.cloudDescription
+  const visibleCopy: LoginSpaceSelectionCopy = {
+    accountLabel: legacyLoginLabel(copy?.accountLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.accountLabel),
+    storageLabel: legacyLoginLabel(copy?.storageLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.storageLabel),
+    cloudLabel: legacyLoginLabel(copy?.cloudLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.cloudLabel),
+    localLabel: legacyLoginLabel(copy?.localLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.localLabel),
+    cloudDescription: legacyLoginLabel(copy?.cloudDescription, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.cloudDescription),
+    localDescription: legacyLoginLabel(copy?.localDescription, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.localDescription),
+    continueLabel: legacyLoginLabel(copy?.continueLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.continueLabel),
+    moreProvidersLabel: legacyLoginLabel(copy?.moreProvidersLabel, LEGACY_LOGIN_SPACE_SELECTION_DEFAULT_COPY.moreProvidersLabel),
+  }
+  const visibleDescription = space === 'local' ? visibleCopy.localDescription : visibleCopy.cloudDescription
 
   return (
     <div className="flex h-full flex-1 flex-col px-7 py-7 text-center">
@@ -654,32 +753,28 @@ export function LoginSpaceSelectionView({
         ) : null}
         <div className="space-y-2">
           <h1 className="text-lg font-semibold text-foreground">{productName}</h1>
-          {copy?.accountLabel ? <p className="text-sm text-muted-foreground">{copy.accountLabel}</p> : null}
+          <p className="text-sm text-muted-foreground">{visibleCopy.accountLabel}</p>
         </div>
 
         <div className="w-full space-y-2">
-          {copy?.storageLabel ? <p className="text-xs font-medium text-muted-foreground">{copy.storageLabel}</p> : null}
+          <p className="text-xs font-medium text-muted-foreground">{visibleCopy.storageLabel}</p>
           <div className="grid grid-cols-2 rounded-xl border border-border/70 bg-muted/30 p-1">
-            {copy?.cloudLabel ? (
-              <button
-                type="button"
-                disabled={!providers.cloud}
-                onClick={() => setSpace('cloud')}
-                className={loginSpaceSegmentClass(space === 'cloud')}
-              >
-                {copy.cloudLabel}
-              </button>
-            ) : null}
-            {copy?.localLabel ? (
-              <button
-                type="button"
-                disabled={!providers.local}
-                onClick={() => setSpace('local')}
-                className={loginSpaceSegmentClass(space === 'local')}
-              >
-                {copy.localLabel}
-              </button>
-            ) : null}
+            <button
+              type="button"
+              disabled={!providers.cloud}
+              onClick={() => setSpace('cloud')}
+              className={loginSpaceSegmentClass(space === 'cloud')}
+            >
+              {visibleCopy.cloudLabel}
+            </button>
+            <button
+              type="button"
+              disabled={!providers.local}
+              onClick={() => setSpace('local')}
+              className={loginSpaceSegmentClass(space === 'local')}
+            >
+              {visibleCopy.localLabel}
+            </button>
           </div>
           {visibleDescription ? <p className="text-xs leading-5 text-muted-foreground">{visibleDescription}</p> : null}
         </div>
@@ -688,21 +783,21 @@ export function LoginSpaceSelectionView({
       <LoginErrorBanner error={error} onDismiss={onDismissError} />
 
       <div className="shrink-0 space-y-2">
-        {copy?.continueLabel ? <button
+        <button
           type="button"
           disabled={!selectedProvider}
           onClick={() => selectedProvider && onConnect(selectedProvider.id)}
           className="h-11 w-full cursor-pointer rounded-xl bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {copy?.continueLabel}
-        </button> : null}
-        {onMoreProviders && copy?.moreProvidersLabel ? (
+          {visibleCopy.continueLabel}
+        </button>
+        {onMoreProviders ? (
           <button
             type="button"
             onClick={onMoreProviders}
             className="h-9 w-full cursor-pointer rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground"
           >
-            {copy.moreProvidersLabel}
+            {visibleCopy.moreProvidersLabel}
           </button>
         ) : null}
       </div>

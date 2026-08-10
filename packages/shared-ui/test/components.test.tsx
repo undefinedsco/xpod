@@ -9,6 +9,7 @@ import {
   Input,
   LoginAccountView,
   LoginCardShell,
+  LoginErrorBanner,
   LoginFailureView,
   LoginProviderListView,
   LoginRestoringView,
@@ -172,18 +173,50 @@ describe('@undefineds.co/shared-ui', () => {
     expect(html).not.toContain('Local')
   })
 
-  it('does not expose unnamed legacy actions when a host omits copy', () => {
+  it('keeps legacy controls available with neutral defaults when copy is omitted', () => {
     const connect = renderToStaticMarkup(<SolidConnectForm onConnect={() => undefined} />)
-    expect(connect).not.toContain('type="submit"')
+    expect(connect).toContain('Identity provider URL')
+    expect(connect).toContain('Connect')
 
     const space = renderToStaticMarkup(
       <LoginSpaceSelectionView
         productName="Northstar"
-        providers={{ cloud: { id: 'cloud-id', label: 'Remote' } }}
+        providers={{ cloud: { id: 'cloud-id', label: 'Remote' }, local: { id: 'local-id', label: 'Local' } }}
         onConnect={() => undefined}
+        onMoreProviders={() => undefined}
       />,
     )
-    expect(space).not.toContain('type="button"')
+    expect(space).toContain('Account')
+    expect(space).toContain('Storage')
+    expect(space).toContain('Remote')
+    expect(space).toContain('Local')
+    expect(space).toContain('Continue')
+    expect(space).toContain('More options')
+
+    const account = renderToStaticMarkup(
+      <LoginAccountView
+        name="User"
+        onEnter={() => undefined}
+      />,
+    )
+    expect(account).toContain('Continue')
+
+    const error = renderToStaticMarkup(
+      <LoginErrorBanner
+        error="Something went wrong"
+        onDismiss={() => undefined}
+      />,
+    )
+    expect(error).toContain('aria-label="Dismiss"')
+
+    const providers = renderToStaticMarkup(
+      <LoginProviderListView
+        providers={[]}
+        onConnect={() => undefined}
+        onAddProvider={() => undefined}
+      />,
+    )
+    expect(providers).toContain('Add provider')
 
     const conflict = renderToStaticMarkup(
       <LoginStorageConflictView
@@ -194,10 +227,78 @@ describe('@undefineds.co/shared-ui', () => {
         expectedValue="expected"
         actualLabel="Actual"
         actualValue="actual"
-        secondaryLabel=""
         onSecondary={() => undefined}
       />,
     )
-    expect(conflict).not.toContain('type="button"')
+    expect(conflict).toContain('Return')
+  })
+
+  it('uses every complete host copy field without mixing in legacy defaults', () => {
+    const html = renderToStaticMarkup(
+      <>
+        <SolidConnectForm
+          onConnect={() => undefined}
+          copy={{
+            issuerLabel: 'Endpoint label',
+            issuerPlaceholder: 'Endpoint placeholder',
+            submitLabel: 'Submit endpoint',
+            pendingLabel: 'Waiting endpoint',
+            errorMessage: 'Endpoint error',
+          }}
+        />
+        <LoginSpaceSelectionView
+          productName="Host product"
+          providers={{ cloud: { id: 'cloud-id', label: 'Remote choice' }, local: { id: 'local-id', label: 'Local choice' } }}
+          onConnect={() => undefined}
+          onMoreProviders={() => undefined}
+          copy={{
+            accountLabel: 'Host account',
+            storageLabel: 'Host storage',
+            cloudLabel: 'Host remote',
+            localLabel: 'Host local',
+            cloudDescription: 'Host remote description',
+            localDescription: 'Host local description',
+            continueLabel: 'Host continue',
+            moreProvidersLabel: 'Host more',
+          }}
+        />
+        <LoginAccountView
+          name="User"
+          enterLabel="Host enter"
+          onEnter={() => undefined}
+        />
+        <LoginErrorBanner
+          error="Host error"
+          onDismiss={() => undefined}
+          dismissLabel="Host dismiss"
+        />
+        <LoginProviderListView
+          providers={[]}
+          onConnect={() => undefined}
+          onAddProvider={() => undefined}
+          copy={{
+            title: 'Host providers',
+            backLabel: 'Host back',
+            addLabel: 'Host add',
+            addPlaceholder: 'Host placeholder',
+            addInputLabel: 'Host input',
+            invalidUrlMessage: 'Host invalid URL',
+            connectLabel: 'Host connect',
+            cancelLabel: 'Host cancel',
+            emptyMessage: 'Host empty',
+          }}
+        />
+      </>,
+    )
+
+    expect(html).toContain('Endpoint label')
+    expect(html).toContain('Host remote')
+    expect(html).toContain('Host enter')
+    expect(html).toContain('Host dismiss')
+    expect(html).toContain('Host add')
+    expect(html).not.toContain('Identity provider URL')
+    expect(html).not.toContain('More options')
+    expect(html).not.toContain('Add provider')
+    expect(html).not.toContain('Dismiss')
   })
 })
