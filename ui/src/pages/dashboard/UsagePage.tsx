@@ -51,7 +51,13 @@ export default function UsagePage() {
   }, [accountId]);
 
   useEffect(() => {
-    void loadUsage();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) void loadUsage();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [loadUsage]);
 
   const summary = useMemo(() => {

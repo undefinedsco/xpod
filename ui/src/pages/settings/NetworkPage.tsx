@@ -85,15 +85,16 @@ export default function NetworkPage() {
     requestIdRef.current += 1;
     diagnoseActionIdRef.current += 1;
     renewActionIdRef.current += 1;
-    setStatus(undefined);
-    setDiagnostics([]);
-    setError(undefined);
-    setLoading(false);
-    setDiagnosing(false);
-    setRenewing(false);
-    if (identityKey) {
-      void loadStatus();
-    }
+    queueMicrotask(() => {
+      if (!mountedRef.current || activeIdentityKeyRef.current !== identityKey) return;
+      setStatus(undefined);
+      setDiagnostics([]);
+      setError(undefined);
+      setLoading(false);
+      setDiagnosing(false);
+      setRenewing(false);
+      if (identityKey) void loadStatus();
+    });
   }, [identityKey, loadStatus]);
 
   const runDiagnose = useCallback(async () => {
