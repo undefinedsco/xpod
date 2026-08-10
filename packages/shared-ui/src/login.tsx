@@ -414,13 +414,15 @@ export function LoginStorageConflictView({
             {primaryLabel}
           </button>
         ) : null}
-        <button
-          type="button"
-          onClick={onSecondary}
-          className="h-9 w-full cursor-pointer rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-        >
-          {secondaryLabel}
-        </button>
+        {secondaryLabel.trim() ? (
+          <button
+            type="button"
+            onClick={onSecondary}
+            className="h-9 w-full cursor-pointer rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            {secondaryLabel}
+          </button>
+        ) : null}
       </div>
     </div>
   )

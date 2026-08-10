@@ -58,10 +58,13 @@ export function SolidConnectForm({
   const normalizedIssuer = issuer.trim()
   const pending = pendingExternal || pendingInternal
   const visibleError = submitError || error
+  const submitLabel = pending ? copy?.pendingLabel : copy?.submitLabel
 
   const describedBy = useMemo(() => (
     visibleError ? errorId : undefined
   ), [errorId, visibleError])
+
+  if (!copy) return null
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -85,7 +88,7 @@ export function SolidConnectForm({
   return (
     <form className="flex flex-col gap-4" onSubmit={(event) => void handleSubmit(event)}>
       <div className="flex flex-col gap-2 text-left">
-        <Label htmlFor={issuerId}>{copy?.issuerLabel}</Label>
+        <Label htmlFor={issuerId}>{copy.issuerLabel}</Label>
         <Input
           id={issuerId}
           type="url"
@@ -93,7 +96,7 @@ export function SolidConnectForm({
           disabled={pending}
           aria-invalid={visibleError ? true : undefined}
           aria-describedby={describedBy}
-          placeholder={copy?.issuerPlaceholder}
+          placeholder={copy.issuerPlaceholder}
           className="border-border/60 bg-background focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           onChange={(event) => setIssuer(event.currentTarget.value)}
         />
@@ -110,13 +113,13 @@ export function SolidConnectForm({
         </p>
       ) : null}
 
-      <Button
+      {submitLabel ? <Button
         type="submit"
         className="w-full"
         disabled={!normalizedIssuer || pending}
       >
-        {pending ? copy?.pendingLabel : copy?.submitLabel}
-      </Button>
+        {submitLabel}
+      </Button> : null}
     </form>
   )
 }

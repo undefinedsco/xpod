@@ -171,4 +171,33 @@ describe('@undefineds.co/shared-ui', () => {
     expect(html).not.toContain('Cloud')
     expect(html).not.toContain('Local')
   })
+
+  it('does not expose unnamed legacy actions when a host omits copy', () => {
+    const connect = renderToStaticMarkup(<SolidConnectForm onConnect={() => undefined} />)
+    expect(connect).not.toContain('type="submit"')
+
+    const space = renderToStaticMarkup(
+      <LoginSpaceSelectionView
+        productName="Northstar"
+        providers={{ cloud: { id: 'cloud-id', label: 'Remote' } }}
+        onConnect={() => undefined}
+      />,
+    )
+    expect(space).not.toContain('type="button"')
+
+    const conflict = renderToStaticMarkup(
+      <LoginStorageConflictView
+        eyebrow="Mismatch"
+        accountName="User"
+        description="Mismatch"
+        expectedLabel="Expected"
+        expectedValue="expected"
+        actualLabel="Actual"
+        actualValue="actual"
+        secondaryLabel=""
+        onSecondary={() => undefined}
+      />,
+    )
+    expect(conflict).not.toContain('type="button"')
+  })
 })
