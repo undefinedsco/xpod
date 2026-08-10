@@ -3,7 +3,7 @@ import { JSDOM } from 'jsdom';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
+import type { SolidSessionAdapter, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
   createXpodSolidRuntimeValue,
   discoverPodUrlFromWebId,
@@ -11,7 +11,6 @@ import {
   type XpodSolidRuntimeCore,
 } from './XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './XpodSolidRuntimeProvider';
-import { SettingsAuthBoundary } from './SettingsAuthBoundary';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -20,10 +19,10 @@ const mock = vi.fn;
 
 type Listener = (...args: unknown[]) => void;
 
-const unsafeIssuerCases = [
-  ['userinfo', 'https://alice:secret@issuer.example/'],
-  ['query', 'https://issuer.example/?client_id=leak'],
-  ['hash', 'https://issuer.example/#access_token=leak'],
+const unsafeRouteCases = [
+  ['userinfo', 'https://alice:secret@app.example/'],
+  ['query', 'https://app.example/?client_id=leak'],
+  ['hash', 'https://app.example/#access_token=leak'],
 ] as const;
 
 class FakeSession implements SolidSessionAdapter {
@@ -104,7 +103,7 @@ function RuntimeProbe() {
     <div>
       <span data-testid="status">{snapshot.status}</span>
       <span data-testid="issuer">{runtime.issuer ?? 'no-issuer'}</span>
-      <button type="button" onClick={() => void runtime.login(' https://issuer.example/ ')}>
+      <button type="button" onClick={() => void runtime.login(currentOriginTransaction())}>
         login
       </button>
       <button type="button" onClick={() => void runtime.logout()}>
@@ -115,6 +114,22 @@ function RuntimeProbe() {
       </button>
     </div>
   );
+}
+
+function currentOriginTransaction(overrides: Partial<WebIdLoginTransaction> = {}): WebIdLoginTransaction {
+  return {
+    id: 'xpod-test-transaction-123456',
+    route: {
+      id: 'xpod-current-origin',
+      label: window.location.host,
+      identityProvider: { url: window.location.origin, label: window.location.host },
+      storageProvider: { url: window.location.origin, label: window.location.host },
+      availability: 'ready',
+    },
+    authorizationSurface: 'redirect',
+    discovery: 'strict',
+    ...overrides,
+  };
 }
 
 function CapabilityProbe() {
@@ -187,7 +202,7 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('trims login issuer, exposes authenticated fetch, and logs out without raw token storage', async () => {
+  test('accepts only a validated current-origin transaction, exposes authenticated fetch, and logs out without raw token storage', async () => {
     const session = new FakeSession();
     session.handleIncomingRedirect.mockImplementation(async () => {
       session.authenticate();
@@ -215,7 +230,10 @@ describe('Xpod Solid runtime', () => {
       logoutButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    expect(session.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(session.loginOptions).toEqual([expect.objectContaining({
+      oidcIssuer: 'https://app.example/',
+      redirectUrl: 'https://app.example/auth/callback?transaction=xpod-test-transaction-123456',
+    })]);
     expect(session.fetch).toHaveBeenCalledWith('/resource');
     expect(localStorageSet).not.toHaveBeenCalled();
     expect(container.textContent).toContain('anonymous');
@@ -244,7 +262,7 @@ describe('Xpod Solid runtime', () => {
       loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://issuer.example/');
+    expect(container.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://app.example/');
     await unmount(root);
   });
 
@@ -276,7 +294,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       firstLoginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
-    expect(firstSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(firstSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://app.example/' })]);
     await unmount(firstRoot);
 
     const secondSession = new FakeSession();
@@ -297,13 +315,13 @@ describe('Xpod Solid runtime', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(secondRootNode.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://issuer.example/');
+    expect(secondRootNode.querySelector('[data-testid="issuer"]')?.textContent).toBe('https://app.example/');
     const secondLoginButton = secondRootNode.querySelector('button');
     if (!secondLoginButton) throw new Error('missing second login button');
     await act(async () => {
       secondLoginButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
-    expect(secondSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://issuer.example/' })]);
+    expect(secondSession.loginOptions).toEqual([expect.objectContaining({ oidcIssuer: 'https://app.example/' })]);
     expect(JSON.stringify(window.sessionStorage)).not.toContain('token');
     expect(JSON.stringify(window.localStorage)).not.toContain('issuer.example');
     await unmount(secondRoot);
@@ -334,7 +352,7 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  test('rejects non-http login issuers without persisting or redirecting', async () => {
+  test('rejects arbitrary login input without persisting or redirecting', async () => {
     installDom();
     window.sessionStorage.clear();
     const session = new FakeSession();
@@ -345,7 +363,7 @@ describe('Xpod Solid runtime', () => {
     await act(async () => {
       root.render(
         <XpodSolidRuntimeProvider value={value}>
-          <InvalidLoginProbe />
+          <InvalidLoginProbe transaction={'javascript:alert(1)'} />
         </XpodSolidRuntimeProvider>,
       );
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -362,8 +380,8 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
-  for (const [label, unsafeIssuer] of unsafeIssuerCases) {
-    test(`rejects login issuers containing ${label} without persisting or redirecting`, async () => {
+  for (const [label, unsafeIdentityProvider] of unsafeRouteCases) {
+    test(`rejects current-origin routes containing ${label} without persisting or redirecting`, async () => {
       installDom();
       window.sessionStorage.clear();
       const session = new FakeSession();
@@ -374,7 +392,12 @@ describe('Xpod Solid runtime', () => {
       await act(async () => {
         root.render(
           <XpodSolidRuntimeProvider value={value}>
-            <InvalidLoginProbe issuer={unsafeIssuer} />
+            <InvalidLoginProbe transaction={currentOriginTransaction({
+              route: {
+                ...currentOriginTransaction().route,
+                identityProvider: { url: unsafeIdentityProvider, label: 'unsafe' },
+              },
+            })} />
           </XpodSolidRuntimeProvider>,
         );
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -438,7 +461,7 @@ describe('Xpod Solid runtime', () => {
     })).resolves.toBe('https://pod.example/alice/');
   });
 
-  test('maps session errors and expiry to a safe auth boundary login state', async () => {
+  test('maps session errors and expiry to safe public runtime states', async () => {
     const session = new FakeSession();
     session.handleIncomingRedirect.mockImplementation(async () => {
       throw new Error('raw internal failure');
@@ -447,40 +470,33 @@ describe('Xpod Solid runtime', () => {
 
     const { container, root } = await renderWithRoot(
       <XpodSolidRuntimeProvider value={value}>
-        <SettingsAuthBoundary>
-          <RuntimeProbe />
-        </SettingsAuthBoundary>
+        <RuntimeStateProbe />
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.textContent).toContain('登录未完成');
-    expect(container.textContent).toContain('Solid login failed. Please reconnect your Pod.');
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('error');
+    expect(container.querySelector('[data-testid="runtime-error"]')?.textContent).toBe('Solid login failed. Please reconnect your Pod.');
     expect(container.textContent).not.toContain('raw internal failure');
 
     await act(async () => {
       session.expire();
     });
-    expect(container.textContent).toContain('登录未完成');
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('expired');
     await unmount(root);
   });
 
-  test('renders the Linx account space chooser instead of the raw Solid issuer form', async () => {
+  test('does not render a provider chooser or arbitrary issuer form', async () => {
     const session = new FakeSession();
     const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
 
     const { container, root } = await renderWithRoot(
       <XpodSolidRuntimeProvider value={value}>
-        <SettingsAuthBoundary>
-          <RuntimeProbe />
-        </SettingsAuthBoundary>
+        <RuntimeProbe />
       </XpodSolidRuntimeProvider>,
     );
 
-    expect(container.textContent).toContain('使用 undefineds 账号');
-    expect(container.textContent).toContain('云端');
-    expect(container.textContent).toContain('本机');
+    expect(container.textContent).not.toMatch(/Cloud|Local|Add provider|Solid Pod/);
     expect(container.querySelector('label')).toBeNull();
-    expect(container.textContent).not.toContain('Solid Pod 地址');
 
     await unmount(root);
   });
@@ -541,10 +557,20 @@ describe('Xpod Solid runtime', () => {
   });
 });
 
-function InvalidLoginProbe({ issuer = 'javascript:alert(1)' }: { issuer?: string }) {
+function RuntimeStateProbe() {
   const runtime = useXpodSolidRuntime();
   return (
-    <button type="button" onClick={() => void runtime.login(issuer)}>
+    <div>
+      <span data-testid="runtime-state">{runtime.state.status}</span>
+      <span data-testid="runtime-error">{runtime.state.status === 'error' ? runtime.state.error.message : ''}</span>
+    </div>
+  );
+}
+
+function InvalidLoginProbe({ transaction }: { transaction: unknown }) {
+  const runtime = useXpodSolidRuntime();
+  return (
+    <button type="button" onClick={() => void runtime.login(transaction as WebIdLoginTransaction).catch(() => undefined)}>
       login
     </button>
   );

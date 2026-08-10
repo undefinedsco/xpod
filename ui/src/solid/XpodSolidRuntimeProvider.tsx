@@ -1,11 +1,13 @@
 import { SolidRuntimeProvider, type OpenPodRuntime } from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
+import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
   getXpodSolidRuntimeValue,
   initializedRuntimes,
   normalizeXpodOidcIssuer,
+  normalizeXpodLoginTransaction,
   safeAuthError,
   snapshotToState,
   XpodSolidRuntimeContext,
@@ -27,20 +29,23 @@ export function XpodSolidRuntimeProvider({
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
   const [aiClientConfiguration, setAiClientConfiguration] =
     useState<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>>();
+  const snapshotRef = useRef(snapshot);
 
   useEffect(() => {
     return runtime.session.subscribe((nextSnapshot) => {
+      const previousSnapshot = snapshotRef.current;
+      snapshotRef.current = nextSnapshot;
       setSnapshot(nextSnapshot);
       setIssuer(runtime.getIssuer());
       if (nextSnapshot.status !== 'authenticated') {
         setCurrentPod(undefined);
         setPodError(undefined);
         runtime.pod.clear();
-      } else if (nextSnapshot.webId !== snapshot.webId) {
+      } else if (previousSnapshot.status !== 'authenticated' || nextSnapshot.webId !== previousSnapshot.webId) {
         setAiClientConfiguration(undefined);
       }
     });
-  }, [runtime, snapshot.webId]);
+  }, [runtime]);
 
   useEffect(() => {
     if (initializedRuntimes.has(runtime)) {
@@ -117,16 +122,20 @@ export function XpodSolidRuntimeProvider({
       issuer: state.issuer,
       currentPod,
       aiClientConfiguration,
-      login: async (issuer: string) => {
-        const oidcIssuer = normalizeXpodOidcIssuer(issuer);
-        if (!oidcIssuer) {
-          return;
+      login: async (transaction: WebIdLoginTransaction | string) => {
+        if (typeof transaction === 'string') {
+          throw new TypeError('Xpod login requires a validated WebID transaction');
         }
+        const validated = normalizeXpodLoginTransaction(transaction);
+        const oidcIssuer = normalizeXpodOidcIssuer(validated.route.identityProvider.url);
+        if (!oidcIssuer) throw new TypeError('Xpod login route has no valid current-origin issuer');
+        const redirectUrl = new URL('/auth/callback', window.location.origin);
+        redirectUrl.searchParams.set('transaction', validated.id);
         runtime.setIssuer(oidcIssuer);
         setIssuer(oidcIssuer);
         await runtime.session.login({
           oidcIssuer,
-          redirectUrl: window.location.href,
+          redirectUrl: redirectUrl.toString(),
         });
       },
       logout: async () => {

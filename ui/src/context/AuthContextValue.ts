@@ -1,11 +1,30 @@
 import { createContext, useContext } from 'react';
+import type { AccountAuthState } from '../../../packages/shared-ui/src';
 
 export interface Controls {
   password?: { login?: string; create?: string; forgot?: string; reset?: string };
-  account?: { create?: string; logout?: string; webId?: string; pod?: string; clientCredentials?: string };
+  account?: {
+    id?: string;
+    username?: string;
+    displayName?: string;
+    create?: string;
+    logout?: string;
+    webId?: string;
+    pod?: string;
+    clientCredentials?: string;
+  };
   html?: { password?: { login?: string; register?: string; forgot?: string }; account?: { account?: string } };
   oidc?: { webId?: string; consent?: string; cancel?: string };
   main?: { logins?: string; index?: string };
+}
+
+export type { AccountAuthState };
+
+export interface SanitizedAccountIdentity {
+  id?: string;
+  username?: string;
+  displayName?: string;
+  webId?: string;
 }
 
 export interface AuthContextType {
@@ -17,6 +36,16 @@ export interface AuthContextType {
   authenticating: boolean;
   hasOidcPending: boolean;
   refetchControls: () => Promise<void>;
+  retry: () => Promise<void>;
+  logout: () => Promise<void>;
+  accountState: AccountAuthState;
+  accountAuthState: AccountAuthState;
+  /** Alias retained for callers migrating to the canonical state name. */
+  authState: AccountAuthState;
+  /** Alias retained for shell integrations that call this `state`. */
+  state: AccountAuthState;
+  identity?: SanitizedAccountIdentity;
+  accountIdentity?: SanitizedAccountIdentity;
 }
 
 export const AuthContext = createContext<AuthContextType | null>(null);

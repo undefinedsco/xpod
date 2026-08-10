@@ -1,23 +1,44 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { storedAccountTokenHeaders, clearAccountSessionToken } from '../utils/account-session';
-import { AuthContext, type Controls } from './AuthContextValue';
+import { AuthContext, type AccountAuthState, type Controls, type SanitizedAccountIdentity } from './AuthContextValue';
 
 interface ControlsResponse {
   controls?: Controls;
 }
 
+const IDP_INDEX = '/.account/';
+
+const ACCOUNT_ERROR_MESSAGE = 'Account service is temporarily unavailable. Please try again.';
+
+function accountIdentityFromControls(controls: Controls | null): SanitizedAccountIdentity | undefined {
+  const account = controls?.account;
+  if (!account) return undefined;
+  const identity = {
+    ...(typeof account.id === 'string' ? { id: account.id } : {}),
+    ...(typeof account.username === 'string' ? { username: account.username } : {}),
+    ...(typeof account.displayName === 'string' ? { displayName: account.displayName } : {}),
+    ...(typeof account.webId === 'string' ? { webId: account.webId } : {}),
+  } satisfies SanitizedAccountIdentity;
+  return Object.keys(identity).length > 0 ? identity : undefined;
+}
+
+function accountStateForControls(controls: Controls | null): AccountAuthState {
+  if (controls?.account?.logout) return { status: 'authenticated' };
+  return { status: 'anonymous', mode: 'login' };
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Pure SPA mode: No server-side injection.
   // We assume the IDP index is always at '/.account/' relative to the domain root.
-  const idpIndex = '/.account/';
-  
+  const idpIndex = IDP_INDEX;
   const [controls, setControls] = useState<Controls | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [initError, setInitError] = useState<string | null>(null);
   const [hasOidcPending, setHasOidcPending] = useState(false);
+  const [accountState, setAccountState] = useState<AccountAuthState>({ status: 'initializing' });
 
-  const isLoggedIn = Boolean(controls?.account?.logout);
-  const authenticating = isInitializing;
+  const isLoggedIn = accountState.status === 'authenticated';
+  const authenticating = isInitializing || accountState.status === 'submitting';
 
   const checkOidcPending = useCallback(async (): Promise<boolean> => {
     try {
@@ -50,21 +71,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         
         // Set both states together to avoid race condition
+        const nextControls = json.controls || {};
         setHasOidcPending(pending);
-        setControls(json.controls || {});
+        setControls(nextControls);
+        setInitError(null);
+        setAccountState(accountStateForControls(nextControls));
       } else {
         if (res.status === 401 || res.status === 403) {
           clearAccountSessionToken();
           setHasOidcPending(false);
           setControls({});
+          setAccountState({ status: 'anonymous', mode: 'login' });
+          setInitError(null);
           return;
         }
-        // If we get a 404 or other error, it might mean we are not at the right place
-        // or the server is down. For now, we set an error.
-        setInitError(`Failed to load configuration (Status: ${res.status})`);
+        const message = res.status === 502
+          ? ACCOUNT_ERROR_MESSAGE
+          : `Failed to load account controls (Status: ${res.status})`;
+        setInitError(res.status === 502 ? null : message);
+        setAccountState({ status: 'error', mode: 'login', message });
       }
     } catch {
-      setInitError('Network error: Could not connect to authentication server');
+      setInitError(null);
+      setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
     }
   }, [checkOidcPending, idpIndex]);
 
@@ -79,8 +108,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await fetchControls();
   }, [fetchControls]);
 
+  const logout = useCallback(async () => {
+    const logoutUrl = controls?.account?.logout;
+    let failed = false;
+    if (logoutUrl) {
+      try {
+        const response = await fetch(logoutUrl, {
+          method: 'POST',
+          headers: storedAccountTokenHeaders(),
+          credentials: 'include',
+        });
+        failed = !response.ok && response.status !== 401 && response.status !== 403;
+      } catch {
+        failed = true;
+      }
+    }
+    clearAccountSessionToken();
+    setHasOidcPending(false);
+    setControls({});
+    setInitError(null);
+    setAccountState(failed
+      ? { status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE }
+      : { status: 'anonymous', mode: 'login' });
+    if (failed) return;
+  }, [controls?.account?.logout]);
+
+  const identity = useMemo(() => accountIdentityFromControls(controls), [controls]);
+
   return (
-    <AuthContext.Provider value={{ controls, isInitializing, initError, idpIndex, isLoggedIn, authenticating, hasOidcPending, refetchControls }}>
+    <AuthContext.Provider value={{
+      controls,
+      isInitializing,
+      initError,
+      idpIndex,
+      isLoggedIn,
+      authenticating,
+      hasOidcPending,
+      refetchControls,
+      retry: refetchControls,
+      logout,
+      accountState,
+      accountAuthState: accountState,
+      authState: accountState,
+      state: accountState,
+      identity,
+      accountIdentity: identity,
+    }}>
       {children}
     </AuthContext.Provider>
   );

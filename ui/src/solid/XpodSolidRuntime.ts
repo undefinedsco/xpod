@@ -7,12 +7,15 @@ import {
   type SolidSessionAdapter,
   type SolidSessionRuntime,
   type SolidSessionSnapshot,
+  normalizeWebIdLoginTransaction,
+  type WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
 import { drizzle, type SolidAuthSession, type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { aiProviderResource, credentialResource } from '@undefineds.co/models';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import { createContext, useContext } from 'react';
 import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision-scope';
+import { assertXpodLoginRoute, normalizeXpodReturnTo } from '../auth/xpod-login-route';
 
 export const XPOD_LAST_OIDC_ISSUER_STORAGE_KEY = 'xpod.solid.lastOidcIssuer';
 
@@ -20,6 +23,7 @@ export type XpodSolidRuntimeState =
   | { status: 'loading'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
   | { status: 'anonymous'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
   | { status: 'authenticated'; webId: string; podUrl?: string; issuer?: string; error?: undefined }
+  | { status: 'expired'; webId?: string; podUrl?: string; issuer?: string; error?: undefined }
   | { status: 'error'; webId?: string; podUrl?: string; issuer?: string; error: Error };
 
 export interface XpodSolidRuntimeValue {
@@ -32,7 +36,12 @@ export interface XpodSolidRuntimeValue {
   readonly issuer?: string;
   readonly currentPod?: OpenPodRuntime<SolidDatabase>;
   readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
-  login(issuer: string): Promise<void>;
+  /**
+   * The string overload is a temporary source-compatibility adapter for the
+   * legacy Settings surface. It is rejected at runtime; new Xpod callers must
+   * pass the validated transaction object.
+   */
+  login(transaction: WebIdLoginTransaction | string): Promise<void>;
   logout(): Promise<void>;
 }
 
@@ -61,6 +70,9 @@ export function snapshotToState(
   if (snapshot.status === 'anonymous') {
     return { status: 'anonymous', issuer };
   }
+  if (snapshot.status === 'expired') {
+    return { status: 'expired', webId: snapshot.webId, issuer };
+  }
   if (snapshot.status === 'error') {
     return {
       status: 'error',
@@ -72,7 +84,7 @@ export function snapshotToState(
   }
   return {
     status: 'authenticated',
-    webId: snapshot.webId,
+    webId: snapshot.webId!,
     podUrl: currentPod?.podUrl,
     issuer,
   };
@@ -147,6 +159,25 @@ export function safeAuthError(error: Error): Error {
     return error;
   }
   return new Error('Solid login failed. Please reconnect your Pod.');
+}
+
+export function normalizeXpodLoginTransaction(
+  input: WebIdLoginTransaction,
+  origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin,
+): WebIdLoginTransaction {
+  if (!input || typeof input !== 'object') {
+    throw new TypeError('Xpod login requires a validated WebID transaction');
+  }
+  const normalized = normalizeWebIdLoginTransaction(input);
+  const route = assertXpodLoginRoute(normalized.route, origin);
+  const returnTo = normalizeXpodReturnTo(normalized.returnTo);
+  return {
+    ...normalized,
+    route,
+    authorizationSurface: 'redirect',
+    discovery: 'strict',
+    ...(returnTo === undefined ? {} : { returnTo }),
+  };
 }
 
 export function useXpodSolidRuntimeContext(): XpodSolidRuntimeValue {
