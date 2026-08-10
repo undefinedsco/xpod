@@ -1,6 +1,7 @@
 import { useId, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { AlertCircle } from 'lucide-react'
 import { Button } from './button'
+import { Card } from './card'
 import { Input } from './input'
 
 export function ConnectSurface({
@@ -16,9 +17,9 @@ export function ConnectSurface({
       aria-labelledby={labelledBy}
       data-auth-boundary="surface"
     >
-      <div className="w-full max-w-md rounded-lg border border-border bg-layout-content px-8 py-7 shadow-sm">
+      <Card className="w-full max-w-md rounded-lg border border-border bg-layout-content px-8 py-7 shadow-sm">
         {children}
-      </div>
+      </Card>
     </section>
   )
 }

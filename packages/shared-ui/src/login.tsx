@@ -2,6 +2,10 @@ import { useId, useState, type ReactNode } from 'react'
 import { AlertCircle, AlertTriangle, ChevronRight, Loader2, Plus, X } from 'lucide-react'
 import { cn } from './utils'
 
+// Legacy login pieces remain source-compatible while hosts migrate to the
+// canonical AuthSurface and Account/WebID presentation views.
+export type { AuthSurfaceMode } from './auth-surface'
+
 export type LoginBadgeTone = 'neutral' | 'primary' | 'success' | 'warning' | 'danger'
 
 export interface LoginBadge {
