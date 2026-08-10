@@ -219,6 +219,13 @@ describe('Xpod Solid runtime', () => {
     expect(window.sessionStorage.getItem('xpod.auth.transaction.v1.active')).toBeNull();
     expect(readXpodSelectedStorage({ origin: window.location.origin, webId: selectedStorage.webId })).toEqual(selectedStorage);
     expect((await completeXpodOidcCallback({
+      href: 'https://app.example/auth/callback?transaction=callback-test-12345678',
+      runtime,
+      transactionStore: store,
+      storage: window.sessionStorage,
+      locationReplace: replace,
+    }))).toMatchObject({ status: 'failure', code: 'replayed-transaction' });
+    expect((await completeXpodOidcCallback({
       href: window.location.href,
       runtime,
       transactionStore: store,

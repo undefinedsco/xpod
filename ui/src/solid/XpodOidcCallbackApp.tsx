@@ -105,9 +105,16 @@ export async function completeXpodOidcCallback(
   });
   let transaction: WebIdLoginTransaction;
   try {
-    // Inrupt state has been validated before the host-owned transaction is
-    // consumed. This ordering keeps failed OIDC callbacks replayable.
-    transaction = store.consume(transactionId);
+    // Do not consume until every asynchronous validation/open step succeeds.
+    // Inrupt can clean the callback URL with a full document navigation; the
+    // next document must still be able to finish the same pending transaction.
+    const pending = store.readSinglePending();
+    if (!pending || pending.id !== transactionId) {
+      // Preserve the store's precise replay/expiry diagnostics.
+      transaction = store.consume(transactionId);
+    } else {
+      transaction = pending;
+    }
   } catch (error) {
     return failure(transactionFailureCode(error));
   }
@@ -162,6 +169,7 @@ export async function completeXpodOidcCallback(
 
   const destination = new URL(returnTo ?? '/dashboard/overview', origin).href;
   try {
+    store.consume(transactionId);
     options.locationReplace?.(destination);
   } catch {
     clearXpodSelectedStorage({ storage: options.storage });
