@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import {
   AuthSurface,
   Button,
+  LoginErrorBanner,
+  LoginFailureView,
+  LoginRestoringView,
   OidcConsentView,
   StorageBootstrapView,
   type OidcConsentOption,
@@ -180,6 +183,16 @@ export function ConsentPage() {
 
     return ids;
   }, [consentUrl, pickWebIdUrl, provisionCode, transactionStore]);
+
+  const retryConsentLoad = useCallback(() => {
+    setIsLoading(true);
+    setError(null);
+    void refreshConsentState()
+      .catch((err: unknown) => {
+        setError(safeConsentError(err, 'Authorization information could not be loaded. Please try again.'));
+      })
+      .finally(() => setIsLoading(false));
+  }, [refreshConsentState]);
 
   useEffect(() => {
     persistReturnTo(window.location.href);
@@ -410,15 +423,18 @@ export function ConsentPage() {
             }}>Go to sign in</Button>
         </div>
       )}
-      {error && (
-        <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-          {error}
-        </div>
-      )}
+      {error && !clientInfo ? (
+        <LoginFailureView
+          title="Authorization unavailable"
+          description={error}
+          primaryLabel="Try again"
+          onPrimary={retryConsentLoad}
+        />
+      ) : error ? (
+        <LoginErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel="Dismiss" />
+      ) : null}
       {isLoading ? (
-        <div role="status" aria-live="polite" className="p-6 text-sm text-muted-foreground">
-          Loading authorization…
-        </div>
+        <LoginRestoringView label="Restoring authorization…" />
       ) : (
         <div className="space-y-4">
           <OidcConsentView

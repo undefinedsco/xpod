@@ -98,6 +98,26 @@ describe('CSS identity page controllers', () => {
     await waitFor(() => expect(screen.getByTestId('storage-bootstrap-scroll')).toBeTruthy());
   });
 
+  it('uses shared restoring and failure views for identity loading states', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+
+    renderWithAuth(<ConsentPage />, { isLoggedIn: true });
+    expect(screen.getByRole('status').textContent).toContain('Restoring authorization…');
+
+    cleanup();
+    renderWithAuth(<FirstPodPage />);
+    expect(screen.getByRole('status').textContent).toContain('Restoring storage…');
+
+    cleanup();
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('internal identity response');
+    }));
+    renderWithAuth(<ConsentPage />, { isLoggedIn: true });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Authorization information could not be loaded. Please try again.'));
+    expect(screen.getByRole('alert').tagName).toBe('P');
+    expect(screen.queryByText('internal identity response')).toBeNull();
+  });
+
   it('guards only the Account domain and follows the advertised Account login control', async () => {
     function LocationProbe() {
       return <span data-testid="guard-location">{useLocation().pathname}</span>;

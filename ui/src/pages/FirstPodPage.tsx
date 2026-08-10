@@ -4,6 +4,8 @@ import {
   AuthSurface,
   Input,
   Label,
+  LoginErrorBanner,
+  LoginRestoringView,
   StorageBootstrapView,
   type StorageBootstrapState,
 } from '@undefineds.co/shared-ui';
@@ -132,9 +134,9 @@ export function FirstPodPage() {
   return (
     <AuthSurface mode="page" title="Prepare storage">
       <div className="space-y-4 p-4">
-        {error ? <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p> : null}
+        {error ? <LoginErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel="Dismiss" /> : null}
         {isChecking ? (
-          <div role="status" aria-live="polite" className="p-6 text-sm text-muted-foreground">Checking storage…</div>
+          <LoginRestoringView label="Restoring storage…" />
         ) : needsFirstPod ? (
           <>
             <div className="space-y-2">
