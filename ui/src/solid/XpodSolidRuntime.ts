@@ -7,6 +7,7 @@ import {
   type SolidSessionAdapter,
   type SolidSessionRuntime,
   type SolidSessionSnapshot,
+  type StorageBinding,
   normalizeWebIdLoginTransaction,
   type WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
@@ -35,6 +36,7 @@ export interface XpodSolidRuntimeValue {
   readonly podUrl?: string;
   readonly issuer?: string;
   readonly currentPod?: OpenPodRuntime<SolidDatabase>;
+  readonly selectedStorage?: StorageBinding;
   readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
   login(transaction: WebIdLoginTransaction): Promise<void>;
   logout(): Promise<void>;
