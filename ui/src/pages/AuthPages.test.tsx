@@ -84,6 +84,7 @@ describe('CSS identity page controllers', () => {
 
   it('renders consent and first-storage state through canonical views', async () => {
     const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ registered: false }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -116,6 +117,15 @@ describe('CSS identity page controllers', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Authorization information could not be loaded. Please try again.'));
     expect(screen.getByRole('alert').tagName).toBe('P');
     expect(screen.queryByText('internal identity response')).toBeNull();
+  });
+
+  it('uses the shared failure view for unauthenticated consent prompts', () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+
+    renderWithAuth(<ConsentPage />);
+
+    expect(screen.getByRole('alert').tagName).toBe('P');
+    expect(screen.getByRole('button', { name: 'Go to sign in' })).toBeTruthy();
   });
 
   it('guards only the Account domain and follows the advertised Account login control', async () => {

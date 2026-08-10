@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AuthSurface,
-  Button,
   LoginErrorBanner,
   LoginFailureView,
   LoginRestoringView,
@@ -220,6 +219,11 @@ export function ConsentPage() {
     }
   };
 
+  const handleGoToSignIn = () => {
+    persistReturnTo(window.location.href);
+    navigate('/.account/login/password/');
+  };
+
   const handleConsent = async (allow: boolean, selected?: OidcConsentSelection) => {
     if (!allow) {
       await handleCancelConsent();
@@ -414,16 +418,14 @@ export function ConsentPage() {
   return (
     <AuthSurface mode="page" title="Authorize">
       <div className="space-y-4 p-4">
-      {!isLoggedIn && (
-        <div className="space-y-3 rounded-lg border border-border/60 bg-muted/30 p-3 text-sm text-muted-foreground">
-          <p>Sign in to approve this request and choose which WebID to share.</p>
-          <Button type="button" className="w-full" onClick={() => {
-              persistReturnTo(window.location.href);
-              navigate('/.account/login/password/');
-            }}>Go to sign in</Button>
-        </div>
-      )}
-      {error && !clientInfo ? (
+      {!isLoggedIn ? (
+        <LoginFailureView
+          title="Sign in required"
+          description="Sign in to approve this request and choose which WebID to share."
+          primaryLabel="Go to sign in"
+          onPrimary={handleGoToSignIn}
+        />
+      ) : error && !clientInfo ? (
         <LoginFailureView
           title="Authorization unavailable"
           description={error}
@@ -433,9 +435,9 @@ export function ConsentPage() {
       ) : error ? (
         <LoginErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel="Dismiss" />
       ) : null}
-      {isLoading ? (
+      {isLoggedIn ? (isLoading ? (
         <LoginRestoringView label="Restoring authorization…" />
-      ) : (
+      ) : error && !clientInfo ? null : (
         <div className="space-y-4">
           <OidcConsentView
             client={{
@@ -509,7 +511,7 @@ export function ConsentPage() {
             />
           ) : null}
         </div>
-      )}
+      )) : null}
       </div>
     </AuthSurface>
   );
