@@ -81,9 +81,27 @@ export function XpodSolidRuntimeProvider({
       origin: typeof window === 'undefined' ? undefined : window.location.origin,
       webId: snapshot.webId,
     });
-    const openArgs = rememberedBinding
-      ? { webId: snapshot.webId, podUrl: rememberedBinding.storageUrl, fetch: runtime.session.fetch }
-      : { webId: snapshot.webId, fetch: runtime.session.fetch };
+    if (!rememberedBinding) {
+      // Xpod no longer guesses a Pod from profile storage. A public WebID-only
+      // session remains valid, while Pod-backed routes wait for an explicit
+      // Account binding selected through consent or callback state.
+      runtime.pod.clear({ webId: snapshot.webId });
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setCurrentPod(undefined);
+          setSelectedStorage(undefined);
+          setPodError(undefined);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    const openArgs = {
+      webId: snapshot.webId,
+      podUrl: rememberedBinding.storageUrl,
+      fetch: runtime.session.fetch,
+    };
     void runtime.pod.open(openArgs).then(
       (opened) => {
         if (!cancelled) {

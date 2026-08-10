@@ -4,30 +4,24 @@ import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Co
 import { useAuth } from '../context/AuthContextValue';
 import { buildPodCreatePayload, clearStoredProvisionCode, getStoredProvisionCode } from '../utils/pod';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
+import type { StorageBinding } from '@undefineds.co/solid-sdk';
+import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
-  currentStorageScope,
-  dedupeScopedEntries,
-  lookupProvisionScopedWebIds,
-  scopedEntriesFromPods,
-  storageModeFor,
-  storageUrlBelongsToRoot,
-  type ScopedWebIdEntry,
-  type StorageMode,
-} from '../utils/storage-scope';
+  readRememberedXpodStorageBindingKey,
+  reconcileXpodStorageSelection,
+  rememberXpodStorageBinding,
+  storageBindingKey,
+  type XpodStorageSelectionState,
+} from '../auth/xpod-storage-selection';
 
 interface PodView {
   id: string;
   resourceUrl?: string;
   name?: string;
-  storageMode?: StorageMode;
 }
 
 interface AccountPodResponse {
   pods?: Record<string, string>;
-}
-
-interface AccountWebIdResponse {
-  webIdLinks?: Record<string, string>;
 }
 
 interface AccountClientCredentialsResponse {
@@ -50,6 +44,16 @@ function derivePodName(storageUrl: string): string | undefined {
   }
 }
 
+function normalizeStorageUrl(storageUrl: string): string {
+  try {
+    const url = new URL(storageUrl);
+    url.pathname = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+    return url.href;
+  } catch {
+    return storageUrl.endsWith('/') ? storageUrl : `${storageUrl}/`;
+  }
+}
+
 function normalizePods(json: AccountPodResponse | undefined): PodView[] {
   const pods = json?.pods;
   if (!pods || typeof pods !== 'object') {
@@ -61,27 +65,6 @@ function normalizePods(json: AccountPodResponse | undefined): PodView[] {
     resourceUrl,
     name: derivePodName(storageUrl),
   }));
-}
-
-function podsFromScopedEntries(entries: ScopedWebIdEntry[]): PodView[] {
-  const seen = new Set<string>();
-  const pods: PodView[] = [];
-  for (const entry of entries) {
-    if (seen.has(entry.storageUrl)) {
-      continue;
-    }
-    seen.add(entry.storageUrl);
-    pods.push({
-      id: entry.storageUrl,
-      name: derivePodName(entry.storageUrl),
-      storageMode: entry.storageMode ?? storageModeFor(entry.webId, entry.storageUrl),
-    });
-  }
-  return pods;
-}
-
-function webIdsFromScopedEntries(entries: ScopedWebIdEntry[]): string[] {
-  return Array.from(new Set(entries.map((entry) => entry.webId)));
 }
 
 function credentialIdFromUrl(resourceUrl: string): string {
@@ -126,6 +109,8 @@ export function AccountPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
   const [pods, setPods] = useState<PodView[]>([]);
+  const [storageBindings, setStorageBindings] = useState<StorageBinding[]>([]);
+  const [storageSelection, setStorageSelection] = useState<XpodStorageSelectionState>({ status: 'loading' });
   const [podStateSettling, setPodStateSettling] = useState(false);
   const [showCreatePod, setShowCreatePod] = useState(false);
   const [podName, setPodName] = useState('');
@@ -164,22 +149,21 @@ export function AccountPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const scope = currentStorageScope(window.location.origin, getStoredProvisionCode());
-      let nextWebIds: string[] = [];
-      let allWebIds: string[] = [];
+      const bindings = await fetchAccountStorageBindings({
+        controls,
+        origin: window.location.origin,
+      });
+      const rememberedKey = readRememberedXpodStorageBindingKey();
+      const remembered = rememberedKey
+        ? bindings.find((binding) => storageBindingKey(binding) === rememberedKey)
+        : undefined;
+      const selection = reconcileXpodStorageSelection({ bindings, remembered });
+      setStorageBindings(bindings);
+      setStorageSelection(selection);
+
+      const nextWebIds = Array.from(new Set(bindings.map((binding) => binding.webId)));
+      const storageUrls = new Set(bindings.map((binding) => binding.storageUrl));
       let allPods: PodView[] = [];
-      let scopedEntries: ScopedWebIdEntry[] = [];
-      if (controls?.account?.webId) {
-        const res = await fetch(controls.account.webId, { headers: storedAccountTokenHeaders(), credentials: 'include' });
-        if (res.ok) {
-          const json = await res.json() as AccountWebIdResponse;
-          const links = json.webIdLinks || {};
-          allWebIds = Object.keys(links);
-        } else {
-          // No WebIDs yet is normal for new users
-          allWebIds = [];
-        }
-      }
 
       if (controls?.account?.pod) {
         const res = await fetch(controls.account.pod, { headers: storedAccountTokenHeaders(), credentials: 'include' });
@@ -191,29 +175,13 @@ export function AccountPage() {
         }
       }
 
-      if (scope) {
-        scopedEntries = scope.serviceToken
-          ? await lookupProvisionScopedWebIds(fetch, allWebIds, scope)
-          : scopedEntriesFromPods(allWebIds, allPods.map((pod) => pod.id), scope);
-      }
-      scopedEntries = dedupeScopedEntries(scopedEntries);
-      nextWebIds = webIdsFromScopedEntries(scopedEntries);
-      const nextPods = scope?.serviceToken
-        ? podsFromScopedEntries(scopedEntries)
-        : allPods
-          .filter((pod) => storageUrlBelongsToRoot(pod.id, scope?.root))
-          .map((pod) => ({
-            ...pod,
-            storageMode: scopedEntries.find((entry) => storageUrlBelongsToRoot(pod.id, entry.storageUrl))?.storageMode,
-          }));
+      // Pod controls still provide deletion resource URLs, but never define
+      // WebID ownership. The exact binding control remains authoritative.
+      const nextPods = allPods.filter((pod) => storageUrls.has(normalizeStorageUrl(pod.id)));
 
       setWebIds(nextWebIds);
       setPods(nextPods);
-      if (scope) {
-        setPodStateSettling(nextPods.length === 0 && allWebIds.length > 0);
-      } else {
-        setPodStateSettling(false);
-      }
+      setPodStateSettling(selection.status === 'empty' && nextWebIds.length > 0);
 
       if (controls?.account?.clientCredentials) {
         const res = await fetch(controls.account.clientCredentials, { headers: storedAccountTokenHeaders(), credentials: 'include' });
@@ -238,10 +206,12 @@ export function AccountPage() {
       console.error('Failed to fetch account data:', err);
       setWebIds([]);
       setPods([]);
+      setStorageBindings([]);
+      setStorageSelection(reconcileXpodStorageSelection({ error: err }));
       setCredentials([]);
       setPodStateSettling(false);
     }
-  }, [controls?.account?.clientCredentials, controls?.account?.pod, controls?.account?.webId]);
+  }, [controls, controls?.account?.clientCredentials, controls?.account?.pod]);
 
   useEffect(() => {
     fetchData();
@@ -471,6 +441,49 @@ export function AccountPage() {
             )}
           </div>
           <p className="text-[11px] text-zinc-500 mb-3">Your personal data stores (Pods). You own and control all data stored here.</p>
+
+          {storageSelection.status === 'error' && (
+            <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-[11px] text-red-600">
+              {storageSelection.message} <button type="button" onClick={() => void fetchData()} className="ml-1 underline">Retry</button>
+            </div>
+          )}
+          {storageSelection.status === 'conflict' && (
+            <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-700">
+              {storageSelection.message}
+            </div>
+          )}
+          {storageSelection.status === 'selecting' && (
+            <div className="mb-3 rounded-xl border border-[#7C4DFF]/30 bg-[#7C4DFF]/5 p-3">
+              <p className="mb-2 text-[11px] font-medium text-zinc-700">Choose the Pod for the next sign-in</p>
+              <div className="space-y-1">
+                {storageSelection.candidates.map((binding) => (
+                  <label key={storageBindingKey(binding)} className="flex cursor-pointer items-center gap-2 rounded-lg bg-white p-2 text-[11px] text-zinc-600">
+                    <input
+                      type="radio"
+                      name="account-storage-binding"
+                      onChange={() => {
+                        rememberXpodStorageBinding(binding);
+                        setStorageSelection({ status: 'ready', selected: binding });
+                      }}
+                    />
+                    <span className="truncate">{binding.storageUrl}</span>
+                    <span className="truncate text-zinc-400">{binding.webId}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          {storageSelection.status === 'ready' && (
+            <div className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-[11px] text-emerald-700">
+              Selected storage: <span className="font-mono">{storageSelection.selected.storageUrl}</span>
+              <span className="ml-1 text-emerald-600">({storageSelection.selected.webId})</span>
+            </div>
+          )}
+          {storageSelection.status === 'empty' && storageBindings.length === 0 && (
+            <div className="mb-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-[11px] text-zinc-500">
+              No storage binding is available yet. Create a Pod to continue.
+            </div>
+          )}
           
           {showCreatePod && (
             <form onSubmit={handleCreatePod} className="mb-4 p-4 bg-white border border-zinc-200 rounded-xl shadow-sm">

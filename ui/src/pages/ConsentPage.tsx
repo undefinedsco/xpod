@@ -1,18 +1,28 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Shield, AlertCircle, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
+import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { useAuth } from '../context/AuthContextValue';
 import { CardWrapper } from '../components/CardWrapper';
 import { FirstPodCreator } from '../components/FirstPodCreator';
 import { persistReturnTo } from '../utils/returnTo';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
-import { lookupProvisionScopedWebIds } from '../utils/provision-scope';
 import { messageFromError, readResponseMessage } from '../utils/errors';
+import {
+  createXpodLoginTransactionStore,
+  type XpodLoginTransactionStore,
+} from '../auth/xpod-login-transaction';
+import {
+  reconcileXpodStorageSelection,
+  storageBindingKey,
+  type XpodStorageSelectionState,
+} from '../auth/xpod-storage-selection';
 import {
   fetchOidcCancelRedirectLocation,
   resolveConsentDisplayWebIds,
+  resolveConsentStorageBindings,
   resolveOidcCancelUrl,
 } from './ConsentPage.utils';
 
@@ -32,6 +42,7 @@ interface PickWebIdResponse {
   location?: string;
   message?: string;
   webIds?: unknown;
+  entries?: unknown;
 }
 
 export function ConsentPage() {
@@ -41,6 +52,10 @@ export function ConsentPage() {
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
   const [currentWebId, setCurrentWebId] = useState<string | null>(null);
   const [webIds, setWebIds] = useState<string[]>([]);
+  const [consentBindings, setConsentBindings] = useState<StorageBinding[]>([]);
+  const [selectedStorageUrl, setSelectedStorageUrl] = useState('');
+  const [storageSelection, setStorageSelection] = useState<XpodStorageSelectionState>({ status: 'loading' });
+  const [pendingTransaction, setPendingTransaction] = useState<WebIdLoginTransaction>();
   const [selectedWebId, setSelectedWebId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<string | null>(null);
@@ -48,12 +63,31 @@ export function ConsentPage() {
   const [provisionCode, setProvisionCode] = useState<string | undefined>(() => getStoredProvisionCode());
   const [isAuthorizing, setIsAuthorizing] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const transactionStore = useMemo<XpodLoginTransactionStore | undefined>(() => {
+    try {
+      return createXpodLoginTransactionStore({
+        origin: window.location.origin,
+        storage: window.sessionStorage,
+      });
+    } catch {
+      return undefined;
+    }
+  }, []);
 
   const consentUrl = `${idpIndex}oidc/consent/`;
   const pickWebIdUrl = `${idpIndex}oidc/pick-webid/`;
   const cancelUrl = resolveOidcCancelUrl(controls, idpIndex);
 
   const refreshConsentState = useCallback(async (): Promise<string[]> => {
+    let activeTransaction: WebIdLoginTransaction | undefined;
+    try {
+      activeTransaction = transactionStore?.readSinglePending();
+    } catch (err: unknown) {
+      setPendingTransaction(undefined);
+      setStorageSelection({ status: 'error', message: messageFromError(err, 'Sign-in transaction is invalid.') });
+    }
+    setPendingTransaction(activeTransaction);
+
     const currentProvisionCode = await resolveProvisionCodeForCurrentScope(fetch, provisionCode);
     setProvisionCode(currentProvisionCode);
 
@@ -83,7 +117,9 @@ export function ConsentPage() {
     });
     if (!pickRes.ok) {
       setWebIds([]);
+      setConsentBindings([]);
       setSelectedWebId('');
+      setStorageSelection({ status: 'error', message: `Failed to load WebID bindings (${pickRes.status}).` });
       return [];
     }
 
@@ -91,23 +127,37 @@ export function ConsentPage() {
     const rawIds = Array.isArray(pickData.webIds)
       ? pickData.webIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
       : [];
-    const scopedEntries = currentProvisionCode
-      ? await lookupProvisionScopedWebIds(fetch, rawIds, currentProvisionCode)
-      : undefined;
-    const ids = scopedEntries
-      ? scopedEntries.map((entry) => entry.webId)
+    const exactBindings = resolveConsentStorageBindings(pickData.entries, rawIds);
+    const selectedPendingBinding = activeTransaction?.selectedStorage;
+    const eligibleBindings = selectedPendingBinding
+      ? exactBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(selectedPendingBinding))
+      : exactBindings;
+    const selection = reconcileXpodStorageSelection({ bindings: eligibleBindings });
+    setConsentBindings(exactBindings);
+    setStorageSelection(selection);
+
+    // Keep the legacy IDs for old CSS responses, but never derive a storage
+    // URL from those IDs. Canonical consent always renders exact bindings.
+    const ids = exactBindings.length > 0
+      ? Array.from(new Set(exactBindings.map((entry) => entry.webId)))
       : rawIds;
     setWebIds(ids);
-    if (consentData.webId && ids.includes(consentData.webId)) {
+    if (selection.status === 'ready') {
+      setSelectedWebId(selection.selected.webId);
+      setSelectedStorageUrl(selection.selected.storageUrl);
+    } else if (consentData.webId && ids.includes(consentData.webId)) {
       setSelectedWebId(consentData.webId);
+      setSelectedStorageUrl('');
     } else if (ids.length > 0) {
-      setSelectedWebId(ids[0]);
+      setSelectedWebId(selection.status === 'selecting' || ids.length > 1 ? '' : ids.at(0) ?? '');
+      setSelectedStorageUrl('');
     } else {
       setSelectedWebId('');
+      setSelectedStorageUrl('');
     }
 
     return ids;
-  }, [consentUrl, pickWebIdUrl, provisionCode]);
+  }, [consentUrl, pickWebIdUrl, provisionCode, transactionStore]);
 
   useEffect(() => {
     console.log('[Consent] Page loaded, fetching consent info...');
@@ -167,6 +217,29 @@ export function ConsentPage() {
       setIsAuthorizing(true);
       setError(null);
 
+      let selectedBinding: StorageBinding | undefined;
+      if (pendingTransaction) {
+        if (storageSelection.status !== 'ready') {
+          throw new Error('Choose a storage before approving this authorization.');
+        }
+        selectedBinding = storageSelection.selected;
+        if (!transactionStore) {
+          throw new Error('This browser cannot keep the selected storage for the callback.');
+        }
+        // The transaction is read-only until this exact pair is ready. This
+        // update is scoped to the active id and never consumes the record.
+        transactionStore.updateSelectedStorage(pendingTransaction.id, selectedBinding);
+      } else if (consentBindings.length > 0) {
+        if (storageSelection.status !== 'ready') {
+          throw new Error('Choose a storage before approving this authorization.');
+        }
+        selectedBinding = consentBindings.find((binding) =>
+          binding.webId === selectedWebId && (!selectedStorageUrl || binding.storageUrl === selectedStorageUrl));
+        if (!selectedBinding) {
+          throw new Error('Choose a storage before approving this authorization.');
+        }
+      }
+
       if (selectedWebId && selectedWebId !== currentWebId) {
         console.log('[Consent] Picking WebID:', selectedWebId);
         const pickRes = await fetch(pickWebIdUrl, {
@@ -205,7 +278,7 @@ export function ConsentPage() {
       console.log('[Consent] Redirect URL:', redirectUrl);
       
       if (redirectUrl) {
-        window.location.href = redirectUrl;
+        window.location.assign(redirectUrl);
       } else {
         // No redirect URL - authorization complete but nowhere to go
         // This might happen if the OIDC session was lost
@@ -228,6 +301,10 @@ export function ConsentPage() {
         cancelUrl,
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
       });
+      if (pendingTransaction && transactionStore) {
+        transactionStore.cancel(pendingTransaction.id);
+        setPendingTransaction(undefined);
+      }
       window.location.href = redirectUrl;
     } catch (err: unknown) {
       setError(messageFromError(err, 'Authorization cancellation failed'));
@@ -237,7 +314,11 @@ export function ConsentPage() {
   };
 
   const displayWebIds = resolveConsentDisplayWebIds(webIds, currentWebId, Boolean(provisionCode));
+  const displayBindings = pendingTransaction?.selectedStorage
+    ? consentBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(pendingTransaction.selectedStorage!))
+    : consentBindings;
   const isSubmitting = isAuthorizing || isCancelling;
+  const requiresStorageSelection = consentBindings.length > 0;
 
   return (
     <CardWrapper title="Authorize" subtitle={`${clientInfo?.client_name || 'Application'} requests access`} icon={Shield}>
@@ -297,18 +378,28 @@ export function ConsentPage() {
                 </div>
               )}
             </div>
-            {displayWebIds.length === 0 ? (
+            {(storageSelection.status === 'error' || storageSelection.status === 'conflict') && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-700">
+                {storageSelection.message}
+              </div>
+            )}
+            {(displayWebIds.length === 0 || (pendingTransaction && storageSelection.status === 'empty')) ? (
               <FirstPodCreator
                 createPodUrl={controls?.account?.pod}
                 headers={storedAccountTokenHeaders()}
-                onCreated={async (ids) => {
-                  if (ids.length === 0) {
+                onCreated={async () => undefined}
+                onBindingCreated={async (bindings) => {
+                  setConsentBindings(bindings);
+                  setWebIds(Array.from(new Set(bindings.map((binding) => binding.webId))));
+                  const nextSelection = reconcileXpodStorageSelection({ bindings });
+                  setStorageSelection(nextSelection);
+                  if (nextSelection.status === 'ready') {
+                    setSelectedWebId(nextSelection.selected.webId);
+                    setSelectedStorageUrl(nextSelection.selected.storageUrl);
+                  } else if (bindings.length === 0) {
                     await refreshConsentState();
                     setError('Storage was created. Click Refresh authorization when the WebID is ready.');
-                    return;
                   }
-                  setWebIds(ids);
-                  setSelectedWebId(ids[0] || '');
                 }}
                 onError={setError}
                 pickWebIdUrl={pickWebIdUrl}
@@ -317,14 +408,16 @@ export function ConsentPage() {
               />
             ) : (
               <div className="space-y-1">
-                {displayWebIds.map(id => {
+                {(displayBindings.length > 0 ? displayBindings : displayWebIds.map((webId) => ({ webId, storageUrl: '' }))).map((binding) => {
+                  const id = binding.webId;
                   const info = parseWebIdInfo(id);
+                  const pairKey = `${id}|${binding.storageUrl}`;
                   return (
                     <label 
-                      key={id} 
+                      key={pairKey}
                       className={clsx(
                         "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
-                        selectedWebId === id 
+                        selectedWebId === id && (!binding.storageUrl || selectedStorageUrl === binding.storageUrl)
                           ? "border-[#7C4DFF]/50 bg-[#7C4DFF]/10" 
                           : "border-zinc-200 bg-zinc-50 hover:border-zinc-300"
                       )}
@@ -333,8 +426,14 @@ export function ConsentPage() {
                         type="radio" 
                         name="webId" 
                         value={id} 
-                        checked={selectedWebId === id} 
-                        onChange={e => setSelectedWebId(e.target.value)} 
+                        checked={selectedWebId === id && (!binding.storageUrl || selectedStorageUrl === binding.storageUrl)}
+                        onChange={() => {
+                          setSelectedWebId(id);
+                          setSelectedStorageUrl(binding.storageUrl);
+                          if (binding.storageUrl) {
+                            setStorageSelection({ status: 'ready', selected: binding });
+                          }
+                        }}
                         className="text-[#7C4DFF]" 
                       />
                       <div className="min-w-0 flex-1">
@@ -381,7 +480,8 @@ export function ConsentPage() {
             </button>
             <button 
               onClick={() => handleConsent(true)} 
-              disabled={isSubmitting || displayWebIds.length === 0}
+              disabled={isSubmitting || displayWebIds.length === 0 ||
+                Boolean((pendingTransaction || requiresStorageSelection) && storageSelection.status !== 'ready')}
               className="py-2.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white rounded-xl text-xs disabled:opacity-50 transition-colors"
             >
               {isAuthorizing ? 'Authorizing...' : 'Authorize'}

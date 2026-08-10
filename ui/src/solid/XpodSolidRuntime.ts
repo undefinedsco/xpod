@@ -95,11 +95,12 @@ export async function discoverPodUrlFromWebId({
   fetch: typeof globalThis.fetch;
 }): Promise<string> {
   const storageUrls = await fetchProfileStorageUrls(fetch, webId);
-  const storageUrl = storageUrls[0];
-  if (!storageUrl) {
-    throw new Error('WebID profile does not declare a Solid storage URL');
+  if (storageUrls.length !== 1) {
+    throw new Error(storageUrls.length === 0
+      ? 'WebID profile does not declare a Solid storage URL'
+      : 'WebID profile declares multiple Solid storage URLs; choose an explicit Account binding');
   }
-  return ensureTrailingSlash(new URL(storageUrl).toString());
+  return ensureTrailingSlash(new URL(storageUrls.at(0)!).toString());
 }
 
 export function createXpodSolidRuntimeValue(
@@ -116,7 +117,12 @@ export function createXpodSolidRuntimeValue(
   };
   const pod = createPodRuntime<SolidDatabase>({
     adapter: {
-      discoverPod: ({ webId, fetch }) => discoverPodUrlFromWebId({ webId, fetch }),
+      // Xpod storage is selected from an Account-owned binding before a Pod
+      // session opens. Keep the SDK adapter explicit so a WebID-only call
+      // cannot silently discover and choose the first profile storage.
+      discoverPod: () => {
+        throw new Error('Explicit Xpod storage binding is required to open a Pod');
+      },
       openDatabase: ({ podUrl }) => drizzle(authSession, {
         podUrl,
         schema: {

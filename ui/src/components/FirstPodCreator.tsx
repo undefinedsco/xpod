@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
+import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import {
   checkFirstPodNameAvailability,
+  createFirstPodAndWaitForBinding,
   createFirstPodAndWaitForWebIds,
   deriveFirstPodNameCandidate,
+  waitForConsentBindings,
   waitForConsentWebIds,
   type FirstPodNameAvailabilityStatus,
 } from '../utils/consent-first-pod';
@@ -13,6 +16,7 @@ interface FirstPodCreatorProps {
   createPodUrl?: string;
   headers: Record<string, string>;
   onCreated: (webIds: string[]) => void | Promise<void>;
+  onBindingCreated?: (bindings: StorageBinding[]) => void | Promise<void>;
   onError: (message: string | null) => void;
   pickWebIdUrl?: string;
   provisionCode?: string;
@@ -28,6 +32,7 @@ export function FirstPodCreator({
   createPodUrl,
   headers,
   onCreated,
+  onBindingCreated,
   onError,
   pickWebIdUrl,
   provisionCode,
@@ -81,16 +86,27 @@ export function FirstPodCreator({
     try {
       onError(null);
       setIsCreating(true);
-      const webIds = pickWebIdUrl
+      const bindings = pickWebIdUrl && onBindingCreated
+        ? await waitForConsentBindings({
+          headers,
+          pickWebIdUrl,
+        })
+        : [];
+      if (onBindingCreated) {
+        await onBindingCreated(bindings);
+      }
+      const webIds = pickWebIdUrl && !onBindingCreated
         ? await waitForConsentWebIds({
           headers,
           pickWebIdUrl,
         })
         : [];
-      if (webIds.length > 0) {
+      if (bindings.length > 0 || webIds.length > 0) {
         setCreatedPodName(null);
       }
-      await onCreated(webIds);
+      if (!onBindingCreated) {
+        await onCreated(webIds);
+      }
     } catch (err: unknown) {
       onError(messageFromError(err, 'Failed to refresh authorization state'));
     } finally {
@@ -124,16 +140,31 @@ export function FirstPodCreator({
     try {
       onError(null);
       setIsCreating(true);
-      const webIds = await createFirstPodAndWaitForWebIds({
-        createPodUrl,
-        headers,
-        pickWebIdUrl,
-        provisionCode,
-        username: normalizedName,
-      });
-      setCreatedPodName(webIds.length > 0 ? null : normalizedName);
+      const bindings = onBindingCreated
+        ? await createFirstPodAndWaitForBinding({
+          createPodUrl,
+          headers,
+          pickWebIdUrl,
+          provisionCode,
+          username: normalizedName,
+        })
+        : [];
+      const webIds = onBindingCreated
+        ? bindings.map((binding) => binding.webId)
+        : await createFirstPodAndWaitForWebIds({
+          createPodUrl,
+          headers,
+          pickWebIdUrl,
+          provisionCode,
+          username: normalizedName,
+        });
+      setCreatedPodName(bindings.length > 0 || webIds.length > 0 ? null : normalizedName);
       setPodName(normalizedName);
-      await onCreated(webIds);
+      if (onBindingCreated) {
+        await onBindingCreated(bindings);
+      } else {
+        await onCreated(webIds);
+      }
     } catch (err: unknown) {
       onError(messageFromError(err, 'Failed to create Pod'));
     } finally {

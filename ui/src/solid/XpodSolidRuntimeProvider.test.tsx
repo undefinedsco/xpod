@@ -85,8 +85,9 @@ function installDom(url = 'https://app.example/dashboard/models') {
   return dom;
 }
 
-async function renderWithRoot(element: React.ReactNode) {
+async function renderWithRoot(element: React.ReactNode, setup?: () => void) {
   installDom();
+  setup?.();
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -599,6 +600,16 @@ describe('Xpod Solid runtime', () => {
     }));
   });
 
+  test('requires an explicit storage binding when opening the Xpod Pod runtime', async () => {
+    installDom();
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => new FakeSession() });
+
+    await expect(runtime.pod.open({
+      webId: 'https://app.example/alice#me',
+      fetch: globalThis.fetch,
+    })).rejects.toThrow('Explicit Xpod storage binding is required');
+  });
+
   test('discovers and normalizes pim storage from Turtle profile regressions', async () => {
     const fetchImpl = mock(async () => new Response(
       [
@@ -628,6 +639,21 @@ describe('Xpod Solid runtime', () => {
       webId: 'https://id.example/alice#me',
       fetch: fetchImpl as typeof fetch,
     })).resolves.toBe('https://pod.example/alice/');
+  });
+
+  test('does not choose the first storage from a multi-storage WebID profile', async () => {
+    const fetchImpl = mock(async () => new Response(JSON.stringify({
+      '@id': 'https://id.example/alice#me',
+      'http://www.w3.org/ns/pim/space#storage': [
+        { '@id': 'https://pod.example/alice/' },
+        { '@id': 'https://pod.example/archive/' },
+      ],
+    }), { headers: { 'content-type': 'application/ld+json' } }));
+
+    await expect(discoverPodUrlFromWebId({
+      webId: 'https://id.example/alice#me',
+      fetch: fetchImpl as typeof fetch,
+    })).rejects.toThrow('multiple Solid storage URLs');
   });
 
   test('maps session errors and expiry to safe public runtime states', async () => {
@@ -702,8 +728,8 @@ describe('Xpod Solid runtime', () => {
 
   test('clears the old Pod binding and AI capability immediately when the authenticated WebID changes', async () => {
     const session = new FakeSession();
-    const aliceWebId = 'https://id.example/alice#me';
-    const bobWebId = 'https://id.example/bob#me';
+    const aliceWebId = 'https://app.example/alice#me';
+    const bobWebId = 'https://app.example/bob#me';
     session.handleIncomingRedirect.mockImplementation(async () => {
       session.authenticate(aliceWebId);
       return session.info;
@@ -724,7 +750,7 @@ describe('Xpod Solid runtime', () => {
     const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
     const alicePod = {
       webId: aliceWebId,
-      podUrl: 'https://pod.example/alice/',
+      podUrl: 'https://app.example/alice/',
       database: {} as never,
       collections: 'ready' as const,
     };
@@ -737,13 +763,15 @@ describe('Xpod Solid runtime', () => {
       <XpodSolidRuntimeProvider value={value}>
         <IdentityPairProbe />
       </XpodSolidRuntimeProvider>,
+      () => rememberXpodSelectedStorage({ webId: aliceWebId, storageUrl: alicePod.podUrl }),
     );
 
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 10));
     });
     expect(container.querySelector('[data-testid="identity-pair"]')?.textContent).toContain(aliceWebId);
-    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent).toContain(aliceWebId);
+    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent)
+      .toBe(`${aliceWebId}|${alicePod.podUrl}`);
     expect(container.querySelector('[data-testid="capability-pair"]')?.textContent).toBe('available');
 
     await act(async () => {

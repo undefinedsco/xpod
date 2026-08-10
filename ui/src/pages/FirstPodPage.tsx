@@ -7,16 +7,7 @@ import { FirstPodCreator } from '../components/FirstPodCreator';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { messageFromError } from '../utils/errors';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
-import {
-  filterWebIdsByStorageRoot,
-  lookupProvisionScopedWebIds,
-  resolveProvisionScope,
-  storageRootFromOrigin,
-} from '../utils/provision-scope';
-
-interface AccountWebIdResponse {
-  webIdLinks?: Record<string, string>;
-}
+import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 
 export function FirstPodPage() {
   const { controls, hasOidcPending, refetchControls } = useAuth();
@@ -39,8 +30,7 @@ export function FirstPodPage() {
         }
         setProvisionCode(currentProvisionCode);
         const status = await loadCurrentStorageWebIds({
-          accountWebIdUrl: controls?.account?.webId,
-          provisionCode: currentProvisionCode,
+          accountBindingsUrl: controls?.account?.bindings,
         });
         if (cancelled) {
           return;
@@ -66,7 +56,7 @@ export function FirstPodPage() {
     return () => {
       cancelled = true;
     };
-  }, [controls?.account?.webId, hasOidcPending, navigate, provisionCode]);
+  }, [controls?.account?.bindings, hasOidcPending, navigate, provisionCode]);
 
   return (
     <CardWrapper
@@ -98,6 +88,14 @@ export function FirstPodPage() {
             await refetchControls();
             navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
           }}
+          onBindingCreated={async (bindings) => {
+            if (hasOidcPending && bindings.length === 0) {
+              setError('Storage was created. Click Refresh authorization when the WebID is ready.');
+              return;
+            }
+            await refetchControls();
+            navigate(hasOidcPending ? '/.account/oidc/consent/' : '/.account/account/', { replace: true });
+          }}
           onError={setError}
           pickWebIdUrl={pickWebIdUrl}
           provisionCode={provisionCode}
@@ -109,40 +107,18 @@ export function FirstPodPage() {
 }
 
 async function loadCurrentStorageWebIds(options: {
-  accountWebIdUrl?: string;
-  provisionCode?: string;
+  accountBindingsUrl?: string;
 }): Promise<{ allWebIds: string[]; currentStorageWebIds: string[] }> {
-  const accountWebIdUrl = options.accountWebIdUrl;
-  if (!accountWebIdUrl) {
+  if (!options.accountBindingsUrl) {
     return { allWebIds: [], currentStorageWebIds: [] };
   }
-
-  const response = await fetch(accountWebIdUrl, {
-    headers: storedAccountTokenHeaders(),
-    credentials: 'include',
+  const entries = await fetchAccountStorageBindings({
+    controls: { account: { bindings: options.accountBindingsUrl } },
+    origin: window.location.origin,
   });
-  if (!response.ok) {
-    return { allWebIds: [], currentStorageWebIds: [] };
-  }
-
-  const data = await response.json().catch(() => ({})) as AccountWebIdResponse;
-  const allWebIds = Object.keys(data.webIdLinks ?? {});
-  if (allWebIds.length === 0) {
-    return { allWebIds, currentStorageWebIds: [] };
-  }
-
-  const provisionScope = resolveProvisionScope(options.provisionCode);
-  if (provisionScope) {
-    const entries = await lookupProvisionScopedWebIds(fetch, allWebIds, options.provisionCode);
-    return {
-      allWebIds,
-      currentStorageWebIds: (entries ?? []).map((entry) => entry.webId),
-    };
-  }
-
-  const entries = await filterWebIdsByStorageRoot(fetch, allWebIds, storageRootFromOrigin(window.location.origin));
+  const allWebIds = Array.from(new Set(entries.map((entry) => entry.webId)));
   return {
     allWebIds,
-    currentStorageWebIds: entries.map((entry) => entry.webId),
+    currentStorageWebIds: allWebIds,
   };
 }

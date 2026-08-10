@@ -133,6 +133,55 @@
       }
     },
     {
+      "comment": "Expose exact Account WebID/storage pairs for the current Xpod storage root.",
+      "@id": "urn:undefineds:xpod:AccountStorageBindingsRoute",
+      "@type": "RelativePathInteractionRoute",
+      "base": {
+        "@id": "urn:solid-server:default:AccountIdRoute"
+      },
+      "relativePath": "bindings/"
+    },
+    {
+      "@id": "urn:undefineds:xpod:AccountStorageBindingsRouter",
+      "@type": "AuthorizedRouteHandler",
+      "route": {
+        "@id": "urn:undefineds:xpod:AccountStorageBindingsRoute"
+      },
+      "source": {
+        "@id": "urn:undefineds:xpod:AccountStorageBindingsHandler",
+        "@type": "AccountStorageBindingsHandler",
+        "podStore": {
+          "@id": "urn:solid-server:default:PodStore"
+        },
+        "storageBaseUrl": {
+          "@id": "urn:solid-server:default:variable:baseUrl",
+          "@type": "Variable"
+        }
+      }
+    },
+    {
+      "comment": "Route the authorized bindings resource through CSS's account interaction chain.",
+      "@id": "urn:solid-server:default:InteractionRouteHandler",
+      "@type": "StatusWaterfallHandler",
+      "handlers": [
+        {
+          "@id": "urn:undefineds:xpod:AccountStorageBindingsRouter"
+        }
+      ]
+    },
+    {
+      "@id": "urn:solid-server:default:AccountControlHandler",
+      "@type": "ControlHandler",
+      "controls": [
+        {
+          "ControlHandler:_controls_key": "bindings",
+          "ControlHandler:_controls_value": {
+            "@id": "urn:undefineds:xpod:AccountStorageBindingsRoute"
+          }
+        }
+      ]
+    },
+    {
       "comment": "Override main HTML template to remove CSS default header/footer wrapper.",
       "@type": "Override",
       "overrideInstance": {
