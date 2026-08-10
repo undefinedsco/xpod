@@ -1,9 +1,13 @@
 import { Loader2 } from 'lucide-react';
+import { AuthSurface } from '@undefineds.co/shared-ui';
 
 export function LoadingScreen() {
   return (
-    <div className="flex min-h-screen bg-zinc-50 text-zinc-900 items-center justify-center">
-      <Loader2 className="w-6 h-6 animate-spin text-[#7C4DFF]" />
-    </div>
+    <AuthSurface mode="page" title="Loading">
+      <div role="status" aria-live="polite" className="flex items-center justify-center p-8 text-sm text-muted-foreground">
+        <Loader2 aria-hidden="true" className="mr-2 h-5 w-5 animate-spin" />
+        Loading…
+      </div>
+    </AuthSurface>
   );
 }
