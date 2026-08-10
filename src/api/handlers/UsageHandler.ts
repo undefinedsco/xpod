@@ -12,7 +12,8 @@ export interface UsageHandlerOptions {
 /**
  * Handler for usage query API
  *
- * Requires ServiceAuthContext with 'usage:read' scope.
+ * Requires ServiceAuthContext with 'usage:read' scope, Solid auth, or a CSS
+ * account token scoped to the requested account.
  *
  * GET /v1/usage/accounts/:accountId - Get account usage details
  * GET /v1/usage/pods/:podId         - Get pod usage details
@@ -23,11 +24,10 @@ export function registerUsageRoutes(server: ApiServer, options: UsageHandlerOpti
 
   // GET /v1/usage/accounts/:accountId
   server.get('/v1/usage/accounts/:accountId', async (request, response, params) => {
-    if (!requireUsageRead(request, response)) {
+    const accountId = decodeURIComponent(params.accountId);
+    if (!requireUsageRead(request, response, accountId)) {
       return;
     }
-
-    const accountId = decodeURIComponent(params.accountId);
 
     try {
       const usage = await usageRepo.getAccountUsage(accountId);
@@ -109,7 +109,11 @@ export function registerUsageRoutes(server: ApiServer, options: UsageHandlerOpti
   });
 }
 
-function requireUsageRead(request: AuthenticatedRequest, response: ServerResponse): boolean {
+function requireUsageRead(
+  request: AuthenticatedRequest,
+  response: ServerResponse,
+  requestedAccountId?: string,
+): boolean {
   if (!request.auth) {
     sendJson(response, 401, { error: 'Authentication required' });
     return false;
@@ -120,6 +124,13 @@ function requireUsageRead(request: AuthenticatedRequest, response: ServerRespons
       return false;
     }
     return true;
+  }
+  if (request.auth.type === 'account') {
+    if (requestedAccountId && request.auth.accountId === requestedAccountId) {
+      return true;
+    }
+    sendJson(response, 403, { error: 'Account token cannot access this usage resource' });
+    return false;
   }
   // Allow Solid auth (for admin/user self-query)
   if (request.auth.type === 'solid') {

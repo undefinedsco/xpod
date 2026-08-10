@@ -7,6 +7,7 @@
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
+import type { CssAccountTokenResolver } from '../auth/CssAccountTokenResolver';
 import type { GatewayAccessKeyRepository } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import type { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import type { ServiceTokenRepositoryPort } from '../../identity/drizzle/ServiceTokenRepository';
@@ -233,6 +234,7 @@ export interface ApiContainerCradle {
   apiServer: ApiServer;
   authMiddleware: AuthMiddleware;
   authenticator: Authenticator;
+  cssAccountTokenResolver?: CssAccountTokenResolver;
 
   // 仓库
   nodeRepo: EdgeNodeRepository;

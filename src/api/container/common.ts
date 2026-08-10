@@ -17,6 +17,8 @@ import { SolidTokenAuthenticator } from '../auth/SolidTokenAuthenticator';
 import { ClientCredentialsAuthenticator } from '../auth/ClientCredentialsAuthenticator';
 import { NodeTokenAuthenticator } from '../auth/NodeTokenAuthenticator';
 import { ServiceTokenAuthenticator } from '../auth/ServiceTokenAuthenticator';
+import { CssAccountTokenAuthenticator } from '../auth/CssAccountTokenAuthenticator';
+import { CssAccountTokenResolver } from '../auth/CssAccountTokenResolver';
 import { MultiAuthenticator } from '../auth/MultiAuthenticator';
 import { GatewayApiKeyAuthenticator } from '../ai-gateway/auth/GatewayApiKeyAuthenticator';
 import { PodGatewayAccessKeyRepository } from '../ai-gateway/auth/PodGatewayAccessKeyRepository';
@@ -61,6 +63,7 @@ import {
 } from '../ai-gateway/models';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
+import { RedisKeyValueStorage } from '../../storage/keyvalue/RedisKeyValueStorage';
 import { VectorService } from '../service/VectorService';
 import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
 import { ApiServer } from '../ApiServer';
@@ -151,6 +154,18 @@ export function registerCommonServices(
         serviceId: config.nodeId ?? 'local-1',
         scopes: ['quota:write', 'usage:read', 'account:manage', 'network:read', 'network:write'],
       });
+    }).singleton(),
+
+    cssAccountTokenResolver: asFunction(({ db, config }: ApiContainerCradle) => {
+      const redisStorage = config.redisUrl
+        ? new RedisKeyValueStorage<unknown>({
+          client: config.redisUrl,
+          username: process.env.CSS_REDIS_USERNAME,
+          password: process.env.CSS_REDIS_PASSWORD,
+          namespace: '/.internal/',
+        })
+        : undefined;
+      return new CssAccountTokenResolver({ db, redisStorage });
     }).singleton(),
 
     gatewayInternalPodAccess: asFunction(({ config }: ApiContainerCradle) => {
@@ -428,7 +443,14 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    authenticator: asFunction(({ nodeRepo, serviceTokenRepo, gatewayAccessKeyRepository, invocationTokenCodec, config }: ApiContainerCradle) => {
+    authenticator: asFunction(({
+      nodeRepo,
+      serviceTokenRepo,
+      cssAccountTokenResolver,
+      gatewayAccessKeyRepository,
+      invocationTokenCodec,
+      config,
+    }: ApiContainerCradle) => {
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
         publicBaseUrl: config.solidBaseUrl,
@@ -447,6 +469,10 @@ export function registerCommonServices(
         repository: serviceTokenRepo,
       });
 
+      const cssAccountTokenAuthenticator = new CssAccountTokenAuthenticator({
+        resolveAccountId: cssAccountTokenResolver!.resolveAccountId.bind(cssAccountTokenResolver),
+      });
+
       const gatewayApiKeyAuthenticator = gatewayAccessKeyRepository || invocationTokenCodec
         ? new GatewayApiKeyAuthenticator({
           repository: gatewayAccessKeyRepository,
@@ -457,10 +483,11 @@ export function registerCommonServices(
         : undefined;
 
       return new MultiAuthenticator({
-        // Order: Solid DPoP → Service Token → Node Token → Gateway Key → Client Credentials.
+        // Order: Solid DPoP → CSS account cookie → Service Token → Node Token → Gateway Key → Client Credentials.
         // Agent execution is scoped by ChatKit thread/workspace and Run state, not standalone Agent JWTs.
         authenticators: [
           solidAuthenticator,
+          cssAccountTokenAuthenticator,
           serviceTokenAuthenticator,
           nodeTokenAuthenticator,
           ...(gatewayApiKeyAuthenticator ? [gatewayApiKeyAuthenticator] : []),

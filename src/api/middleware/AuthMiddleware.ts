@@ -90,7 +90,7 @@ export class AuthMiddleware {
     response.statusCode = statusCode;
     response.setHeader('Content-Type', 'application/json');
     if (statusCode === 401) {
-      response.setHeader('WWW-Authenticate', 'Bearer, DPoP');
+      response.setHeader('WWW-Authenticate', 'Bearer, DPoP, CSS-Account-Token');
     }
     if (statusCode === 503) {
       response.end(JSON.stringify({

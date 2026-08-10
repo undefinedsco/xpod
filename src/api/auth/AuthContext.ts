@@ -45,7 +45,19 @@ export interface ServiceAuthContext {
   scopes: string[];
 }
 
-export type AuthContext = SolidAuthContext | NodeAuthContext | ServiceAuthContext;
+/**
+ * Authentication context created from the CSS account cookie token.
+ *
+ * This principal is intentionally narrower than Solid or service auth: it can
+ * only address the account represented by the cookie that CSS issued.
+ */
+export interface AccountAuthContext {
+  type: 'account';
+  accountId: string;
+  tokenType: 'CSS-Account-Token';
+}
+
+export type AuthContext = SolidAuthContext | NodeAuthContext | ServiceAuthContext | AccountAuthContext;
 
 export function isSolidAuth(ctx: AuthContext): ctx is SolidAuthContext {
   return ctx.type === 'solid';
@@ -77,6 +89,9 @@ export function getAccountId(ctx: AuthContext): string | undefined {
     return ctx.accountId;
   }
   if (ctx.type === 'node') {
+    return ctx.accountId;
+  }
+  if (ctx.type === 'account') {
     return ctx.accountId;
   }
   return undefined;
