@@ -27,15 +27,40 @@ export interface ProviderRuntimeExecuteInput {
   signal?: AbortSignal;
 }
 
+export interface ProviderImageGenerationRequest {
+  model: string;
+  prompt: string;
+  n?: number;
+  size?: string;
+  quality?: string;
+  style?: string;
+  responseFormat?: 'b64_json' | 'url';
+  image?: {
+    data: Uint8Array;
+    mimeType: string;
+    name: string;
+  };
+}
+
+export interface ProviderImageGenerationInput {
+  request: ProviderImageGenerationRequest;
+  apiKey: string;
+  credential?: ProviderRuntimeCredential;
+  signal?: AbortSignal;
+}
+
 export interface ProviderRuntimeAdapter {
   readonly provider: string;
   execute(input: ProviderRuntimeExecuteInput): AsyncIterable<GatewayEvent>;
+  generateImage?(input: ProviderImageGenerationInput): Promise<Record<string, unknown>>;
 }
 
 export interface ProviderRuntimeAdapterOptions {
   transport?: ProviderHttpTransport;
   maxOutputTokensDefault?: number;
 }
+
+const MAX_IMAGE_PROVIDER_RESPONSE_BYTES = 36 * 1024 * 1024;
 
 export interface CompatibleChatAdapterOptions extends ProviderRuntimeAdapterOptions {
   provider: string;
@@ -106,6 +131,34 @@ export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapt
       },
       cause: error,
     });
+  }
+
+  protected async requestOpenAiImage(
+    input: ProviderImageGenerationInput,
+    baseUrl: string,
+  ): Promise<Record<string, unknown>> {
+    try {
+      if (input.request.image) {
+        return await this.transport.postForm({
+          url: `${baseUrl}/images/edits`,
+          apiKey: input.apiKey,
+          body: toOpenAiImageEditForm(input.request),
+          proxy: input.credential?.proxy,
+          signal: input.signal,
+          maxResponseBytes: MAX_IMAGE_PROVIDER_RESPONSE_BYTES,
+        }) as Record<string, unknown>;
+      }
+      return await this.transport.postJson({
+        url: `${baseUrl}/images/generations`,
+        apiKey: input.apiKey,
+        body: toOpenAiImageGenerationBody(input.request),
+        proxy: input.credential?.proxy,
+        signal: input.signal,
+        maxResponseBytes: MAX_IMAGE_PROVIDER_RESPONSE_BYTES,
+      }) as Record<string, unknown>;
+    } catch (error) {
+      this.handleTransportError(error, input.apiKey);
+    }
   }
 }
 
@@ -189,6 +242,24 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
     }
   }
 
+  public async generateImage(input: ProviderImageGenerationInput): Promise<Record<string, unknown>> {
+    const capability = input.request.image ? 'imageEditing' : 'imageGeneration';
+    if (this.descriptor?.capabilities[capability] !== true) {
+      const runtimeCapability = input.request.image ? 'image_editing' : 'image_generation';
+      throw new GatewayProtocolError(`${this.provider} does not support ${input.request.image ? 'image editing' : 'image generation'}`, {
+        code: 'invalid_request',
+        status: 400,
+        details: { provider: this.provider, capability: runtimeCapability },
+      });
+    }
+    const baseUrl = this.resolveBaseUrl({
+      configuredBaseUrl: input.credential?.baseUrl,
+      defaultBaseUrl: this.defaultBaseUrl,
+      safeBaseUrls: this.safeBaseUrls,
+    });
+    return this.requestOpenAiImage(input, baseUrl);
+  }
+
   private validateRequest(request: GatewayRequest): void {
     if (!this.supportsImages && request.messages.some((message) => message.content.some((part) => part.type === 'image'))) {
       throw new GatewayProtocolError(`${this.provider} does not support image input through this gateway`, {
@@ -242,6 +313,32 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
     }
     return this.fallbackReasoningBody(effort, request, model);
   }
+}
+
+export function toOpenAiImageGenerationBody(request: ProviderImageGenerationRequest): Record<string, unknown> {
+  return {
+    model: request.model,
+    prompt: request.prompt,
+    ...(request.n !== undefined ? { n: request.n } : {}),
+    ...(request.size ? { size: request.size } : {}),
+    ...(request.quality ? { quality: request.quality } : {}),
+    ...(request.style ? { style: request.style } : {}),
+    ...(request.responseFormat ? { response_format: request.responseFormat } : {}),
+  };
+}
+
+export function toOpenAiImageEditForm(request: ProviderImageGenerationRequest): FormData {
+  if (!request.image) throw new Error('Image edit request requires image data');
+  const form = new FormData();
+  form.set('model', request.model);
+  form.set('prompt', request.prompt);
+  form.set('image', new Blob([request.image.data], { type: request.image.mimeType }), request.image.name);
+  if (request.n !== undefined) form.set('n', String(request.n));
+  if (request.size) form.set('size', request.size);
+  if (request.quality) form.set('quality', request.quality);
+  if (request.style) form.set('style', request.style);
+  if (request.responseFormat) form.set('response_format', request.responseFormat);
+  return form;
 }
 
 export function toResponsesBody(request: GatewayRequest): Record<string, unknown> {

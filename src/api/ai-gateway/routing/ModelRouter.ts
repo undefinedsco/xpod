@@ -37,6 +37,7 @@ export interface GatewayCredentialCandidate {
   };
   cooldownUntil?: Date;
   runtimeCredential?: ProviderRuntimeCredential;
+  runtimeCapabilities?: string[];
   metadata?: Record<string, unknown>;
 }
 
@@ -218,18 +219,36 @@ export class ModelRouter {
             },
           });
         }
+        const runtimeCapabilities = new Set(credential.runtimeCapabilities ?? ['chat_completions']);
+        const explicitCustomModel = (credential.customModels ?? customModelsFromMetadata(credential.metadata))
+          .find((model) => model.id === explicit.model);
+        const modelCapabilities = new Set(explicitCustomModel?.capabilities ?? []);
         this.registry.register({
           id: explicit.providerId,
           label: explicit.providerId,
           authModes: ['apiKey'],
-          protocols: ['responses', 'chatCompletions'],
+          protocols: [
+            ...(runtimeCapabilities.has('responses') ? ['responses' as const] : []),
+            ...(runtimeCapabilities.has('chat_completions') ? ['chatCompletions' as const] : []),
+          ],
           defaultBaseUrl: baseUrl,
           safeBaseUrls: [baseUrl],
           capabilities: {
-            toolCalls: true,
-            imageInput: true,
+            toolCalls: runtimeCapabilities.has('tool_calls'),
+            imageInput: runtimeCapabilities.has('image_input'),
+            imageGeneration: runtimeCapabilities.has('image_generation'),
+            imageEditing: runtimeCapabilities.has('image_editing'),
           },
-          models: [{ id: explicit.model }],
+          models: [{
+            id: explicit.model,
+            ...(explicitCustomModel?.inputModalities?.length ? { inputModalities: explicitCustomModel.inputModalities } : {}),
+            capabilities: {
+              toolCalls: modelCapabilities.has('tool_calls'),
+              imageInput: modelCapabilities.has('image_input'),
+              imageGeneration: modelCapabilities.has('image_generation'),
+              imageEditing: modelCapabilities.has('image_editing'),
+            },
+          }],
         });
       }
       if (explicit) {

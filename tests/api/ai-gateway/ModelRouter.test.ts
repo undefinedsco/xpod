@@ -36,6 +36,7 @@ function credential(input: Partial<GatewayCredentialCandidate> & {
     cooldownUntil: input.cooldownUntil,
     customModels: input.customModels,
     runtimeCredential: input.runtimeCredential,
+    runtimeCapabilities: input.runtimeCapabilities,
     metadata: input.metadata,
   };
 }
@@ -133,11 +134,12 @@ describe('ProviderRegistry', () => {
     expect(registry.requireProvider('openai')).toMatchObject({
       defaultBaseUrl: 'https://api.openai.com/v1',
       safeBaseUrls: ['https://api.openai.com/v1'],
+      capabilities: { toolCalls: true, reasoningEffort: true },
       models: [
         {
           id: 'gpt-5',
           contextWindow: 256_000,
-          capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true },
+          capabilities: { toolCalls: true, imageInput: true },
           metadata: {},
         },
       ],
@@ -239,6 +241,7 @@ describe('ModelRouter', () => {
         provider: 'timecc',
         models: ['codex-auto-review'],
         runtimeCredential: { baseUrl: 'https://timicc.example/v1' },
+        runtimeCapabilities: ['chat_completions', 'image_input'],
       })],
     });
 
@@ -253,8 +256,9 @@ describe('ModelRouter', () => {
       source: 'explicit-provider',
     });
     expect(registry.requireProvider('timecc')).toMatchObject({
-      protocols: ['responses', 'chatCompletions'],
+      protocols: ['chatCompletions'],
       safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageInput: true, imageGeneration: false, imageEditing: false },
     });
   });
 

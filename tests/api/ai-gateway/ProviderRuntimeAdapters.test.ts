@@ -73,10 +73,13 @@ function fetchFixture(response: Response | (() => Response)): { fetch: typeof fe
     fetch: (async(url: string | URL | Request, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       const rawBody = typeof init?.body === 'string' ? init.body : '{}';
+      const body = init?.body instanceof FormData
+        ? Object.fromEntries(init.body.entries())
+        : JSON.parse(rawBody);
       captured.push({
         url: String(url),
         init: init ?? {},
-        body: JSON.parse(rawBody),
+        body,
         headers,
       });
       return typeof response === 'function' ? response() : response;
@@ -164,6 +167,151 @@ describe('Provider runtime adapters', () => {
       stream: true,
       tools: [{ type: 'web_search' }],
     });
+  });
+
+  it('uses the authenticated OpenAI-compatible image endpoint only when declared', async () => {
+    const fixture = fetchFixture(new Response(JSON.stringify({
+      created: 1_700_000_000,
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageGeneration: true },
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(runtimes.get('timecc').generateImage?.({
+      request: {
+        model: 'image-model',
+        prompt: 'A local-first workspace',
+        n: 1,
+        responseFormat: 'b64_json',
+      },
+      apiKey: 'sk-image-secret',
+    })).resolves.toEqual({
+      created: 1_700_000_000,
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    });
+    expect(fixture.captured[0]).toMatchObject({
+      url: 'https://timicc.example/v1/images/generations',
+      body: {
+        model: 'image-model',
+        prompt: 'A local-first workspace',
+        n: 1,
+        response_format: 'b64_json',
+      },
+    });
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer sk-image-secret');
+  });
+
+  it('rejects an oversized provider image response before buffering its JSON body', async () => {
+    const fixture = fetchFixture(new Response('{"data":[]}', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': String(36 * 1024 * 1024 + 1),
+      },
+    }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageGeneration: true },
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(runtimes.get('timecc').generateImage?.({
+      request: { model: 'image-model', prompt: 'Do not buffer this response' },
+      apiKey: 'sk-image-secret',
+    })).rejects.toMatchObject({
+      code: 'provider_error',
+      status: 502,
+    });
+  });
+
+  it('rejects undeclared custom-provider image generation before transport', async () => {
+    const fixture = fetchFixture(new Response(null, { status: 500 }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: {},
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({
+      registry,
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(runtimes.get('timecc').generateImage?.({
+      request: { model: 'image-model', prompt: 'Do not send' },
+      apiKey: 'sk-image-secret',
+    })).rejects.toMatchObject({
+      code: 'invalid_request',
+      details: { provider: 'timecc', capability: 'image_generation' },
+    });
+    expect(fixture.captured).toHaveLength(0);
+  });
+
+  it('forwards image edits as multipart without setting a conflicting content type', async () => {
+    const fixture = fetchFixture(new Response(JSON.stringify({ data: [{ b64_json: 'ZWRpdGVk' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    const registry = createDefaultProviderRegistry();
+    registry.register({
+      id: 'timecc',
+      label: 'timecc',
+      authModes: ['apiKey'],
+      protocols: ['chatCompletions'],
+      defaultBaseUrl: 'https://timicc.example/v1',
+      safeBaseUrls: ['https://timicc.example/v1'],
+      capabilities: { imageEditing: true },
+      models: [{ id: 'image-model' }],
+    });
+    const runtimes = new ProviderRuntimeRegistry({ registry, transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+
+    await runtimes.get('timecc').generateImage?.({
+      request: {
+        model: 'image-model',
+        prompt: 'Make it blue',
+        image: { data: new TextEncoder().encode('source'), mimeType: 'image/png', name: 'source.png' },
+        responseFormat: 'b64_json',
+      },
+      apiKey: 'sk-edit-secret',
+    });
+
+    expect(fixture.captured[0].url).toBe('https://timicc.example/v1/images/edits');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'image-model',
+      prompt: 'Make it blue',
+      response_format: 'b64_json',
+      image: expect.any(Blob),
+    });
+    expect(fixture.captured[0].headers.get('Content-Type')).toBeNull();
+    expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer sk-edit-secret');
   });
 
   it('rejects Responses web search before transport when the provider does not declare support', async () => {

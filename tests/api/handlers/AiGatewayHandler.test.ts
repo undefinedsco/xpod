@@ -159,6 +159,8 @@ function createFixture(options: {
   includeDeepSeek?: boolean;
   onAbort?: () => void;
   acceptanceEndpointsEnabled?: boolean;
+  runtimeCapabilities?: string[];
+  models?: string[];
 } = {}) {
   const registry = createDefaultProviderRegistry();
   const events = options.events ?? [
@@ -175,11 +177,12 @@ function createFixture(options: {
       provider: 'openai',
       authMode: 'apiKey' as const,
       enabled: true,
-      models: ['gpt-5'],
+      models: options.models ?? ['gpt-5'],
       health: 'healthy' as const,
       quota: { status: 'available' as const },
       encryptedSecret: encrypted('openai'),
       runtimeCredential: { baseUrl: 'https://api.openai.com/v1' },
+      ...(options.runtimeCapabilities !== undefined ? { runtimeCapabilities: options.runtimeCapabilities } : {}),
     },
     ...(options.firstProviderFails ? [{
       id: 'cred_openai_backup',
@@ -246,6 +249,10 @@ function createFixture(options: {
       }
       return delayedEventStream(events, options.onAbort);
     }),
+    generateImage: vi.fn(async() => ({
+      created: 1_700_000_000,
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    })),
   };
   if (options.failAfterFirstEvent) {
     runtime.execute = vi.fn((input: any): AsyncIterable<GatewayEvent> => ({
@@ -288,6 +295,115 @@ async function callRoute(routes: Record<string, Function>, methodAndPath: string
 }
 
 describe('AiGatewayHandler', () => {
+  it('routes image generation through the Pod credential without exposing its secret', async () => {
+    const { routes, runtime, vault } = createFixture({
+      runtimeCapabilities: ['chat_completions', 'image_generation'],
+      models: ['gpt-5', 'gpt-image-1'],
+    });
+
+    const res = await callRoute(routes, 'POST /v1/images/generations', request('/v1/images/generations', {
+      provider: 'openai',
+      model: 'gpt-image-1',
+      prompt: 'A quiet local-first workspace',
+      n: 1,
+      response_format: 'b64_json',
+    }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      created: 1_700_000_000,
+      data: [{ b64_json: 'aW1hZ2U=' }],
+    });
+    expect(vault.open).toHaveBeenCalledOnce();
+    expect(runtime.generateImage).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: 'sk-primary',
+      request: expect.objectContaining({
+        model: 'gpt-image-1',
+        prompt: 'A quiet local-first workspace',
+        responseFormat: 'b64_json',
+      }),
+    }));
+    expect(res.body).not.toContain('sk-primary');
+  });
+
+  it('rejects unsafe image URLs returned by the provider', async () => {
+    const { routes, runtime } = createFixture({
+      runtimeCapabilities: ['chat_completions', 'image_generation'],
+      models: ['gpt-5', 'gpt-image-1'],
+    });
+    runtime.generateImage.mockResolvedValueOnce({
+      created: 1_700_000_000,
+      data: [{ url: 'http://attacker.example/generated.png' }],
+    });
+
+    const res = await callRoute(routes, 'POST /v1/images/generations', request('/v1/images/generations', {
+      provider: 'openai',
+      model: 'gpt-image-1',
+      prompt: 'A quiet local-first workspace',
+    }));
+
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: { code: 'provider_error' },
+    });
+    expect(res.body).not.toContain('attacker.example');
+  });
+
+  it('rejects undeclared image generation capability before opening the Pod credential', async () => {
+    const { routes, runtime, vault } = createFixture({
+      runtimeCapabilities: ['chat_completions'],
+      models: ['gpt-5', 'gpt-image-1'],
+    });
+
+    const res = await callRoute(routes, 'POST /v1/images/generations', request('/v1/images/generations', {
+      model: 'openai/gpt-image-1',
+      prompt: 'Should not leave Xpod',
+    }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({
+      error: {
+        code: 'invalid_request',
+        details: { provider: 'openai', capability: 'image_generation' },
+      },
+    });
+    expect(vault.open).not.toHaveBeenCalled();
+    expect(runtime.generateImage).not.toHaveBeenCalled();
+  });
+
+  it('decodes bounded image edits and forwards them only after the editing capability gate', async () => {
+    const { routes, runtime } = createFixture({
+      runtimeCapabilities: ['chat_completions', 'image_editing'],
+      models: ['gpt-5', 'gpt-image-1'],
+    });
+    const res = await callRoute(routes, 'POST /v1/images/edits', request('/v1/images/edits', {
+      provider: 'openai',
+      model: 'gpt-image-1',
+      prompt: 'Make the background blue',
+      image: {
+        data: Buffer.from('source-image').toString('base64'),
+        mime_type: 'image/png',
+        name: 'source.png',
+      },
+      response_format: 'b64_json',
+    }));
+
+    expect(res.statusCode).toBe(200);
+    expect(runtime.generateImage).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        model: 'gpt-image-1',
+        prompt: 'Make the background blue',
+        image: expect.objectContaining({
+          mimeType: 'image/png',
+          name: 'source.png',
+          data: expect.any(Uint8Array),
+        }),
+      }),
+    }));
+    const requestInput = runtime.generateImage.mock.calls.at(-1)?.[0];
+    expect(Buffer.from(requestInput.request.image.data).toString()).toBe('source-image');
+  });
+
   it('aggregates non-streaming chat completions without exposing provider secrets to the handler', async () => {
     const { routes, vault, runtime } = createFixture({
       events: [

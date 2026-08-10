@@ -10,10 +10,12 @@ import type { GatewayEvent, GatewayProtocol, GatewayProtocolFrontend } from '../
 export interface AiGatewayHandlerOptions {
   service: AiGatewayService;
   jsonBodyLimitBytes?: number;
+  imageEditBodyLimitBytes?: number;
   acceptanceEndpointsEnabled?: boolean;
 }
 
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+const DEFAULT_IMAGE_EDIT_BODY_LIMIT_BYTES = 36 * 1024 * 1024;
 
 export function registerAiGatewayRoutes(
   server: ApiServer,
@@ -23,6 +25,8 @@ export function registerAiGatewayRoutes(
   server.post('/v1/responses', (request, response) => handler.handleInference(request, response, 'responses'));
   server.post('/v1/messages', (request, response) => handler.handleInference(request, response, 'anthropic'));
   server.post('/v1/chat/completions', (request, response) => handler.handleInference(request, response, 'chatCompletions'));
+  server.post('/v1/images/generations', (request, response) => handler.handleImageGeneration(request, response, 'generation'));
+  server.post('/v1/images/edits', (request, response) => handler.handleImageGeneration(request, response, 'edit'));
   server.get('/v1/models', (request, response) => handler.handleModels(request, response));
   if (options.acceptanceEndpointsEnabled === true) {
     server.get('/v1/xpod/acceptance/provenance', (request, response) => handler.handleAcceptanceProvenance(request, response));
@@ -33,10 +37,12 @@ export class AiGatewayHandler {
   private readonly logger = getLoggerFor(this);
   private readonly service: AiGatewayService;
   private readonly jsonBodyLimitBytes: number;
+  private readonly imageEditBodyLimitBytes: number;
 
   public constructor(options: AiGatewayHandlerOptions) {
     this.service = options.service;
     this.jsonBodyLimitBytes = options.jsonBodyLimitBytes ?? DEFAULT_JSON_BODY_LIMIT_BYTES;
+    this.imageEditBodyLimitBytes = options.imageEditBodyLimitBytes ?? DEFAULT_IMAGE_EDIT_BODY_LIMIT_BYTES;
   }
 
   public async handleInference(
@@ -103,6 +109,41 @@ export class AiGatewayHandler {
       });
     } catch (error) {
       this.sendGatewayError(response, error);
+    }
+  }
+
+  public async handleImageGeneration(
+    request: AuthenticatedRequest,
+    response: ServerResponse,
+    mode: 'generation' | 'edit',
+  ): Promise<void> {
+    const bodyResult = await readBoundedJsonBody(request, {
+      limitBytes: mode === 'edit' ? this.imageEditBodyLimitBytes : this.jsonBodyLimitBytes,
+    });
+    if (!bodyResult.ok) {
+      this.sendGatewayError(response, new GatewayProtocolError(bodyResult.error, {
+        code: 'invalid_request',
+        status: bodyResult.status,
+      }));
+      return;
+    }
+
+    const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    response.once('close', abort);
+    try {
+      sendJson(response, 200, await this.service.generateImage({
+        auth: request.auth!,
+        body: bodyResult.value,
+        mode,
+        signal: controller.signal,
+      }));
+    } catch (error) {
+      if (!controller.signal.aborted && !response.destroyed) {
+        this.sendGatewayError(response, error);
+      }
+    } finally {
+      response.off('close', abort);
     }
   }
 

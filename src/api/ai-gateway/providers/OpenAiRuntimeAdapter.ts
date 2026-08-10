@@ -2,6 +2,7 @@ import {
   BaseProviderRuntimeAdapter,
   parseOpenAiResponsesSse,
   toResponsesBody,
+  type ProviderImageGenerationInput,
   type ProviderRuntimeAdapterOptions,
   type ProviderRuntimeExecuteInput,
 } from './ProviderRuntimeAdapter';
@@ -43,5 +44,14 @@ export class OpenAiRuntimeAdapter extends BaseProviderRuntimeAdapter {
     } catch (error) {
       this.handleTransportError(error, input.apiKey);
     }
+  }
+
+  public async generateImage(input: ProviderImageGenerationInput): Promise<Record<string, unknown>> {
+    const baseUrl = this.resolveBaseUrl({
+      configuredBaseUrl: input.credential?.baseUrl,
+      defaultBaseUrl: this.defaultBaseUrl,
+      safeBaseUrls: this.safeBaseUrls,
+    });
+    return this.requestOpenAiImage(input, baseUrl);
   }
 }

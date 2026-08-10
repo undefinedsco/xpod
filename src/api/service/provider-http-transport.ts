@@ -29,6 +29,7 @@ export class ProviderHttpTransport {
     proxy?: string;
     headers?: HeadersInit;
     signal?: AbortSignal;
+    maxResponseBytes?: number;
   }): Promise<any> {
     const fetchFn = options.proxy ? createProxyFetch(options.proxy) : this.fetch;
     const headers = new Headers(options.headers);
@@ -51,7 +52,7 @@ export class ProviderHttpTransport {
       throw error;
     }
 
-    return response.json();
+    return readJsonResponse(response, options.maxResponseBytes);
   }
 
   public async postStream(options: {
@@ -84,6 +85,35 @@ export class ProviderHttpTransport {
     }
 
     return response;
+  }
+
+  public async postForm(options: {
+    url: string;
+    apiKey: string;
+    body: FormData;
+    proxy?: string;
+    headers?: HeadersInit;
+    signal?: AbortSignal;
+    maxResponseBytes?: number;
+  }): Promise<any> {
+    const fetchFn = options.proxy ? createProxyFetch(options.proxy) : this.fetch;
+    const headers = new Headers(options.headers);
+    headers.set('Authorization', `Bearer ${options.apiKey}`);
+    const response = await fetchFn(options.url, {
+      method: 'POST',
+      headers,
+      body: options.body,
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      const error = new Error(`Provider error: ${response.statusText}`);
+      (error as any).status = response.status;
+      (error as any).headers = response.headers;
+      (error as any).body = errorText;
+      throw error;
+    }
+    return readJsonResponse(response, options.maxResponseBytes);
   }
 
   public async *postSse(options: {
@@ -123,6 +153,41 @@ export class ProviderHttpTransport {
 
     yield* parseSseStream(response.body);
   }
+}
+
+async function readJsonResponse(response: Response, maxBytes?: number): Promise<unknown> {
+  if (!maxBytes) return response.json();
+  const declaredLength = Number(response.headers.get('Content-Length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw providerResponseTooLarge();
+  }
+  const reader = response.body?.getReader();
+  if (!reader) return response.json();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw providerResponseTooLarge();
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function providerResponseTooLarge(): Error {
+  const error = new Error('Provider response exceeds the configured size limit');
+  (error as any).status = 502;
+  return error;
 }
 
 export async function* parseSseStream(stream: ReadableStream<Uint8Array>): AsyncIterable<ProviderSseEvent> {

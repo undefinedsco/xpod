@@ -6,6 +6,7 @@ import type { CredentialVault } from './credentials/CredentialVault';
 import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
+import type { ProviderImageGenerationRequest } from './providers/ProviderRuntimeAdapter';
 import type { ProviderCapabilities, ProviderRegistry } from './providers/ProviderRegistry';
 import { normalizeProviderId } from './providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from './providers/ProviderRuntimeRegistry';
@@ -69,6 +70,13 @@ export interface GatewayExecutionInput {
   auth: AuthContext;
   protocol: GatewayProtocol;
   body: unknown;
+  signal?: AbortSignal;
+}
+
+export interface GatewayImageGenerationInput {
+  auth: AuthContext;
+  body: unknown;
+  mode?: 'generation' | 'edit';
   signal?: AbortSignal;
 }
 
@@ -185,6 +193,57 @@ export class AiGatewayService {
       events.push(event);
     }
     return aggregateEvents(execution.protocol, execution.request.model, events, this.now());
+  }
+
+  public async generateImage(input: GatewayImageGenerationInput): Promise<Record<string, unknown>> {
+    this.requireScope(input.auth, 'inference:write');
+    const principal = this.requirePrincipal(input.auth);
+    const request = parseImageGenerationRequest(input.body, input.mode ?? 'generation');
+    let route = await this.router.route({
+      webId: principal.webId,
+      deployment: this.deployment,
+      auth: input.auth,
+      model: request.model,
+      explicitCredentialId: explicitImageCredentialId(input.body),
+    });
+    request.model = route.model;
+    const attempted = new Set<string>();
+
+    for (;;) {
+      attempted.add(route.credential.id);
+      const credential = route.credential as StoredGatewayCredential;
+      this.requireImageCapability(route, Boolean(request.image));
+      const adapter = this.runtimes.get(route.provider.id);
+      if (!adapter.generateImage) {
+        throw new GatewayProtocolError(`${route.provider.id} does not expose image generation`, {
+          code: 'invalid_request',
+          status: 400,
+          details: { provider: route.provider.id, capability: 'image_generation' },
+        });
+      }
+      try {
+        const apiKey = await this.openApiKey(principal, route, credential);
+        const result = normalizeImageGenerationResult(await adapter.generateImage({
+          request,
+          apiKey,
+          credential: credential.runtimeCredential ?? runtimeCredentialFromMetadata(credential.metadata),
+          signal: input.signal,
+        }));
+        await this.credentials.recordSuccess?.(healthRecord(principal.webId, this.deployment, route));
+        return result;
+      } catch (error) {
+        await this.recordRouteFailure(principal.webId, route, error);
+        if (this.router.canFailOver(route)) {
+          const nextRoute = await this.findImageFailoverRoute(principal.webId, input.auth, request, attempted);
+          if (nextRoute) {
+            route = nextRoute;
+            request.model = route.model;
+            continue;
+          }
+        }
+        throw error;
+      }
+    }
   }
 
   public async listModels(auth: AuthContext): Promise<GatewayModelListItem[]> {
@@ -406,6 +465,53 @@ export class AiGatewayService {
     }
   }
 
+  private async findImageFailoverRoute(
+    webId: string,
+    auth: AuthContext,
+    request: ProviderImageGenerationRequest,
+    attempted: Set<string>,
+  ): Promise<ModelRouteResult | undefined> {
+    try {
+      return await this.router.route({
+        webId,
+        deployment: this.deployment,
+        auth,
+        model: request.model,
+      }, attempted);
+    } catch (error) {
+      if (error instanceof GatewayProtocolError && error.code === 'credential_unavailable') {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  private requireImageCapability(route: ModelRouteResult, editing: boolean): void {
+    const explicit = route.credential.runtimeCapabilities;
+    const capability = editing ? 'image_editing' : 'image_generation';
+    const supported = explicit === undefined
+      ? editing ? route.provider.capabilities.imageEditing === true : route.provider.capabilities.imageGeneration === true
+      : explicit.includes(capability);
+    if (!supported) {
+      throw new GatewayProtocolError(`${route.provider.id} does not support ${editing ? 'image editing' : 'image generation'}`, {
+        code: 'invalid_request',
+        status: 400,
+        details: { provider: route.provider.id, model: route.model, capability },
+      });
+    }
+    const model = route.provider.models.find((candidate) => candidate.id === route.model);
+    const modelSupported = editing
+      ? model?.capabilities?.imageEditing === true
+      : model?.capabilities?.imageGeneration === true;
+    if (!modelSupported) {
+      throw new GatewayProtocolError(`${route.model} is not declared for ${editing ? 'image editing' : 'image generation'}`, {
+        code: 'invalid_request',
+        status: 400,
+        details: { provider: route.provider.id, model: route.model, capability, scope: 'model' },
+      });
+    }
+  }
+
   private async openApiKey(
     principal: { webId: string },
     route: ModelRouteResult,
@@ -513,6 +619,206 @@ function validateGatewayRequest(request: GatewayRequest, protocol: GatewayProtoc
       details: { protocol, field: protocol === 'responses' ? 'input' : 'messages' },
     });
   }
+}
+
+function parseImageGenerationRequest(body: unknown, mode: 'generation' | 'edit'): ProviderImageGenerationRequest {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new GatewayProtocolError('Image generation request must be an object', {
+      code: 'invalid_request',
+      status: 400,
+    });
+  }
+  const record = body as Record<string, unknown>;
+  const provider = nonEmptyString(record.provider);
+  const requestedModel = nonEmptyString(record.model);
+  const prompt = nonEmptyString(record.prompt);
+  if (!requestedModel) {
+    throw new GatewayProtocolError('model is required', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'model' },
+    });
+  }
+  if (!prompt) {
+    throw new GatewayProtocolError('prompt is required', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'prompt' },
+    });
+  }
+  if (prompt.length > 32_000) {
+    throw new GatewayProtocolError('prompt exceeds the 32000 character limit', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'prompt' },
+    });
+  }
+  const explicitProvider = requestedModel.includes('/') ? requestedModel.split('/', 1)[0] : undefined;
+  if (provider && explicitProvider && normalizeProviderId(provider) !== normalizeProviderId(explicitProvider)) {
+    throw new GatewayProtocolError('provider conflicts with the model route', {
+      code: 'invalid_request',
+      status: 400,
+      details: { provider, model: requestedModel },
+    });
+  }
+  const n = record.n === undefined ? undefined : Number(record.n);
+  if (n !== undefined && (!Number.isInteger(n) || n < 1 || n > 4)) {
+    throw new GatewayProtocolError('n must be an integer between 1 and 4', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'n' },
+    });
+  }
+  const responseFormat = record.response_format ?? record.responseFormat;
+  if (responseFormat !== undefined && responseFormat !== 'b64_json' && responseFormat !== 'url') {
+    throw new GatewayProtocolError('response_format must be b64_json or url', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'response_format' },
+    });
+  }
+  const image = parseImageEditInput(record.image);
+  if (mode === 'edit' && !image) {
+    throw new GatewayProtocolError('image is required for image editing', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'image' },
+    });
+  }
+  if (mode === 'generation' && image) {
+    throw new GatewayProtocolError('image is only accepted by the image edits endpoint', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'image' },
+    });
+  }
+  return {
+    model: provider && !explicitProvider ? `${normalizeProviderId(provider)}/${requestedModel}` : requestedModel,
+    prompt,
+    ...(n !== undefined ? { n } : {}),
+    ...(nonEmptyString(record.size) ? { size: nonEmptyString(record.size) } : {}),
+    ...(nonEmptyString(record.quality) ? { quality: nonEmptyString(record.quality) } : {}),
+    ...(nonEmptyString(record.style) ? { style: nonEmptyString(record.style) } : {}),
+    ...(responseFormat ? { responseFormat } : {}),
+    ...(image ? { image } : {}),
+  };
+}
+
+function parseImageEditInput(value: unknown): ProviderImageGenerationRequest['image'] | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new GatewayProtocolError('image must be an object', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'image' },
+    });
+  }
+  const image = value as Record<string, unknown>;
+  const encoded = nonEmptyString(image.data);
+  const mimeType = nonEmptyString(image.mime_type ?? image.mimeType)?.toLowerCase();
+  if (!encoded || !mimeType || !/^image\/(?:png|jpeg|webp)$/u.test(mimeType)) {
+    throw new GatewayProtocolError('image requires base64 data and a PNG, JPEG, or WebP MIME type', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'image' },
+    });
+  }
+  const normalized = encoded.replace(/^data:[^;]+;base64,/iu, '').replace(/\s+/gu, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized) || normalized.length % 4 !== 0) {
+    throw new GatewayProtocolError('image data must be valid base64', {
+      code: 'invalid_request',
+      status: 400,
+      details: { field: 'image.data' },
+    });
+  }
+  const data = Buffer.from(normalized, 'base64');
+  if (data.byteLength === 0 || data.byteLength > 25 * 1024 * 1024) {
+    throw new GatewayProtocolError('image must be between 1 byte and 25 MB', {
+      code: 'invalid_request',
+      status: 413,
+      details: { field: 'image.data' },
+    });
+  }
+  const requestedName = nonEmptyString(image.name) ?? 'image.png';
+  const name = requestedName.replace(/[^A-Za-z0-9._-]/gu, '_').slice(0, 128) || 'image.png';
+  return { data, mimeType, name };
+}
+
+function explicitImageCredentialId(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const record = body as Record<string, unknown>;
+  return nonEmptyString(record.credential)
+    ?? nonEmptyString(record.credential_id)
+    ?? nonEmptyString(record.xpod_credential_id);
+}
+
+function normalizeImageGenerationResult(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new GatewayProtocolError('Image provider returned an invalid response', {
+      code: 'provider_error',
+      status: 502,
+    });
+  }
+  const record = value as Record<string, unknown>;
+  const data = Array.isArray(record.data)
+    ? record.data.flatMap((entry): Record<string, unknown>[] => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+        const image = entry as Record<string, unknown>;
+        const b64Json = nonEmptyString(image.b64_json);
+        const url = nonEmptyString(image.url);
+        if (!b64Json && !url) return [];
+        if (b64Json && !isBoundedImageBase64(b64Json)) {
+          throw new GatewayProtocolError('Image provider returned invalid or oversized image data', {
+            code: 'provider_error',
+            status: 502,
+          });
+        }
+        if (url && !isSafeImageResultUrl(url)) {
+          throw new GatewayProtocolError('Image provider returned an unsafe image URL', {
+            code: 'provider_error',
+            status: 502,
+          });
+        }
+        return [{
+          ...(b64Json ? { b64_json: b64Json } : {}),
+          ...(url ? { url } : {}),
+          ...(nonEmptyString(image.revised_prompt) ? { revised_prompt: nonEmptyString(image.revised_prompt) } : {}),
+        }];
+      })
+    : [];
+  if (data.length === 0) {
+    throw new GatewayProtocolError('Image provider returned no image data', {
+      code: 'provider_error',
+      status: 502,
+    });
+  }
+  return {
+    created: typeof record.created === 'number' && Number.isFinite(record.created)
+      ? record.created
+      : Math.floor(Date.now() / 1000),
+    data,
+  };
+}
+
+function isBoundedImageBase64(value: string): boolean {
+  const maxLength = Math.ceil((25 * 1024 * 1024) / 3) * 4 + 4;
+  return value.length <= maxLength
+    && value.length % 4 === 0
+    && /^[A-Za-z0-9+/]*={0,2}$/u.test(value);
+}
+
+function isSafeImageResultUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:'
+      || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function conversationIdFor(request: GatewayRequest): string | undefined {

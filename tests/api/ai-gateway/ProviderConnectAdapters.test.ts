@@ -979,7 +979,11 @@ describe('ProviderConnectService', () => {
             };
           }
           if (id === resource.buildId({ id: 'timecc' })) {
-            return { id, baseUrl: 'https://timicc.com' };
+            return {
+              id,
+              baseUrl: 'https://timicc.com',
+              capabilities: ['chat_completions', 'responses', 'image_generation'],
+            };
           }
           return null;
         },
@@ -998,6 +1002,7 @@ describe('ProviderConnectService', () => {
       expect.objectContaining({
         provider: 'timecc',
         runtimeCredential: { baseUrl: 'https://timicc.com' },
+        runtimeCapabilities: ['chat_completions', 'responses', 'image_generation'],
         encryptedSecret: expect.objectContaining({
           algorithm: 'PLAINTEXT',
           provider: 'timecc',

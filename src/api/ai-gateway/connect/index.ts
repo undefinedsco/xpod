@@ -238,6 +238,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     encryptedSecret: EncryptedCredentialSecret;
     version?: number;
     runtimeCredential?: Record<string, unknown>;
+    runtimeCapabilities?: string[];
     metadata?: Record<string, unknown>;
   }>> {
     const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
@@ -280,12 +281,13 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .filter(({ record }) => record.status === 'active')
       .map(({ record, providerRow }) => ({
         record,
+        runtimeCapabilities: runtimeCapabilitiesFromProviderRow(providerRow),
         runtimeCredential: {
           ...runtimeCredentialFromMetadata(record.metadata),
           ...(typeof providerRow?.baseUrl === 'string' ? { baseUrl: providerRow.baseUrl } : {}),
         },
       }))
-      .map(({ record, runtimeCredential }) => ({
+      .map(({ record, runtimeCredential, runtimeCapabilities }) => ({
         id: record.id,
         credentialIri: record.credentialIri,
         provider: record.provider,
@@ -300,6 +302,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
         encryptedSecret: record.encryptedSecret,
         version: record.version,
         runtimeCredential,
+        runtimeCapabilities,
         metadata: record.metadata,
       }));
   }
@@ -1383,6 +1386,14 @@ function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undef
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function runtimeCapabilitiesFromProviderRow(providerRow: Record<string, unknown> | null): string[] | undefined {
+  if (!providerRow || !Array.isArray(providerRow.capabilities)) {
+    return undefined;
+  }
+  return stringList(providerRow.capabilities.map((capability) =>
+    typeof capability === 'string' ? capability.trim().toLowerCase() : capability));
 }
 
 function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {
