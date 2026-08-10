@@ -112,6 +112,47 @@ describe('Account auxiliary presentation', () => {
     expect(onSelect).toHaveBeenCalledWith('password')
   })
 
+  it('bounds long login-method, recovery and reset content', () => {
+    const long = 'Long host copy '.repeat(300)
+    const { rerender } = render(
+      <AccountLoginMethodListView
+        methods={[{ id: 'password', label: 'Password', description: long }]}
+        onSelect={() => undefined}
+        copy={{ title: 'Choose sign-in method', description: long, methodActionLabel: 'Use method' }}
+      />,
+    )
+    expect(screen.getByTestId('account-login-method-scroll').classList.contains('overflow-y-auto')).toBe(true)
+
+    rerender(
+      <PasswordRecoveryView
+        email="person@example.test"
+        onEmailChange={() => undefined}
+        onSubmit={() => undefined}
+        copy={{
+          title: 'Recover access', description: long, emailLabel: 'Email', emailPlaceholder: 'you@example.test',
+          actionLabel: 'Send recovery link', successTitle: 'Check your inbox', successMessage: long,
+        }}
+      />,
+    )
+    expect(screen.getByTestId('password-recovery-scroll').classList.contains('overflow-y-auto')).toBe(true)
+
+    rerender(
+      <PasswordResetView
+        password="one"
+        confirmation="one"
+        onPasswordChange={() => undefined}
+        onConfirmationChange={() => undefined}
+        onSubmit={() => undefined}
+        copy={{
+          title: 'Set a new password', description: long, passwordLabel: 'New password', passwordPlaceholder: 'New password',
+          confirmationLabel: 'Confirm new password', confirmationPlaceholder: 'Repeat password',
+          actionLabel: 'Reset password', successMessage: long, mismatchError: 'Passwords do not match',
+        }}
+      />,
+    )
+    expect(screen.getByTestId('password-reset-scroll').classList.contains('overflow-y-auto')).toBe(true)
+  })
+
   it('shows recovery and reset success/error states with controlled inputs', () => {
     const onRecover = vi.fn()
     const onReset = vi.fn()

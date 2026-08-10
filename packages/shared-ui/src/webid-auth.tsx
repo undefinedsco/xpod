@@ -2,6 +2,7 @@ import { Loader2 } from 'lucide-react'
 import { Badge } from './badge'
 import { Button } from './button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './card'
+import { ScrollArea } from './scroll-area'
 
 export interface WebIdLoginRouteOption {
   id: string
@@ -110,6 +111,7 @@ export function WebIdLoginRouteView({
 
   return (
     <Card className="w-full border-border bg-card text-card-foreground">
+      <ScrollArea data-testid="webid-login-route-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
       <CardHeader>
         <CardTitle>{copy.title}</CardTitle>
         {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
@@ -168,16 +170,17 @@ export function WebIdLoginRouteView({
           {(state.status === 'expired' || state.status === 'retry' || state.status === 'storage-conflict' || state.status === 'failure' || state.status === 'error') && onRetry ? (
             <Button type="button" className="w-full" disabled={pending} onClick={() => void onRetry(route.id)}>{copy.retryLabel}</Button>
           ) : null}
-          {state.status === 'connecting' && onCancel ? (
+          {(state.status === 'connecting' || state.status === 'cancel') && onCancel ? (
             <Button type="button" variant="outline" className="w-full" disabled={pending} onClick={() => void onCancel()}>{copy.cancelLabel}</Button>
           ) : null}
-          {onSwitchAccount && (state.status === 'remembered' || state.status === 'expired') ? (
+          {onSwitchAccount && copy.switchAccountLabel && (state.status === 'remembered' || state.status === 'expired') ? (
             <Button type="button" variant="ghost" className="w-full" disabled={pending} onClick={() => void onSwitchAccount()}>
               {copy.switchAccountLabel}
             </Button>
           ) : null}
         </div>
       </CardContent>
+      </ScrollArea>
     </Card>
   )
 }

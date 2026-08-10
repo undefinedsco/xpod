@@ -22,29 +22,38 @@ describe('shared connect components', () => {
 
   it('renders the Solid connect form with an accessible labelled input', () => {
     const html = renderToStaticMarkup(
-      <SolidConnectForm defaultIssuer="https://pod.example.com" onConnect={() => undefined} />,
+      <SolidConnectForm defaultIssuer="https://pod.example.com" onConnect={() => undefined} copy={{
+        issuerLabel: 'Identity endpoint', issuerPlaceholder: 'https://pod.example.com', submitLabel: 'Connect', pendingLabel: 'Connecting…',
+        errorMessage: 'Connection failed',
+      }} />,
     )
 
-    expect(html).toContain('Solid Pod 地址')
+    expect(html).toContain('Identity endpoint')
     expect(html).toContain('type="url"')
     expect(html).toContain('value="https://pod.example.com"')
     expect(html).toContain('type="submit"')
-    expect(html).toContain('连接')
+    expect(html).toContain('Connect')
     expect(html).toContain('border-border/60')
   })
 
   it('disables the submit control while a connection is pending', () => {
     const html = renderToStaticMarkup(
-      <SolidConnectForm defaultIssuer="https://pod.example.com" pending onConnect={() => undefined} />,
+      <SolidConnectForm defaultIssuer="https://pod.example.com" pending onConnect={() => undefined} copy={{
+        issuerLabel: 'Endpoint', issuerPlaceholder: 'https://pod.example.com', submitLabel: 'Connect', pendingLabel: 'Connecting…',
+        errorMessage: 'Connection failed',
+      }} />,
     )
 
-    expect(html).toContain('连接中...')
+    expect(html).toContain('Connecting…')
     expect(html).toContain('disabled')
   })
 
   it('surfaces the external error through the shared alert pattern', () => {
     const html = renderToStaticMarkup(
-      <SolidConnectForm error="issuer unreachable" onConnect={() => undefined} />,
+      <SolidConnectForm error="issuer unreachable" onConnect={() => undefined} copy={{
+        issuerLabel: 'Endpoint', issuerPlaceholder: 'https://pod.example.com', submitLabel: 'Connect', pendingLabel: 'Connecting…',
+        errorMessage: 'Connection failed',
+      }} />,
     )
 
     expect(html).toContain('role="alert"')

@@ -134,11 +134,11 @@ export function AccountCredentialsView({
 
   return (
     <Card className="w-full border-border bg-card text-card-foreground">
-      <CardHeader>
-        <CardTitle>{isRegister ? copy.registerTitle : copy.loginTitle}</CardTitle>
-        <CardDescription>{copy.productName}</CardDescription>
-      </CardHeader>
       <ScrollArea data-testid="account-credentials-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
+        <CardHeader>
+          <CardTitle>{isRegister ? copy.registerTitle : copy.loginTitle}</CardTitle>
+          <CardDescription>{copy.productName}</CardDescription>
+        </CardHeader>
         <CardContent className="space-y-4">
           {isRegister ? (
             <div className="space-y-2">
@@ -308,31 +308,33 @@ export function AccountLoginMethodListView({
   const selectMethod = onSelect ?? onSelectMethod
   return (
     <Card className="w-full border-border bg-card text-card-foreground">
-      <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
-        {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {methods.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{copy.emptyMessage}</p>
-        ) : methods.map((method) => (
-          <Button
-            key={method.id}
-            type="button"
-            variant="outline"
-            className="h-auto w-full justify-between gap-3 px-4 py-3 text-left"
-            disabled={pending || method.disabled || !selectMethod}
-            onClick={() => selectMethod?.(method.id)}
-          >
-            <span className="min-w-0">
-              <span className="block truncate">{method.label}</span>
-              {method.description ? <span className="mt-1 block text-sm font-normal text-muted-foreground">{method.description}</span> : null}
-            </span>
-            {method.badge ? <Badge variant={method.badge.tone === 'danger' ? 'destructive' : method.badge.tone === 'neutral' ? 'outline' : method.badge.tone === 'warning' ? 'secondary' : 'default'}>{method.badge.label}</Badge> : null}
-            {copy.methodActionLabel ? <span className="sr-only">{copy.methodActionLabel}</span> : null}
-          </Button>
-        ))}
-      </CardContent>
+      <ScrollArea data-testid="account-login-method-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
+        <CardHeader>
+          <CardTitle>{copy.title}</CardTitle>
+          {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {methods.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{copy.emptyMessage}</p>
+          ) : methods.map((method) => (
+            <Button
+              key={method.id}
+              type="button"
+              variant="outline"
+              className="h-auto w-full justify-between gap-3 px-4 py-3 text-left"
+              disabled={pending || method.disabled || !selectMethod}
+              onClick={() => selectMethod?.(method.id)}
+            >
+              <span className="min-w-0">
+                <span className="block truncate">{method.label}</span>
+                {method.description ? <span className="mt-1 block text-sm font-normal text-muted-foreground">{method.description}</span> : null}
+              </span>
+              {method.badge ? <Badge variant={method.badge.tone === 'danger' ? 'destructive' : method.badge.tone === 'neutral' ? 'outline' : method.badge.tone === 'warning' ? 'secondary' : 'default'}>{method.badge.label}</Badge> : null}
+              {copy.methodActionLabel ? <span className="sr-only">{copy.methodActionLabel}</span> : null}
+            </Button>
+          ))}
+        </CardContent>
+      </ScrollArea>
     </Card>
   )
 }
@@ -377,27 +379,29 @@ export function PasswordRecoveryView({
   }
   return (
     <Card className="w-full border-border bg-card text-card-foreground">
-      <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
-        {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
-      </CardHeader>
-      <CardContent>
-        {status === 'success' ? (
-          <div role="status" aria-live="polite" className="space-y-2">
-            <p className="font-medium text-foreground">{copy.successTitle}</p>
-            <p className="text-sm text-muted-foreground">{copy.successMessage}</p>
-          </div>
-        ) : (
-          <form onSubmit={submit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor={emailId}>{copy.emailLabel}</Label>
-              <Input id={emailId} type="email" autoComplete="email" placeholder={copy.emailPlaceholder} value={email} disabled={isPending} onChange={(event) => onEmailChange(event.currentTarget.value)} />
+      <ScrollArea data-testid="password-recovery-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
+        <CardHeader>
+          <CardTitle>{copy.title}</CardTitle>
+          {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+        </CardHeader>
+        <CardContent>
+          {status === 'success' ? (
+            <div role="status" aria-live="polite" className="space-y-2">
+              <p className="font-medium text-foreground">{copy.successTitle}</p>
+              <p className="text-sm text-muted-foreground">{copy.successMessage}</p>
             </div>
-            {error ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{error}</p> : null}
-            <Button type="submit" className="w-full" disabled={isPending || !email.trim() || !recover}>{isPending ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}{copy.actionLabel}</Button>
-          </form>
-        )}
-      </CardContent>
+          ) : (
+            <form onSubmit={submit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor={emailId}>{copy.emailLabel}</Label>
+                <Input id={emailId} type="email" autoComplete="email" placeholder={copy.emailPlaceholder} value={email} disabled={isPending} onChange={(event) => onEmailChange(event.currentTarget.value)} />
+              </div>
+              {error ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{error}</p> : null}
+              <Button type="submit" className="w-full" disabled={isPending || !email.trim() || !recover}>{isPending ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}{copy.actionLabel}</Button>
+            </form>
+          )}
+        </CardContent>
+      </ScrollArea>
     </Card>
   )
 }
@@ -453,29 +457,37 @@ export function PasswordResetView({
     void reset?.({ password, confirmation })
   }
   if (status === 'success') {
-    return <Card className="w-full border-border bg-card text-card-foreground"><CardContent><p role="status" aria-live="polite">{copy.successMessage}</p></CardContent></Card>
+    return (
+      <Card className="w-full border-border bg-card text-card-foreground">
+        <ScrollArea data-testid="password-reset-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
+          <CardContent><p role="status" aria-live="polite">{copy.successMessage}</p></CardContent>
+        </ScrollArea>
+      </Card>
+    )
   }
   return (
     <Card className="w-full border-border bg-card text-card-foreground">
-      <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
-        {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={submit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor={passwordId}>{copy.passwordLabel}</Label>
-            <Input id={passwordId} type="password" autoComplete="new-password" placeholder={copy.passwordPlaceholder} value={password} disabled={isPending} onChange={(event) => onPasswordChange(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); submit() } }} />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={confirmationId}>{copy.confirmationLabel}</Label>
-            <Input id={confirmationId} type="password" autoComplete="new-password" placeholder={copy.confirmationPlaceholder} value={confirmation} disabled={isPending} aria-invalid={mismatch ? true : undefined} onChange={(event) => onConfirmationChange(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); submit() } }} />
-          </div>
-          {error ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{error}</p> : null}
-          {mismatch ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{copy.mismatchError}</p> : null}
-          <Button type="submit" className="w-full" disabled={isPending || !reset}>{isPending ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}{copy.actionLabel}</Button>
-        </form>
-      </CardContent>
+      <ScrollArea data-testid="password-reset-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
+        <CardHeader>
+          <CardTitle>{copy.title}</CardTitle>
+          {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={submit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor={passwordId}>{copy.passwordLabel}</Label>
+              <Input id={passwordId} type="password" autoComplete="new-password" placeholder={copy.passwordPlaceholder} value={password} disabled={isPending} onChange={(event) => onPasswordChange(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); submit() } }} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={confirmationId}>{copy.confirmationLabel}</Label>
+              <Input id={confirmationId} type="password" autoComplete="new-password" placeholder={copy.confirmationPlaceholder} value={confirmation} disabled={isPending} aria-invalid={mismatch ? true : undefined} onChange={(event) => onConfirmationChange(event.currentTarget.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); submit() } }} />
+            </div>
+            {error ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{error}</p> : null}
+            {mismatch ? <p role="alert" aria-live="polite" className="text-sm text-destructive">{copy.mismatchError}</p> : null}
+            <Button type="submit" className="w-full" disabled={isPending || !reset}>{isPending ? <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 animate-spin" /> : null}{copy.actionLabel}</Button>
+          </form>
+        </CardContent>
+      </ScrollArea>
     </Card>
   )
 }

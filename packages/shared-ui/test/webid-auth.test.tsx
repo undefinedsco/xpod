@@ -25,17 +25,33 @@ const copy = {
   cancelLabel: 'Cancel',
   storageConflictTitle: 'Storage conflict',
   failureTitle: 'Could not sign in',
+  switchAccountLabel: 'Switch account',
 }
 
 describe('WebIdLoginRouteView', () => {
   it('passes an opaque route id to the action and renders remembered/restoring states', () => {
     const onStart = vi.fn()
+    const onSwitchAccount = vi.fn()
     const { rerender } = render(
       <WebIdLoginRouteView route={route} state={{ status: 'anonymous' }} copy={copy} onStart={onStart} />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(onStart).toHaveBeenCalledWith('northstar-local')
     expect(onStart).not.toHaveBeenCalledWith(route.identityProvider.url)
+
+    rerender(
+      <WebIdLoginRouteView
+        route={route}
+        state={{ status: 'remembered', remembered: { displayName: 'Ari', routeId: route.id } }}
+        copy={copy}
+        onStart={onStart}
+        onSwitchAccount={onSwitchAccount}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Switch account' }))
+    expect(onStart).toHaveBeenCalledWith(route.id)
+    expect(onSwitchAccount).toHaveBeenCalledTimes(1)
 
     rerender(
       <WebIdLoginRouteView
@@ -72,6 +88,18 @@ describe('WebIdLoginRouteView', () => {
     rerender(
       <WebIdLoginRouteView
         route={route}
+        state={{ status: 'cancel', message: 'Authorization was cancelled' }}
+        copy={copy}
+        onCancel={onCancel}
+      />,
+    )
+    expect(screen.getByRole('alert').textContent).toContain('Authorization was cancelled')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onCancel).toHaveBeenCalledTimes(2)
+
+    rerender(
+      <WebIdLoginRouteView
+        route={route}
         state={{ status: 'storage-conflict', message: 'Identity and storage do not match' }}
         copy={copy}
         onRetry={onRetry}
@@ -81,9 +109,22 @@ describe('WebIdLoginRouteView', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
 
     rerender(
-      <WebIdLoginRouteView route={route} state={{ status: 'failure', message: 'Network unavailable' }} copy={copy} />,
+      <WebIdLoginRouteView route={route} state={{ status: 'failure', message: 'Network unavailable' }} copy={copy} onRetry={onRetry} />,
     )
     expect(screen.getByRole('alert').textContent).toContain('Network unavailable')
-    expect(screen.queryByRole('button')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(onRetry).toHaveBeenCalledWith(route.id)
+  })
+
+  it('bounds long route content', () => {
+    render(
+      <WebIdLoginRouteView
+        route={{ ...route, description: 'Long route copy '.repeat(300) }}
+        state={{ status: 'anonymous' }}
+        copy={{ ...copy, description: 'Long surface copy '.repeat(300) }}
+        onStart={() => undefined}
+      />,
+    )
+    expect(screen.getByTestId('webid-login-route-scroll').classList.contains('overflow-y-auto')).toBe(true)
   })
 })

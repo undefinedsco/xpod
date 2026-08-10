@@ -3,6 +3,7 @@ import { AlertCircle } from 'lucide-react'
 import { Button } from './button'
 import { Card } from './card'
 import { Input } from './input'
+import { Label } from './label'
 
 export function ConnectSurface({
   children,
@@ -29,14 +30,24 @@ export interface SolidConnectFormProps {
   pending?: boolean
   error?: string
   submitErrorMessage?: string
+  copy?: SolidConnectCopy
   onConnect: (issuer: string) => void | Promise<void>
+}
+
+export interface SolidConnectCopy {
+  issuerLabel: string
+  issuerPlaceholder: string
+  submitLabel: string
+  pendingLabel: string
+  errorMessage: string
 }
 
 export function SolidConnectForm({
   defaultIssuer = '',
   pending: pendingExternal = false,
   error,
-  submitErrorMessage = '连接失败，请重试。',
+  submitErrorMessage,
+  copy,
   onConnect,
 }: SolidConnectFormProps) {
   const issuerId = useId()
@@ -46,7 +57,7 @@ export function SolidConnectForm({
   const [submitError, setSubmitError] = useState<string | undefined>()
   const normalizedIssuer = issuer.trim()
   const pending = pendingExternal || pendingInternal
-  const visibleError = submitError ?? error
+  const visibleError = submitError || error
 
   const describedBy = useMemo(() => (
     visibleError ? errorId : undefined
@@ -65,7 +76,7 @@ export function SolidConnectForm({
     try {
       await onConnect(normalizedIssuer)
     } catch {
-      setSubmitError(submitErrorMessage)
+      setSubmitError(copy?.errorMessage ?? submitErrorMessage)
     } finally {
       setPendingInternal(false)
     }
@@ -74,9 +85,7 @@ export function SolidConnectForm({
   return (
     <form className="flex flex-col gap-4" onSubmit={(event) => void handleSubmit(event)}>
       <div className="flex flex-col gap-2 text-left">
-        <label className="text-sm font-medium leading-5 text-foreground" htmlFor={issuerId}>
-          Solid Pod 地址
-        </label>
+        <Label htmlFor={issuerId}>{copy?.issuerLabel}</Label>
         <Input
           id={issuerId}
           type="url"
@@ -84,7 +93,7 @@ export function SolidConnectForm({
           disabled={pending}
           aria-invalid={visibleError ? true : undefined}
           aria-describedby={describedBy}
-          placeholder="https://pod.example.com"
+          placeholder={copy?.issuerPlaceholder}
           className="border-border/60 bg-background focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           onChange={(event) => setIssuer(event.currentTarget.value)}
         />
@@ -106,7 +115,7 @@ export function SolidConnectForm({
         className="w-full"
         disabled={!normalizedIssuer || pending}
       >
-        {pending ? '连接中...' : '连接'}
+        {pending ? copy?.pendingLabel : copy?.submitLabel}
       </Button>
     </form>
   )

@@ -69,4 +69,15 @@ describe('AuthSurface', () => {
     expect(screen.getByTestId('auth-surface-page').getAttribute('aria-modal')).toBeNull()
     expect(screen.getByTestId('auth-surface-embedded').getAttribute('aria-modal')).toBeNull()
   })
+
+  it('bounds long page content inside the surface body', () => {
+    render(
+      <AuthSurface mode="page" title="Long sign in">
+        <p>{'Long content '.repeat(300)}</p>
+      </AuthSurface>,
+    )
+    const body = screen.getByTestId('auth-surface-body')
+    expect(body.classList.contains('max-h-[min(80vh,48rem)]')).toBe(true)
+    expect(body.classList.contains('overflow-y-auto')).toBe(true)
+  })
 })

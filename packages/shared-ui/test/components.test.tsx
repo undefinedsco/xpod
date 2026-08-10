@@ -12,7 +12,9 @@ import {
   LoginFailureView,
   LoginProviderListView,
   LoginRestoringView,
+  LoginSpaceSelectionView,
   LoginStorageConflictView,
+  SolidConnectForm,
   Toaster,
   dismissToast,
   toast,
@@ -80,58 +82,93 @@ describe('@undefineds.co/shared-ui', () => {
         }]}
         onConnect={() => undefined}
         onAddProvider={() => undefined}
+        copy={{
+          title: 'More options', backLabel: 'Back', addLabel: 'Add sign-in method', addPlaceholder: 'https://pod.example.com',
+          addInputLabel: 'Sign-in method address', invalidUrlMessage: 'Enter a valid URL.', connectLabel: 'Connect', cancelLabel: 'Cancel', emptyMessage: 'No sign-in methods',
+        }}
       />,
     )
     expect(providerList).toContain('当前 Xpod')
     expect(providerList).toContain('本机')
     expect(providerList).toContain('xpod.local')
-    expect(providerList).toContain('添加登录方式')
+    expect(providerList).toContain('Add sign-in method')
 
     const account = renderToStaticMarkup(
       <LoginAccountView
         name="Alice"
         bindingLabel="https://xpod.local"
         expired
+        expiredTitle="Session expired"
         expiredDescription="为保护数据，会话已暂停。"
+        enterLabel="Enter"
+        switchLabel="Switch account"
         onEnter={() => undefined}
         onSwitchAccount={() => undefined}
       />,
     )
-    expect(account).toContain('会话已过期')
+    expect(account).toContain('Session expired')
     expect(account).toContain('为保护数据，会话已暂停。')
-    expect(account).toContain('切换账号')
+    expect(account).toContain('Switch account')
   })
 
   it('renders the login failure and storage conflict views from the LinX login flow', () => {
     const failure = renderToStaticMarkup(
       <LoginFailureView
+        title="Sign-in incomplete"
         description="native clients require End-User interaction"
-        primaryLabel="重试云端登录"
+        primaryLabel="Retry sign-in"
         onPrimary={() => undefined}
-        secondaryLabel="重新登录"
+        secondaryLabel="Start over"
         onSecondary={() => undefined}
       />,
     )
-    expect(failure).toContain('登录未完成')
+    expect(failure).toContain('Sign-in incomplete')
     expect(failure).toContain('native clients require End-User interaction')
-    expect(failure).toContain('重试云端登录')
-    expect(failure).toContain('重新登录')
+    expect(failure).toContain('Retry sign-in')
+    expect(failure).toContain('Start over')
 
     const conflict = renderToStaticMarkup(
       <LoginStorageConflictView
-        eyebrow="空间不匹配"
-        accountName="LinX 用户"
-        description="当前账号绑定的是另一个空间。"
-        expectedValue="https://id.undefineds.co/glocal/"
-        actualValue="https://node-0000.undefineds.co/glocal/"
-        secondaryLabel="返回登录并重新选择空间"
+        eyebrow="Space mismatch"
+        accountName="Northstar user"
+        description="The account is bound to another space."
+        expectedLabel="Expected space"
+        expectedValue="https://id.example.test/space/"
+        actualLabel="Bound space"
+        actualValue="https://node.example.test/space/"
+        secondaryLabel="Return and choose again"
         onSecondary={() => undefined}
       />,
     )
-    expect(conflict).toContain('空间不匹配')
-    expect(conflict).toContain('当前空间应写入')
-    expect(conflict).toContain('https://id.undefineds.co/glocal/')
-    expect(conflict).toContain('账号当前绑定')
-    expect(conflict).toContain('返回登录并重新选择空间')
+    expect(conflict).toContain('Space mismatch')
+    expect(conflict).toContain('Expected space')
+    expect(conflict).toContain('https://id.example.test/space/')
+    expect(conflict).toContain('Bound space')
+    expect(conflict).toContain('Return and choose again')
+  })
+
+  it('renders host-supplied compatibility copy without product fallbacks', () => {
+    const html = renderToStaticMarkup(
+      <>
+        <LoginSpaceSelectionView
+          productName="Northstar"
+          providers={{ cloud: { id: 'cloud-id', label: 'Remote space' }, local: { id: 'local-id', label: 'Desk space' } }}
+          onConnect={() => undefined}
+          copy={{
+            accountLabel: 'Use your Northstar account', storageLabel: 'Storage location', cloudLabel: 'Remote', localLabel: 'Desk',
+            cloudDescription: 'Keep data with your team.', localDescription: 'Keep data on this device.', continueLabel: 'Continue', moreProvidersLabel: 'More account options',
+          }}
+        />
+        <SolidConnectForm onConnect={() => undefined} copy={{
+          issuerLabel: 'Identity endpoint', issuerPlaceholder: 'https://identity.example.test', submitLabel: 'Continue', pendingLabel: 'Working…', errorMessage: 'Could not connect',
+        }} />
+      </>,
+    )
+    expect(html).toContain('Use your Northstar account')
+    expect(html).toContain('Identity endpoint')
+    expect(html).not.toContain('Xpod')
+    expect(html).not.toContain('undefineds')
+    expect(html).not.toContain('Cloud')
+    expect(html).not.toContain('Local')
   })
 })

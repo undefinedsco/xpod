@@ -92,6 +92,7 @@ export function OidcConsentView({
 
   return (
     <Card className="w-full border-border bg-card text-card-foreground">
+      <ScrollArea data-testid="oidc-consent-scroll" className="max-h-[min(80vh,42rem)] overflow-y-auto">
       <CardHeader>
         <CardTitle>{copy.title}</CardTitle>
         <CardDescription>{copy.description}</CardDescription>
@@ -100,7 +101,6 @@ export function OidcConsentView({
           {client.description ? <p className="mt-1 text-sm text-muted-foreground">{client.description}</p> : null}
         </div>
       </CardHeader>
-      <ScrollArea data-testid="oidc-consent-scroll" className="max-h-[min(80vh,42rem)] overflow-y-auto">
         <CardContent className="space-y-5">
           <div className="space-y-2">
             <Label htmlFor="oidc-consent-webid">{copy.webIdLabel}</Label>

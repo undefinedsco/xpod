@@ -62,11 +62,11 @@ export function StorageBootstrapView({
 
   return (
     <Card className="w-full border-border bg-card text-card-foreground">
-      <CardHeader>
-        <CardTitle>{copy.title}</CardTitle>
-        {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
-      </CardHeader>
       <ScrollArea data-testid="storage-bootstrap-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
+        <CardHeader>
+          <CardTitle>{copy.title}</CardTitle>
+          {copy.description ? <CardDescription>{copy.description}</CardDescription> : null}
+        </CardHeader>
         <CardContent className="space-y-4">
           {isError ? (
             <div role="alert" aria-live="polite" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">

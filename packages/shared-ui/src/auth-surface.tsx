@@ -20,6 +20,17 @@ export interface AuthSurfaceProps {
   className?: string
 }
 
+export function AuthSurfaceBody({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      data-testid="auth-surface-body"
+      className={cn('min-h-0 max-h-[min(80vh,48rem)] overflow-y-auto', className)}
+    >
+      {children}
+    </div>
+  )
+}
+
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
@@ -145,7 +156,7 @@ export function AuthSurface({
             </Button>
           ) : null}
         </div>
-        <div className="min-h-0 flex-1">{children}</div>
+        <AuthSurfaceBody>{children}</AuthSurfaceBody>
       </Card>
     </div>
   )
