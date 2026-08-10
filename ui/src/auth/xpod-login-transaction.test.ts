@@ -1,9 +1,12 @@
 import { describe, expect, test, vi } from 'vitest';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
+  XPOD_SELECTED_STORAGE_BINDING_KEY,
   XpodLoginTransactionError,
   createXpodLoginTransactionStore,
   createOpaqueTransactionId,
+  readXpodSelectedStorage,
+  rememberXpodSelectedStorage,
 } from './xpod-login-transaction';
 
 const route = {
@@ -108,5 +111,29 @@ describe('xpod login transaction store', () => {
         identityProvider: { url: 'https://evil.example', label: 'evil' },
       },
     }))).toThrow(/origin|route/i);
+  });
+
+  test('persists only the public selected WebID and storage URL across a callback document', () => {
+    const sessionStorage = storage();
+    const labeledBinding = { ...binding, label: 'Alice Pod' };
+
+    rememberXpodSelectedStorage(labeledBinding, {
+      storage: sessionStorage,
+      origin: 'https://app.example',
+      now: () => 1000,
+    });
+
+    expect(JSON.parse(sessionStorage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY)!)).toEqual({
+      version: 1,
+      createdAt: 1000,
+      expiresAt: 1000 + 24 * 60 * 60 * 1000,
+      binding,
+    });
+    expect(readXpodSelectedStorage({
+      storage: sessionStorage,
+      origin: 'https://app.example',
+      webId: binding.webId,
+      now: () => 1001,
+    })).toEqual(binding);
   });
 });

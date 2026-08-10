@@ -442,7 +442,6 @@ function normalizeSelectedStorageBinding(binding: StorageBinding, origin: string
   return {
     storageUrl: storageUrl.href,
     webId: webId.href,
-    ...(binding.label === undefined ? {} : { label: binding.label }),
   };
 }
 
