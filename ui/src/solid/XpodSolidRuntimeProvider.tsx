@@ -4,6 +4,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import {
+  clearXpodSelectedStorage,
+  readXpodSelectedStorage,
+} from '../auth/xpod-login-transaction';
+import {
   getXpodSolidRuntimeValue,
   initializedRuntimes,
   normalizeXpodOidcIssuer,
@@ -73,11 +77,28 @@ export function XpodSolidRuntimeProvider({
     }
 
     let cancelled = false;
-    void runtime.pod.open({ webId: snapshot.webId, fetch: runtime.session.fetch }).then(
+    const rememberedBinding = readXpodSelectedStorage({
+      origin: typeof window === 'undefined' ? undefined : window.location.origin,
+      webId: snapshot.webId,
+    });
+    const openArgs = rememberedBinding
+      ? { webId: snapshot.webId, podUrl: rememberedBinding.storageUrl, fetch: runtime.session.fetch }
+      : { webId: snapshot.webId, fetch: runtime.session.fetch };
+    void runtime.pod.open(openArgs).then(
       (opened) => {
         if (!cancelled) {
+          if (rememberedBinding && (
+            opened.webId !== rememberedBinding.webId
+            || !sameUrl(opened.podUrl, rememberedBinding.storageUrl)
+          )) {
+            clearXpodSelectedStorage();
+            setCurrentPod(undefined);
+            setSelectedStorage(undefined);
+            setPodError({ webId: snapshot.webId, error: new Error('Selected Pod binding mismatch') });
+            return;
+          }
           setCurrentPod(opened);
-          setSelectedStorage({ webId: opened.webId, storageUrl: opened.podUrl });
+          setSelectedStorage(rememberedBinding ?? { webId: opened.webId, storageUrl: opened.podUrl });
           setPodError(undefined);
         }
       },
@@ -148,6 +169,7 @@ export function XpodSolidRuntimeProvider({
       },
       logout: async () => {
         runtime.pod.clear();
+        clearXpodSelectedStorage();
         setCurrentPod(undefined);
         setSelectedStorage(undefined);
         setAiClientConfiguration(undefined);
@@ -163,6 +185,14 @@ export function XpodSolidRuntimeProvider({
       </XpodSolidRuntimeContext.Provider>
     </SolidRuntimeProvider>
   );
+}
+
+function sameUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return left === right;
+  }
 }
 
 async function discoverAiClientConfigurationCapability(

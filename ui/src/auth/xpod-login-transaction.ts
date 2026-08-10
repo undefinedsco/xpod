@@ -11,6 +11,9 @@ import {
 export const XPOD_LOGIN_TRANSACTION_VERSION = 1 as const;
 export const XPOD_LOGIN_TRANSACTION_PREFIX = 'xpod.auth.transaction.v1';
 export const XPOD_LOGIN_TRANSACTION_TTL_MS = 10 * 60 * 1000;
+export const XPOD_SELECTED_STORAGE_BINDING_VERSION = 1 as const;
+export const XPOD_SELECTED_STORAGE_BINDING_KEY = 'xpod.auth.selected-storage.v1';
+export const XPOD_SELECTED_STORAGE_BINDING_TTL_MS = 24 * 60 * 60 * 1000;
 
 type TransactionErrorCode =
   | 'already_active'
@@ -47,6 +50,99 @@ export interface CreateXpodLoginTransactionStoreOptions {
   ttlMs?: number;
   prefix?: string;
 }
+
+export interface XpodSelectedStorageBindingOptions {
+  storage?: Storage;
+  origin?: string;
+  webId?: string;
+  now?: () => number;
+  ttlMs?: number;
+}
+
+interface StoredSelectedStorageBinding {
+  version: typeof XPOD_SELECTED_STORAGE_BINDING_VERSION;
+  createdAt: number;
+  expiresAt: number;
+  binding: StorageBinding;
+}
+
+/**
+ * Keep only the public selected WebID/storage pair across the callback's
+ * full-page replacement. No token or Inrupt-managed state is written here.
+ */
+export function rememberXpodSelectedStorage(
+  binding: StorageBinding,
+  options: XpodSelectedStorageBindingOptions = {},
+): void {
+  const storage = options.storage ?? getOptionalSessionStorage();
+  if (!storage) {
+    throw new XpodLoginTransactionError('storage_unavailable', 'Session storage is unavailable');
+  }
+  const origin = new URL(options.origin ?? getWindowOrigin()).origin;
+  const normalized = normalizeSelectedStorageBinding(binding, origin);
+  const now = options.now ?? (() => Date.now());
+  const createdAt = now();
+  const record: StoredSelectedStorageBinding = {
+    version: XPOD_SELECTED_STORAGE_BINDING_VERSION,
+    createdAt,
+    expiresAt: createdAt + (options.ttlMs ?? XPOD_SELECTED_STORAGE_BINDING_TTL_MS),
+    binding: normalized,
+  };
+  storage.setItem(XPOD_SELECTED_STORAGE_BINDING_KEY, JSON.stringify(record));
+}
+
+export function readXpodSelectedStorage(
+  options: XpodSelectedStorageBindingOptions = {},
+): StorageBinding | undefined {
+  const storage = options.storage ?? getOptionalSessionStorage();
+  if (!storage) return undefined;
+  const raw = storage.getItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
+  if (!raw) return undefined;
+
+  const clear = () => storage.removeItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    clear();
+    return undefined;
+  }
+  if (!isStoredSelectedStorageBinding(parsed)) {
+    clear();
+    return undefined;
+  }
+  const now = options.now ?? (() => Date.now());
+  if (parsed.expiresAt <= now()) {
+    clear();
+    return undefined;
+  }
+  let normalized: StorageBinding;
+  try {
+    normalized = normalizeSelectedStorageBinding(parsed.binding, new URL(options.origin ?? getWindowOrigin()).origin);
+  } catch {
+    clear();
+    return undefined;
+  }
+  if (options.webId !== undefined && normalized.webId !== options.webId) {
+    clear();
+    return undefined;
+  }
+  return normalized;
+}
+
+export function clearXpodSelectedStorage(options: Pick<XpodSelectedStorageBindingOptions, 'storage'> = {}): void {
+  options.storage?.removeItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
+  if (options.storage) return;
+  try {
+    getOptionalSessionStorage()?.removeItem(XPOD_SELECTED_STORAGE_BINDING_KEY);
+  } catch {
+    // Browser storage can be unavailable in private or embedded contexts.
+  }
+}
+
+// Descriptive aliases for host integrations that prefer read/write naming.
+export const persistXpodSelectedStorage = rememberXpodSelectedStorage;
+export const loadXpodSelectedStorage = readXpodSelectedStorage;
 
 interface StoredTransaction {
   version: typeof XPOD_LOGIN_TRANSACTION_VERSION;
@@ -317,6 +413,39 @@ function materialize(transaction: StoredTransaction['transaction']): WebIdLoginT
   };
 }
 
+function normalizeSelectedStorageBinding(binding: StorageBinding, origin: string): StorageBinding {
+  if (!binding || typeof binding.storageUrl !== 'string' || typeof binding.webId !== 'string') {
+    throw new XpodLoginTransactionError('malformed', 'Selected storage binding is malformed');
+  }
+  let storageUrl: URL;
+  let webId: URL;
+  try {
+    storageUrl = new URL(binding.storageUrl);
+    webId = new URL(binding.webId);
+  } catch {
+    throw new XpodLoginTransactionError('malformed', 'Selected storage binding is malformed');
+  }
+  if (!['http:', 'https:'].includes(storageUrl.protocol) || !['http:', 'https:'].includes(webId.protocol)) {
+    throw new XpodLoginTransactionError('cross_origin', 'Selected storage binding must use web URLs');
+  }
+  if (
+    storageUrl.origin !== origin
+    || webId.origin !== origin
+    || storageUrl.username
+    || storageUrl.password
+    || storageUrl.hash
+    || webId.username
+    || webId.password
+  ) {
+    throw new XpodLoginTransactionError('cross_origin', 'Selected storage binding is not local to this Xpod');
+  }
+  return {
+    storageUrl: storageUrl.href,
+    webId: webId.href,
+    ...(binding.label === undefined ? {} : { label: binding.label }),
+  };
+}
+
 function isSafeTransactionId(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value);
 }
@@ -330,6 +459,15 @@ function isStoredTransaction(value: unknown): value is StoredTransaction {
     && Boolean(record.transaction && typeof record.transaction === 'object');
 }
 
+function isStoredSelectedStorageBinding(value: unknown): value is StoredSelectedStorageBinding {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<StoredSelectedStorageBinding>;
+  return candidate.version === XPOD_SELECTED_STORAGE_BINDING_VERSION
+    && typeof candidate.createdAt === 'number'
+    && typeof candidate.expiresAt === 'number'
+    && Boolean(candidate.binding && typeof candidate.binding === 'object');
+}
+
 function getSessionStorage(): Storage {
   try {
     if (typeof window !== 'undefined' && window.sessionStorage) return window.sessionStorage;
@@ -337,6 +475,15 @@ function getSessionStorage(): Storage {
     // Fall through to the explicit error below.
   }
   throw new XpodLoginTransactionError('storage_unavailable', 'Session storage is unavailable');
+}
+
+function getOptionalSessionStorage(): Storage | undefined {
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) return window.sessionStorage;
+  } catch {
+    // Fall through to the unsupported-storage result.
+  }
+  return undefined;
 }
 
 function getWindowOrigin(): string {

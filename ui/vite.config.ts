@@ -41,6 +41,11 @@ export default defineConfig(() => {
       outDir: '../static/settings',
       input: 'settings.html',
     },
+    authCallback: {
+      base: '/auth/callback/',
+      outDir: '../static/auth-callback',
+      input: 'auth-callback.html',
+    },
   };
 
   const config = configs[buildTarget as keyof typeof configs] || configs.app;

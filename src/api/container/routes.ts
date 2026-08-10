@@ -23,6 +23,7 @@ import { registerMatrixRoutes } from '../handlers/MatrixHandler';
 import { registerCoordinationRoutes } from '../handlers/CoordinationHandler';
 import { registerDashboardRoutes } from '../handlers/DashboardHandler';
 import { registerSettingsRoutes } from '../handlers/SettingsHandler';
+import { registerAuthCallbackRoutes } from '../handlers/AuthCallbackHandler';
 import { registerAdminRoutes } from '../handlers/AdminHandler';
 import { registerAdminDdnsRoutes } from '../handlers/AdminDdnsHandler';
 import { registerLinxCapabilitiesRoutes } from '../handlers/LinxCapabilitiesHandler';
@@ -99,6 +100,8 @@ function registerHealthRoutes(server: ApiServer): void {
   registerDashboardRoutes(server, { staticDir });
   const settingsStaticDir = path.resolve(PACKAGE_ROOT, 'static/settings');
   registerSettingsRoutes(server, { staticDir: settingsStaticDir });
+  const authCallbackStaticDir = path.resolve(PACKAGE_ROOT, 'static/auth-callback');
+  registerAuthCallbackRoutes(server, { staticDir: authCallbackStaticDir });
 }
 
 /**

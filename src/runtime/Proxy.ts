@@ -232,18 +232,35 @@ export class GatewayProxy {
   }
 
   private isApiWebProductPath(url: string): boolean {
-    return url === '/dashboard'
-      || url.startsWith('/dashboard/')
-      || url === '/settings'
-      || url.startsWith('/settings/');
+    const pathname = this.pathnameFromRequestUrl(url);
+    return [
+      '/dashboard',
+      '/status',
+      '/network',
+      '/settings',
+      '/ai-config',
+      '/ai-connections',
+    ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
+      || pathname === '/auth/callback'
+      || pathname === '/auth/callback/assets'
+      || pathname.startsWith('/auth/callback/assets/');
   }
 
   private shouldRouteToApi(url: string): boolean {
-    return url.startsWith('/v1/')
-      || url.startsWith('/api/')
-      || url.startsWith('/provision/')
-      || url === '/.well-known/matrix/client'
-      || url.startsWith('/_matrix/');
+    const pathname = this.pathnameFromRequestUrl(url);
+    return pathname.startsWith('/v1/')
+      || pathname.startsWith('/api/')
+      || pathname.startsWith('/provision/')
+      || pathname === '/.well-known/matrix/client'
+      || pathname.startsWith('/_matrix/');
+  }
+
+  private pathnameFromRequestUrl(url: string): string {
+    try {
+      return new URL(url, 'http://xpod-gateway.invalid').pathname;
+    } catch {
+      return url.split('?', 1)[0] ?? '/';
+    }
   }
 
   private applyInternalAdminProxyHeaders(req: http.IncomingMessage, originalClientLoopback: boolean): void {
