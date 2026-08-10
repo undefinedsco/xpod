@@ -220,7 +220,8 @@ export function TwoPaneLayout({
           <aside
             ref={paneRefs.list}
             className={cn(
-              'flex min-h-0 flex-col overflow-hidden bg-layout-list-item @container',
+              'min-h-0 flex-col overflow-hidden bg-layout-list-item @container',
+              listHidden ? 'hidden' : 'flex',
               isStack ? 'border-r-0' : 'border-r border-border',
             )}
             data-testid="workspace-list-pane"
@@ -240,7 +241,10 @@ export function TwoPaneLayout({
           </aside>
           <main
             ref={paneRefs.main}
-            className="flex min-h-0 flex-col overflow-hidden bg-layout-content @container"
+            className={cn(
+              'min-h-0 flex-col overflow-hidden bg-layout-content @container',
+              mainHidden ? 'hidden' : 'flex',
+            )}
             data-testid="workspace-main-pane"
             data-workspace-pane="main"
             hidden={mainHidden}
@@ -372,6 +376,7 @@ export function ThreePaneLayout({
             ref={paneRefs.list}
             className={cn(
               'min-h-0 overflow-y-auto bg-layout-list-item @container',
+              listHidden ? 'hidden' : null,
               isStack ? 'border-r-0' : 'border-r border-border',
             )}
             data-testid="workspace-list-pane"
@@ -383,7 +388,10 @@ export function ThreePaneLayout({
           </aside>
           <main
             ref={paneRefs.main}
-            className="min-h-0 overflow-y-auto bg-layout-content @container"
+            className={cn(
+              'min-h-0 overflow-y-auto bg-layout-content @container',
+              mainHidden ? 'hidden' : null,
+            )}
             data-testid="workspace-main-pane"
             data-workspace-pane="main"
             hidden={mainHidden}
@@ -404,6 +412,7 @@ export function ThreePaneLayout({
             ref={paneRefs.context}
             className={cn(
               'min-h-0 overflow-y-auto bg-layout-content @container',
+              contextHidden ? 'hidden' : null,
               isStack ? 'border-l-0' : 'border-l border-border',
             )}
             data-testid="workspace-context-pane"

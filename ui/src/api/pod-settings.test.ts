@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
+import { fetchPodSettingsStatus } from './pod-settings';
 
 const mock = vi.fn;
-import { fetchPodSettingsStatus } from './pod-settings';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';

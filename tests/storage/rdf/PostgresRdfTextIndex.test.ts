@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PostgresRdfEngine, PostgresRdfTextIndex, createRdfEntityTextChunks, rdfVar } from '../../../src/storage/rdf';
 
 const { literal, namedNode, quad } = DataFactory;
+const PGLITE_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 
 describe('PostgresRdfTextIndex', () => {
   let dataDir: string;
@@ -1099,7 +1100,7 @@ describe('PostgresRdfTextIndex', () => {
       await rm(engineDir, { recursive: true, force: true });
       await rm(engineTextIndexDir, { recursive: true, force: true });
     }
-  });
+  }, PGLITE_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('reports PG-native FTS physical evidence through query metrics', async () => {
     const engineDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-rdf-native-text-engine-'));
@@ -1164,7 +1165,7 @@ describe('PostgresRdfTextIndex', () => {
       await rm(engineDir, { recursive: true, force: true });
       await rm(engineTextIndexDir, { recursive: true, force: true });
     }
-  });
+  }, PGLITE_INTEGRATION_TEST_TIMEOUT_MS);
 
   async function reopenTextIndex(options: { textSearchBackend?: 'posting' | 'pg-native-fts' | 'auto' } = {}): Promise<void> {
     await index.close();

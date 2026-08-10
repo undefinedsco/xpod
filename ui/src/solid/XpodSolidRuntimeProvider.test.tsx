@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -15,6 +15,8 @@ import { SettingsAuthBoundary } from './SettingsAuthBoundary';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const mock = vi.fn;
 
 type Listener = (...args: unknown[]) => void;
 

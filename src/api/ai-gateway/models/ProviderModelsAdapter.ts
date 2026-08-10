@@ -82,8 +82,8 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
   }
 
   public async fetch(input: ProviderModelsFetchInput): Promise<DiscoveredProviderModel[]> {
-    const apiKey = apiKeyFromSecret(input.secret);
-    if (!apiKey) {
+    const bearerToken = bearerTokenFromSecret(input.secret);
+    if (!bearerToken) {
       throw new Error('models_secret_missing');
     }
     const product = this.registry?.getProduct(input.credential.provider) ?? this.product;
@@ -98,7 +98,7 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
     );
     const response = await this.fetchImpl(`${target.baseUrl}${target.path}`, {
       method: 'GET',
-      headers: { authorization: `Bearer ${apiKey}` },
+      headers: { authorization: `Bearer ${bearerToken}` },
       signal: input.signal,
     });
     if (!response.ok) {
@@ -110,6 +110,13 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
     }
     return normalizeDiscoveredModels(await response.json());
   }
+}
+
+function bearerTokenFromSecret(secret: ProviderSecret): string | undefined {
+  const apiKey = apiKeyFromSecret(secret);
+  if (apiKey) return apiKey;
+  const accessToken = secret.accessToken;
+  return typeof accessToken === 'string' && accessToken.trim() ? accessToken : undefined;
 }
 
 function resolveOfferingDiscoveryTarget(

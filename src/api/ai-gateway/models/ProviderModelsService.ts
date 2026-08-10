@@ -102,7 +102,9 @@ export class ProviderModelsService {
     provider: string;
     offeringId?: string;
     credentialId: string;
-    apiKey: string;
+    authMode?: ModelsCredentialRecord['authMode'];
+    secret?: Record<string, unknown>;
+    apiKey?: string;
     baseUrl?: string;
     signal?: AbortSignal;
   }): Promise<ProviderModelDiscovery> {
@@ -117,7 +119,7 @@ export class ProviderModelsService {
         deployment: 'local',
         provider,
         offeringId: input.offeringId,
-        authMode: 'apiKey',
+        authMode: input.authMode ?? 'apiKey',
         status: 'active',
         reauthRequired: false,
         encryptedSecret: {} as never,
@@ -126,7 +128,7 @@ export class ProviderModelsService {
     const adapter = this.findAdapter(provider, credential);
     const models = await adapter.fetch({
       credential,
-      secret: { type: 'apiKey', apiKey: input.apiKey },
+      secret: normalizeCallerSuppliedModelsSecret(input),
       signal: input.signal,
     });
     return {
@@ -306,6 +308,25 @@ export class ProviderModelsService {
     }
     throw new Error('models_credential_not_found');
   }
+}
+
+function normalizeCallerSuppliedModelsSecret(input: {
+  authMode?: ModelsCredentialRecord['authMode'];
+  secret?: Record<string, unknown>;
+  apiKey?: string;
+}): Record<string, unknown> {
+  if (input.authMode === 'deviceCodeOAuth') {
+    const accessToken = input.secret?.accessToken;
+    return typeof accessToken === 'string' && accessToken.trim()
+      ? { type: 'oauth', accessToken }
+      : { type: 'oauth' };
+  }
+  const apiKey = typeof input.secret?.apiKey === 'string' && input.secret.apiKey.trim()
+    ? input.secret.apiKey
+    : input.apiKey;
+  return typeof apiKey === 'string' && apiKey.trim()
+    ? { type: 'apiKey', apiKey }
+    : { type: 'apiKey' };
 }
 
 function discoverySource(provider: string, offeringId?: string): string {

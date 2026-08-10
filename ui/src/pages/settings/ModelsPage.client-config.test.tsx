@@ -21,6 +21,16 @@ describe('ModelsPage coding-client configuration capability', () => {
       const method = init?.method ?? 'GET';
       const body = typeof init?.body === 'string' ? init.body : undefined;
       calls.push({ path: url.pathname, method, authorization: new Headers(init?.headers).get('authorization'), body });
+      if (url.pathname === '/.account/') {
+        return json({ clientCredentials: {} });
+      }
+      if (url.pathname === '/.account/client-credentials/' && method === 'POST') {
+        return json({
+          id: 'cc_1',
+          secret: 'cc_secret',
+          resource: 'client-credentials/cc_1/',
+        }, { status: 201 });
+      }
       if (url.pathname === '/api/applets/service-access/ai-connections') {
         return json({
           appletId: 'co.undefineds.ai-connections',
@@ -69,7 +79,7 @@ describe('ModelsPage coding-client configuration capability', () => {
           });
         }
         if (url.pathname.endsWith('/apply')) {
-          expect(body).toContain('sk-Y2xpZW50LWNvZGV4OnNlY3JldC1jb2RleA==');
+          expect(body).toMatch(/"gatewayKey":"sk-[^"]+"/u);
           expect(body).not.toContain('sk-provider-secret');
           return json({ applied: true });
         }
@@ -189,6 +199,8 @@ function installDom(fetchImpl: typeof fetch) {
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.Event = dom.window.Event;
   globalThis.MouseEvent = dom.window.MouseEvent;
+  window.fetch = fetchImpl;
+  globalThis.fetch = fetchImpl;
   window.matchMedia = vi.fn(() => ({
     matches: false,
     media: '(max-width: 767px)',
@@ -226,7 +238,7 @@ function runtimeWith(fetchImpl: typeof fetch, clientConfigAvailable = false): Xp
       fetch: fetchImpl,
       getSnapshot: () => ({ status: 'authenticated', webId: WEB_ID }),
       subscribe: () => () => undefined,
-    } as XpodSolidRuntimeValue['session'],
+    } as unknown as XpodSolidRuntimeValue['session'],
     pod: {} as XpodSolidRuntimeValue['pod'],
     fetch: fetchImpl,
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
@@ -236,7 +248,7 @@ function runtimeWith(fetchImpl: typeof fetch, clientConfigAvailable = false): Xp
       podUrl: POD_URL,
       webId: WEB_ID,
       database: createEmptyPodDatabase(),
-    } as XpodSolidRuntimeValue['currentPod'],
+    } as unknown as XpodSolidRuntimeValue['currentPod'],
     aiClientConfiguration: clientConfigAvailable
       ? { available: true, authority: 'local-filesystem' }
       : undefined,

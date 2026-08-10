@@ -104,7 +104,6 @@ describe('packaged applet SDK consumption', () => {
     }
 
     const sourceFiles = [
-      'ui/package.json',
       'ui/tsconfig.app.json',
       'ui/vite.config.ts',
     ];

@@ -99,8 +99,8 @@ bun run settings:dev
 
 | Artifact | SHA256 |
 |----------|--------|
-| `desktop/release/Xpod-0.1.0-arm64.dmg` | `ce3e892cc887c4c5b28508f2cd7a358e20d65bd22b61cc61d8c9586bff45dfee` |
-| `desktop/release/Xpod-0.1.0-arm64-mac.zip` | `a0ec9d2f9ba55ca17822a10491979940830ece67ae4a0a9e498783975f65befb` |
+| `desktop/release/Xpod-0.1.0-arm64.dmg` | `8ea366581eeee8029c80b20b87e3b3cdd233573eab330a6ec5e7eb7530b2f2e7` |
+| `desktop/release/Xpod-0.1.0-arm64-mac.zip` | `db4cacae782b5c48cd93e9c5f090cae52664dfe168c1591c5bf430d348d6a57c` |
 
 `hdiutil verify desktop/release/Xpod-0.1.0-arm64.dmg` 已验证为 valid。
 该 DMG/ZIP 未签名、未公证；它们只适合开发验收，不应声明为正式签名发布包。

@@ -20,6 +20,17 @@ describe('AI Gateway protocol frontends', () => {
             { type: 'input_image', image_url: 'https://example.test/image.png', detail: 'high' },
           ],
         },
+        {
+          type: 'function_call',
+          call_id: 'call_lookup',
+          name: 'lookup',
+          arguments: '{"q":"xpod"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_lookup',
+          output: 'tool result',
+        },
       ],
       tools: [
         {
@@ -52,6 +63,24 @@ describe('AI Gateway protocol frontends', () => {
         { type: 'image', imageUrl: 'https://example.test/image.png', detail: 'high' },
       ],
     });
+    expect(request.messages.slice(1)).toEqual([
+      {
+        role: 'assistant',
+        content: [],
+        protocolExtensions: {
+          tool_calls: [{
+            id: 'call_lookup',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{"q":"xpod"}' },
+          }],
+        },
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'tool result' }],
+        toolCallId: 'call_lookup',
+      },
+    ]);
     expect(request.tools[0]).toMatchObject({
       type: 'function',
       name: 'lookup',
@@ -82,6 +111,23 @@ describe('AI Gateway protocol frontends', () => {
             },
           ],
         },
+        {
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: 'tool_read',
+            name: 'read_file',
+            input: { path: 'fixture.txt' },
+          }],
+        },
+        {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tool_read',
+            content: 'fixture contents',
+          }],
+        },
       ],
       tools: [
         {
@@ -108,12 +154,74 @@ describe('AI Gateway protocol frontends', () => {
         data: 'iVBORw0KGgo=',
       },
     ]);
+    expect(request.messages.slice(1)).toEqual([
+      {
+        role: 'assistant',
+        content: [],
+        protocolExtensions: {
+          tool_calls: [{
+            id: 'tool_read',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' },
+          }],
+        },
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'fixture contents' }],
+        toolCallId: 'tool_read',
+      },
+    ]);
     expect(request.tools[0]).toMatchObject({
       type: 'function',
       name: 'read_file',
       inputSchema: { type: 'object', required: ['path'] },
     });
     expect(request.protocolExtensions.anthropic).toEqual({ top_k: 5 });
+  });
+
+  it('preserves mixed Anthropic user text and tool_result ordering', () => {
+    const request = new MessagesFrontend().parseRequest({
+      model: 'claude-sonnet-4.5',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'before first tool' },
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool_first',
+            content: 'first result',
+          },
+          { type: 'text', text: 'between tools' },
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool_second',
+            content: 'second result',
+          },
+        ],
+      }],
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'before first tool' }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'tool_first',
+        content: [{ type: 'text', text: 'first result' }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'between tools' }],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'tool_second',
+        content: [{ type: 'text', text: 'second result' }],
+      },
+    ]);
   });
 
   it('parses Chat Completions requests with developer/system messages, images, tools and native extensions', () => {
@@ -128,6 +236,20 @@ describe('AI Gateway protocol frontends', () => {
             { type: 'text', text: 'inspect' },
             { type: 'image_url', image_url: { url: 'data:image/png;base64,abc', detail: 'low' } },
           ],
+        },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{
+            id: 'call_read',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' },
+          }],
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call_read',
+          content: 'fixture contents',
         },
       ],
       tools: [
@@ -161,6 +283,22 @@ describe('AI Gateway protocol frontends', () => {
           { type: 'text', text: 'inspect' },
           { type: 'image', imageUrl: 'data:image/png;base64,abc', detail: 'low' },
         ],
+      },
+      {
+        role: 'assistant',
+        content: [],
+        protocolExtensions: {
+          tool_calls: [{
+            id: 'call_read',
+            type: 'function',
+            function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' },
+          }],
+        },
+      },
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'fixture contents' }],
+        toolCallId: 'call_read',
       },
     ]);
     expect(request.tools[0]).toMatchObject({

@@ -17,6 +17,7 @@ import {
   OpenAiQuotaAdapter,
   PodQuotaSnapshotRepository,
   ProviderQuotaService,
+  UnsupportedQuotaAdapter,
   type NormalizedQuotaSnapshot,
   type ProviderQuotaAdapter,
   type QuotaCredentialRecord,
@@ -375,6 +376,43 @@ describe('ProviderQuotaAdapters', () => {
     ]);
   });
 
+  it('normalizes Kimi Official Subscription device-code OAuth quota with its bearer access token', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.kimi.com/coding/v1/usages');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer kimi-oauth-access-token');
+      return {
+        body: {
+          usage: { used: '35', limit: '100', resetTime: '2026-08-16T00:00:00.000Z' },
+          limits: [{
+            window: { duration: 300, timeUnit: 'TIME_UNIT_MINUTE' },
+            detail: { used: '5', limit: '50', resetTime: '2026-08-09T05:00:00.000Z' },
+          }],
+        },
+      };
+    });
+    const current = {
+      ...withOffering(await credential('kimi'), 'official-subscription'),
+      authMode: 'deviceCodeOAuth' as const,
+    };
+    const adapter = new KimiCodeSubscriptionQuotaAdapter({ fetch });
+    expect(adapter.supports(current)).toBe(true);
+
+    const snapshot = await adapter.fetch({
+      credential: current,
+      secret: { type: 'deviceCodeOAuth', accessToken: 'kimi-oauth-access-token' },
+      now: new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    expect(snapshot).toMatchObject({
+      status: 'available',
+      source: 'kimi-code:/usages',
+      windows: [
+        { name: 'five-hour', used: 5, limit: 50, remaining: 45, resetsAt: '2026-08-09T05:00:00.000Z' },
+        { name: 'weekly', used: 35, limit: 100, remaining: 65, resetsAt: '2026-08-16T00:00:00.000Z' },
+      ],
+    });
+  });
+
   it('records 429 as cooldown metadata without fabricating remaining quota', async () => {
     const fetch = jsonFetch(() => ({
       status: 429,
@@ -520,6 +558,70 @@ describe('ProviderQuotaAdapters', () => {
     expect(new Set(repository.rows.map((row) => row.id)).size).toBe(2);
   });
 
+  it('routes Bailian Token Plan personal and team quota through distinct offering cache identities', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const personalIri = CREDENTIAL_IRI.replace('cloud-kimi', 'cloud-bailian-token-plan-personal');
+    const teamIri = CREDENTIAL_IRI.replace('cloud-kimi', 'cloud-bailian-token-plan-team');
+    const personal: QuotaCredentialRecord = {
+      ...await credential('bailian'),
+      id: 'bailian-token-plan-personal',
+      credentialIri: personalIri,
+      offeringId: 'token-plan',
+      encryptedSecret: await vault.seal({ webId: WEB_ID }, personalIri, 'bailian', {
+        type: 'apiKey',
+        apiKey: 'personal-secret',
+      }),
+    };
+    const team: QuotaCredentialRecord = {
+      ...await credential('bailian'),
+      id: 'bailian-token-plan-team',
+      credentialIri: teamIri,
+      offeringId: 'token-plan-team',
+      encryptedSecret: await vault.seal({ webId: WEB_ID }, teamIri, 'bailian', {
+        type: 'apiKey',
+        apiKey: 'team-secret',
+      }),
+    };
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [new UnsupportedQuotaAdapter()],
+      credentials: [personal, team],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    const personalSnapshot = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'bailian',
+      offeringId: 'token-plan',
+      refresh: true,
+    });
+    const teamSnapshot = await service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'bailian',
+      offeringId: 'token-plan-team',
+      refresh: true,
+    });
+
+    expect(personalSnapshot).toMatchObject({
+      credential: personalIri,
+      status: 'unsupported',
+      source: 'bailian:token-plan:quota-unsupported',
+    });
+    expect(teamSnapshot).toMatchObject({
+      credential: teamIri,
+      status: 'unsupported',
+      source: 'bailian:token-plan-team:quota-unsupported',
+    });
+    expect(repository.rows).toHaveLength(2);
+    expect(new Set(repository.rows.map((row) => row.id)).size).toBe(2);
+    expect(new Set(repository.rows.map((row) => row.offeringId)).size).toBe(2);
+  });
+
   it('selects quota adapters by provider offering and credential auth mode', async () => {
     const repository = new InMemoryQuotaSnapshotRepository();
     const vault = createVault();
@@ -538,7 +640,7 @@ describe('ProviderQuotaAdapters', () => {
     const apiAdapter: ProviderQuotaAdapter = {
       provider: 'openai',
       supports: (current) => current.offeringId === 'api-platform' && current.authMode === 'apiKey',
-      fetch: vi.fn(async ({ credential: current, now }) => ({
+      fetch: vi.fn(async ({ credential: current, now }): Promise<NormalizedQuotaSnapshot> => ({
         credential: current.credentialIri,
         status: 'unsupported' as const,
         windows: [],
@@ -550,7 +652,7 @@ describe('ProviderQuotaAdapters', () => {
     const subscriptionAdapter: ProviderQuotaAdapter = {
       provider: 'openai',
       supports: (current) => current.offeringId === 'official-subscription' && current.authMode === 'deviceCodeOAuth',
-      fetch: vi.fn(async ({ credential: current, now }) => ({
+      fetch: vi.fn(async ({ credential: current, now }): Promise<NormalizedQuotaSnapshot> => ({
         credential: current.credentialIri,
         status: 'available' as const,
         windows: [{ name: 'five-hour', used: 25, limit: 100, remaining: 75 }],

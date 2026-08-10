@@ -124,7 +124,7 @@ export interface RunAcceptanceOptions extends AcceptancePlanOptions {
 export const ACCEPTANCE_REQUIREMENTS: AcceptanceRequirement[] = [
   {
     id: 'solid-pod-isolation',
-    title: 'Solid/Pod isolation and ciphertext storage use real Xpod state',
+    title: 'Solid/Pod isolation and reversible credential envelopes use real Xpod state',
     source: 'docs/superpowers/plans/2026-07-30-xpod-light-settings.md Task 12 Step 1-2',
   },
   {
@@ -179,11 +179,6 @@ const PUBLIC_GATE_ENV_KEYS = new Set([
   'XPOD_ACCEPTANCE_RUN_CODEX',
   'XPOD_ACCEPTANCE_EXTERNAL_OAUTH',
   'XPOD_ACCEPTANCE_ENDPOINTS_ENABLED',
-  'XPOD_SETTINGS_E2E_BASE_URL',
-  'XPOD_SETTINGS_E2E_ALICE_STATE',
-  'XPOD_SETTINGS_E2E_BOB_STATE',
-  'XPOD_SETTINGS_E2E_ALICE_POD_URL',
-  'XPOD_SETTINGS_E2E_TEST_API_KEY',
   'XPOD_ACCEPTANCE_XPOD_BASE_URL',
   'XPOD_ACCEPTANCE_MODEL',
   'XPOD_ACCEPTANCE_GATEWAY_KEY',
@@ -329,7 +324,6 @@ export async function writeAcceptanceEvidence(report: AcceptanceReport, options:
 }
 
 function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
-  const baseUrl = env.XPOD_SETTINGS_E2E_BASE_URL ?? env.XPOD_ACCEPTANCE_XPOD_BASE_URL ?? env.XPOD_ACCEPTANCE_BASE_URL;
   const runVisual = env.XPOD_ACCEPTANCE_RUN_VISUAL === 'true';
   const runRealPod = env.XPOD_ACCEPTANCE_REAL_XPOD === 'true';
   const runDocker = env.XPOD_ACCEPTANCE_RUN_DOCKER === 'true';
@@ -341,25 +335,25 @@ function planItems(env: Record<string, string | undefined>): AcceptanceItem[] {
       requirementId: 'solid-pod-isolation',
       title: requirementTitle('solid-pod-isolation'),
       mandatory: true,
-      status: runRealPod && hasRealHostEnv(env) ? 'skip' : 'not_complete',
+      status: runRealPod ? 'skip' : 'not_complete',
       reason: runRealPod
-        ? missingRealHostReason(env)
-        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true plus real Xpod host, A/B auth states, A Pod URL and test API key.',
-      commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... bunx playwright test tests/e2e/xpod-settings.spec.ts'],
-      evidence: ['tests/e2e/xpod-settings.spec.ts performs UI save/reload, A/B isolation and Pod ciphertext inspection when the real-host gate is complete.'],
-      gate: runRealPod && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+        ? 'Hermetic browser gate is enabled and must start its own Xpod, provider fixture, and two Solid accounts.'
+        : 'Requires XPOD_ACCEPTANCE_REAL_XPOD=true; the Playwright spec provisions all runtime and account state itself.',
+      commands: ['XPOD_ACCEPTANCE_REAL_XPOD=true bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
+      evidence: ['tests/e2e/xpod-settings.spec.ts performs real OIDC login, UI save/reload, A/B isolation, Pod envelope inspection, and teardown without pre-generated browser state.'],
+      gate: runRealPod ? playwrightGate(env) : undefined,
     },
     {
       requirementId: 'browser-visual',
       title: requirementTitle('browser-visual'),
       mandatory: true,
-      status: runVisual && hasRealHostEnv(env) ? 'skip' : 'not_complete',
+      status: runVisual ? 'skip' : 'not_complete',
       reason: runVisual
-        ? missingRealHostReason(env)
-        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true plus real Xpod host, A/B auth states, A Pod URL and test API key; UI fetch interception with canned JSON is not allowed.',
-      commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true XPOD_SETTINGS_E2E_BASE_URL=... XPOD_SETTINGS_E2E_ALICE_STATE=... XPOD_SETTINGS_E2E_BOB_STATE=... XPOD_SETTINGS_E2E_ALICE_POD_URL=... XPOD_SETTINGS_E2E_TEST_API_KEY=... bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
-      evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots and asserts SDK geometry contracts.'],
-      gate: runVisual && hasRealHostEnv(env) ? playwrightGate(env) : undefined,
+        ? 'Hermetic browser gate is enabled and must execute desktop and narrow layout assertions.'
+        : 'Requires XPOD_ACCEPTANCE_RUN_VISUAL=true; UI fetch interception with canned product JSON is not allowed.',
+      commands: ['XPOD_ACCEPTANCE_RUN_VISUAL=true bunx playwright test tests/e2e/xpod-settings.spec.ts --reporter=json'],
+      evidence: ['tests/e2e/xpod-settings.spec.ts captures desktop and narrow screenshots against its real temporary Xpod and asserts SDK geometry contracts.'],
+      gate: runVisual ? playwrightGate(env) : undefined,
     },
     fixtureItem('connect-quota', [
       'bun run test -- tests/api/ai-gateway/ProviderConnectAdapters.test.ts tests/api/ai-gateway/ProviderQuotaAdapters.test.ts',
@@ -446,14 +440,7 @@ function fixtureItem(requirementId: string, commands: string[], evidence: string
 }
 
 function playwrightGate(env: Record<string, string | undefined>): GateCommand {
-  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 3 * 60 * 1000, env, {
-    runtimeEnvKeys: [
-      'XPOD_SETTINGS_E2E_BASE_URL',
-      'XPOD_SETTINGS_E2E_ALICE_STATE',
-      'XPOD_SETTINGS_E2E_BOB_STATE',
-      'XPOD_SETTINGS_E2E_ALICE_POD_URL',
-      'XPOD_SETTINGS_E2E_TEST_API_KEY',
-    ],
+  return shellGate(['bunx', 'playwright', 'test', 'tests/e2e/xpod-settings.spec.ts', '--reporter=json'], 10 * 60 * 1000, env, {
     resultContract: {
       kind: 'playwright-json',
       minExecuted: 1,
@@ -485,21 +472,6 @@ function publicEnv(env: Record<string, string | undefined>): Record<string, { pr
       .filter((key) => env[key] !== undefined)
       .map((key) => [key, { present: true }]),
   );
-}
-
-function hasRealHostEnv(env: Record<string, string | undefined>): boolean {
-  return Boolean(
-    env.XPOD_SETTINGS_E2E_BASE_URL &&
-    env.XPOD_SETTINGS_E2E_ALICE_STATE &&
-    env.XPOD_SETTINGS_E2E_BOB_STATE &&
-    env.XPOD_SETTINGS_E2E_ALICE_POD_URL &&
-    env.XPOD_SETTINGS_E2E_TEST_API_KEY
-  );
-}
-
-function missingRealHostReason(env: Record<string, string | undefined>): string {
-  if (hasRealHostEnv(env)) return 'Real host gate is enabled and must execute.';
-  return 'Requires XPOD_SETTINGS_E2E_BASE_URL, XPOD_SETTINGS_E2E_ALICE_STATE, XPOD_SETTINGS_E2E_BOB_STATE, XPOD_SETTINGS_E2E_ALICE_POD_URL and XPOD_SETTINGS_E2E_TEST_API_KEY.';
 }
 
 function hasRealCodexEnv(env: Record<string, string | undefined>): boolean {

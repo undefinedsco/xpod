@@ -403,12 +403,15 @@ function createInteractiveAiConnectionsClient(
           if (credentials.length === 0) throw new Error('models_credential_not_found')
           const settled = await Promise.allSettled(credentials.map(async (credential) => {
             const secret = await podStore.readCredentialSecret!(provider, credential.id)
-            const apiKey = typeof secret.apiKey === 'string' ? secret.apiKey : undefined
-            if (!apiKey) throw new Error('models_secret_missing')
+            const discoverySecret = discoverySecretFromProviderSecret(secret, credential.authMode)
+            if (!discoverySecret) throw new Error('models_secret_missing')
             return operationsClient.discoverModels(provider, {
               credentialId: credential.id,
               offeringId: credential.offeringId,
-              apiKey,
+              authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
+                ? 'deviceCodeOAuth'
+                : 'apiKey',
+              secret: discoverySecret,
               baseUrl: credential.baseUrl,
             })
           }))
@@ -636,6 +639,22 @@ function durableCredential(
 
 function providerName(provider: AiConnectionsProvider): string {
   return PROVIDERS.find((candidate) => candidate.id === provider)?.name ?? provider
+}
+
+function discoverySecretFromProviderSecret(
+  secret: Record<string, unknown>,
+  authMode: AiProviderCredentialSummary['authMode'],
+): Record<string, unknown> | undefined {
+  if (authMode === 'deviceCode' || authMode === 'oauth') {
+    const accessToken = typeof secret.accessToken === 'string' && secret.accessToken.trim()
+      ? secret.accessToken
+      : undefined
+    return accessToken ? { type: 'oauth', accessToken } : undefined
+  }
+  const apiKey = typeof secret.apiKey === 'string' && secret.apiKey.trim()
+    ? secret.apiKey
+    : undefined
+  return apiKey ? { type: 'apiKey', apiKey } : undefined
 }
 
 function isDefined<T>(value: T | undefined): value is T {

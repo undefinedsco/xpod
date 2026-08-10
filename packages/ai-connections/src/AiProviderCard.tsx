@@ -265,15 +265,21 @@ export function AiProviderCard({
         </section>
 
         <section className="space-y-4">
-          <div className="flex items-center justify-between border-b border-border/40 pb-4">
-            <div className="flex items-center gap-2">
-              <Box className="h-4 w-4 text-primary" />
-              <h3 className="text-sm font-medium text-foreground/90">可用模型</h3>
-              <span className="ml-2 text-xs text-muted-foreground">
+          <div
+            data-testid="provider-models-header"
+            className="flex flex-col gap-3 border-b border-border/40 pb-4 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+              <Box className="h-4 w-4 shrink-0 text-primary" />
+              <h3 className="shrink-0 text-sm font-medium text-foreground/90">可用模型</h3>
+              <span className="text-xs text-muted-foreground">
                 共 {models.length} · 已加入 {effectiveSelectedModelIds.length} · 已失效 {unavailableModelCount}
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div
+              data-testid="provider-models-actions"
+              className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap sm:justify-end"
+            >
               {(isConfigured || isConnected) && (onVerify || onAddModel) ? (
                 <>
                   {onAddModel ? (
@@ -318,13 +324,13 @@ export function AiProviderCard({
                 </>
               ) : null}
               {models.length > 0 ? (
-                <div className="relative">
+                <div className="relative w-full sm:w-auto">
                   <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     value={modelSearch}
                     onChange={(event) => setModelSearch(event.target.value)}
                     placeholder="搜索模型..."
-                    className="h-8 w-[232px] bg-background pl-8 text-xs"
+                    className="h-8 w-full bg-background pl-8 text-xs sm:w-[232px]"
                     autoComplete="off"
                     data-lpignore="true"
                     data-1p-ignore

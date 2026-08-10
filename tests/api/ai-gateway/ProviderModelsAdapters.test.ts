@@ -12,13 +12,16 @@ import {
   ProviderModelsService,
   normalizeDiscoveredModels,
   type ModelsCredentialRecord,
+  type ProviderModelsAdapter,
 } from '../../../src/api/ai-gateway/models';
 import { InMemoryGatewayAccessKeyRepository } from './InMemoryGatewayAccessKeyRepository';
 import type { AuthenticatedRequest } from '../../../src/api/middleware/AuthMiddleware';
 import type { ApiServer } from '../../../src/api/ApiServer';
 import {
   createDefaultProviderRegistry,
+  type OfferingAuthMode,
   type ProviderOfferingDescriptor,
+  type ProviderOfferingKind,
   type ProviderProductDescriptor,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
 
@@ -76,6 +79,52 @@ async function credential(provider: string, secret: ProviderSecret = { type: 'ap
   };
 }
 
+function offeringFixture(input: {
+  id: string;
+  provider?: string;
+  label?: string;
+  kind?: ProviderOfferingKind;
+  authModes?: OfferingAuthMode[];
+  baseUrl: string;
+  modelPath?: string;
+  quotaStrategy?: 'providerApi' | 'subscription' | 'console' | 'unsupported';
+}): ProviderOfferingDescriptor {
+  const provider = input.provider ?? 'bailian';
+  const kind = input.kind ?? 'api-platform';
+  const authModes = input.authModes ?? ['apiKey'];
+  const modelPath = input.modelPath ?? '/models';
+  const quotaStrategy = input.quotaStrategy ?? 'console';
+  return {
+    id: input.id,
+    runtimeProviderIds: [provider],
+    label: input.label ?? input.id,
+    productLabel: provider,
+    kind,
+    authModes,
+    auth: authModes.map((mode) => ({
+      protocol: mode === 'oauth' || mode === 'deviceCode'
+        ? 'oauth-device-code'
+        : kind === 'token-plan'
+          ? 'subscription-key'
+          : 'api-key',
+    })),
+    upstream: [
+      { capability: 'models', protocol: 'openai-models', options: { path: modelPath } },
+      { capability: 'inference', protocol: 'openai-chat-completions' },
+      { capability: quotaStrategy === 'providerApi' ? 'balance' : 'quota', protocol: quotaStrategy },
+    ],
+    credentialPrefixHints: ['sk-'],
+    consoleUrl: `https://console.example/${input.id}`,
+    subscriptionUrl: `https://console.example/${input.id}/subscribe`,
+    endpoints: [{ protocol: 'chatCompletions', baseUrl: input.baseUrl }],
+    modelDiscovery: { strategy: 'openaiCompatible', path: modelPath, endpointProtocol: 'chatCompletions' },
+    quota: { strategy: quotaStrategy, url: `https://console.example/${input.id}/quota` },
+    usagePolicyUrl: `https://console.example/${input.id}/policy`,
+    region: 'global',
+    lifecycle: 'active',
+  };
+}
+
 describe('ProviderModelsAdapters', () => {
   it('reuses one OpenAI models protocol handler across Provider metadata endpoints', async () => {
     const fetch = jsonFetch((url) => ({ body: { data: [{ id: url.includes('deepseek') ? 'deepseek-chat' : 'moonshot-v1' }] } }));
@@ -105,31 +154,36 @@ describe('ProviderModelsAdapters', () => {
     expect(fetch).toHaveBeenNthCalledWith(2, 'https://api.moonshot.ai/v1/models', expect.any(Object));
   });
 
+  it('uses the Kimi OAuth access token for official-subscription model discovery', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.kimi.com/coding/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer oauth-access-token');
+      return { body: { data: [{ id: 'kimi-for-coding' }] } };
+    });
+    const registry = createDefaultProviderRegistry();
+    const adapter = new OpenAiCompatibleModelsAdapter({
+      protocol: 'openai-models',
+      registry,
+      fetchImpl: fetch,
+    });
+
+    await expect(adapter.fetch({
+      credential: {
+        ...await credential('kimi'),
+        offeringId: 'official-subscription',
+        authMode: 'deviceCodeOAuth',
+      },
+      secret: { type: 'deviceCodeOAuth', accessToken: 'oauth-access-token' },
+    })).resolves.toEqual([{ id: 'kimi-for-coding' }]);
+  });
+
   it('discovers isolated model catalogs from the selected offering endpoint with bearer auth', async () => {
     const product: ProviderProductDescriptor = {
       id: 'bailian',
       label: 'Bailian',
       offerings: [
-        {
-          id: 'payg', runtimeProviderIds: ['bailian'], label: 'PAYG', productLabel: 'Bailian',
-          kind: 'api-platform', authModes: ['apiKey'], auth: [{ protocol: 'api-key' }],
-          upstream: [{ capability: 'models', protocol: 'openai-models' }], credentialPrefixHints: ['sk-'],
-          consoleUrl: 'https://console.example/payg', subscriptionUrl: 'https://console.example/payg/subscribe',
-          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://payg.example/v1' }],
-          modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
-          quota: { strategy: 'providerApi', url: 'https://console.example/payg/quota' },
-          usagePolicyUrl: 'https://console.example/payg/policy', region: 'cn', lifecycle: 'active',
-        },
-        {
-          id: 'coding', runtimeProviderIds: ['bailian'], label: 'Coding', productLabel: 'Bailian',
-          kind: 'token-plan', authModes: ['apiKey'], auth: [{ protocol: 'api-key' }],
-          upstream: [{ capability: 'models', protocol: 'openai-models' }], credentialPrefixHints: ['sk-'],
-          consoleUrl: 'https://console.example/coding', subscriptionUrl: 'https://console.example/coding/subscribe',
-          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://coding.example/v1' }],
-          modelDiscovery: { strategy: 'openaiCompatible', path: '/catalog/models', endpointProtocol: 'chatCompletions' },
-          quota: { strategy: 'providerApi', url: 'https://console.example/coding/quota' },
-          usagePolicyUrl: 'https://console.example/coding/policy', region: 'cn', lifecycle: 'active',
-        },
+        offeringFixture({ id: 'payg', provider: 'bailian', label: 'PAYG', kind: 'api-platform', baseUrl: 'https://payg.example/v1', quotaStrategy: 'providerApi' }),
+        offeringFixture({ id: 'coding', provider: 'bailian', label: 'Coding', kind: 'token-plan', baseUrl: 'https://coding.example/v1', modelPath: '/catalog/models', quotaStrategy: 'providerApi' }),
       ],
     };
     const fetch = jsonFetch((url, init) => {
@@ -165,16 +219,9 @@ describe('ProviderModelsAdapters', () => {
 
   it('rejects ambiguous offering discovery instead of using the provider default catalog', async () => {
     const product: ProviderProductDescriptor = {
-      id: 'multi', label: 'Multi', offerings: ['one', 'two'].map((id): ProviderOfferingDescriptor => ({
-        id, runtimeProviderIds: ['multi'], label: id, productLabel: 'Multi', kind: 'api-platform',
-        authModes: ['apiKey'], auth: [{ protocol: 'api-key' }],
-        upstream: [{ capability: 'models', protocol: 'openai-models' }],
-        credentialPrefixHints: [], consoleUrl: 'https://console.example',
-        subscriptionUrl: 'https://console.example',
-        endpoints: [{ protocol: 'chatCompletions', baseUrl: `https://${id}.example/v1` }],
-        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
-        quota: { strategy: 'console', url: 'https://console.example' },
-        usagePolicyUrl: 'https://console.example/policy', region: 'global', lifecycle: 'active',
+      id: 'multi', label: 'Multi', offerings: ['one', 'two'].map((id) => ({
+        ...offeringFixture({ id, provider: 'multi', kind: 'api-platform', baseUrl: `https://${id}.example/v1` }),
+        credentialPrefixHints: [],
       })),
     };
     const fetch = vi.fn() as unknown as typeof globalThis.fetch;
@@ -189,15 +236,11 @@ describe('ProviderModelsAdapters', () => {
   });
 
   it('rejects a sibling offering endpoint while preserving an explicitly safe custom endpoint', async () => {
-    const offerings = ['payg', 'coding'].map((id): ProviderOfferingDescriptor => ({
-      id, runtimeProviderIds: ['bailian'], label: id, productLabel: 'Bailian',
-      kind: 'token-plan', authModes: ['apiKey'], auth: [{ protocol: 'api-key' }],
-      upstream: [{ capability: 'models', protocol: 'openai-models' }], credentialPrefixHints: ['sk-'],
-      consoleUrl: `https://console.example/${id}`, subscriptionUrl: `https://console.example/${id}`,
-      endpoints: [{ protocol: 'chatCompletions', baseUrl: `https://${id}.example/v1` }],
-      modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
-      quota: { strategy: 'console', url: `https://console.example/${id}` },
-      usagePolicyUrl: `https://console.example/${id}/policy`, region: 'cn', lifecycle: 'active',
+    const offerings = ['payg', 'coding'].map((id) => offeringFixture({
+      id,
+      provider: 'bailian',
+      kind: id === 'coding' ? 'token-plan' : 'api-platform',
+      baseUrl: `https://${id}.example/v1`,
     }));
     const adapter = new OpenAiCompatibleModelsAdapter({
       provider: 'bailian',
@@ -391,6 +434,85 @@ describe('ProviderModelsService', () => {
     });
   });
 
+  it('discovers from an ephemeral caller-supplied OAuth access token without aliasing it as an API key', async () => {
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe('https://api.moonshot.cn/v1/models');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer caller-access-token');
+      return { body: { data: [{ id: 'kimi-for-coding' }] } };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'kimi',
+        defaultBaseUrl: 'https://api.moonshot.cn/v1',
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-09T00:00:00.000Z'),
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'kimi',
+      offeringId: 'official-subscription',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      authMode: 'deviceCodeOAuth',
+      secret: { type: 'oauth', accessToken: 'caller-access-token' },
+    })).resolves.toEqual({
+      provider: 'kimi',
+      credential: 'credentials.ttl#kimi-oauth',
+      models: [{ id: 'kimi-for-coding' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'kimi:official-subscription:/models',
+    });
+  });
+
+  it('requires an auth-capable caller supplied secret for ephemeral model discovery', async () => {
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'kimi',
+        defaultBaseUrl: 'https://api.moonshot.cn/v1',
+        fetchImpl: vi.fn() as unknown as typeof fetch,
+      })],
+    });
+
+    await expect(service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'kimi',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      authMode: 'deviceCodeOAuth',
+      secret: { type: 'oauth', refreshToken: 'refresh-only' },
+    })).rejects.toThrow('models_secret_missing');
+  });
+
+  it('minimizes caller-supplied OAuth secrets before they reach the models adapter', async () => {
+    const adapter: ProviderModelsAdapter = {
+      provider: 'kimi',
+      async fetch(input) {
+        expect(input.secret).toEqual({ type: 'oauth', accessToken: 'caller-access-token' });
+        return [{ id: 'kimi-for-coding' }];
+      },
+    };
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      adapters: [adapter],
+    });
+
+    const result = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'kimi',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      authMode: 'deviceCodeOAuth',
+      secret: {
+        type: 'oauth',
+        accessToken: 'caller-access-token',
+        refreshToken: 'must-not-reach-adapter',
+      },
+    });
+
+    expect(result.models).toEqual([{ id: 'kimi-for-coding' }]);
+  });
+
   it('preserves the requested offering when discovering from a caller-supplied secret', async () => {
     const fetch = jsonFetch((url, init) => {
       expect(url).toBe('https://coding.example/v1/models');
@@ -404,14 +526,14 @@ describe('ProviderModelsService', () => {
         defaultBaseUrl: 'https://fallback.example/v1',
         product: {
           id: 'bailian', label: 'Bailian', offerings: [{
-            id: 'coding', runtimeProviderIds: ['bailian'], label: 'Coding', productLabel: 'Bailian',
-            kind: 'token-plan', authModes: ['apiKey'], auth: [{ protocol: 'api-key' }],
-            upstream: [{ capability: 'models', protocol: 'openai-models' }], credentialPrefixHints: ['sk-'],
-            consoleUrl: 'https://console.example', subscriptionUrl: 'https://console.example/subscribe',
-            endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://coding.example/v1' }],
-            modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
-            quota: { strategy: 'providerApi', url: 'https://console.example/quota' },
-            usagePolicyUrl: 'https://console.example/policy', region: 'cn', lifecycle: 'active',
+            ...offeringFixture({
+              id: 'coding',
+              provider: 'bailian',
+              label: 'Coding',
+              kind: 'token-plan',
+              baseUrl: 'https://coding.example/v1',
+              quotaStrategy: 'providerApi',
+            }),
           }],
         },
         fetchImpl: fetch,
@@ -428,6 +550,55 @@ describe('ProviderModelsService', () => {
 
     expect(result.models).toEqual([{ id: 'coding-only' }]);
     expect(result.source).toBe('bailian:coding:/models');
+  });
+
+  it('keeps Bailian Token Plan personal and team discovery isolated on their shared endpoint', async () => {
+    const registry = createDefaultProviderRegistry();
+    const sharedEndpoint = 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models';
+    let callIndex = 0;
+    const fetch = jsonFetch((url, init) => {
+      expect(url).toBe(sharedEndpoint);
+      const authorization = new Headers(init?.headers).get('authorization');
+      expect(authorization).toBe(callIndex++ === 0 ? 'Bearer personal-secret' : 'Bearer team-secret');
+      return {
+        body: {
+          data: [{ id: authorization === 'Bearer personal-secret' ? 'personal-model' : 'team-model' }],
+        },
+      };
+    });
+    const service = new ProviderModelsService({
+      vault: createVault(),
+      providerRegistry: registry,
+      adapters: [new OpenAiCompatibleModelsAdapter({
+        provider: 'bailian',
+        registry,
+        fetchImpl: fetch,
+      })],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    const personal = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'token-plan',
+      credentialId: 'credentials.ttl#bailian-token-plan-personal',
+      apiKey: 'personal-secret',
+    });
+    const team = await service.listFromSecret({
+      webId: WEB_ID,
+      provider: 'bailian',
+      offeringId: 'token-plan-team',
+      credentialId: 'credentials.ttl#bailian-token-plan-team',
+      apiKey: 'team-secret',
+    });
+
+    expect(personal.models).toEqual([{ id: 'personal-model' }]);
+    expect(team.models).toEqual([{ id: 'team-model' }]);
+    expect(personal.source).toBe('bailian:token-plan:/models');
+    expect(team.source).toBe('bailian:token-plan-team:/models');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenNthCalledWith(1, sharedEndpoint, expect.any(Object));
+    expect(fetch).toHaveBeenNthCalledWith(2, sharedEndpoint, expect.any(Object));
   });
 
   it('does not send an ephemeral caller secret to an untrusted discovery base URL', async () => {
@@ -796,6 +967,51 @@ describe('AiGatewayManagementHandler models routes', () => {
       credentialId: 'credentials.ttl#deepseek-primary',
       apiKey: 'caller-secret',
     }));
+    expect(modelsService.list).not.toHaveBeenCalled();
+  });
+
+  it('uses an ephemeral OAuth access token for browser-owned Pod credentials without API-key aliasing', async () => {
+    const listFromSecret = vi.fn(async (_input: Record<string, unknown>) => ({
+      provider: 'kimi',
+      credential: 'credentials.ttl#kimi-oauth',
+      models: [{ id: 'kimi-for-coding' }],
+      observedAt: '2026-08-09T00:00:00.000Z',
+      source: 'kimi:official-subscription:/models',
+    }));
+    const modelsService = {
+      list: vi.fn(),
+      listFromSecret,
+    };
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'local',
+      modelsService: modelsService as never,
+    });
+
+    const res = response();
+    await routes['POST /api/ai/gateway/providers/:provider/models/refresh'](request(
+      { type: 'solid', webId: WEB_ID },
+      {
+        credentialId: 'credentials.ttl#kimi-oauth',
+        offeringId: 'official-subscription',
+        authMode: 'deviceCodeOAuth',
+        secret: { type: 'oauth', accessToken: 'caller-access-token' },
+      },
+    ), res, { provider: 'kimi' });
+
+    expect(res.statusCode).toBe(200);
+    expect(listFromSecret).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID,
+      provider: 'kimi',
+      credentialId: 'credentials.ttl#kimi-oauth',
+      offeringId: 'official-subscription',
+      authMode: 'deviceCodeOAuth',
+      secret: { type: 'oauth', accessToken: 'caller-access-token' },
+    }));
+    const listFromSecretInput = listFromSecret.mock.calls.at(0)?.[0];
+    expect(listFromSecretInput).toBeDefined();
+    expect(listFromSecretInput).not.toHaveProperty('apiKey');
     expect(modelsService.list).not.toHaveBeenCalled();
   });
 

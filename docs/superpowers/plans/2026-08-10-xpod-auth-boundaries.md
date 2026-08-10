@@ -80,9 +80,9 @@
 
 ## Final Acceptance Evidence
 
-- Root Vitest: 408 files total, 372 passed and 36 skipped; 3606 tests total, 3339 passed and 267 skipped.
+- Root Vitest: 409 files total, 373 passed and 36 skipped; 3635 tests total, 3368 passed and 267 skipped.
 - Desktop tests: 19/19 passed.
-- Packages tests: 217/217 passed.
+- Packages tests: 226/226 passed.
 - Network focused tests: 17/17 passed.
 - UI lint and typecheck passed.
 - Manual/package acceptance verified Account, WebID, and local-host authorization boundaries independently:
@@ -90,5 +90,5 @@
   - Network and local runtime surfaces remain reachable through the local-host boundary.
   - Pod-owned and AI model-assignment surfaces retain WebID ownership boundaries.
 - Packaged smoke coverage confirmed canonical rail behavior, diagnostic API behavior, native 3/3 tray actions, and quit cleanup.
-- Apple Silicon developer artifacts were validated: DMG SHA256 `ce3e892cc887c4c5b28508f2cd7a358e20d65bd22b61cc61d8c9586bff45dfee` with `hdiutil verify` valid, and ZIP SHA256 `a0ec9d2f9ba55ca17822a10491979940830ece67ae4a0a9e498783975f65befb`.
+- Apple Silicon developer artifacts were validated: DMG SHA256 `8ea366581eeee8029c80b20b87e3b3cdd233573eab330a6ec5e7eb7530b2f2e7` with `hdiutil verify` valid, and ZIP SHA256 `db4cacae782b5c48cd93e9c5f090cae52664dfe168c1591c5bf430d348d6a57c`.
 - Distribution limitation: artifacts are unsigned and not notarized; do not present them as signed release-ready builds.

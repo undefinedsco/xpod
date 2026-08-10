@@ -95,10 +95,10 @@ export function AiCredentialPoolSection({
   onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
   onDismissError?: () => void
 }) {
-  const fallbackOfferings = [{
+  const fallbackOfferings: AiProviderOffering[] = [{
     id: 'api-platform',
     label: 'API Key',
-    authModes: ['apiKey' as const],
+    authModes: ['apiKey'],
   }]
   const credentials = product?.credentials ?? []
   const offerings = product?.offerings.length ? product.offerings : fallbackOfferings
@@ -116,6 +116,16 @@ export function AiCredentialPoolSection({
           const offeringCredentials = credentials
             .filter((credential) => credential.offeringId === offering.id)
             .sort((left, right) => left.priority - right.priority)
+
+          if (offering.lifecycle === 'unavailable') {
+            return (
+              <OfferingItem key={offering.id} offering={offering}>
+                <p className="text-sm text-muted-foreground">
+                  暂不可用：该 Offering 尚未提供可用的连接流程。
+                </p>
+              </OfferingItem>
+            )
+          }
 
           if (error && mode === 'deviceCodeOAuth') {
             return (

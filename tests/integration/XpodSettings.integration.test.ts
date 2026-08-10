@@ -79,11 +79,6 @@ describe('Xpod settings product acceptance harness', () => {
   it('executes enabled command gates and converts command failures into fail status', async () => {
     const report = await runAcceptance({
       env: {
-        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
-        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
-        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
-        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
-        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
       },
       now: '2026-08-01T00:00:00.000Z',
@@ -109,21 +104,13 @@ describe('Xpod settings product acceptance harness', () => {
     expect(report.summary).toMatchObject({ fail: 1, healthy: false, complete: false, exitCode: 1 });
   });
 
-  it('uses the selected runAcceptance env for the default command executor', async () => {
+  it('uses the selected runAcceptance PATH for the hermetic browser gate', async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), 'xpod-settings-selected-env-'));
     const shimDir = path.join(tempRoot, 'bin');
     await mkdir(shimDir, { recursive: true });
     const bunxShim = path.join(shimDir, 'bunx');
     await writeFile(bunxShim, [
       '#!/bin/sh',
-      'if [ "$XPOD_SETTINGS_E2E_BASE_URL" != "http://127.0.0.1:9" ]; then',
-      '  echo "missing selected base url" >&2',
-      '  exit 41',
-      'fi',
-      'if [ "$XPOD_SETTINGS_E2E_TEST_API_KEY" != "sk-selected-env-test-key" ]; then',
-      '  echo "missing selected api key" >&2',
-      '  exit 42',
-      'fi',
       'case " $* " in',
       '  *" --reporter=json "*) ;;',
       '  *) echo "missing json reporter" >&2; exit 43 ;;',
@@ -139,11 +126,6 @@ describe('Xpod settings product acceptance harness', () => {
         PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
         HOME: process.env.HOME,
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
-        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:9',
-        XPOD_SETTINGS_E2E_ALICE_STATE: path.join(tempRoot, 'alice-state.json'),
-        XPOD_SETTINGS_E2E_BOB_STATE: path.join(tempRoot, 'bob-state.json'),
-        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:9/alice/',
-        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-selected-env-test-key',
       },
       now: '2026-08-01T00:00:00.000Z',
     });
@@ -161,11 +143,6 @@ describe('Xpod settings product acceptance harness', () => {
     const report = await runAcceptance({
       env: {
         XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
-        XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
-        XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
-        XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
-        XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
-        XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
       },
       now: '2026-08-01T00:00:00.000Z',
       executeCommand: async (command) => ({
@@ -385,18 +362,21 @@ describe('Xpod settings product acceptance harness', () => {
     expect(report.summary).toMatchObject({ healthy: true, complete: true, exitCode: 0 });
   });
 
-  it('keeps the Playwright real-host spec mandatory once its environment gate is enabled', async () => {
+  it('keeps the Playwright browser spec hermetic and mandatory once its gate is enabled', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
 
-    expect(spec).toContain('XPOD_SETTINGS_E2E_BASE_URL');
-    expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_STATE');
-    expect(spec).toContain('XPOD_SETTINGS_E2E_BOB_STATE');
-    expect(spec).toContain('XPOD_SETTINGS_E2E_ALICE_POD_URL');
-    expect(spec).toContain('XPOD_SETTINGS_E2E_TEST_API_KEY');
+    expect(spec).not.toContain('XPOD_SETTINGS_E2E_');
+    expect(spec).toContain("spawn('bun'");
+    expect(spec).toContain('xpodSettingsFixtureServer.ts');
+    expect(spec).not.toContain('new XpodTestStack()');
+    expect(spec).not.toContain('setupAccount(');
+    expect(spec).toContain('completeOidcLogin');
     expect(spec).toContain('completeApiKeyThroughUi');
-    expect(spec).toContain('assertCiphertextOnlyPodCredential');
+    expect(spec).toContain('assertReversiblePodCredential');
     expect(spec).toContain('assertSdkGeometryContract');
-    expect(spec).not.toContain('if (await firstNavigable.count())');
+    expect(spec).toContain("'/settings/models'");
+    expect(spec).not.toContain("'/dashboard/models'");
+    expect(spec).not.toContain('page.route(');
   });
 
   it('keeps acceptance provenance endpoint behind an explicit runtime environment gate', async () => {
@@ -514,11 +494,6 @@ describe('Xpod settings product acceptance harness', () => {
       no_proxy: 'localhost,127.0.0.1',
       NO_PROXY: 'internal.example',
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true',
-      XPOD_SETTINGS_E2E_BASE_URL: 'http://127.0.0.1:3000',
-      XPOD_SETTINGS_E2E_ALICE_STATE: '/tmp/alice-state.json',
-      XPOD_SETTINGS_E2E_BOB_STATE: '/tmp/bob-state.json',
-      XPOD_SETTINGS_E2E_ALICE_POD_URL: 'http://127.0.0.1:3000/alice/',
-      XPOD_SETTINGS_E2E_TEST_API_KEY: 'sk-visual-test-key',
     };
     const redactionValues = acceptanceRedactionValues(env);
     const gate = buildAcceptancePlan({ env, now: '2026-08-01T00:00:00.000Z' })
@@ -639,14 +614,16 @@ describe('Xpod settings product acceptance harness', () => {
     expect(auditedReport.items.find((item) => item.requirementId === 'external-oauth')?.status).toBe('pass');
   });
 
-  it('keeps Alice credential cleanup in a best-effort finally block', async () => {
+  it('keeps the hermetic Xpod and provider fixture cleanup in a finally block', async () => {
     const spec = await readFile(path.resolve('tests/e2e/xpod-settings.spec.ts'), 'utf8');
-    const credentialTestStart = spec.indexOf("persists Alice API-key credential as ciphertext");
-    const credentialTest = spec.slice(credentialTestStart, spec.indexOf("for (const viewport", credentialTestStart));
 
-    expect(credentialTest).toContain('finally');
-    expect(credentialTest).toContain('cleanupApiKeyThroughUi(alice)');
-    expect(credentialTest).toContain('.catch(() => undefined)');
+    expect(spec).toContain('finally');
+    expect(spec).toContain('fixtureHarness?.stop()');
+
+    const harness = await readFile(path.resolve('tests/helpers/xpodSettingsFixtureServer.ts'), 'utf8');
+    expect(harness).toContain('stack.stop()');
+    expect(harness).toContain('providerFixture.stop()');
+    expect(harness).toContain('rm(runtimeRoot');
   });
 
   it('requires real Codex stream and tool sentinel messages', async () => {
@@ -656,6 +633,15 @@ describe('Xpod settings product acceptance harness', () => {
     expect(script).toContain('XPOD_REAL_TOOL_SENTINEL');
     expect(script).toContain('Real Codex stream run did not return the sentinel');
     expect(script).toContain('Real Codex tool run did not return the sentinel');
+  });
+
+  it('deletes the temporary Xpod runtime that held live provider credentials', async () => {
+    const script = await readFile(path.resolve('scripts/accept-live-ai-connections.ts'), 'utf8');
+
+    expect(script).toContain("mkdtempSync(path.join(os.tmpdir(), 'xpod-live-ai-acceptance-'))");
+    expect(script).toContain('runtimeRoot,');
+    expect(script).toContain('fs.rmSync(runtimeRoot, { recursive: true, force: true })');
+    expect(script.indexOf('await stack.stop()')).toBeLessThan(script.indexOf('fs.rmSync(runtimeRoot'));
   });
 
   it('rejects real Codex provenance when the gateway key fingerprint or provider route is not runtime verified', () => {

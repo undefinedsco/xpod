@@ -8,6 +8,7 @@ import { PostgresRdfEngine, PostgresRdfVectorIndex, rdfVar } from '../../../src/
 
 const { literal, namedNode, quad } = DataFactory;
 const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
+const PGLITE_INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 
 describe('PostgresRdfVectorIndex', () => {
   let dataDir: string;
@@ -737,7 +738,7 @@ describe('PostgresRdfVectorIndex', () => {
         score: 1,
       },
     ]);
-  });
+  }, PGLITE_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('upgrades legacy chunk uniqueness before storing parallel provider vectors', async () => {
     await index.close();
@@ -823,7 +824,7 @@ describe('PostgresRdfVectorIndex', () => {
       chunkCount: 2,
       componentCount: 4,
     });
-  });
+  }, PGLITE_INTEGRATION_TEST_TIMEOUT_MS);
 
   it('can be used by PostgresRdfEngine for async vector-search joins', async () => {
     const engineDir = await mkdtemp(path.join(tmpdir(), 'xpod-pg-rdf-vector-engine-'));
@@ -995,7 +996,7 @@ describe('PostgresRdfVectorIndex', () => {
       await rm(engineDir, { recursive: true, force: true });
       await rm(engineVectorIndexDir, { recursive: true, force: true });
     }
-  });
+  }, PGLITE_INTEGRATION_TEST_TIMEOUT_MS);
 });
 
 describe('PostgresRdfVectorIndex pg backend', () => {

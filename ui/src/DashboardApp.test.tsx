@@ -44,7 +44,7 @@ function routeElementFor(path: string) {
 function redirectTargetFor(path: string) {
   const element = routeElementFor(path);
   if (!isValidElement(element) || element.type !== Navigate) return null;
-  return element.props.to;
+  return (element.props as { to: string }).to;
 }
 
 function installDom(path: string) {
@@ -160,6 +160,7 @@ describe('dashboard routes', () => {
       expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(to);
       expect(sessionStorage.getItem('xpod:returnTo')).toBe(to);
       expect(container.textContent).not.toContain('登录 Xpod Dashboard');
+      expect(container.textContent).not.toContain('Solid issuer');
       expect(sessionConstructions).toBe(1);
       expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
       await unmount(root);

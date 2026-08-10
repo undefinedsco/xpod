@@ -17,6 +17,9 @@ export interface AccountSetup {
   webId: string;
   podUrl: string;
   issuer: string;
+  /** Credentials are exposed only for hermetic browser acceptance flows. */
+  email?: string;
+  password?: string;
 }
 
 function ensureTrailingSlash(value: string): string {
@@ -174,6 +177,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
   const shortPrefix = normalizedPrefix.slice(0, 8).replace(/^-|-$/g, '') || 'test';
   const emailPrefix = normalizedPrefix.slice(0, 24) || 'test';
   const email = `${emailPrefix}-${suffix}@test.com`;
+  const password = 'test123456';
   const podName = `${shortPrefix}-${suffix}`;
   const routingHeaders = hostHeaderFor(baseUrl);
   const tag = `[setupAccount:${prefix}]`;
@@ -227,7 +231,7 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
         Authorization: `CSS-Account-Token ${authorization}`,
         ...routingHeaders,
       },
-      body: JSON.stringify({ email, password: "test123456" }),
+      body: JSON.stringify({ email, password }),
     });
     if (!pwRes.ok) {
       console.error(`${tag} create password failed: ${pwRes.status} ${await pwRes.text().catch(() => '')}`);
@@ -291,6 +295,8 @@ async function setupAccountOnce(baseUrl: string, prefix: string): Promise<Accoun
     webId,
     podUrl,
     issuer,
+    email,
+    password,
   };
 }
 

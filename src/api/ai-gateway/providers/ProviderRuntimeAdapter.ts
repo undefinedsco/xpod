@@ -14,6 +14,7 @@ import type { ProviderDescriptor, ProviderModelDescriptor } from './ProviderRegi
 export interface ProviderRuntimeCredential {
   baseUrl?: string;
   keyType?: 'apiKey' | 'dashscope' | 'codingPlan' | string;
+  supportsDeveloperMessages?: boolean;
   proxy?: string;
   region?: string;
   workspaceId?: string;
@@ -139,19 +140,20 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
   }
 
   public async *execute(input: ProviderRuntimeExecuteInput): AsyncIterable<GatewayEvent> {
-    this.validateRequest(input.request);
+    const request = this.toProviderCompatibleRequest(input.request, input.credential);
+    this.validateRequest(request);
     const baseUrl = this.resolveBaseUrl({
       configuredBaseUrl: input.credential?.baseUrl,
       defaultBaseUrl: this.defaultBaseUrl,
       safeBaseUrls: this.safeBaseUrls,
     });
-    const model = this.findRegisteredModel(input.request.model);
-    const compatibleBody = toChatCompletionsBody(input.request, {
-      reasoningEffort: this.resolveReasoningEffort(input.request, model),
-      extraReasoningBody: this.resolveFallbackReasoningBody(input.request, model),
+    const model = this.findRegisteredModel(request.model);
+    const compatibleBody = toChatCompletionsBody(request, {
+      reasoningEffort: this.resolveReasoningEffort(request, model),
+      extraReasoningBody: this.resolveFallbackReasoningBody(request, model),
       preserveReasoningContent: this.preserveReasoningContent,
     });
-    const body = this.chatBodyTransform?.(compatibleBody, input) ?? compatibleBody;
+    const body = this.chatBodyTransform?.(compatibleBody, { ...input, request }) ?? compatibleBody;
 
     try {
       yield* parseCompatibleChatSse(this.transport.postSse({
@@ -174,13 +176,6 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
         details: { provider: this.provider, capability: 'imageInput' },
       });
     }
-    if (!this.supportsDeveloperMessages && request.messages.some((message) => message.role === 'developer')) {
-      throw new GatewayProtocolError(`${this.provider} does not support developer role messages`, {
-        code: 'invalid_request',
-        status: 400,
-        details: { provider: this.provider, capability: 'developerMessages' },
-      });
-    }
     const chatExtensions = request.protocolExtensions.chatCompletions ?? {};
     if (!this.allowToolChoiceRequired && chatExtensions.tool_choice === 'required') {
       throw new GatewayProtocolError(`${this.provider} does not support required tool_choice`, {
@@ -189,6 +184,23 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
         details: { provider: this.provider, capability: 'tool_choice.required' },
       });
     }
+  }
+
+  private toProviderCompatibleRequest(
+    request: GatewayRequest,
+    credential?: ProviderRuntimeCredential,
+  ): GatewayRequest {
+    const supportsDeveloperMessages = credential?.supportsDeveloperMessages
+      ?? this.supportsDeveloperMessages;
+    if (supportsDeveloperMessages || !request.messages.some((message) => message.role === 'developer')) {
+      return request;
+    }
+    return {
+      ...request,
+      messages: request.messages.map((message) => message.role === 'developer'
+        ? { ...message, role: 'system' as const }
+        : message),
+    };
   }
 
   private findRegisteredModel(model: string): ProviderModelDescriptor | undefined {
@@ -230,14 +242,50 @@ export function toResponsesBody(request: GatewayRequest): Record<string, unknown
     ...(request.previousResponseId ? { previous_response_id: request.previousResponseId } : {}),
     ...(request.maxOutputTokens !== undefined ? { max_output_tokens: request.maxOutputTokens } : {}),
     ...(request.reasoning?.effort ? { reasoning: { effort: request.reasoning.effort } } : {}),
-    input: request.messages.map((message) => ({
-      role: message.role,
-      content: message.content.flatMap(toOpenAiContentPart),
-      ...(message.name ? { name: message.name } : {}),
-      ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
-    })),
+    input: request.messages.flatMap(toResponsesInputItems),
     ...(request.tools.length > 0 ? { tools: request.tools.map(toOpenAiTool) } : {}),
   };
+}
+
+function toResponsesInputItems(message: GatewayMessage): Array<Record<string, unknown>> {
+  if (message.role === 'tool') {
+    return [{
+      type: 'function_call_output',
+      ...(message.toolCallId ? { call_id: message.toolCallId } : {}),
+      output: contentToText(message.content),
+    }];
+  }
+
+  const functionCalls = responsesFunctionCallItems(message);
+  const messageItem = {
+    role: message.role,
+    content: message.content.flatMap(toOpenAiContentPart),
+    ...(message.name ? { name: message.name } : {}),
+  };
+  return [
+    ...(message.content.length > 0 || functionCalls.length === 0 ? [messageItem] : []),
+    ...functionCalls,
+  ];
+}
+
+function responsesFunctionCallItems(message: GatewayMessage): Array<Record<string, unknown>> {
+  if (message.role !== 'assistant' || !Array.isArray(message.protocolExtensions?.tool_calls)) {
+    return [];
+  }
+  return message.protocolExtensions.tool_calls.flatMap((value) => {
+    if (!value || typeof value !== 'object') return [];
+    const toolCall = value as Record<string, unknown>;
+    const fn = toolCall.function;
+    if (!fn || typeof fn !== 'object') return [];
+    const functionCall = fn as Record<string, unknown>;
+    if (typeof toolCall.id !== 'string' || typeof functionCall.name !== 'string') return [];
+    return [{
+      type: 'function_call',
+      call_id: toolCall.id,
+      name: functionCall.name,
+      arguments: typeof functionCall.arguments === 'string' ? functionCall.arguments : '{}',
+    }];
+  });
 }
 
 export function toAnthropicBody(request: GatewayRequest, options: { maxOutputTokensDefault?: number } = {}): Record<string, unknown> {
@@ -252,7 +300,10 @@ export function toAnthropicBody(request: GatewayRequest, options: { maxOutputTok
       role: message.role === 'tool' ? 'user' : message.role,
       content: message.role === 'tool'
         ? [{ type: 'tool_result', tool_use_id: message.toolCallId, content: contentToText(message.content) }]
-        : message.content.map(toAnthropicContentPart),
+        : [
+            ...message.content.map(toAnthropicContentPart),
+            ...anthropicToolUseParts(message),
+          ],
     })),
     ...(request.tools.length > 0 ? { tools: request.tools.map(toAnthropicTool) } : {}),
     ...(request.reasoning?.effort
@@ -266,6 +317,74 @@ export function toAnthropicBody(request: GatewayRequest, options: { maxOutputTok
         }
       : {}),
   };
+}
+
+function anthropicToolUseParts(message: GatewayMessage): Array<Record<string, unknown>> {
+  if (message.role !== 'assistant' || !Array.isArray(message.protocolExtensions?.tool_calls)) {
+    return [];
+  }
+  return message.protocolExtensions.tool_calls.flatMap((value) => {
+    if (!value || typeof value !== 'object') return [];
+    const toolCall = value as Record<string, unknown>;
+    const fn = toolCall.function;
+    if (!fn || typeof fn !== 'object') return [];
+    const functionCall = fn as Record<string, unknown>;
+    if (typeof toolCall.id !== 'string' || typeof functionCall.name !== 'string') return [];
+    return [{
+      type: 'tool_use',
+      id: toolCall.id,
+      name: functionCall.name,
+      input: parseAnthropicToolUseInput(functionCall.arguments, {
+        id: toolCall.id,
+        name: functionCall.name,
+      }),
+    }];
+  });
+}
+
+function parseAnthropicToolUseInput(
+  rawArguments: unknown,
+  toolCall: { id: string; name: string },
+): Record<string, unknown> {
+  if (rawArguments === undefined || rawArguments === null || rawArguments === '') {
+    return {};
+  }
+  if (typeof rawArguments !== 'string') {
+    throw new GatewayProtocolError('Anthropic tool replay arguments must be JSON object strings', {
+      code: 'invalid_request',
+      status: 400,
+      details: {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+    });
+  }
+  if (!rawArguments.trim()) return {};
+  let input: unknown;
+  try {
+    input = JSON.parse(rawArguments);
+  } catch (error) {
+    throw new GatewayProtocolError('Anthropic tool replay arguments must be valid JSON object strings', {
+      code: 'invalid_request',
+      status: 400,
+      details: {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+      cause: error,
+    });
+  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new GatewayProtocolError('Anthropic tool replay arguments must be JSON objects', {
+      code: 'invalid_request',
+      status: 400,
+      details: {
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+      },
+    });
+  }
+  return input as Record<string, unknown>;
 }
 
 export function toChatCompletionsBody(
@@ -642,6 +761,10 @@ function toChatMessage(
   const reasoningContent = message.protocolExtensions?.reasoning_content;
   if (options.preserveReasoningContent && message.role === 'assistant' && typeof reasoningContent === 'string') {
     base.reasoning_content = reasoningContent;
+  }
+  const toolCalls = message.protocolExtensions?.tool_calls;
+  if (message.role === 'assistant' && Array.isArray(toolCalls) && toolCalls.length > 0) {
+    base.tool_calls = toolCalls;
   }
   return base;
 }

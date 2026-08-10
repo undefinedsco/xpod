@@ -29,7 +29,7 @@ export class KimiRuntimeAdapter extends OpenAiCompatibleRuntimeAdapter {
         ...offeringBaseUrls('kimi', 'chatCompletions'),
       ])),
       supportsImages: true,
-      supportsDeveloperMessages: true,
+      supportsDeveloperMessages: false,
       allowToolChoiceRequired: true,
       preserveReasoningContent: true,
       reasoningEffortMapper: (effort, request, model) => mapKimiReasoningEffort(effort, request, model),

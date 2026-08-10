@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import type { GatewayEvent, GatewayRequest } from '../../../src/api/ai-gateway/types';
+import { ChatCompletionsFrontend } from '../../../src/api/ai-gateway/protocol/ChatCompletionsFrontend';
+import { ResponsesFrontend } from '../../../src/api/ai-gateway/protocol/ResponsesFrontend';
 import { AnthropicRuntimeAdapter } from '../../../src/api/ai-gateway/providers/AnthropicRuntimeAdapter';
 import { BailianRuntimeAdapter } from '../../../src/api/ai-gateway/providers/BailianRuntimeAdapter';
 import { DeepSeekRuntimeAdapter } from '../../../src/api/ai-gateway/providers/DeepSeekRuntimeAdapter';
@@ -222,6 +224,97 @@ describe('Provider runtime adapters', () => {
     });
   });
 
+  it('projects a Chat Completions frontend request onto the OpenAI Responses upstream', async () => {
+    const frontend = new ChatCompletionsFrontend();
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_chat_projection' } },
+      { type: 'response.output_text.delta', delta: 'projected' },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    const request = frontend.parseRequest({
+      model: 'gpt-5',
+      messages: [
+        { role: 'system', content: 'Answer with strict JSON.' },
+        { role: 'user', content: 'hello from chat completions' },
+      ],
+      stream: true,
+    });
+    await expect(collect(adapter.execute({
+      request,
+      apiKey: 'sk-openai-chat-projection',
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'projected' });
+
+    expect(fixture.captured[0].url).toBe('https://api.openai.com/v1/responses');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'gpt-5',
+      stream: true,
+      instructions: 'Answer with strict JSON.',
+      input: [{
+        role: 'user',
+        content: [{ type: 'input_text', text: 'hello from chat completions' }],
+      }],
+    });
+    expect(fixture.captured[0].body).not.toHaveProperty('messages');
+  });
+
+  it('replays native Responses tool history as typed upstream input items', async () => {
+    const frontend = new ResponsesFrontend();
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_tool_replay' } },
+      { type: 'response.completed', response: { status: 'completed' } },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    const request = frontend.parseRequest({
+      model: 'gpt-5',
+      input: [
+        { role: 'user', content: 'Look up Xpod.' },
+        {
+          type: 'function_call',
+          call_id: 'call_lookup',
+          name: 'lookup',
+          arguments: '{"q":"xpod"}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_lookup',
+          output: 'tool result',
+        },
+      ],
+      stream: true,
+    });
+    await collect(adapter.execute({
+      request,
+      apiKey: 'sk-openai-tool-replay',
+    }));
+
+    expect(fixture.captured[0].body.input).toEqual([
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Look up Xpod.' }],
+      },
+      {
+        type: 'function_call',
+        call_id: 'call_lookup',
+        name: 'lookup',
+        arguments: '{"q":"xpod"}',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_lookup',
+        output: 'tool result',
+      },
+    ]);
+  });
+
   it('streams Anthropic Messages events including thinking, signatures, partial tool JSON, usage and midstream errors', async () => {
     const fixture = fetchFixture(new Response(jsonSse([
       { type: 'message_start', message: { id: 'msg_anthropic' } },
@@ -264,6 +357,47 @@ describe('Provider runtime adapters', () => {
       thinking: { type: 'enabled', budget_tokens: 1024 },
     });
 
+    const historyFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const historyAdapter = new AnthropicRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: historyFixture.fetch }),
+    });
+    await collect(historyAdapter.execute({
+      request: baseRequest({
+        model: 'claude-sonnet-4-5-20250929',
+        instructions: undefined,
+        reasoning: undefined,
+        messages: [
+          {
+            role: 'assistant',
+            content: [],
+            protocolExtensions: {
+              tool_calls: [{
+                id: 'tool_read',
+                type: 'function',
+                function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' },
+              }],
+            },
+          },
+          {
+            role: 'tool',
+            toolCallId: 'tool_read',
+            content: [{ type: 'text', text: 'fixture contents' }],
+          },
+        ],
+      }),
+      apiKey: 'sk-ant-secret',
+    }));
+    expect(historyFixture.captured[0].body.messages).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tool_read', name: 'read_file', input: { path: 'fixture.txt' } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool_read', content: 'fixture contents' }],
+      },
+    ]);
+
     const errorFixture = fetchFixture(new Response(jsonSse([
       { type: 'message_start', message: { id: 'msg_error' } },
       { type: 'error', error: { type: 'overloaded_error', message: 'temporarily unavailable' } },
@@ -290,6 +424,41 @@ describe('Provider runtime adapters', () => {
       request: baseRequest({ model: 'claude-sonnet-4-5-20250929' }),
       apiKey: 'sk-ant-secret',
     }))).resolves.toContainEqual({ type: 'response.completed', finishReason: 'max_tokens' });
+  });
+
+  it('rejects invalid Anthropic tool_use replay arguments instead of silently sending empty input', async () => {
+    for (const argumentsValue of ['{"path":', '"primitive"', { path: 'not-a-json-string' }]) {
+      const fixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+      const adapter = new AnthropicRuntimeAdapter({
+        transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+      });
+
+      await expect(collect(adapter.execute({
+        request: baseRequest({
+          model: 'claude-sonnet-4-5-20250929',
+          instructions: undefined,
+          reasoning: undefined,
+          messages: [
+            {
+              role: 'assistant',
+              content: [],
+              protocolExtensions: {
+                tool_calls: [{
+                  id: 'tool_read',
+                  type: 'function',
+                  function: { name: 'read_file', arguments: argumentsValue },
+                }],
+              },
+            },
+          ],
+        }),
+        apiKey: 'sk-ant-secret',
+      }))).rejects.toMatchObject({
+        code: 'invalid_request',
+        status: 400,
+      });
+      expect(fixture.captured).toHaveLength(0);
+    }
   });
 
   it('handles Kimi chat deltas and maps reasoning only when the live registry model allows it', async () => {
@@ -382,7 +551,12 @@ describe('Provider runtime adapters', () => {
     await collect(officialAdapter.execute({
       request: baseRequest({
         model: 'kimi-for-coding',
+        instructions: undefined,
         reasoning: undefined,
+        messages: [{
+          role: 'developer',
+          content: [{ type: 'text', text: 'Follow the coding policy.' }],
+        }],
         protocolExtensions: { chatCompletions: { temperature: 0 } },
       }),
       apiKey: 'sk-kimi-subscription',
@@ -390,6 +564,10 @@ describe('Provider runtime adapters', () => {
     }));
     expect(officialSubscription.captured[0].url).toBe('https://api.kimi.com/coding/v1/chat/completions');
     expect(officialSubscription.captured[0].body.temperature).toBe(1);
+    expect(officialSubscription.captured[0].body.messages).toContainEqual({
+      role: 'system',
+      content: 'Follow the coding policy.',
+    });
 
     await expect(collect(officialAdapter.execute({
       request: baseRequest({ model: 'kimi-k2', reasoning: undefined }),
@@ -494,6 +672,49 @@ describe('Provider runtime adapters', () => {
       code: 'invalid_request',
       status: 400,
     });
+  });
+
+  it('projects a Chat Completions frontend request onto the Bailian Coding Plan Anthropic Messages upstream', async () => {
+    const frontend = new ChatCompletionsFrontend();
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'message_start', message: { id: 'msg_coding_projection' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'projected' } },
+      { type: 'message_stop', stop_reason: 'end_turn' },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new BailianRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    const request = frontend.parseRequest({
+      model: 'qwen-coder-plus',
+      messages: [
+        { role: 'system', content: 'Follow the coding policy.' },
+        { role: 'user', content: 'hello from chat completions' },
+      ],
+      stream: true,
+    });
+    await expect(collect(adapter.execute({
+      request,
+      apiKey: 'sk-sp-coding-projection',
+      credential: {
+        keyType: 'codingPlan',
+        baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
+      },
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'projected' });
+
+    expect(fixture.captured[0].url).toBe('https://coding.dashscope.aliyuncs.com/apps/anthropic/messages');
+    expect(fixture.captured[0].headers.get('x-api-key')).toBe('sk-sp-coding-projection');
+    expect(fixture.captured[0].body).toMatchObject({
+      model: 'qwen-coder-plus',
+      stream: true,
+      system: 'Follow the coding policy.',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'text', text: 'hello from chat completions' }],
+      }],
+    });
+    expect(fixture.captured[0].body).not.toHaveProperty('input');
   });
 
   it('constructs Bailian regional workspace endpoints from enums and rejects SSRF strings or endpoint/key mismatches', async () => {
@@ -622,16 +843,70 @@ describe('Provider runtime adapters', () => {
       details: { capability: 'reasoningEffort' },
     });
 
-    await expect(collect(adapter.execute({
+    const developerFixture = fetchFixture(new Response(jsonSse([
+      { id: 'chatcmpl_deepseek_developer', choices: [{ delta: { role: 'assistant' } }] },
+      { choices: [{ delta: { content: 'final' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]), { status: 200 }));
+    const developerAdapter = new DeepSeekRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: developerFixture.fetch }),
+    });
+    await expect(collect(developerAdapter.execute({
       request: baseRequest({
         model: 'deepseek-chat',
-        messages: [{ role: 'developer', content: [{ type: 'text', text: 'not supported' }] }],
+        instructions: undefined,
+        reasoning: undefined,
+        messages: [{ role: 'developer', content: [{ type: 'text', text: 'follow the coding policy' }] }],
       }),
       apiKey: 'sk-deepseek',
-    }))).rejects.toMatchObject({
-      code: 'invalid_request',
-      status: 400,
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'final' });
+    expect(developerFixture.captured[0].body.messages).toContainEqual({
+      role: 'system',
+      content: 'follow the coding policy',
     });
+
+    const toolHistoryFixture = fetchFixture(new Response(jsonSse(['[DONE]']), { status: 200 }));
+    const toolHistoryAdapter = new DeepSeekRuntimeAdapter({
+      transport: new ProviderHttpTransport({ fetch: toolHistoryFixture.fetch }),
+    });
+    await collect(toolHistoryAdapter.execute({
+      request: baseRequest({
+        model: 'deepseek-chat',
+        instructions: undefined,
+        reasoning: undefined,
+        messages: [
+          {
+            role: 'assistant',
+            content: [],
+            protocolExtensions: {
+              tool_calls: [{
+                id: 'call_lookup',
+                type: 'function',
+                function: { name: 'lookup', arguments: '{"q":"xpod"}' },
+              }],
+            },
+          },
+          {
+            role: 'tool',
+            toolCallId: 'call_lookup',
+            content: [{ type: 'text', text: 'tool result' }],
+          },
+        ],
+      }),
+      apiKey: 'sk-deepseek',
+    }));
+    expect(toolHistoryFixture.captured[0].body.messages).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{
+          id: 'call_lookup',
+          type: 'function',
+          function: { name: 'lookup', arguments: '{"q":"xpod"}' },
+        }],
+      },
+      { role: 'tool', tool_call_id: 'call_lookup', content: 'tool result' },
+    ]);
 
     await expect(collect(adapter.execute({
       request: baseRequest({

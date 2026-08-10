@@ -61,7 +61,7 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
       fetch: fetchImpl,
       getSnapshot: () => ({ status: 'authenticated', webId: WEB_ID }),
       subscribe: () => () => undefined,
-    } as XpodSolidRuntimeValue['session'],
+    } as unknown as XpodSolidRuntimeValue['session'],
     pod: {} as XpodSolidRuntimeValue['pod'],
     fetch: fetchImpl,
     state: { status: 'authenticated', webId: WEB_ID, podUrl: POD_URL },
@@ -71,7 +71,7 @@ function runtimeWith(fetchImpl: typeof fetch): XpodSolidRuntimeValue {
       podUrl: POD_URL,
       webId: WEB_ID,
       database: createEmptyPodDatabase(),
-    } as XpodSolidRuntimeValue['currentPod'],
+    } as unknown as XpodSolidRuntimeValue['currentPod'],
     login: mock(async () => undefined),
     logout: mock(async () => undefined),
   };

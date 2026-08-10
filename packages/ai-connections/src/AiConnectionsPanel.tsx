@@ -49,6 +49,11 @@ import {
 
 const EMPTY_PROVIDER_SUMMARIES: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>> = {}
 
+interface ModelDiscoveryMergeScope {
+  markMissing: boolean
+  offeringId?: string
+}
+
 export interface AiConnectionsPanelProps {
   client: AiConnectionsClient
   openExternal?: (url: string) => void | Promise<void>
@@ -373,11 +378,56 @@ export function AiConnectionsPanel({
       const discovery = input
         ? await client.discoverModels(provider, input)
         : await client.discoverModels(provider)
+      const selectedModels = effectiveProviderProducts[provider]?.selectedModels ?? []
+      const mergeScope: ModelDiscoveryMergeScope = input?.offeringId
+        ? { markMissing: true, offeringId: input.offeringId }
+        : { markMissing: !input }
       try {
         const persisted = await client.listModels()
-        setModels(mergeDiscoveredModels(persisted, provider, discovery.models))
+        const persistedForProvider = persisted
+          .filter((model) => model.provider === provider)
+        setModels((current) => {
+          const withPersisted = mergeDiscoveredModels(
+            current,
+            provider,
+            persistedForProvider,
+            mergeScope,
+          )
+          const withDiscovery = mergeDiscoveredModels(
+            withPersisted,
+            provider,
+            discovery.models,
+            mergeScope,
+          )
+          return markMissingSelectedModelsUnavailable(
+            withDiscovery,
+            provider,
+            selectedModels,
+            discovery.models,
+            mergeScope,
+          )
+        })
       } catch {
-        setModels((current) => mergeDiscoveredModels(current, provider, discovery.models))
+        setModels((current) => markMissingSelectedModelsUnavailable(
+          mergeDiscoveredModels(current, provider, discovery.models, mergeScope),
+          provider,
+          selectedModels,
+          discovery.models,
+          mergeScope,
+        ))
+      }
+      try {
+        const products = await client.listProviders()
+        const product = products.find((item) => item.id === provider)
+        if (product) {
+          setProviderProductOverrides((current) => ({
+            ...current,
+            [provider]: product,
+          }))
+        }
+      } catch {
+        // The model catalog already reflects the discovery result; provider
+        // summaries will refresh on the next host/provider reload.
       }
       if (announceSuccess) {
         toast({
@@ -717,7 +767,10 @@ export function AiConnectionsPanel({
   }, [client, serviceAccessGranted])
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-10 px-8 py-8">
+    <div
+      data-testid="ai-connections-panel"
+      className="mx-auto w-full max-w-5xl space-y-10 px-4 py-6 sm:px-8 sm:py-8"
+    >
       <Toaster />
       <section>
           {providerLoadError ? (
@@ -1079,19 +1132,81 @@ function errorMessage(error: unknown): string {
 function mergeDiscoveredModels(
   current: AiGatewayModel[],
   provider: AiConnectionsProvider,
-  discovered: DiscoveredProviderModel[],
+  discovered: Array<DiscoveredProviderModel | AiGatewayModel>,
+  scope: ModelDiscoveryMergeScope = { markMissing: false },
 ): AiGatewayModel[] {
-  const merged = [...current]
+  const discoveredIds = new Set(discovered.map((model) => model.id))
+  const merged = current.map((model) => (
+    scope.markMissing
+    && model.provider === provider
+    && !model.custom
+    && !discoveredIds.has(model.id)
+    && (scope.offeringId === undefined || model.offeringId === scope.offeringId)
+      ? compactModel({ ...model, availability: 'unavailable' })
+      : model
+  ))
   for (const model of discovered) {
-    const index = merged.findIndex((item) => item.provider === provider && item.id === model.id)
+    const candidate = model as DiscoveredProviderModel & Partial<AiGatewayModel>
+    const persistedCatalogModel = 'provider' in model
+    const offeringId = candidate.offeringId
+      ?? (persistedCatalogModel ? undefined : scope.offeringId)
+    const index = merged.findIndex((item) => {
+      if (item.provider !== provider) return false
+      if (candidate.resourceId && item.resourceId) {
+        return candidate.resourceId === item.resourceId
+      }
+      if (offeringId !== undefined) {
+        return item.id === candidate.id && item.offeringId === offeringId
+      }
+      return item.id === candidate.id && item.offeringId === undefined
+    })
     if (index === -1) {
       merged.push(compactModel({
-        id: model.id,
+        ...candidate,
+        id: candidate.id,
         provider,
-        displayName: model.displayName,
+        availability: candidate.availability ?? 'available',
+        ...(offeringId ? { offeringId } : {}),
       }))
-    } else if (model.displayName && !merged[index].displayName) {
-      merged[index] = { ...merged[index], displayName: model.displayName }
+    } else {
+      merged[index] = compactModel({
+        ...merged[index],
+        ...candidate,
+        provider,
+        displayName: candidate.displayName ?? merged[index].displayName,
+        availability: candidate.availability ?? 'available',
+        ...(offeringId ? { offeringId } : {}),
+      })
+    }
+  }
+  return merged
+}
+
+function markMissingSelectedModelsUnavailable(
+  current: AiGatewayModel[],
+  provider: AiConnectionsProvider,
+  selectedModels: AiGatewayModel[],
+  discovered: DiscoveredProviderModel[],
+  scope: ModelDiscoveryMergeScope,
+): AiGatewayModel[] {
+  if (!scope.markMissing || selectedModels.length === 0) return current
+  const discoveredIds = new Set(discovered.map((model) => model.id))
+  const merged = [...current]
+  for (const selected of selectedModels.filter((model) => model.provider === provider)) {
+    if (selected.custom) continue
+    if (scope.offeringId !== undefined && selected.offeringId !== scope.offeringId) continue
+    if (discoveredIds.has(selected.id)) continue
+    const selectionId = modelSelectionId(selected)
+    const index = merged.findIndex((model) => model.provider === provider && modelSelectionId(model) === selectionId)
+    const unavailable = compactModel({ ...selected, availability: 'unavailable' })
+    if (index === -1) {
+      merged.push(unavailable)
+    } else {
+      merged[index] = compactModel({
+        ...merged[index],
+        ...unavailable,
+        displayName: merged[index].displayName ?? unavailable.displayName,
+      })
     }
   }
   return merged
@@ -1112,6 +1227,9 @@ function mergeProviderModelCatalog(
       ...merged[index],
       ...selectedModel,
       displayName: merged[index].displayName ?? selectedModel.displayName,
+      availability: merged[index].availability === 'unavailable'
+        ? 'unavailable'
+        : selectedModel.availability,
     })
   }
   return merged

@@ -17,7 +17,7 @@ describe('dashboard runtime console routes', () => {
     expect(app).not.toContain('/.account/settings/');
   });
 
-  it('uses deep-linkable dashboard routes for status, logs and settings', async () => {
+  it('keeps dashboard observability routes separate from settings navigation', async () => {
     const dashboardApp = await readRepoFile('ui/src/DashboardApp.tsx');
     const dashboardRoutes = await readRepoFile('ui/src/dashboard-routes.tsx');
     const settingsRoutes = await readRepoFile('ui/src/settings-routes.tsx');
@@ -33,11 +33,18 @@ describe('dashboard runtime console routes', () => {
     expect(dashboardApp).toContain('basename={surface.basename}');
     expect(dashboardApp).toContain('statusSurfaceRoutes');
     expect(dashboardApp).toContain('networkSurfaceRoutes');
+    expect(dashboardRoutes).toContain("path: 'overview'");
+    expect(dashboardRoutes).toContain("path: 'network/*'");
     expect(dashboardRoutes).toContain("path: 'runtime'");
     expect(dashboardRoutes).toContain("path: 'logs'");
+    expect(dashboardRoutes).toContain("path: 'rdf'");
+    expect(dashboardRoutes).toContain("path: 'usage'");
     expect(dashboardRoutes).toContain("path: 'status'");
     expect(dashboardRoutes).toContain('statusSurfaceRoutes');
     expect(dashboardRoutes).toContain('networkSurfaceRoutes');
+    expect(dashboardRoutes).not.toContain("path: 'models'");
+    expect(dashboardRoutes).not.toContain("path: 'pod'");
+    expect(dashboardRoutes).not.toContain("path: 'services'");
     expect(settingsRoutes).toContain("path: 'models'");
     expect(settingsRoutes).toContain("path: 'pod'");
     expect(settingsRoutes).toContain("path: 'network'");
@@ -86,12 +93,14 @@ describe('upgraded dashboard pages', () => {
     expect(button).toContain('active:translate-y-px');
   });
 
-  it('keeps the compact settings navigation inside the narrow header viewport', async () => {
+  it('uses the shared compact icon-only product layout inside the narrow header viewport', async () => {
     const productLayout = await readRepoFile('ui/src/layout/XpodProductLayout.tsx');
 
+    expect(productLayout).toContain("import { AppLayout }");
     expect(productLayout).toContain('flex h-full w-full flex-row items-center');
     expect(productLayout).toContain('sm:min-h-full sm:flex-col');
     expect(productLayout).toContain('flex h-9 w-9 items-center justify-center');
+    expect(productLayout).toContain('ProductNavLinks');
     expect(productLayout).not.toContain('min-height: 11.75rem;');
   });
 

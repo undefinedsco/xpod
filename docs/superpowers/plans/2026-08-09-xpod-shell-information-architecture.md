@@ -207,13 +207,13 @@
 
 ## Final acceptance evidence
 
-- Repository Vitest: 408 files (372 passed, 36 skipped), 3,606 tests (3,339 passed, 267 skipped), zero failures.
-- Package suites: 217/217 passed; desktop unit suites: 19/19 passed; Network real-Gateway/auth suites: 17/17 passed.
+- Repository Vitest: 409 files (373 passed, 36 skipped), 3,635 tests (3,368 passed, 267 skipped), zero failures.
+- Package suites: 226/226 passed; desktop unit suites: 19/19 passed; Network real-Gateway/auth suites: 17/17 passed.
 - `bun run typecheck:test`, `bun run --cwd ui lint`, `bun run build`, and the final `bun run test:integration` all exited successfully.
 - The packaged arm64 app opened `/network/overview` without login, exposed the fixed rail order, preserved Account/WebID/local-host boundaries, returned Network status and diagnostics, and created the native three-service menu with Gateway, Solid Server, and API Server at 3/3 healthy.
 - A standard LaunchServices launch and AppleScript quit stopped the shell-owned runtime and left ports/processes clean; runtime-manager tests prove externally managed runtimes are preserved.
-- `desktop/release/Xpod-0.1.0-arm64.dmg` SHA256: `ce3e892cc887c4c5b28508f2cd7a358e20d65bd22b61cc61d8c9586bff45dfee`; `hdiutil verify` reported valid.
-- `desktop/release/Xpod-0.1.0-arm64-mac.zip` SHA256: `a0ec9d2f9ba55ca17822a10491979940830ece67ae4a0a9e498783975f65befb`.
+- `desktop/release/Xpod-0.1.0-arm64.dmg` SHA256: `8ea366581eeee8029c80b20b87e3b3cdd233573eab330a6ec5e7eb7530b2f2e7`; `hdiutil verify` reported valid.
+- `desktop/release/Xpod-0.1.0-arm64-mac.zip` SHA256: `db4cacae782b5c48cd93e9c5f090cae52664dfe168c1591c5bf430d348d6a57c`.
 - The development package is unsigned and not notarized because no Apple Developer ID Application identity is installed. This is the only unavailable release-distribution check and is not a functional acceptance gap.
 
 ## Implementation constraints
