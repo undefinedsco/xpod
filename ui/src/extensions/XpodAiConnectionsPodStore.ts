@@ -26,6 +26,7 @@ import type {
 
 export interface CreateXpodAiConnectionsPodStoreInput {
   database: SolidDatabase;
+  authenticatedFetch?: typeof fetch;
   webId: string;
   podUrl: string;
 }

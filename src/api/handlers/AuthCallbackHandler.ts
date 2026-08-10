@@ -36,7 +36,7 @@ export function registerAuthCallbackRoutes(
 ): void {
   const staticDir = path.resolve(options.staticDir);
   const serveEntry: RouteHandler = async (req, res) => {
-    await serveFile(req, res, staticDir, ENTRY_FILE, 'text/html');
+    await serveFile(req, res, staticDir, ENTRY_FILE, 'text/html', 'no-cache');
   };
   const serveAsset: RouteHandler = async (req, res, params) => {
     const relativePath = params.path ?? '';
@@ -61,6 +61,7 @@ async function serveFile(
   staticDir: string,
   relativePath: string,
   contentTypeOverride?: string,
+  cacheControlOverride?: string,
 ): Promise<void> {
   const fullPath = path.resolve(staticDir, relativePath);
   if (!isWithinDirectory(fullPath, staticDir)) {
@@ -84,7 +85,7 @@ async function serveFile(
   const extension = path.extname(fullPath).toLowerCase();
   res.statusCode = 200;
   res.setHeader('Content-Type', contentTypeOverride ?? MIME_TYPES[extension] ?? 'application/octet-stream');
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Cache-Control', cacheControlOverride ?? 'public, max-age=31536000, immutable');
   res.setHeader('Content-Length', content.byteLength);
   if ((req.method ?? 'GET').toUpperCase() !== 'HEAD') {
     res.end(content);
