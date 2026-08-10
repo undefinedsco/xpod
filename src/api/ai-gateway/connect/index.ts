@@ -341,6 +341,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     encryptedSecret: EncryptedCredentialSecret;
     version?: number;
     runtimeCredential?: Record<string, unknown>;
+    runtimeCapabilities?: string[];
     metadata?: Record<string, unknown>;
   }>> {
     const { db, credential, aiProvider, aiModel, fetch: podFetch } = await this.dbForOwner(input.webId, input.auth);
@@ -2830,6 +2831,14 @@ function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undef
     };
   }
   return Object.keys(runtime).length > 0 ? runtime : undefined;
+}
+
+function runtimeCapabilitiesFromProviderRow(providerRow: Record<string, unknown> | null): string[] | undefined {
+  if (!providerRow || !Array.isArray(providerRow.capabilities)) {
+    return undefined;
+  }
+  return stringList(providerRow.capabilities.map((capability) =>
+    typeof capability === 'string' ? capability.trim().toLowerCase() : capability));
 }
 
 function parseEncryptedSecret(value: unknown): EncryptedCredentialSecret {

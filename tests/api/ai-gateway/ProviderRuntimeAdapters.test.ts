@@ -80,10 +80,13 @@ function fetchFixture(response: Response | (() => Response)): { fetch: typeof fe
     fetch: (async(url: string | URL | Request, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       const rawBody = typeof init?.body === 'string' ? init.body : '{}';
+      const body = init?.body instanceof FormData
+        ? Object.fromEntries(init.body.entries())
+        : JSON.parse(rawBody);
       captured.push({
         url: String(url),
         init: init ?? {},
-        body: JSON.parse(rawBody),
+        body,
         headers,
       });
       return typeof response === 'function' ? response() : response;

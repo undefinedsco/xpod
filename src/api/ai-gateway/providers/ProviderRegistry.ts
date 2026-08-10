@@ -96,6 +96,8 @@ export interface ProviderCapabilities {
   parallelToolCalls?: boolean;
   reasoningEffort?: boolean;
   imageInput?: boolean;
+  imageGeneration?: boolean;
+  imageEditing?: boolean;
   promptCaching?: boolean;
 }
 
@@ -877,11 +879,14 @@ export const DEFAULT_PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       parallelToolCalls: true,
       reasoningEffort: true,
       imageInput: true,
+      imageGeneration: true,
+      imageEditing: true,
       promptCaching: true,
     },
     models: [
       { id: 'gpt-5', contextWindow: 400_000, capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true } },
       { id: 'gpt-4.1', capabilities: { toolCalls: true, imageInput: true } },
+      { id: 'gpt-image-1', inputModalities: ['text', 'image'], capabilities: { imageGeneration: true, imageEditing: true } },
     ],
   },
   {
@@ -1070,7 +1075,6 @@ function mergeModelDescriptor(
     aliases: Array.from(new Set([ ...existing.aliases ?? [], ...discovered.aliases ?? [] ])),
     protocols: Array.from(new Set([ ...existing.protocols ?? [], ...discovered.protocols ?? provider.protocols ])),
     capabilities: {
-      ...provider.capabilities,
       ...existing.capabilities,
       ...discovered.capabilities,
     },
@@ -1088,10 +1092,7 @@ function normalizeModelDescriptor(
   return {
     ...model,
     protocols: Array.from(new Set(model.protocols ?? provider.protocols)),
-    capabilities: {
-      ...provider.capabilities,
-      ...model.capabilities,
-    },
+    capabilities: { ...model.capabilities },
     metadata: sanitizeDiscoveryMetadata(model.metadata ?? {}),
   };
 }

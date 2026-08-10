@@ -135,11 +135,12 @@ describe('ProviderRegistry', () => {
     expect(registry.requireProvider('openai')).toMatchObject({
       defaultBaseUrl: 'https://api.openai.com/v1',
       safeBaseUrls: ['https://api.openai.com/v1'],
+      capabilities: { toolCalls: true, reasoningEffort: true },
       models: [
         {
           id: 'gpt-5',
           contextWindow: 256_000,
-          capabilities: { toolCalls: true, reasoningEffort: true, imageInput: true },
+          capabilities: { toolCalls: true, imageInput: true },
           metadata: {},
         },
       ],
