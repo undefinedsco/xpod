@@ -5,7 +5,7 @@ import { useMemo } from 'react';
 import { createXpodLoginController } from '../auth/XpodLoginController';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
 
-export function XpodPodReadinessBoundary({ children }: { children: ReactNode }) {
+export function WebIdAuthBoundary({ children }: { children: ReactNode }) {
   const runtime = useXpodSolidRuntime();
   const controller = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
   const state = runtimeState(runtime.state);
@@ -70,14 +70,17 @@ function sameUrl(left: string, right: string): boolean {
   }
 }
 
-/** @deprecated Use XpodPodReadinessBoundary in Pod-backed routes. */
+/** Compatibility aliases retained for host consumers during the route-policy migration. */
+export const XpodPodReadinessBoundary = WebIdAuthBoundary;
+
+/** @deprecated Use WebIdAuthBoundary in Pod-backed routes. */
 export function SettingsAuthBoundary({
   children,
 }: {
   children: ReactNode;
   product?: 'Dashboard' | 'Settings';
 }) {
-  return <XpodPodReadinessBoundary>{children}</XpodPodReadinessBoundary>;
+  return <WebIdAuthBoundary>{children}</WebIdAuthBoundary>;
 }
 
 function runtimeState(state: ReturnType<typeof useXpodSolidRuntime>['state']): WebIdAuthState {

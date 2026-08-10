@@ -1,19 +1,15 @@
 import {
-  normalizeApplicationReturnTo,
   normalizeWebIdLoginRoute,
   type WebIdLoginRouteDescriptor,
 } from '@undefineds.co/solid-sdk';
+import {
+  normalizeXpodReturnPath,
+  XPOD_RETURN_PATH_PREFIXES,
+} from '../../../src/shared/xpod-route-policy';
 
 export const XPOD_LOGIN_ROUTE_ID = 'xpod-current-origin';
 
-export const XPOD_LOGIN_RETURN_PREFIXES = [
-  '/dashboard',
-  '/status',
-  '/network',
-  '/settings',
-  '/ai-config',
-  '/ai-connections',
-] as const;
+export const XPOD_LOGIN_RETURN_PREFIXES = XPOD_RETURN_PATH_PREFIXES;
 
 export function createXpodLoginRoute(
   locationLike: Location | URL | string = typeof window === 'undefined' ? 'http://localhost' : window.location,
@@ -40,7 +36,7 @@ export function createXpodLoginRoutes(
 }
 
 export function normalizeXpodReturnTo(value: string | undefined): string | undefined {
-  return normalizeApplicationReturnTo(value, XPOD_LOGIN_RETURN_PREFIXES);
+  return normalizeXpodReturnPath(value);
 }
 
 export function assertXpodLoginRoute(

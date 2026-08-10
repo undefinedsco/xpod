@@ -1,15 +1,14 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
-import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
 
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
 const StatusPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.StatusPage })));
-const PodPage = lazy(() => import('./pages/settings/PodPage'));
 const NetworkPage = lazy(() => import('./pages/settings/NetworkPage'));
 const ServicesPage = lazy(() => import('./pages/settings/ServicesPage'));
+const UsagePage = lazy(() => import('./pages/dashboard/UsagePage'));
 
 function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
@@ -21,11 +20,7 @@ function guardedRoute(element: React.ReactNode) {
 
 export const dashboardRoutes: RouteObject[] = [
   {
-    element: (
-      <XpodAuthProvider>
-        <XpodDashboardLayout />
-      </XpodAuthProvider>
-    ),
+    element: <XpodDashboardLayout />,
     children: [
       { index: true, element: <Navigate to="/overview" replace /> },
       {
@@ -46,7 +41,7 @@ export const dashboardRoutes: RouteObject[] = [
       },
       {
         path: 'usage',
-        element: guardedRoute(lazyRoute(<PodPage view="usage" />)),
+        element: guardedRoute(lazyRoute(<UsagePage />)),
       },
       { path: 'status', element: <Navigate to="/overview" replace /> },
       { path: '*', element: <Navigate to="/overview" replace /> },

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 import { isValidElement } from 'react';
 import { Navigate, matchRoutes } from 'react-router-dom';
 import { settingsRoutes } from './settings-routes';
-import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
+import { WebIdAuthBoundary } from './solid/SettingsAuthBoundary';
 
 function containsElementType(element: unknown, type: unknown): boolean {
   if (!isValidElement(element)) return false;
@@ -35,18 +35,20 @@ describe('settings routes', () => {
     expect(routeElementFor('/services')).toBeTruthy();
   });
 
-  test('leaves local settings routes available without an Account or Solid chooser boundary', () => {
-    for (const path of ['/models', '/network', '/services']) {
+  test('leaves anonymous-local settings routes available without an auth boundary', () => {
+    for (const path of ['/network', '/services']) {
       const element = routeElementFor(path);
       expect(isValidElement(element)).toBe(true);
-      expect(containsElementType(element, SettingsAuthBoundary)).toBe(false);
+      expect(containsElementType(element, WebIdAuthBoundary)).toBe(false);
     }
   });
 
-  test('keeps Pod settings on the host readiness boundary rather than the legacy chooser', () => {
-    const element = routeElementFor('/pod');
-    expect(isValidElement(element)).toBe(true);
-    expect(containsElementType(element, SettingsAuthBoundary)).toBe(false);
+  test('keeps Pod and Models settings on the canonical current-origin WebID boundary', () => {
+    for (const path of ['/models', '/pod']) {
+      const element = routeElementFor(path);
+      expect(isValidElement(element)).toBe(true);
+      expect(containsElementType(element, WebIdAuthBoundary)).toBe(true);
+    }
   });
 
   test('does not own Dashboard observability routes', () => {

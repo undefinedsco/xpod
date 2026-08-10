@@ -9,11 +9,9 @@ import {
   type NetworkDiagnosticCheckResult,
   type NetworkSettingsStatus,
 } from '../../api/network-settings';
-import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
 
 export default function NetworkPage() {
-  const runtime = useXpodSolidRuntime();
   const [status, setStatus] = useState<NetworkSettingsStatus>();
   const [diagnostics, setDiagnostics] = useState<NetworkDiagnosticCheckResult[]>([]);
   const [error, setError] = useState<string>();
@@ -26,8 +24,8 @@ export default function NetworkPage() {
   const activeIdentityKeyRef = useRef<string | undefined>(undefined);
   const mountedRef = useRef(true);
 
-  const canLoad = runtime.state.status === 'authenticated' && Boolean(runtime.webId && runtime.podUrl);
-  const identityKey = canLoad ? `${runtime.webId}\n${runtime.podUrl}` : undefined;
+  const authenticatedFetch = globalThis.fetch;
+  const identityKey = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -58,11 +56,7 @@ export default function NetworkPage() {
   ), []);
 
   const loadStatus = useCallback(async () => {
-    const podUrl = runtime.podUrl;
     const requestIdentityKey = identityKey;
-    if (!podUrl || !requestIdentityKey) {
-      return;
-    }
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
 
@@ -70,8 +64,7 @@ export default function NetworkPage() {
     setError(undefined);
     try {
       const nextStatus = await fetchNetworkSettingsStatus({
-        podUrl,
-        authenticatedFetch: runtime.fetch,
+        authenticatedFetch,
       });
       if (isCurrentRequest(requestId, requestIdentityKey)) {
         setStatus(nextStatus);
@@ -85,7 +78,7 @@ export default function NetworkPage() {
         setLoading(false);
       }
     }
-  }, [identityKey, isCurrentRequest, runtime.fetch, runtime.podUrl]);
+  }, [authenticatedFetch, identityKey, isCurrentRequest]);
 
   useEffect(() => {
     activeIdentityKeyRef.current = identityKey;
@@ -104,19 +97,14 @@ export default function NetworkPage() {
   }, [identityKey, loadStatus]);
 
   const runDiagnose = useCallback(async () => {
-    const podUrl = runtime.podUrl;
     const requestIdentityKey = identityKey;
-    if (!podUrl || !requestIdentityKey) {
-      return;
-    }
     const actionId = diagnoseActionIdRef.current + 1;
     diagnoseActionIdRef.current = actionId;
     setDiagnosing(true);
     setError(undefined);
     try {
       const result = await runNetworkDiagnostics({
-        podUrl,
-        authenticatedFetch: runtime.fetch,
+        authenticatedFetch,
       });
       if (isCurrentDiagnoseAction(actionId, requestIdentityKey)) {
         setDiagnostics(result.checks);
@@ -130,22 +118,17 @@ export default function NetworkPage() {
         setDiagnosing(false);
       }
     }
-  }, [identityKey, isCurrentDiagnoseAction, runtime.fetch, runtime.podUrl]);
+  }, [authenticatedFetch, identityKey, isCurrentDiagnoseAction]);
 
   const renewCertificate = useCallback(async () => {
-    const podUrl = runtime.podUrl;
     const requestIdentityKey = identityKey;
-    if (!podUrl || !requestIdentityKey) {
-      return;
-    }
     const actionId = renewActionIdRef.current + 1;
     renewActionIdRef.current = actionId;
     setRenewing(true);
     setError(undefined);
     try {
       await renewNetworkCertificate({
-        podUrl,
-        authenticatedFetch: runtime.fetch,
+        authenticatedFetch,
       });
       if (isCurrentRenewAction(actionId, requestIdentityKey)) {
         await loadStatus();
@@ -159,7 +142,7 @@ export default function NetworkPage() {
         setRenewing(false);
       }
     }
-  }, [identityKey, isCurrentRenewAction, loadStatus, runtime.fetch, runtime.podUrl]);
+  }, [authenticatedFetch, identityKey, isCurrentRenewAction, loadStatus]);
 
   const sections = useMemo(() => [
     { key: 'local', title: 'Local', values: status?.addresses.local ?? [] },

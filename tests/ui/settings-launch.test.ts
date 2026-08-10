@@ -41,6 +41,21 @@ async function waitForOk(
 }
 
 describe('settings launch scripts', () => {
+  it('mounts Xpod auth coordination without gating anonymous-local settings', async () => {
+    const app = await readRepoFile('ui/src/SettingsApp.tsx');
+    const routes = await readRepoFile('ui/src/settings-routes.tsx');
+    const boundary = await readRepoFile('ui/src/solid/SettingsAuthBoundary.tsx');
+
+    expect(app).toContain('XpodAuthProvider');
+    expect(routes).toContain('WebIdAuthBoundary');
+    expect(routes).toContain("path: 'models'");
+    expect(routes).toContain("path: 'pod'");
+    expect(routes).toContain("path: 'network'");
+    expect(routes).toContain("path: 'services'");
+    expect(boundary).toContain('createXpodLoginController');
+    expect(boundary).toContain('SolidAuthBoundary');
+  });
+
   it('exposes independent dashboard commands without starting a second Xpod host', async () => {
     const pkg = JSON.parse(await readRepoFile('package.json')) as { scripts: Record<string, string> };
 

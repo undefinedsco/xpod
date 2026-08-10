@@ -7,6 +7,7 @@
 import type { ApiServer } from '../ApiServer';
 import { registerStaticSpaRoutes } from './StaticSpaHandler';
 import type { RouteHandler } from '../ApiServer';
+import { resolveXpodAliasTarget, type XpodProductAlias } from '../../shared/xpod-route-policy';
 
 export interface DashboardHandlerOptions {
   /** 静态资源目录路径 */
@@ -20,6 +21,9 @@ export function registerDashboardRoutes(
   server: ApiServer,
   options: DashboardHandlerOptions,
 ): void {
+  registerAlias(server, '/status');
+  registerAlias(server, '/network');
+
   const movedRoutes = {
     '/dashboard/models': '/settings/models',
     '/dashboard/pod': '/settings/pod',
@@ -28,9 +32,8 @@ export function registerDashboardRoutes(
   } as const;
   for (const [from, to] of Object.entries(movedRoutes)) {
     const redirect: RouteHandler = async (req, res) => {
-      const source = new URL(req.url ?? from, 'http://localhost');
       res.statusCode = 302;
-      res.setHeader('Location', `${to}${source.search}`);
+      res.setHeader('Location', `${to}${new URL(req.url ?? from, 'http://localhost').search}`);
       res.end();
     };
     server.get(from, redirect, { public: true });
@@ -42,4 +45,14 @@ export function registerDashboardRoutes(
     entryFiles: ['dashboard.html', 'index.html'],
     label: 'Dashboard',
   });
+}
+
+function registerAlias(server: ApiServer, alias: XpodProductAlias): void {
+  const redirect: RouteHandler = async (req, res) => {
+    res.statusCode = 302;
+    res.setHeader('Location', resolveXpodAliasTarget(alias, req.url ?? alias));
+    res.end();
+  };
+  server.get(alias, redirect, { public: true });
+  server.route('HEAD', alias, redirect, { public: true });
 }

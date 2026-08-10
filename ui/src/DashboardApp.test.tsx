@@ -9,6 +9,7 @@ import { MemoryRouter, Navigate, matchRoutes, useLocation, useRoutes } from 'rea
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import { dashboardRoutes } from './dashboard-routes';
 import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
@@ -109,9 +110,11 @@ async function renderDashboardRoute(path: string) {
   await act(async () => {
     root.render(
       <XpodSolidRuntimeProvider value={runtime}>
-        <MemoryRouter initialEntries={[path]}>
-          <TestRoutes />
-        </MemoryRouter>
+        <XpodAuthProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <TestRoutes />
+          </MemoryRouter>
+        </XpodAuthProvider>
       </XpodSolidRuntimeProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));

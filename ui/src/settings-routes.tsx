@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
-import { XpodPodReadinessBoundary } from './solid/SettingsAuthBoundary';
+import { WebIdAuthBoundary } from './solid/SettingsAuthBoundary';
 
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 const PodPage = lazy(() => import('./pages/settings/PodPage'));
@@ -13,7 +13,7 @@ function lazyRoute(element: React.ReactNode) {
 }
 
 function podRoute(element: React.ReactNode) {
-  return <XpodPodReadinessBoundary>{element}</XpodPodReadinessBoundary>;
+  return <WebIdAuthBoundary>{element}</WebIdAuthBoundary>;
 }
 
 export const settingsRoutes: RouteObject[] = [
@@ -21,7 +21,7 @@ export const settingsRoutes: RouteObject[] = [
     element: <XpodSettingsLayout />,
     children: [
       { index: true, element: <Navigate to="/models" replace /> },
-      { path: 'models', element: lazyRoute(<ModelsPage />) },
+      { path: 'models', element: podRoute(lazyRoute(<ModelsPage />)) },
       { path: 'pod', element: podRoute(lazyRoute(<PodPage view="settings" />)) },
       {
         path: 'network',

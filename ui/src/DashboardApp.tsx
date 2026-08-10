@@ -1,6 +1,6 @@
 import { BrowserRouter, useRoutes } from 'react-router-dom';
 import { dashboardRoutes } from './dashboard-routes';
-import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
+import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import './index.css';
 
 function DashboardRoutes() {
@@ -9,10 +9,10 @@ function DashboardRoutes() {
 
 export function DashboardApp() {
   return (
-    <XpodSolidRuntimeProvider>
+    <XpodAuthProvider>
       <BrowserRouter basename="/dashboard">
         <DashboardRoutes />
       </BrowserRouter>
-    </XpodSolidRuntimeProvider>
+    </XpodAuthProvider>
   );
 }

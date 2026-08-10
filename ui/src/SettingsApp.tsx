@@ -1,18 +1,19 @@
 import { BrowserRouter, useRoutes } from 'react-router-dom';
 import { settingsRoutes } from './settings-routes';
-import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
+import type { XpodSolidRuntimeCore } from './solid/XpodSolidRuntime';
+import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import './index.css';
 
 function SettingsRoutes() {
   return useRoutes(settingsRoutes);
 }
 
-export function SettingsApp() {
+export function SettingsApp({ runtime }: { runtime?: XpodSolidRuntimeCore } = {}) {
   return (
-    <XpodSolidRuntimeProvider>
+    <XpodAuthProvider runtime={runtime}>
       <BrowserRouter basename="/settings">
         <SettingsRoutes />
       </BrowserRouter>
-    </XpodSolidRuntimeProvider>
+    </XpodAuthProvider>
   );
 }

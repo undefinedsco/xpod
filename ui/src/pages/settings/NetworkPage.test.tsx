@@ -33,6 +33,7 @@ function installDom() {
 
 async function renderNetworkPage(runtime: XpodSolidRuntimeValue) {
   installDom();
+  globalThis.fetch = runtime.fetch;
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -129,6 +130,19 @@ describe('NetworkPage', () => {
     expect(container.textContent).toContain('DNS unsupported');
     expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Diagnose'))).toBe(true);
     expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Renew certificate'))).toBe(false);
+    await unmount(root);
+  });
+
+  test('uses the current browser origin even when the Solid runtime points at another Pod', async () => {
+    const fetchImpl = mock(async () => {
+      return new Response(JSON.stringify(createStatus()), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+
+    const { root } = await renderNetworkPage(runtimeWith(fetchImpl, {
+      podUrl: 'https://other-pod.example/bob/',
+      state: { status: 'authenticated', webId: WEB_ID, podUrl: 'https://other-pod.example/bob/' },
+    }));
+    expect(fetchImpl).toHaveBeenCalledWith('https://pod.example/api/network/settings/status', expect.anything());
     await unmount(root);
   });
 
@@ -243,43 +257,28 @@ describe('NetworkPage', () => {
     await unmount(root);
   });
 
-  test('ignores stale status responses after identity changes and StrictMode remounts', async () => {
+  test('ignores stale status responses after StrictMode remount cleanup', async () => {
     installDom();
     const container = document.getElementById('root');
     if (!container) throw new Error('missing root');
     const root = createRoot(container);
-    const aResponse = deferredResponse(createStatus({ endpoint: 'https://old.example/' }));
-    const bResponse = deferredResponse(createStatus({ endpoint: 'https://new.example/' }));
-    const runtimeA = runtimeWith(mock(() => aResponse.promise) as typeof fetch);
-    const runtimeB = runtimeWith(mock(() => bResponse.promise) as typeof fetch, {
-      webId: 'https://pod.example/bob/profile/card#me',
-      podUrl: 'https://pod-b.example/bob/',
-      state: { status: 'authenticated', webId: 'https://pod.example/bob/profile/card#me', podUrl: 'https://pod-b.example/bob/' },
-      currentPod: { podUrl: 'https://pod-b.example/bob/' } as XpodSolidRuntimeValue['currentPod'],
-    });
+    const staleResponse = deferredResponse(createStatus({ endpoint: 'https://old.example/' }));
+    let calls = 0;
+    const fetchImpl = mock(async () => {
+      calls += 1;
+      if (calls === 1) return staleResponse.promise;
+      return new Response(JSON.stringify(createStatus({ endpoint: 'https://new.example/' })), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    globalThis.fetch = fetchImpl;
 
     await act(async () => {
       root.render(
         <StrictMode>
-          <XpodSolidRuntimeContext.Provider value={runtimeA}>
-            <NetworkPage />
-          </XpodSolidRuntimeContext.Provider>
+          <NetworkPage />
         </StrictMode>,
       );
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    await act(async () => {
-      root.render(
-        <StrictMode>
-          <XpodSolidRuntimeContext.Provider value={runtimeB}>
-            <NetworkPage />
-          </XpodSolidRuntimeContext.Provider>
-        </StrictMode>,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    await act(async () => {
-      bResponse.resolve();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
@@ -287,7 +286,7 @@ describe('NetworkPage', () => {
     expect(container.textContent).not.toContain('https://old.example/');
 
     await act(async () => {
-      aResponse.resolve();
+      staleResponse.resolve();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
