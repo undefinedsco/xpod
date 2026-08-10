@@ -1,4 +1,4 @@
-import { SolidRuntimeProvider, type OpenPodRuntime } from '@undefineds.co/solid-sdk';
+import { SolidRuntimeProvider, type OpenPodRuntime, type StorageBinding } from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
@@ -26,6 +26,7 @@ export function XpodSolidRuntimeProvider({
   const [snapshot, setSnapshot] = useState(() => runtime.session.getSnapshot());
   const [issuer, setIssuer] = useState(() => runtime.getIssuer());
   const [currentPod, setCurrentPod] = useState<OpenPodRuntime<SolidDatabase>>();
+  const [selectedStorage, setSelectedStorage] = useState<StorageBinding>();
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
   const [aiClientConfiguration, setAiClientConfiguration] =
     useState<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>>();
@@ -39,10 +40,18 @@ export function XpodSolidRuntimeProvider({
       setIssuer(runtime.getIssuer());
       if (nextSnapshot.status !== 'authenticated') {
         setCurrentPod(undefined);
+        setSelectedStorage(undefined);
         setPodError(undefined);
+        setAiClientConfiguration(undefined);
         runtime.pod.clear();
       } else if (previousSnapshot.status !== 'authenticated' || nextSnapshot.webId !== previousSnapshot.webId) {
+        setCurrentPod(undefined);
+        setSelectedStorage(undefined);
+        setPodError(undefined);
         setAiClientConfiguration(undefined);
+        runtime.pod.clear(previousSnapshot.status === 'authenticated'
+          ? { webId: previousSnapshot.webId }
+          : undefined);
       }
     });
   }, [runtime]);
@@ -68,6 +77,7 @@ export function XpodSolidRuntimeProvider({
       (opened) => {
         if (!cancelled) {
           setCurrentPod(opened);
+          setSelectedStorage({ webId: opened.webId, storageUrl: opened.podUrl });
           setPodError(undefined);
         }
       },
@@ -121,6 +131,7 @@ export function XpodSolidRuntimeProvider({
       podUrl: state.podUrl,
       issuer: state.issuer,
       currentPod,
+      selectedStorage,
       aiClientConfiguration,
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
@@ -138,10 +149,12 @@ export function XpodSolidRuntimeProvider({
       logout: async () => {
         runtime.pod.clear();
         setCurrentPod(undefined);
+        setSelectedStorage(undefined);
+        setAiClientConfiguration(undefined);
         await runtime.session.logout();
       },
     };
-  }, [aiClientConfiguration, currentPod, issuer, podError, runtime, snapshot]);
+  }, [aiClientConfiguration, currentPod, issuer, podError, runtime, selectedStorage, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: runtime.session, pod: runtime.pod, currentPod }}>

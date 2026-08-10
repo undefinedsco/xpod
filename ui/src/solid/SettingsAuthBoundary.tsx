@@ -9,18 +9,26 @@ export function XpodPodReadinessBoundary({ children }: { children: ReactNode }) 
   const runtime = useXpodSolidRuntime();
   const controller = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
   const state = runtimeState(runtime.state);
+  const statePodUrl = runtime.state.status === 'authenticated' ? runtime.state.podUrl : undefined;
+  const podReady = state.status === 'authenticated'
+    && runtime.currentPod !== undefined
+    && runtime.currentPod.webId === state.webId
+    && (statePodUrl === undefined || sameUrl(runtime.currentPod.podUrl, statePodUrl))
+    && selectedBindingMatches(runtime.currentPod, runtime.selectedStorage);
 
-  if (state.status === 'authenticated' && runtime.currentPod) {
+  if (podReady) {
     return <>{children}</>;
   }
 
-  if (state.status === 'authenticated') {
+  if (state.status === 'authenticated' && runtime.currentPod === undefined) {
     return <div role="status" aria-live="polite" className="p-6 text-sm text-muted-foreground">Preparing Pod</div>;
   }
 
+  const reconnectState = state.status === 'authenticated' ? { status: 'anonymous' as const } : state;
+
   return (
     <SolidAuthBoundary
-      state={state}
+      state={reconnectState}
       routes={controller.routes}
       onLogin={(routeId) => {
         if (routeId === controller.routes[0]?.id) void controller.startLogin();
@@ -41,6 +49,25 @@ export function XpodPodReadinessBoundary({ children }: { children: ReactNode }) 
       {children}
     </SolidAuthBoundary>
   );
+}
+
+function selectedBindingMatches(
+  currentPod: { webId: string; podUrl: string },
+  selectedStorage?: { webId: string; storageUrl: string },
+): boolean {
+  const binding = selectedStorage ?? {
+    webId: currentPod.webId,
+    storageUrl: currentPod.podUrl,
+  };
+  return binding.webId === currentPod.webId && sameUrl(binding.storageUrl, currentPod.podUrl);
+}
+
+function sameUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return left === right;
+  }
 }
 
 /** @deprecated Use XpodPodReadinessBoundary in Pod-backed routes. */

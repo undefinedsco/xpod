@@ -145,6 +145,22 @@ function CapabilityProbe() {
   );
 }
 
+function IdentityPairProbe() {
+  const runtime = useXpodSolidRuntime();
+  const selectedStorage = (runtime as XpodSolidRuntimeValueWithBinding).selectedStorage;
+  return (
+    <div>
+      <span data-testid="identity-pair">{runtime.currentPod ? `${runtime.currentPod.webId}|${runtime.currentPod.podUrl}` : 'none'}</span>
+      <span data-testid="selected-pair">{selectedStorage ? `${selectedStorage.webId}|${selectedStorage.storageUrl}` : 'none'}</span>
+      <span data-testid="capability-pair">{runtime.aiClientConfiguration?.available === true ? 'available' : 'none'}</span>
+    </div>
+  );
+}
+
+type XpodSolidRuntimeValueWithBinding = XpodSolidRuntimeValue & {
+  readonly selectedStorage?: { webId: string; storageUrl: string };
+};
+
 describe('Xpod Solid runtime', () => {
   test('constructs one browser session and initializes redirect handling once', async () => {
     let constructions = 0;
@@ -528,6 +544,62 @@ describe('Xpod Solid runtime', () => {
       credentials: 'include',
       headers: expect.objectContaining({ accept: 'application/json' }),
     }));
+    await unmount(root);
+  });
+
+  test('clears the old Pod binding and AI capability immediately when the authenticated WebID changes', async () => {
+    const session = new FakeSession();
+    const aliceWebId = 'https://id.example/alice#me';
+    const bobWebId = 'https://id.example/bob#me';
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      session.authenticate(aliceWebId);
+      return session.info;
+    });
+    let capabilityCalls = 0;
+    session.fetch.mockImplementation(async (input) => {
+      if (String(input).includes('/api/ai/client-configuration/capability')) {
+        capabilityCalls += 1;
+        if (capabilityCalls > 1) return new Promise(() => undefined);
+        return new Response(JSON.stringify({
+          available: true,
+          authority: 'local-filesystem',
+          manualInstructions: 'Manual setup remains available.',
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('ok');
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const alicePod = {
+      webId: aliceWebId,
+      podUrl: 'https://pod.example/alice/',
+      database: {} as never,
+      collections: 'ready' as const,
+    };
+    vi.spyOn(value.pod, 'open').mockImplementation(async ({ webId }) => {
+      if (webId === aliceWebId) return alicePod;
+      return new Promise(() => undefined);
+    });
+
+    const { container, root } = await renderWithRoot(
+      <XpodSolidRuntimeProvider value={value}>
+        <IdentityPairProbe />
+      </XpodSolidRuntimeProvider>,
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('[data-testid="identity-pair"]')?.textContent).toContain(aliceWebId);
+    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent).toContain(aliceWebId);
+    expect(container.querySelector('[data-testid="capability-pair"]')?.textContent).toBe('available');
+
+    await act(async () => {
+      session.authenticate(bobWebId);
+    });
+
+    expect(container.querySelector('[data-testid="identity-pair"]')?.textContent).toBe('none');
+    expect(container.querySelector('[data-testid="selected-pair"]')?.textContent).toBe('none');
+    expect(container.querySelector('[data-testid="capability-pair"]')?.textContent).toBe('none');
     await unmount(root);
   });
 

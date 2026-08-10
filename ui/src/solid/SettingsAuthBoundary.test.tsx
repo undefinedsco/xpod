@@ -2,11 +2,14 @@ import { describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
+import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import type { XpodSolidRuntimeValue } from './XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from './XpodSolidRuntime';
 import { XpodPodReadinessBoundary } from './SettingsAuthBoundary';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+type RuntimeWithBinding = XpodSolidRuntimeValue & { readonly selectedStorage?: StorageBinding };
 
 function installDom() {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
@@ -18,7 +21,7 @@ function installDom() {
   globalThis.Event = dom.window.Event;
 }
 
-function runtimeWith(overrides: Partial<XpodSolidRuntimeValue> = {}): XpodSolidRuntimeValue {
+function runtimeWith(overrides: Partial<RuntimeWithBinding> = {}): RuntimeWithBinding {
   return {
     session: {
       getSnapshot: () => ({ status: 'anonymous' }),
@@ -31,7 +34,7 @@ function runtimeWith(overrides: Partial<XpodSolidRuntimeValue> = {}): XpodSolidR
     login: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
     ...overrides,
-  };
+  } as RuntimeWithBinding;
 }
 
 async function render(runtime: XpodSolidRuntimeValue) {
@@ -87,11 +90,56 @@ describe('XpodPodReadinessBoundary', () => {
     await unmount(rendered.root);
   });
 
+  test('does not render a stale Pod when the runtime WebID changes', async () => {
+    const runtime = runtimeWith({
+      state: { status: 'authenticated', webId: 'https://app.example/bob#me' },
+      webId: 'https://app.example/bob#me',
+      currentPod: {
+        webId: 'https://app.example/alice#me',
+        podUrl: 'https://app.example/alice/',
+      } as XpodSolidRuntimeValue['currentPod'],
+      selectedStorage: {
+        webId: 'https://app.example/alice#me',
+        storageUrl: 'https://app.example/alice/',
+      },
+    } as RuntimeWithBinding);
+    const rendered = await render(runtime);
+    expect(rendered.container.querySelector('[data-testid="protected"]')).toBeNull();
+    expect(rendered.container.textContent).toContain('Xpod');
+    await unmount(rendered.root);
+  });
+
+  test('does not render a Pod whose URL differs from the current selected local binding', async () => {
+    const runtime = runtimeWith({
+      state: { status: 'authenticated', webId: 'https://app.example/alice#me' },
+      webId: 'https://app.example/alice#me',
+      currentPod: {
+        webId: 'https://app.example/alice#me',
+        podUrl: 'https://app.example/alice/',
+      } as XpodSolidRuntimeValue['currentPod'],
+      selectedStorage: {
+        webId: 'https://app.example/alice#me',
+        storageUrl: 'https://app.example/bob/',
+      },
+    } as RuntimeWithBinding);
+    const rendered = await render(runtime);
+    expect(rendered.container.querySelector('[data-testid="protected"]')).toBeNull();
+    expect(rendered.container.textContent).toContain('Xpod');
+    await unmount(rendered.root);
+  });
+
   test('renders Pod-backed children once the host reports a current Pod', async () => {
     const runtime = runtimeWith({
       state: { status: 'authenticated', webId: 'https://app.example/alice#me' },
       webId: 'https://app.example/alice#me',
-      currentPod: { podUrl: 'https://app.example/alice/' } as XpodSolidRuntimeValue['currentPod'],
+      currentPod: {
+        webId: 'https://app.example/alice#me',
+        podUrl: 'https://app.example/alice/',
+      } as XpodSolidRuntimeValue['currentPod'],
+      selectedStorage: {
+        webId: 'https://app.example/alice#me',
+        storageUrl: 'https://app.example/alice/',
+      },
     });
     const rendered = await render(runtime);
     expect(rendered.container.querySelector('[data-testid="protected"]')?.textContent).toBe('ready');
