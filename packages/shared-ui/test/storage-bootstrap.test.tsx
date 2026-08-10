@@ -57,4 +57,19 @@ describe('StorageBootstrapView', () => {
     expect(screen.getByTestId('storage-bootstrap-scroll').classList.contains('overflow-y-auto')).toBe(true)
     expect(screen.getByRole('button', { name: 'Create workspace' })).toBeTruthy()
   })
+
+  it('does not expose create again while storage creation is in progress', () => {
+    const onCreate = vi.fn()
+    render(
+      <StorageBootstrapView
+        state="creating"
+        copy={copy}
+        onCreate={onCreate}
+      />,
+    )
+
+    expect(screen.queryByRole('button', { name: 'Create workspace' })).toBeNull()
+    expect(screen.getByRole('status').querySelector('svg')?.classList.contains('animate-spin')).toBe(true)
+    expect(onCreate).not.toHaveBeenCalled()
+  })
 })

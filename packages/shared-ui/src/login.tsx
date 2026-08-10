@@ -78,6 +78,7 @@ const LEGACY_LOGIN_CONNECTING_DEFAULT_COPY = {
 } as const
 
 const LEGACY_LOGIN_ACCOUNT_DEFAULT_COPY = {
+  expiredTitle: 'Session expired',
   enterLabel: 'Continue',
   switchLabel: 'Switch account',
 } as const
@@ -89,6 +90,8 @@ const LEGACY_LOGIN_FAILURE_DEFAULT_COPY = {
 } as const
 
 const LEGACY_LOGIN_STORAGE_CONFLICT_DEFAULT_COPY = {
+  expectedLabel: 'Expected space',
+  actualLabel: 'Bound space',
   primaryLabel: 'Use expected space',
   secondaryLabel: 'Return',
 } as const
@@ -324,15 +327,16 @@ export function LoginAccountView({
   onEnter: () => void
   onSwitchAccount?: () => void
 }) {
+  const visibleExpiredTitle = legacyLoginLabel(expiredTitle, LEGACY_LOGIN_ACCOUNT_DEFAULT_COPY.expiredTitle)
   const visibleEnterLabel = legacyLoginLabel(enterLabel, LEGACY_LOGIN_ACCOUNT_DEFAULT_COPY.enterLabel)
   const visibleSwitchLabel = legacyLoginLabel(switchLabel, LEGACY_LOGIN_ACCOUNT_DEFAULT_COPY.switchLabel)
   return (
     <div className="flex h-full flex-1 flex-col">
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-5 py-8">
-        {expired && expiredTitle ? (
+        {expired ? (
           <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary">
             <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
-            {expiredTitle}
+            {visibleExpiredTitle}
           </div>
         ) : null}
         <LoginAvatar name={name} avatarUrl={avatarUrl} size="lg" />
@@ -473,6 +477,14 @@ export function LoginStorageConflictView({
     secondaryLabel,
     LEGACY_LOGIN_STORAGE_CONFLICT_DEFAULT_COPY.secondaryLabel,
   )
+  const visibleExpectedLabel = legacyLoginLabel(
+    expectedLabel,
+    LEGACY_LOGIN_STORAGE_CONFLICT_DEFAULT_COPY.expectedLabel,
+  )
+  const visibleActualLabel = legacyLoginLabel(
+    actualLabel,
+    LEGACY_LOGIN_STORAGE_CONFLICT_DEFAULT_COPY.actualLabel,
+  )
   return (
     <div className="flex h-full flex-1 flex-col">
       <div className="shrink-0 px-5 pb-4 pt-6">
@@ -490,8 +502,8 @@ export function LoginStorageConflictView({
       </div>
 
       <div className="mx-4 space-y-3 rounded-lg border border-border/60 bg-muted/25 p-4">
-        <StorageDetail label={expectedLabel} value={expectedValue} />
-        <StorageDetail label={actualLabel} value={actualValue} />
+        <StorageDetail label={visibleExpectedLabel} value={expectedValue} />
+        <StorageDetail label={visibleActualLabel} value={actualValue} />
       </div>
 
       <div className="mt-auto space-y-2 px-4 pb-4 pt-5">

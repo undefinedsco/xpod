@@ -47,10 +47,13 @@ export function StorageBootstrapView({
   onCancel,
 }: StorageBootstrapViewProps) {
   const state = normalizeState(stateInput)
-  const isCreating = state.status === 'creation' || state.status === 'creating'
+  const canCreate = state.status === 'creation'
+  const isCreating = state.status === 'creating'
   const isWaiting = state.status === 'waiting' || state.status === 'waiting_for_binding'
   const isError = state.status === 'conflict' || state.status === 'error'
-  const message = state.message ?? (isCreating
+  const isProvisioning = canCreate || isCreating
+  const showProgress = isWaiting || isCreating || (canCreate && pending)
+  const message = state.message ?? (isProvisioning
     ? copy.creationMessage
     : isWaiting
       ? copy.waitingMessage
@@ -72,9 +75,9 @@ export function StorageBootstrapView({
             <div role="alert" aria-live="polite" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
               {message}
             </div>
-          ) : isWaiting || isCreating ? (
+          ) : showProgress ? (
             <div role="status" aria-live="polite" className="flex items-start gap-2 text-sm text-muted-foreground">
-              {(isWaiting || pending) ? <Loader2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 animate-spin" /> : null}
+              <Loader2 aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
               <span>{message}</span>
             </div>
           ) : (
@@ -82,7 +85,7 @@ export function StorageBootstrapView({
           )}
 
           <div className="flex flex-col gap-2">
-            {isCreating && onCreate ? <Button type="button" className="w-full" disabled={pending} onClick={() => void onCreate()}>{copy.createLabel}</Button> : null}
+            {canCreate && onCreate ? <Button type="button" className="w-full" disabled={pending} onClick={() => void onCreate()}>{copy.createLabel}</Button> : null}
             {state.status === 'ready' && onContinue ? <Button type="button" className="w-full" disabled={pending} onClick={() => void onContinue()}>{copy.continueLabel}</Button> : null}
             {isError && onRetry ? <Button type="button" className="w-full" disabled={pending} onClick={() => void onRetry()}>{copy.retryLabel}</Button> : null}
             {(isWaiting || isCreating) && onCancel ? <Button type="button" variant="outline" className="w-full" disabled={pending} onClick={() => void onCancel()}>{copy.cancelLabel}</Button> : null}

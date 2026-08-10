@@ -99,7 +99,7 @@ describe('@undefineds.co/shared-ui', () => {
         name="Alice"
         bindingLabel="https://xpod.local"
         expired
-        expiredTitle="Session expired"
+        expiredTitle="Host session ended"
         expiredDescription="为保护数据，会话已暂停。"
         enterLabel="Enter"
         switchLabel="Switch account"
@@ -107,7 +107,8 @@ describe('@undefineds.co/shared-ui', () => {
         onSwitchAccount={() => undefined}
       />,
     )
-    expect(account).toContain('Session expired')
+    expect(account).toContain('Host session ended')
+    expect(account).not.toContain('Session expired')
     expect(account).toContain('为保护数据，会话已暂停。')
     expect(account).toContain('Switch account')
   })
@@ -231,6 +232,36 @@ describe('@undefineds.co/shared-ui', () => {
       />,
     )
     expect(conflict).toContain('Return')
+  })
+
+  it('keeps the expired indicator visible when legacy hosts omit its label', () => {
+    const html = renderToStaticMarkup(
+      <LoginAccountView
+        name="User"
+        expired
+        onEnter={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Session expired')
+  })
+
+  it('keeps storage conflict details visible when legacy hosts omit detail labels', () => {
+    const html = renderToStaticMarkup(
+      <LoginStorageConflictView
+        eyebrow="Mismatch"
+        accountName="User"
+        description="The account is bound to another space."
+        expectedValue="https://id.example.test/space/"
+        actualValue="https://node.example.test/space/"
+        onSecondary={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Expected space')
+    expect(html).toContain('https://id.example.test/space/')
+    expect(html).toContain('Bound space')
+    expect(html).toContain('https://node.example.test/space/')
   })
 
   it('uses every complete host copy field without mixing in legacy defaults', () => {
