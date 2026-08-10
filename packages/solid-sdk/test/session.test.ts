@@ -246,9 +246,8 @@ describe('createSolidSessionRuntime', () => {
         error: expect.objectContaining({ message: 'Provider denied access' }),
       },
       {
-        status: 'error',
+        status: 'expired',
         webId: 'https://pod.example/alice/restored/profile/card#me',
-        error: expect.objectContaining({ message: 'Solid session expired' }),
       },
       { status: 'anonymous' },
     ]);

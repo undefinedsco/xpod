@@ -25,6 +25,11 @@ export type SolidSessionSnapshot =
     error?: undefined;
   }
   | {
+    status: 'expired';
+    webId?: string;
+    error?: undefined;
+  }
+  | {
     status: 'error';
     webId?: string;
     error: Error;
@@ -94,6 +99,15 @@ function snapshotFromSessionError(
   };
 }
 
+function snapshotFromSessionExpired(
+  info: Pick<ISessionInfo, 'webId'>,
+): SolidSessionSnapshot {
+  return {
+    status: 'expired',
+    ...(info.webId === undefined ? {} : { webId: info.webId }),
+  };
+}
+
 function areSnapshotsEqual(
   left: SolidSessionSnapshot | undefined,
   right: SolidSessionSnapshot,
@@ -138,7 +152,7 @@ export function createSolidSessionRuntime(
 
   const publishSessionInfo = () => publish(snapshotFromSessionInfo(session.info));
   const publishAnonymous = () => publish({ status: 'anonymous' });
-  const publishSessionExpired = () => publish(snapshotFromSessionError('Solid session expired', session.info));
+  const publishSessionExpired = () => publish(snapshotFromSessionExpired(session.info));
   const publishSessionError = (
     code: string | null,
     description?: string | null,
