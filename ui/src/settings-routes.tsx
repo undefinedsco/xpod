@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import { XpodSettingsLayout } from './layout/XpodSettingsLayout';
-import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
+import { XpodPodReadinessBoundary } from './solid/SettingsAuthBoundary';
 
 const ModelsPage = lazy(() => import('./pages/settings/ModelsPage'));
 const PodPage = lazy(() => import('./pages/settings/PodPage'));
@@ -12,8 +12,8 @@ function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
 }
 
-function guardedRoute(element: React.ReactNode) {
-  return <SettingsAuthBoundary>{element}</SettingsAuthBoundary>;
+function podRoute(element: React.ReactNode) {
+  return <XpodPodReadinessBoundary>{element}</XpodPodReadinessBoundary>;
 }
 
 export const settingsRoutes: RouteObject[] = [
@@ -21,16 +21,16 @@ export const settingsRoutes: RouteObject[] = [
     element: <XpodSettingsLayout />,
     children: [
       { index: true, element: <Navigate to="/models" replace /> },
-      { path: 'models', element: guardedRoute(lazyRoute(<ModelsPage />)) },
-      { path: 'pod', element: guardedRoute(lazyRoute(<PodPage view="settings" />)) },
+      { path: 'models', element: lazyRoute(<ModelsPage />) },
+      { path: 'pod', element: podRoute(lazyRoute(<PodPage view="settings" />)) },
       {
         path: 'network',
-        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
+        element: lazyRoute(<ServicesPage product="settings" />),
         children: [{ index: true, element: lazyRoute(<SettingsPage />) }],
       },
       {
         path: 'services',
-        element: guardedRoute(lazyRoute(<ServicesPage product="settings" />)),
+        element: lazyRoute(<ServicesPage product="settings" />),
         children: [
           { index: true, element: lazyRoute(<SettingsPage />) },
           { path: 'configuration', element: lazyRoute(<SettingsPage />) },

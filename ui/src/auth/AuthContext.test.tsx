@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
+import { fireEvent } from '@testing-library/react';
 import { AuthProvider } from '../context/AuthContext';
 import { useAuth } from '../context/AuthContextValue';
 
@@ -47,11 +48,11 @@ async function unmount(root: Root) {
 }
 
 describe('Xpod Account controller', () => {
-  test('clears local Account token on 401/403 and remains anonymous', async () => {
+  test.each([401, 403])('clears local Account token on %s and remains anonymous', async (status) => {
     installDom();
     window.sessionStorage.setItem('xpod.cssAccountToken', 'secret-token');
     document.cookie = 'css-account=secret-token; Path=/';
-    const fetchImpl = vi.fn(async () => new Response('', { status: 401 }));
+    const fetchImpl = vi.fn(async () => new Response('', { status }));
     globalThis.fetch = fetchImpl as unknown as typeof fetch;
     const container = document.getElementById('root');
     if (!container) throw new Error('missing root');
@@ -80,7 +81,9 @@ describe('Xpod Account controller', () => {
       headers: { 'content-type': 'application/json' },
     }));
     await act(async () => {
-      container.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const retryButton = container.querySelector('button');
+      if (!retryButton) throw new Error('missing retry button');
+      fireEvent.click(retryButton);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('authenticated');

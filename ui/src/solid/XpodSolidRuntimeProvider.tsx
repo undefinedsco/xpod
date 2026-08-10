@@ -122,10 +122,7 @@ export function XpodSolidRuntimeProvider({
       issuer: state.issuer,
       currentPod,
       aiClientConfiguration,
-      login: async (transaction: WebIdLoginTransaction | string) => {
-        if (typeof transaction === 'string') {
-          throw new TypeError('Xpod login requires a validated WebID transaction');
-        }
+      login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
         const oidcIssuer = normalizeXpodOidcIssuer(validated.route.identityProvider.url);
         if (!oidcIssuer) throw new TypeError('Xpod login route has no valid current-origin issuer');

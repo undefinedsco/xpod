@@ -3,6 +3,7 @@ import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
 import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
+import { createXpodLoginController } from '../../auth/XpodLoginController';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
 
@@ -14,10 +15,13 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
   const requestIdRef = useRef(0);
   const activeIdentityKeyRef = useRef<string | undefined>(undefined);
   const mountedRef = useRef(true);
+  const loginController = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
 
   const canLoad = runtime.state.status === 'authenticated' && Boolean(runtime.webId && runtime.podUrl);
   const identityKey = canLoad ? `${runtime.webId}\n${runtime.podUrl}` : undefined;
 
+  // Reset the request-scoped view before starting a new identity request.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -73,6 +77,7 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
       void loadStatus();
     }
   }, [identityKey, loadStatus]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const identity = useMemo(() => ({
     webId: runtime.webId ?? status?.identity.webId,
@@ -86,8 +91,7 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
   };
 
   const loginAgain = () => {
-    if (!runtime.issuer) return;
-    void runtime.login(runtime.issuer);
+    void loginController.startLogin();
   };
 
   return (
@@ -105,7 +109,7 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
               onOpenPod={openPod}
               onLogout={() => void runtime.logout()}
               onLoginAgain={loginAgain}
-              canLoginAgain={Boolean(runtime.issuer)}
+              canLoginAgain={runtime.state.status !== 'loading'}
             />
           ) : null}
           {view !== 'settings' ? <PodUsageCard storage={status?.storage} loading={loading && !status} /> : null}

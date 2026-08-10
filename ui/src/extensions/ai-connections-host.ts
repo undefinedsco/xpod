@@ -12,6 +12,7 @@ import {
   createServiceAccessGatewayFetch,
   createXpodAiClientConfigurationBridge,
 } from '../api/ai-connections';
+import { createXpodLoginController } from '../auth/XpodLoginController';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 import { createXpodAiClientCredentialsCapability } from './XpodAiClientCredentials';
 import { createXpodAiConnectionsPodStore } from './XpodAiConnectionsPodStore';
@@ -29,6 +30,7 @@ if (!discoveredAiConnectionsApplet) {
 const aiConnectionApplet = discoveredAiConnectionsApplet;
 
 export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): WebExtensionHost<SolidDatabase> {
+  const loginController = createXpodLoginController({ runtime });
   const pod = runtime.currentPod
     ? { status: 'ready' as const, current: runtime.currentPod }
     : runtime.state.status === 'authenticated'
@@ -56,7 +58,9 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       permissions: {
         ...createSolidPermissionCapability({ fetch: runtime.fetch }),
       },
-      requireLogin: async () => runtime.login(window.location.origin),
+      requireLogin: async () => {
+        await loginController.startLogin();
+      },
     },
     navigation: {
       openExternal: async (url) => {
@@ -73,6 +77,7 @@ export function createXpodAiConnectionsHost(runtime: XpodSolidRuntimeValue): Web
       aiConnectionsPodStore: runtime.currentPod
         ? createXpodAiConnectionsPodStore({
           database: runtime.currentPod.database,
+          authenticatedFetch: runtime.fetch,
           podUrl: runtime.currentPod.podUrl,
           webId: runtime.currentPod.webId,
         })

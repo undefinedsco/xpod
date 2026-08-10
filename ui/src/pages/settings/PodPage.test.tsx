@@ -194,7 +194,7 @@ describe('PodPage', () => {
     await unmount(root);
   });
 
-  test('login again uses the Solid runtime issuer instead of guessing from WebID or Pod URL', async () => {
+  test('login again uses the validated current-origin Xpod transaction', async () => {
     const splitWebId = 'https://id.example/alice/profile/card#me';
     const splitPodUrl = 'https://storage.example/alice/';
     const fetchImpl = mock(async () => new Response(JSON.stringify({
@@ -221,9 +221,19 @@ describe('PodPage', () => {
       loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(runtime.login).toHaveBeenCalledWith('https://issuer.identity.example/');
+    expect(runtime.login).toHaveBeenCalledWith(expect.objectContaining({
+      id: expect.any(String),
+      authorizationSurface: 'redirect',
+      discovery: 'strict',
+      route: expect.objectContaining({
+        id: 'xpod-current-origin',
+        identityProvider: expect.objectContaining({ url: 'https://pod.example' }),
+        storageProvider: expect.objectContaining({ url: 'https://pod.example' }),
+      }),
+    }));
     expect(runtime.login).not.toHaveBeenCalledWith('https://id.example');
     expect(runtime.login).not.toHaveBeenCalledWith('https://storage.example');
+    expect(runtime.login).not.toHaveBeenCalledWith('https://issuer.identity.example/');
     await unmount(root);
   });
 

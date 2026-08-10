@@ -36,12 +36,7 @@ export interface XpodSolidRuntimeValue {
   readonly issuer?: string;
   readonly currentPod?: OpenPodRuntime<SolidDatabase>;
   readonly aiClientConfiguration?: Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>;
-  /**
-   * The string overload is a temporary source-compatibility adapter for the
-   * legacy Settings surface. It is rejected at runtime; new Xpod callers must
-   * pass the validated transaction object.
-   */
-  login(transaction: WebIdLoginTransaction | string): Promise<void>;
+  login(transaction: WebIdLoginTransaction): Promise<void>;
   logout(): Promise<void>;
 }
 

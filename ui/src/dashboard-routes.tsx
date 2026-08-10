@@ -1,7 +1,8 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
+import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
-import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 
 const LogsPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.LogsPage })));
 const RdfPage = lazy(() => import('./pages/admin').then((module) => ({ default: module.RdfPage })));
@@ -15,12 +16,16 @@ function lazyRoute(element: React.ReactNode) {
 }
 
 function guardedRoute(element: React.ReactNode) {
-  return <SettingsAuthBoundary product="Dashboard">{element}</SettingsAuthBoundary>;
+  return <AccountAuthBoundary>{element}</AccountAuthBoundary>;
 }
 
 export const dashboardRoutes: RouteObject[] = [
   {
-    element: <XpodDashboardLayout />,
+    element: (
+      <XpodAuthProvider>
+        <XpodDashboardLayout />
+      </XpodAuthProvider>
+    ),
     children: [
       { index: true, element: <Navigate to="/overview" replace /> },
       {

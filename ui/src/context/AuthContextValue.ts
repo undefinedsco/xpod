@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { AccountAuthState } from '../../../packages/shared-ui/src';
+import type { AccountAuthState } from '@undefineds.co/shared-ui';
 
 export interface Controls {
   password?: { login?: string; create?: string; forgot?: string; reset?: string };

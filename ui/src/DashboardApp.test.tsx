@@ -8,6 +8,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Navigate, matchRoutes, useLocation, useRoutes } from 'react-router-dom';
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
 import { dashboardRoutes } from './dashboard-routes';
+import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
+import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
 
@@ -40,10 +42,24 @@ function routeElementFor(path: string) {
   return matches?.at(-1)?.route.element;
 }
 
+function protectedElementFor(path: string) {
+  const routePath = path.replace(/^\//u, '');
+  return matchRoutes(dashboardRoutes, path)?.find((match) => match.route.path === routePath)?.route.element;
+}
+
 function redirectTargetFor(path: string) {
   const element = routeElementFor(path);
   if (!isValidElement(element) || element.type !== Navigate) return null;
   return element.props.to;
+}
+
+function containsElementType(element: unknown, type: unknown): boolean {
+  if (!isValidElement(element)) return false;
+  if (element.type === type) return true;
+  const children = element.props?.children;
+  return Array.isArray(children)
+    ? children.some((child) => containsElementType(child, type))
+    : containsElementType(children, type);
 }
 
 function installDom(path: string) {
@@ -54,6 +70,7 @@ function installDom(path: string) {
   globalThis.document = dom.window.document;
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.Event = dom.window.Event;
+  globalThis.fetch = mock(async () => new Response('', { status: 401 })) as unknown as typeof fetch;
   return dom;
 }
 
@@ -123,13 +140,20 @@ describe('dashboard routes', () => {
     expect(routeElementFor('/usage')).toBeTruthy();
   });
 
+  test('uses the Account boundary for protected routes instead of the Solid provider chooser', () => {
+    const element = protectedElementFor('/overview');
+    expect(isValidElement(element)).toBe(true);
+    expect(containsElementType(element, AccountAuthBoundary)).toBe(true);
+    expect(containsElementType(element, SettingsAuthBoundary)).toBe(false);
+  });
+
   test('does not own canonical settings sections', () => {
     expect(redirectTargetFor('/models')).toBe('/overview');
     expect(redirectTargetFor('/pod')).toBe('/overview');
     expect(redirectTargetFor('/services')).toBe('/overview');
   });
 
-  test('normalizes anonymous dashboard redirects before settings auth guard', async () => {
+  test('normalizes anonymous dashboard redirects before the Account auth guard', async () => {
     const cases = [
       ['/', '/overview'],
       ['/status', '/overview'],
@@ -140,7 +164,9 @@ describe('dashboard routes', () => {
       const { container, root, session, sessionConstructions } = await renderDashboardRoute(from);
 
       expect(container.querySelector('[data-testid="location"]')?.textContent).toBe(to);
-      expect(container.textContent).toContain('使用 undefineds 账号');
+      expect(container.textContent).toContain('Sign in to Xpod');
+      expect(container.textContent).not.toContain('Cloud');
+      expect(container.textContent).not.toContain('Add provider');
       expect(container.textContent).not.toContain('Solid issuer');
       expect(sessionConstructions).toBe(1);
       expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);

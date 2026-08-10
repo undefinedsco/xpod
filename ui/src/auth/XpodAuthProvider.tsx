@@ -55,28 +55,27 @@ export function XpodAuthProvider({
   selectedStorage,
   location,
 }: XpodAuthProviderProps) {
+  const ambientRuntime = useContext(XpodSolidRuntimeContext);
+  const coordinator = (
+    <XpodAuthCoordinator
+      account={account}
+      transactionStore={transactionStore}
+      selectedStorage={selectedStorage}
+      location={location}
+    >
+      {children}
+    </XpodAuthCoordinator>
+  );
+
+  if (ambientRuntime) {
+    return account ? coordinator : <AuthProvider>{coordinator}</AuthProvider>;
+  }
+
   return account ? (
-    <XpodSolidRuntimeProvider value={runtime}>
-      <XpodAuthCoordinator
-        account={account}
-        transactionStore={transactionStore}
-        selectedStorage={selectedStorage}
-        location={location}
-      >
-        {children}
-      </XpodAuthCoordinator>
-    </XpodSolidRuntimeProvider>
+    <XpodSolidRuntimeProvider value={runtime}>{coordinator}</XpodSolidRuntimeProvider>
   ) : (
     <AuthProvider>
-      <XpodSolidRuntimeProvider value={runtime}>
-        <XpodAuthCoordinator
-          transactionStore={transactionStore}
-          selectedStorage={selectedStorage}
-          location={location}
-        >
-          {children}
-        </XpodAuthCoordinator>
-      </XpodSolidRuntimeProvider>
+      <XpodSolidRuntimeProvider value={runtime}>{coordinator}</XpodSolidRuntimeProvider>
     </AuthProvider>
   );
 }

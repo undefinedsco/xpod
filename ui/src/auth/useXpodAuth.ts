@@ -5,7 +5,7 @@ import type {
   WebIdLoginRouteDescriptor,
   WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
-import type { AccountAuthState } from '../../../packages/shared-ui/src';
+import type { AccountAuthState } from '@undefineds.co/shared-ui';
 import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
 

@@ -1,5 +1,5 @@
-import type { AccountAuthState, AccountLoginMethod } from '../../../packages/shared-ui/src';
-import { AccountLoginMethodListView, Button, Card, CardContent, CardHeader, CardTitle } from '../../../packages/shared-ui/src';
+import type { AccountAuthState, AccountLoginMethod } from '@undefineds.co/shared-ui';
+import { AccountLoginMethodListView, Button, Card, CardContent, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
 import type { ReactNode } from 'react';
 import { useXpodAuth } from './useXpodAuth';
 
