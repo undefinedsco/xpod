@@ -98,7 +98,20 @@ export interface AiConnectionsPodStore {
   deleteProviderCredential?(provider: string, credentialId: string): Promise<unknown | undefined>;
   readCredentialSecret?(provider: string, credentialId: string): Promise<Record<string, unknown>>;
   saveDiscoveredModels?(provider: string, credentialId: string, models: unknown[]): Promise<void>;
-  saveModelSelection?(provider: string, modelIds: string[]): Promise<void>;
+  saveModelSelection?(provider: string, models: AiConnectionsModelSelection[]): Promise<void>;
+}
+
+/**
+ * A durable model reference selected by an applet.
+ *
+ * `id` stays the upstream/public model id. `resourceId` is the canonical Pod
+ * resource when one exists; `offeringId` disambiguates identical upstream ids
+ * exposed by different commercial offerings.
+ */
+export interface AiConnectionsModelSelection {
+  id: string;
+  offeringId?: string;
+  resourceId?: string;
 }
 
 export interface AiConnectionsOAuthCredential {

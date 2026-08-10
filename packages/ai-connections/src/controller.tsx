@@ -365,11 +365,15 @@ function createInteractiveAiConnectionsClient(
         }
       : operationsClient.refreshOAuthCredential,
     quota: podStore.readCredentialSecret
-      ? async (provider) => {
+      ? async (provider, _refresh = false, input) => {
           const providers = await podStore.listProviders() as AiProviderSummary[]
-          const credential = providers
+          const credentials = providers
             .find((item) => item.id === provider)
-            ?.credentials.find((item) => item.enabled)
+            ?.credentials ?? []
+          const requestedCredentialId = input?.credentialId ?? input?.credentialIri
+          const credential = requestedCredentialId
+            ? credentials.find((item) => item.id === requestedCredentialId)
+            : credentials.find((item) => item.enabled && (!input?.offeringId || item.offeringId === input.offeringId))
           if (!credential) throw new Error('quota_credential_not_found')
           const secret = await podStore.readCredentialSecret!(provider, credential.id)
           return operationsClient.quotaFromSecret(provider, {
@@ -405,7 +409,7 @@ function createInteractiveAiConnectionsClient(
             const secret = await podStore.readCredentialSecret!(provider, credential.id)
             const discoverySecret = discoverySecretFromProviderSecret(secret, credential.authMode)
             if (!discoverySecret) throw new Error('models_secret_missing')
-            return operationsClient.discoverModels(provider, {
+            const result = await operationsClient.discoverModels(provider, {
               credentialId: credential.id,
               offeringId: credential.offeringId,
               authMode: credential.authMode === 'deviceCode' || credential.authMode === 'oauth'
@@ -414,10 +418,15 @@ function createInteractiveAiConnectionsClient(
               secret: discoverySecret,
               baseUrl: credential.baseUrl,
             })
+            return {
+              ...result,
+              models: result.models.map((model) => ({
+                ...model,
+                offeringId: credential.offeringId,
+              })),
+            }
           }))
-          const successful = settled
-            .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<AiConnectionsClient['discoverModels']>>> => result.status === 'fulfilled')
-            .map((result) => result.value)
+          const successful = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
           if (successful.length === 0) {
             throw (settled[0] as PromiseRejectedResult).reason
           }
@@ -425,7 +434,10 @@ function createInteractiveAiConnectionsClient(
             await Promise.all(successful.map((result) =>
               podStore.saveDiscoveredModels!(provider, result.credential, result.models)))
           }
-          const models = [...new Map(successful.flatMap((result) => result.models).map((model) => [model.id, model])).values()]
+          const models = [...new Map(successful.flatMap((result) => result.models).map((model) => [
+            `${('offeringId' in model ? model.offeringId : undefined) ?? ''}\0${('resourceId' in model ? model.resourceId : undefined) ?? model.id}`,
+            model,
+          ])).values()]
           return { ...successful[0]!, models }
         }
       : operationsClient.discoverModels,

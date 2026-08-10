@@ -340,7 +340,7 @@ describe('ProviderQuotaAdapters', () => {
     ]);
   });
 
-  it('normalizes Kimi Code managed-plan five-hour and weekly usage', async () => {
+  it('normalizes Kimi Token Plan five-hour and weekly usage with the subscription key', async () => {
     const fetch = jsonFetch((url) => {
       expect(url).toBe('https://api.kimi.com/coding/v1/usages');
       return {
@@ -354,11 +354,13 @@ describe('ProviderQuotaAdapters', () => {
       };
     });
     const current = {
-      ...withOffering(await credential('kimi'), 'official-subscription'),
+      ...withOffering(await credential('kimi'), 'subscription-key'),
       authMode: 'apiKey' as const,
     };
+    const adapter = new KimiCodeSubscriptionQuotaAdapter({ fetch });
+    expect(adapter.supports(current)).toBe(true);
 
-    const snapshot = await new KimiCodeSubscriptionQuotaAdapter({ fetch }).fetch({
+    const snapshot = await adapter.fetch({
       credential: current,
       secret: { type: 'apiKey', apiKey: 'sk-kimi-subscription-token' },
       now: new Date('2026-08-09T00:00:00.000Z'),
@@ -405,6 +407,21 @@ describe('ProviderQuotaAdapters', () => {
         { name: 'weekly', used: 35, limit: 100, remaining: 65, resetsAt: '2026-08-16T00:00:00.000Z' },
       ],
     });
+  });
+
+  it('keeps Kimi subscription quota credentials isolated from API Platform credentials', async () => {
+    const adapter = new KimiCodeSubscriptionQuotaAdapter();
+    const apiPlatform = {
+      ...withOffering(await credential('kimi'), 'api-platform'),
+      authMode: 'apiKey' as const,
+    };
+    const invalidOfficialApiKey = {
+      ...withOffering(await credential('kimi'), 'official-subscription'),
+      authMode: 'apiKey' as const,
+    };
+
+    expect(adapter.supports(apiPlatform)).toBe(false);
+    expect(adapter.supports(invalidOfficialApiKey)).toBe(false);
   });
 
   it('records 429 as cooldown metadata without fabricating remaining quota', async () => {

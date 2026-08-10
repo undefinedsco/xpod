@@ -88,6 +88,7 @@ export async function completeOidcLogin(
 
     const deadline = Date.now() + timeoutMs;
     let submittedPassword = false;
+    let resumedFromAccountHome = false;
 
     while (Date.now() < deadline) {
       if (await isSettingsWorkspaceReady(page, baseOrigin)) {
@@ -103,7 +104,7 @@ export async function completeOidcLogin(
       const passwordInput = page.locator('input[type="password"], input[name="password"], input#password').first();
       const emailVisible = await emailInput.isVisible({ timeout: 250 }).catch(() => false);
       const passwordVisible = await passwordInput.isVisible({ timeout: 250 }).catch(() => false);
-      if (emailVisible && passwordVisible) {
+      if (emailVisible && passwordVisible && !submittedPassword) {
         await emailInput.fill(account.email);
         await passwordInput.fill(account.password);
         await passwordInput.press('Enter');
@@ -128,6 +129,12 @@ export async function completeOidcLogin(
         continue;
       }
 
+      if (submittedPassword && !resumedFromAccountHome && options.startUrl && isAccountHome(page.url(), baseOrigin)) {
+        resumedFromAccountHome = true;
+        await page.goto(options.startUrl, { waitUntil: 'domcontentloaded' });
+        continue;
+      }
+
       await page.waitForTimeout(350);
     }
 
@@ -137,6 +144,15 @@ export async function completeOidcLogin(
   } finally {
     page.off('request', observeRequest);
     page.off('framenavigated', observeNavigation);
+  }
+}
+
+function isAccountHome(rawUrl: string, baseOrigin: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.origin === baseOrigin && url.pathname === '/.account/';
+  } catch {
+    return false;
   }
 }
 

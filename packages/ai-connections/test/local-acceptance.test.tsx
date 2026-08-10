@@ -34,10 +34,16 @@ describe('AI Connections local acceptance', () => {
     )
 
     fireEvent.click((await screen.findAllByRole('button', { name: '添加 API Key' }))[0]!)
-    fireEvent.change(screen.getByLabelText('百炼 API Key 标签'), { target: { value: 'PAYG' } })
     fireEvent.change(screen.getByLabelText('百炼 API Key 输入'), { target: { value: PROVIDER_SECRET } })
     fireEvent.click(screen.getByRole('button', { name: '保存 百炼 API Key' }))
 
+    await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('bailian', {
+      offeringId: 'pay-as-you-go',
+      apiKey: PROVIDER_SECRET,
+      label: undefined,
+      baseUrl: undefined,
+      priority: 10,
+    }))
     await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('bailian', {
       offeringId: 'pay-as-you-go',
       credentialId: 'cred-pay-as-you-go-1',
@@ -46,10 +52,16 @@ describe('AI Connections local acceptance', () => {
     expect(document.body.textContent).not.toContain(PROVIDER_SECRET)
 
     fireEvent.click(screen.getAllByRole('button', { name: '添加 API Key' })[1]!)
-    fireEvent.change(screen.getByLabelText('百炼 API Key 标签'), { target: { value: 'Token' } })
     fireEvent.change(screen.getByLabelText('百炼 API Key 输入'), { target: { value: PROVIDER_SECRET } })
     fireEvent.click(screen.getByRole('button', { name: '保存 百炼 API Key' }))
 
+    await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('bailian', {
+      offeringId: 'token-plan',
+      apiKey: PROVIDER_SECRET,
+      label: undefined,
+      baseUrl: undefined,
+      priority: 10,
+    }))
     await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('bailian', {
       offeringId: 'token-plan',
       credentialId: 'cred-token-plan-1',
@@ -101,7 +113,11 @@ describe('AI Connections local acceptance', () => {
 
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith(
       'bailian',
-      ['bailian-pay-as-you-go.ttl#qwen-active'],
+      [{
+        id: 'qwen-active',
+        offeringId: 'pay-as-you-go',
+        resourceId: 'bailian-pay-as-you-go.ttl#qwen-active',
+      }],
     ))
   })
 
@@ -174,7 +190,7 @@ describe('AI Connections local acceptance', () => {
       />,
     )
 
-    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 额度' }))
+    fireEvent.click(await screen.findByRole('button', { name: '刷新 百炼 Token Plan Personal额度' }))
 
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('bailian', true, {
       offeringId: 'token-plan',
@@ -281,7 +297,7 @@ function createAcceptanceClient(state: ReturnType<typeof createAcceptanceState>)
     pollDevice: vi.fn(),
     disconnect: vi.fn(),
     createApiKeyCredential: vi.fn(async (_provider, input) => {
-      const offeringId = state.credentials.length === 0 ? 'pay-as-you-go' : 'token-plan'
+      const offeringId = input.offeringId
       const created = credential(`cred-${offeringId}-1`, offeringId, {
         label: input.label,
         priority: input.priority ?? 10,
@@ -333,8 +349,13 @@ function createAcceptanceClient(state: ReturnType<typeof createAcceptanceState>)
         source: `bailian:${offeringId}:/models`,
       }
     }),
-    saveModelSelection: vi.fn(async (_provider, modelIds) => {
-      state.selectedModelIds = [...modelIds]
+    saveModelSelection: vi.fn(async (_provider, selections) => {
+      state.selectedModelIds = selections.flatMap((selection) => {
+        if (selection.resourceId) return [selection.resourceId]
+        const model = state.models.find((candidate) => candidate.id === selection.id
+          && candidate.offeringId === selection.offeringId)
+        return model?.resourceId ? [model.resourceId] : []
+      })
     }),
     saveProviderModel: vi.fn(async () => []),
     deleteProviderModel: vi.fn(async () => []),
@@ -345,7 +366,7 @@ const OFFERINGS: AiProviderOffering[] = [
   {
     id: 'pay-as-you-go',
     label: 'Pay as You Go',
-    kind: 'payAsYouGo',
+    kind: 'api-platform',
     authModes: ['apiKey'],
     productLabel: '百炼 API 平台',
     endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' }],
@@ -354,7 +375,7 @@ const OFFERINGS: AiProviderOffering[] = [
   {
     id: 'token-plan',
     label: 'Token Plan Personal',
-    kind: 'tokenPlan',
+    kind: 'token-plan',
     authModes: ['apiKey'],
     productLabel: '百炼 Token Plan',
     endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' }],

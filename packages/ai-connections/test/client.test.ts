@@ -708,6 +708,79 @@ describe('AI Connection management client', () => {
     ])
   })
 
+  it('preserves offering and resource identity from gateway model payloads', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'official-subscription',
+          resourceId: 'urn:model:kimi:official-subscription:shared-model',
+        },
+        {
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'api-platform',
+          resourceId: 'urn:model:kimi:api-platform:shared-model',
+        },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(client.listModels()).resolves.toEqual([
+      {
+        id: 'shared-model',
+        provider: 'kimi',
+        offeringId: 'official-subscription',
+        resourceId: 'urn:model:kimi:official-subscription:shared-model',
+      },
+      {
+        id: 'shared-model',
+        provider: 'kimi',
+        offeringId: 'api-platform',
+        resourceId: 'urn:model:kimi:api-platform:shared-model',
+      },
+    ])
+  })
+
+  it('keeps same-id selected models from separate offerings when provider summaries merge', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: 'kimi',
+          status: 'available',
+          offerings: [{ id: 'token-plan', authModes: ['apiKey'] }],
+          credentials: [],
+          selectedModels: [{ id: 'shared-model', provider: 'kimi', offeringId: 'token-plan' }],
+        },
+        {
+          id: 'kimi',
+          status: 'available',
+          offerings: [{ id: 'api-platform', authModes: ['apiKey'] }],
+          credentials: [],
+          selectedModels: [{ id: 'shared-model', provider: 'kimi', offeringId: 'api-platform' }],
+        },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const providers = await client.listProviders()
+
+    expect(providers).toHaveLength(1)
+    expect(providers[0]?.selectedModels).toEqual([
+      { id: 'shared-model', provider: 'kimi', offeringId: 'token-plan' },
+      { id: 'shared-model', provider: 'kimi', offeringId: 'api-platform' },
+    ])
+  })
+
   it('saves and deletes custom provider models through the management routes', async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = []
     const authenticatedFetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {

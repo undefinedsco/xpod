@@ -1,4 +1,5 @@
 import type {
+  AiConnectionsModelSelection,
   AiConnectionsOAuthCredential,
   AiClientCredentialRecord,
   AiClientCredentialsCapability,
@@ -89,11 +90,8 @@ export interface GatewayKeyRecord {
   name?: string
 }
 
-export interface AiGatewayModel {
-  id: string
+export interface AiGatewayModel extends AiConnectionsModelSelection {
   provider: AiConnectionsProvider
-  offeringId?: string
-  resourceId?: string
   displayName?: string
   availability?: 'available' | 'unavailable'
   contextWindow?: number
@@ -259,7 +257,7 @@ export interface AiConnectionsClient {
     apiKey?: string
     baseUrl?: string
   }): Promise<ProviderModelDiscovery>
-  saveModelSelection?(provider: AiConnectionsProvider, modelIds: string[]): Promise<void>
+  saveModelSelection?(provider: AiConnectionsProvider, models: AiConnectionsModelSelection[]): Promise<void>
   saveProviderModel(provider: AiConnectionsProvider, model: CustomProviderModel): Promise<CustomProviderModel[]>
   deleteProviderModel(provider: AiConnectionsProvider, modelId: string): Promise<CustomProviderModel[]>
 }
@@ -807,6 +805,8 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
   return compactObject({
     id: value.id,
     provider,
+    offeringId: stringValue(value.offeringId),
+    resourceId: stringValue(value.resourceId),
     displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
     contextWindow: numberValue(value.contextWindow) ?? numberValue(value.context_window),
     protocols: Array.isArray(value.protocols)
@@ -1048,7 +1048,7 @@ function mergeProviderSummaries(
   )
   const selectedModels = uniqueBy(
     [...left.selectedModels, ...right.selectedModels],
-    (model) => `${model.provider}:${model.id}`,
+    modelIdentity,
   )
   return {
     id: left.id,
@@ -1058,6 +1058,11 @@ function mergeProviderSummaries(
     selectedModels,
     status: mergeProviderSummaryStatus(left.status, right.status),
   }
+}
+
+function modelIdentity(model: AiGatewayModel): string {
+  return model.resourceId
+    ?? `${model.provider}:${model.offeringId ?? ''}:${model.id}`
 }
 
 function providerProductStatusFromLegacy(

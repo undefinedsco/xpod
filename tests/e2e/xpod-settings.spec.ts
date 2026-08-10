@@ -8,6 +8,9 @@ const screenshotDir = path.resolve('.test-data/acceptance/screenshots');
 const fixtureModelId = 'fixture-gpt-acceptance';
 const fixtureModelName = 'Fixture GPT Acceptance';
 const fakeProviderApiKey = 'sk-xpod-acceptance-fixture-key';
+const fakeSiblingApiKey = 'sk-xpod-acceptance-fixture-sibling';
+const primaryCredentialLabel = maskedCredentialLabel(fakeProviderApiKey);
+const siblingCredentialLabel = maskedCredentialLabel(fakeSiblingApiKey);
 const aliceGatewayKeyName = 'Alice acceptance Gateway';
 const fixtureFailurePrefix = 'XPOD_SETTINGS_FIXTURE_ERROR ';
 
@@ -121,6 +124,7 @@ test.describe.configure({ mode: 'serial' });
 
 test.describe('Xpod settings product acceptance', () => {
   test.beforeAll(async () => {
+    test.setTimeout(150_000);
     await mkdir(screenshotDir, { recursive: true });
     fixtureHarness = await FixtureHarness.start();
     alice = fixtureHarness.ready.accounts.alice;
@@ -153,28 +157,21 @@ test.describe('Xpod settings product acceptance', () => {
       await expect.poll(async () => (await fixtureHarness.status()).authorizedDiscoveries).toContain('primary');
 
       const credential = await assertReversiblePodCredential(alice, fakeProviderApiKey);
-      await completeApiKeyThroughUi(
-        alicePage,
-        'Alice fixture sibling',
-        'sk-xpod-acceptance-fixture-sibling',
-      );
+      await completeApiKeyThroughUi(alicePage, fakeSiblingApiKey);
       await expect.poll(async () => (await fixtureHarness.status()).authorizedDiscoveries).toContain('sibling');
       await expect.poll(
         async () => (await runAiConnectionsPodProbe(alice, { provider: 'openai' })).providerCredentialCount,
         { timeout: 45_000 },
       ).toBe(2);
-      await alicePage.getByRole('button', { name: '停用 Alice fixture sibling' }).click();
-      await expect(alicePage.getByRole('button', { name: '启用 Alice fixture sibling' })).toBeVisible();
-      await alicePage.getByRole('button', { name: '启用 Alice fixture sibling' }).click();
-      await expect(alicePage.getByRole('button', { name: '停用 Alice fixture sibling' })).toBeVisible();
-      await alicePage.getByRole('button', { name: '删除 Alice fixture sibling' }).click();
-      await expect(alicePage.getByText('Alice fixture sibling', { exact: true })).toHaveCount(0);
-      await expect(alicePage.getByText('Alice fixture key', { exact: true })).toBeVisible();
+      await alicePage.getByRole('button', { name: `停用 ${siblingCredentialLabel}` }).click();
+      await expect(alicePage.getByRole('button', { name: `启用 ${siblingCredentialLabel}` })).toBeVisible();
+      await alicePage.getByRole('button', { name: `启用 ${siblingCredentialLabel}` }).click();
+      await expect(alicePage.getByRole('button', { name: `停用 ${siblingCredentialLabel}` })).toBeVisible();
+      await alicePage.getByRole('button', { name: `删除 ${siblingCredentialLabel}` }).click();
+      await expect(alicePage.getByText(siblingCredentialLabel, { exact: true })).toHaveCount(0);
+      await expect(alicePage.getByText(primaryCredentialLabel, { exact: true })).toBeVisible();
       await expect.poll(
-        async () => (await runAiConnectionsPodProbe(alice, {
-          provider: 'openai',
-          credentialLabel: 'Alice fixture key',
-        })).providerCredentialCount,
+        async () => (await runAiConnectionsPodProbe(alice, { provider: 'openai' })).providerCredentialCount,
         { timeout: 45_000 },
       ).toBe(1);
       await chooseFixtureModel(alicePage);
@@ -204,7 +201,7 @@ test.describe('Xpod settings product acceptance', () => {
       const bobTrace = await loginToSettings(bobPage, bob);
       assertRealOidcTrace(bobTrace);
       await openModule(bobPage, '/settings/models', 'Models');
-      await expect(bobPage.locator('body')).not.toContainText('Alice fixture key');
+      await expect(bobPage.locator('body')).not.toContainText(primaryCredentialLabel);
       await expect(bobPage.locator('body')).not.toContainText(aliceGatewayKeyName);
       await expect(bobPage.locator('[data-credential-state]')).toHaveCount(0);
       await expect(bobPage.getByText(fixtureModelName, { exact: true })).toHaveCount(0);
@@ -337,17 +334,16 @@ async function openModule(page: Page, route: string, label: string): Promise<voi
 
 async function completeApiKeyThroughUi(
   page: Page,
-  label = 'Alice fixture key',
   apiKey = fakeProviderApiKey,
 ): Promise<void> {
   await page.getByRole('option', { name: 'OpenAI' }).click();
   await page.getByRole('button', { name: '添加 API Key' }).first().click();
-  await page.getByLabel('OpenAI API Key 标签').fill(label);
   await page.getByLabel('OpenAI API Key 输入').fill(apiKey);
+  await page.getByRole('button', { name: '高级设置' }).click();
   await page.getByLabel('OpenAI Base URL 输入').fill(fixtureHarness.ready.fixtureBaseUrl);
   await page.getByRole('button', { name: '保存 OpenAI API Key' }).click();
   await expect(page.locator('body')).not.toContainText(apiKey);
-  await expect(page.getByText(label, { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(maskedCredentialLabel(apiKey), { exact: true })).toBeVisible({ timeout: 30_000 });
 }
 
 async function chooseFixtureModel(page: Page): Promise<void> {
@@ -396,10 +392,10 @@ async function openClientCredentialsSection(page: Page): Promise<void> {
 async function deleteAliceFixtureCredentialThroughUi(page: Page): Promise<void> {
   await openModule(page, '/settings/models', 'Models');
   await page.getByRole('option', { name: 'OpenAI' }).click();
-  const remove = page.getByRole('button', { name: '删除 Alice fixture key' });
+  const remove = page.getByRole('button', { name: `删除 ${primaryCredentialLabel}` });
   if (await remove.isVisible({ timeout: 1_000 }).catch(() => false)) {
     await remove.click();
-    await expect(page.getByText('Alice fixture key', { exact: true })).toHaveCount(0);
+    await expect(page.getByText(primaryCredentialLabel, { exact: true })).toHaveCount(0);
   }
 }
 
@@ -414,7 +410,6 @@ async function revokeAliceGatewayKeyThroughUi(page: Page): Promise<void> {
 async function assertReversiblePodCredential(account: BrowserSolidAccount, plaintext: string): Promise<{ id: string }> {
   const result = await runAiConnectionsPodProbe(account, {
     provider: 'openai',
-    credentialLabel: 'Alice fixture key',
     expectedSecret: plaintext,
   });
   expect(result.credentialId).toBeTruthy();
@@ -425,6 +420,13 @@ async function assertReversiblePodCredential(account: BrowserSolidAccount, plain
   expect(result.rawContainsEnvelope).toBe(true);
   expect(result.providerCredentialCount).toBeGreaterThan(0);
   return { id: result.credentialId! };
+}
+
+function maskedCredentialLabel(apiKey: string): string {
+  const hint = apiKey.length <= 8
+    ? `${apiKey.slice(0, 2)}…`
+    : `${apiKey.slice(0, 3)}...${apiKey.slice(-4)}`;
+  return `API Key · ${hint}`;
 }
 
 type AiConnectionsPodProbeResult = {
