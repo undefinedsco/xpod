@@ -2,9 +2,9 @@ import { describe, expect, it } from 'bun:test'
 import { resolveDesktopTargetUrl } from '../src/target-url.js'
 
 describe('desktop target URL', () => {
-  it('opens the anonymous local Network overview on a first launch', () => {
+  it('opens the Account-protected Status overview on a first launch', () => {
     expect(resolveDesktopTargetUrl({ argv: ['electron', 'main.js'], env: {} })).toBe(
-      'http://127.0.0.1:3000/network/overview',
+      'http://127.0.0.1:3000/status/overview',
     )
   })
 

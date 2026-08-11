@@ -1,39 +1,40 @@
-import type { AccountAuthState, AccountLoginMethod } from '@undefineds.co/shared-ui';
-import { AccountLoginMethodListView, Button, Card, CardContent, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
+import type { AccountAuthState } from '@undefineds.co/shared-ui';
+import { AuthSurface, Button, Card, CardContent, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
+import { Loader2 } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { XpodAccountCredentials } from './XpodAccountCredentials';
 import { useXpodAuth } from './useXpodAuth';
 
 export interface AccountAuthBoundaryProps {
   children?: ReactNode;
   state?: AccountAuthState;
   accountState?: AccountAuthState;
-  startLogin?: () => void | Promise<void>;
-  onStartLogin?: () => void | Promise<void>;
   retry?: () => void | Promise<void>;
 }
-
-const loginMethod: AccountLoginMethod = {
-  id: 'xpod-current-origin',
-  label: 'Sign in to Xpod',
-  description: 'Continue with this Xpod account',
-};
 
 export function AccountAuthBoundary({
   children,
   state: stateOverride,
   accountState: accountStateOverride,
-  startLogin: startLoginOverride,
-  onStartLogin: onStartLoginOverride,
   retry: retryOverride,
 }: AccountAuthBoundaryProps) {
   const xpod = useXpodAuth();
   const state = stateOverride ?? accountStateOverride ?? xpod.account.accountState;
-  const startLogin = startLoginOverride ?? onStartLoginOverride ?? (() => xpod.startLogin());
   const retry = retryOverride ?? xpod.account.retry;
 
   if (state.status === 'authenticated') return <>{children}</>;
   if (state.status === 'initializing') {
     return <div role="status" aria-live="polite" className="p-6 text-sm text-muted-foreground">Loading account</div>;
+  }
+  if (state.status === 'submitting') {
+    return (
+      <AuthSurface mode="modal" title="Sign in to Xpod">
+        <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          Signing in…
+        </div>
+      </AuthSurface>
+    );
   }
   if (state.status === 'error') {
     return (
@@ -47,16 +48,5 @@ export function AccountAuthBoundary({
     );
   }
 
-  return (
-    <AccountLoginMethodListView
-      methods={[loginMethod]}
-      pending={state.status === 'submitting'}
-      onSelect={() => void startLogin()}
-      copy={{
-        title: 'Sign in',
-        description: 'Use the current Xpod account to continue.',
-        methodActionLabel: 'Continue',
-      }}
-    />
-  );
+  return <XpodAccountCredentials surface="modal" />;
 }

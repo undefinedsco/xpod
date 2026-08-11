@@ -11,6 +11,12 @@ const IDP_INDEX = '/.account/';
 const ACCOUNT_ERROR_MESSAGE = 'Account service is temporarily unavailable. Please try again.';
 const OIDC_PENDING_PROBE_TIMEOUT_MS = 3_000;
 
+function isAccountSpaPath(): boolean {
+  if (typeof window === 'undefined') return false;
+  const pathname = window.location.pathname;
+  return pathname === '/.account' || pathname.startsWith('/.account/');
+}
+
 function accountIdentityFromControls(controls: Controls | null): SanitizedAccountIdentity | undefined {
   const account = controls?.account;
   if (!account) return undefined;
@@ -86,7 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         // The controls response establishes Account authentication. Consent is
         // an optional OIDC continuation probe and must not delay that state.
-        if (nextControls.account?.logout) {
+        if (nextControls.account?.logout && isAccountSpaPath()) {
           void checkOidcPending().then((pending) => {
             if (probeId === pendingProbeIdRef.current) setHasOidcPending(pending);
           });

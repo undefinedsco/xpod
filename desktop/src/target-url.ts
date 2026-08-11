@@ -1,4 +1,4 @@
-const DEFAULT_DESKTOP_URL = 'http://127.0.0.1:3000/network/overview'
+const DEFAULT_DESKTOP_URL = 'http://127.0.0.1:3000/status/overview'
 
 export function resolveDesktopTargetUrl({
   argv = process.argv,

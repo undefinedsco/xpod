@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { encodePlaintextCredential } from '../../../src/api/ai-gateway/credentials/PlaintextCredentialPayload';
+import type { CredentialVault } from '../../../src/api/ai-gateway/credentials/CredentialVault';
 import type { AuthContext } from '../../../src/api/auth/AuthContext';
 import { GatewayProtocolError } from '../../../src/api/ai-gateway/errors';
 import {
@@ -38,7 +39,7 @@ function createHarness(options: {
   secret?: Record<string, unknown>;
   credential?: Record<string, unknown>;
   modelsService?: ProviderModelDiscoveryServiceLike;
-  credentialVault?: { open: ReturnType<typeof vi.fn> };
+  credentialVault?: CredentialVault;
   adapterDiscover?: (
     secret: Record<string, unknown>,
     input?: Record<string, unknown>,
@@ -92,7 +93,7 @@ function createHarness(options: {
     selectionRepository: selectionRepository as any,
     discoveryRegistry: discoveryRegistry as any,
     modelsService: options.modelsService,
-    credentialVault: options.credentialVault as any,
+    credentialVault: options.credentialVault,
     now: options.now,
   });
   return { service, adapter, credentialRepository, selectionRepository, discoveryRegistry, getSelection: () => currentSelection };
@@ -194,7 +195,7 @@ describe('ProviderModelSelectionService', () => {
           proxyUrl: 'http://proxy.example:8080',
           compatibility: 'openai',
         });
-        return { models: [{ id: 'kimi-for-coding', modelType: 'chat' }] };
+        return { models: [{ id: 'kimi-for-coding', modelType: 'chat' as const }] };
       }),
     };
     const harness = createHarness({
@@ -233,12 +234,14 @@ describe('ProviderModelSelectionService', () => {
       ciphertext: 'opaque',
     };
     const credentialVault = {
+      seal: vi.fn(),
       open: vi.fn(async () => ({ type: 'apiKey', apiKey: 'sk-vault-secret' })),
-    };
+      rewrap: vi.fn(),
+    } satisfies CredentialVault;
     const modelsService: ProviderModelDiscoveryServiceLike = {
       listFromSecret: vi.fn(async (input) => {
         expect(input.secret).toEqual({ type: 'apiKey', apiKey: 'sk-vault-secret' });
-        return { models: [{ id: 'gpt-vault', modelType: 'chat' }] };
+        return { models: [{ id: 'gpt-vault', modelType: 'chat' as const }] };
       }),
     };
     const harness = createHarness({

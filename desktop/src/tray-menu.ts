@@ -22,7 +22,6 @@ export type TrayMenuAction =
   | { type: 'refresh' }
   | { type: 'restart' }
   | { type: 'start' }
-  | { type: 'switch-account' }
   | { type: 'toggle-launch-at-login' }
   | { type: 'about' }
   | { type: 'quit' }
@@ -109,7 +108,7 @@ export function buildTrayMenuModel({
     items.push(
       separator(),
       { label: `Signed in as ${identity.label}`, enabled: false },
-      { label: 'Switch Account…', action: { type: 'switch-account' } },
+      { label: 'Account…', action: { type: 'open-route', route: '/status/overview?account=open' } },
     )
   }
 

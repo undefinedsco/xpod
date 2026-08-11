@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import {
   ProviderHttpTransport,
@@ -45,7 +45,7 @@ describe('ProviderHttpTransport network policy', () => {
     if (!address || typeof address === 'string') {
       throw new Error('test_server_not_listening');
     }
-    const resolver = vi.fn<ProviderAddressResolver>()
+    const resolver = vi.fn<Parameters<ProviderAddressResolver>, ReturnType<ProviderAddressResolver>>()
       .mockResolvedValueOnce([{ address: '203.0.113.10' }])
       .mockResolvedValueOnce([{ address: '127.0.0.1' }]);
     const transport = new ProviderHttpTransport({ resolver, timeoutMs: 1_000 });
@@ -280,7 +280,7 @@ describe('ProviderHttpTransport network policy', () => {
   });
 
   it('closes the per-request dispatcher after consuming a buffered response', async () => {
-    let closeSpy: ReturnType<typeof vi.spyOn> | undefined;
+    let closeSpy: MockInstance<[], Promise<void>> | undefined;
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       closeSpy = vi.spyOn((init as RequestInit & { dispatcher: { close: () => Promise<void> } }).dispatcher, 'close');
       return new Response(JSON.stringify({ ok: true }), { status: 200 });

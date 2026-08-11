@@ -8,9 +8,9 @@ import { useAuth } from '../context/AuthContextValue';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-function installDom(fetchImpl?: typeof fetch) {
+function installDom(fetchImpl?: typeof fetch, url = 'https://app.example/.account/') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'https://app.example/.account/',
+    url,
   });
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
@@ -48,8 +48,8 @@ function ImmediateLogoutProbe() {
   );
 }
 
-async function render(fetchImpl?: typeof fetch, probe: ReactElement = <Probe />) {
-  installDom(fetchImpl);
+async function render(fetchImpl?: typeof fetch, probe: ReactElement = <Probe />, url?: string) {
+  installDom(fetchImpl, url);
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
@@ -137,6 +137,27 @@ describe('Xpod Account controller', () => {
     await act(async () => {
       await consentResponse;
     });
+    await unmount(root);
+  });
+
+  test('does not probe OIDC consent for authenticated controls on the Status surface', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), window.location.origin).pathname;
+      if (pathname === '/.account/') {
+        return new Response(JSON.stringify({ controls: { account: { logout: '/.account/logout/' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected request ${pathname}`);
+    });
+
+    const { container, root } = await render(fetchImpl as unknown as typeof fetch, <Probe />, 'https://app.example/status/overview');
+
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('authenticated');
+    expect(container.querySelector('[data-testid="logged-in"]')?.textContent).toBe('true');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls.some(([input]) => String(input).includes('/.account/oidc/consent/'))).toBe(false);
     await unmount(root);
   });
 

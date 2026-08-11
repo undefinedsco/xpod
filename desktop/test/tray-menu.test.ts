@@ -59,7 +59,7 @@ describe('buildTrayMenuModel', () => {
       'Check Status Again',
       'Restart Xpod…',
       'Signed in as Alice',
-      'Switch Account…',
+      'Account…',
       'Launch at Login',
       'About Xpod',
       'Quit Xpod',
@@ -74,6 +74,11 @@ describe('buildTrayMenuModel', () => {
       type: 'open-route',
       route: '/status/overview',
     });
+    expect(model.items.find((item) => item.label === 'Account…')?.action).toEqual({
+      type: 'open-route',
+      route: '/status/overview?account=open',
+    });
+    expect(model.items.some((item) => item.action?.type === 'open-route' && item.action.route.startsWith('/.account'))).toBe(false);
   });
 
   test('offers Start Xpod when all services are stopped', () => {

@@ -5,7 +5,6 @@ import path from 'node:path';
 import { ApiServer } from '../../../src/api/ApiServer';
 import type { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 import { registerStaticSpaRoutes } from '../../../src/api/handlers/StaticSpaHandler';
-import type { AuthMiddleware } from '../../../src/api/middleware/AuthMiddleware';
 
 describe('registerStaticSpaRoutes', () => {
   let server: ApiServer;

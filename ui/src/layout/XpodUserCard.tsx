@@ -11,7 +11,8 @@ import {
   DialogTrigger,
   Separator,
 } from '@undefineds.co/shared-ui';
-import { ArrowLeftRight, Check, CircleAlert, Loader2, LogIn, LogOut, RefreshCw, Settings2, UserRound } from 'lucide-react';
+import { ArrowLeftRight, Check, CircleAlert, Loader2, LogOut, RefreshCw, Settings2, UserRound } from 'lucide-react';
+import { XpodAccountCredentials } from '../auth/XpodAccountCredentials';
 import { useContext, useMemo, useState, type ReactNode } from 'react';
 import { XpodAuthContext } from '../auth/useXpodAuth';
 import type { XpodLogoutState } from '../auth/xpod-logout';
@@ -23,12 +24,16 @@ export interface XpodUserCardProps {
 }
 
 const emptyLogoutState = { status: 'idle' } as const;
+type AccountSwitchPhase = 'idle' | 'logging-out' | 'ready';
+type ActiveLogoutState = Extract<XpodLogoutState, { status: 'running' | 'error' }>;
 
 export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
   const auth = useContext(XpodAuthContext);
   const runtime = useContext(XpodSolidRuntimeContext);
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState<'login' | 'logout' | 'switch' | 'retry' | undefined>();
+  const [open, setOpen] = useState(accountCardRequestedByUrl);
+  const [busy, setBusy] = useState<'logout' | 'switch' | 'retry' | undefined>();
+  const [accountSwitchPhase, setAccountSwitchPhase] = useState<AccountSwitchPhase>('idle');
+  const [accountSwitchLogoutState, setAccountSwitchLogoutState] = useState<ActiveLogoutState>();
   const logoutState = auth?.logoutState ?? emptyLogoutState;
   const account = auth?.account;
   const isAuthenticated = account?.isLoggedIn === true && account.accountState.status === 'authenticated';
@@ -49,23 +54,20 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
     && currentPod?.webId === webId
     && sameUrl(currentPod?.podUrl ?? '', podUrl ?? '');
   const switchLabel = product === 'dashboard' ? 'Open Settings' : 'Open Dashboard';
-
-  const runLogin = async () => {
-    if (!auth) return;
-    setBusy('login');
-    try {
-      await auth.startLogin();
-      setOpen(false);
-    } finally {
-      setBusy(undefined);
-    }
+  const effectiveLogoutState = accountSwitchPhase === 'logging-out'
+    ? accountSwitchLogoutState ?? { status: 'running', account: 'pending', webId: 'pending' } as const
+    : accountSwitchLogoutState ?? (logoutState.status === 'running' || logoutState.status === 'error' ? logoutState : undefined);
+  const handleCardOpenChange = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen) clearAccountCardRequest();
   };
 
   const runLogout = async () => {
     if (!auth) return;
     setBusy('logout');
     try {
-      await auth.logout();
+      const result = await auth.logout();
+      if (result.status === 'complete') auth.logoutCoordinator.reset();
     } finally {
       setBusy(undefined);
     }
@@ -75,7 +77,23 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
     if (!auth) return;
     setBusy('retry');
     try {
-      await auth.retryLogout();
+      if (accountSwitchPhase === 'logging-out') {
+        setAccountSwitchLogoutState((state) => state ? {
+          status: 'running',
+          account: state.account === 'complete' ? 'complete' : 'pending',
+          webId: state.webId === 'complete' ? 'complete' : 'pending',
+        } : { status: 'running', account: 'pending', webId: 'pending' });
+      }
+      const result = await auth.retryLogout();
+      if (result.status === 'complete') {
+        auth.logoutCoordinator.reset();
+        if (accountSwitchPhase === 'logging-out') {
+          setAccountSwitchLogoutState(undefined);
+          setAccountSwitchPhase('ready');
+        }
+      } else if (accountSwitchPhase === 'logging-out' && isActiveLogoutState(result)) {
+        setAccountSwitchLogoutState(result);
+      }
     } finally {
       setBusy(undefined);
     }
@@ -84,17 +102,24 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
   const runSwitchAccount = async () => {
     if (!auth) return;
     setBusy('switch');
+    setAccountSwitchPhase('logging-out');
+    setAccountSwitchLogoutState({ status: 'running', account: 'pending', webId: 'pending' });
     try {
-      const result = await auth.switchAccount();
-      if (typeof result === 'object' && result && 'status' in result && result.status !== 'complete') return;
-      setOpen(false);
+      const result = await auth.logout();
+      if (result.status !== 'complete') {
+        if (isActiveLogoutState(result)) setAccountSwitchLogoutState(result);
+        return;
+      }
+      auth.logoutCoordinator.reset();
+      setAccountSwitchLogoutState(undefined);
+      setAccountSwitchPhase('ready');
     } finally {
       setBusy(undefined);
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleCardOpenChange}>
       <DialogTrigger asChild>
         <button
           type="button"
@@ -117,31 +142,48 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
           </DialogDescription>
         </DialogHeader>
 
-        {logoutState.status === 'running' || logoutState.status === 'error' ? (
+        {accountSwitchPhase === 'ready' ? (
+          <XpodAccountCredentials
+            surface="embedded"
+            onAuthenticated={() => {
+              setAccountSwitchPhase('idle');
+              handleCardOpenChange(false);
+            }}
+          />
+        ) : effectiveLogoutState ? (
           <LogoutProgress
-            state={logoutState}
+            state={effectiveLogoutState}
             busy={busy}
             onRetry={() => void runRetry()}
           />
         ) : !isAuthenticated ? (
-          <div className="space-y-4">
-            <StatusLine
-              icon={<UserRound className="h-4 w-4" aria-hidden="true" />}
-              label="Status"
-              value={accountRestoring ? 'Restoring account' : accountUnavailable ? 'Account unavailable' : 'Not signed in'}
-            />
-            {accountUnavailable ? (
+          accountUnavailable ? (
+            <div className="space-y-4">
+              <StatusLine
+                icon={<UserRound className="h-4 w-4" aria-hidden="true" />}
+                label="Status"
+                value="Account unavailable"
+              />
               <Button type="button" variant="outline" className="w-full" onClick={() => void account?.retry()} disabled={busy !== undefined}>
                 <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />
                 Try again
               </Button>
-            ) : (
-              <Button type="button" className="w-full" onClick={() => void runLogin()} disabled={busy !== undefined || accountRestoring}>
-                {busy === 'login' || accountRestoring ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />}
-                {accountRestoring ? 'Restoring account' : 'Sign in to Xpod'}
+            </div>
+          ) : accountRestoring ? (
+            <div className="space-y-4">
+              <StatusLine
+                icon={<UserRound className="h-4 w-4" aria-hidden="true" />}
+                label="Status"
+                value="Restoring account"
+              />
+              <Button type="button" className="w-full" disabled>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                Restoring account
               </Button>
-            )}
-          </div>
+            </div>
+          ) : (
+            <XpodAccountCredentials surface="embedded" onAuthenticated={() => handleCardOpenChange(false)} />
+          )
         ) : (
           <div className="space-y-4">
             <div className="space-y-3 text-sm">
@@ -170,7 +212,7 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
           </div>
         )}
         <DialogFooter>
-          <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>Close</Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => handleCardOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -266,4 +308,21 @@ function domainLabel(value: 'pending' | 'complete' | 'error'): string {
   if (value === 'complete') return 'Complete';
   if (value === 'error') return 'Needs retry';
   return 'In progress';
+}
+
+function isActiveLogoutState(state: XpodLogoutState): state is ActiveLogoutState {
+  return state.status === 'running' || state.status === 'error';
+}
+
+function accountCardRequestedByUrl(): boolean {
+  return typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('account') === 'open';
+}
+
+function clearAccountCardRequest(): void {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('account') !== 'open') return;
+  url.searchParams.delete('account');
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
 }

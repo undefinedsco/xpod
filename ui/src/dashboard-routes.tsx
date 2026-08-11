@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Navigate, type RouteObject } from 'react-router-dom';
+import { Navigate, Outlet, type RouteObject } from 'react-router-dom';
 import { AccountAuthBoundary } from './auth/AccountAuthBoundary';
 import { XpodDashboardLayout } from './layout/XpodDashboardLayout';
 
@@ -17,8 +17,39 @@ function lazyRoute(element: React.ReactNode) {
   return <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading settings...</div>}>{element}</Suspense>;
 }
 
-function accountGuardedRoute(element: React.ReactNode) {
-  return <AccountAuthBoundary>{element}</AccountAuthBoundary>;
+const statusContentRoutes: RouteObject[] = [
+  { path: 'overview', element: lazyRoute(<StatusPage />) },
+  { path: 'services/gateway', element: lazyRoute(<ServiceStatusPanel serviceId="gateway" title="Gateway" />) },
+  { path: 'services/solid-server', element: lazyRoute(<ServiceStatusPanel serviceId="css" title="Solid Server" />) },
+  { path: 'services/api-server', element: lazyRoute(<ServiceStatusPanel serviceId="api" title="API Server" />) },
+  { path: 'logs', element: lazyRoute(<LogsPage />) },
+  { path: 'index', element: lazyRoute(<IndexSubjectPanel kind="overview" />) },
+  { path: 'index/rdf', element: lazyRoute(<RdfPage />) },
+  { path: 'index/fts', element: lazyRoute(<IndexSubjectPanel kind="fts" />) },
+  { path: 'index/vector', element: lazyRoute(<IndexSubjectPanel kind="vector" />) },
+  { path: 'index/retrieval-points', element: lazyRoute(<IndexSubjectPanel kind="retrieval-points" />) },
+  { path: 'index/cache', element: lazyRoute(<IndexSubjectPanel kind="cache" />) },
+  { path: 'index/slow-queries', element: lazyRoute(<IndexSubjectPanel kind="slow-queries" />) },
+  { path: 'index/benchmark', element: lazyRoute(<IndexSubjectPanel kind="benchmark" />) },
+  { path: 'usage', element: lazyRoute(<UsagePage embedded />) },
+  { path: 'usage/storage', element: lazyRoute(<UsageStatusPanel kind="storage" />) },
+  { path: 'usage/bandwidth', element: lazyRoute(<UsageStatusPanel kind="bandwidth" />) },
+  { path: 'usage/ai', element: lazyRoute(<UsageStatusPanel kind="ai" />) },
+  { path: 'usage/index-storage', element: lazyRoute(<UsageStatusPanel kind="index-storage" />) },
+];
+
+function accountGuardedOutletRoute(children: RouteObject[]): RouteObject {
+  return {
+    element: <AccountAuthBoundary><Outlet /></AccountAuthBoundary>,
+    children,
+  };
+}
+
+function statusWorkspaceRoute(children: RouteObject[]): RouteObject {
+  return {
+    element: lazyRoute(<StatusWorkspace />),
+    children: [accountGuardedOutletRoute(children)],
+  };
 }
 
 export const dashboardRoutes: RouteObject[] = [
@@ -26,29 +57,7 @@ export const dashboardRoutes: RouteObject[] = [
     element: <XpodDashboardLayout />,
     children: [
       { index: true, element: <Navigate to="overview" replace /> },
-      {
-        element: accountGuardedRoute(lazyRoute(<StatusWorkspace />)),
-        children: [
-          { path: 'overview', element: lazyRoute(<StatusPage />) },
-          { path: 'services/gateway', element: lazyRoute(<ServiceStatusPanel serviceId="gateway" title="Gateway" />) },
-          { path: 'services/solid-server', element: lazyRoute(<ServiceStatusPanel serviceId="css" title="Solid Server" />) },
-          { path: 'services/api-server', element: lazyRoute(<ServiceStatusPanel serviceId="api" title="API Server" />) },
-          { path: 'logs', element: lazyRoute(<LogsPage />) },
-          { path: 'index', element: lazyRoute(<IndexSubjectPanel kind="overview" />) },
-          { path: 'index/rdf', element: lazyRoute(<RdfPage />) },
-          { path: 'index/fts', element: lazyRoute(<IndexSubjectPanel kind="fts" />) },
-          { path: 'index/vector', element: lazyRoute(<IndexSubjectPanel kind="vector" />) },
-          { path: 'index/retrieval-points', element: lazyRoute(<IndexSubjectPanel kind="retrieval-points" />) },
-          { path: 'index/cache', element: lazyRoute(<IndexSubjectPanel kind="cache" />) },
-          { path: 'index/slow-queries', element: lazyRoute(<IndexSubjectPanel kind="slow-queries" />) },
-          { path: 'index/benchmark', element: lazyRoute(<IndexSubjectPanel kind="benchmark" />) },
-          { path: 'usage', element: lazyRoute(<UsagePage embedded />) },
-          { path: 'usage/storage', element: lazyRoute(<UsageStatusPanel kind="storage" />) },
-          { path: 'usage/bandwidth', element: lazyRoute(<UsageStatusPanel kind="bandwidth" />) },
-          { path: 'usage/ai', element: lazyRoute(<UsageStatusPanel kind="ai" />) },
-          { path: 'usage/index-storage', element: lazyRoute(<UsageStatusPanel kind="index-storage" />) },
-        ],
-      },
+      statusWorkspaceRoute(statusContentRoutes),
       { path: 'runtime', element: <Navigate to="overview" replace /> },
       { path: 'rdf', element: <Navigate to="index/rdf" replace /> },
       { path: 'network/*', element: lazyRoute(<NetworkPage />) },
@@ -61,31 +70,11 @@ export const dashboardRoutes: RouteObject[] = [
 export const statusSurfaceRoutes: RouteObject[] = [
   {
     element: <XpodDashboardLayout />,
-    children: [{
-      element: accountGuardedRoute(lazyRoute(<StatusWorkspace />)),
-      children: [
-        { index: true, element: <Navigate to="overview" replace /> },
-        { path: 'overview', element: lazyRoute(<StatusPage />) },
-        { path: 'services/gateway', element: lazyRoute(<ServiceStatusPanel serviceId="gateway" title="Gateway" />) },
-        { path: 'services/solid-server', element: lazyRoute(<ServiceStatusPanel serviceId="css" title="Solid Server" />) },
-        { path: 'services/api-server', element: lazyRoute(<ServiceStatusPanel serviceId="api" title="API Server" />) },
-        { path: 'logs', element: lazyRoute(<LogsPage />) },
-        { path: 'index', element: lazyRoute(<IndexSubjectPanel kind="overview" />) },
-        { path: 'index/rdf', element: lazyRoute(<RdfPage />) },
-        { path: 'index/fts', element: lazyRoute(<IndexSubjectPanel kind="fts" />) },
-        { path: 'index/vector', element: lazyRoute(<IndexSubjectPanel kind="vector" />) },
-        { path: 'index/retrieval-points', element: lazyRoute(<IndexSubjectPanel kind="retrieval-points" />) },
-        { path: 'index/cache', element: lazyRoute(<IndexSubjectPanel kind="cache" />) },
-        { path: 'index/slow-queries', element: lazyRoute(<IndexSubjectPanel kind="slow-queries" />) },
-        { path: 'index/benchmark', element: lazyRoute(<IndexSubjectPanel kind="benchmark" />) },
-        { path: 'usage', element: lazyRoute(<UsagePage embedded />) },
-        { path: 'usage/storage', element: lazyRoute(<UsageStatusPanel kind="storage" />) },
-        { path: 'usage/bandwidth', element: lazyRoute(<UsageStatusPanel kind="bandwidth" />) },
-        { path: 'usage/ai', element: lazyRoute(<UsageStatusPanel kind="ai" />) },
-        { path: 'usage/index-storage', element: lazyRoute(<UsageStatusPanel kind="index-storage" />) },
-        { path: '*', element: <Navigate to="overview" replace /> },
-      ],
-    }],
+    children: [statusWorkspaceRoute([
+      { index: true, element: <Navigate to="overview" replace /> },
+      ...statusContentRoutes,
+      { path: '*', element: <Navigate to="overview" replace /> },
+    ])],
   },
 ];
 

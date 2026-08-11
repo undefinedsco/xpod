@@ -175,9 +175,6 @@ async function runTrayAction(action: TrayMenuAction): Promise<void> {
       await runtimeManager.ensureRunning().catch(() => undefined)
       if (tray) await refreshTrayStatus(tray)
       return
-    case 'switch-account':
-      await openRoute('/.account/')
-      return
     case 'toggle-launch-at-login':
       app.setLoginItemSettings({ openAtLogin: !app.getLoginItemSettings().openAtLogin })
       if (tray) updateTray(tray)

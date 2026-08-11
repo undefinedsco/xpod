@@ -1,6 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-
-const mock = vi.fn;
+import { waitFor } from '@testing-library/react';
 import { JSDOM } from 'jsdom';
 import { isValidElement } from 'react';
 import { act } from 'react';
@@ -14,6 +13,8 @@ import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
 import { DashboardApp } from './DashboardApp';
+
+const mock = vi.fn;
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -122,6 +123,8 @@ async function renderDashboardRoute(path: string) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+  await waitFor(() => expect(container.textContent).toContain('Sign in to Xpod'));
+
   return { container, root, session, sessionConstructions };
 }
 
@@ -208,5 +211,17 @@ describe('dashboard routes', () => {
       expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
       await unmount(root);
     }
+  });
+
+  test('keeps the Status workspace mounted behind the anonymous Account login modal', async () => {
+    const { container, root } = await renderDashboardRoute('/overview');
+
+    expect(container.textContent).toContain('Sign in to Xpod');
+    expect(container.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(container.querySelector('[data-list-navigation]')).toBeTruthy();
+    expect(container.querySelector('[data-list-navigation]')?.textContent).toContain('Overview');
+    expect(container.textContent).toContain('Status · Overview');
+
+    await unmount(root);
   });
 });

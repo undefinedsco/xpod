@@ -1,0 +1,1 @@
+import{j as e}from"./auth-callback-DR5E-Jhz.js";import r from"./UsagePage-D2JlFr91.js";import"./PaneListHeader-CLvBy_pG.js";import"./workspace-layout-iqbI30lb.js";import"./skeleton-A80xTiFM.js";function p({kind:t}){return e.jsx(r,{kind:t,embedded:!0})}export{p as default};
