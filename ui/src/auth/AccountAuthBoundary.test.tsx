@@ -122,6 +122,27 @@ describe('AccountAuthBoundary', () => {
     await unmount(rendered.root);
   });
 
+  test('dismisses and reopens the startup modal without revealing protected content', async () => {
+    const rendered = await render(value(), <span data-testid="protected">private status</span>);
+
+    const closeButton = Array.from(rendered.container.querySelectorAll('button'))
+      .find((button) => button.getAttribute('aria-label') === 'Close sign in');
+    expect(closeButton).toBeTruthy();
+    await act(async () => closeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(rendered.container.querySelector('[role="dialog"]')).toBeNull();
+    expect(rendered.container.querySelector('[data-testid="protected"]')).toBeNull();
+    expect(rendered.container.textContent).toContain('Sign in required');
+
+    const reopenButton = Array.from(rendered.container.querySelectorAll('button'))
+      .find((button) => button.textContent?.trim() === 'Sign in');
+    expect(reopenButton).toBeTruthy();
+    await act(async () => reopenButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(rendered.container.querySelector('[role="dialog"]')).toBeTruthy();
+
+    await unmount(rendered.root);
+  });
+
   test('renders a non-submittable pending modal while Account authentication is submitting', async () => {
     const baseValue = value();
     const pendingValue: XpodAuthValue = {
@@ -140,6 +161,25 @@ describe('AccountAuthBoundary', () => {
     await unmount(rendered.root);
   });
 
+  test('keeps initialization in the same dismissible modal so local routes remain reachable', async () => {
+    const rendered = await render(value({
+      account: {
+        accountState: { status: 'initializing' },
+        isLoggedIn: false,
+      },
+    }), <span data-testid="protected">private status</span>);
+
+    expect(rendered.container.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(rendered.container.textContent).toContain('Loading account');
+    const closeButton = Array.from(rendered.container.querySelectorAll('button'))
+      .find((button) => button.getAttribute('aria-label') === 'Close sign in');
+    expect(closeButton).toBeTruthy();
+    await act(async () => closeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(rendered.container.querySelector('[role="dialog"]')).toBeNull();
+    expect(rendered.container.querySelector('[data-testid="protected"]')).toBeNull();
+    await unmount(rendered.root);
+  });
+
   test('renders authenticated children and retryable Account errors', async () => {
     const retry = vi.fn(async () => undefined);
     const rendered = await render(value({
@@ -154,6 +194,7 @@ describe('AccountAuthBoundary', () => {
     }), <span data-testid="protected">ready</span>);
 
     expect(rendered.container.textContent).toContain('Account temporarily unavailable');
+    expect(rendered.container.querySelector('[role="dialog"]')).toBeTruthy();
     const retryButton = Array.from(rendered.container.querySelectorAll('button')).find((node) => /retry/i.test(node.textContent ?? ''));
     expect(retryButton).toBeTruthy();
     await act(async () => retryButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));

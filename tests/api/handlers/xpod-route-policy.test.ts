@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeXpodReturnPath,
   resolveXpodAliasTarget,
+  XPOD_PRODUCT_ALIASES,
 } from '../../../src/shared/xpod-route-policy';
 
 describe('xpod route policy', () => {
@@ -11,9 +12,11 @@ describe('xpod route policy', () => {
     expect(() => normalizeXpodReturnPath('/settings/../models')).toThrow(/safe path/i);
   });
 
-  it('canonicalizes aliases without copying fragments or allowing an absolute target', () => {
-    expect(resolveXpodAliasTarget('/ai-config', '/ai-config?provider=kimi&surface=other#pane'))
-      .toBe('/settings/models?surface=ai-config&provider=kimi');
+  it('keeps only genuine legacy dashboard aliases and never rewrites first-class AI surfaces', () => {
+    expect(XPOD_PRODUCT_ALIASES).toEqual({
+      '/status': '/dashboard/overview',
+      '/network': '/dashboard/network',
+    });
     expect(resolveXpodAliasTarget('/status', '/status?tab=runtime#pane'))
       .toBe('/dashboard/overview?tab=runtime');
   });

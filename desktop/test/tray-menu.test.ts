@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   aggregateTrayStatus,
   buildTrayMenuModel,
+  normalizeTrayIdentity,
   type TrayServiceSnapshot,
 } from '../src/tray-menu.js';
 
@@ -40,7 +41,7 @@ describe('buildTrayMenuModel', () => {
     const model = buildTrayMenuModel({
       services: healthy,
       launchAtLogin: true,
-      identity: { label: 'Alice' },
+      identity: { label: 'Alice', podUrl: 'http://127.0.0.1:3000/alice/' },
     });
     const labels = model.items.flatMap((item) => item.label ? [item.label] : []);
 
@@ -86,6 +87,17 @@ describe('buildTrayMenuModel', () => {
     expect(model.items.find((item) => item.label === 'Start Xpod')?.action).toEqual({ type: 'start' });
   });
 
+  test('keeps the in-shell Account entry available while anonymous', () => {
+    const model = buildTrayMenuModel({ services: healthy, launchAtLogin: false });
+
+    expect(model.items.find((item) => item.label === 'Account…')?.action).toEqual({
+      type: 'open-route',
+      route: '/status/overview?account=open',
+    });
+    expect(model.items.some((item) => item.label?.startsWith('Signed in as '))).toBe(false);
+    expect(model.items.some((item) => item.label === 'Open Pod')).toBe(false);
+  });
+
   test('adds a contextual log action for a crashed service', () => {
     const model = buildTrayMenuModel({
       services: [healthy[0], healthy[1], { name: 'api', status: 'crashed' }],
@@ -93,5 +105,24 @@ describe('buildTrayMenuModel', () => {
     });
 
     expect(model.items.map((item) => item.label)).toContain('Open API Server Logs');
+  });
+});
+
+describe('normalizeTrayIdentity', () => {
+  test('accepts only sanitized identity URLs on the desktop Xpod origin', () => {
+    expect(normalizeTrayIdentity({
+      label: '  Alice\u0000 Admin  ',
+      webId: 'http://127.0.0.1:3000/alice/profile/card#me',
+      podUrl: 'http://127.0.0.1:3000/alice/',
+    }, 'http://127.0.0.1:3000')).toEqual({
+      label: 'Alice Admin',
+      webId: 'http://127.0.0.1:3000/alice/profile/card#me',
+      podUrl: 'http://127.0.0.1:3000/alice/',
+    });
+
+    expect(normalizeTrayIdentity({
+      label: 'Mallory',
+      podUrl: 'https://other-provider.example/pod/',
+    }, 'http://127.0.0.1:3000')).toBeUndefined();
   });
 });

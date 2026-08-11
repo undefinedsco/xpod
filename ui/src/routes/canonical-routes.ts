@@ -30,17 +30,26 @@ export type ProductSurface = {
   basename: '/dashboard' | '/status' | '/network' | '/settings' | '/ai-connections' | '/ai-config';
 };
 
+/**
+ * Authoritative product-shell roots shared by the normal entry documents and
+ * the OIDC callback document. Keep route ownership in one place so adding a
+ * rail surface cannot silently strand an authenticated callback elsewhere.
+ */
+export const productSurfaceRoots: readonly ProductSurface[] = [
+  { app: 'dashboard', basename: '/dashboard' },
+  { app: 'dashboard', basename: '/status' },
+  { app: 'dashboard', basename: '/network' },
+  { app: 'settings', basename: '/settings' },
+  { app: 'settings', basename: '/ai-connections' },
+  { app: 'settings', basename: '/ai-config' },
+];
+
 export function canonicalProductPathname(pathname: string): string {
   return legacyProductRedirects[pathname] ?? pathname;
 }
 
 export function surfaceForPathname(pathname: string): ProductSurface {
-  if (pathname === '/status' || pathname.startsWith('/status/')) return { app: 'dashboard', basename: '/status' };
-  if (pathname === '/network' || pathname.startsWith('/network/')) return { app: 'dashboard', basename: '/network' };
-  if (pathname === '/ai-connections' || pathname.startsWith('/ai-connections/')) return { app: 'settings', basename: '/ai-connections' };
-  if (pathname === '/ai-config' || pathname.startsWith('/ai-config/')) return { app: 'settings', basename: '/ai-config' };
-  if (pathname === '/settings' || pathname.startsWith('/settings/')) return { app: 'settings', basename: '/settings' };
-  return pathname === '/dashboard' || pathname.startsWith('/dashboard/')
-    ? { app: 'dashboard', basename: '/dashboard' }
-    : { app: 'settings', basename: '/settings' };
+  return productSurfaceRoots.find(({ basename }) => (
+    pathname === basename || pathname.startsWith(`${basename}/`)
+  )) ?? { app: 'settings', basename: '/settings' };
 }

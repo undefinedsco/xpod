@@ -1,29 +1,22 @@
 import type { ApiServer } from '../ApiServer';
 import { registerStaticSpaRoutes } from './StaticSpaHandler';
-import type { RouteHandler } from '../ApiServer';
-import { resolveXpodAliasTarget } from '../../shared/xpod-route-policy';
 
 export interface SettingsHandlerOptions {
   staticDir: string;
 }
 
 export function registerSettingsRoutes(server: ApiServer, options: SettingsHandlerOptions): void {
-  for (const alias of ['/ai-config', '/ai-connections'] as const) {
-    const redirect: RouteHandler = async (request, response) => {
-      response.statusCode = 302;
-      response.setHeader('Location', resolveXpodAliasTarget(alias, request.url ?? alias));
-      response.end();
-    };
-    server.get(alias, redirect, { public: true });
-    server.route('HEAD', alias, redirect, { public: true });
-    server.get(`${alias}/*path`, redirect, { public: true });
-    server.route('HEAD', `${alias}/*path`, redirect, { public: true });
+  for (const [prefix, label] of [
+    ['/settings', 'Settings'],
+    ['/ai-connections', 'AI Connections'],
+    ['/ai-config', 'AI Config'],
+  ] as const) {
+    registerStaticSpaRoutes(server, {
+      prefix,
+      staticDir: options.staticDir,
+      entryFiles: ['settings.html', 'index.html'],
+      label,
+      serveExactRoot: true,
+    });
   }
-
-  registerStaticSpaRoutes(server, {
-    prefix: '/settings',
-    staticDir: options.staticDir,
-    entryFiles: ['settings.html', 'index.html'],
-    label: 'Settings',
-  });
 }

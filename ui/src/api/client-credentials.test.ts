@@ -5,15 +5,30 @@ import {
 } from './client-credentials';
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me';
-const CLIENT_CREDENTIALS_URL = 'https://pod.example/.account/client-credentials/';
+const CLIENT_CREDENTIALS_PATH = '/.account/client-credentials/';
 
 describe('account controls Client Credentials manager', () => {
   it('is unavailable when account controls do not expose a Client Credentials endpoint', () => {
     expect(createAccountControlsClientCredentialManager(undefined, WEB_ID)).toBeUndefined();
-    expect(createAccountControlsClientCredentialManager(CLIENT_CREDENTIALS_URL, undefined)).toBeUndefined();
+    expect(createAccountControlsClientCredentialManager(CLIENT_CREDENTIALS_PATH, undefined)).toBeUndefined();
+  });
+
+  it('fails closed without fetching when the Client Credentials control is not current-origin http(s)', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const { protocol, host } = window.location;
+
+    expect(createAccountControlsClientCredentialManager('https://evil.example/.account/client-credentials/', WEB_ID, fetchImpl))
+      .toBeUndefined();
+    expect(createAccountControlsClientCredentialManager(`${protocol}//user@${host}/.account/client-credentials/`, WEB_ID, fetchImpl))
+      .toBeUndefined();
+    expect(createAccountControlsClientCredentialManager('javascript:alert(1)', WEB_ID, fetchImpl))
+      .toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('lists, creates, encodes, and revokes Solid Client Credentials through account controls', async () => {
+    const origin = window.location.origin;
+    const clientCredentialsUrl = `${origin}${CLIENT_CREDENTIALS_PATH}`;
     const calls: Array<{
       url: string;
       method: string;
@@ -35,8 +50,8 @@ describe('account controls Client Credentials manager', () => {
       if ((init?.method ?? 'GET') === 'GET') {
         return json({
           clientCredentials: {
-            'https://pod.example/.account/client-credentials/existing-id/': WEB_ID,
-            'https://pod.example/.account/client-credentials/bob-id/': 'https://pod.example/bob/profile/card#me',
+            [`${origin}/.account/client-credentials/existing-id/`]: WEB_ID,
+            [`${origin}/.account/client-credentials/bob-id/`]: 'https://pod.example/bob/profile/card#me',
           },
         });
       }
@@ -44,7 +59,7 @@ describe('account controls Client Credentials manager', () => {
         return json({
           id: 'created-id',
           secret: 'created-secret',
-          resourceUrl: 'https://pod.example/.account/client-credentials/created-id/',
+          resourceUrl: `${origin}/.account/client-credentials/created-id/`,
           webId: WEB_ID,
         }, { status: 201 });
       }
@@ -54,11 +69,11 @@ describe('account controls Client Credentials manager', () => {
       return new Response(null, { status: 405 });
     }) as typeof fetch;
 
-    const manager = createAccountControlsClientCredentialManager(CLIENT_CREDENTIALS_URL, WEB_ID, fetchImpl);
+    const manager = createAccountControlsClientCredentialManager(CLIENT_CREDENTIALS_PATH, WEB_ID, fetchImpl);
 
     await expect(manager?.list()).resolves.toEqual([{
       id: 'existing-id',
-      resourceUrl: 'https://pod.example/.account/client-credentials/existing-id/',
+      resourceUrl: `${origin}/.account/client-credentials/existing-id/`,
       owner: WEB_ID,
       webId: WEB_ID,
     }]);
@@ -67,7 +82,7 @@ describe('account controls Client Credentials manager', () => {
       plaintext: encodeClientCredentialsApiKey('created-id', 'created-secret'),
       record: {
         id: 'created-id',
-        resourceUrl: 'https://pod.example/.account/client-credentials/created-id/',
+        resourceUrl: `${origin}/.account/client-credentials/created-id/`,
         owner: WEB_ID,
         webId: WEB_ID,
       },
@@ -75,14 +90,14 @@ describe('account controls Client Credentials manager', () => {
       clientSecret: 'created-secret',
       apiKey: encodeClientCredentialsApiKey('created-id', 'created-secret'),
     });
-    await manager?.revoke('https://pod.example/.account/client-credentials/created-id/');
-    await expect(manager?.revoke('https://pod.example/.account/client-credentials/bob-id/'))
+    await manager?.revoke(`${origin}/.account/client-credentials/created-id/`);
+    await expect(manager?.revoke(`${origin}/.account/client-credentials/bob-id/`))
       .rejects.toThrow('outside the current WebID');
 
     expect(calls.map((call) => [call.method, call.url])).toEqual([
-      ['GET', CLIENT_CREDENTIALS_URL],
-      ['POST', CLIENT_CREDENTIALS_URL],
-      ['DELETE', 'https://pod.example/.account/client-credentials/created-id/'],
+      ['GET', clientCredentialsUrl],
+      ['POST', clientCredentialsUrl],
+      ['DELETE', `${origin}/.account/client-credentials/created-id/`],
     ]);
     expect(calls.every((call) => call.credentials === 'include')).toBe(true);
     expect(calls[1]?.contentType).toBe('application/json');

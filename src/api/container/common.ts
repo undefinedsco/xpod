@@ -10,6 +10,7 @@ import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
+import { DrizzleIndexedStorage } from '../../identity/drizzle/DrizzleIndexedStorage';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
 import { UsageRepository } from '../../storage/quota/UsageRepository';
 import { AccountRoleRepository } from '../../identity/drizzle/AccountRoleRepository';
@@ -167,6 +168,7 @@ export function registerCommonServices(
     }).singleton(),
 
     cssAccountTokenResolver: asFunction(({ db, config }: ApiContainerCradle) => {
+      const accountStorage = new DrizzleIndexedStorage(config.databaseUrl);
       const redisStorage = config.redisUrl
         ? new RedisKeyValueStorage<unknown>({
           client: config.redisUrl,
@@ -175,7 +177,7 @@ export function registerCommonServices(
           namespace: '/.internal/',
         })
         : undefined;
-      return new CssAccountTokenResolver({ db, redisStorage });
+      return new CssAccountTokenResolver({ db, redisStorage, accountStorage });
     }).singleton(),
 
     hostedPodDataAccess: asFunction(({ config }: ApiContainerCradle) => {

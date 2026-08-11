@@ -43,7 +43,6 @@ export default defineConfig({
       'ui/src/pages/settings/ai-config/form-state.test.ts',
       'ui/src/pages/settings/settings-projection.test.ts',
       'ui/src/pages/status/usage-projection.test.ts',
-      'ui/src/solid/XpodSolidRuntimeProvider.test.tsx',
       'ui/src/external/**',
     ],
     globals: true,

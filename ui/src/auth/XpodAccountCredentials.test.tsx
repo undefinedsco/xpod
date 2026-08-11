@@ -58,7 +58,7 @@ describe('XpodAccountCredentials', () => {
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       events.push('fetch');
-      expect(String(input)).toBe('/.account/login/password/');
+      expect(String(input)).toBe(new URL('/.account/login/password/', window.location.origin).href);
       expect(init?.method).toBe('POST');
       expect(init?.credentials).toBe('include');
       expect(init?.headers).toEqual({ 'Content-Type': 'application/json', Accept: 'application/json' });
@@ -95,7 +95,7 @@ describe('XpodAccountCredentials', () => {
     const onAuthenticated = vi.fn(async () => undefined);
     const retry = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      expect(String(input)).toBe('/.account/login/password/');
+      expect(String(input)).toBe(new URL('/.account/login/password/', window.location.origin).href);
       return new Response(JSON.stringify({ authorization: 'account-token' }), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -198,5 +198,21 @@ describe('XpodAccountCredentials', () => {
 
     resolveLogin(new Response(JSON.stringify({ authorization: 'account-token' }), { status: 200 }));
     await waitFor(() => expect(submit.disabled).toBe(false));
+  });
+
+  it('keeps the surface open and clears the token when refreshed Account controls remain anonymous', async () => {
+    const refetchControls = vi.fn(async () => undefined);
+    const onAuthenticated = vi.fn();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ authorization: 'unverified-token' }), { status: 200 })));
+
+    renderCredentials({ refetchControls, isAnonymous: () => true }, { onAuthenticated });
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    const error = await screen.findByRole('alert');
+    expect(error.textContent).toContain('Sign-in failed. Please try again.');
+    expect(onAuthenticated).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBeNull();
+    expect(document.cookie).not.toContain('css-account=unverified-token');
   });
 });

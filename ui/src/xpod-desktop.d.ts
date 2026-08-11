@@ -1,7 +1,13 @@
 export {};
 
 declare global {
+  interface XpodDesktopIdentityPayload {
+    label: string;
+    webId?: string;
+    podUrl?: string;
+  }
+
   var xpodDesktop: undefined | {
-    setIdentity(identity: { label: string; webId?: string; podUrl?: string } | null): void;
+    setIdentity(identity: XpodDesktopIdentityPayload | null): void;
   };
 }

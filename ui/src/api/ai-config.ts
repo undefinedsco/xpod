@@ -59,7 +59,7 @@ export interface AiConfigResponse {
 }
 
 export async function fetchAiConfig(authenticatedFetch: typeof fetch): Promise<AiConfigResponse> {
-  return readResponse(authenticatedFetch('/api/ai/config', {
+  return readResponse(authenticatedFetch(currentOriginApiUrl('/api/ai/config'), {
     method: 'GET',
     credentials: 'include',
     headers: { accept: 'application/json' },
@@ -70,7 +70,7 @@ export async function updateAiConfig(
   authenticatedFetch: typeof fetch,
   patch: AiConfigPolicyPatch,
 ): Promise<AiConfigResponse> {
-  return readResponse(authenticatedFetch('/api/ai/config', {
+  return readResponse(authenticatedFetch(currentOriginApiUrl('/api/ai/config'), {
     method: 'PATCH',
     credentials: 'include',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -79,7 +79,7 @@ export async function updateAiConfig(
 }
 
 export async function scheduleAiConfigRebuild(authenticatedFetch: typeof fetch, target: AiConfigRebuildTarget): Promise<AiConfigRebuildJob> {
-  const response = await authenticatedFetch('/api/ai/config/rebuild', { method: 'POST', credentials: 'include', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ target }) });
+  const response = await authenticatedFetch(currentOriginApiUrl('/api/ai/config/rebuild'), { method: 'POST', credentials: 'include', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ target }) });
   const payload = await response.json().catch(() => undefined) as { job?: AiConfigRebuildJob; error?: string } | undefined;
   if (!response.ok || !payload?.job) throw new Error(payload?.error ?? 'Index rebuild request failed');
   return payload.job;
@@ -90,7 +90,7 @@ export async function testAiConfigModel(
   model: { id: string; capabilities: string[] },
 ): Promise<void> {
   const embedding = model.capabilities.some((capability) => capability.toLowerCase() === 'embedding');
-  const response = await authenticatedFetch(embedding ? '/v1/embeddings' : '/v1/chat/completions', {
+  const response = await authenticatedFetch(currentOriginApiUrl(embedding ? '/v1/embeddings' : '/v1/chat/completions'), {
     method: 'POST',
     credentials: 'include',
     headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -104,6 +104,13 @@ export async function testAiConfigModel(
     throw new Error(message ?? 'Model readiness probe failed');
   }
   await response.arrayBuffer();
+}
+
+function currentOriginApiUrl(path: string): string {
+  if (typeof window === 'undefined') {
+    throw new Error('AI Config API requires the current browser origin');
+  }
+  return new URL(path, window.location.origin).toString();
 }
 
 async function readResponse(responsePromise: Promise<Response>): Promise<AiConfigResponse> {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storedAccountTokenHeaders, clearAccountSessionToken } from '../utils/account-session';
+import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
 import { AuthContext, type AccountAuthState, type Controls, type SanitizedAccountIdentity } from './AuthContextValue';
 
 interface ControlsResponse {
@@ -136,8 +137,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchControls]);
 
   const logout = useCallback(async () => {
-    const logoutUrl = controls?.account?.logout;
-    let failed = false;
+    const advertisedLogoutUrl = controls?.account?.logout;
+    const logoutUrl = resolveSameOriginAccountControlUrl(advertisedLogoutUrl);
+    let failed = Boolean(advertisedLogoutUrl && !logoutUrl);
     if (logoutUrl) {
       try {
         const response = await fetch(logoutUrl, {

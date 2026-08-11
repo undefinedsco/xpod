@@ -1,13 +1,13 @@
 import { useRef, useState } from 'react';
 import {
-  AccountCredentialsView,
-  AuthSurface,
+  AccountCredentialsSurface,
   type AccountCredentialsCopy,
   type AccountCredentialsValues,
 } from '@undefineds.co/shared-ui';
 import { useAuth } from '../context/AuthContextValue';
 import { loginAccountPassword } from '../utils/registration-flow';
-import { storeAccountSessionToken } from '../utils/account-session';
+import { clearAccountSessionToken, storeAccountSessionToken } from '../utils/account-session';
+import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
 
 export interface XpodAccountCredentialsProps {
   surface: 'modal' | 'embedded';
@@ -44,16 +44,6 @@ function safeLoginMessage(status: number): string {
   return 'Sign-in failed. Please try again.';
 }
 
-function sameOriginUrl(value: string): string | undefined {
-  if (typeof window === 'undefined') return undefined;
-  try {
-    const url = new URL(value, window.location.origin);
-    return url.origin === window.location.origin ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 class PasswordLoginStatusError extends Error {
   public readonly status: number;
 
@@ -69,7 +59,7 @@ export function XpodAccountCredentials({
   onAuthenticated,
   onClose,
 }: XpodAccountCredentialsProps) {
-  const { controls, refetchControls } = useAuth();
+  const { controls, isAnonymous, refetchControls } = useAuth();
   const [values, setValues] = useState<AccountCredentialsValues>({ email: '', password: '' });
   const [formError, setFormError] = useState<string>();
   const [pending, setPending] = useState(false);
@@ -83,7 +73,7 @@ export function XpodAccountCredentials({
     setFormError(undefined);
 
     try {
-      const loginUrl = sameOriginUrl(controls?.password?.login || '/.account/login/password/');
+      const loginUrl = resolveSameOriginAccountControlUrl(controls?.password?.login || '/.account/login/password/');
       if (!loginUrl) {
         setFormError('Sign-in failed. Please try again.');
         return;
@@ -101,6 +91,11 @@ export function XpodAccountCredentials({
       });
       storeAccountSessionToken(login.accountToken);
       await refetchControls();
+      if (isAnonymous?.()) {
+        clearAccountSessionToken();
+        setFormError('Sign-in failed. Please try again.');
+        return;
+      }
       await onAuthenticated?.();
     } catch (error: unknown) {
       setFormError(error instanceof PasswordLoginStatusError
@@ -118,23 +113,18 @@ export function XpodAccountCredentials({
   };
 
   return (
-    <AuthSurface
-      mode={surface}
-      title="Sign in to Xpod"
+    <AccountCredentialsSurface
+      surface={surface}
+      surfaceTitle="Sign in to Xpod"
       onClose={surface === 'modal' ? onClose : undefined}
       closeLabel={surface === 'modal' && onClose ? 'Close sign in' : undefined}
-    >
-      <div className="space-y-4 p-4">
-        <AccountCredentialsView
-          mode="login"
-          values={values}
-          onChange={updateValues}
-          onSubmit={handleSubmit}
-          pending={pending}
-          errors={formError ? { form: formError } : undefined}
-          copy={credentialsCopy}
-        />
-      </div>
-    </AuthSurface>
+      mode="login"
+      values={values}
+      onChange={updateValues}
+      onSubmit={handleSubmit}
+      pending={pending}
+      errors={formError ? { form: formError } : undefined}
+      copy={credentialsCopy}
+    />
   );
 }

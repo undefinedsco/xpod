@@ -71,24 +71,29 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
-    // Interactive applet operations run as the current Solid user. A separate
-    // service principal is only needed by background/runtime Pod access.
-    const service = options.servicePrincipal
-      ? await options.servicePrincipal.getServicePrincipal()
-      : { webId: request.auth.webId };
-    const descriptor = createAiConnectionsServiceAccess({
-      ownerWebId: request.auth.webId,
-      serviceWebId: service.webId,
-    });
-    const invocation = options.aiConnectionInvocationKeyIssuer
-      ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
-      : undefined;
-    logger.debug(`Issuing AI Connection service access for ${request.auth.webId}; invocation=${Boolean(invocation)}`);
-    sendJson(response, 200, {
-      ...descriptor,
-      aiClientConfiguration: options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
-      ...(invocation ? { invocation } : {}),
-    });
+    try {
+      // Interactive applet operations still describe the configured Xpod
+      // service identity. A separate service principal is only needed by
+      // background/runtime Pod access, so an omitted one remains supported.
+      const service = options.servicePrincipal
+        ? await options.servicePrincipal.getServicePrincipal()
+        : { webId: request.auth.webId };
+      const descriptor = createAiConnectionsServiceAccess({
+        ownerWebId: request.auth.webId,
+        serviceWebId: service.webId,
+      });
+      const invocation = options.aiConnectionInvocationKeyIssuer
+        ? await options.aiConnectionInvocationKeyIssuer.issue({ auth: request.auth })
+        : undefined;
+      logger.debug(`Issuing AI Connection service access for ${request.auth.webId}; invocation=${Boolean(invocation)}`);
+      sendJson(response, 200, {
+        ...descriptor,
+        aiClientConfiguration: options.aiClientConfiguration ?? unavailableAiClientConfigurationCapability(),
+        ...(invocation ? { invocation } : {}),
+      });
+    } catch (error) {
+      sendAiConnectionsServiceAccessError(response, error);
+    }
   });
 
   const repository = options.repository;
@@ -1627,6 +1632,22 @@ function publicConnectResult(value: unknown): unknown {
       ].includes(key))
       .map(([key, item]) => [key, publicConnectResult(item)]),
   );
+}
+
+function sendAiConnectionsServiceAccessError(response: ServerResponse, error: unknown): void {
+  if (error instanceof GatewayProtocolError && error.status >= 400 && error.status < 500) {
+    sendJson(response, error.status, {
+      error: error.code,
+      message: 'AI Connection service access request was rejected',
+    });
+    return;
+  }
+
+  logger.warn('AI Connection service access is temporarily unavailable');
+  sendJson(response, 503, {
+    error: 'ai_connection_service_access_unavailable',
+    message: 'AI Connection service access is temporarily unavailable',
+  });
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {

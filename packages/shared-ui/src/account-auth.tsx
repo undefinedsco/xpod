@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useId, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { AlertCircle, Check, Loader2 } from 'lucide-react'
 import { Badge } from './badge'
 import { Button } from './button'
@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './car
 import { Input } from './input'
 import { Label } from './label'
 import { ScrollArea } from './scroll-area'
-import type { AuthSurfaceMode } from './auth-surface'
+import { AuthSurface, type AuthSurfaceMode } from './auth-surface'
 
 export type { AuthSurfaceMode }
 
@@ -63,6 +63,30 @@ export interface AccountCredentialsViewProps {
   usernameAvailability?: 'idle' | 'checking' | 'available' | 'unavailable' | { status: 'idle' | 'checking' | 'available' | 'unavailable'; message?: string }
   usernameSuggestions?: readonly string[]
   copy: AccountCredentialsCopy
+  frame?: 'card' | 'bare'
+  showHeader?: boolean
+}
+
+function AccountCredentialsFrame({
+  frame,
+  children,
+}: {
+  frame: 'card' | 'bare'
+  children: ReactNode
+}) {
+  if (frame === 'bare') {
+    return (
+      <div data-account-credentials-frame="bare" className="w-full text-card-foreground">
+        {children}
+      </div>
+    )
+  }
+
+  return (
+    <Card data-account-credentials-frame="card" className="w-full border-border bg-card text-card-foreground">
+      {children}
+    </Card>
+  )
 }
 
 function setCredentialValue(
@@ -98,6 +122,8 @@ export function AccountCredentialsView({
   usernameAvailability = 'idle',
   usernameSuggestions = [],
   copy,
+  frame = 'card',
+  showHeader = true,
 }: AccountCredentialsViewProps) {
   const [submittedMismatch, setSubmittedMismatch] = useState(false)
   const usernameId = useId()
@@ -133,13 +159,15 @@ export function AccountCredentialsView({
   }
 
   return (
-    <Card className="w-full border-border bg-card text-card-foreground">
+    <AccountCredentialsFrame frame={frame}>
       <ScrollArea data-testid="account-credentials-scroll" className="max-h-[min(70vh,36rem)] overflow-y-auto">
-        <CardHeader>
-          <CardTitle>{isRegister ? copy.registerTitle : copy.loginTitle}</CardTitle>
-          <CardDescription>{copy.productName}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+        {showHeader ? (
+          <CardHeader>
+            <CardTitle>{isRegister ? copy.registerTitle : copy.loginTitle}</CardTitle>
+            <CardDescription>{copy.productName}</CardDescription>
+          </CardHeader>
+        ) : null}
+        <CardContent className={showHeader ? 'space-y-4' : 'space-y-4 pt-6'}>
           {isRegister ? (
             <div className="space-y-2">
               <Label htmlFor={usernameId}>{copy.usernameLabel}</Label>
@@ -273,7 +301,47 @@ export function AccountCredentialsView({
           </form>
         </CardContent>
       </ScrollArea>
-    </Card>
+    </AccountCredentialsFrame>
+  )
+}
+
+export interface AccountCredentialsSurfaceProps extends AccountCredentialsViewProps {
+  surface: AuthSurfaceMode
+  surfaceTitle: string
+  onClose?: () => void
+  closeLabel?: string
+  closeOnEscape?: boolean
+  surfaceClassName?: string
+  contentClassName?: string
+}
+
+/**
+ * Complete Account credentials presentation for hosts that want the public
+ * page, modal or embedded surface without stacking two Card frames.
+ */
+export function AccountCredentialsSurface({
+  surface,
+  surfaceTitle,
+  onClose,
+  closeLabel,
+  closeOnEscape,
+  surfaceClassName,
+  contentClassName = 'p-4',
+  ...credentials
+}: AccountCredentialsSurfaceProps) {
+  return (
+    <AuthSurface
+      mode={surface}
+      title={surfaceTitle}
+      onClose={onClose}
+      closeLabel={closeLabel}
+      closeOnEscape={closeOnEscape}
+      className={surfaceClassName}
+    >
+      <div className={contentClassName}>
+        <AccountCredentialsView {...credentials} frame="bare" showHeader={false} />
+      </div>
+    </AuthSurface>
   )
 }
 

@@ -1,0 +1,1 @@
+import{j as e}from"./auth-callback-CRz9dhDB.js";import r from"./UsagePage-Bf89YWQO.js";import"./PaneListHeader-NbknM7dn.js";import"./workspace-layout-DnxbLStj.js";import"./skeleton-BDFjL3S3.js";function p({kind:t}){return e.jsx(r,{kind:t,embedded:!0})}export{p as default};

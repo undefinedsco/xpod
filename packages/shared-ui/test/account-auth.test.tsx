@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AccountCredentialsSurface,
   AccountCredentialsView,
   AccountLoginMethodListView,
   PasswordRecoveryView,
@@ -52,6 +53,28 @@ function CredentialsHarness({ mode = 'login' as const }: { mode?: 'login' | 'reg
 }
 
 describe('Account credentials presentation', () => {
+  it('owns one complete modal frame without nesting a credentials card', () => {
+    render(
+      <AccountCredentialsSurface
+        surface="modal"
+        surfaceTitle="Sign in to Northstar"
+        closeLabel="Close sign in"
+        onClose={() => undefined}
+        mode="login"
+        values={{ email: 'person@example.test', password: 'secret' }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        copy={credentialsCopy}
+      />,
+    )
+
+    const dialog = screen.getByRole('dialog', { name: 'Sign in to Northstar' })
+    expect(dialog.querySelector('[data-account-credentials-frame="bare"]')).toBeTruthy()
+    expect(dialog.querySelector('[data-account-credentials-frame="card"]')).toBeNull()
+    expect(screen.getAllByRole('heading')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Close sign in' })).toBeTruthy()
+  })
+
   it('supports registration autocomplete, controlled fields, enter submission and live errors', () => {
     const onChange = vi.fn()
     const onSubmit = vi.fn()

@@ -26,6 +26,8 @@ export interface StaticSpaRouteOptions {
   staticDir: string;
   entryFiles: readonly string[];
   label: string;
+  /** Serve the SPA entry at the exact prefix instead of normalizing to a trailing slash. */
+  serveExactRoot?: boolean;
 }
 
 function resolveEntry(staticDir: string, entryFiles: readonly string[]): string | undefined {
@@ -35,7 +37,7 @@ function resolveEntry(staticDir: string, entryFiles: readonly string[]): string 
 }
 
 export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRouteOptions): void {
-  const { prefix, staticDir, entryFiles, label } = options;
+  const { prefix, staticDir, entryFiles, label, serveExactRoot = false } = options;
   if (!fs.existsSync(staticDir)) {
     console.warn(`[${label}] Static directory not found: ${staticDir}`);
     console.warn(`[${label}] Run "bun run build:ui" to build the UI products`);
@@ -92,10 +94,11 @@ export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRou
     }
   };
 
-  server.get(prefix, redirectHandler, { public: true });
+  const rootHandler = serveExactRoot ? staticHandler : redirectHandler;
+  server.get(prefix, rootHandler, { public: true });
   server.get(`${prefix}/`, staticHandler, { public: true });
   server.get(`${prefix}/*path`, staticHandler, { public: true });
-  server.route('HEAD', prefix, redirectHandler, { public: true });
+  server.route('HEAD', prefix, rootHandler, { public: true });
   server.route('HEAD', `${prefix}/`, staticHandler, { public: true });
   server.route('HEAD', `${prefix}/*path`, staticHandler, { public: true });
 }

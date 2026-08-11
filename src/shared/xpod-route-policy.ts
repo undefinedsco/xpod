@@ -11,8 +11,6 @@ export const XPOD_RETURN_PATH_PREFIXES = [
 export const XPOD_PRODUCT_ALIASES = {
   '/status': '/dashboard/overview',
   '/network': '/dashboard/network',
-  '/ai-config': '/settings/models',
-  '/ai-connections': '/settings/models',
 } as const;
 
 export type XpodProductAlias = keyof typeof XPOD_PRODUCT_ALIASES;
@@ -63,19 +61,5 @@ function decodeForValidation(value: string): string {
 export function resolveXpodAliasTarget(alias: XpodProductAlias, requestUrl: string): string {
   const source = new URL(requestUrl, 'http://xpod.local');
   const target = XPOD_PRODUCT_ALIASES[alias];
-  const params = new URLSearchParams();
-
-  if (alias === '/ai-config' || alias === '/ai-connections') {
-    params.set('surface', alias === '/ai-config' ? 'ai-config' : 'ai-connections');
-  }
-
-  for (const [key, value] of source.searchParams) {
-    if ((alias === '/ai-config' || alias === '/ai-connections') && key === 'surface') {
-      continue;
-    }
-    params.append(key, value);
-  }
-
-  const search = params.toString();
-  return search ? `${target}?${search}` : target;
+  return `${target}${source.search}`;
 }

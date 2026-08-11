@@ -1,6 +1,11 @@
-import { SolidRuntimeProvider, type OpenPodRuntime, type StorageBinding } from '@undefineds.co/solid-sdk';
+import {
+  SolidRuntimeProvider,
+  type OpenPodRuntime,
+  type SolidSessionSnapshot,
+  type StorageBinding,
+} from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { AuthContext } from '../context/AuthContextValue';
@@ -10,10 +15,12 @@ import {
   readXpodSelectedStorage,
 } from '../auth/xpod-login-transaction';
 import { storageBindingKey } from '../auth/xpod-storage-selection';
+import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import {
   getXpodSolidRuntimeValue,
   clearStoredXpodOidcIssuer,
+  isCurrentXpodSessionSnapshot,
   normalizeXpodOidcIssuer,
   normalizeXpodLoginTransaction,
   safeAuthError,
@@ -34,8 +41,9 @@ export function XpodSolidRuntimeProvider({
   const accountContext = useContext(AuthContext);
   const accountIsLoggedIn = accountContext?.isLoggedIn ?? false;
   const accountBindingsUrl = accountContext?.controls?.account?.bindings;
-  const [snapshot, setSnapshot] = useState(() => runtime.session.getSnapshot());
-  const [issuer, setIssuer] = useState(() => runtime.getIssuer());
+  const initialProviderSession = useMemo(() => currentProviderSession(runtime), [runtime]);
+  const [snapshot, setSnapshot] = useState(initialProviderSession.snapshot);
+  const [issuer, setIssuer] = useState(initialProviderSession.issuer);
   const [currentPod, setCurrentPod] = useState<OpenPodRuntime<SolidDatabase>>();
   const [selectedStorage, setSelectedStorage] = useState<StorageBinding>();
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
@@ -43,13 +51,77 @@ export function XpodSolidRuntimeProvider({
     useState<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>>();
   const [accountClientCredentialsUrl, setAccountClientCredentialsUrl] = useState<string>();
   const snapshotRef = useRef(snapshot);
+  const rejectedSessionRef = useRef(initialProviderSession.rejected);
+  const rejectedSessionResetRef = useRef<Promise<void> | undefined>(undefined);
+
+  const exposedFetch = useCallback<typeof fetch>((input, init) => {
+    if (rejectedSessionRef.current) {
+      return Promise.reject(REJECTED_SESSION_FETCH_ERROR);
+    }
+    return init === undefined
+      ? runtime.session.fetch(input)
+      : runtime.session.fetch(input, init);
+  }, [runtime.session]);
+
+  const clearRejectedSession = useCallback(() => {
+    if (rejectedSessionResetRef.current) return rejectedSessionResetRef.current;
+
+    const reset = (async () => {
+      try {
+        await runtime.session.logout();
+        const resetSnapshot = runtime.session.getSnapshot();
+        if (resetSnapshot.status !== 'authenticated'
+          || isCurrentXpodSessionSnapshot(resetSnapshot, runtime.getIssuer())) {
+          rejectedSessionRef.current = false;
+        }
+      } catch {
+        // A rejected provider must remain unusable even if its logout endpoint
+        // is unavailable. The host clears all local runtime state below.
+      } finally {
+        const anonymous = { status: 'anonymous' } as const;
+        runtime.pod.clear();
+        clearXpodSelectedStorage();
+        clearStoredXpodOidcIssuer();
+        runtime.setIssuer(undefined);
+        snapshotRef.current = anonymous;
+        setSnapshot(anonymous);
+        setIssuer(undefined);
+        setCurrentPod(undefined);
+        setSelectedStorage(undefined);
+        setPodError(undefined);
+        setAiClientConfiguration(undefined);
+        setAccountClientCredentialsUrl(undefined);
+      }
+    })().finally(() => {
+      if (rejectedSessionResetRef.current === reset) {
+        rejectedSessionResetRef.current = undefined;
+      }
+    });
+    rejectedSessionResetRef.current = reset;
+    return reset;
+  }, [runtime]);
+
+  const exposedSession = useMemo(() => ({
+    ...runtime.session,
+    fetch: exposedFetch,
+    getSnapshot: () => snapshotRef.current,
+  }), [exposedFetch, runtime.session]);
 
   useEffect(() => {
     return runtime.session.subscribe((nextSnapshot) => {
+      const nextIssuer = runtime.getIssuer();
+      if (!isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer)) {
+        rejectedSessionRef.current = true;
+        void clearRejectedSession();
+        return;
+      }
+      if (nextSnapshot.status === 'authenticated') {
+        rejectedSessionRef.current = false;
+      }
       const previousSnapshot = snapshotRef.current;
       snapshotRef.current = nextSnapshot;
       setSnapshot(nextSnapshot);
-      setIssuer(runtime.getIssuer());
+      setIssuer(nextIssuer);
       if (nextSnapshot.status !== 'authenticated') {
         setCurrentPod(undefined);
         setSelectedStorage(undefined);
@@ -68,7 +140,7 @@ export function XpodSolidRuntimeProvider({
           : undefined);
       }
     });
-  }, [runtime]);
+  }, [clearRejectedSession, runtime]);
 
   useEffect(() => {
     let active = true;
@@ -76,16 +148,25 @@ export function XpodSolidRuntimeProvider({
     const initialization = currentSnapshot.status === 'initializing'
       ? runtime.session.initialize({ restorePreviousSession: true })
       : Promise.resolve(currentSnapshot);
-    void initialization.then((nextSnapshot) => {
-      if (active) {
-        setSnapshot(nextSnapshot);
-        setIssuer(runtime.getIssuer());
+    void initialization.then(async (nextSnapshot) => {
+      const nextIssuer = runtime.getIssuer();
+      if (!isCurrentXpodSessionSnapshot(nextSnapshot, nextIssuer)) {
+        rejectedSessionRef.current = true;
+        await clearRejectedSession();
+        return;
       }
+      if (nextSnapshot.status === 'authenticated') {
+        rejectedSessionRef.current = false;
+      }
+      if (!active) return;
+      snapshotRef.current = nextSnapshot;
+      setSnapshot(nextSnapshot);
+      setIssuer(nextIssuer);
     });
     return () => {
       active = false;
     };
-  }, [runtime]);
+  }, [clearRejectedSession, runtime]);
 
   useEffect(() => {
     if (snapshot.status !== 'authenticated') {
@@ -116,7 +197,7 @@ export function XpodSolidRuntimeProvider({
     const openArgs = {
       webId: snapshot.webId,
       podUrl: rememberedBinding.storageUrl,
-      fetch: runtime.session.fetch,
+      fetch: exposedFetch,
     };
     void (async () => {
       try {
@@ -159,7 +240,7 @@ export function XpodSolidRuntimeProvider({
     return () => {
       cancelled = true;
     };
-  }, [accountBindingsUrl, accountIsLoggedIn, runtime, snapshot]);
+  }, [accountBindingsUrl, accountIsLoggedIn, exposedFetch, runtime, snapshot]);
 
   const authenticatedWebId = snapshot.status === 'authenticated' ? snapshot.webId : undefined;
 
@@ -172,7 +253,7 @@ export function XpodSolidRuntimeProvider({
         setAccountClientCredentialsUrl(url);
       }
     });
-    void discoverAiClientConfigurationCapability(runtime.session.fetch).then((capability) => {
+    void discoverAiClientConfigurationCapability(exposedFetch).then((capability) => {
       if (!cancelled && runtime.session.getSnapshot().status === 'authenticated' &&
         runtime.session.getSnapshot().webId === authenticatedWebId) {
         setAiClientConfiguration(capability);
@@ -182,7 +263,7 @@ export function XpodSolidRuntimeProvider({
     return () => {
       cancelled = true;
     };
-  }, [authenticatedWebId, runtime]);
+  }, [authenticatedWebId, exposedFetch, runtime]);
 
   const xpodRuntime = useMemo<XpodSolidRuntimeValue>(() => {
     const activeIssuer = issuer ?? runtime.getIssuer();
@@ -194,9 +275,9 @@ export function XpodSolidRuntimeProvider({
       : snapshotToState(snapshot, currentPod, activeIssuer);
 
     return {
-      session: runtime.session,
+      session: exposedSession,
       pod: runtime.pod,
-      fetch: runtime.session.fetch,
+      fetch: exposedFetch,
       state: state.status === 'error' ? { ...state, error: safeAuthError(state.error) } : state,
       webId: state.webId,
       podUrl: state.podUrl,
@@ -229,10 +310,10 @@ export function XpodSolidRuntimeProvider({
         setAccountClientCredentialsUrl(undefined);
       },
     };
-  }, [accountClientCredentialsUrl, aiClientConfiguration, currentPod, issuer, podError, runtime, selectedStorage, snapshot]);
+  }, [accountClientCredentialsUrl, aiClientConfiguration, currentPod, exposedFetch, exposedSession, issuer, podError, runtime, selectedStorage, snapshot]);
 
   return (
-    <SolidRuntimeProvider value={{ session: runtime.session, pod: runtime.pod, currentPod }}>
+    <SolidRuntimeProvider value={{ session: exposedSession, pod: runtime.pod, currentPod }}>
       <XpodSolidRuntimeContext.Provider value={xpodRuntime}>
         {children}
       </XpodSolidRuntimeContext.Provider>
@@ -250,10 +331,25 @@ async function discoverAccountClientCredentialsUrl(fetchImpl: typeof fetch): Pro
     const payload = await response.json() as unknown;
     if (!isRecord(payload) || !isRecord(payload.controls) || !isRecord(payload.controls.account)) return undefined;
     const value = payload.controls.account.clientCredentials;
-    return typeof value === 'string' && value ? value : undefined;
+    return resolveSameOriginAccountControlUrl(typeof value === 'string' ? value : undefined);
   } catch {
     return undefined;
   }
+}
+
+const ANONYMOUS_SNAPSHOT = { status: 'anonymous' } as const satisfies SolidSessionSnapshot;
+const REJECTED_SESSION_FETCH_ERROR = new Error('Xpod session is unavailable');
+
+function currentProviderSession(runtime: XpodSolidRuntimeCore): {
+  snapshot: SolidSessionSnapshot;
+  issuer: string | undefined;
+  rejected: boolean;
+} {
+  const snapshot = runtime.session.getSnapshot();
+  const issuer = runtime.getIssuer();
+  return isCurrentXpodSessionSnapshot(snapshot, issuer)
+    ? { snapshot, issuer, rejected: false }
+    : { snapshot: ANONYMOUS_SNAPSHOT, issuer: undefined, rejected: true };
 }
 
 function sameUrl(left: string, right: string): boolean {

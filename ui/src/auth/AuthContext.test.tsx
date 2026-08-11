@@ -193,6 +193,45 @@ describe('Xpod Account controller', () => {
     await unmount(root);
   });
 
+  test('rejects a cross-origin logout control without sending the Account token or clearing the local session', async () => {
+    installDom(undefined, 'https://app.example/status/overview');
+    window.sessionStorage.setItem('xpod.cssAccountToken', 'secret-token');
+    document.cookie = 'css-account=secret-token; Path=/';
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        controls: { account: { logout: 'https://evil.example/.account/logout/' } },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AuthProvider><Probe /></AuthProvider>);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await act(async () => {
+      const logoutButton = container.querySelector('button:last-of-type');
+      if (!logoutButton) throw new Error('missing logout button');
+      fireEvent.click(logoutButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalledWith(
+      'https://evil.example/.account/logout/',
+      expect.anything(),
+    );
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+    expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('false');
+    expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBe('secret-token');
+    expect(document.cookie).toContain('secret-token');
+    await unmount(root);
+  });
+
   test('keeps a just-authenticated Account non-anonymous when an immediate logout fails', async () => {
     installDom();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {

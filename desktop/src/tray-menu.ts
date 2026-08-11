@@ -40,6 +40,58 @@ export interface TrayMenuModel {
   items: TrayMenuItemModel[]
 }
 
+export interface TrayIdentity {
+  label: string
+  webId?: string
+  podUrl?: string
+}
+
+export function normalizeTrayIdentity(value: unknown, targetOrigin: string): TrayIdentity | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const candidate = value as { label?: unknown; webId?: unknown; podUrl?: unknown }
+  if (typeof candidate.label !== 'string') return undefined
+
+  const label = Array.from(candidate.label, (character) => {
+    const codePoint = character.codePointAt(0)!
+    return codePoint < 0x20
+      || (codePoint >= 0x7f && codePoint <= 0x9f)
+      || (codePoint >= 0x202a && codePoint <= 0x202e)
+      || (codePoint >= 0x2066 && codePoint <= 0x2069)
+      ? ' '
+      : character
+  }).join('').replace(/\s+/g, ' ').trim()
+  const boundedLabel = Array.from(label).slice(0, 80).join('').trim()
+  if (!boundedLabel) return undefined
+
+  const webId = normalizeIdentityUrl(candidate.webId, targetOrigin)
+  const podUrl = normalizeIdentityUrl(candidate.podUrl, targetOrigin)
+  if ((candidate.webId !== undefined && !webId) || (candidate.podUrl !== undefined && !podUrl)) {
+    return undefined
+  }
+  return {
+    label: boundedLabel,
+    ...(webId ? { webId } : {}),
+    ...(podUrl ? { podUrl } : {}),
+  }
+}
+
+function normalizeIdentityUrl(value: unknown, targetOrigin: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.length > 2_048) return undefined
+  try {
+    const url = new URL(value)
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:')
+      || url.username
+      || url.password
+      || url.origin !== targetOrigin
+    ) return undefined
+    return url.toString()
+  } catch {
+    return undefined
+  }
+}
+
 const servicePresentation: Record<TrayServiceName, { label: string; route: string }> = {
   gateway: { label: 'Gateway', route: '/status/services/gateway' },
   css: { label: 'Solid Server', route: '/status/services/solid-server' },
@@ -67,7 +119,7 @@ export function buildTrayMenuModel({
 }: {
   services: readonly TrayServiceSnapshot[]
   launchAtLogin: boolean
-  identity?: { label: string }
+  identity?: TrayIdentity
 }): TrayMenuModel {
   const normalized = normalizedServices(services)
   const aggregate = aggregateTrayStatus(normalized)
@@ -90,7 +142,11 @@ export function buildTrayMenuModel({
   items.push(
     separator(),
     { label: 'Open Xpod', action: { type: 'open-xpod' } },
-    { label: 'Open Pod', action: { type: 'open-pod' } },
+  )
+  if (identity?.podUrl) {
+    items.push({ label: 'Open Pod', action: { type: 'open-pod' } })
+  }
+  items.push(
     separator(),
     { label: 'Status', action: { type: 'open-route', route: '/status/overview' } },
     { label: 'Network', action: { type: 'open-route', route: '/network' } },
@@ -104,13 +160,11 @@ export function buildTrayMenuModel({
     },
   )
 
+  items.push(separator())
   if (identity) {
-    items.push(
-      separator(),
-      { label: `Signed in as ${identity.label}`, enabled: false },
-      { label: 'Account…', action: { type: 'open-route', route: '/status/overview?account=open' } },
-    )
+    items.push({ label: `Signed in as ${identity.label}`, enabled: false })
   }
+  items.push({ label: 'Account…', action: { type: 'open-route', route: '/status/overview?account=open' } })
 
   items.push(
     separator(),

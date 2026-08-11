@@ -4,6 +4,7 @@ import type {
   CreatedAiClientCredential,
 } from '@undefineds.co/extension-sdk/web';
 import { storedAccountTokenHeaders } from '../utils/account-session';
+import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
 
 interface ClientCredentialsResponse {
   clientCredentials?: Record<string, string>;
@@ -25,13 +26,14 @@ export function createAccountControlsClientCredentialManager(
   currentWebId: string | undefined,
   fetchImpl: typeof fetch = fetch,
 ): AiClientCredentialManager | undefined {
-  if (!clientCredentialsUrl || !currentWebId) return undefined;
+  const resolvedClientCredentialsUrl = resolveSameOriginAccountControlUrl(clientCredentialsUrl);
+  if (!resolvedClientCredentialsUrl || !currentWebId) return undefined;
   const allowedResourceUrls = new Set<string>();
   return {
     available: true,
     accountUrl: '/.account/',
     async list() {
-      const response = await fetchImpl(clientCredentialsUrl, {
+      const response = await fetchImpl(resolvedClientCredentialsUrl, {
         method: 'GET',
         headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
         credentials: 'include',
@@ -45,7 +47,7 @@ export function createAccountControlsClientCredentialManager(
     },
     async create(input) {
       if (input.webId !== currentWebId) throw new Error('Cannot create a Client Credential for another WebID');
-      const response = await fetchImpl(clientCredentialsUrl, {
+      const response = await fetchImpl(resolvedClientCredentialsUrl, {
         method: 'POST',
         headers: storedAccountTokenHeaders({
           Accept: 'application/json',
@@ -59,15 +61,16 @@ export function createAccountControlsClientCredentialManager(
       });
       if (!response.ok) throw new Error('Failed to create Client Credential');
       const payload = await response.json() as CreatedClientCredentialResponse;
-      const created = normalizeCreatedClientCredential(payload, input.webId, clientCredentialsUrl);
+      const created = normalizeCreatedClientCredential(payload, input.webId, resolvedClientCredentialsUrl);
       allowedResourceUrls.add(created.record.resourceUrl);
       return created;
     },
     async revoke(resourceUrl) {
-      if (!allowedResourceUrls.has(resourceUrl)) {
+      const resolvedResourceUrl = resolveSameOriginAccountControlUrl(resourceUrl);
+      if (!resolvedResourceUrl || !allowedResourceUrls.has(resolvedResourceUrl)) {
         throw new Error('Cannot revoke a Client Credential outside the current WebID');
       }
-      const response = await fetchImpl(resourceUrl, {
+      const response = await fetchImpl(resolvedResourceUrl, {
         method: 'DELETE',
         headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
         credentials: 'include',
@@ -79,12 +82,18 @@ export function createAccountControlsClientCredentialManager(
 
 function normalizeClientCredentialRecords(value: unknown): AiClientCredentialRecord[] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-  return Object.entries(value as Record<string, unknown>).map(([resourceUrl, webId]) => ({
-    id: clientCredentialIdFromUrl(resourceUrl),
-    resourceUrl,
-    owner: typeof webId === 'string' ? webId : '',
-    webId: typeof webId === 'string' ? webId : undefined,
-  }));
+  return Object.entries(value as Record<string, unknown>)
+    .flatMap(([resourceUrl, webId]) => {
+      const resolvedResourceUrl = resolveSameOriginAccountControlUrl(resourceUrl);
+      if (!resolvedResourceUrl) return [];
+      const record: AiClientCredentialRecord = {
+        id: clientCredentialIdFromUrl(resolvedResourceUrl),
+        resourceUrl: resolvedResourceUrl,
+        owner: typeof webId === 'string' ? webId : '',
+        webId: typeof webId === 'string' ? webId : undefined,
+      };
+      return [record];
+    });
 }
 
 function normalizeCreatedClientCredential(
@@ -95,7 +104,12 @@ function normalizeCreatedClientCredential(
   if (!value.id || !value.secret) {
     throw new Error('Client Credential response did not include the one-time secret');
   }
-  const resourceUrl = value.resourceUrl ?? new URL(`${encodeURIComponent(value.id)}/`, clientCredentialsUrl).href;
+  const resourceUrl = resolveSameOriginAccountControlUrl(
+    value.resourceUrl ?? new URL(`${encodeURIComponent(value.id)}/`, clientCredentialsUrl).href,
+  );
+  if (!resourceUrl) {
+    throw new Error('Client Credential response included an unsafe resource URL');
+  }
   return {
     plaintext: encodeClientCredentialsApiKey(value.id, value.secret),
     record: {

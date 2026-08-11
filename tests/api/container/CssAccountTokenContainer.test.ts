@@ -29,6 +29,18 @@ describe('CSS account token API container wiring', () => {
       )
     `);
     await executeStatement(db, sql`
+      CREATE TABLE identity_store (
+        container TEXT NOT NULL,
+        id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (container, id)
+      )
+    `);
+    await executeStatement(db, sql`
+      INSERT INTO identity_store (container, id, payload)
+      VALUES ('account', 'account-container', '{}')
+    `);
+    await executeStatement(db, sql`
       INSERT INTO internal_kv (key, value)
       VALUES ('accounts/cookies/container-token', ${JSON.stringify({
         expires: new Date(Date.now() + 60_000).toISOString(),

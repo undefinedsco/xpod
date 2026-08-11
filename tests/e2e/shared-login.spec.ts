@@ -24,6 +24,13 @@ type SharedLoginFixture = {
   };
 };
 
+type AccountLoginTrace = {
+  beforeUrl: string;
+  afterUrl: string;
+  passwordSubmitted: boolean;
+  popupOpened: boolean;
+};
+
 class SharedLoginHarness {
   private constructor(
     private readonly child: ReturnType<typeof spawn>,
@@ -146,19 +153,16 @@ test.describe('Xpod shared login acceptance', () => {
     await fixture?.stop();
   });
 
-  test('dashboard-first login opens Pod-backed Settings without a second password prompt', async ({ browser }) => {
+  test('Account-first Status login opens Pod-backed AI Connections without a second password prompt', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
-      const trace = await login(page, fixture.ready.accounts.alice, '/dashboard/overview', isDashboardAuthenticated);
-      assertRealOidcTrace(trace);
+      const trace = await loginAccount(page, fixture.ready.accounts.alice, '/status/overview');
+      assertAccountLoginTrace(trace);
       await expect(page.getByTestId('xpod-user-card-trigger')).toBeVisible();
-      // Dashboard auth can settle before the selected Pod finishes opening;
-      // wait for the same exact-pair readiness marker used by Settings before
-      // switching products.
-      await expect(page.locator('[data-testid="xpod-user-card-trigger"][data-pod-ready="true"]'))
-        .toBeVisible({ timeout: 30_000 });
 
-      await openProduct(page, 'settings');
+      const oidcTrace = await login(page, fixture.ready.accounts.alice, '/ai-connections', isPodSettingsReady);
+      assertRealOidcTrace(oidcTrace, { requirePassword: false });
+      expect(oidcTrace.passwordSubmitted).toBe(false);
       try {
         await expect.poll(() => isPodSettingsReady(page), { timeout: 30_000 }).toBe(true);
       } catch (error) {
@@ -170,32 +174,54 @@ test.describe('Xpod shared login acceptance', () => {
     }
   });
 
-  test('Settings-first login leaves the Account session available to Dashboard', async ({ browser }) => {
+  test('WebID-first AI Config login leaves the Account session available to Status', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
-      const trace = await login(page, fixture.ready.accounts.alice, '/settings/models', isPodSettingsReady);
+      const trace = await login(page, fixture.ready.accounts.alice, '/ai-config/model-assignments', isAiConfigReady);
       assertRealOidcTrace(trace);
-      await openProduct(page, 'dashboard');
-      await expect.poll(() => isDashboardAuthenticated(page), { timeout: 30_000 }).toBe(true);
+      await openRoute(page, '/status/overview');
+      await expect.poll(() => isStatusAuthenticated(page), { timeout: 30_000 }).toBe(true);
       await expect(page.locator('input[type="password"]')).toHaveCount(0);
     } finally {
       await context.close();
     }
   });
 
-  test('an existing Account with one Pod restores that exact binding after reload', async ({ browser }) => {
+  test('an existing Account restores Status after reload without reopening the modal', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
-      const trace = await login(page, fixture.ready.accounts.alice, '/settings/models', isPodSettingsReady);
-      assertRealOidcTrace(trace);
+      await loginAccount(page, fixture.ready.accounts.alice, '/status/overview');
       await page.reload({ waitUntil: 'domcontentloaded' });
-      await expect.poll(() => isPodSettingsReady(page), { timeout: 30_000 }).toBe(true);
+      await expect.poll(() => isStatusAuthenticated(page), { timeout: 30_000 }).toBe(true);
       await expect(page.locator('input[type="password"]')).toHaveCount(0);
+      await expect(page.getByTestId('auth-surface-modal')).toHaveCount(0);
       await page.getByTestId('xpod-user-card-trigger').click();
       const dialog = page.getByRole('dialog');
       await expect(dialog).toBeVisible();
-      await expect(dialog).not.toContainText('No Pod selected');
-      await expect(dialog).toContainText('Pod');
+      await expect(dialog).toContainText(/Account|alice/i);
+    } finally {
+      await context.close();
+    }
+  });
+
+  test('dismissing the Status Account modal keeps protected content hidden while rail and Network stay usable', async ({ browser }) => {
+    const { context, page } = await scenarioPage(browser);
+    try {
+      await openRoute(page, '/status/overview');
+      await expect(page.getByTestId('auth-surface-modal')).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole('link', { name: 'Status', exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Network', exact: true })).toBeVisible();
+
+      await page.getByRole('button', { name: 'Close sign in', exact: true }).click();
+      await expect(page.getByRole('heading', { name: 'Sign in required', exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Status', exact: true })).toBeVisible();
+      await expect(page.getByRole('link', { name: 'Network', exact: true })).toBeVisible();
+
+      await page.getByRole('link', { name: 'Network', exact: true }).click();
+      await expect.poll(() => safePath(page.url()), { timeout: 10_000 }).toBe('/network');
+      await expect.poll(() => isWorkspaceReady(page), { timeout: 30_000 }).toBe(true);
+      await expect(page.getByTestId('auth-surface-modal')).toHaveCount(0);
+      await expect(page.locator('input[type="password"]')).toHaveCount(0);
     } finally {
       await context.close();
     }
@@ -207,7 +233,7 @@ test.describe('Xpod shared login acceptance', () => {
       const bob = fixture.ready.accounts.bob;
       const podUrls = bob.podUrls;
       expect(podUrls.length).toBeGreaterThanOrEqual(2);
-      const pending = await login(page, bob, '/settings/models', isConsentReady, false);
+      const pending = await login(page, bob, '/ai-connections', isConsentReady, false);
       assertOidcStartTrace(pending);
       const selectedBinding = bob.podBindings[1] ?? bob.podBindings[0]!;
       await chooseStorageBinding(page, selectedBinding.podUrl);
@@ -261,7 +287,7 @@ test.describe('Xpod shared login acceptance', () => {
   test('exact-pair storage metadata conflicts expose deterministic retry recovery instead of silent selection', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
-      const pending = await login(page, fixture.ready.accounts.alice, '/settings/models', isConsentReady, false);
+      const pending = await login(page, fixture.ready.accounts.alice, '/ai-connections', isConsentReady, false);
       assertOidcStartTrace(pending);
       let injectedCount = 0;
       await page.route('**/*', async (route) => {
@@ -328,7 +354,7 @@ test.describe('Xpod shared login acceptance', () => {
     page.on('response', observeTokenResponse);
     try {
       await page.clock.install();
-      const trace = await login(page, fixture.ready.accounts.alice, '/settings/models', isPodSettingsReady);
+      const trace = await login(page, fixture.ready.accounts.alice, '/ai-config/model-assignments', isAiConfigReady);
       assertRealOidcTrace(trace);
       await expect.poll(() => tokenExpiresIn, { timeout: 10_000 }).toBeGreaterThan(0);
       const sessionIdBeforeExpiry = await page.evaluate(() => window.sessionStorage.getItem('xpod.solid.sessionId'));
@@ -388,7 +414,7 @@ test.describe('Xpod shared login acceptance', () => {
       const bootstrapTrace = await login(
         page,
         fixture.ready.accounts.newAccount,
-        '/settings/models',
+        '/ai-connections',
         isStorageBootstrapVisible,
         false,
       );
@@ -422,17 +448,18 @@ test.describe('Xpod shared login acceptance', () => {
     }
   });
 
-  test('enforces Dashboard, anonymous local Settings, and Pod-backed Settings authorization', async ({ browser }) => {
+  test('enforces Account Status, anonymous local Network, and Pod-backed WebID authorization', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
-      await openRoute(page, '/dashboard/overview');
-      await expect(page.getByRole('button', { name: /continue$/i }).first()).toBeVisible();
+      await openRoute(page, '/status/overview');
+      await expect(page.getByTestId('auth-surface-modal')).toBeVisible({ timeout: 30_000 });
 
-      await openRoute(page, '/settings/network');
+      await openRoute(page, '/network');
       await expect.poll(() => isWorkspaceReady(page), { timeout: 30_000 }).toBe(true);
-      await expect(page.getByRole('button', { name: /continue$/i })).toHaveCount(0);
+      await expect(page.getByTestId('auth-surface-modal')).toHaveCount(0);
+      await expect(page.locator('input[type="password"]')).toHaveCount(0);
 
-      await openRoute(page, '/settings/models');
+      await openRoute(page, '/ai-connections');
       await expect(page.getByRole('button', { name: /continue$/i }).first()).toBeVisible();
     } finally {
       await context.close();
@@ -442,10 +469,10 @@ test.describe('Xpod shared login acceptance', () => {
   test('uses the fixed same-origin callback and returns to the original safe route', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
-      const trace = await login(page, fixture.ready.accounts.alice, '/settings/models?surface=providers', isPodSettingsReady);
+      const trace = await login(page, fixture.ready.accounts.alice, '/ai-config/model-assignments?surface=providers', isAiConfigReady);
       assertRealOidcTrace(trace);
       expect(new URL(page.url()).origin).toBe(new URL(fixture.ready.baseUrl).origin);
-      expect(new URL(page.url()).pathname).toBe('/settings/models');
+      expect(new URL(page.url()).pathname).toBe('/ai-config/model-assignments');
       expect(new URL(page.url()).search).toBe('?surface=providers');
       expect(trace.authorizationRedirectUris.some((value) => {
         const redirect = new URL(value);
@@ -461,7 +488,7 @@ test.describe('Xpod shared login acceptance', () => {
   test('consent denial and unsafe return paths expose deterministic recovery', async ({ browser }) => {
     const { context, page } = await scenarioPage(browser);
     try {
-      const denied = await login(page, fixture.ready.accounts.alice, '/settings/models', isConsentReady, false);
+      const denied = await login(page, fixture.ready.accounts.alice, '/ai-connections', isConsentReady, false);
       assertOidcStartTrace(denied);
       // The full-page consent surface exposes Deny as its real cancellation
       // action; it does not pretend that the callback page has a dismiss
@@ -470,10 +497,10 @@ test.describe('Xpod shared login acceptance', () => {
       await expect(page.getByRole('button', { name: /^dismiss$/i })).toHaveCount(0);
       await page.getByRole('button', { name: /^deny$/i }).click();
       await expect.poll(() => safePath(page.url()), { timeout: 30_000 })
-        .toMatch(/^(?:\/settings\/models|\/dashboard\/overview|\/auth\/callback)$/u);
+        .toMatch(/^(?:\/ai-connections|\/status\/overview|\/auth\/callback)$/u);
       await expect(page.getByRole('link', { name: /start sign-in again/i }).first()).toBeVisible();
 
-      await openRoute(page, '/settings/models');
+      await openRoute(page, '/ai-connections');
       const restarted = await completeOidcLogin(page, fixture.ready.accounts.alice, {
         baseUrl: fixture.ready.baseUrl,
         ready: isConsentReady,
@@ -535,10 +562,10 @@ test.describe('Xpod shared login acceptance', () => {
     try {
       const trace = await completeOidcLogin(page, fixture.ready.accounts.alice, {
         baseUrl: fixture.ready.baseUrl,
-        startUrl: new URL('/settings/models', fixture.ready.baseUrl).href,
+        startUrl: new URL('/ai-connections', fixture.ready.baseUrl).href,
         ready: isPodSettingsReady,
         requireCallbackEvidence: true,
-        timeoutMs: 30_000,
+        timeoutMs: 90_000,
       });
       assertRealOidcTrace(trace);
       expect(callbackHref).toBeTruthy();
@@ -568,10 +595,10 @@ test.describe('Xpod shared login acceptance', () => {
     try {
       const trace = await completeOidcLogin(page, fixture.ready.accounts.alice, {
         baseUrl: fixture.ready.baseUrl,
-        startUrl: new URL('/settings/models', fixture.ready.baseUrl).href,
+        startUrl: new URL('/ai-connections', fixture.ready.baseUrl).href,
         ready: isPodSettingsReady,
         requireCallbackEvidence: true,
-        timeoutMs: 30_000,
+        timeoutMs: 90_000,
       });
       assertRealOidcTrace(trace);
       expect(callbackHref).toBeTruthy();
@@ -591,7 +618,7 @@ test.describe('Xpod shared login acceptance', () => {
     const { context, page } = await scenarioPage(browser);
     let failAccountLogout = true;
     try {
-      await login(page, fixture.ready.accounts.alice, '/settings/models', isPodSettingsReady);
+      await login(page, fixture.ready.accounts.alice, '/ai-connections', isPodSettingsReady);
       await page.route('**/*', async (route) => {
         const request = route.request();
         const url = new URL(request.url());
@@ -611,9 +638,10 @@ test.describe('Xpod shared login acceptance', () => {
       await page.getByRole('button', { name: 'Try again', exact: true }).evaluate((button) => {
         (button as HTMLButtonElement).click();
       });
-      await expect(page.getByRole('button', { name: /sign in to xpod/i })).toBeVisible({ timeout: 30_000 });
-      await openRoute(page, '/dashboard/overview');
-      await expect(page.getByRole('button', { name: /continue$/i }).first()).toBeVisible();
+      await expect(page.getByRole('dialog', { name: /xpod account/i })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole('region', { name: /sign in to xpod/i })).toBeVisible();
+      await openRoute(page, '/status/overview');
+      await expect(page.getByTestId('auth-surface-modal')).toBeVisible({ timeout: 30_000 });
     } finally {
       await page.unroute('**/*').catch(() => undefined);
       await context.close();
@@ -629,7 +657,7 @@ test.describe('Xpod shared login acceptance', () => {
     };
     page.on('request', countAccountLogout);
     try {
-      await login(page, fixture.ready.accounts.alice, '/settings/models', isPodSettingsReady);
+      await login(page, fixture.ready.accounts.alice, '/ai-connections', isPodSettingsReady);
       await page.evaluate(() => {
         const nativeRemoveItem = Storage.prototype.removeItem;
         Storage.prototype.removeItem = function removeItem(key: string) {
@@ -651,10 +679,11 @@ test.describe('Xpod shared login acceptance', () => {
       await page.getByRole('button', { name: 'Try again', exact: true }).evaluate((button) => {
         (button as HTMLButtonElement).click();
       });
-      await expect(page.getByRole('button', { name: /sign in to xpod/i })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole('dialog', { name: /xpod account/i })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole('region', { name: /sign in to xpod/i })).toBeVisible();
       expect(accountLogoutRequests).toBe(1);
-      await openRoute(page, '/dashboard/overview');
-      await expect(page.getByRole('button', { name: /continue$/i }).first()).toBeVisible();
+      await openRoute(page, '/status/overview');
+      await expect(page.getByTestId('auth-surface-modal')).toBeVisible({ timeout: 30_000 });
     } finally {
       page.off('request', countAccountLogout);
       await context.close();
@@ -666,7 +695,7 @@ test.describe('Xpod shared login acceptance', () => {
     try {
       // Bob's multi-Pod recovery scenario above intentionally deletes one of
       // his bindings; use the stable single-Pod account for this invariant.
-      await login(page, fixture.ready.accounts.alice, '/settings/models', isPodSettingsReady);
+      await login(page, fixture.ready.accounts.alice, '/ai-connections', isPodSettingsReady);
       await expect(page.getByTestId('xpod-user-card-trigger')).toHaveCount(1);
       await expect(page.getByRole('button', { name: /cloud|local|custom issuer|external webid|external pod/i })).toHaveCount(0);
       await page.getByTestId('xpod-user-card-trigger').click();
@@ -679,14 +708,15 @@ test.describe('Xpod shared login acceptance', () => {
   });
 });
 
-async function isDashboardAuthenticated(page: Page): Promise<boolean> {
+async function isStatusAuthenticated(page: Page): Promise<boolean> {
   const url = new URL(page.url());
-  return url.pathname.startsWith('/dashboard')
+  return url.pathname.startsWith('/status')
     && await page.locator('[data-testid="xpod-user-card-trigger"][aria-label^="Open account menu for "]').isVisible({ timeout: 250 }).catch(() => false);
 }
 
 async function isPodSettingsReady(page: Page): Promise<boolean> {
-  if (!new URL(page.url()).pathname.startsWith('/settings')) return false;
+  const pathname = new URL(page.url()).pathname;
+  if (!pathname.startsWith('/settings') && !pathname.startsWith('/ai-connections') && !pathname.startsWith('/ai-config')) return false;
   if (!await page.locator('[data-testid="xpod-user-card-trigger"][data-pod-ready="true"]').isVisible({ timeout: 250 }).catch(() => false)) return false;
   const workspace = page.locator('[data-workspace-layout]').first();
   if (!await workspace.isVisible({ timeout: 250 }).catch(() => false)) return false;
@@ -694,8 +724,18 @@ async function isPodSettingsReady(page: Page): Promise<boolean> {
     .count() > 0;
 }
 
+async function isAiConfigReady(page: Page): Promise<boolean> {
+  const pathname = new URL(page.url()).pathname;
+  if (!pathname.startsWith('/ai-config')) return false;
+  if (!await page.locator('[data-testid="xpod-user-card-trigger"][data-pod-ready="true"]').isVisible({ timeout: 250 }).catch(() => false)) return false;
+  if (!await page.locator('[data-workspace-layout]').first().isVisible({ timeout: 250 }).catch(() => false)) return false;
+  return await page.getByRole('heading', { name: /AI Config ·/u }).first()
+    .isVisible({ timeout: 250 }).catch(() => false);
+}
+
 async function isWorkspaceReady(page: Page): Promise<boolean> {
-  if (!new URL(page.url()).pathname.startsWith('/settings')) return false;
+  const pathname = new URL(page.url()).pathname;
+  if (!pathname.startsWith('/settings') && !pathname.startsWith('/network')) return false;
   return await page.locator('[data-workspace-layout]').first().isVisible({ timeout: 250 }).catch(() => false);
 }
 
@@ -724,6 +764,39 @@ async function scenarioPage(browser: { newContext(): Promise<BrowserContext> }):
   return { context, page: await context.newPage() };
 }
 
+async function loginAccount(
+  page: Page,
+  account: BrowserSolidCredentials,
+  startPath: string,
+): Promise<AccountLoginTrace> {
+  await openRoute(page, startPath);
+  const beforeUrl = page.url();
+  const dialog = page.getByRole('dialog', { name: /sign in to xpod/i });
+  await expect(dialog).toBeVisible({ timeout: 30_000 });
+
+  const openedPages: Page[] = [];
+  const onPage = (newPage: Page) => openedPages.push(newPage);
+  page.context().on('page', onPage);
+  try {
+    await dialog.locator('input[type="email"], input[name="email"], input#email').first().fill(account.email);
+    await dialog.locator('input[type="password"], input[name="password"], input#password').first().fill(account.password);
+    await dialog.getByRole('button', { name: 'Sign in', exact: true }).click({ noWaitAfter: true });
+    await expect.poll(() => isStatusAuthenticated(page), { timeout: 30_000 }).toBe(true);
+    await expect(dialog).toHaveCount(0);
+    await page.waitForTimeout(1_000);
+  } finally {
+    page.context().off('page', onPage);
+    await Promise.all(openedPages.map((newPage) => newPage.close().catch(() => undefined)));
+  }
+
+  return {
+    beforeUrl,
+    afterUrl: page.url(),
+    passwordSubmitted: true,
+    popupOpened: openedPages.length > 0,
+  };
+}
+
 async function openRoute(page: Page, path: string): Promise<void> {
   const destination = new URL(path, fixture.ready.baseUrl).href;
   try {
@@ -733,7 +806,7 @@ async function openRoute(page: Page, path: string): Promise<void> {
   }
   await expect.poll(() => safePath(page.url()), {
     timeout: 10_000,
-    message: `route did not settle: ${destination}; ${pageDiagnostics(page)}`,
+    message: `route did not settle: ${destination}`,
   }).toBe(new URL(path, fixture.ready.baseUrl).pathname);
 }
 
@@ -770,44 +843,13 @@ async function login(
     // graph (including the browser RDF engine) before the readiness marker is
     // mounted. Keep the deadline inside the 120s scenario budget without
     // treating a still-loading module response as an authentication failure.
-    timeoutMs: 60_000,
+    timeoutMs: 90_000,
   });
   // The callback app records completion immediately before replacing the
   // document. Give that replacement one event-loop turn to settle before a
-  // caller starts a second product navigation (notably dashboard → Settings).
+  // caller starts a second product navigation (notably Status → AI Connections).
   await page.waitForTimeout(250);
   return trace;
-}
-
-async function openProduct(page: Page, product: 'dashboard' | 'settings'): Promise<void> {
-  const trigger = page.getByTestId('xpod-user-card-trigger');
-  await trigger.click({ timeout: 2_000 });
-  const label = product === 'dashboard' ? 'Open Dashboard' : 'Open Settings';
-  const link = page.getByRole('link', { name: label, exact: true });
-  // Follow the host-provided same-origin route. This keeps navigation
-  // deterministic while the login helper remains the only OIDC observer.
-  const href = await link.getAttribute('href', { timeout: 2_000 }).catch(() =>
-    product === 'dashboard' ? '/dashboard/overview' : '/settings/models');
-  if (!href) throw new Error(`Missing ${label} route`);
-  const close = page.getByRole('button', { name: 'Close', exact: true });
-  if (await close.isVisible({ timeout: 500 }).catch(() => false)) {
-    await close.click({ timeout: 2_000 });
-  }
-  const destination = new URL(href, fixture.ready.baseUrl).href;
-  let response: Awaited<ReturnType<Page['goto']>>;
-  try {
-    response = await page.goto(destination, { waitUntil: 'domcontentloaded', timeout: 10_000 });
-  } catch (error) {
-    if (!(error instanceof Error) || !/ERR_ABORTED|another navigation/iu.test(error.message)) throw error;
-    // Callback cleanup can replace the document at the same moment the host
-    // switch is requested. The URL poll below observes the settled route.
-    response = null;
-  }
-  const expectedPath = product === 'dashboard' ? '/dashboard/overview' : '/settings/models';
-  await expect.poll(() => safePath(page.url()), {
-    timeout: 30_000,
-    message: `switch route did not settle: href=${href}; response=${response?.status() ?? 'none'} ${response?.url() ?? destination}`,
-  }).toBe(expectedPath);
 }
 
 function safePath(rawUrl: string): string {
@@ -825,8 +867,26 @@ function assertOidcStartTrace(trace: BrowserOidcTrace): void {
   expect(trace.passwordSubmitted).toBe(true);
 }
 
-function assertRealOidcTrace(trace: BrowserOidcTrace): void {
-  assertOidcStartTrace(trace);
+function assertAccountLoginTrace(trace: AccountLoginTrace): void {
+  const before = new URL(trace.beforeUrl);
+  const after = new URL(trace.afterUrl);
+  expect(trace.passwordSubmitted).toBe(true);
+  expect(trace.popupOpened).toBe(false);
+  expect(after.origin).toBe(before.origin);
+  expect(after.pathname).toBe('/status/overview');
+  expect(after.pathname.startsWith('/.account')).toBe(false);
+}
+
+function assertRealOidcTrace(
+  trace: BrowserOidcTrace,
+  options: { requirePassword?: boolean } = {},
+): void {
+  if (options.requirePassword !== false) assertOidcStartTrace(trace);
+  else {
+    expect(trace.authorizationRequestSeen).toBe(true);
+    expect(trace.authCodeChallengeSeen).toBe(true);
+    expect(trace.authCodeChallengeMethodS256).toBe(true);
+  }
   expect(trace.redirectCodeSeen).toBe(true);
   expect(trace.tokenAuthorizationCodeGrantSeen).toBe(true);
   expect(trace.tokenCodeVerifierSeen).toBe(true);

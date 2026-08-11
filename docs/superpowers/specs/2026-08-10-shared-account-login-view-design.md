@@ -1,5 +1,13 @@
 # Shared Account and WebID Login Design
 
+> **Xpod desktop composition note (2026-08-12):** The later approved
+> `2026-08-10-xpod-auth-boundaries-design.md` supersedes this document's
+> Dashboard-first OIDC orchestration. Dashboard/Status now opens a direct
+> same-origin Account credentials modal. Pod-backed Settings starts the
+> separate current-origin WebID session. The public package boundaries and
+> single-session host profiles below remain authoritative; the old claim that
+> every Xpod sign-in affordance starts WebID/OIDC does not.
+
 ## Goal
 
 Build the complete public login presentation and typed contracts in the Xpod monorepo, then migrate Xpod to consume them. Linx remains unchanged in this phase and will migrate after the Xpod implementation is accepted.
@@ -16,9 +24,13 @@ The reusable package contracts remain data-driven, but Xpod applies a stricter l
 ## Xpod protocol flow
 
 ```text
-User invokes any Xpod sign-in affordance
+User opens Dashboard/Status while Account-anonymous
+  -> Xpod opens the shared same-origin Account credentials modal in-shell
+  -> CSS establishes the Account session without starting OIDC
+
+User opens a Pod-backed Settings surface while WebID-anonymous
   -> Xpod starts its single current-origin WebID/OIDC route
-  -> CSS reuses or performs Account login
+  -> CSS may reuse the existing Account session
   -> CSS limits WebID selection to the local account and local storage
   -> CSS presents OIDC consent when required
   -> the application callback restores one host-owned Inrupt Solid session
@@ -28,7 +40,7 @@ This is one user-visible login path that can establish or restore two independen
 
 If the Account session already exists when Pod-backed Settings starts the login path, CSS reuses it and must not ask for the password again. If Pod-backed Settings starts the path first, the CSS Account login step establishes the Account session before the OIDC flow returns. Direct Account, password-recovery, and registration URLs are identity-provider implementation routes, not additional Xpod product login choices.
 
-When an anonymous user starts this path from Dashboard, Xpod intentionally completes the same local WebID/OIDC transaction even though Dashboard route readiness depends only on Account authentication. Dashboard does not use the resulting WebID token for its authorization or Account data. Establishing both sessions from that one path is an explicit Xpod product trade-off that prevents a second login path; it is not a requirement imposed on Account-only public-library consumers. If Dashboard already has an authenticated Account session, it renders without starting or requiring a WebID transaction.
+Dashboard never starts a WebID/OIDC transaction. It authenticates only the Account domain through the current-origin Account modal. Pod-backed Settings owns the separate WebID route; CSS may reuse the Account session so that this second protocol transaction does not require entering the Account password again. This is still one provider policy (the current Xpod), but it is deliberately two independent session domains.
 
 ## Xpod surface and service boundaries
 

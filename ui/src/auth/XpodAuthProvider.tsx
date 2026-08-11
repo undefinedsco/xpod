@@ -31,6 +31,7 @@ import {
   createXpodLogoutCoordinator,
   type XpodLogoutCoordinator,
 } from './xpod-logout';
+import { XpodDesktopIdentityBridge } from '../desktop/XpodDesktopIdentityBridge';
 
 export interface XpodAuthProviderProps {
   children: ReactNode;
@@ -159,6 +160,7 @@ function XpodAuthCoordinator({
 
   return (
     <XpodAuthContext.Provider value={value}>
+      <XpodDesktopIdentityBridge />
       {children}
     </XpodAuthContext.Provider>
   );

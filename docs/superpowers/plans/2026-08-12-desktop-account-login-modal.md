@@ -4,7 +4,7 @@
 
 **Goal:** Make a fresh Xpod desktop launch show the public Account credentials modal over Status Overview, complete CSS Account login inside Electron, and remain on the same Dashboard route.
 
-**Architecture:** Reuse `@undefineds.co/shared-ui`'s controlled `AuthSurface` and `AccountCredentialsView`. Add one Xpod host controller for CSS password submission and Account-token persistence, then compose it from the Account route boundary and anonymous Avatar card. Keep Account and WebID sessions independent; local Network and Settings remain unguarded.
+**Architecture:** Reuse `@undefineds.co/shared-ui`'s complete `AccountCredentialsSurface`, which owns one controlled `AuthSurface` frame around a frame-free `AccountCredentialsView`. Add one Xpod host controller for CSS password submission and Account-token persistence, then compose the same public surface from the Account route boundary and anonymous Avatar card. Keep Account and WebID sessions independent; local Network and Settings remain unguarded.
 
 **Tech Stack:** TypeScript, React 19, React Router, shared-ui, CSS Account API, Bun/Vitest, Playwright Electron.
 
@@ -34,7 +34,7 @@ bun run --cwd packages/shared-ui test -- test/auth-surface.test.tsx test/account
 bun run --cwd packages/shared-ui build
 ```
 
-Expected: both focused suites pass and the package exports `AuthSurface`, `AuthSurfaceMode`, `AccountCredentialsView`, and their prop contracts.
+Expected: both focused suites pass and the package exports `AuthSurface`, `AuthSurfaceMode`, `AccountCredentialsView`, `AccountCredentialsSurface`, and their prop contracts.
 
 - [x] **Step 3: Complete the merge commit**
 
@@ -86,7 +86,7 @@ export interface XpodAccountCredentialsProps {
 }
 ```
 
-Render `AuthSurface` plus `AccountCredentialsView` in login mode. Submit through `loginAccountPassword`, call `storeAccountSessionToken`, await `auth.refetchControls()`, then call `onAuthenticated`. Map 401/403 to `Invalid email or password`, 429 to a retry-later message, and every other error to a safe generic message. Never set `window.location`, call `navigate`, or start Solid OIDC from this controller.
+Render the public `AccountCredentialsSurface` in login mode and supply only Xpod's host-owned submission controller. Submit through `loginAccountPassword`, call `storeAccountSessionToken`, await `auth.refetchControls()`, verify the refreshed Account session is authenticated, then call `onAuthenticated`. Map 401/403 to `Invalid email or password`, 429 to a retry-later message, and every other error to a safe generic message. Never set `window.location`, call `navigate`, or start Solid OIDC from this controller.
 
 - [x] **Step 4: Run the focused tests**
 
@@ -235,3 +235,78 @@ Extend the Account credentials test to prove that successful same-origin passwor
 - [x] **Step 4: Repeat source, Electron, integration, and package verification**
 
 Rebuild generated assets/runtime, exercise the real anonymous/login/reload/Avatar flow against Electron, run the full integration suite, and regenerate the DMG only after all review fixes pass.
+
+### Task 7: Close the local-Xpod trust and desktop bridge gaps
+
+**Files:**
+- Modify: `desktop/src/target-url.ts`
+- Modify: `desktop/test/target-url.test.ts`
+- Modify: `desktop/src/tray-menu.ts`
+- Modify: `desktop/test/tray-menu.test.ts`
+- Modify: `packages/shared-ui/src/account-auth.tsx`
+- Modify: `packages/shared-ui/test/account-auth.test.tsx`
+- Create: `ui/src/desktop/XpodDesktopIdentityBridge.tsx`
+- Create: `ui/src/desktop/XpodDesktopIdentityBridge.test.tsx`
+- Modify: `ui/src/auth/XpodAuthProvider.tsx`
+- Modify: `ui/src/auth/XpodAccountCredentials.tsx`
+- Modify: `ui/src/auth/AccountAuthBoundary.tsx`
+- Modify: `ui/src/auth/AccountAuthBoundary.test.tsx`
+- Modify: `ui/src/context/AuthContext.tsx`
+- Modify: `ui/src/auth/AuthContext.test.tsx`
+- Modify: `ui/src/auth-callback-navigation.ts`
+- Modify: `ui/src/auth-callback-navigation.test.ts`
+- Modify: `ui/src/auth-callback.tsx`
+- Modify: `ui/src/solid/XpodSolidRuntime.ts`
+- Modify: `ui/src/solid/XpodSolidRuntimeProvider.tsx`
+- Modify: `ui/src/solid/XpodSolidRuntimeProvider.test.tsx`
+- Modify: `ui/vite.config.ts`
+- Modify: `src/api/auth/CssAccountTokenResolver.ts`
+- Modify: `tests/api/auth/CssAccountTokenResolver.test.ts`
+- Modify: `src/api/container/common.ts`
+- Regenerate: `static/**`
+- Package: `desktop/release/Xpod-0.1.0-arm64.dmg`
+
+- [x] **Step 1: Write failing public-surface and local-trust tests**
+
+Prove that the public Account surface renders exactly one Card/dialog frame, the startup modal can be dismissed and reopened without exposing protected content, external `--url`/`XPOD_DESKTOP_URL` values cannot become the desktop trust origin, a cross-origin Account logout control receives no token-bearing request, an external restored OIDC issuer/WebID is cleared, and a CSS cookie whose Account no longer exists cannot create an API Account principal.
+
+- [x] **Step 2: Write the failing tray production-bridge tests**
+
+Prove that `Account…` exists even while anonymous and always targets `/status/overview?account=open`. Mount the real Xpod auth composition with a fake preload bridge and assert authenticated Account/WebID/Pod state reaches `setIdentity`, then assert logout publishes `null`.
+
+- [x] **Step 3: Implement the complete public modal and minimum current-Xpod enforcement**
+
+Compose the Account credentials body and `AuthSurface` once in the public UI package and consume it from Xpod; keep dismissed Status content protected while leaving the rail usable; choose the first safe loopback desktop target in CLI/environment/default precedence; reuse one same-origin Account-control validator for login and logout; reject and clear non-local restored Solid sessions before Pod readiness; validate Account existence after resolving a CSS cookie; and mount one renderer-to-preload identity bridge inside `XpodAuthProvider`.
+
+- [x] **Step 4: Close callback and production login escapes**
+
+Keep every canonical same-origin product route (`/dashboard`, `/status`, `/network`, `/settings`, `/ai-config`, `/ai-connections`) inside the callback document and render the matching app bundle there. Keep the bundled Inrupt diagnostic only as a current-Xpod verifier: its issuer, WebID, Pod URLs, and fetch targets must stay on the current origin. Keep arbitrary WebID-link controls out of Xpod product surfaces without deleting generic CSS/public-library capability.
+
+- [x] **Step 5: Run focused red/green verification**
+
+Run the desktop target/tray suites, Account controller suite, the dedicated previously-excluded Solid runtime-provider suite, CSS token resolver suite, and the renderer bridge suite. Preserve the red failure evidence for each missing behavior, then require every focused command to exit zero after implementation.
+
+- [x] **Step 6: Repeat browser, Electron, integration, build, and package acceptance**
+
+Run the real shared-login Playwright scenarios, verify a fresh Electron window shows the Account modal over Status and never opens an external provider, verify tray Account opens the shared card, run package/root/type/lint/integration gates, rebuild runtime/static assets, regenerate the DMG, and smoke the packaged app before committing.
+
+### Task 8: Serve first-class product routes without legacy rewrites
+
+**Files:**
+- Modify: `src/api/handlers/SettingsHandler.ts`
+- Modify: `src/shared/xpod-route-policy.ts`
+- Modify: `tests/api/handlers/SettingsHandler.test.ts`
+- Modify: `tests/api/handlers/xpod-route-policy.test.ts`
+- Verify: `tests/e2e/shared-login.spec.ts`
+
+- [x] **Step 1: Lock the canonical route regression**
+
+Change the Settings handler tests so `/ai-config/model-assignments?surface=providers` and `/ai-connections` are served by the Settings SPA while preserving their canonical browser paths. Confirm the old redirect to `/settings/models?surface=...` fails the new expectation.
+
+- [x] **Step 2: Remove the obsolete canonical-to-legacy alias policy**
+
+Register `/settings`, `/ai-config`, and `/ai-connections` as independent static SPA prefixes backed by the same Settings bundle. Keep only genuine legacy Dashboard aliases in the shared server route policy; do not rewrite either first-class AI rail entry to `/settings/models`.
+
+- [x] **Step 3: Re-run the callback acceptance**
+
+Run the focused handler tests and the real browser scenario that starts WebID login at `/ai-config/model-assignments?surface=providers`. Require the callback to remain on that exact path and query, then run the complete shared-login spec.

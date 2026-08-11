@@ -4,6 +4,7 @@ import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Co
 import { useAuth } from '../context/AuthContextValue';
 import { buildPodCreatePayload, clearStoredProvisionCode, getStoredProvisionCode } from '../utils/pod';
 import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
+import { resolveSameOriginAccountControlUrl } from '../utils/account-control-url';
 import {
   currentStorageScope,
   dedupeScopedEntries,
@@ -129,8 +130,6 @@ export function AccountPage() {
   const [podStateSettling, setPodStateSettling] = useState(false);
   const [showCreatePod, setShowCreatePod] = useState(false);
   const [podName, setPodName] = useState('');
-  const [showLinkWebId, setShowLinkWebId] = useState(false);
-  const [linkWebIdUrl, setLinkWebIdUrl] = useState('');
   const [credentials, setCredentials] = useState<CredentialView[]>([]);
   const [newCredential, setNewCredential] = useState<{ id: string; secret: string } | null>(null);
   const [showCreateCredential, setShowCreateCredential] = useState(false);
@@ -140,6 +139,12 @@ export function AccountPage() {
   const [showWebIdDropdown, setShowWebIdDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const aiApiBaseUrl = getAiApiBaseUrl();
+  const accountWebIdUrl = resolveSameOriginAccountControlUrl(controls?.account?.webId);
+  const accountPodUrl = resolveSameOriginAccountControlUrl(controls?.account?.pod);
+  const accountClientCredentialsUrl = resolveSameOriginAccountControlUrl(controls?.account?.clientCredentials);
+  const accountLogoutUrl = resolveSameOriginAccountControlUrl(controls?.account?.logout);
+  const passwordForgotUrl = resolveSameOriginAccountControlUrl(controls?.password?.forgot)
+    ?? '/.account/login/password/forgot/';
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -169,8 +174,8 @@ export function AccountPage() {
       let allWebIds: string[] = [];
       let allPods: PodView[] = [];
       let scopedEntries: ScopedWebIdEntry[] = [];
-      if (controls?.account?.webId) {
-        const res = await fetch(controls.account.webId, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+      if (accountWebIdUrl) {
+        const res = await fetch(accountWebIdUrl, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountWebIdResponse;
           const links = json.webIdLinks || {};
@@ -181,8 +186,8 @@ export function AccountPage() {
         }
       }
 
-      if (controls?.account?.pod) {
-        const res = await fetch(controls.account.pod, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+      if (accountPodUrl) {
+        const res = await fetch(accountPodUrl, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountPodResponse;
           allPods = normalizePods(json);
@@ -215,18 +220,23 @@ export function AccountPage() {
         setPodStateSettling(false);
       }
 
-      if (controls?.account?.clientCredentials) {
-        const res = await fetch(controls.account.clientCredentials, { headers: storedAccountTokenHeaders(), credentials: 'include' });
+      if (accountClientCredentialsUrl) {
+        const res = await fetch(accountClientCredentialsUrl, { headers: storedAccountTokenHeaders(), credentials: 'include' });
         if (res.ok) {
           const json = await res.json() as AccountClientCredentialsResponse;
           const creds = json.clientCredentials || {};
           const scopedWebIds = new Set(nextWebIds);
           setCredentials(Object.entries(creds)
-            .map(([resourceUrl, webId]) => ({
-              id: credentialIdFromUrl(resourceUrl),
-              resourceUrl,
-              webId: typeof webId === 'string' ? webId : undefined,
-            }))
+            .flatMap(([resourceUrl, webId]) => {
+              const resolvedResourceUrl = resolveSameOriginAccountControlUrl(resourceUrl);
+              if (!resolvedResourceUrl) return [];
+              const credential: CredentialView = {
+                id: credentialIdFromUrl(resolvedResourceUrl),
+                resourceUrl: resolvedResourceUrl,
+                webId: typeof webId === 'string' ? webId : undefined,
+              };
+              return [credential];
+            })
             .filter((credential) => credential.webId && scopedWebIds.has(credential.webId)));
         } else {
           setCredentials([]);
@@ -241,7 +251,7 @@ export function AccountPage() {
       setCredentials([]);
       setPodStateSettling(false);
     }
-  }, [controls]);
+  }, [accountClientCredentialsUrl, accountPodUrl, accountWebIdUrl]);
 
   useEffect(() => {
     let active = true;
@@ -256,10 +266,10 @@ export function AccountPage() {
   }, [fetchData]);
 
   const handleLogout = async () => {
-    if (!controls?.account?.logout) return;
+    if (!accountLogoutUrl) return;
     setIsLoading(true);
     try {
-      const res = await fetch(controls.account.logout, {
+      const res = await fetch(accountLogoutUrl, {
         method: 'POST',
         headers: storedAccountTokenHeaders(),
         credentials: 'include',
@@ -279,10 +289,10 @@ export function AccountPage() {
 
   const handleCreatePod = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!controls?.account?.pod || !podName.trim()) return;
+    if (!accountPodUrl || !podName.trim()) return;
     setIsLoading(true);
     try {
-      const res = await fetch(controls.account.pod, {
+      const res = await fetch(accountPodUrl, {
         method: 'POST',
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
@@ -308,43 +318,13 @@ export function AccountPage() {
     }
   };
 
-  const handleLinkWebId = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!controls?.account?.webId || !linkWebIdUrl.trim()) return;
-    if (getStoredProvisionCode()) {
-      setShowLinkWebId(false);
-      alert('Link WebID is disabled in a scoped Local storage session.');
-      return;
-    }
-    setIsLoading(true);
-    try {
-      const res = await fetch(controls.account.webId, {
-        method: 'POST',
-        headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
-        credentials: 'include',
-        body: JSON.stringify({ webId: linkWebIdUrl.trim() }),
-      });
-      if (res.ok) {
-        setLinkWebIdUrl('');
-        setShowLinkWebId(false);
-        await fetchData();
-      } else {
-        const json = await res.json().catch(() => ({}));
-        alert(json.message || 'Failed to link WebID');
-      }
-    } catch {
-      alert('Network error');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleDeletePod = async (pod: PodView) => {
-    if (!pod.resourceUrl) return;
+    const podResourceUrl = resolveSameOriginAccountControlUrl(pod.resourceUrl);
+    if (!podResourceUrl) return;
     if (!confirm(`Delete pod ${pod.id}? This cannot be undone.`)) return;
     setIsLoading(true);
     try {
-      const res = await fetch(pod.resourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      const res = await fetch(podResourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -359,10 +339,10 @@ export function AccountPage() {
 
   const handleCreateCredential = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!controls?.account?.clientCredentials || !credentialWebId || !credentialName.trim()) return;
+    if (!accountClientCredentialsUrl || !credentialWebId || !credentialName.trim()) return;
     setIsLoading(true);
     try {
-      const res = await fetch(controls.account.clientCredentials, {
+      const res = await fetch(accountClientCredentialsUrl, {
         method: 'POST',
         headers: storedAccountTokenHeaders({ 'Content-Type': 'application/json', Accept: 'application/json' }),
         credentials: 'include',
@@ -397,10 +377,12 @@ export function AccountPage() {
   };
 
   const handleDeleteCredential = async (credential: CredentialView) => {
+    const credentialResourceUrl = resolveSameOriginAccountControlUrl(credential.resourceUrl);
+    if (!credentialResourceUrl) return;
     if (!confirm('Delete this credential? This cannot be undone.')) return;
     setIsLoading(true);
     try {
-      const res = await fetch(credential.resourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      const res = await fetch(credentialResourceUrl, { method: 'DELETE', headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         await fetchData();
       } else {
@@ -472,7 +454,7 @@ export function AccountPage() {
         <section>
           <div className="flex justify-between items-center mb-1">
             <h2 className="text-sm font-semibold text-zinc-700 flex items-center gap-2"><HardDrive className="w-4 h-4 text-[#7C4DFF]" />Storage</h2>
-            {controls?.account?.pod && (
+            {accountPodUrl && (
               <button onClick={() => setShowCreatePod(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-xs rounded-lg transition-colors">
                 <Plus className="w-3.5 h-3.5" />Add Pod
               </button>
@@ -522,26 +504,10 @@ export function AccountPage() {
 
         {/* WebIDs Section */}
         <section>
-          <div className="flex justify-between items-center mb-1">
+          <div className="flex items-center mb-1">
             <h2 className="text-sm font-semibold text-zinc-700 flex items-center gap-2"><User className="w-4 h-4 text-[#7C4DFF]" />Identity</h2>
-            {controls?.account?.webId && (
-              <button onClick={() => setShowLinkWebId(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-xs rounded-lg transition-colors">
-                <Plus className="w-3.5 h-3.5" />Link WebID
-              </button>
-            )}
           </div>
           <p className="text-[11px] text-zinc-500 mb-3">Your unique decentralized identifiers (WebIDs). This is your identity on the Solid network.</p>
-          
-          {showLinkWebId && (
-            <form onSubmit={handleLinkWebId} className="mb-4 p-4 bg-white border border-zinc-200 rounded-xl shadow-sm">
-              <label className="block text-xs text-zinc-500 mb-2">WebID URL</label>
-              <div className="flex gap-2">
-                <input type="url" value={linkWebIdUrl} onChange={(e) => setLinkWebIdUrl(e.target.value)} placeholder="https://example.com/profile/card#me" className="flex-1 px-3 py-2 bg-zinc-50 border border-zinc-200 rounded-lg text-sm focus:border-[#7C4DFF] focus:outline-none" required />
-                <button type="submit" disabled={isLoading} className="px-4 py-2 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-xs rounded-lg disabled:opacity-50">{isLoading ? 'Linking...' : 'Link'}</button>
-                <button type="button" onClick={() => setShowLinkWebId(false)} className="px-3 py-2 text-zinc-500 hover:text-zinc-900 text-xs">Cancel</button>
-              </div>
-            </form>
-          )}
           <div className="bg-white border border-zinc-200 rounded-xl shadow-sm">
             {webIds.length === 0 ? (
               <p className="p-4 text-xs text-zinc-500">No WebIDs found. Create a Pod first to get a WebID.</p>
@@ -562,7 +528,7 @@ export function AccountPage() {
         <section>
           <div className="flex justify-between items-center mb-1">
             <h2 className="text-sm font-semibold text-zinc-700 flex items-center gap-2"><Key className="w-4 h-4 text-[#7C4DFF]" />Developer Access</h2>
-            {controls?.account?.clientCredentials && (
+            {accountClientCredentialsUrl && (
               <button onClick={openCreateCredential} disabled={isLoading} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#7C4DFF] hover:bg-[#6B3FE8] text-white text-xs rounded-lg transition-colors">
                 <Plus className="w-3.5 h-3.5" />New Key
               </button>
@@ -572,7 +538,7 @@ export function AccountPage() {
             AI API keys for model endpoints such as <code className="bg-zinc-100 px-1 py-0.5 rounded">/v1/chat/completions</code> and <code className="bg-zinc-100 px-1 py-0.5 rounded">/v1/responses</code>. Send as <code className="bg-zinc-100 px-1 py-0.5 rounded">Authorization: Bearer sk-xxx</code>.
           </p>
           
-          {!controls?.account?.clientCredentials ? (
+          {!accountClientCredentialsUrl ? (
             <div className="bg-white border border-zinc-200 rounded-xl shadow-sm p-4">
               <p className="text-xs text-zinc-500">Client credential endpoint not configured.</p>
             </div>
@@ -743,7 +709,7 @@ export function AccountPage() {
               <h3 className="text-xs font-medium mb-1">Password</h3>
               <p className="text-[10px] text-zinc-500">Update your account password</p>
             </div>
-            <a href={controls?.password?.forgot || '/.account/login/password/forgot/'} className="px-3 py-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-xs rounded-lg transition-colors">
+            <a href={passwordForgotUrl} className="px-3 py-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 text-xs rounded-lg transition-colors">
               Change Password
             </a>
           </div>

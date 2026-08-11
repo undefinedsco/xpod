@@ -197,6 +197,61 @@ describe('AiGatewayManagementHandler', () => {
     });
   });
 
+  it('returns a structured unavailable response when the configured service identity cannot be resolved', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => {
+          throw new Error('Gateway internal Pod token exchange failed: HTTP 503');
+        }),
+      },
+    });
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connections'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, {});
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'ai_connection_service_access_unavailable',
+      message: 'AI Connection service access is temporarily unavailable',
+    });
+    expect(res.body).not.toContain('token exchange');
+  });
+
+  it('returns a structured unavailable response when the invocation key cannot be issued', async () => {
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(),
+      deployment: 'cloud',
+      servicePrincipal: {
+        getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),
+      },
+      aiConnectionInvocationKeyIssuer: {
+        issue: vi.fn(async () => {
+          throw new Error('invocation key signing key is not configured');
+        }),
+      },
+    });
+    const res = response();
+
+    await routes['GET /api/applets/service-access/ai-connections'](request({
+      type: 'solid',
+      webId: WEB_ID,
+    }), res, {});
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'ai_connection_service_access_unavailable',
+      message: 'AI Connection service access is temporarily unavailable',
+    });
+    expect(res.body).not.toContain('signing key');
+  });
+
   it('publishes AI Connection service-access resources derived only from the authenticated WebID', async () => {
     const servicePrincipal = {
       getServicePrincipal: vi.fn(async () => ({ webId: 'https://id.example/xpod/profile/card#me' })),

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, shell, type MenuItemConstructorOptions } from 'electron'
 import {
   buildTrayMenuModel,
+  normalizeTrayIdentity,
   type TrayMenuAction,
   type TrayMenuItemModel,
   type TrayServiceSnapshot,
@@ -249,11 +250,7 @@ function isTrayServiceSnapshot(value: unknown): value is TrayServiceSnapshot {
 }
 
 ipcMain.on('xpod:identity', (_event, identity: unknown) => {
-  if (isTrayIdentity(identity)) {
-    trayIdentity = identity
-  } else {
-    trayIdentity = undefined
-  }
+  trayIdentity = normalizeTrayIdentity(identity, targetOrigin)
   if (tray) updateTray(tray)
 })
 
@@ -285,14 +282,6 @@ app.on('before-quit', (event) => {
     void runtimeManager.stopOwned().finally(() => app.quit())
   }
 })
-
-function isTrayIdentity(value: unknown): value is { label: string; webId?: string; podUrl?: string } {
-  if (!value || typeof value !== 'object') return false
-  const candidate = value as { label?: unknown; webId?: unknown; podUrl?: unknown }
-  return typeof candidate.label === 'string'
-    && (candidate.webId === undefined || typeof candidate.webId === 'string')
-    && (candidate.podUrl === undefined || typeof candidate.podUrl === 'string')
-}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

@@ -8,10 +8,15 @@ const ACCOUNT_COOKIE_KEY_PREFIXES = [
 ] as const;
 
 const REDIS_ACCOUNT_COOKIE_PREFIX = 'accounts/cookies/';
+const ACCOUNT_STORAGE_TYPE = 'account';
 
 export interface CssAccountTokenRedisStorage {
   get(key: string): Promise<unknown | undefined>;
   finalize?: Finalizable['finalize'];
+}
+
+export interface CssAccountExistenceStorage {
+  has(type: string, id: string): Promise<boolean>;
 }
 
 export interface CssAccountTokenResolverOptions {
@@ -19,6 +24,8 @@ export interface CssAccountTokenResolverOptions {
   db?: IdentityDatabase;
   /** CSS Redis storage configured with the `/.internal/` namespace. */
   redisStorage?: CssAccountTokenRedisStorage;
+  /** CSS Account storage used to reject stale cookie mappings. */
+  accountStorage: CssAccountExistenceStorage;
 }
 
 interface WrappedCookieValue {
@@ -34,10 +41,12 @@ interface WrappedCookieValue {
 export class CssAccountTokenResolver {
   private readonly db?: IdentityDatabase;
   private readonly redisStorage?: CssAccountTokenRedisStorage;
+  private readonly accountStorage: CssAccountExistenceStorage;
 
-  public constructor(options: CssAccountTokenResolverOptions = {}) {
+  public constructor(options: CssAccountTokenResolverOptions) {
     this.db = options.db;
     this.redisStorage = options.redisStorage;
+    this.accountStorage = options.accountStorage;
   }
 
   public async resolveAccountId(token: string): Promise<string | undefined> {
@@ -48,37 +57,40 @@ export class CssAccountTokenResolver {
     let dbError: unknown;
     if (this.db) {
       for (const prefix of ACCOUNT_COOKIE_KEY_PREFIXES) {
+        let value: unknown;
         try {
           const result = await executeQuery<{ value: unknown }>(
             this.db,
             sql`SELECT value FROM internal_kv WHERE key = ${`${prefix}${token}`} LIMIT 1`,
           );
-          const accountId = parseWrappedCookieValue(result.rows[0]?.value);
-          if (accountId) {
-            return accountId;
-          }
+          value = result.rows[0]?.value;
         } catch (error) {
           dbError = error;
+          continue;
         }
+
+        const accountId = parseWrappedCookieValue(value);
+        if (accountId) return this.resolveExistingAccountId(accountId);
       }
     }
 
     if (this.redisStorage) {
-      try {
-        const value = await this.redisStorage.get(`${REDIS_ACCOUNT_COOKIE_PREFIX}${token}`);
-        return parseWrappedCookieValue(value);
-      } catch (error) {
-        // A configured Redis backend is authoritative when the local lookup
-        // misses. Propagate the failure so authentication returns 503 rather
-        // than accidentally treating a backend outage as a valid session.
-        throw error;
-      }
+      // A configured Redis backend is authoritative when the local lookup
+      // misses. Let failures propagate so authentication returns 503.
+      const value = await this.redisStorage.get(`${REDIS_ACCOUNT_COOKIE_PREFIX}${token}`);
+      const accountId = parseWrappedCookieValue(value);
+      return accountId ? this.resolveExistingAccountId(accountId) : undefined;
     }
 
     if (dbError) {
       throw dbError;
     }
     return undefined;
+  }
+
+  private async resolveExistingAccountId(accountId: string): Promise<string | undefined> {
+    const exists = await this.accountStorage.has(ACCOUNT_STORAGE_TYPE, accountId);
+    return exists ? accountId : undefined;
   }
 
   public async finalize(): Promise<void> {

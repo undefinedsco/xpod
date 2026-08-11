@@ -230,6 +230,25 @@ export function normalizeXpodOidcIssuer(value: unknown): string | undefined {
   }
 }
 
+export function isCurrentXpodSessionSnapshot(
+  snapshot: SolidSessionSnapshot,
+  issuer: string | undefined,
+  origin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin,
+): boolean {
+  if (snapshot.status !== 'authenticated') return true;
+  return issuer !== undefined
+    && hasOrigin(snapshot.webId, origin)
+    && hasOrigin(issuer, origin);
+}
+
+function hasOrigin(value: string, origin: string): boolean {
+  try {
+    return new URL(value).origin === new URL(origin).origin;
+  } catch {
+    return false;
+  }
+}
+
 function readStoredOidcIssuer(): string | undefined {
   try {
     return normalizeXpodOidcIssuer(globalThis.window?.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY));

@@ -4,7 +4,10 @@ import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { SettingsApp } from './SettingsApp';
 import { DashboardApp } from './DashboardApp';
 import type { XpodOidcCallbackSuccess } from './solid/XpodOidcCallbackApp';
-import { createCallbackNavigation } from './auth-callback-navigation';
+import {
+  callbackProductAppForDestination,
+  createCallbackNavigation,
+} from './auth-callback-navigation';
 import './index.css';
 
 // A full-page OIDC redirect creates one fresh document. Keep one Xpod runtime
@@ -16,15 +19,12 @@ const callbackLocation = createCallbackNavigation({
 });
 
 function renderRedirected(result: XpodOidcCallbackSuccess) {
-  const destination = new URL(result.destination);
-  if (destination.origin !== window.location.origin) {
-    return <main role="status" aria-live="polite">Sign-in complete. Opening Xpod…</main>;
-  }
-  if (destination.pathname.startsWith('/settings')) {
-    return <SettingsApp runtime={runtime} />;
-  }
-  if (destination.pathname.startsWith('/dashboard')) {
+  const productApp = callbackProductAppForDestination(result.destination, window.location.origin);
+  if (productApp === 'dashboard') {
     return <DashboardApp runtime={runtime} />;
+  }
+  if (productApp === 'settings') {
+    return <SettingsApp runtime={runtime} />;
   }
   return <main role="status" aria-live="polite">Sign-in complete. Opening Xpod…</main>;
 }

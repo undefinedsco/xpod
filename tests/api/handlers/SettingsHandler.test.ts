@@ -10,7 +10,7 @@ describe('registerSettingsRoutes', () => {
       route: vi.fn(),
     } as unknown as ApiServer;
 
-    registerSettingsRoutes(server, { staticDir: path.resolve('static/dashboard') });
+    registerSettingsRoutes(server, { staticDir: path.resolve('static/settings') });
 
     expect(server.get).toHaveBeenCalledWith('/settings', expect.any(Function), { public: true });
     expect(server.get).toHaveBeenCalledWith('/settings/', expect.any(Function), { public: true });
@@ -22,28 +22,31 @@ describe('registerSettingsRoutes', () => {
     expect(server.get).toHaveBeenCalledWith('/ai-config/*path', expect.any(Function), { public: true });
   });
 
-  it('registers AI entry aliases with required surface precedence and preserved query parameters', async () => {
+  it('keeps first-class AI entry paths canonical while serving the Settings SPA', async () => {
     const routes = new Map<string, RouteHandler>();
     const server = {
       get: vi.fn((route: string, handler: RouteHandler) => routes.set(`GET ${route}`, handler)),
       route: vi.fn((method: string, route: string, handler: RouteHandler) => routes.set(`${method} ${route}`, handler)),
     } as unknown as ApiServer;
 
-    registerSettingsRoutes(server, { staticDir: path.resolve('static/dashboard') });
+    registerSettingsRoutes(server, { staticDir: path.resolve('static/settings') });
 
-    for (const [alias, expected] of [
-      ['/ai-config', '/settings/models?surface=ai-config&provider=kimi'],
-      ['/ai-connections', '/settings/models?surface=ai-connections&provider=kimi'],
-    ] as const) {
+    for (const prefix of ['/ai-config', '/ai-connections'] as const) {
       const response = createResponse();
-      await routes.get(`GET ${alias}`)?.({ url: `${alias}?provider=kimi&surface=wrong#fragment` } as never, response as never, {});
-      expect(response.statusCode).toBe(302);
-      expect(response.headers.location).toBe(expected);
+      await routes.get(`GET ${prefix}`)?.({ url: `${prefix}?provider=kimi` } as never, response as never, {});
+      expect(response.statusCode).toBe(200);
+      expect(response.headers.location).toBeUndefined();
+      expect(response.headers['content-type']).toBe('text/html');
 
-      const headResponse = createResponse();
-      await routes.get(`HEAD ${alias}`)?.({ url: `${alias}?provider=kimi` } as never, headResponse as never, {});
-      expect(headResponse.statusCode).toBe(302);
-      expect(headResponse.headers.location).toBe(expected);
+      const deepResponse = createResponse();
+      await routes.get(`GET ${prefix}/*path`)?.(
+        { url: `${prefix}/model-assignments?surface=providers` } as never,
+        deepResponse as never,
+        { path: 'model-assignments' },
+      );
+      expect(deepResponse.statusCode).toBe(200);
+      expect(deepResponse.headers.location).toBeUndefined();
+      expect(deepResponse.headers['content-type']).toBe('text/html');
     }
   });
 });
