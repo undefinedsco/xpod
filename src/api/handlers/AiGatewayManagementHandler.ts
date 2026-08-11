@@ -1057,6 +1057,7 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
       error: 'provider_models_fetch_failed',
       providerStatus: error.providerStatus,
       ...(error.retryAfter ? { retryAfter: error.retryAfter } : {}),
+      ...(error.providerMessage ? { providerMessage: error.providerMessage } : {}),
     });
     return;
   }

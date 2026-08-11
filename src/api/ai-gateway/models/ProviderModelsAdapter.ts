@@ -43,12 +43,14 @@ export interface ProviderModelsAdapter {
 export class ProviderModelsFetchError extends Error {
   public readonly providerStatus: number;
   public readonly retryAfter?: string | null;
+  public readonly providerMessage?: string;
 
-  public constructor(providerStatus: number, retryAfter?: string | null) {
+  public constructor(providerStatus: number, retryAfter?: string | null, providerMessage?: string) {
     super(`provider_models_fetch_failed:${providerStatus}`);
     this.name = 'ProviderModelsFetchError';
     this.providerStatus = providerStatus;
     this.retryAfter = retryAfter;
+    this.providerMessage = providerMessage;
   }
 }
 
@@ -102,10 +104,11 @@ export class OpenAiCompatibleModelsAdapter implements ProviderModelsAdapter {
       signal: input.signal,
     });
     if (!response.ok) {
-      await response.text().catch(() => '');
+      const errorText = await response.text().catch(() => '');
       throw new ProviderModelsFetchError(
         response.status,
         response.headers.get('Retry-After') ?? response.headers.get('retry-after'),
+        safeProviderMessage(errorText, bearerToken),
       );
     }
     return normalizeDiscoveredModels(await response.json());
@@ -226,10 +229,11 @@ export class AnthropicModelsAdapter implements ProviderModelsAdapter {
       signal: input.signal,
     });
     if (!response.ok) {
-      await response.text().catch(() => '');
+      const errorText = await response.text().catch(() => '');
       throw new ProviderModelsFetchError(
         response.status,
         response.headers.get('Retry-After') ?? response.headers.get('retry-after'),
+        safeProviderMessage(errorText, apiKey),
       );
     }
     return normalizeDiscoveredModels(await response.json());
@@ -265,7 +269,46 @@ function normalizeModelsBaseUrl(value: string): string {
   ) {
     throw new Error('unsafe_provider_base_url');
   }
+  if (url.pathname === '' || url.pathname === '/') {
+    url.pathname = '/v1';
+  }
   return url.href.replace(/\/$/u, '');
+}
+
+function safeProviderMessage(raw: string, secret: string): string | undefined {
+  const message = providerMessageFromJson(raw) ?? providerMessageFromText(raw);
+  if (!message) return undefined;
+  return message.split(secret).join('[REDACTED]');
+}
+
+function providerMessageFromJson(raw: string): string | undefined {
+  if (!raw.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    const nested = record.error && typeof record.error === 'object' && !Array.isArray(record.error)
+      ? record.error as Record<string, unknown>
+      : undefined;
+    return boundedMessage(
+      stringValue(nested?.message)
+        ?? stringValue(record.message)
+        ?? stringValue(record.error_description)
+        ?? stringValue(record.error),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function providerMessageFromText(raw: string): string | undefined {
+  return boundedMessage(raw);
+}
+
+function boundedMessage(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/\s+/gu, ' ').trim();
+  if (!normalized) return undefined;
+  return normalized.slice(0, 240);
 }
 
 export function normalizeDiscoveredModels(payload: unknown): DiscoveredProviderModel[] {

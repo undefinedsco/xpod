@@ -138,6 +138,10 @@ export class GatewayProxy {
 
   private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     const url = req.url ?? '/';
+    // Route matching must ignore the query string: OIDC callbacks and other
+    // product URLs arrive as `/ai-connections?code=...`, and exact-path
+    // comparisons against req.url would otherwise fall through to CSS and 401.
+    const pathname = url.split('?')[0];
     const origin = req.headers.origin;
     const originalRemoteAddress = this.clientRemoteAddressResolver?.(req) ?? req.socket.remoteAddress;
     const originalClientLoopback = isLoopbackRemoteAddress(originalRemoteAddress);
@@ -182,7 +186,7 @@ export class GatewayProxy {
     );
 
     // 1. Internal service endpoints
-    if (url.startsWith('/service/')) {
+    if (pathname.startsWith('/service/')) {
       if (req.method === 'OPTIONS') {
         this.handleCorsPreflightRequest(res, origin);
         return;
@@ -200,13 +204,13 @@ export class GatewayProxy {
     // single-origin clients and existing legacy endpoints.
 
     // 2a. Xpod web products are served by the API server.
-    if (this.isApiWebProductPath(url) && this.targets.api) {
+    if (this.isApiWebProductPath(pathname) && this.targets.api) {
       this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;
     }
 
-    if ((apiHost || this.shouldRouteToApi(url)) && this.targets.api) {
+    if ((apiHost || this.shouldRouteToApi(pathname)) && this.targets.api) {
       this.applyInternalAdminProxyHeaders(req, originalClientLoopback);
       this.proxy.web(req, res, { target: this.toProxyTarget(this.targets.api) as any });
       return;

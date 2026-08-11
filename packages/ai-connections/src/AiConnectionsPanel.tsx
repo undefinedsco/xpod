@@ -5,6 +5,7 @@ import {
   Toaster,
   toast,
 } from '@undefineds.co/shared-ui'
+import type { AiConnectionsModelSelection } from '@undefineds.co/extension-sdk/web'
 import {
   type AiConnectAttempt,
   type AiConnectionsClient,
@@ -14,7 +15,6 @@ import {
   type AiProviderConnectionSummary,
   type AiProviderOffering,
   type AiProviderSummary,
-  type AiQuotaSnapshot,
   type DiscoveredProviderModel,
   type GatewayKeyRecord,
   normalizeAiConnectionsThrownError,
@@ -42,6 +42,10 @@ import {
   AiProviderCard,
   type ProviderConnectionState,
 } from './AiProviderCard'
+import type {
+  AiOfferingActionError,
+  AiOfferingQuotaState,
+} from './AiCredentialPoolSection'
 import {
   AiModelEditorDialog,
   type AiModelEditorValue,
@@ -97,11 +101,15 @@ export function AiConnectionsPanel({
     Partial<Record<AiConnectionsProvider, string[]>>
   >({})
   const [attempts, setAttempts] = useState<Record<string, AiConnectAttempt | undefined>>({})
+  const [attemptOfferingIds, setAttemptOfferingIds] = useState<Partial<Record<AiConnectionsProvider, string>>>({})
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
   const [baseUrlInputs, setBaseUrlInputs] = useState<Record<string, string>>({})
   const [busyProviders, setBusyProviders] = useState<Record<string, boolean>>({})
-  const [providerErrors, setProviderErrors] = useState<Record<string, string | undefined>>({})
-  const [quotas, setQuotas] = useState<Record<string, AiQuotaSnapshot | undefined>>({})
+  const [providerErrors, setProviderErrors] = useState<Record<string, AiOfferingActionError | undefined>>({})
+  const [quotas, setQuotas] = useState<Partial<Record<
+    AiConnectionsProvider,
+    Partial<Record<string, AiOfferingQuotaState>>
+  >>>({})
   const [verifyingProviders, setVerifyingProviders] = useState<Record<string, boolean>>({})
   const [modelEditor, setModelEditor] = useState<{
     provider: AiConnectionsProvider
@@ -195,8 +203,15 @@ export function AiConnectionsPanel({
     setBusyProviders((current) => ({ ...current, [provider]: value }))
   }
 
-  const setProviderError = (provider: AiConnectionsProvider, value?: string) => {
-    setProviderErrors((current) => ({ ...current, [provider]: value }))
+  const setProviderError = (
+    provider: AiConnectionsProvider,
+    value?: string,
+    offeringId?: string,
+  ) => {
+    setProviderErrors((current) => ({
+      ...current,
+      [provider]: value ? { message: value, offeringId } : undefined,
+    }))
   }
 
   const openAttemptUrl = useCallback(async (attempt: AiConnectAttempt) => {
@@ -210,6 +225,7 @@ export function AiConnectionsPanel({
     if (!serviceAccessGranted) return
     setBusy(provider, true)
     setProviderError(provider)
+    setAttemptOfferingIds((current) => ({ ...current, [provider]: undefined }))
     try {
       const attempt = await client.beginConnect(provider, 'browserAssistedApiKey')
       setAttempts((current) => ({ ...current, [provider]: attempt }))
@@ -251,17 +267,19 @@ export function AiConnectionsPanel({
       await beginApiKey(provider)
       return
     }
-    await beginConnectMode(provider, mode)
+    await beginConnectMode(provider, mode, offering.id)
   }
 
   const beginConnectMode = async (
     provider: AiConnectionsProvider,
     mode: AiConnectAttempt['mode'],
+    offeringId?: string,
   ) => {
     if (!serviceAccessGranted) return
     if (mode === 'connectUnsupported') return
     setBusy(provider, true)
     setProviderError(provider)
+    setAttemptOfferingIds((current) => ({ ...current, [provider]: offeringId }))
     const generation = pollingGeneration.current + 1
     pollingGeneration.current = generation
     try {
@@ -271,10 +289,9 @@ export function AiConnectionsPanel({
         const connected = attempt.status === 'completed'
         updateConnectionState(provider, connected ? 'connected' : 'failed')
         if (!connected) {
-          setProviderError(
-            provider,
-            attempt.message ?? connectFailureMessage(attempt.status),
-          )
+          setProviderError(provider, attempt.status === 'unsupported'
+            ? '当前部署未启用账号授权'
+            : attempt.message ?? connectFailureMessage(attempt.status), offeringId)
         }
         setBusy(provider, false)
         return
@@ -286,13 +303,13 @@ export function AiConnectionsPanel({
         onConnected: () => updateConnectionState(provider, 'connected'),
         onFailed: (message) => {
           updateConnectionState(provider, 'failed')
-          setProviderError(provider, message)
+          setProviderError(provider, message, offeringId)
         },
         onFinished: () => setBusy(provider, false),
       })
     } catch (error) {
       updateConnectionState(provider, 'failed')
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), offeringId)
       setBusy(provider, false)
     }
   }
@@ -323,12 +340,21 @@ export function AiConnectionsPanel({
 
   const disconnect = async (provider: AiConnectionsProvider, credentialId?: string) => {
     if (!serviceAccessGranted) return
+    const offeringId = credentialId
+      ? effectiveProviderProducts[provider]?.credentials.find((credential) => credential.id === credentialId)?.offeringId
+      : undefined
     setBusy(provider, true)
     setProviderError(provider)
     try {
       await client.disconnect(provider, credentialId)
       setAttempts((current) => ({ ...current, [provider]: undefined }))
-      setQuotas((current) => ({ ...current, [provider]: undefined }))
+      setAttemptOfferingIds((current) => ({ ...current, [provider]: undefined }))
+      setQuotas((current) => ({
+        ...current,
+        [provider]: offeringId
+          ? { ...current[provider], [offeringId]: undefined }
+          : undefined,
+      }))
       if (credentialId) {
         setProviderProductOverrides((current) => ({
           ...current,
@@ -344,7 +370,7 @@ export function AiConnectionsPanel({
         toast({ description: '已断开连接' })
       }
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), offeringId)
     } finally {
       setBusy(provider, false)
     }
@@ -440,7 +466,7 @@ export function AiConnectionsPanel({
       return true
     } catch (error) {
       const message = errorMessage(error)
-      setProviderError(provider, message)
+      setProviderError(provider, message, input?.offeringId)
       toast({ variant: 'destructive', description: `模型同步失败：${message}` })
       return false
     } finally {
@@ -476,7 +502,7 @@ export function AiConnectionsPanel({
         credentialId: credential.id,
       })
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), offering.id)
     } finally {
       setBusy(provider, false)
     }
@@ -509,7 +535,7 @@ export function AiConnectionsPanel({
         })
       }
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), credential.offeringId)
     } finally {
       setBusy(provider, false)
     }
@@ -534,7 +560,7 @@ export function AiConnectionsPanel({
       }))
       toast({ description: '凭证已删除' })
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), credential.offeringId)
     } finally {
       setBusy(provider, false)
     }
@@ -551,7 +577,7 @@ export function AiConnectionsPanel({
       await client.testProviderCredential(provider, { credentialId: credential.id })
       toast({ variant: 'success', description: '测试通过' })
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), credential.offeringId)
     } finally {
       setBusy(provider, false)
     }
@@ -595,31 +621,42 @@ export function AiConnectionsPanel({
       }))
       toast({ description: '顺序已保存' })
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
+      setProviderError(provider, errorMessage(error), offering.id)
     } finally {
       setBusy(provider, false)
     }
   }
 
-  const refreshQuota = async (provider: AiConnectionsProvider) => {
-    setBusy(provider, true)
-    setProviderError(provider)
+  const refreshQuota = async (
+    provider: AiConnectionsProvider,
+    offering: AiProviderOffering,
+    credential?: AiProviderCredentialSummary,
+  ) => {
+    const setQuotaState = (patch: Partial<AiOfferingQuotaState>) => {
+      setQuotas((current) => ({
+        ...current,
+        [provider]: {
+          ...current[provider],
+          [offering.id]: {
+            busy: false,
+            ...current[provider]?.[offering.id],
+            ...patch,
+          },
+        },
+      }))
+    }
+    setQuotaState({ busy: true, error: undefined, credentialId: credential?.id })
     try {
-      const credential = effectiveProviderProducts[provider]?.credentials
-        .filter((candidate) => candidate.enabled)
-        .sort((left, right) => left.priority - right.priority)[0]
-      const quota = credential
-        ? await client.quota(provider, true, {
-            offeringId: credential.offeringId,
-            credentialId: credential.id,
-            credentialIri: credential.id,
-          })
-        : await client.quota(provider, true)
-      setQuotas((current) => ({ ...current, [provider]: quota }))
+      const quota = await client.quota(provider, true, {
+        offeringId: offering.id,
+        ...(credential ? {
+          credentialId: credential.id,
+          credentialIri: credential.id,
+        } : {}),
+      })
+      setQuotaState({ quota, busy: false, error: undefined, credentialId: credential?.id })
     } catch (error) {
-      setProviderError(provider, errorMessage(error))
-    } finally {
-      setBusy(provider, false)
+      setQuotaState({ busy: false, error: errorMessage(error), credentialId: credential?.id })
     }
   }
 
@@ -689,7 +726,16 @@ export function AiConnectionsPanel({
     setSelectedModelIds((current) => ({ ...current, [provider]: ids }))
     void (async () => {
       try {
-        await client.saveModelSelection?.(provider, ids)
+        const candidates = [
+          ...models.filter((model) => model.provider === provider),
+          ...(effectiveProviderProducts[provider]?.selectedModels ?? []),
+        ]
+        const selections = ids.map((selectionId): AiConnectionsModelSelection => {
+          const model = candidates.find((candidate) => modelSelectionId(candidate) === selectionId)
+          if (!model) return { id: selectionId }
+          return compactModelSelection(model)
+        })
+        await client.saveModelSelection?.(provider, selections)
         if (modelSelectionGeneration.current[provider] === generation) {
           onModelSelectionChange?.(provider, ids)
         }
@@ -700,7 +746,7 @@ export function AiConnectionsPanel({
         toast({ variant: 'destructive', description: errorMessage(error) })
       }
     })()
-  }, [client, effectiveProviderProducts, modelSelectionGeneration, onModelSelectionChange, selectedModelIds])
+  }, [client, effectiveProviderProducts, modelSelectionGeneration, models, onModelSelectionChange, selectedModelIds])
 
   const createKey = async () => {
     if (!serviceAccessGranted) return
@@ -795,12 +841,13 @@ export function AiConnectionsPanel({
               status={resolvedConnectionState(connectionStates[definition.id], providerProduct)}
               accountLabel={providerSummariesInput[definition.id]?.accountLabel}
               attempt={attempts[definition.id]}
+              attemptOfferingId={attemptOfferingIds[definition.id]}
               apiKey={apiKeyInputs[definition.id] ?? ''}
               baseUrl={baseUrlInputs[definition.id] ?? providerSummariesInput[definition.id]?.baseUrl ?? ''}
               busy={Boolean(busyProviders[definition.id])}
               disabled={!serviceAccessGranted}
               error={providerErrors[definition.id]}
-              quota={quotas[definition.id]}
+              quotas={quotas[definition.id]}
               models={providerModels}
               selectedModelIds={providerSelectedModelIds}
               onApiKeyChange={(value) => setApiKeyInputs((current) => ({
@@ -827,7 +874,7 @@ export function AiConnectionsPanel({
                 fromIndex,
                 toIndex,
               )}
-              onRefreshQuota={() => void refreshQuota(definition.id)}
+              onRefreshQuota={(offering, credential) => void refreshQuota(definition.id, offering, credential)}
               verifyPending={Boolean(verifyingProviders[definition.id])}
               onVerify={() => void verifyProvider(definition.id)}
               onAddModel={() => openModelEditor(definition.id)}
@@ -1242,7 +1289,16 @@ function compactModel(model: AiGatewayModel): AiGatewayModel {
 }
 
 function modelSelectionId(model: AiGatewayModel): string {
-  return model.resourceId ?? model.id
+  return model.resourceId
+    ?? (model.offeringId ? `${model.offeringId}:${model.id}` : model.id)
+}
+
+function compactModelSelection(model: AiGatewayModel): AiConnectionsModelSelection {
+  return {
+    id: model.id,
+    ...(model.offeringId ? { offeringId: model.offeringId } : {}),
+    ...(model.resourceId ? { resourceId: model.resourceId } : {}),
+  }
 }
 
 function isDefined<T>(value: T | undefined): value is T {

@@ -44,9 +44,12 @@ export function registerStaticSpaRoutes(server: ApiServer, options: StaticSpaRou
 
   console.log(`[${label}] Serving from: ${staticDir}`);
 
-  const redirectHandler: RouteHandler = async (_req, res) => {
+  const redirectHandler: RouteHandler = async (req, res) => {
+    // Preserve the query string: OIDC callbacks arrive as `${prefix}?code=...`
+    // and dropping the query would lose the authorization code mid-login.
+    const query = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
     res.statusCode = 302;
-    res.setHeader('Location', `${prefix}/`);
+    res.setHeader('Location', `${prefix}/${query}`);
     res.end();
   };
 

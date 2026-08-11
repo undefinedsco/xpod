@@ -1,4 +1,5 @@
 import type {
+  AiConnectionsModelSelection,
   AiConnectionsOAuthCredential,
   AiClientCredentialRecord,
   AiClientCredentialsCapability,
@@ -89,11 +90,8 @@ export interface GatewayKeyRecord {
   name?: string
 }
 
-export interface AiGatewayModel {
-  id: string
+export interface AiGatewayModel extends AiConnectionsModelSelection {
   provider: AiConnectionsProvider
-  offeringId?: string
-  resourceId?: string
   displayName?: string
   availability?: 'available' | 'unavailable'
   contextWindow?: number
@@ -259,7 +257,7 @@ export interface AiConnectionsClient {
     apiKey?: string
     baseUrl?: string
   }): Promise<ProviderModelDiscovery>
-  saveModelSelection?(provider: AiConnectionsProvider, modelIds: string[]): Promise<void>
+  saveModelSelection?(provider: AiConnectionsProvider, models: AiConnectionsModelSelection[]): Promise<void>
   saveProviderModel(provider: AiConnectionsProvider, model: CustomProviderModel): Promise<CustomProviderModel[]>
   deleteProviderModel(provider: AiConnectionsProvider, modelId: string): Promise<CustomProviderModel[]>
 }
@@ -622,7 +620,10 @@ export function normalizeAiConnectionsErrorMessage(
     const providerStatus = isRecord(payload) && typeof payload.providerStatus === 'number'
       ? payload.providerStatus
       : undefined
-    return modelDiscoveryErrorMessage(providerStatus)
+    const providerMessage = isRecord(payload) && typeof payload.providerMessage === 'string'
+      ? payload.providerMessage.trim()
+      : undefined
+    return withProviderMessage(modelDiscoveryErrorMessage(providerStatus), providerMessage)
   }
   const coded = code ? messageForSafeErrorCode(code, context.provider) : undefined
   if (coded) return coded
@@ -664,6 +665,7 @@ function normalizeAiConnectionsErrorText(message: string): string {
   if (prefixed) return prefixed
   if (message === 'AI Connection service identity is unavailable') return message
   if (MODEL_DISCOVERY_SAFE_MESSAGES.has(message)) return message
+  if (isModelDiscoveryMessageWithProviderDetail(message)) return message
   if (message.startsWith('invalid_')) return 'AI Connection returned an invalid response.'
   return AI_CONNECTIONS_GENERIC_ERROR_MESSAGE
 }
@@ -722,6 +724,18 @@ function modelDiscoveryErrorMessage(providerStatus: number | undefined): string 
     return '模型服务暂时没有响应。请稍后重试。'
   }
   return '模型列表获取失败。请检查密钥、服务地址或网络后重试。'
+}
+
+function withProviderMessage(message: string, providerMessage: string | undefined): string {
+  if (!providerMessage) return message
+  return `${message} 上游返回：${providerMessage.slice(0, 240)}`
+}
+
+function isModelDiscoveryMessageWithProviderDetail(message: string): boolean {
+  const marker = ' 上游返回：'
+  const index = message.indexOf(marker)
+  if (index <= 0) return false
+  return MODEL_DISCOVERY_SAFE_MESSAGES.has(message.slice(0, index))
 }
 
 function providerLabel(provider: AiConnectionsProvider): string {
@@ -807,6 +821,8 @@ function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
   return compactObject({
     id: value.id,
     provider,
+    offeringId: stringValue(value.offeringId),
+    resourceId: stringValue(value.resourceId),
     displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
     contextWindow: numberValue(value.contextWindow) ?? numberValue(value.context_window),
     protocols: Array.isArray(value.protocols)
@@ -1048,7 +1064,7 @@ function mergeProviderSummaries(
   )
   const selectedModels = uniqueBy(
     [...left.selectedModels, ...right.selectedModels],
-    (model) => `${model.provider}:${model.id}`,
+    modelIdentity,
   )
   return {
     id: left.id,
@@ -1058,6 +1074,11 @@ function mergeProviderSummaries(
     selectedModels,
     status: mergeProviderSummaryStatus(left.status, right.status),
   }
+}
+
+function modelIdentity(model: AiGatewayModel): string {
+  return model.resourceId
+    ?? `${model.provider}:${model.offeringId ?? ''}:${model.id}`
 }
 
 function providerProductStatusFromLegacy(

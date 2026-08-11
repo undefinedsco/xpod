@@ -4,7 +4,6 @@ import type { ComponentType } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { globalNavigationItems, isGlobalNavigationItemActive, type GlobalNavigationItem } from './global-navigation';
 import { XpodUserCard } from './XpodUserCard';
-import { canonicalRoutes } from '../routes/canonical-routes';
 
 export interface ProductNavigationItem {
   id: string;
@@ -62,25 +61,15 @@ export function XpodProductLayout({ product }: XpodProductLayoutProps) {
     <AppLayout
       className={`xpod-${product}-shell`}
       navigation={
-        <div className="flex h-full w-full flex-row items-center px-2 sm:min-h-full sm:flex-col sm:px-0">
-          <div className="hidden shrink-0 flex-col items-center pt-12 sm:flex">
-            <a
-              aria-label="Xpod Home"
-              className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground shadow-sm"
-              href={canonicalRoutes.status}
-              title="Xpod Home"
-            >
-              X
-            </a>
+        <div className="flex h-full w-full flex-row items-center px-2 sm:min-h-full sm:flex-col sm:px-0 sm:py-4">
+          <div className="mr-1 shrink-0 sm:mr-0">
+            <XpodUserCard />
           </div>
-          <div className="flex min-w-0 flex-1 flex-row items-center justify-center sm:flex-col sm:py-4">
+          <div className="flex min-w-0 flex-1 flex-row items-center justify-center sm:mt-5 sm:flex-none sm:flex-col sm:justify-start">
             <ProductNavLinks items={primaryItems} label="Primary Xpod workspaces" />
           </div>
-          <div className="flex shrink-0 flex-row items-center gap-3 sm:flex-col sm:gap-0 sm:pb-4">
+          <div className="flex shrink-0 flex-row items-center gap-3 sm:mt-auto sm:flex-col sm:gap-0">
             <ProductNavLinks items={bottomItems} label="Xpod settings" />
-            <div className="ml-1 border-l border-border/60 pl-3 sm:ml-0 sm:mt-3 sm:border-l-0 sm:border-t sm:pl-0 sm:pt-3">
-              <XpodUserCard />
-            </div>
           </div>
         </div>
       }

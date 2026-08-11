@@ -149,6 +149,7 @@ export interface ConnectCredentialRecord {
   priority?: number;
   enabled?: boolean;
   health?: 'healthy' | 'reauthRequired' | 'disabled' | 'error';
+  selectedModels?: AiGatewayModelSummary[];
   metadata?: Record<string, unknown>;
 }
 
@@ -324,40 +325,37 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       .filter((record) => record.status === 'active')
       .filter((record) => normalizeProvider(record.provider) !== '')
       .filter((record) => providerAllowedByConfiguredIds(record.provider, enabledProviderIds));
-    const selectedModelsByProvider = new Map<string, string[]>();
-    await Promise.all([...new Set(filtered.map((record) => normalizeProvider(record.provider)))].map(async (provider) => {
-      const row = await db.findById<Record<string, unknown>>(aiProvider, aiProviderResource.buildId({ id: provider }));
-      selectedModelsByProvider.set(provider, modelIdsFromProviderRow(row));
-    }));
-    return filtered
+    const hydrated = await this.withSelectedModels(db, aiProvider, filtered);
+    return hydrated
       .sort(compareCredentialRecords)
-      .map((record) => ({
-        id: record.id,
-        credentialIri: record.credentialIri,
-        provider: record.provider,
-        authMode: record.authMode,
-        enabled: record.enabled === false ? false : !record.reauthRequired,
-        accountLabel: record.accountLabel,
-        models: selectedModelsByProvider.get(normalizeProvider(record.provider))
-          ?? modelsFromMetadata(record.metadata),
-        customModels: customModelsFromMetadata(record.metadata),
-        defaultModel: defaultModelFromMetadata(record.metadata),
-        priority: record.priority ?? 100,
-        health: record.health ?? (record.reauthRequired ? 'reauthRequired' : 'healthy'),
-        quota: { status: 'available' },
-        encryptedSecret: record.encryptedSecret,
-        version: record.version,
-        runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
-        metadata: {
-          ...record.metadata,
-          models: selectedModelsByProvider.get(normalizeProvider(record.provider))
-            ?? modelsFromMetadata(record.metadata),
-          offeringId: record.offeringId ?? (metadataFromRowValue(record.metadata)?.offeringId ?? undefined),
+      .map((record) => {
+        const selectedModelIds = record.selectedModels?.map((model) => model.id);
+        return {
+          id: record.id,
+          credentialIri: record.credentialIri,
+          provider: record.provider,
+          authMode: record.authMode,
+          enabled: record.enabled === false ? false : !record.reauthRequired,
+          accountLabel: record.accountLabel,
+          models: selectedModelIds ?? modelsFromMetadata(record.metadata),
+          customModels: customModelsFromMetadata(record.metadata),
+          defaultModel: defaultModelFromMetadata(record.metadata),
           priority: record.priority ?? 100,
-          enabled: record.enabled ?? !record.reauthRequired,
           health: record.health ?? (record.reauthRequired ? 'reauthRequired' : 'healthy'),
-        },
-      }));
+          quota: { status: 'available' },
+          encryptedSecret: record.encryptedSecret,
+          version: record.version,
+          runtimeCredential: runtimeCredentialFromMetadata(record.metadata),
+          metadata: {
+            ...record.metadata,
+            models: selectedModelIds ?? modelsFromMetadata(record.metadata),
+            offeringId: record.offeringId ?? (metadataFromRowValue(record.metadata)?.offeringId ?? undefined),
+            priority: record.priority ?? 100,
+            enabled: record.enabled ?? !record.reauthRequired,
+            health: record.health ?? (record.reauthRequired ? 'reauthRequired' : 'healthy'),
+          },
+        };
+      });
   }
 
   public async listProviderCredentials(input: ProviderCredentialQuery): Promise<ConnectCredentialRecord[]> {
@@ -471,14 +469,15 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     auth?: AuthContext;
     includeRevoked?: boolean;
   }): Promise<ConnectCredentialRecord[]> {
-    const { db, credential } = await this.dbForOwner(input.webId, input.auth);
+    const { db, credential, aiProvider } = await this.dbForOwner(input.webId, input.auth);
     const rows = await this.selectCredentialRows(db, credential);
     const providerIds = queryProviderIds(input.provider);
-    return rows
+    const filtered = rows
       .flatMap(parseCredentialRow)
       .filter((record) => record.webId === input.webId)
       .filter((record) => providerIds.has(normalizeProvider(record.provider)))
-      .filter((record) => input.includeRevoked || record.status === 'active')
+      .filter((record) => input.includeRevoked || record.status === 'active');
+    return (await this.withSelectedModels(db, aiProvider, filtered))
       .sort(compareCredentialRecords);
   }
 
@@ -607,6 +606,35 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
       credentialId: current.id,
       expectedVersion: current.version,
       auth: input.auth,
+    });
+  }
+
+  private async withSelectedModels(
+    db: ConnectedCredentialDb,
+    aiProvider: typeof aiProviderResource,
+    records: ConnectCredentialRecord[],
+  ): Promise<ConnectCredentialRecord[]> {
+    const selectedByProduct = new Map<string, AiGatewayModelSummary[] | undefined>();
+    const productIds = [...new Set(records.map((record) => productProviderId(record.provider)))];
+    await Promise.all(productIds.map(async (productId) => {
+      const providerRow = await db.findById<Record<string, unknown>>(
+        aiProvider,
+        aiProviderResource.buildId({ id: productId }),
+      );
+      if (!providerRow) {
+        selectedByProduct.set(productId, undefined);
+        return;
+      }
+      selectedByProduct.set(productId, selectedModelReferencesFromProviderRow(providerRow, productId));
+    }));
+    return records.map((record) => {
+      const selected = selectedByProduct.get(productProviderId(record.provider));
+      if (selected === undefined) return record;
+      const offeringId = credentialOfferingId(record);
+      return {
+        ...record,
+        selectedModels: selected.filter((model) => !model.offeringId || model.offeringId === offeringId),
+      };
     });
   }
 
@@ -1351,6 +1379,8 @@ export interface AiProviderCredentialSummary {
 export interface AiGatewayModelSummary {
   id: string;
   provider: string;
+  offeringId?: string;
+  resourceId?: string;
   displayName?: string;
   custom?: boolean;
   inputModalities?: string[];
@@ -1870,8 +1900,15 @@ function selectedModelsFromCredentials(credentials: ConnectCredentialRecord[]): 
     }
     const metadata = metadataFromRowValue(credential.metadata);
     const provider = normalizeProvider(credential.provider);
-    for (const modelId of modelIdsFromMetadata(metadata)) {
-      selected.set(`${provider}:${modelId}`, { id: modelId, provider });
+    const models: AiGatewayModelSummary[] = credential.selectedModels
+      ?? modelIdsFromMetadata(metadata).map((id) => ({ id, provider }));
+    for (const model of models) {
+      const publicModel = { ...model, provider: productProviderId(provider) };
+      selected.set(
+        publicModel.resourceId
+          ?? `${publicModel.provider}:${publicModel.offeringId ?? ''}:${publicModel.id}`,
+        publicModel,
+      );
     }
     for (const custom of customModelsFromMetadata(metadata)) {
       selected.set(`${provider}:${custom.id}`, metadataWithoutUndefined({
@@ -2195,18 +2232,49 @@ function modelsFromMetadata(metadata: Record<string, unknown> | undefined): stri
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined;
 }
 
-function modelIdsFromProviderRow(row: Record<string, unknown> | null | undefined): string[] {
+function selectedModelReferencesFromProviderRow(
+  row: Record<string, unknown>,
+  provider: string,
+): AiGatewayModelSummary[] {
   const raw = row?.hasModel;
   const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
-  return [...new Set(values.flatMap((value) => {
-    if (typeof value !== 'string' || !value.trim()) return [];
-    const fragment = value.includes('#') ? value.slice(value.lastIndexOf('#') + 1) : value;
-    try {
-      return [decodeURIComponent(fragment)];
-    } catch {
-      return [fragment];
-    }
-  }))];
+  const resourceIds = [...new Set(values.filter((value): value is string =>
+    typeof value === 'string' && Boolean(value.trim())))];
+  return resourceIds.map((resourceId) => {
+    return metadataWithoutUndefined({
+      id: modelIdFromResourceReference(resourceId),
+      provider,
+      offeringId: offeringIdFromProviderReference(resourceId, provider),
+      resourceId,
+    }) as unknown as AiGatewayModelSummary;
+  });
+}
+
+function modelIdFromResourceReference(value: string): string {
+  const fragment = value.includes('#') ? value.slice(value.lastIndexOf('#') + 1) : value;
+  try {
+    return decodeURIComponent(fragment);
+  } catch {
+    return fragment;
+  }
+}
+
+function productProviderId(provider: string): string {
+  return normalizeProvider(providerProductFor(provider)?.id ?? provider);
+}
+
+function offeringIdFromProviderReference(value: string, provider: string): string | undefined {
+  const withoutFragment = value.split('#', 1)[0] ?? value;
+  const fileName = withoutFragment.split('/').filter(Boolean).at(-1) ?? withoutFragment;
+  const key = fileName.replace(/\.ttl$/u, '');
+  const productId = productProviderId(provider);
+  if (!key || key === productId || !key.startsWith(`${productId}-`)) return undefined;
+  const offeringId = key.slice(productId.length + 1);
+  if (productId === 'bailian') {
+    if (offeringId === 'token-plan-personal') return 'token-plan';
+    if (offeringId === 'coding-plan-pro') return 'coding-plan';
+  }
+  return offeringId;
 }
 
 function defaultModelFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {

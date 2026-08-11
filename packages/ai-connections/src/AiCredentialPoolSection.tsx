@@ -29,12 +29,26 @@ import type {
   AiProviderCredentialSummary,
   AiProviderOffering,
   AiProviderSummary,
+  AiQuotaSnapshot,
 } from './ai-connections-client'
 import type {
   AiProviderDefinition,
 } from './controller'
 import type { ProviderConnectionState } from './AiProviderCard'
 import { offeringLabel } from './offering-label'
+import { AiQuotaCard } from './AiQuotaCard'
+
+export interface AiOfferingActionError {
+  message: string
+  offeringId?: string
+}
+
+export interface AiOfferingQuotaState {
+  quota?: AiQuotaSnapshot
+  busy: boolean
+  error?: string
+  credentialId?: string
+}
 
 export function AiCredentialPoolSection({
   definition,
@@ -42,11 +56,13 @@ export function AiCredentialPoolSection({
   status,
   accountLabel,
   attempt,
+  attemptOfferingId,
   apiKey,
   baseUrl = '',
   busy,
   disabled = false,
   error,
+  quotas = {},
   onApiKeyChange,
   onBaseUrlChange,
   onBeginApiKey,
@@ -59,6 +75,7 @@ export function AiCredentialPoolSection({
   onDeleteCredential,
   onTestCredential,
   onReorderCredentials,
+  onRefreshQuota,
   onDismissError,
 }: {
   definition: AiProviderDefinition
@@ -66,11 +83,13 @@ export function AiCredentialPoolSection({
   status: ProviderConnectionState
   accountLabel?: string
   attempt?: AiConnectAttempt
+  attemptOfferingId?: string
   apiKey: string
   baseUrl?: string
   busy: boolean
   disabled?: boolean
-  error?: string
+  error?: AiOfferingActionError
+  quotas?: Partial<Record<string, AiOfferingQuotaState>>
   onApiKeyChange: (value: string) => void
   onBaseUrlChange?: (value: string) => void
   onBeginApiKey: () => void
@@ -93,11 +112,13 @@ export function AiCredentialPoolSection({
   onDeleteCredential?: (credential: AiProviderCredentialSummary) => void
   onTestCredential?: (credential: AiProviderCredentialSummary) => void
   onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
+  onRefreshQuota?: (offering: AiProviderOffering, credential?: AiProviderCredentialSummary) => void
   onDismissError?: () => void
 }) {
   const fallbackOfferings: AiProviderOffering[] = [{
     id: 'api-platform',
     label: 'API Key',
+    kind: 'api-platform',
     authModes: ['apiKey'],
   }]
   const credentials = product?.credentials ?? []
@@ -113,9 +134,29 @@ export function AiCredentialPoolSection({
       <div className="space-y-3">
         {offerings.map((offering) => {
           const mode = modeForOffering(offering, definition)
+          const offeringAttempt = attemptOfferingId === offering.id ? attempt : undefined
           const offeringCredentials = credentials
             .filter((credential) => credential.offeringId === offering.id)
             .sort((left, right) => left.priority - right.priority)
+          const offeringError = error?.offeringId === offering.id ? error.message : undefined
+          const quotaCredential = offeringCredentials.find((credential) => credential.enabled)
+            ?? offeringCredentials[0]
+          const quotaState = quotas[offering.id]
+          const visibleQuotaState = quotaCredential && quotaState?.credentialId === quotaCredential.id
+            ? quotaState
+            : undefined
+          const quotaCard = (
+            <AiQuotaCard
+              providerName={definition.name}
+              offeringName={offeringTitle(offering)}
+              quota={visibleQuotaState?.quota}
+              busy={visibleQuotaState?.busy ?? false}
+              disabled={disabled || (Boolean(product) && !quotaCredential)}
+              credentialLabel={quotaCredential ? credentialDisplayLabel(quotaCredential) : undefined}
+              error={visibleQuotaState?.error}
+              onRefresh={() => onRefreshQuota?.(offering, quotaCredential)}
+            />
+          )
 
           if (offering.lifecycle === 'unavailable') {
             return (
@@ -127,29 +168,43 @@ export function AiCredentialPoolSection({
             )
           }
 
-          if (error && mode === 'deviceCodeOAuth') {
+          if (offeringError && offeringAttempt?.status === 'unsupported' && mode === 'deviceCodeOAuth') {
             return (
               <OfferingItem key={offering.id} offering={offering}>
-              <LoginFailureView
-                description={error}
-                primaryLabel="重试登录"
-                onPrimary={() => onBeginOffering?.(offering, mode)}
-                secondaryLabel="关闭"
-                onSecondary={onDismissError ?? (() => undefined)}
-              />
+                <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-3">
+                  <p className="text-sm font-medium text-foreground">当前部署未启用账号授权</p>
+                  <p className="mt-1 text-xs text-muted-foreground">仍可使用其他已提供的接入方式。</p>
+                </div>
+                {quotaCard}
               </OfferingItem>
             )
           }
 
-          if (isPendingAttempt(attempt) && mode === 'deviceCodeOAuth') {
+          if (offeringError && mode === 'deviceCodeOAuth') {
             return (
               <OfferingItem key={offering.id} offering={offering}>
-              <LoginConnectingView
-                title="正在连接"
-                detail={attempt?.userCode ? `验证码：${attempt.userCode}` : '请在打开的页面完成授权。'}
-                providerLabel={offeringLabel(offering)}
-                providerHost={definition.name}
-              />
+                <LoginFailureView
+                  description={offeringError}
+                  primaryLabel="重试登录"
+                  onPrimary={() => onBeginOffering?.(offering, mode)}
+                  secondaryLabel="关闭"
+                  onSecondary={onDismissError ?? (() => undefined)}
+                />
+                {quotaCard}
+              </OfferingItem>
+            )
+          }
+
+          if (isPendingAttempt(offeringAttempt) && mode === 'deviceCodeOAuth') {
+            return (
+              <OfferingItem key={offering.id} offering={offering}>
+                <LoginConnectingView
+                  title="正在连接"
+                  detail={offeringAttempt?.userCode ? `验证码：${offeringAttempt.userCode}` : '请在打开的页面完成授权。'}
+                  providerLabel={offeringTitle(offering)}
+                  providerHost={definition.name}
+                />
+                {quotaCard}
               </OfferingItem>
             )
           }
@@ -162,13 +217,13 @@ export function AiCredentialPoolSection({
                     <CredentialRow
                       key={credential.id}
                       credential={credential}
-                      label={credential.label ? maskAccountLabel(credential.label) : credential.id}
+                      label={credential.label ? maskAccountLabel(credential.label) : credentialDisplayLabel(credential)}
                       busy={busy}
                       disabled={disabled}
                       onToggle={onUpdateCredential}
                       onTest={onTestCredential}
                       onDelete={() => onDisconnect(credential)}
-                      deleteAriaLabel={`${credential.label ? maskAccountLabel(credential.label) : credential.id} 移除`}
+                      deleteAriaLabel={`${credential.label ? maskAccountLabel(credential.label) : credentialDisplayLabel(credential)} 移除`}
                     />
                   ))}
                 </div>
@@ -178,57 +233,65 @@ export function AiCredentialPoolSection({
                     {offeringCredentials.length ? '添加账号' : '登录'}
                   </Button>
                 </div>
-                {error ? <p className="text-sm text-destructive">{error}</p> : null}
+                {quotaCard}
               </OfferingItem>
             )
           }
 
           return (
             <OfferingItem key={offering.id} offering={offering}>
-            <ApiKeyPool
-              definition={definition}
-              status={status}
-              accountLabel={accountLabel}
-              credentials={offeringCredentials}
-              attempt={attempt}
-              apiKey={apiKey}
-              baseUrl={baseUrl}
-              busy={busy}
-              disabled={disabled}
-              error={error}
-              onApiKeyChange={onApiKeyChange}
-              onBaseUrlChange={onBaseUrlChange}
-              onBeginApiKey={onBeginApiKey}
-              onBeginBrowser={onBeginBrowser}
-              onSaveApiKey={onSaveApiKey}
-              onDisconnect={onDisconnect}
-              onCreateApiKeyCredential={onCreateApiKeyCredential
-                ? (input) => onCreateApiKeyCredential(offering, input)
-                : undefined}
-              onUpdateCredential={onUpdateCredential}
-              onDeleteCredential={onDeleteCredential}
-              onTestCredential={onTestCredential}
-              onMoveCredential={(fromIndex, toIndex) => onReorderCredentials?.(
-                offering,
-                offeringCredentials,
-                fromIndex,
-                toIndex,
-              )}
-            />
+              <ApiKeyPool
+                definition={definition}
+                offering={offering}
+                status={status}
+                accountLabel={accountLabel}
+                credentials={offeringCredentials}
+                attempt={attempt}
+                apiKey={apiKey}
+                baseUrl={baseUrl}
+                busy={busy}
+                disabled={disabled}
+                error={offeringError}
+                onApiKeyChange={onApiKeyChange}
+                onBaseUrlChange={onBaseUrlChange}
+                onBeginApiKey={onBeginApiKey}
+                onBeginBrowser={onBeginBrowser}
+                onSaveApiKey={onSaveApiKey}
+                onDisconnect={onDisconnect}
+                onCreateApiKeyCredential={onCreateApiKeyCredential
+                  ? (input) => onCreateApiKeyCredential(offering, input)
+                  : undefined}
+                onUpdateCredential={onUpdateCredential}
+                onDeleteCredential={onDeleteCredential}
+                onTestCredential={onTestCredential}
+                onMoveCredential={(fromIndex, toIndex) => onReorderCredentials?.(
+                  offering,
+                  offeringCredentials,
+                  fromIndex,
+                  toIndex,
+                )}
+              />
+              {quotaCard}
             </OfferingItem>
           )
         })}
+        {error && !error.offeringId ? (
+          <p className="rounded-md border border-destructive/30 px-3 py-2 text-sm text-destructive">
+            {error.message}
+          </p>
+        ) : null}
       </div>
     </section>
   )
 }
 
 function OfferingItem({ offering, children }: { offering: AiProviderOffering; children: ReactNode }) {
+  const endpoints = offering.endpoints ?? []
   return (
     <section className="space-y-3 rounded-lg border border-border/50 bg-card p-3" aria-labelledby={`offering-${offering.id}`}>
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h4 id={`offering-${offering.id}`} className="text-sm font-medium text-foreground">{offeringLabel(offering)}</h4>
+          <h4 id={`offering-${offering.id}`} className="text-sm font-medium text-foreground">{offeringTitle(offering)}</h4>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
             {offering.productLabel ? <span>{offering.productLabel}</span> : null}
             {offering.kind ? <span>{offeringKindLabel(offering.kind)}</span> : null}
@@ -242,6 +305,18 @@ function OfferingItem({ offering, children }: { offering: AiProviderOffering; ch
         {offering.quota?.url ? <OfferingLink href={offering.quota.url} label="额度与用量" /> : null}
         {offering.usagePolicyUrl ? <OfferingLink href={offering.usagePolicyUrl} label="使用政策" /> : null}
       </div>
+      {endpoints.length ? (
+        <dl className="space-y-1 text-[11px] text-muted-foreground">
+          {endpoints.map((endpoint) => (
+            <div key={`${endpoint.protocol}:${endpoint.baseUrl}`} className="flex min-w-0 items-baseline gap-2">
+              <dt className="shrink-0 text-foreground/70">{endpointProtocolLabel(endpoint.protocol)}</dt>
+              <dd className="min-w-0 truncate font-mono" title={endpoint.baseUrl}>
+                {endpointDisplayValue(endpoint.baseUrl)}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {children}
     </section>
   )
@@ -249,6 +324,32 @@ function OfferingItem({ offering, children }: { offering: AiProviderOffering; ch
 
 function OfferingLink({ href, label }: { href: string; label: string }) {
   return <a href={href} target="_blank" rel="noreferrer" className="text-primary hover:underline">{label}</a>
+}
+
+function offeringTitle(offering: AiProviderOffering): string {
+  return offering.label?.trim() || offeringLabel(offering)
+}
+
+function offeringEndpoint(offering: AiProviderOffering): string | undefined {
+  const protocol = offering.modelDiscovery?.endpointProtocol
+  return offering.endpoints?.find((endpoint) => endpoint.protocol === protocol)?.baseUrl
+    ?? offering.endpoints?.[0]?.baseUrl
+}
+
+function endpointDisplayValue(value: string): string {
+  try {
+    const url = new URL(value)
+    return `${url.host}${url.pathname.replace(/\/$/u, '')}`
+  } catch {
+    return value
+  }
+}
+
+function endpointProtocolLabel(protocol: string): string {
+  if (protocol === 'responses') return 'Responses API'
+  if (protocol === 'chatCompletions') return 'Chat API'
+  if (protocol === 'anthropic') return 'Anthropic API'
+  return protocol
 }
 
 function offeringKindLabel(kind: string): string {
@@ -265,6 +366,7 @@ function authMethodLabel(offering: AiProviderOffering): string {
 
 function ApiKeyPool({
   definition,
+  offering,
   status,
   accountLabel,
   credentials,
@@ -287,6 +389,7 @@ function ApiKeyPool({
   onMoveCredential,
 }: {
   definition: AiProviderDefinition
+  offering: AiProviderOffering
   status: ProviderConnectionState
   accountLabel?: string
   credentials: AiProviderCredentialSummary[]
@@ -328,6 +431,7 @@ function ApiKeyPool({
   const [poolLabel, setPoolLabel] = useState('')
   const [poolApiKey, setPoolApiKey] = useState('')
   const [poolBaseUrl, setPoolBaseUrl] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const openCreateForm = () => {
     setFormMode('create')
@@ -335,6 +439,7 @@ function ApiKeyPool({
     setPoolLabel('')
     setPoolApiKey('')
     setPoolBaseUrl('')
+    setShowAdvanced(false)
   }
 
   const openEditForm = (credential: AiProviderCredentialSummary) => {
@@ -343,6 +448,7 @@ function ApiKeyPool({
     setPoolLabel(credential.label ?? '')
     setPoolApiKey('')
     setPoolBaseUrl(credential.baseUrl ?? '')
+    setShowAdvanced(false)
   }
 
   const closePoolForm = () => {
@@ -351,6 +457,7 @@ function ApiKeyPool({
     setPoolLabel('')
     setPoolApiKey('')
     setPoolBaseUrl('')
+    setShowAdvanced(false)
   }
 
   const savePoolForm = () => {
@@ -384,20 +491,20 @@ function ApiKeyPool({
               <CredentialRow
                 key={credential.id}
                 credential={credential}
-                label={credential.label ?? credential.id}
+                label={credentialDisplayLabel(credential)}
                 busy={busy}
                 disabled={disabled}
                 onToggle={onUpdateCredential}
                 onTest={onTestCredential}
                 onEdit={() => openEditForm(credential)}
                 onDelete={() => onDeleteCredential?.(credential)}
-                deleteAriaLabel={`删除 ${credential.label ?? credential.id}`}
+                deleteAriaLabel={`删除 ${credentialDisplayLabel(credential)}`}
                 beforeActions={<>
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7"
-                    aria-label={`上移 ${credential.label ?? credential.id}`}
+                    aria-label={`上移 ${credentialDisplayLabel(credential)}`}
                     disabled={index === 0 || disabled || busy}
                     onClick={() => onMoveCredential?.(index, index - 1)}
                   >
@@ -407,7 +514,7 @@ function ApiKeyPool({
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7"
-                    aria-label={`下移 ${credential.label ?? credential.id}`}
+                    aria-label={`下移 ${credentialDisplayLabel(credential)}`}
                     disabled={index === credentials.length - 1 || disabled || busy}
                     onClick={() => onMoveCredential?.(index, index + 1)}
                   >
@@ -485,17 +592,21 @@ function ApiKeyPool({
 
       {formMode ? (
         <div className="space-y-2 rounded-lg border border-border/50 bg-muted/10 p-3">
-          <Input
-            autoComplete="off"
-            aria-label={`${definition.name} API Key 标签`}
-            placeholder="名称，例如 Work key"
-            value={poolLabel}
-            onChange={(event) => setPoolLabel(event.target.value)}
-          />
+          {formMode === 'edit' ? (
+            <Input
+              autoComplete="off"
+              aria-label={`${definition.name} API Key 标签`}
+              placeholder="名称，例如 Work key"
+              value={poolLabel}
+              onChange={(event) => setPoolLabel(event.target.value)}
+            />
+          ) : null}
           {formMode === 'create' ? (
             <Input
               type={showKey ? 'text' : 'password'}
-              autoComplete="off"
+              autoComplete="new-password"
+              data-lpignore="true"
+              data-1p-ignore
               aria-label={`${definition.name} API Key 输入`}
               placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
               value={poolApiKey}
@@ -503,16 +614,18 @@ function ApiKeyPool({
               className="font-mono"
             />
           ) : null}
-          <Input
-            autoComplete="off"
-            data-lpignore="true"
-            data-1p-ignore
-            aria-label={`${definition.name} Base URL 输入`}
-            placeholder={definition.defaultBaseUrl || '默认服务地址'}
-            value={poolBaseUrl}
-            onChange={(event) => setPoolBaseUrl(event.target.value)}
-            className="font-mono text-xs"
-          />
+          {formMode === 'edit' || showAdvanced ? (
+            <Input
+              autoComplete="off"
+              data-lpignore="true"
+              data-1p-ignore
+              aria-label={`${definition.name} Base URL 输入`}
+              placeholder={offeringEndpoint(offering) || definition.defaultBaseUrl || '默认服务地址'}
+              value={poolBaseUrl}
+              onChange={(event) => setPoolBaseUrl(event.target.value)}
+              className="font-mono text-xs"
+            />
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
@@ -525,6 +638,11 @@ function ApiKeyPool({
             <Button variant="ghost" size="sm" onClick={closePoolForm}>
               取消
             </Button>
+            {formMode === 'create' ? (
+              <Button variant="ghost" size="sm" onClick={() => setShowAdvanced((current) => !current)}>
+                {showAdvanced ? '收起高级设置' : '高级设置'}
+              </Button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -542,7 +660,9 @@ function ApiKeyPool({
           <div className="group relative">
             <Input
               type={showKey ? 'text' : 'password'}
-              autoComplete="off"
+              autoComplete="new-password"
+              data-lpignore="true"
+              data-1p-ignore
               aria-label={`${definition.name} API Key 输入`}
               placeholder={definition.apiKeyPlaceholder || '从官方控制台复制 API Key'}
               value={apiKey}
@@ -694,6 +814,13 @@ function isPendingAttempt(attempt: AiConnectAttempt | undefined): boolean {
 function nextCredentialPriority(credentials: AiProviderCredentialSummary[]): number {
   if (credentials.length === 0) return 10
   return Math.max(...credentials.map((credential) => credential.priority)) + 10
+}
+
+function credentialDisplayLabel(credential: AiProviderCredentialSummary): string {
+  if (credential.label?.trim()) return credential.label
+  if (credential.maskedHint) return `API Key · ${credential.maskedHint}`
+  if (credential.authMode === 'oauth' || credential.authMode === 'deviceCode') return '已授权账号'
+  return 'API Key'
 }
 
 function maskAccountLabel(value: string): string {

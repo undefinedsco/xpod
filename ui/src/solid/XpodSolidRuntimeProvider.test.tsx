@@ -4,9 +4,14 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { SolidSessionAdapter } from '@undefineds.co/solid-sdk';
+import { EVENTS } from '@inrupt/solid-client-authn-browser';
 import {
   createXpodSolidRuntimeValue,
+  currentXpodSurfaceRedirectUrl,
   discoverPodUrlFromWebId,
+  ensureXpodOidcClient,
+  markOidcClientAsNonExpiring,
+  syncStoredOidcRedirectUrl,
   XPOD_LAST_OIDC_ISSUER_STORAGE_KEY,
   type XpodSolidRuntimeCore,
 } from './XpodSolidRuntime';
@@ -60,6 +65,10 @@ class FakeSession implements SolidSessionAdapter {
     this.emit('sessionExpired');
   }
 
+  restore(url: string) {
+    this.emit(EVENTS.SESSION_RESTORED, url);
+  }
+
   private emit(event: string, ...args: unknown[]) {
     for (const listener of this.listeners.get(event) ?? []) {
       listener(...args);
@@ -67,9 +76,9 @@ class FakeSession implements SolidSessionAdapter {
   }
 }
 
-function installDom() {
+function installDom(url = 'https://app.example/dashboard/models') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'https://app.example/dashboard/models',
+    url,
   });
   globalThis.window = dom.window as unknown as Window & typeof globalThis;
   globalThis.document = dom.window.document;
@@ -131,6 +140,104 @@ function CapabilityProbe() {
 }
 
 describe('Xpod Solid runtime', () => {
+  test('maps deep links to the owning product surface redirect URL', () => {
+    installDom('https://app.example/settings/pod?tab=storage');
+
+    expect(currentXpodSurfaceRedirectUrl()).toBe('https://app.example/settings/');
+  });
+
+  test('syncs the stored OIDC redirect URL to the current product surface', () => {
+    installDom('https://app.example/settings/pod');
+    window.localStorage.clear();
+    window.localStorage.setItem('solidClientAuthn:currentSession', 'session-1');
+    window.localStorage.setItem('solidClientAuthenticationUser:session-1', JSON.stringify({
+      clientId: 'client-1',
+      redirectUrl: 'https://app.example/ai-connections/',
+    }));
+
+    syncStoredOidcRedirectUrl();
+
+    expect(JSON.parse(window.localStorage.getItem('solidClientAuthenticationUser:session-1') ?? '{}')).toEqual({
+      clientId: 'client-1',
+      redirectUrl: 'https://app.example/settings/',
+    });
+  });
+
+  test('registers one OIDC client for all product surface callbacks', async () => {
+    installDom('https://app.example/settings/pod');
+    window.localStorage.clear();
+    const requests: { url: string; body?: string }[] = [];
+    vi.stubGlobal('fetch', mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, body: typeof init?.body === 'string' ? init.body : undefined });
+      if (url === 'https://app.example/.well-known/openid-configuration') {
+        return Response.json({
+          registration_endpoint: 'https://app.example/reg',
+          id_token_signing_alg_values_supported: ['ES256'],
+        });
+      }
+      if (url === 'https://app.example/reg') {
+        return Response.json({ client_id: 'client-1', client_secret: 'secret-1' }, { status: 201 });
+      }
+      return new Response(null, { status: 404 });
+    }));
+
+    try {
+      const client = await ensureXpodOidcClient('https://app.example/');
+      expect(client).toEqual({
+        issuer: 'https://app.example/',
+        clientId: 'client-1',
+        clientSecret: 'secret-1',
+        redirectUris: [
+          'https://app.example/ai-connections/',
+          'https://app.example/ai-config/',
+          'https://app.example/settings/',
+          'https://app.example/status/',
+          'https://app.example/network/',
+          'https://app.example/dashboard/',
+        ],
+      });
+      expect(JSON.parse(requests.find((request) => request.url === 'https://app.example/reg')?.body ?? '{}')).toEqual(
+        expect.objectContaining({
+          client_name: 'Xpod',
+          redirect_uris: client?.redirectUris,
+          grant_types: ['authorization_code', 'refresh_token'],
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('marks a statically registered OIDC client as non-expiring for Inrupt session restore', () => {
+    installDom('https://app.example/settings/');
+    window.localStorage.clear();
+    window.localStorage.setItem('solidClientAuthenticationUser:session-1', JSON.stringify({
+      clientId: 'client-1',
+      clientSecret: 'secret-1',
+      clientType: 'static',
+    }));
+
+    markOidcClientAsNonExpiring('client-1');
+
+    expect(JSON.parse(window.localStorage.getItem('solidClientAuthenticationUser:session-1') ?? '{}')).toEqual({
+      clientId: 'client-1',
+      clientSecret: 'secret-1',
+      clientType: 'static',
+      expiresAt: '0',
+    });
+  });
+
+  test('navigates inside the current product surface when Inrupt restores a session', () => {
+    installDom('https://app.example/settings/');
+    const session = new FakeSession();
+    createXpodSolidRuntimeValue({ sessionFactory: () => session });
+
+    session.restore('https://app.example/settings/pod?tab=storage');
+
+    expect(`${window.location.pathname}${window.location.search}`).toBe('/settings/pod?tab=storage');
+  });
+
   test('constructs one browser session and initializes redirect handling once', async () => {
     let constructions = 0;
     const session = new FakeSession();

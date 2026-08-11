@@ -69,8 +69,8 @@ export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapt
     defaultBaseUrl: string;
     safeBaseUrls: string[];
   }): string {
-    const candidate = trimTrailingSlash(input.configuredBaseUrl ?? input.defaultBaseUrl);
-    if (!input.safeBaseUrls.map(trimTrailingSlash).includes(candidate)) {
+    const candidate = safeNormalizeCompatibleBaseUrl(input.configuredBaseUrl ?? input.defaultBaseUrl);
+    if (!candidate || !input.safeBaseUrls.map(safeNormalizeCompatibleBaseUrl).includes(candidate)) {
       throw new GatewayProtocolError('Configured provider endpoint is not allowed', {
         code: 'invalid_request',
         status: 400,
@@ -849,6 +849,22 @@ function compactUsage(usage: GatewayUsage): GatewayUsage | undefined {
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/u, '');
+}
+
+function normalizeCompatibleBaseUrl(value: string): string {
+  const url = new URL(value);
+  if (url.pathname === '' || url.pathname === '/') {
+    url.pathname = '/v1';
+  }
+  return trimTrailingSlash(url.href);
+}
+
+function safeNormalizeCompatibleBaseUrl(value: string): string | undefined {
+  try {
+    return normalizeCompatibleBaseUrl(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function redactSecret(value: string, secret: string): string {

@@ -317,6 +317,28 @@ describe('ProviderModelsAdapters', () => {
     expect(models).toEqual([{ id: 'kimi-k2' }]);
   });
 
+  it('normalizes an OpenAI-compatible root URL to the v1 models endpoint', async () => {
+    const fetch = jsonFetch((url) => {
+      expect(url).toBe('https://timicc.com/v1/models');
+      return { body: { data: [{ id: 'gpt-4o-compatible' }] } };
+    });
+
+    const models = await new OpenAiCompatibleModelsAdapter({
+      provider: 'openai',
+      defaultBaseUrl: 'https://timicc.com/v1',
+      safeBaseUrls: ['https://timicc.com/v1'],
+      fetchImpl: fetch,
+    }).fetch({
+      credential: {
+        ...await credential('openai'),
+        baseUrl: 'https://timicc.com',
+      },
+      secret: { type: 'apiKey', apiKey: 'provider-secret' },
+    });
+
+    expect(models).toEqual([{ id: 'gpt-4o-compatible' }]);
+  });
+
   it('rejects an untrusted credential base URL before attaching the provider secret', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
@@ -1075,7 +1097,7 @@ describe('AiGatewayManagementHandler models routes', () => {
     const modelsService = {
       list: vi.fn()
         .mockRejectedValueOnce(new Error('models_credential_not_found'))
-        .mockRejectedValueOnce(new ProviderModelsFetchError(429, '30'))
+        .mockRejectedValueOnce(new ProviderModelsFetchError(429, '30', 'quota temporarily exhausted'))
         .mockRejectedValueOnce(new Error('unsafe_provider_base_url')),
     };
     const { server, routes } = createServer();
@@ -1105,6 +1127,7 @@ describe('AiGatewayManagementHandler models routes', () => {
       error: 'provider_models_fetch_failed',
       providerStatus: 429,
       retryAfter: '30',
+      providerMessage: 'quota temporarily exhausted',
     });
 
     const unsafe = response();

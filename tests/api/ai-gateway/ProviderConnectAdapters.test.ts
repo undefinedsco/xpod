@@ -2756,6 +2756,129 @@ describe('ProviderConnectService', () => {
     ]);
   });
 
+  it('hydrates selected models as offering-aware Pod resource references', async () => {
+    const subscriptionModel = 'kimi-subscription-key.ttl#shared-model';
+    const platformModel = 'kimi-api-platform.ttl#shared-model';
+    const credentialRows = await Promise.all([
+      ['credentials.ttl#kimi-subscription', 'subscription-key'],
+      ['credentials.ttl#kimi-platform', 'api-platform'],
+    ].map(async ([id, offeringId], priority) => {
+      const credentialIri = `https://id.example/alice/settings/${id}`;
+      return {
+        id,
+        owner: WEB_ID,
+        provider: 'kimi.ttl',
+        service: 'ai',
+        authMode: 'apiKey',
+        status: 'active',
+        encryptedSecret: JSON.stringify(await encryptedSecret('kimi', credentialIri, {
+          type: 'apiKey',
+          apiKey: `fixture-${offeringId}`,
+        })),
+        keyVersion: '1',
+        metadata: { offeringId, priority, enabled: true, health: 'healthy' },
+      };
+    }));
+    const rows = new Map<string, Record<string, unknown>>([
+      ['kimi.ttl', { id: 'kimi.ttl', hasModel: [subscriptionModel, platformModel] }],
+      [subscriptionModel, {
+        id: subscriptionModel,
+        displayName: 'Subscription Shared Model',
+        isProvidedBy: 'kimi-subscription-key.ttl#this',
+      }],
+      [platformModel, {
+        id: platformModel,
+        displayName: 'Platform Shared Model',
+        isProvidedBy: 'kimi-api-platform.ttl#this',
+      }],
+    ]);
+    const repository = new PodConnectedCredentialRepository({
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({ where: () => ({ execute: async () => jsonClone(credentialRows) }) }),
+        }),
+        findById: async (_resource: unknown, id: string) => jsonClone(rows.get(id) ?? null),
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials({
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        internalInvocation: true,
+      },
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        offeringId: 'subscription-key',
+        selectedModels: [{
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'subscription-key',
+          resourceId: subscriptionModel,
+        }],
+      }),
+      expect.objectContaining({
+        offeringId: 'api-platform',
+        selectedModels: [{
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'api-platform',
+          resourceId: platformModel,
+        }],
+      }),
+    ]));
+
+    const runtimeCredentials = await repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        internalInvocation: true,
+      },
+    });
+    expect(runtimeCredentials).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metadata: expect.objectContaining({ offeringId: 'subscription-key', models: ['shared-model'] }),
+        models: ['shared-model'],
+      }),
+      expect.objectContaining({
+        metadata: expect.objectContaining({ offeringId: 'api-platform', models: ['shared-model'] }),
+        models: ['shared-model'],
+      }),
+    ]));
+    expect(JSON.stringify(runtimeCredentials)).not.toContain('subscription-key:shared-model');
+    expect(JSON.stringify(runtimeCredentials)).not.toContain('api-platform:shared-model');
+
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      adapters: [],
+      credentialRepository: repository,
+    });
+    const kimi = (await service.listProviderCredentialPools({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      auth: {
+        type: 'solid',
+        webId: WEB_ID,
+        internalInvocation: true,
+      },
+    })).find((provider) => provider.id === 'kimi');
+    expect(kimi?.selectedModels).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'shared-model', offeringId: 'subscription-key', resourceId: subscriptionModel }),
+      expect.objectContaining({ id: 'shared-model', offeringId: 'api-platform', resourceId: platformModel }),
+    ]));
+    expect(kimi?.selectedModels.map((model) => model.id)).toEqual(['shared-model', 'shared-model']);
+  });
+
   it('reports a capability error when the Pod has no collection query sidecar', async () => {
     const repository = new PodConnectedCredentialRepository({
       internalPodAccess: {

@@ -20,7 +20,6 @@ import type {
   AiProviderCredentialSummary,
   AiProviderOffering,
   AiProviderSummary,
-  AiQuotaSnapshot,
 } from './ai-connections-client'
 import {
   Box,
@@ -38,8 +37,12 @@ import {
   Search,
   Trash2,
 } from 'lucide-react'
-import { AiQuotaCard } from './AiQuotaCard'
-import { AiCredentialPoolSection } from './AiCredentialPoolSection'
+import {
+  AiCredentialPoolSection,
+  type AiOfferingActionError,
+  type AiOfferingQuotaState,
+} from './AiCredentialPoolSection'
+import { offeringLabel } from './offering-label'
 
 export type { AiProviderDefinition } from './controller'
 import type { AiProviderDefinition } from './controller'
@@ -59,12 +62,13 @@ export function AiProviderCard({
   status,
   accountLabel,
   attempt,
+  attemptOfferingId,
   apiKey,
   baseUrl = '',
   busy,
   disabled = false,
   error,
-  quota,
+  quotas,
   models,
   verifyPending = false,
   onApiKeyChange,
@@ -93,12 +97,13 @@ export function AiProviderCard({
   status: ProviderConnectionState
   accountLabel?: string
   attempt?: AiConnectAttempt
+  attemptOfferingId?: string
   apiKey: string
   baseUrl?: string
   busy: boolean
   disabled?: boolean
-  error?: string
-  quota?: AiQuotaSnapshot
+  error?: AiOfferingActionError
+  quotas?: Partial<Record<string, AiOfferingQuotaState>>
   models: AiGatewayModel[]
   verifyPending?: boolean
   onApiKeyChange: (value: string) => void
@@ -123,7 +128,7 @@ export function AiProviderCard({
   onDeleteCredential?: (credential: AiProviderCredentialSummary) => void
   onTestCredential?: (credential: AiProviderCredentialSummary) => void
   onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
-  onRefreshQuota: () => void
+  onRefreshQuota: (offering: AiProviderOffering, credential?: AiProviderCredentialSummary) => void
   onVerify?: () => void
   onAddModel?: () => void
   onEditModel?: (model: AiGatewayModel) => void
@@ -138,14 +143,18 @@ export function AiProviderCard({
   const [copiedModelId, setCopiedModelId] = useState<string>()
   const [localSelectedModelIds, setLocalSelectedModelIds] = useState<string[]>(selectedModelIds ?? [])
   const effectiveSelectedModelIds = selectedModelIds ?? localSelectedModelIds
+  const offeringSources = useMemo(() => new Map(
+    product?.offerings.map((offering) => [offering.id, {
+      id: offering.id,
+      label: offering.label?.trim() || offeringLabel(offering),
+    }]) ?? [],
+  ), [product?.offerings])
 
   const visibleModels = useMemo(() => {
     const query = modelSearch.trim().toLocaleLowerCase()
     if (!query) return models
-    return models.filter((model) =>
-      model.id.toLocaleLowerCase().includes(query)
-      || model.displayName?.toLocaleLowerCase().includes(query))
-  }, [models, modelSearch])
+    return models.filter((model) => modelSearchText(model, offeringSources).includes(query))
+  }, [models, modelSearch, offeringSources])
   const selectableVisibleModels = visibleModels.filter((model) => model.availability !== 'unavailable')
   const selectedVisibleCount = selectableVisibleModels.filter((model) => effectiveSelectedModelIds.includes(modelSelectionId(model))).length
   const allVisibleSelected = selectableVisibleModels.length > 0 && selectedVisibleCount === selectableVisibleModels.length
@@ -234,11 +243,13 @@ export function AiProviderCard({
           status={status}
           accountLabel={accountLabel}
           attempt={attempt}
+          attemptOfferingId={attemptOfferingId}
           apiKey={apiKey}
           baseUrl={baseUrl}
           busy={busy}
           disabled={disabled}
           error={error}
+          quotas={quotas}
           onApiKeyChange={onApiKeyChange}
           onBaseUrlChange={onBaseUrlChange}
           onBeginApiKey={onBeginApiKey}
@@ -251,18 +262,9 @@ export function AiProviderCard({
           onDeleteCredential={onDeleteCredential}
           onTestCredential={onTestCredential}
           onReorderCredentials={onReorderCredentials}
+          onRefreshQuota={onRefreshQuota}
           onDismissError={onDismissError}
         />
-
-        <section className="space-y-4">
-          <AiQuotaCard
-            providerName={definition.name}
-            quota={quota}
-            busy={busy}
-            disabled={disabled}
-            onRefresh={onRefreshQuota}
-          />
-        </section>
 
         <section className="space-y-4">
           <div
@@ -374,6 +376,7 @@ export function AiProviderCard({
                 const isSelected = effectiveSelectedModelIds.includes(selectionId)
                 const isUnavailable = model.availability === 'unavailable'
                 const modelLabel = model.displayName ?? model.id
+                const source = modelOfferingSource(model, offeringSources)
                 const iconTokens = [
                   ...(model.inputModalities ?? []).filter((modality) => modality !== 'text'),
                   ...(model.capabilities ?? []),
@@ -412,6 +415,16 @@ export function AiProviderCard({
                         <div className="flex items-center gap-1">
                           {iconTokens.map((token) => <CapabilityIcon key={token} type={token} />)}
                         </div>
+                        {source ? (
+                          <Badge
+                            variant="outline"
+                            className="shrink-0 text-[10px] font-normal"
+                            aria-label={`模型来源：${source.label}`}
+                            title={source.id}
+                          >
+                            {source.label}
+                          </Badge>
+                        ) : null}
                         {model.custom ? <Badge variant="outline" className="shrink-0 text-[10px] font-normal">手工</Badge> : null}
                         {isUnavailable ? (
                           <Badge variant="destructive" className="shrink-0 text-[10px] font-normal">
@@ -510,7 +523,34 @@ function providerMark(provider: AiProviderDefinition['id']): string {
 }
 
 function modelSelectionId(model: AiGatewayModel): string {
-  return model.resourceId ?? model.id
+  return model.resourceId
+    ?? (model.offeringId ? `${model.offeringId}:${model.id}` : model.id)
+}
+
+function modelSearchText(model: AiGatewayModel, offeringSources: Map<string, ModelOfferingSource>): string {
+  const source = modelOfferingSource(model, offeringSources)
+  return [
+    model.id,
+    model.displayName,
+    source?.label,
+    source?.id,
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .toLocaleLowerCase()
+}
+
+function modelOfferingSource(
+  model: AiGatewayModel,
+  offeringSources: Map<string, ModelOfferingSource>,
+): ModelOfferingSource | undefined {
+  if (!model.offeringId) return undefined
+  return offeringSources.get(model.offeringId) ?? { id: model.offeringId, label: model.offeringId }
+}
+
+type ModelOfferingSource = {
+  id: string
+  label: string
 }
 
 function connectionStatusLabel(status: ProviderConnectionState): string {

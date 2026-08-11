@@ -14,6 +14,7 @@ import {
   createDefaultProviderRegistry,
   ProviderRegistry,
 } from '../../../src/api/ai-gateway/providers/ProviderRegistry';
+import { OpenAiCompatibleRuntimeAdapter } from '../../../src/api/ai-gateway/providers/ProviderRuntimeAdapter';
 import { ProviderHttpTransport } from '../../../src/api/service/provider-http-transport';
 import { parseSseStream } from '../../../src/api/service/provider-http-transport';
 
@@ -1114,5 +1115,26 @@ describe('Provider runtime adapters', () => {
       code: 'invalid_request',
       status: 400,
     });
+  });
+
+  it('normalizes an OpenAI-compatible root URL to the v1 chat endpoint', async () => {
+    const fixture = fetchFixture(new Response(jsonSse([
+      { id: 'chatcmpl_custom', choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiCompatibleRuntimeAdapter({
+      provider: 'custom',
+      defaultBaseUrl: 'https://timicc.com/v1',
+      safeBaseUrls: ['https://timicc.com/v1'],
+      transport: new ProviderHttpTransport({ fetch: fixture.fetch }),
+    });
+
+    await expect(collect(adapter.execute({
+      request: baseRequest({ model: 'gpt-4o-compatible' }),
+      apiKey: 'sk-custom-secret',
+      credential: { baseUrl: 'https://timicc.com' },
+    }))).resolves.toContainEqual({ type: 'text.delta', text: 'ok' });
+
+    expect(fixture.captured[0].url).toBe('https://timicc.com/v1/chat/completions');
   });
 });

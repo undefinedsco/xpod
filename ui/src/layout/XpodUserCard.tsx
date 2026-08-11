@@ -49,16 +49,16 @@ export function XpodUserCard() {
         title={identity}
         className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 [&::-webkit-details-marker]:hidden"
       >
-        <Avatar className="h-8 w-8 border border-border bg-background">
+        <Avatar className="h-8 w-8 rounded-full border border-border bg-background">
           <AvatarFallback className="bg-background text-xs font-semibold text-foreground">
             {webId ? identity.slice(0, 2).toUpperCase() : <UserRound className="h-4 w-4" aria-hidden="true" />}
           </AvatarFallback>
         </Avatar>
       </summary>
 
-      <div className="absolute bottom-12 right-0 z-50 w-72 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-xl sm:bottom-0 sm:left-12 sm:right-auto">
+      <div className="absolute bottom-12 left-0 z-50 w-72 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-xl sm:bottom-auto sm:left-12 sm:top-0">
         <div className="flex items-center gap-3">
-          <Avatar className="h-10 w-10 border border-border">
+          <Avatar className="h-10 w-10 rounded-full border border-border">
             <AvatarFallback className="text-sm font-semibold">
               {webId ? identity.slice(0, 2).toUpperCase() : <UserRound className="h-5 w-5" aria-hidden="true" />}
             </AvatarFallback>

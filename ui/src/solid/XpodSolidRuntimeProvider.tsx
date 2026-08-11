@@ -3,11 +3,17 @@ import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import {
+  currentXpodSurfaceRedirectUrl,
+  ensureXpodOidcClient,
   getXpodSolidRuntimeValue,
   initializedRuntimes,
+  markOidcClientAsNonExpiring,
   normalizeXpodOidcIssuer,
+  persistSolidLoginReturnTo,
+  restoreSolidLoginReturnTo,
   safeAuthError,
   snapshotToState,
+  syncStoredOidcRedirectUrl,
   XpodSolidRuntimeContext,
   type XpodSolidRuntimeCore,
   type XpodSolidRuntimeValue,
@@ -47,9 +53,11 @@ export function XpodSolidRuntimeProvider({
       return;
     }
     initializedRuntimes.add(runtime);
+    syncStoredOidcRedirectUrl();
     void runtime.session.initialize({ restorePreviousSession: true }).then((nextSnapshot) => {
       setSnapshot(nextSnapshot);
       setIssuer(runtime.getIssuer());
+      restoreSolidLoginReturnTo();
     });
   }, [runtime]);
 
@@ -124,9 +132,21 @@ export function XpodSolidRuntimeProvider({
         }
         runtime.setIssuer(oidcIssuer);
         setIssuer(oidcIssuer);
+        persistSolidLoginReturnTo(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+        const client = await ensureXpodOidcClient(oidcIssuer);
         await runtime.session.login({
           oidcIssuer,
-          redirectUrl: window.location.href,
+          redirectUrl: currentXpodSurfaceRedirectUrl(),
+          ...(client
+            ? {
+              clientId: client.clientId,
+              clientSecret: client.clientSecret,
+              handleRedirect: (url) => {
+                markOidcClientAsNonExpiring(client.clientId);
+                window.location.href = url;
+              },
+            }
+            : {}),
         });
       },
       logout: async () => {

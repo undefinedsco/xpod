@@ -98,8 +98,8 @@ export class KimiCodeSubscriptionQuotaAdapter extends SubscriptionQuotaAdapter {
   public readonly capability = { protocol: 'rolling-quota-windows', profile: 'kimi-code' } as const;
 
   public supports(credential: QuotaCredentialRecord): boolean {
-    return credential.offeringId === 'official-subscription'
-      && (credential.authMode === 'deviceCodeOAuth' || credential.authMode === 'apiKey');
+    return (credential.offeringId === 'official-subscription' && credential.authMode === 'deviceCodeOAuth')
+      || (credential.offeringId === 'subscription-key' && credential.authMode === 'apiKey');
   }
 
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {

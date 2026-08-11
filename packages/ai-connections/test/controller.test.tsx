@@ -376,6 +376,89 @@ describe('AI Connection controller host.solid integration', () => {
     ])
   })
 
+  it('routes quota through the requested credential before falling back to the requested offering', async () => {
+    const requestBodies: unknown[] = []
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/bailian\/quota\/refresh$/u)
+      requestBodies.push(JSON.parse(String(init?.body)))
+      return Response.json({
+        credential: (JSON.parse(String(init?.body)) as { credentialId: string }).credentialId,
+        status: 'available',
+        windows: [{ name: 'tokens.remaining', remaining: 1000 }],
+        observedAt: '2026-08-09T00:00:00.000Z',
+        expiresAt: '2026-08-09T01:00:00.000Z',
+        source: 'bailian:quota',
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async (_provider: string, credentialId: string) => ({
+      type: 'apiKey',
+      apiKey: `${credentialId}-secret`,
+    }))
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'bailian',
+        credentials: [
+          {
+            id: 'credentials.ttl#api-enabled',
+            offeringId: 'api-platform',
+            authMode: 'apiKey',
+            enabled: true,
+            priority: 1,
+            baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+          },
+          {
+            id: 'credentials.ttl#token-disabled',
+            offeringId: 'token-plan',
+            authMode: 'apiKey',
+            enabled: false,
+            priority: 2,
+            baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+          },
+          {
+            id: 'credentials.ttl#token-enabled',
+            offeringId: 'token-plan',
+            authMode: 'apiKey',
+            enabled: true,
+            priority: 3,
+            baseUrl: 'https://token-plan-backup.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+          },
+        ],
+      }]),
+      readCredentialSecret,
+    }
+    const controller = createAiConnectionsController(host)
+
+    await controller.client!.quota('bailian', true, {
+      offeringId: 'api-platform',
+      credentialId: 'credentials.ttl#token-disabled',
+    })
+    await controller.client!.quota('bailian', true, { offeringId: 'token-plan' })
+
+    expect(readCredentialSecret).toHaveBeenNthCalledWith(1, 'bailian', 'credentials.ttl#token-disabled')
+    expect(readCredentialSecret).toHaveBeenNthCalledWith(2, 'bailian', 'credentials.ttl#token-enabled')
+    expect(requestBodies).toEqual([
+      expect.objectContaining({
+        offeringId: 'token-plan',
+        credentialId: 'credentials.ttl#token-disabled',
+        baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+        secret: { type: 'apiKey', apiKey: 'credentials.ttl#token-disabled-secret' },
+      }),
+      expect.objectContaining({
+        offeringId: 'token-plan',
+        credentialId: 'credentials.ttl#token-enabled',
+        baseUrl: 'https://token-plan-backup.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+        secret: { type: 'apiKey', apiKey: 'credentials.ttl#token-enabled-secret' },
+      }),
+    ])
+  })
+
   it('discovers models only for the requested offering and forwards its identity', async () => {
     const requestBodies: unknown[] = []
     const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -430,7 +513,73 @@ describe('AI Connection controller host.solid integration', () => {
     expect(saveDiscoveredModels).toHaveBeenCalledWith(
       'bailian',
       'credentials.ttl#token',
-      [{ id: 'qwen-token-only', displayName: 'Qwen Token Only' }],
+      [expect.objectContaining({ id: 'qwen-token-only', displayName: 'Qwen Token Only', offeringId: 'token-plan' })],
+    )
+  })
+
+  it('keeps duplicate discovered model ids when they come from different offerings', async () => {
+    const sessionFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/bailian\/models\/refresh$/u)
+      const body = JSON.parse(String(init?.body)) as { credentialId: string; offeringId: string }
+      return Response.json({
+        provider: 'bailian',
+        credential: body.credentialId,
+        models: [
+          { id: 'qwen-plus', displayName: `Qwen Plus ${body.offeringId}` },
+          { id: `${body.offeringId}-only`, displayName: body.offeringId },
+        ],
+        observedAt: '2026-08-09T08:00:00.000Z',
+        source: `bailian:${body.offeringId}:/models`,
+      })
+    }) as unknown as typeof fetch
+    const readCredentialSecret = vi.fn(async () => ({ type: 'apiKey', apiKey: 'transient-secret' }))
+    const saveDiscoveredModels = vi.fn(async () => undefined)
+    const host = hostFromSolid(solidCapability({
+      session: {
+        fetch: sessionFetch,
+        getSnapshot: () => ({ status: 'authenticated' as const, webId: WEB_ID }),
+        subscribe: () => () => undefined,
+      },
+    }))
+    host.capabilities.aiConnectionsPodStore = {
+      listProviders: vi.fn(async () => [{
+        id: 'bailian',
+        credentials: [
+          { id: 'credentials.ttl#api', offeringId: 'api-platform', authMode: 'apiKey', enabled: true, priority: 1 },
+          { id: 'credentials.ttl#token', offeringId: 'token-plan', authMode: 'apiKey', enabled: true, priority: 2 },
+        ],
+      }]),
+      readCredentialSecret,
+      saveDiscoveredModels,
+    }
+    const controller = createAiConnectionsController(host)
+
+    const result = await controller.client!.discoverModels('bailian')
+
+    expect(result.models).toEqual([
+      expect.objectContaining({ id: 'qwen-plus', offeringId: 'api-platform' }),
+      expect.objectContaining({ id: 'api-platform-only', offeringId: 'api-platform' }),
+      expect.objectContaining({ id: 'qwen-plus', offeringId: 'token-plan' }),
+      expect.objectContaining({ id: 'token-plan-only', offeringId: 'token-plan' }),
+    ])
+    expect(result.models.filter((model) => model.id === 'qwen-plus')).toHaveLength(2)
+    expect(saveDiscoveredModels).toHaveBeenNthCalledWith(
+      1,
+      'bailian',
+      'credentials.ttl#api',
+      [
+        expect.objectContaining({ id: 'qwen-plus', offeringId: 'api-platform' }),
+        expect.objectContaining({ id: 'api-platform-only', offeringId: 'api-platform' }),
+      ],
+    )
+    expect(saveDiscoveredModels).toHaveBeenNthCalledWith(
+      2,
+      'bailian',
+      'credentials.ttl#token',
+      [
+        expect.objectContaining({ id: 'qwen-plus', offeringId: 'token-plan' }),
+        expect.objectContaining({ id: 'token-plan-only', offeringId: 'token-plan' }),
+      ],
     )
   })
 
@@ -496,7 +645,7 @@ describe('AI Connection controller host.solid integration', () => {
     expect(saveDiscoveredModels).toHaveBeenCalledWith(
       'kimi',
       'credentials.ttl#kimi-oauth',
-      [{ id: 'kimi-for-coding', displayName: 'Kimi for Coding' }],
+      [expect.objectContaining({ id: 'kimi-for-coding', displayName: 'Kimi for Coding', offeringId: 'official-subscription' })],
     )
   })
 

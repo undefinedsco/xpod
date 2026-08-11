@@ -32,15 +32,23 @@ describe('XpodProductLayout', () => {
     expect(html).not.toContain('aria-label="Open Settings"');
   });
 
+  test('uses the account avatar as the top-left rail identity', () => {
+    const html = renderProduct('dashboard');
+
+    expect(html).not.toContain('aria-label="Xpod Home"');
+    expect(html).toContain('aria-label="Current user"');
+    expect(html.indexOf('aria-label="Current user"')).toBeLessThan(html.indexOf('aria-label="Status"'));
+  });
+
   test('uses a bottom navigation on narrow screens and a left rail from sm upward', () => {
     const html = renderProduct('dashboard');
 
     expect(html).toContain('flex-row items-center px-2');
-    expect(html).toContain('sm:flex-col sm:px-0');
+    expect(html).toContain('sm:flex-col sm:px-0 sm:py-4');
     expect(html).toContain('flex flex-row items-center gap-3 sm:flex-col sm:gap-4');
-    expect(html).toContain('hidden shrink-0 flex-col items-center pt-12 sm:flex');
-    expect(html).toContain('bottom-12 right-0');
-    expect(html).toContain('sm:bottom-0 sm:left-12');
+    expect(html).not.toContain('justify-center sm:flex-col sm:py-4');
+    expect(html).toContain('bottom-12 left-0');
+    expect(html).toContain('sm:left-12 sm:top-0');
   });
 });
 

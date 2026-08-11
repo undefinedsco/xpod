@@ -686,6 +686,23 @@ describe('AI Connection management client', () => {
     }
   })
 
+  it('preserves safe upstream model discovery failure details', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: 'provider_models_fetch_failed',
+      providerStatus: 403,
+      providerMessage: 'API Key 所属分组已停用',
+    }), { status: 502, headers: { 'content-type': 'application/json' } }))
+    const scoped = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(scoped.discoverModels('openai')).rejects.toThrow(
+      '密钥不可用。请检查密钥是否填写正确，或换一个密钥后重试。 上游返回：API Key 所属分组已停用',
+    )
+  })
+
   it('maps registry capability objects and custom capability lists onto catalog models', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       data: [
@@ -705,6 +722,79 @@ describe('AI Connection management client', () => {
       { id: 'gpt-5', provider: 'openai', capabilities: ['image', 'tool_call', 'reasoning'] },
       { id: 'gpt-4.1', provider: 'openai' },
       { id: 'ft-mine', provider: 'openai', custom: true, displayName: 'Mine', inputModalities: ['text', 'image'], capabilities: ['web'] },
+    ])
+  })
+
+  it('preserves offering and resource identity from gateway model payloads', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'official-subscription',
+          resourceId: 'urn:model:kimi:official-subscription:shared-model',
+        },
+        {
+          id: 'shared-model',
+          provider: 'kimi',
+          offeringId: 'api-platform',
+          resourceId: 'urn:model:kimi:api-platform:shared-model',
+        },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(client.listModels()).resolves.toEqual([
+      {
+        id: 'shared-model',
+        provider: 'kimi',
+        offeringId: 'official-subscription',
+        resourceId: 'urn:model:kimi:official-subscription:shared-model',
+      },
+      {
+        id: 'shared-model',
+        provider: 'kimi',
+        offeringId: 'api-platform',
+        resourceId: 'urn:model:kimi:api-platform:shared-model',
+      },
+    ])
+  })
+
+  it('keeps same-id selected models from separate offerings when provider summaries merge', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: 'kimi',
+          status: 'available',
+          offerings: [{ id: 'token-plan', authModes: ['apiKey'] }],
+          credentials: [],
+          selectedModels: [{ id: 'shared-model', provider: 'kimi', offeringId: 'token-plan' }],
+        },
+        {
+          id: 'kimi',
+          status: 'available',
+          offerings: [{ id: 'api-platform', authModes: ['apiKey'] }],
+          credentials: [],
+          selectedModels: [{ id: 'shared-model', provider: 'kimi', offeringId: 'api-platform' }],
+        },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    const providers = await client.listProviders()
+
+    expect(providers).toHaveLength(1)
+    expect(providers[0]?.selectedModels).toEqual([
+      { id: 'shared-model', provider: 'kimi', offeringId: 'token-plan' },
+      { id: 'shared-model', provider: 'kimi', offeringId: 'api-platform' },
     ])
   })
 

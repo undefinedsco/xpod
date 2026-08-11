@@ -88,7 +88,7 @@ describe('AI Connection model selection', () => {
     fireEvent.click(selectAll)
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
       'openai',
-      ['gpt-5', 'legacy-model', 'gpt-5-mini'],
+      [{ id: 'gpt-5' }, { id: 'legacy-model' }, { id: 'gpt-5-mini' }],
     ))
 
     fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: '' } })
@@ -98,7 +98,7 @@ describe('AI Connection model selection', () => {
     ))
     await waitFor(() => expect(current.saveModelSelection).toHaveBeenCalledWith(
       'openai',
-      ['gpt-5', 'legacy-model', 'gpt-5-mini'],
+      [{ id: 'gpt-5' }, { id: 'legacy-model' }, { id: 'gpt-5-mini' }],
     ))
 
     fireEvent.click(screen.getByRole('checkbox', { name: '取消选择 GPT-5' }))
@@ -271,14 +271,18 @@ describe('AI Connection model selection', () => {
     expect(screen.getByText('Custom Model')).toBeTruthy()
 
     fireEvent.click(screen.getAllByRole('button', { name: '添加 API Key' })[1])
-    fireEvent.change(screen.getByLabelText('OpenAI API Key 标签'), {
-      target: { value: 'Offering B key' },
-    })
     fireEvent.change(screen.getByLabelText('OpenAI API Key 输入'), {
       target: { value: 'sk-offering-b' },
     })
     fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
 
+    await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('openai', {
+      offeringId: 'offering-b',
+      apiKey: 'sk-offering-b',
+      label: undefined,
+      baseUrl: undefined,
+      priority: 10,
+    }))
     await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai', {
       offeringId: 'offering-b',
       credentialId: 'openai-offering-b-credential',
@@ -294,7 +298,6 @@ describe('AI Connection model selection', () => {
         id: 'shared-model',
         provider: 'openai',
         offeringId: 'offering-a',
-        resourceId: 'urn:model:offering-a:shared-model',
         displayName: 'Offering A Model',
         availability: 'available',
       },
@@ -302,7 +305,6 @@ describe('AI Connection model selection', () => {
         id: 'shared-model',
         provider: 'openai',
         offeringId: 'offering-b',
-        resourceId: 'urn:model:offering-b:shared-model',
         displayName: 'Offering B Model',
         availability: 'available',
       },
@@ -357,14 +359,18 @@ describe('AI Connection model selection', () => {
     expect(screen.getByText('Offering B Model')).toBeTruthy()
 
     fireEvent.click(screen.getAllByRole('button', { name: '添加 API Key' })[1])
-    fireEvent.change(screen.getByLabelText('OpenAI API Key 标签'), {
-      target: { value: 'Offering B key' },
-    })
     fireEvent.change(screen.getByLabelText('OpenAI API Key 输入'), {
       target: { value: 'sk-offering-b' },
     })
     fireEvent.click(screen.getByRole('button', { name: '保存 OpenAI API Key' }))
 
+    await waitFor(() => expect(current.createApiKeyCredential).toHaveBeenCalledWith('openai', {
+      offeringId: 'offering-b',
+      apiKey: 'sk-offering-b',
+      label: undefined,
+      baseUrl: undefined,
+      priority: 10,
+    }))
     await waitFor(() => expect(current.discoverModels).toHaveBeenCalledWith('openai', {
       offeringId: 'offering-b',
       credentialId: 'openai-offering-b-credential',
@@ -373,6 +379,106 @@ describe('AI Connection model selection', () => {
     expect(screen.getByText('Offering A Model')).toBeTruthy()
     expect(screen.queryByText('Offering B Model')).toBeNull()
     expect(screen.queryByText('已失效')).toBeNull()
+  })
+
+  it('persists same-id selections as offering-aware model references', async () => {
+    const current = client([
+      {
+        id: 'shared-model',
+        provider: 'openai',
+        offeringId: 'offering-a',
+        displayName: 'Offering A Model',
+        availability: 'available',
+      },
+      {
+        id: 'shared-model',
+        provider: 'openai',
+        offeringId: 'offering-b',
+        displayName: 'Offering B Model',
+        availability: 'available',
+      },
+    ])
+
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerProducts={{
+          openai: {
+            ...openAiProduct([]),
+            offerings: [
+              { id: 'offering-a', label: 'Offering A', authModes: ['apiKey'] },
+              { id: 'offering-b', label: 'Offering B', authModes: ['apiKey'] },
+            ],
+          },
+        }}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择 Offering A Model' }))
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith('openai', [
+      { id: 'shared-model', offeringId: 'offering-a' },
+    ]))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 Offering B Model' }))
+    await waitFor(() => expect(current.saveModelSelection).toHaveBeenLastCalledWith('openai', [
+      { id: 'shared-model', offeringId: 'offering-a' },
+      { id: 'shared-model', offeringId: 'offering-b' },
+    ]))
+  })
+
+  it('shows offering source badges for same-id models and includes source text in search without changing public ids', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const current = client([
+      {
+        id: 'shared-model',
+        provider: 'openai',
+        offeringId: 'api-platform',
+        displayName: 'Shared Model',
+        availability: 'available',
+      },
+      {
+        id: 'shared-model',
+        provider: 'openai',
+        offeringId: 'token-plan',
+        displayName: 'Shared Model',
+        availability: 'available',
+      },
+    ])
+
+    render(
+      <AiConnectionsPanel
+        client={current}
+        selectedProvider="openai"
+        serviceAccessGranted
+        providerProducts={{
+          openai: {
+            ...openAiProduct([]),
+            offerings: [
+              { id: 'api-platform', kind: 'api-platform', authModes: ['apiKey'] },
+              { id: 'token-plan', kind: 'token-plan', authModes: ['apiKey'] },
+            ],
+          },
+        }}
+      />,
+    )
+
+    expect(await screen.findByLabelText('模型来源：API 平台')).toBeTruthy()
+    expect(screen.getByLabelText('模型来源：Token 套餐')).toBeTruthy()
+    expect(screen.getAllByRole('checkbox', { name: '选择 Shared Model' })).toHaveLength(2)
+
+    fireEvent.change(screen.getByPlaceholderText('搜索模型...'), { target: { value: 'token-plan' } })
+    expect(screen.getAllByRole('checkbox', { name: '选择 Shared Model' })).toHaveLength(1)
+    expect(screen.queryByLabelText('模型来源：API 平台')).toBeNull()
+    expect(screen.getByLabelText('模型来源：Token 套餐')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '复制 Shared Model ID' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('shared-model'))
   })
 
   it('rolls selection back and reports an error when Pod selection persistence fails', async () => {
@@ -400,7 +506,10 @@ describe('AI Connection model selection', () => {
     const mini = await screen.findByRole('checkbox', { name: '选择 GPT-5 Mini' })
     fireEvent.click(mini)
 
-    await waitFor(() => expect(saveModelSelection).toHaveBeenCalledWith('openai', ['gpt-5', 'gpt-5-mini']))
+    await waitFor(() => expect(saveModelSelection).toHaveBeenCalledWith('openai', [
+      { id: 'gpt-5' },
+      { id: 'gpt-5-mini' },
+    ]))
     expect(await screen.findByText('AI Connection request failed. Please try again.')).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: '选择 GPT-5 Mini' })).toBeTruthy()
     expect(screen.getByRole('checkbox', { name: '取消选择 GPT-5' })).toBeTruthy()

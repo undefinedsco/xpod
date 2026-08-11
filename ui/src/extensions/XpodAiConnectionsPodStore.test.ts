@@ -175,6 +175,189 @@ describe('XpodAiConnectionsPodStore', () => {
     );
   });
 
+  it('lists complete Kimi offering metadata and derives offering base URLs', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: () => ({
+          execute: async () => [],
+        }),
+      }),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const kimi = (await store.listProviders()).find((provider) => provider.id === 'kimi');
+
+    expect(kimi?.offerings).toEqual([
+      expect.objectContaining({
+        id: 'official-subscription',
+        label: '官方订阅',
+        kind: 'oauth-subscription',
+        lifecycle: 'active',
+        authModes: ['oauth'],
+        productLabel: 'Kimi Coding',
+        runtimeProviderIds: ['kimi'],
+        consoleUrl: 'https://www.kimi.com/code',
+        subscriptionUrl: 'https://www.kimi.com/code',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1', region: 'cn' },
+          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/', region: 'cn' },
+        ],
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
+        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
+        region: 'cn',
+      }),
+      expect.objectContaining({
+        id: 'subscription-key',
+        label: 'Token 套餐',
+        kind: 'token-plan',
+        lifecycle: 'active',
+        authModes: ['apiKey'],
+        productLabel: 'Kimi Coding',
+        runtimeProviderIds: ['kimi'],
+        credentialPrefixHints: ['sk-kimi-'],
+        consoleUrl: 'https://www.kimi.com/code',
+        subscriptionUrl: 'https://www.kimi.com/code',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1', region: 'cn' },
+          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/', region: 'cn' },
+        ],
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
+        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
+        region: 'cn',
+      }),
+      expect.objectContaining({
+        id: 'api-platform',
+        label: 'API 平台',
+        kind: 'api-platform',
+        lifecycle: 'active',
+        authModes: ['apiKey'],
+        productLabel: 'Moonshot AI',
+        runtimeProviderIds: ['kimi'],
+        credentialPrefixHints: ['sk-'],
+        consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+        subscriptionUrl: 'https://platform.moonshot.cn/console/account',
+        endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.moonshot.ai/v1', region: 'cn' }],
+        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+        quota: { strategy: 'console', url: 'https://platform.moonshot.cn/console/account' },
+        usagePolicyUrl: 'https://platform.moonshot.cn/docs/intro',
+        region: 'cn',
+      }),
+    ]);
+
+    const official = await store.createApiKeyCredential!('kimi', {
+      apiKey: 'sk-kimi-official',
+      label: 'Official',
+      offeringId: 'official-subscription',
+    });
+    const subscriptionKey = await store.createApiKeyCredential!('kimi', {
+      apiKey: 'sk-kimi-subscription',
+      label: 'Subscription Key',
+      offeringId: 'subscription-key',
+    });
+    const apiPlatform = await store.createApiKeyCredential!('kimi', {
+      apiKey: 'sk-kimi-platform',
+      label: 'API Platform',
+      offeringId: 'api-platform',
+    });
+
+    expect(rows.get(official.id)?.baseUrl).toBe('https://api.kimi.com/coding/v1');
+    expect(rows.get(subscriptionKey.id)?.baseUrl).toBe('https://api.kimi.com/coding/v1');
+    expect(rows.get(apiPlatform.id)?.baseUrl).toBe('https://api.moonshot.ai/v1');
+  });
+
+  it('describes each provider offering with its own endpoint, console, and quota source', async () => {
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: () => ({ execute: async () => [] }) }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+    const providers = await store.listProviders();
+
+    const openai = providers.find((provider) => provider.id === 'openai');
+    expect(openai?.offerings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'official-subscription',
+        lifecycle: 'unavailable',
+        quota: { strategy: 'subscription', url: 'https://chatgpt.com/codex' },
+      }),
+      expect.objectContaining({
+        id: 'api-platform',
+        consoleUrl: 'https://platform.openai.com/api-keys',
+        endpoints: expect.arrayContaining([
+          expect.objectContaining({ protocol: 'responses', baseUrl: 'https://api.openai.com/v1' }),
+        ]),
+        quota: { strategy: 'providerApi', url: 'https://platform.openai.com/usage' },
+      }),
+    ]));
+
+    const anthropic = providers.find((provider) => provider.id === 'anthropic');
+    expect(anthropic?.offerings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'official-subscription', lifecycle: 'unavailable' }),
+      expect.objectContaining({
+        id: 'api-platform',
+        consoleUrl: 'https://console.anthropic.com/settings/keys',
+        endpoints: [{ protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1' }],
+        quota: { strategy: 'console', url: 'https://console.anthropic.com/settings/limits' },
+      }),
+    ]));
+
+    const deepseek = providers.find((provider) => provider.id === 'deepseek');
+    expect(deepseek?.offerings).toEqual([
+      expect.objectContaining({
+        id: 'api-platform',
+        consoleUrl: 'https://platform.deepseek.com/api_keys',
+        subscriptionUrl: 'https://platform.deepseek.com/usage',
+        endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://api.deepseek.com/v1' }],
+        quota: { strategy: 'console', url: 'https://platform.deepseek.com/usage' },
+      }),
+    ]);
+
+    const bailian = providers.find((provider) => provider.id === 'bailian');
+    expect(bailian?.offerings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'pay-as-you-go',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', region: 'cn' },
+          { protocol: 'anthropic', baseUrl: 'https://dashscope.aliyuncs.com/apps/anthropic', region: 'cn' },
+        ],
+      }),
+      expect.objectContaining({
+        id: 'token-plan',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', region: 'cn-beijing' },
+          { protocol: 'anthropic', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic', region: 'cn-beijing' },
+        ],
+      }),
+      expect.objectContaining({
+        id: 'coding-plan',
+        endpoints: [
+          { protocol: 'chatCompletions', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', region: 'cn' },
+          { protocol: 'anthropic', baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic', region: 'cn' },
+        ],
+      }),
+    ]));
+  });
+
   it.each([undefined, null] as const)(
     'rejects credential updates when the Pod returns %s and keeps the persisted row unchanged',
     async (updateResult) => {
@@ -366,7 +549,7 @@ describe('XpodAiConnectionsPodStore', () => {
       expect.objectContaining({ id: 'deepseek-reasoner', availability: 'unavailable' }),
     ]);
 
-    await store.saveModelSelection!('deepseek', ['deepseek-chat']);
+    await store.saveModelSelection!('deepseek', [{ id: 'deepseek-chat' }]);
     provider = (await store.listProviders()).find((item) => item.id === 'deepseek')!;
     expect(provider.selectedModels).toEqual([
       expect.objectContaining({ id: 'deepseek-chat', displayName: 'DeepSeek Chat', availability: 'available' }),
@@ -374,6 +557,17 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
       'deepseek.ttl#deepseek-chat',
     ]);
+
+    await store.saveModelSelection!('deepseek', [
+      { id: 'stale-upstream-id', resourceId: 'deepseek.ttl#deepseek-chat' },
+    ]);
+    expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
+      'deepseek.ttl#deepseek-chat',
+    ]);
+
+    await expect(store.saveModelSelection!('deepseek', [
+      { id: 'foreign-model', resourceId: 'kimi-subscription-key.ttl#foreign-model' },
+    ])).rejects.toThrow('invalid_model_selection_resource');
   });
 
   it('uses credential IRIs from gateway model discovery when updating offering-scoped catalogs', async () => {
@@ -543,6 +737,10 @@ describe('XpodAiConnectionsPodStore', () => {
     ]));
 
     await reloadedStore.saveModelSelection!('bailian', [
+      { id: 'qwen-same', offeringId: 'pay-as-you-go' },
+      { id: 'qwen-same', offeringId: 'token-plan' },
+    ]);
+    expect(rowsByResource.get(aiProviderResource)?.get(productProviderId)?.hasModel).toEqual([
       aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
       aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }),
     ]);
@@ -551,5 +749,11 @@ describe('XpodAiConnectionsPodStore', () => {
       expect.objectContaining({ id: 'qwen-same', offeringId: 'pay-as-you-go', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }) }),
       expect.objectContaining({ id: 'qwen-same', offeringId: 'token-plan', resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: tokenOfferingProviderId }) }),
     ]));
+
+    await expect(reloadedStore.saveModelSelection!('bailian', [{
+      id: 'qwen-same',
+      offeringId: 'token-plan',
+      resourceId: aiModelResource.buildId({ id: 'qwen-same', isProvidedBy: paygOfferingProviderId }),
+    }])).rejects.toThrow('invalid_model_selection_resource');
   });
 });

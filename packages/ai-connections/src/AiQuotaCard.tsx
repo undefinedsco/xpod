@@ -4,20 +4,26 @@ import { RefreshCcw, Wallet } from 'lucide-react'
 
 export function AiQuotaCard({
   providerName,
+  offeringName,
   quota,
   busy,
   disabled = false,
+  credentialLabel,
+  error,
   onRefresh,
 }: {
   providerName: string
+  offeringName: string
   quota?: AiQuotaSnapshot
   busy: boolean
   disabled?: boolean
+  credentialLabel?: string
+  error?: string
   onRefresh: () => void
 }) {
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2 border-b border-border/40 pb-2">
+    <div className="space-y-3 border-t border-border/40 pt-3">
+      <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Wallet className="h-4 w-4 text-primary" />
           <div className="text-sm font-medium text-foreground/90">剩余额度</div>
@@ -25,7 +31,7 @@ export function AiQuotaCard({
         <Button
           variant="ghost"
           size="sm"
-          aria-label={`刷新 ${providerName} 额度`}
+          aria-label={`刷新 ${providerName} ${offeringName}额度`}
           disabled={busy || disabled}
           onClick={onRefresh}
         >
@@ -33,8 +39,13 @@ export function AiQuotaCard({
           刷新
         </Button>
       </div>
-      {!quota ? (
-        <p className="text-xs text-muted-foreground">尚未检查</p>
+      {credentialLabel ? (
+        <p className="text-xs text-muted-foreground">凭证：{credentialLabel}</p>
+      ) : null}
+      {error ? (
+        <p className="text-sm text-destructive">{error}</p>
+      ) : !quota ? (
+        <p className="text-xs text-muted-foreground">{credentialLabel ? '尚未检查' : '连接后可查询'}</p>
       ) : quota.status === 'unsupported' ? (
         <>
           <p className="text-sm">官方额度接口不支持</p>
