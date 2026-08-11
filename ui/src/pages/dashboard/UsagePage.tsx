@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
 import { ChartNoAxesCombined, RefreshCw } from 'lucide-react';
@@ -24,16 +24,42 @@ export default function UsagePage() {
   const [data, setData] = useState<AccountUsageResponse>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const requestIdRef = useRef(0);
+  const accountIdRef = useRef(accountId);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestIdRef.current += 1;
+    };
+  }, []);
+
+  const isCurrentRequest = useCallback((requestId: number, requestedAccountId: string | undefined) => (
+    mountedRef.current
+    && requestIdRef.current === requestId
+    && accountIdRef.current === requestedAccountId
+  ), []);
 
   const loadUsage = useCallback(async () => {
-    if (!accountId) {
-      setData(undefined);
+    const requestedAccountId = accountId;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    const isCurrent = () => isCurrentRequest(requestId, requestedAccountId);
+
+    if (!requestedAccountId) {
+      if (isCurrent()) {
+        setData(undefined);
+        setError(undefined);
+        setLoading(false);
+      }
       return;
     }
     setLoading(true);
     setError(undefined);
     try {
-      const response = await fetch(`/v1/usage/accounts/${encodeURIComponent(accountId)}`, {
+      const response = await fetch(`/v1/usage/accounts/${encodeURIComponent(requestedAccountId)}`, {
         method: 'GET',
         credentials: 'include',
         headers: storedAccountTokenHeaders({ Accept: 'application/json' }),
@@ -42,23 +68,36 @@ export default function UsagePage() {
         await response.arrayBuffer();
         throw new Error('Account usage request failed. Please try again.');
       }
-      setData(await response.json() as AccountUsageResponse);
+      const nextData = await response.json() as AccountUsageResponse;
+      if (isCurrent()) {
+        setData(nextData);
+      }
     } catch {
-      setError('Account usage request failed. Please try again.');
+      if (isCurrent()) {
+        setError('Account usage request failed. Please try again.');
+      }
     } finally {
-      setLoading(false);
+      if (isCurrent()) {
+        setLoading(false);
+      }
     }
-  }, [accountId]);
+  }, [accountId, isCurrentRequest]);
 
   useEffect(() => {
     let cancelled = false;
+    accountIdRef.current = accountId;
+    requestIdRef.current += 1;
     queueMicrotask(() => {
-      if (!cancelled) void loadUsage();
+      if (cancelled || !mountedRef.current) return;
+      setData(undefined);
+      setError(undefined);
+      setLoading(Boolean(accountId));
+      void loadUsage();
     });
     return () => {
       cancelled = true;
     };
-  }, [loadUsage]);
+  }, [accountId, loadUsage]);
 
   const summary = useMemo(() => {
     const usage = data?.usage;
