@@ -40,7 +40,7 @@ import {
   registerNetworkSettingsRoutes,
 } from '../handlers/NetworkSettingsHandler';
 import { registerQuotaRoutes } from '../handlers/QuotaHandler';
-import { registerUsageRoutes } from '../handlers/UsageHandler';
+import { createPodLookupUsageOwnershipResolver, registerUsageRoutes } from '../handlers/UsageHandler';
 import { registerRdfStatsRoutes } from '../handlers/RdfStatsHandler';
 import { registerAiGatewayManagementRoutes } from '../handlers/AiGatewayManagementHandler';
 import { registerAiClientConfigurationRoutes } from '../handlers/AiClientConfigurationHandler';
@@ -238,7 +238,10 @@ function registerSharedRoutes(
     const quotaService = new DrizzleQuotaService({ identityDbUrl: config.databaseUrl });
     const usageRepo = new UsageRepository(container.resolve('db'));
     registerQuotaRoutes(server, { quotaService, usageRepo });
-    registerUsageRoutes(server, { usageRepo });
+    registerUsageRoutes(server, {
+      usageRepo,
+      ownershipResolver: createPodLookupUsageOwnershipResolver(podLookupRepository),
+    });
     console.log('[Shared] Quota & Usage routes registered');
   } catch (error) {
     console.log(`[Shared] Quota & Usage routes not registered: ${error}`);
