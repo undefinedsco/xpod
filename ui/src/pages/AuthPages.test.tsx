@@ -1,7 +1,9 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType, type Controls } from '../context/AuthContextValue';
+import { XpodAuthContext, type XpodAuthValue } from '../auth/useXpodAuth';
+import { createXpodLogoutCoordinator } from '../auth/xpod-logout';
 import { LoginSelectPage } from './LoginSelectPage';
 import { WelcomePage } from './WelcomePage';
 import { ForgotPasswordPage } from './ForgotPasswordPage';
@@ -39,12 +41,43 @@ function renderWithAuth(
   element: React.ReactNode,
   overrides: Partial<AuthContextType> = {},
   initialEntries: string[] = ['/'],
+  xpodAuth: XpodAuthValue | null = null,
 ) {
   return render(
     <AuthContext.Provider value={authValue(overrides)}>
-      <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
+      <XpodAuthContext.Provider value={xpodAuth}>
+        <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
+      </XpodAuthContext.Provider>
     </AuthContext.Provider>,
   );
+}
+
+function xpodAuthValue(overrides: Partial<XpodAuthValue> = {}): XpodAuthValue {
+  const coordinator = createXpodLogoutCoordinator({
+    account: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
+    webId: { logout: vi.fn(async () => undefined), verifyAnonymous: () => true },
+  });
+  return {
+    account: {
+      accountState: { status: 'authenticated' },
+      isLoggedIn: true,
+      retry: vi.fn(async () => undefined),
+      refetchControls: vi.fn(async () => undefined),
+      logout: vi.fn(async () => undefined),
+    },
+    routes: [],
+    webIdState: { status: 'anonymous' },
+    readiness: { dashboard: true, localSettings: true, podSettings: false },
+    startLogin: vi.fn(async () => undefined),
+    retryLogin: vi.fn(async () => undefined),
+    cancelLogin: vi.fn(),
+    logout: coordinator.logout,
+    retryLogout: coordinator.retry,
+    logoutState: coordinator.getState(),
+    logoutCoordinator: coordinator,
+    switchAccount: vi.fn(async () => undefined),
+    ...overrides,
+  };
 }
 
 describe('CSS identity page controllers', () => {
@@ -97,6 +130,32 @@ describe('CSS identity page controllers', () => {
     vi.stubGlobal('fetch', firstPodFetch);
     renderWithAuth(<FirstPodPage />, { controls: { account: { bindings: '/.account/account/bindings' } } });
     await waitFor(() => expect(screen.getByTestId('storage-bootstrap-scroll')).toBeTruthy());
+  });
+
+  it('switches account through the host Xpod coordinator', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ registered: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const accountLogout = vi.fn(async () => undefined);
+    const switchAccount = vi.fn(async () => undefined);
+
+    renderWithAuth(
+      <ConsentPage />,
+      {
+        isLoggedIn: true,
+        controls: { account: { bindings: '/.account/account/bindings' } },
+        logout: accountLogout,
+      },
+      ['/'],
+      xpodAuthValue({ switchAccount }),
+    );
+
+    await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Use a different account' }));
+    await waitFor(() => expect(switchAccount).toHaveBeenCalledWith(expect.any(String)));
+    expect(accountLogout).not.toHaveBeenCalled();
   });
 
   it('uses shared restoring and failure views for identity loading states', async () => {

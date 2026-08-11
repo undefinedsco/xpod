@@ -1,10 +1,8 @@
-import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
+import { User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContextValue';
-import { XpodAuthContext } from '../auth/useXpodAuth';
-import type { XpodLogoutState } from '../auth/xpod-logout';
-import { buildPodCreatePayload, clearStoredProvisionCode, getStoredProvisionCode } from '../utils/pod';
+import { buildPodCreatePayload, getStoredProvisionCode } from '../utils/pod';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
@@ -106,8 +104,7 @@ function getAiApiBaseUrl(): string {
 }
 
 export function AccountPage() {
-  const { controls, refetchControls, hasOidcPending, logout: accountLogout } = useAuth();
-  const xpodAuth = useContext(XpodAuthContext);
+  const { controls, refetchControls, hasOidcPending } = useAuth();
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
@@ -214,30 +211,11 @@ export function AccountPage() {
       setCredentials([]);
       setPodStateSettling(false);
     }
-  }, [controls, controls?.account?.clientCredentials, controls?.account?.pod]);
+  }, [controls]);
 
   useEffect(() => {
-    fetchData();
+    void Promise.resolve().then(() => fetchData());
   }, [fetchData]);
-
-  const handleLogout = async () => {
-    setIsLoading(true);
-    try {
-      const state: XpodLogoutState = xpodAuth
-        ? await (xpodAuth.logoutState.status === 'error' ? xpodAuth.retryLogout() : xpodAuth.logout())
-        : (await accountLogout(), { status: 'complete', account: 'complete', webId: 'complete' });
-      if (state.status === 'complete') {
-        clearStoredProvisionCode();
-        navigate('/.account/');
-      } else {
-        alert('Sign out incomplete. Please try again.');
-      }
-    } catch {
-      alert('Sign out incomplete. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleCreatePod = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -396,10 +374,6 @@ export function AccountPage() {
               <Info className="w-3.5 h-3.5" />
               About
             </Link>
-            <button onClick={handleLogout} disabled={isLoading} className="flex items-center gap-2 px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg transition-colors">
-              <LogOut className="w-3.5 h-3.5" />
-              Sign out
-            </button>
           </div>
         </div>
       </header>

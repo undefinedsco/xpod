@@ -6,9 +6,6 @@ import { StrictMode, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { XpodSolidRuntimeValue } from '../../solid/XpodSolidRuntime';
 import { XpodSolidRuntimeContext } from '../../solid/XpodSolidRuntime';
-import { XpodAuthContext, type XpodAuthValue } from '../../auth/useXpodAuth';
-import { createXpodLoginController } from '../../auth/XpodLoginController';
-import { createXpodLogoutCoordinator } from '../../auth/xpod-logout';
 import PodPage from './PodPage';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,7 +35,6 @@ function installDom() {
 async function renderPodPage(
   runtime: XpodSolidRuntimeValue,
   view: 'combined' | 'settings' | 'usage' = 'combined',
-  auth = authForRuntime(runtime),
 ) {
   installDom();
   const container = document.getElementById('root');
@@ -46,46 +42,13 @@ async function renderPodPage(
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <XpodAuthContext.Provider value={auth}>
-        <XpodSolidRuntimeContext.Provider value={runtime}>
-          <PodPage view={view} />
-        </XpodSolidRuntimeContext.Provider>
-      </XpodAuthContext.Provider>,
+      <XpodSolidRuntimeContext.Provider value={runtime}>
+        <PodPage view={view} />
+      </XpodSolidRuntimeContext.Provider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 30));
   });
   return { container, root };
-}
-
-function authForRuntime(runtime: XpodSolidRuntimeValue): XpodAuthValue {
-  const controller = createXpodLoginController({ runtime });
-  const coordinator = createXpodLogoutCoordinator({
-    account: { logout: mock(async () => undefined), verifyAnonymous: () => true },
-    webId: { logout: runtime.logout, verifyAnonymous: () => true },
-  });
-  return {
-    account: {
-      accountState: { status: 'authenticated' },
-      isLoggedIn: true,
-      identity: { username: 'alice' },
-      retry: mock(async () => undefined),
-      refetchControls: mock(async () => undefined),
-      logout: mock(async () => undefined),
-    },
-    runtime,
-    routes: controller.routes,
-    webIdState: { status: 'authenticated', webId: runtime.webId ?? WEB_ID },
-    readiness: { dashboard: true, localSettings: true, podSettings: true },
-    selectedStorage: runtime.selectedStorage,
-    startLogin: controller.startLogin,
-    retryLogin: controller.retryLogin,
-    cancelLogin: controller.cancelLogin,
-    logout: coordinator.logout,
-    retryLogout: coordinator.retry,
-    logoutState: coordinator.getState(),
-    logoutCoordinator: coordinator,
-    switchAccount: mock(async () => undefined),
-  };
 }
 
 async function unmount(root: Root) {
@@ -234,7 +197,7 @@ describe('PodPage', () => {
     await unmount(root);
   });
 
-  test('login again uses the validated current-origin Xpod transaction', async () => {
+  test('leaves logout and login-again controls to the host user card', async () => {
     const splitWebId = 'https://id.example/alice/profile/card#me';
     const splitPodUrl = 'https://storage.example/alice/';
     const fetchImpl = mock(async () => new Response(JSON.stringify({
@@ -254,47 +217,9 @@ describe('PodPage', () => {
     } satisfies XpodSolidRuntimeValue;
 
     const { container, root } = await renderPodPage(runtime);
-    const loginButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Login again'));
-    if (!loginButton) throw new Error('missing login again button');
-
-    await act(async () => {
-      loginButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(runtime.login).toHaveBeenCalledWith(expect.objectContaining({
-      id: expect.any(String),
-      authorizationSurface: 'redirect',
-      discovery: 'strict',
-      route: expect.objectContaining({
-        id: 'xpod-current-origin',
-        identityProvider: expect.objectContaining({ url: 'https://pod.example' }),
-        storageProvider: expect.objectContaining({ url: 'https://pod.example' }),
-      }),
-    }));
-    expect(runtime.login).not.toHaveBeenCalledWith('https://id.example');
-    expect(runtime.login).not.toHaveBeenCalledWith('https://storage.example');
-    expect(runtime.login).not.toHaveBeenCalledWith('https://issuer.identity.example/');
-    await unmount(root);
-  });
-
-  test('routes Pod sign out through the host logout coordinator', async () => {
-    const fetchImpl = mock(async () => new Response(JSON.stringify(createStatus()), {
-      headers: { 'content-type': 'application/json' },
-    })) as typeof fetch;
-    const runtime = runtimeWith(fetchImpl);
-    const auth = authForRuntime(runtime);
-    const logout = mock(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const));
-    auth.logout = logout;
-
-    const { container, root } = await renderPodPage(runtime, 'combined', auth);
-    const logoutButton = Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.includes('Logout'));
-    if (!logoutButton) throw new Error('missing logout button');
-    await act(async () => {
-      logoutButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(logout).toHaveBeenCalledTimes(1);
-    expect(runtime.logout).not.toHaveBeenCalled();
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Logout'))).toBe(false);
+    expect(Array.from(container.querySelectorAll('button')).some((button) => button.textContent?.includes('Login again'))).toBe(false);
+    expect(runtime.login).not.toHaveBeenCalled();
     await unmount(root);
   });
 

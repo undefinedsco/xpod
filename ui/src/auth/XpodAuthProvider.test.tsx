@@ -120,4 +120,42 @@ describe('XpodAuthProvider policy', () => {
     expect(runtimeLogout).toHaveBeenCalledTimes(1);
     expect(startLogin).toHaveBeenCalledWith('/dashboard/overview', undefined);
   });
+
+  test('resets a completed logout before login so the next logout still clears both domains', async () => {
+    let webIdStatus: 'authenticated' | 'anonymous' = 'authenticated';
+    let accountLoggedIn = true;
+    const accountSource = account({
+      isLoggedIn: true,
+      isAnonymous: () => !accountLoggedIn,
+    });
+    const accountLogout = vi.fn(async () => {
+      accountLoggedIn = false;
+      accountSource.isLoggedIn = false;
+    });
+    accountSource.logout = accountLogout;
+    const runtimeLogout = vi.fn(async () => {
+      webIdStatus = 'anonymous';
+    });
+    const startLogin = vi.fn(async () => {
+      accountLoggedIn = true;
+      accountSource.isLoggedIn = true;
+      webIdStatus = 'authenticated';
+    });
+    const value = createXpodAuthValue({
+      account: accountSource,
+      runtime: {
+        state: { status: 'authenticated', webId: binding.webId },
+        logout: runtimeLogout,
+        session: { getSnapshot: () => ({ status: webIdStatus, ...(webIdStatus === 'authenticated' ? { webId: binding.webId } : {}) }) },
+      },
+      startLogin,
+    });
+
+    await value.logout();
+    await value.startLogin('/dashboard/overview');
+    await value.logout();
+
+    expect(accountLogout).toHaveBeenCalledTimes(2);
+    expect(runtimeLogout).toHaveBeenCalledTimes(2);
+  });
 });

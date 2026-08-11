@@ -25,8 +25,10 @@ function Probe() {
     <div>
       <span data-testid="status">{auth.accountState.status}</span>
       <span data-testid="logged-in">{String(auth.isLoggedIn)}</span>
+      <span data-testid="anonymous">{String(auth.isAnonymous?.())}</span>
       <span data-testid="error">{auth.accountState.status === 'error' ? auth.accountState.message : ''}</span>
       <button type="button" onClick={() => void auth.retry()}>retry</button>
+      <button type="button" onClick={() => void auth.logout()}>logout</button>
     </div>
   );
 }
@@ -87,6 +89,68 @@ describe('Xpod Account controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('authenticated');
+    await unmount(root);
+  });
+
+  test('keeps Account credentials available when logout cannot reach CSS', async () => {
+    installDom();
+    window.sessionStorage.setItem('xpod.cssAccountToken', 'secret-token');
+    document.cookie = 'css-account=secret-token; Path=/';
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ controls: { account: { logout: '/.account/logout/' } } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('', { status: 503 }));
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AuthProvider><Probe /></AuthProvider>);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await act(async () => {
+      const logoutButton = container.querySelector('button:last-of-type');
+      if (!logoutButton) throw new Error('missing logout button');
+      fireEvent.click(logoutButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+    expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBe('secret-token');
+    expect(document.cookie).toContain('secret-token');
+    await unmount(root);
+  });
+
+  test('reports anonymous synchronously after a successful real AuthProvider logout', async () => {
+    installDom();
+    window.sessionStorage.setItem('xpod.cssAccountToken', 'secret-token');
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ controls: { account: { logout: '/.account/logout/' } } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<AuthProvider><Probe /></AuthProvider>);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await act(async () => {
+      const logoutButton = container.querySelector('button:last-of-type');
+      if (!logoutButton) throw new Error('missing logout button');
+      fireEvent.click(logoutButton);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('anonymous');
+    expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('true');
     await unmount(root);
   });
 });

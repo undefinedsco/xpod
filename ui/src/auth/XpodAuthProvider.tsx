@@ -183,28 +183,28 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
         : options.runtime?.state.status !== 'authenticated',
     },
   });
+  const clearStaleSession = async () => {
+    try {
+      options.cancelLogin?.();
+    } catch {
+      // A stale transaction may already have expired; logout still proceeds.
+    }
+    const staleLogout = await logoutCoordinator.logout();
+    if (staleLogout.status !== 'complete') throw new Error('Existing Xpod session could not be cleared');
+    // A completed transaction is terminal by design. Reset it before starting
+    // a new login so the next logout can run both domain ports again.
+    logoutCoordinator.reset();
+  };
   const startLogin = async (returnTo?: string, selectedStorage?: StorageBinding) => {
     if (options.runtime?.state.status === 'authenticated' && !options.account.isLoggedIn) {
-      try {
-        options.cancelLogin?.();
-      } catch {
-        // A stale transaction may already have expired; logout still proceeds.
-      }
-      const staleLogout = await logoutCoordinator.logout();
-      if (staleLogout.status !== 'complete') throw new Error('Existing Xpod session could not be cleared');
+      await clearStaleSession();
     }
     return baseStartLogin(returnTo, selectedStorage);
   };
   const retryLogin = options.retryLogin
     ? async (returnTo?: string, selectedStorage?: StorageBinding) => {
       if (options.runtime?.state.status === 'authenticated' && !options.account.isLoggedIn) {
-        try {
-          options.cancelLogin?.();
-        } catch {
-          // A stale transaction may already have expired; logout still proceeds.
-        }
-        const staleLogout = await logoutCoordinator.logout();
-        if (staleLogout.status !== 'complete') throw new Error('Existing Xpod session could not be cleared');
+        await clearStaleSession();
       }
       return options.retryLogin?.(returnTo, selectedStorage);
     }

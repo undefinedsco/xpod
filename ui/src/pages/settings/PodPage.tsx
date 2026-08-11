@@ -1,15 +1,13 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
-import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Database, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
-import { XpodAuthContext } from '../../auth/useXpodAuth';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
 
 export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'settings' | 'usage' }) {
   const runtime = useXpodSolidRuntime();
-  const xpodAuth = useContext(XpodAuthContext);
   const [status, setStatus] = useState<PodSettingsStatus>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
@@ -103,9 +101,6 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
               issuer={identity.issuer}
               sessionStatus={runtime.state.status}
               onOpenPod={openPod}
-              onLogout={() => void xpodAuth?.logout()}
-              onLoginAgain={() => void xpodAuth?.startLogin()}
-              canLoginAgain={runtime.state.status !== 'loading'}
             />
           ) : null}
           {view !== 'settings' ? <PodUsageCard storage={status?.storage} loading={loading && !status} /> : null}
@@ -148,18 +143,12 @@ export function IdentityCard({
   issuer,
   sessionStatus,
   onOpenPod,
-  onLogout,
-  onLoginAgain,
-  canLoginAgain,
 }: {
   webId?: string;
   podUrl?: string;
   issuer?: string;
   sessionStatus: string;
   onOpenPod: () => void;
-  onLogout: () => void;
-  onLoginAgain: () => void;
-  canLoginAgain: boolean;
 }) {
   return (
     <Card>
@@ -178,14 +167,6 @@ export function IdentityCard({
           <Button type="button" size="sm" variant="outline" onClick={onOpenPod} disabled={!podUrl}>
             <ExternalLink className="mr-2 h-4 w-4" aria-hidden="true" />
             Open Pod
-          </Button>
-          <Button type="button" size="sm" variant="subtle" onClick={onLogout}>
-            <LogOut className="mr-2 h-4 w-4" aria-hidden="true" />
-            Logout
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={onLoginAgain} disabled={!canLoginAgain}>
-            <LogIn className="mr-2 h-4 w-4" aria-hidden="true" />
-            Login again
           </Button>
         </div>
       </CardContent>

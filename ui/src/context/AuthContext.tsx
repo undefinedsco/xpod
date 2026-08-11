@@ -134,6 +134,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
       return;
     }
+    // The host logout coordinator verifies this value immediately after the
+    // logout promise settles, before React has necessarily flushed effects.
+    isLoggedInRef.current = false;
     clearAccountSessionToken();
     setHasOidcPending(false);
     setControls({});

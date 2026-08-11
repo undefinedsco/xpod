@@ -208,17 +208,18 @@ export function ConsentPage() {
     })();
   }, [refreshConsentState]);
 
-  // Switch to a different account (logout + redirect to login)
+  // Let the host coordinator clear both auth domains before starting login.
   const handleSwitchAccount = async () => {
     try {
-      const state = xpodAuth
-        ? await (xpodAuth.logoutState.status === 'error' ? xpodAuth.retryLogout() : xpodAuth.logout())
-        : (await accountLogout(), { status: 'complete', account: 'complete', webId: 'complete' } as const);
-      if (state.status === 'complete') {
-        window.location.href = '/.account/login/password/';
-      } else {
-        setError('Sign out incomplete. Please try again.');
+      if (xpodAuth) {
+        const result = await xpodAuth.switchAccount(window.location.href);
+        if (result && typeof result === 'object' && 'status' in result && result.status !== 'complete') {
+          setError('Sign out incomplete. Please try again.');
+        }
+        return;
       }
+      await accountLogout();
+      window.location.href = '/.account/login/password/';
     } catch {
       setError('Sign out incomplete. Please try again.');
     }
