@@ -39,7 +39,15 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
   const initials = initialsFor(displayName);
   const webId = runtime?.webId ?? (runtime?.state.status === 'authenticated' ? runtime.state.webId : undefined);
   const podUrl = runtime?.selectedStorage?.storageUrl ?? runtime?.podUrl;
+  const selectedBinding = runtime?.selectedStorage;
+  const currentPod = runtime?.currentPod;
   const podLabel = useMemo(() => podUrl ? podNameFromUrl(podUrl) : undefined, [podUrl]);
+  const podReady = runtime?.state.status === 'authenticated'
+    && Boolean(webId && podUrl && selectedBinding && currentPod)
+    && selectedBinding?.webId === webId
+    && sameUrl(selectedBinding?.storageUrl ?? '', podUrl ?? '')
+    && currentPod?.webId === webId
+    && sameUrl(currentPod?.podUrl ?? '', podUrl ?? '');
   const switchLabel = product === 'dashboard' ? 'Open Settings' : 'Open Dashboard';
 
   const runLogin = async () => {
@@ -92,6 +100,7 @@ export function XpodUserCard({ product, switchHref }: XpodUserCardProps) {
           type="button"
           aria-label={isAuthenticated ? `Open account menu for ${displayName}` : 'Open account menu'}
           data-testid="xpod-user-card-trigger"
+          data-pod-ready={podReady ? 'true' : 'false'}
           className="flex h-9 w-9 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
           <Avatar className="h-8 w-8 rounded-md border border-border bg-muted">
@@ -242,6 +251,14 @@ function podNameFromUrl(value: string): string | undefined {
     return segments.at(-1);
   } catch {
     return undefined;
+  }
+}
+
+function sameUrl(left: string, right: string): boolean {
+  try {
+    return new URL(left).href === new URL(right).href;
+  } catch {
+    return left === right;
   }
 }
 

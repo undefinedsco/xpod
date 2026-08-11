@@ -57,6 +57,30 @@ describe('Xpod logout coordinator', () => {
     expect(webId.logout).toHaveBeenCalledTimes(1);
   });
 
+  test('retries only WebID when Account logout already completed', async () => {
+    const account = port();
+    const webId = port({
+      logout: vi.fn()
+        .mockRejectedValueOnce(new Error('Solid session storage is unavailable'))
+        .mockResolvedValue(undefined),
+    });
+    const coordinator = createXpodLogoutCoordinator({ account, webId });
+
+    await expect(coordinator.logout()).resolves.toEqual({
+      status: 'error',
+      account: 'complete',
+      webId: 'error',
+    });
+
+    await expect(coordinator.retry()).resolves.toEqual({
+      status: 'complete',
+      account: 'complete',
+      webId: 'complete',
+    });
+    expect(account.logout).toHaveBeenCalledTimes(1);
+    expect(webId.logout).toHaveBeenCalledTimes(2);
+  });
+
   test('does not report success when a domain cannot verify anonymity', async () => {
     const account = port({ verifyAnonymous: vi.fn(async () => false) });
     const webId = port();

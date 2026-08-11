@@ -199,11 +199,7 @@ export class PodLookupRepository {
           const pod = podData as Record<string, unknown>;
           if (pod.baseUrl && typeof pod.baseUrl === 'string') {
             const storageUrl = stringValue(pod.storageUrl) ?? stringValue(pod.storage);
-            const podWebIds = [
-              typeof pod.webId === 'string' ? pod.webId : undefined,
-              ...extractPodOwnerWebIds(pod),
-              ...webIds,
-            ].filter((value): value is string => typeof value === 'string');
+            const podWebIds = resolvePodWebIds(pod, webIds);
             pods.push({
               podId,
               accountId,
@@ -335,11 +331,7 @@ export class PodLookupRepository {
       const pod = podData as Record<string, unknown>;
       if (pod.baseUrl && typeof pod.baseUrl === 'string') {
         const storageUrl = stringValue(pod.storageUrl) ?? stringValue(pod.storage);
-        const podWebIds = [
-          typeof pod.webId === 'string' ? pod.webId : undefined,
-          ...extractPodOwnerWebIds(pod),
-          ...webIds,
-        ].filter((value): value is string => typeof value === 'string');
+        const podWebIds = resolvePodWebIds(pod, webIds);
         pods.push({
           podId,
           accountId,
@@ -415,11 +407,13 @@ export class PodLookupRepository {
       if (!baseUrl || !accountId) {
         continue;
       }
-      const podWebIds = dedupeStrings([
+      const explicitPodWebIds = [
         stringValue(pod.webId),
         ...(ownerWebIdsByPodId.get(podId) ?? []),
-        ...(webIdsByAccountId.get(accountId) ?? []),
-      ].filter((value): value is string => typeof value === 'string'));
+      ].filter((value): value is string => typeof value === 'string');
+      const podWebIds = dedupeStrings(explicitPodWebIds.length > 0
+        ? explicitPodWebIds
+        : webIdsByAccountId.get(accountId) ?? []);
       const storageUrl = stringValue(pod.storageUrl) ?? stringValue(pod.storage);
 
       pods.push({
@@ -485,6 +479,14 @@ function extractPodOwnerWebIds(pod: Record<string, unknown>): string[] {
       return typeof webId === 'string' ? webId : undefined;
     })
     .filter((value): value is string => typeof value === 'string');
+}
+
+function resolvePodWebIds(pod: Record<string, unknown>, accountWebIds: string[]): string[] {
+  const explicitPodWebIds = [
+    typeof pod.webId === 'string' ? pod.webId : undefined,
+    ...extractPodOwnerWebIds(pod),
+  ].filter((value): value is string => typeof value === 'string');
+  return dedupeStrings(explicitPodWebIds.length > 0 ? explicitPodWebIds : accountWebIds);
 }
 
 function normalizeWebId(webId: string | undefined): string | undefined {

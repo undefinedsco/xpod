@@ -185,6 +185,66 @@ describe('ScopedPickWebIdHandler', () => {
     );
   });
 
+  it('returns every exact storage pair when one WebID owns multiple Pods', async () => {
+    const findAllByWebId = vi.fn(async (webId: string): Promise<PodLookupResult[]> => webId === aliceWebId
+      ? [
+        {
+          podId: 'pod-primary',
+          accountId: 'account-1',
+          baseUrl: `${cloudIssuer}alice-primary/`,
+          storageUrl: `${cloudIssuer}alice-primary/`,
+          webId,
+        },
+        {
+          podId: 'pod-secondary',
+          accountId: 'account-1',
+          baseUrl: `${cloudIssuer}alice-secondary/`,
+          storageUrl: `${cloudIssuer}alice-secondary/`,
+          webId,
+        },
+      ]
+      : []);
+    const handler = new ScopedPickWebIdHandler({
+      webIdStore: {
+        findLinks: vi.fn().mockResolvedValue([{ id: 'link-alice', webId: aliceWebId }]),
+        isLinked: vi.fn(),
+        get: vi.fn(),
+        create: vi.fn(),
+        delete: vi.fn(),
+      },
+      providerFactory: {
+        getProvider: vi.fn(async () => ({ issuer: cloudIssuer }) as any),
+      },
+      podLookupRepository: {
+        findByWebId: vi.fn(),
+        findAllByWebId,
+      },
+    });
+
+    const view = await handler.getView({
+      method: 'GET',
+      accountId: 'account-1',
+      oidcInteraction: { params: {} } as any,
+      json: {},
+      metadata: {} as any,
+      target: { path: '/.account/oidc/pick-webid/' },
+    });
+
+    expect(view.json.entries).toEqual([
+      {
+        webId: aliceWebId,
+        storageUrl: `${cloudIssuer}alice-primary/`,
+        storageMode: 'local',
+      },
+      {
+        webId: aliceWebId,
+        storageUrl: `${cloudIssuer}alice-secondary/`,
+        storageMode: 'local',
+      },
+    ]);
+    expect(findAllByWebId).toHaveBeenCalledWith(aliceWebId);
+  });
+
   it('rejects an account-linked WebID that the current storage provider cannot resolve', async () => {
     const { handler } = createHandler();
 

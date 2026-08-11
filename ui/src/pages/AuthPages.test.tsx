@@ -134,6 +134,49 @@ describe('CSS identity page controllers', () => {
     await waitFor(() => expect(screen.getByTestId('storage-bootstrap-scroll')).toBeTruthy());
   });
 
+  it('creates consent storage from the Account username when no WebID is linked yet', async () => {
+    const podCreate = vi.fn(async () => new Response(JSON.stringify({
+      webId: 'https://app.example/alice/profile/card#me',
+      podUrl: 'https://app.example/alice/',
+    }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/provision/status') {
+        return new Response(JSON.stringify({ registered: false }), { status: 200 });
+      }
+      if (url === '/.account/oidc/consent/') {
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+      }
+      if (url === '/.account/oidc/pick-webid/') {
+        return new Response(JSON.stringify({ entries: [] }), { status: 200 });
+      }
+      if (url === '/.account/account/pod/' && init?.method === 'POST') {
+        return podCreate(input, init);
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithAuth(
+      <ConsentPage />,
+      {
+        isLoggedIn: true,
+        controls: {
+          account: {
+            username: 'alice',
+            pod: '/.account/account/pod/',
+            bindings: '/.account/account/bindings',
+          },
+        },
+      },
+    );
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create storage' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Create storage' }));
+    await waitFor(() => expect(podCreate).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(String(podCreate.mock.calls[0]?.[1]?.body))).toEqual({ name: 'alice' });
+  });
+
   it('switches account through the host Xpod coordinator', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ registered: false }), { status: 200 }))

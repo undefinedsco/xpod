@@ -25,7 +25,7 @@ function redirectTargetFor(path: string) {
 
 describe('settings routes', () => {
   test('uses Models as the Settings default', () => {
-    expect(redirectTargetFor('/')).toBe('/models');
+    expect(redirectTargetFor('/')).toBe('models');
   });
 
   test('owns the four writable configuration sections', () => {
@@ -52,8 +52,15 @@ describe('settings routes', () => {
   });
 
   test('does not own Dashboard observability routes', () => {
-    expect(redirectTargetFor('/logs')).toBe('/models');
-    expect(redirectTargetFor('/rdf')).toBe('/models');
-    expect(redirectTargetFor('/usage')).toBe('/models');
+    expect(redirectTargetFor('/logs')).toBe('../models');
+    expect(redirectTargetFor('/rdf')).toBe('../models');
+    expect(redirectTargetFor('/usage')).toBe('../models');
+  });
+
+  test('keeps index and wildcard redirects relative inside the settings basename', () => {
+    for (const [path, target] of [['/', 'models'], ['/unknown', '../models']]) {
+      expect(redirectTargetFor(path)).toBe(target);
+      expect(redirectTargetFor(path)).not.toMatch(/^\//u);
+    }
   });
 });

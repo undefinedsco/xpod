@@ -1,16 +1,18 @@
 import { SolidRuntimeProvider, type OpenPodRuntime, type StorageBinding } from '@undefineds.co/solid-sdk';
 import { type SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AiClientConfigurationCapability } from '@undefineds.co/extension-sdk/web';
 import type { WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
+import { AuthContext } from '../context/AuthContextValue';
+import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
   clearXpodSelectedStorage,
   readXpodSelectedStorage,
 } from '../auth/xpod-login-transaction';
+import { storageBindingKey } from '../auth/xpod-storage-selection';
 import {
   getXpodSolidRuntimeValue,
   clearStoredXpodOidcIssuer,
-  initializedRuntimes,
   normalizeXpodOidcIssuer,
   normalizeXpodLoginTransaction,
   safeAuthError,
@@ -28,6 +30,9 @@ export function XpodSolidRuntimeProvider({
   value?: XpodSolidRuntimeCore;
 }) {
   const runtime = value ?? getXpodSolidRuntimeValue();
+  const accountContext = useContext(AuthContext);
+  const accountIsLoggedIn = accountContext?.isLoggedIn ?? false;
+  const accountBindingsUrl = accountContext?.controls?.account?.bindings;
   const [snapshot, setSnapshot] = useState(() => runtime.session.getSnapshot());
   const [issuer, setIssuer] = useState(() => runtime.getIssuer());
   const [currentPod, setCurrentPod] = useState<OpenPodRuntime<SolidDatabase>>();
@@ -62,14 +67,20 @@ export function XpodSolidRuntimeProvider({
   }, [runtime]);
 
   useEffect(() => {
-    if (initializedRuntimes.has(runtime)) {
-      return;
-    }
-    initializedRuntimes.add(runtime);
-    void runtime.session.initialize({ restorePreviousSession: true }).then((nextSnapshot) => {
-      setSnapshot(nextSnapshot);
-      setIssuer(runtime.getIssuer());
+    let active = true;
+    const currentSnapshot = runtime.session.getSnapshot();
+    const initialization = currentSnapshot.status === 'initializing'
+      ? runtime.session.initialize({ restorePreviousSession: true })
+      : Promise.resolve(currentSnapshot);
+    void initialization.then((nextSnapshot) => {
+      if (active) {
+        setSnapshot(nextSnapshot);
+        setIssuer(runtime.getIssuer());
+      }
     });
+    return () => {
+      active = false;
+    };
   }, [runtime]);
 
   useEffect(() => {
@@ -103,8 +114,19 @@ export function XpodSolidRuntimeProvider({
       podUrl: rememberedBinding.storageUrl,
       fetch: runtime.session.fetch,
     };
-    void runtime.pod.open(openArgs).then(
-      (opened) => {
+    void (async () => {
+      try {
+        if (!await rememberedBindingStillOwned(rememberedBinding, accountIsLoggedIn, accountBindingsUrl)) {
+          if (!cancelled) {
+            clearXpodSelectedStorage();
+            runtime.pod.clear({ webId: snapshot.webId });
+            setCurrentPod(undefined);
+            setSelectedStorage(undefined);
+            setPodError({ webId: snapshot.webId, error: new Error('Selected Pod binding is no longer available') });
+          }
+          return;
+        }
+        const opened = await runtime.pod.open(openArgs);
         if (!cancelled) {
           if (rememberedBinding && (
             opened.webId !== rememberedBinding.webId
@@ -120,21 +142,20 @@ export function XpodSolidRuntimeProvider({
           setSelectedStorage(rememberedBinding ?? { webId: opened.webId, storageUrl: opened.podUrl });
           setPodError(undefined);
         }
-      },
-      (error: unknown) => {
+      } catch (error: unknown) {
         if (!cancelled) {
           setPodError({
             webId: snapshot.webId,
             error: error instanceof Error ? error : new Error(String(error)),
           });
         }
-      },
-    );
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [runtime, snapshot]);
+  }, [accountBindingsUrl, accountIsLoggedIn, runtime, snapshot]);
 
   const authenticatedWebId = snapshot.status === 'authenticated' ? snapshot.webId : undefined;
 
@@ -213,6 +234,22 @@ function sameUrl(left: string, right: string): boolean {
   } catch {
     return left === right;
   }
+}
+
+async function rememberedBindingStillOwned(
+  binding: StorageBinding,
+  accountIsLoggedIn: boolean,
+  accountBindingsUrl?: string,
+): Promise<boolean> {
+  if (!accountIsLoggedIn || !accountBindingsUrl) {
+    return true;
+  }
+
+  const bindings = await fetchAccountStorageBindings({
+    controls: { account: { bindings: accountBindingsUrl } },
+    origin: typeof window === 'undefined' ? undefined : window.location.origin,
+  });
+  return bindings.some((candidate) => storageBindingKey(candidate) === storageBindingKey(binding));
 }
 
 async function discoverAiClientConfigurationCapability(

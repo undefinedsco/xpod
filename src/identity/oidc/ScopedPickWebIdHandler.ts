@@ -131,16 +131,15 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
 
     const entries: WebIdEntry[] = [];
     for (const webId of webIds) {
-      const pod = await this.findSpPod(webId, target.storageUrl);
-      if (!pod) {
-        continue;
+      const pods = await this.findSpPods(webId, target.storageUrl);
+      for (const pod of pods) {
+        const storageUrl = ensureTrailingSlash(pod.storageUrl ?? pod.baseUrl);
+        entries.push({
+          webId,
+          storageUrl,
+          storageMode: deriveStorageMode(webId, storageUrl),
+        });
       }
-      const storageUrl = ensureTrailingSlash(pod.storageUrl ?? pod.baseUrl);
-      entries.push({
-        webId,
-        storageUrl,
-        storageMode: deriveStorageMode(webId, storageUrl),
-      });
     }
     return entries;
   }
@@ -190,27 +189,33 @@ export class ScopedPickWebIdHandler extends JsonInteractionHandler implements Js
   }
 
   private async findSpPod(webId: string, targetStorageUrl: string): Promise<PodLookupResult | undefined> {
+    const pods = await this.findSpPods(webId, targetStorageUrl);
+    return pods[0];
+  }
+
+  private async findSpPods(webId: string, targetStorageUrl: string): Promise<PodLookupResult[]> {
     if (!this.podLookupRepository) {
       this.logger.warn('No PodLookupRepository configured; refusing to expose unscoped WebID choices');
-      return undefined;
+      return [];
     }
 
     try {
       if (this.podLookupRepository.findAllByWebId) {
         const pods = await this.podLookupRepository.findAllByWebId(webId);
-        return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
+        return pods.filter((pod) => matchesTargetStorage(pod, targetStorageUrl));
       }
 
       if (this.podLookupRepository.findByWebIds) {
         const pods = await this.podLookupRepository.findByWebIds([webId]);
-        return pods.find((pod) => matchesTargetStorage(pod, targetStorageUrl));
+        return pods.filter((pod) => getPodCandidateWebIds(pod).includes(webId)
+          && matchesTargetStorage(pod, targetStorageUrl));
       }
 
       const pod = await this.podLookupRepository.findByWebId(webId);
-      return pod && matchesTargetStorage(pod, targetStorageUrl) ? pod : undefined;
+      return pod && matchesTargetStorage(pod, targetStorageUrl) ? [pod] : [];
     } catch (error) {
       this.logger.warn(`Pod lookup unavailable for WebID ${webId}: ${error}`);
-      return undefined;
+      return [];
     }
   }
 

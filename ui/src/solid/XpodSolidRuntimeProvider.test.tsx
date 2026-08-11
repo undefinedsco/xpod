@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { SolidSessionAdapter, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
@@ -12,6 +12,7 @@ import {
 } from './XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './XpodSolidRuntimeProvider';
 import { useXpodSolidRuntime } from './useXpodSolidRuntime';
+import { AuthContext, type AuthContextType } from '../context/AuthContextValue';
 import {
   XPOD_SELECTED_STORAGE_BINDING_KEY,
   createXpodLoginTransactionStore,
@@ -225,14 +226,14 @@ describe('Xpod Solid runtime', () => {
       transactionStore: store,
       storage: window.sessionStorage,
       locationReplace: replace,
-    }))).toMatchObject({ status: 'failure', code: 'replayed-transaction' });
+    }))).toMatchObject({ status: 'redirected', destination: 'https://app.example/settings/models' });
     expect((await completeXpodOidcCallback({
       href: window.location.href,
       runtime,
       transactionStore: store,
       storage: window.sessionStorage,
       locationReplace: replace,
-    }))).toMatchObject({ status: 'failure', code: 'replayed-transaction' });
+    }))).toMatchObject({ status: 'redirected', destination: 'https://app.example/settings/models' });
   });
 
   test('does not consume the host transaction when Inrupt rejects callback state', async () => {
@@ -316,6 +317,75 @@ describe('Xpod Solid runtime', () => {
     await unmount(root);
   });
 
+  test('clears a remembered binding that the Account no longer owns before opening the Pod', async () => {
+    installDom('https://app.example/settings/models');
+    const selectedStorage = {
+      webId: 'https://app.example/alice/profile/card#me',
+      storageUrl: 'https://app.example/alice/',
+    };
+    rememberXpodSelectedStorage(selectedStorage);
+    const session = new FakeSession();
+    session.authenticate(selectedStorage.webId, window.location.origin);
+    const runtime = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    const open = mock(async (args: { webId: string; podUrl?: string }) => ({
+      webId: args.webId,
+      podUrl: args.podUrl!,
+      database: {},
+      collections: 'ready' as const,
+    }));
+    runtime.pod.open = open as typeof runtime.pod.open;
+    const clear = vi.spyOn(runtime.pod, 'clear');
+    const accountContext: AuthContextType = {
+      controls: { account: { bindings: '/.account/account/bindings/' } },
+      isInitializing: false,
+      initError: null,
+      idpIndex: '/.account/',
+      isLoggedIn: true,
+      authenticating: false,
+      hasOidcPending: false,
+      refetchControls: mock(async () => undefined),
+      retry: mock(async () => undefined),
+      logout: mock(async () => undefined),
+      accountState: { status: 'authenticated' },
+      accountAuthState: { status: 'authenticated' },
+      authState: { status: 'authenticated' },
+      state: { status: 'authenticated' },
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ bindings: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AuthContext.Provider value={accountContext}>
+          <XpodSolidRuntimeProvider value={runtime}>
+            <RuntimeStateProbe />
+          </XpodSolidRuntimeProvider>
+        </AuthContext.Provider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://app.example/.account/account/bindings/',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+    expect(open).not.toHaveBeenCalled();
+    expect(clear).toHaveBeenCalledWith({ webId: selectedStorage.webId });
+    expect(container.querySelector('[data-testid="runtime-state"]')?.textContent).toBe('error');
+    expect(readXpodSelectedStorage({
+      origin: window.location.origin,
+      webId: selectedStorage.webId,
+    })).toBeUndefined();
+    vi.unstubAllGlobals();
+    await unmount(root);
+  });
+
   test('constructs one browser session and initializes redirect handling once', async () => {
     let constructions = 0;
     const session = new FakeSession();
@@ -333,6 +403,43 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(constructions).toBe(1);
+    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('anonymous');
+    await unmount(root);
+  });
+
+  test('shares pending initialization across the StrictMode remount', async () => {
+    const session = new FakeSession();
+    let finishInitialization!: () => void;
+    session.handleIncomingRedirect.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        finishInitialization = resolve;
+      });
+      return session.info;
+    });
+    const value = createXpodSolidRuntimeValue({ sessionFactory: () => session });
+    installDom();
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <XpodSolidRuntimeProvider value={value}>
+            <RuntimeProbe />
+          </XpodSolidRuntimeProvider>
+        </StrictMode>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain('initializing');
+
+    await act(async () => {
+      finishInitialization();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
     expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain('anonymous');
     await unmount(root);

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { act } from 'react';
+import { act, useLayoutEffect, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { fireEvent } from '@testing-library/react';
@@ -33,13 +33,28 @@ function Probe() {
   );
 }
 
-async function render(fetchImpl?: typeof fetch) {
+function ImmediateLogoutProbe() {
+  const auth = useAuth();
+  const status = auth.accountState.status;
+  const logout = auth.logout;
+  useLayoutEffect(() => {
+    if (status === 'authenticated') void logout();
+  }, [logout, status]);
+  return (
+    <div>
+      <span data-testid="status">{auth.accountState.status}</span>
+      <span data-testid="anonymous">{String(auth.isAnonymous?.())}</span>
+    </div>
+  );
+}
+
+async function render(fetchImpl?: typeof fetch, probe: ReactElement = <Probe />) {
   installDom(fetchImpl);
   const container = document.getElementById('root');
   if (!container) throw new Error('missing root');
   const root = createRoot(container);
   await act(async () => {
-    root.render(<AuthProvider><Probe /></AuthProvider>);
+    root.render(<AuthProvider>{probe}</AuthProvider>);
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   return { container, root };
@@ -92,6 +107,39 @@ describe('Xpod Account controller', () => {
     await unmount(root);
   });
 
+  test('does not block Account controls on a pending OIDC consent probe', async () => {
+    let resolveConsent: ((response: Response) => void) | undefined;
+    const consentResponse = new Promise<Response>((resolve) => {
+      resolveConsent = resolve;
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), window.location.origin).pathname;
+      if (pathname === '/.account/') {
+        return new Response(JSON.stringify({ controls: { account: { logout: '/.account/logout/' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname === '/.account/oidc/consent/') return consentResponse;
+      throw new Error(`unexpected request ${pathname}`);
+    });
+
+    const { container, root } = await render(fetchImpl as unknown as typeof fetch);
+
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('authenticated');
+    expect(container.querySelector('[data-testid="logged-in"]')?.textContent).toBe('true');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    resolveConsent?.(new Response(JSON.stringify({ client: null }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    await act(async () => {
+      await consentResponse;
+    });
+    await unmount(root);
+  });
+
   test('keeps Account credentials available when logout cannot reach CSS', async () => {
     installDom();
     window.sessionStorage.setItem('xpod.cssAccountToken', 'secret-token');
@@ -118,8 +166,35 @@ describe('Xpod Account controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+    expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('false');
     expect(window.sessionStorage.getItem('xpod.cssAccountToken')).toBe('secret-token');
     expect(document.cookie).toContain('secret-token');
+    await unmount(root);
+  });
+
+  test('keeps a just-authenticated Account non-anonymous when an immediate logout fails', async () => {
+    installDom();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), window.location.origin).pathname;
+      if (pathname === '/.account/') {
+        return new Response(JSON.stringify({ controls: { account: { logout: '/.account/logout/' } } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname === '/.account/oidc/consent/') return new Response('', { status: 404 });
+      if (pathname === '/.account/logout/') return new Response('', { status: 503 });
+      throw new Error(`unexpected request ${pathname}`);
+    });
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    const { container, root } = await render(fetchImpl as unknown as typeof fetch, <ImmediateLogoutProbe />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('[data-testid="status"]')?.textContent).toBe('error');
+    expect(container.querySelector('[data-testid="anonymous"]')?.textContent).toBe('false');
     await unmount(root);
   });
 

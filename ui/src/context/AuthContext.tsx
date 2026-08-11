@@ -9,6 +9,7 @@ interface ControlsResponse {
 const IDP_INDEX = '/.account/';
 
 const ACCOUNT_ERROR_MESSAGE = 'Account service is temporarily unavailable. Please try again.';
+const OIDC_PENDING_PROBE_TIMEOUT_MS = 3_000;
 
 function accountIdentityFromControls(controls: Controls | null): SanitizedAccountIdentity | undefined {
   const account = controls?.account;
@@ -36,6 +37,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [initError, setInitError] = useState<string | null>(null);
   const [hasOidcPending, setHasOidcPending] = useState(false);
   const [accountState, setAccountState] = useState<AccountAuthState>({ status: 'initializing' });
+  const pendingProbeIdRef = useRef(0);
 
   const isLoggedIn = accountState.status === 'authenticated';
   const authenticating = isInitializing || accountState.status === 'submitting';
@@ -45,10 +47,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [isLoggedIn]);
 
   const checkOidcPending = useCallback(async (): Promise<boolean> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), OIDC_PENDING_PROBE_TIMEOUT_MS);
     try {
       const res = await fetch('/.account/oidc/consent/', {
         headers: storedAccountTokenHeaders(),
         credentials: 'include',
+        signal: controller.signal,
       });
       // If we get 200 and valid client info, there's an OIDC flow waiting
       if (res.ok) {
@@ -58,6 +63,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return false;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timeoutId);
     }
   }, []);
 
@@ -66,29 +73,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch(idpIndex, { headers: storedAccountTokenHeaders(), credentials: 'include' });
       if (res.ok) {
         const json = await res.json().catch(() => ({})) as ControlsResponse;
-        
-        // If user is logged in, check if there's an OIDC flow waiting BEFORE setting state
-        // This ensures hasOidcPending is set before isLoggedIn becomes true
-        let pending = false;
-        if (json.controls?.account?.logout) {
-          pending = await checkOidcPending();
-        }
-        
-        // Set both states together to avoid race condition
         const nextControls = json.controls || {};
-        setHasOidcPending(pending);
+        const probeId = ++pendingProbeIdRef.current;
+        setHasOidcPending(false);
         setControls(nextControls);
         setInitError(null);
-        setAccountState(accountStateForControls(nextControls));
+        const nextAccountState = accountStateForControls(nextControls);
+        // Keep synchronous logout verification in lockstep with controls;
+        // the React effect that mirrors isLoggedIn may not have run yet.
+        isLoggedInRef.current = nextAccountState.status === 'authenticated';
+        setAccountState(nextAccountState);
+
+        // The controls response establishes Account authentication. Consent is
+        // an optional OIDC continuation probe and must not delay that state.
+        if (nextControls.account?.logout) {
+          void checkOidcPending().then((pending) => {
+            if (probeId === pendingProbeIdRef.current) setHasOidcPending(pending);
+          });
+        }
       } else {
         if (res.status === 401 || res.status === 403) {
+          pendingProbeIdRef.current += 1;
           clearAccountSessionToken();
+          isLoggedInRef.current = false;
           setHasOidcPending(false);
           setControls({});
           setAccountState({ status: 'anonymous', mode: 'login' });
           setInitError(null);
           return;
         }
+        pendingProbeIdRef.current += 1;
+        setHasOidcPending(false);
         const message = res.status === 502
           ? ACCOUNT_ERROR_MESSAGE
           : `Failed to load account controls (Status: ${res.status})`;
@@ -96,6 +111,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setAccountState({ status: 'error', mode: 'login', message });
       }
     } catch {
+      pendingProbeIdRef.current += 1;
+      setHasOidcPending(false);
       setInitError(null);
       setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
     }

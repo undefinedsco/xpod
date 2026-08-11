@@ -115,6 +115,27 @@ describe('XpodUserCard', () => {
     expect(screen.getByRole('link', { name: 'Open Settings' }).getAttribute('href')).toBe('/settings/models');
   });
 
+  test('marks the shared identity control as Pod-ready only for an exact open binding', async () => {
+    const solid = runtime({
+      state: {
+        status: 'authenticated',
+        webId: 'https://id.example/alice#me',
+        podUrl: 'https://pod.example/alice/',
+      },
+      webId: 'https://id.example/alice#me',
+      podUrl: 'https://pod.example/alice/',
+      selectedStorage: { webId: 'https://id.example/alice#me', storageUrl: 'https://pod.example/alice/' },
+      currentPod: { webId: 'https://id.example/alice#me', podUrl: 'https://pod.example/alice/' } as XpodSolidRuntimeValue['currentPod'],
+    });
+    const value = auth({
+      account: { accountState: { status: 'authenticated' }, isLoggedIn: true, identity: { username: 'alice' } },
+      runtime: solid,
+    });
+    renderCard(value, solid);
+
+    expect(screen.getByTestId('xpod-user-card-trigger').getAttribute('data-pod-ready')).toBe('true');
+  });
+
   test('hides authenticated actions after a partial failure and offers deterministic retry', async () => {
     const retryLogout = vi.fn(async () => ({ status: 'complete', account: 'complete', webId: 'complete' } as const));
     const value = auth({

@@ -19,6 +19,7 @@ import { ensureTrailingSlash, fetchProfileStorageUrls } from '../utils/provision
 import { assertXpodLoginRoute, normalizeXpodReturnTo } from '../auth/xpod-login-route';
 
 export const XPOD_LAST_OIDC_ISSUER_STORAGE_KEY = 'xpod.solid.lastOidcIssuer';
+export const XPOD_SOLID_SESSION_ID_STORAGE_KEY = 'xpod.solid.sessionId';
 
 export type XpodSolidRuntimeState =
   | { status: 'loading'; webId?: undefined; podUrl?: undefined; issuer?: string; error?: undefined }
@@ -54,7 +55,6 @@ export interface CreateXpodSolidRuntimeOptions {
 }
 
 export const XpodSolidRuntimeContext = createContext<XpodSolidRuntimeValue | null>(null);
-export const initializedRuntimes = new WeakSet<XpodSolidRuntimeCore>();
 
 export function snapshotToState(
   snapshot: SolidSessionSnapshot,
@@ -106,7 +106,7 @@ export async function discoverPodUrlFromWebId({
 export function createXpodSolidRuntimeValue(
   options: CreateXpodSolidRuntimeOptions = {},
 ): XpodSolidRuntimeCore {
-  const sessionAdapter = options.sessionFactory?.() ?? new Session();
+  const sessionAdapter = options.sessionFactory?.() ?? createInruptSession();
   let lastIssuer = readIssuerFromSessionInfo(sessionAdapter.info) ?? readStoredOidcIssuer();
   const session = createSolidSessionRuntime({ session: sessionAdapter });
   const authSession: SolidAuthSession = {
@@ -148,6 +148,20 @@ export function createXpodSolidRuntimeValue(
       }
     },
   };
+}
+
+function createInruptSession(): Session {
+  let sessionId: string | undefined;
+  try {
+    sessionId = globalThis.window?.sessionStorage.getItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY) ?? undefined;
+    if (!sessionId) {
+      sessionId = globalThis.crypto?.randomUUID?.() ?? `xpod-${Date.now().toString(36)}`;
+      globalThis.window?.sessionStorage.setItem(XPOD_SOLID_SESSION_ID_STORAGE_KEY, sessionId);
+    }
+  } catch {
+    // Inrupt will generate a session id when browser storage is unavailable.
+  }
+  return new Session({}, sessionId);
 }
 
 let defaultRuntime: XpodSolidRuntimeCore | undefined;

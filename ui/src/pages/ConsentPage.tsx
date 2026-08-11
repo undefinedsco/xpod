@@ -2,6 +2,8 @@ import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AuthSurface,
+  Input,
+  Label,
   LoginErrorBanner,
   LoginFailureView,
   LoginRestoringView,
@@ -82,6 +84,7 @@ export function ConsentPage() {
   const [storageSelection, setStorageSelection] = useState<XpodStorageSelectionState>({ status: 'loading' });
   const [pendingTransaction, setPendingTransaction] = useState<WebIdLoginTransaction>();
   const [selectedWebId, setSelectedWebId] = useState('');
+  const [podName, setPodName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [rememberClient, setRememberClient] = useState(true);
   const [provisionCode, setProvisionCode] = useState<string | undefined>(() => getStoredProvisionCode());
@@ -351,9 +354,11 @@ export function ConsentPage() {
 
   const handleCreateStorage = async () => {
     const createPodUrl = controls?.account?.pod;
-    const username = deriveFirstPodNameCandidate([currentWebId]);
+    const username = deriveFirstPodNameCandidate([currentWebId, controls?.account?.username])
+      || controls?.account?.username
+      || podName.trim();
     if (!createPodUrl || !username) {
-      setError('Pod creation is unavailable until the Account exposes a Pod name.');
+      setError('Choose a Pod name before creating storage.');
       setStorageSelection({ status: 'error', message: 'Storage creation is unavailable.' });
       return;
     }
@@ -390,7 +395,10 @@ export function ConsentPage() {
   const displayBindings = pendingTransaction?.selectedStorage
     ? consentBindings.filter((binding) => storageBindingKey(binding) === storageBindingKey(pendingTransaction.selectedStorage!))
     : consentBindings;
+  const derivedPodName = deriveFirstPodNameCandidate([currentWebId, controls?.account?.username]);
+  const showPodNameInput = displayBindings.length === 0 && !derivedPodName && !controls?.account?.username;
   const isSubmitting = isAuthorizing || isCancelling || isCreatingStorage;
+  const hasStorageConflict = storageSelection.status === 'conflict';
 
   const displayOptions: OidcConsentOption[] = displayBindings.length > 0
     ? displayBindings.map((binding) => ({
@@ -418,15 +426,14 @@ export function ConsentPage() {
             : storageSelection.status === 'conflict'
               ? { status: 'conflict', message: storageSelection.message }
               : { status: 'error', message: storageSelection.message };
-  const showStorageBootstrap = displayBindings.length === 0 && (
+  const showStorageBootstrap = hasStorageConflict || (displayBindings.length === 0 && (
     displayWebIds.length === 0
     || storageSelection.status === 'empty'
     || storageSelection.status === 'creating'
     || storageSelection.status === 'waiting_for_binding'
     || storageSelection.status === 'selecting'
-    || storageSelection.status === 'conflict'
     || storageSelection.status === 'error'
-  );
+  ));
 
   return (
     <AuthSurface mode="page" title="Authorize">
@@ -452,76 +459,92 @@ export function ConsentPage() {
         <LoginRestoringView label="Restoring authorization…" />
       ) : error && !clientInfo ? null : (
         <div className="space-y-4">
-          <OidcConsentView
-            client={{
-              name: clientInfo?.client_name || 'Application',
-              description: clientInfo?.client_uri,
-            }}
-            webIds={displayOptions}
-            storageOptions={displayBindings.length > 0 ? displayOptions : []}
-            selectedWebIdId={selectedOptionId}
-            selectedStorageId={displayBindings.length > 0 ? selectedOptionId : undefined}
-            rememberClient={rememberClient}
-            onWebIdChange={(optionId) => {
-              const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
-              if (binding) {
-                setSelectedWebId(binding.webId);
-                setSelectedStorageUrl(binding.storageUrl);
-                setStorageSelection({ status: 'ready', selected: binding });
-              } else {
-                setSelectedWebId(optionId);
-                setSelectedStorageUrl('');
-              }
-            }}
-            onStorageChange={(optionId) => {
-              const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
-              if (binding) {
-                setSelectedWebId(binding.webId);
-                setSelectedStorageUrl(binding.storageUrl);
-                setStorageSelection({ status: 'ready', selected: binding });
-              }
-            }}
-            onRememberClientChange={setRememberClient}
-            onApprove={(selection) => void handleConsent(true, selection)}
-            onDeny={() => void handleConsent(false)}
-            onEditAccount={async () => {
-              persistReturnTo(window.location.href);
-              navigate('/.account/account/');
-            }}
-            onSwitchAccount={handleSwitchAccount}
-            pending={isSubmitting}
-            copy={{
-              title: 'Authorize access',
-              description: `${clientInfo?.client_name || 'Application'} requests access to your Account data.`,
-              webIdLabel: 'WebID',
-              storageLabel: 'Storage',
-              rememberClientLabel: 'Remember this client',
-              approveLabel: isAuthorizing ? 'Authorizing…' : 'Authorize',
-              denyLabel: isCancelling ? 'Denying…' : 'Deny',
-              editAccountLabel: 'Edit account',
-              switchAccountLabel: 'Use a different account',
-            }}
-          />
-          {showStorageBootstrap ? (
-            <StorageBootstrapView
-              state={bootstrapState}
-              pending={isCreatingStorage}
-              onCreate={handleCreateStorage}
-              onRetry={handleCreateStorage}
+          {!hasStorageConflict ? (
+            <OidcConsentView
+              client={{
+                name: clientInfo?.client_name || 'Application',
+                description: clientInfo?.client_uri,
+              }}
+              webIds={displayOptions}
+              storageOptions={displayBindings.length > 0 ? displayOptions : []}
+              selectedWebIdId={selectedOptionId}
+              selectedStorageId={displayBindings.length > 0 ? selectedOptionId : undefined}
+              rememberClient={rememberClient}
+              onWebIdChange={(optionId) => {
+                const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
+                if (binding) {
+                  setSelectedWebId(binding.webId);
+                  setSelectedStorageUrl(binding.storageUrl);
+                  setStorageSelection({ status: 'ready', selected: binding });
+                } else {
+                  setSelectedWebId(optionId);
+                  setSelectedStorageUrl('');
+                }
+              }}
+              onStorageChange={(optionId) => {
+                const binding = displayBindings.find((candidate) => storageBindingKey(candidate) === optionId);
+                if (binding) {
+                  setSelectedWebId(binding.webId);
+                  setSelectedStorageUrl(binding.storageUrl);
+                  setStorageSelection({ status: 'ready', selected: binding });
+                }
+              }}
+              onRememberClientChange={setRememberClient}
+              onApprove={(selection) => void handleConsent(true, selection)}
+              onDeny={() => void handleConsent(false)}
+              onEditAccount={async () => {
+                persistReturnTo(window.location.href);
+                navigate('/.account/account/');
+              }}
+              onSwitchAccount={handleSwitchAccount}
+              pending={isSubmitting}
               copy={{
-                title: 'Prepare storage',
-                description: 'Create a local storage binding before approving access.',
-                creationMessage: 'No eligible storage is available yet.',
-                waitingMessage: 'Waiting for the storage binding.',
-                readyMessage: 'Storage is ready.',
-                conflictMessage: 'The selected storage conflicts with this identity.',
-                errorMessage: 'Storage could not be prepared.',
-                createLabel: 'Create storage',
-                continueLabel: 'Continue',
-                retryLabel: 'Try again',
-                cancelLabel: 'Cancel',
+                title: 'Authorize access',
+                description: `${clientInfo?.client_name || 'Application'} requests access to your Account data.`,
+                webIdLabel: 'WebID',
+                storageLabel: 'Storage',
+                rememberClientLabel: 'Remember this client',
+                approveLabel: isAuthorizing ? 'Authorizing…' : 'Authorize',
+                denyLabel: isCancelling ? 'Denying…' : 'Deny',
+                editAccountLabel: 'Edit account',
+                switchAccountLabel: 'Use a different account',
               }}
             />
+          ) : null}
+          {showStorageBootstrap ? (
+            <>
+              {showPodNameInput ? (
+                <div className="space-y-2">
+                  <Label htmlFor="consent-pod-name">Pod name</Label>
+                  <Input
+                    id="consent-pod-name"
+                    autoComplete="username"
+                    value={podName}
+                    disabled={isCreatingStorage}
+                    onChange={(event) => setPodName(event.currentTarget.value)}
+                  />
+                </div>
+              ) : null}
+              <StorageBootstrapView
+                state={bootstrapState}
+                pending={isCreatingStorage}
+                onCreate={handleCreateStorage}
+                onRetry={hasStorageConflict ? retryConsentLoad : handleCreateStorage}
+                copy={{
+                  title: 'Prepare storage',
+                  description: 'Create a local storage binding before approving access.',
+                  creationMessage: 'No eligible storage is available yet.',
+                  waitingMessage: 'Waiting for the storage binding.',
+                  readyMessage: 'Storage is ready.',
+                  conflictMessage: 'The selected storage conflicts with this identity.',
+                  errorMessage: 'Storage could not be prepared.',
+                  createLabel: 'Create storage',
+                  continueLabel: 'Continue',
+                  retryLabel: 'Try again',
+                  cancelLabel: 'Cancel',
+                }}
+              />
+            </>
           ) : null}
         </div>
       )) : null}

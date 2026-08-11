@@ -22,7 +22,7 @@ export const dashboardRoutes: RouteObject[] = [
   {
     element: <XpodDashboardLayout />,
     children: [
-      { index: true, element: <Navigate to="/overview" replace /> },
+      { index: true, element: <Navigate to="overview" replace /> },
       {
         path: 'overview',
         element: guardedRoute(lazyRoute(<ServicesPage product="dashboard" />)),
@@ -43,8 +43,8 @@ export const dashboardRoutes: RouteObject[] = [
         path: 'usage',
         element: guardedRoute(lazyRoute(<UsagePage />)),
       },
-      { path: 'status', element: <Navigate to="/overview" replace /> },
-      { path: '*', element: <Navigate to="/overview" replace /> },
+      { path: 'status', element: <Navigate to="overview" replace /> },
+      { path: '*', element: <Navigate to="../overview" replace /> },
     ],
   },
 ];

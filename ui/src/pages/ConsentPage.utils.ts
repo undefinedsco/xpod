@@ -26,18 +26,25 @@ export function resolveConsentStorageBindings(
   }
 
   const bindings: StorageBinding[] = [];
-  const seen = new Set<string>();
   for (const entry of entries) {
     if (!isRecord(entry) || typeof entry.webId !== 'string' || typeof entry.storageUrl !== 'string') {
       continue;
     }
-    const binding = normalizeConsentBinding(entry.webId, entry.storageUrl);
+    const binding = normalizeConsentBinding(
+      entry.webId,
+      entry.storageUrl,
+      typeof entry.label === 'string' ? entry.label : undefined,
+    );
     if (!binding) {
       continue;
     }
     const key = `${binding.webId}\n${binding.storageUrl}`;
-    if (!seen.has(key)) {
-      seen.add(key);
+    const existing = bindings.find((candidate) => `${candidate.webId}\n${candidate.storageUrl}` === key);
+    if (!existing) {
+      bindings.push(binding);
+    } else if (existing.label !== undefined && binding.label !== undefined && existing.label !== binding.label) {
+      // Preserve incompatible metadata for xpod-storage-selection to surface
+      // a deterministic conflict instead of silently choosing one row.
       bindings.push(binding);
     }
   }
@@ -118,7 +125,7 @@ function isErrorWithName(value: unknown, name: string): boolean {
   return isRecord(value) && value.name === name;
 }
 
-function normalizeConsentBinding(webId: string, storageUrl: string): StorageBinding | undefined {
+function normalizeConsentBinding(webId: string, storageUrl: string, label?: string): StorageBinding | undefined {
   try {
     const identity = new URL(webId.trim());
     const storage = new URL(storageUrl.trim());
@@ -135,7 +142,11 @@ function normalizeConsentBinding(webId: string, storageUrl: string): StorageBind
       return undefined;
     }
     storage.pathname = storage.pathname.endsWith('/') ? storage.pathname : `${storage.pathname}/`;
-    return { webId: identity.href, storageUrl: storage.href };
+    return {
+      webId: identity.href,
+      storageUrl: storage.href,
+      ...(label ? { label } : {}),
+    };
   } catch {
     return undefined;
   }

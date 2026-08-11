@@ -80,6 +80,63 @@ function mutableStore(initial: WebIdLoginTransaction): {
 }
 
 describe('Xpod OIDC callback transaction ordering', () => {
+  test('fresh callback replay follows Inrupt currentUrl instead of stale completion destination', async () => {
+    const transactionId = 'callback-replay-settings-123456';
+    const href = `https://app.example/auth/callback?transaction=${transactionId}&code=fresh-code&state=fresh-state`;
+    installDom(href);
+    window.sessionStorage.setItem(`xpod.auth.callback.completed.v1.${transactionId}`, JSON.stringify({
+      destination: 'https://app.example/dashboard/overview',
+      completedAt: Date.now(),
+    }));
+    window.localStorage.setItem('solidClientAuthn:currentUrl', 'https://app.example/settings/models');
+    const replace = vi.fn();
+    const handleIncomingRedirect = vi.fn(async () => ({
+      status: 'authenticated' as const,
+      webId: 'https://app.example/alice/profile/card#me',
+    }));
+    const callbackRuntime = runtime('https://app.example/alice/profile/card#me', vi.fn()) as XpodOidcCallbackRuntime;
+    callbackRuntime.session.handleIncomingRedirect = handleIncomingRedirect;
+
+    await expect(completeXpodOidcCallback({
+      href,
+      runtime: callbackRuntime,
+      storage: window.sessionStorage,
+      locationReplace: replace,
+    })).resolves.toMatchObject({
+      status: 'redirected',
+      destination: 'https://app.example/settings/models',
+    });
+    expect(handleIncomingRedirect).toHaveBeenCalledWith(href);
+    expect(replace).toHaveBeenCalledWith('https://app.example/settings/models');
+  });
+
+  test('pure callback replay keeps the recorded destination without reprocessing OIDC', async () => {
+    const transactionId = 'callback-replay-pure-123456';
+    const href = `https://app.example/auth/callback?transaction=${transactionId}`;
+    installDom(href);
+    window.sessionStorage.setItem(`xpod.auth.callback.completed.v1.${transactionId}`, JSON.stringify({
+      destination: 'https://app.example/dashboard/overview',
+      completedAt: Date.now(),
+    }));
+    window.localStorage.setItem('solidClientAuthn:currentUrl', 'https://app.example/settings/models');
+    const replace = vi.fn();
+    const handleIncomingRedirect = vi.fn();
+    const callbackRuntime = runtime('https://app.example/alice/profile/card#me', vi.fn()) as XpodOidcCallbackRuntime;
+    callbackRuntime.session.handleIncomingRedirect = handleIncomingRedirect;
+
+    await expect(completeXpodOidcCallback({
+      href,
+      runtime: callbackRuntime,
+      storage: window.sessionStorage,
+      locationReplace: replace,
+    })).resolves.toMatchObject({
+      status: 'redirected',
+      destination: 'https://app.example/dashboard/overview',
+    });
+    expect(handleIncomingRedirect).not.toHaveBeenCalled();
+    expect(replace).toHaveBeenCalledWith('https://app.example/dashboard/overview');
+  });
+
   test('keeps a transaction pending when Pod open fails, then consumes on retry', async () => {
     const href = 'https://app.example/auth/callback?transaction=pod-open-retry-123456&code=code&state=state';
     installDom(href);

@@ -206,6 +206,29 @@ The host remains responsible for Solid OIDC operations, session restoration,
 logout, token refresh, and return-path handling. This is the same contract when
 the applet runs in Linx, Xpod, or an isolated test host.
 
+### Xpod shared-login composition
+
+Xpod composes two independent host sessions through one visible identity
+control:
+
+- Account-only surfaces (such as Dashboard) require the host Account session;
+  they do not initialize Solid or open a Pod.
+- WebID-only hosts can use `SolidAuthBoundary` without an Account session.
+- Pod-backed Xpod Settings authorize through WebID + the explicit
+  `(webId, storageUrl)` binding selected by the host. Xpod's unified flow
+  normally leaves an Account session available, but that Account session is
+  not a route-authorization requirement. A remembered valid pair
+  may be restored, while multiple or stale bindings require explicit recovery;
+  the SDK never chooses the first response implicitly.
+
+The Xpod host owns one current-origin `/auth/callback` transaction, safe
+return-path handling, OIDC state/PKCE integration, and the combined logout
+transaction. Applets receive state and callbacks, never Account/access/
+refresh-token values, callback state, issuer/provider selection, or Cloud/local
+chooser controls. Xpod's identity control is the only visible login/logout
+path; public single-domain SDK consumers may retain their own domain logout
+method when they are not using this composition.
+
 ## Solid and data rules
 
 An applet receives Solid through `host.solid`:

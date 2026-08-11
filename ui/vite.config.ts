@@ -72,7 +72,7 @@ export default defineConfig(() => {
         // The lightweight auth/smoke app only uses exact LDP operations. Settings,
         // however, hydrates Provider collections and therefore must bundle the
         // browser SPARQL engine instead of leaving an unresolvable bare import.
-        external: buildTarget === 'settings'
+        external: buildTarget === 'settings' || buildTarget === 'authCallback'
           ? ['node:module']
           : ['@comunica/query-sparql-solid', 'node:module'],
         input: typeof config.input === 'string'

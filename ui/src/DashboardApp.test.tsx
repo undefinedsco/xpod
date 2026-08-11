@@ -13,6 +13,7 @@ import { XpodAuthProvider } from './auth/XpodAuthProvider';
 import { SettingsAuthBoundary } from './solid/SettingsAuthBoundary';
 import { createXpodSolidRuntimeValue } from './solid/XpodSolidRuntime';
 import { XpodSolidRuntimeProvider } from './solid/XpodSolidRuntimeProvider';
+import { DashboardApp } from './DashboardApp';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -130,8 +131,32 @@ async function unmount(root: Root) {
 }
 
 describe('dashboard routes', () => {
+  test('reuses a callback-provided runtime instead of creating a second browser session', async () => {
+    installDom('/overview');
+    let sessionConstructions = 0;
+    const session = new FakeSession();
+    const runtime = createXpodSolidRuntimeValue({
+      sessionFactory: () => {
+        sessionConstructions += 1;
+        return session;
+      },
+    });
+    const container = document.getElementById('root');
+    if (!container) throw new Error('missing root');
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<DashboardApp runtime={runtime} />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(sessionConstructions).toBe(1);
+    expect(session.handleIncomingRedirect).toHaveBeenCalledTimes(1);
+    await unmount(root);
+  });
+
   test('redirects the dashboard index to Overview', () => {
-    expect(redirectTargetFor('/')).toBe('/overview');
+    expect(redirectTargetFor('/')).toBe('overview');
   });
 
   test('owns the read-oriented observability routes', () => {
@@ -151,9 +176,16 @@ describe('dashboard routes', () => {
   });
 
   test('does not own canonical settings sections', () => {
-    expect(redirectTargetFor('/models')).toBe('/overview');
-    expect(redirectTargetFor('/pod')).toBe('/overview');
-    expect(redirectTargetFor('/services')).toBe('/overview');
+    expect(redirectTargetFor('/models')).toBe('../overview');
+    expect(redirectTargetFor('/pod')).toBe('../overview');
+    expect(redirectTargetFor('/services')).toBe('../overview');
+  });
+
+  test('keeps index, alias, and wildcard redirects relative inside the dashboard basename', () => {
+    for (const [path, target] of [['/', 'overview'], ['/status', 'overview'], ['/unknown', '../overview']]) {
+      expect(redirectTargetFor(path)).toBe(target);
+      expect(redirectTargetFor(path)).not.toMatch(/^\//u);
+    }
   });
 
   test('normalizes anonymous dashboard redirects before the Account auth guard', async () => {

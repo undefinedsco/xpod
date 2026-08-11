@@ -7,7 +7,7 @@ import type {
   WebIdLoginTransaction,
 } from '@undefineds.co/solid-sdk';
 import type { SolidDatabase } from '@undefineds.co/drizzle-solid';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { assertXpodLoginRoute, normalizeXpodReturnTo } from '../auth/xpod-login-route';
 import {
   clearXpodSelectedStorage,
@@ -43,12 +43,16 @@ export interface XpodOidcCallbackFailure {
 export interface XpodOidcCallbackSuccess {
   status: 'redirected';
   destination: string;
-  transaction: WebIdLoginTransaction;
-  selectedStorage: StorageBinding;
-  pod: OpenPodRuntime<SolidDatabase>;
+  transaction?: WebIdLoginTransaction;
+  selectedStorage?: StorageBinding;
+  pod?: OpenPodRuntime<SolidDatabase>;
 }
 
 export type XpodOidcCallbackResult = XpodOidcCallbackFailure | XpodOidcCallbackSuccess;
+
+const CALLBACK_COMPLETION_PREFIX = 'xpod.auth.callback.completed.v1.';
+const CALLBACK_COMPLETION_TTL_MS = 10 * 60 * 1_000;
+const callbackRuns = new Map<string, Promise<XpodOidcCallbackResult>>();
 
 export interface XpodOidcCallbackRuntime extends XpodSolidRuntimeCore {
   readonly session: XpodSolidRuntimeCore['session'] & {
@@ -93,6 +97,21 @@ export async function completeXpodOidcCallback(
     return failure('missing-transaction');
   }
 
+  const resumedDestination = readCompletedDestination(callbackUrl, transactionId, options.storage, options.now);
+  if (resumedDestination) {
+    const hasOidcResponse = callbackUrl.searchParams.has('code') || callbackUrl.searchParams.has('state');
+    const currentInruptDestination = hasOidcResponse
+      ? readInruptCurrentDestination(callbackUrl)
+      : undefined;
+    if (hasOidcResponse) {
+      const restored = await handleIncomingRedirect(options.runtime, options.href);
+      if (restored.status === 'failure') return restored;
+    }
+    const destination = currentInruptDestination ?? resumedDestination;
+    options.locationReplace?.(destination);
+    return { status: 'redirected', destination };
+  }
+
   const redirectResult = await handleIncomingRedirect(options.runtime, options.href);
   if (redirectResult.status === 'failure') {
     return redirectResult;
@@ -132,28 +151,31 @@ export async function completeXpodOidcCallback(
     return failure('unsafe-return-to');
   }
 
-  const selectedStorage = transaction.selectedStorage;
-  if (!selectedStorage) {
-    return failure('missing-storage');
-  }
-  if (!isSafeSelectedStorage(selectedStorage, origin, transaction.route.storageProvider?.url)) {
+  const requestedStorage = transaction.selectedStorage;
+  if (requestedStorage && !isSafeSelectedStorage(requestedStorage, origin, transaction.route.storageProvider?.url)) {
     return failure('binding-mismatch');
   }
-  if (selectedStorage.webId !== authenticatedWebId) {
+  if (requestedStorage && requestedStorage.webId !== authenticatedWebId) {
     return failure('webid-mismatch');
   }
 
   let pod: OpenPodRuntime<SolidDatabase>;
   try {
-    pod = await options.runtime.pod.open({
+    pod = await options.runtime.pod.open(requestedStorage ? {
       webId: authenticatedWebId,
-      podUrl: selectedStorage.storageUrl,
+      podUrl: requestedStorage.storageUrl,
+      fetch: options.runtime.session.fetch,
+    } : {
+      webId: authenticatedWebId,
       fetch: options.runtime.session.fetch,
     });
   } catch {
     return failure('pod-open-failed');
   }
-  if (pod.webId !== selectedStorage.webId || !sameUrl(pod.podUrl, selectedStorage.storageUrl)) {
+  const selectedStorage = requestedStorage ?? { webId: pod.webId, storageUrl: pod.podUrl };
+  if (!isSafeSelectedStorage(selectedStorage, origin, transaction.route.storageProvider?.url)
+    || pod.webId !== selectedStorage.webId
+    || !sameUrl(pod.podUrl, selectedStorage.storageUrl)) {
     return failure('binding-mismatch');
   }
 
@@ -170,6 +192,7 @@ export async function completeXpodOidcCallback(
   const destination = new URL(returnTo ?? '/dashboard/overview', origin).href;
   try {
     store.consume(transactionId);
+    rememberCompletedDestination(transactionId, destination, options.storage, options.now);
     options.locationReplace?.(destination);
   } catch {
     clearXpodSelectedStorage({ storage: options.storage });
@@ -178,16 +201,86 @@ export async function completeXpodOidcCallback(
   return { status: 'redirected', destination, transaction, selectedStorage, pod };
 }
 
+function completeXpodOidcCallbackOnce(
+  options: CompleteXpodOidcCallbackOptions,
+): Promise<XpodOidcCallbackResult> {
+  const callbackUrl = new URL(options.href);
+  const key = `${callbackUrl.origin}:${callbackUrl.searchParams.get('transaction') ?? '<missing>'}`;
+  const existing = callbackRuns.get(key);
+  if (existing) return existing;
+  const run = completeXpodOidcCallback(options);
+  callbackRuns.set(key, run);
+  return run;
+}
+
+function readCompletedDestination(
+  callbackUrl: URL,
+  transactionId: string,
+  storage?: Storage,
+  now: () => number = () => Date.now(),
+): string | undefined {
+  try {
+    const targetStorage = storage ?? window.sessionStorage;
+    const key = `${CALLBACK_COMPLETION_PREFIX}${transactionId}`;
+    const raw = targetStorage.getItem(key);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as { destination?: unknown; completedAt?: unknown };
+    if (typeof parsed.destination !== 'string' || typeof parsed.completedAt !== 'number') return undefined;
+    if (now() - parsed.completedAt > CALLBACK_COMPLETION_TTL_MS) {
+      targetStorage.removeItem(key);
+      return undefined;
+    }
+    const destination = new URL(parsed.destination);
+    return destination.origin === callbackUrl.origin ? destination.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Inrupt stores the same-origin page that initiated silent authentication in
+ * localStorage. A fresh code/state response must return to that page rather
+ * than replaying a stale Xpod completion marker from an earlier route.
+ */
+function readInruptCurrentDestination(callbackUrl: URL): string | undefined {
+  try {
+    const raw = window.localStorage.getItem('solidClientAuthn:currentUrl');
+    if (!raw) return undefined;
+    const current = new URL(raw, callbackUrl.origin);
+    if (current.origin !== callbackUrl.origin) return undefined;
+    const path = `${current.pathname}${current.search}`;
+    const safePath = normalizeXpodReturnTo(path);
+    return safePath === undefined ? undefined : new URL(safePath, callbackUrl.origin).href;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberCompletedDestination(
+  transactionId: string,
+  destination: string,
+  storage?: Storage,
+  now: () => number = () => Date.now(),
+): void {
+  const targetStorage = storage ?? window.sessionStorage;
+  targetStorage.setItem(`${CALLBACK_COMPLETION_PREFIX}${transactionId}`, JSON.stringify({
+    destination,
+    completedAt: now(),
+  }));
+}
+
 export function XpodOidcCallbackApp({
   runtime,
   transactionStore,
   href = typeof window === 'undefined' ? 'http://localhost/auth/callback' : window.location.href,
   location = typeof window === 'undefined' ? undefined : window.location,
+  renderRedirected,
 }: {
   runtime?: XpodOidcCallbackRuntime;
   transactionStore?: XpodLoginTransactionStore;
   href?: string;
   location?: Pick<Location, 'replace'>;
+  renderRedirected?: (result: XpodOidcCallbackSuccess) => ReactNode;
 }) {
   const [ownedRuntime] = useState<XpodOidcCallbackRuntime | undefined>(() => runtime ? undefined : createCallbackRuntime());
   const activeRuntime = runtime ?? ownedRuntime!;
@@ -196,7 +289,7 @@ export function XpodOidcCallbackApp({
 
   useEffect(() => {
     if (!runRef.current) {
-      runRef.current = completeXpodOidcCallback({
+      runRef.current = completeXpodOidcCallbackOnce({
         href,
         runtime: activeRuntime,
         transactionStore,
@@ -210,7 +303,8 @@ export function XpodOidcCallbackApp({
     return <main role="status" aria-live="polite">Completing Xpod sign-in…</main>;
   }
   if (result.status === 'redirected') {
-    return <main role="status" aria-live="polite">Sign-in complete. Opening Xpod…</main>;
+    return renderRedirected?.(result)
+      ?? <main role="status" aria-live="polite">Sign-in complete. Opening Xpod…</main>;
   }
   return (
     <main role="alert" aria-live="assertive">

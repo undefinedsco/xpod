@@ -20,7 +20,7 @@ export const settingsRoutes: RouteObject[] = [
   {
     element: <XpodSettingsLayout />,
     children: [
-      { index: true, element: <Navigate to="/models" replace /> },
+      { index: true, element: <Navigate to="models" replace /> },
       { path: 'models', element: podRoute(lazyRoute(<ModelsPage />)) },
       { path: 'pod', element: podRoute(lazyRoute(<PodPage view="settings" />)) },
       {
@@ -36,7 +36,7 @@ export const settingsRoutes: RouteObject[] = [
           { path: 'configuration', element: lazyRoute(<SettingsPage />) },
         ],
       },
-      { path: '*', element: <Navigate to="/models" replace /> },
+      { path: '*', element: <Navigate to="../models" replace /> },
     ],
   },
 ];
