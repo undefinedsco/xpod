@@ -337,7 +337,7 @@ export class AcpAgentRuntime {
 
     const connection = requireAiConnectionsRuntimeConfig({
       baseUrl: aiConnection?.baseUrl,
-      apiKey: aiConnection?.gatewayKey,
+      apiKey: aiConnection?.apiKey,
       model: aiConnection?.model ?? agentConfig?.model,
     }, `${type} ACP runtime`);
     const home = this.getIsolatedHomeDir(type, threadId, workdir);

@@ -48,7 +48,7 @@ export interface PodGatewayAccessKeyRepositoryOptions {
 }
 
 export interface InternalPodAccessTokenProvider {
-  getTrustedFetch(owner: string): Promise<typeof fetch | undefined>;
+  getTrustedFetch(owner: string, auth?: AuthContext): Promise<typeof fetch | undefined>;
 }
 
 export class PodGatewayAccessKeyRepository implements GatewayAccessKeyRepository {

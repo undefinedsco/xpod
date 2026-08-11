@@ -6,6 +6,7 @@ import {
   looksLikePreviousXpodValue,
   normalizeV1Endpoint,
   parseJsonObject,
+  profileApiKey,
   stringifyJson,
 } from './base-adapter';
 import type { AiConnectionsClientProfile, ClientVerification } from './types';
@@ -34,11 +35,9 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
     profile: AiConnectionsClientProfile,
     current: Map<string, string | undefined>,
   ): Promise<Map<string, string>> {
-    const config = this.removeManagedBlock(current.get(this.configPath) ?? '')
-      .split('\n')
-      .filter((line) => !/^\s*model_provider\s*=/.test(line))
-      .join('\n')
-      .trimEnd();
+    const config = stripRootLevelModelKeys(
+      this.removeManagedBlock(current.get(this.configPath) ?? ''),
+    ).trimEnd();
     const model = profile.model?.trim();
     const block = [
       START,
@@ -54,7 +53,7 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
       '',
     ].join('\n');
     const auth = parseJsonObject(current.get(this.authPath), 'Codex auth.json');
-    auth.OPENAI_API_KEY = profile.gatewayKey;
+    auth.OPENAI_API_KEY = profileApiKey(profile);
     return new Map([
       [this.configPath, `${config}${config ? '\n\n' : ''}${block}`],
       [this.authPath, stringifyJson(auth)],
@@ -66,8 +65,9 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
       const config = await fs.promises.readFile(this.configPath, 'utf8');
       const auth = parseJsonObject(await fs.promises.readFile(this.authPath, 'utf8'), 'Codex auth.json');
       const ok = config.includes('model_provider = "xpod"') &&
+        config.includes(`model = ${JSON.stringify(profile.model)}`) &&
         config.includes(`base_url = ${JSON.stringify(normalizeV1Endpoint(profile.endpoint))}`) &&
-        auth.OPENAI_API_KEY === profile.gatewayKey;
+        auth.OPENAI_API_KEY === profileApiKey(profile);
       return ok ? { ok: true } : { ok: false, reason: 'Codex projection differs from the requested connection' };
     } catch (error) {
       return { ok: false, reason: String(error) };
@@ -93,13 +93,17 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
     }
 
     let restored = this.removeManagedBlock(current ?? '').trim();
-    const hasCurrentProvider = restored.split('\n').some((line) => /^\s*model_provider\s*=/.test(line));
+    const hasCurrentProvider = hasRootLevelKey(restored, 'model_provider');
+    const originalContent = original ?? '';
+    const originalHasXpodProjection = originalContent.includes(START)
+      || rootLevelLines(originalContent, 'model_provider')
+        .some((line) => /^\s*model_provider\s*=\s*["']xpod["']/.test(line));
     if (!hasCurrentProvider) {
-      const originalProviders = (original ?? '')
-        .split('\n')
-        .filter((line) => /^\s*model_provider\s*=/.test(line) && !line.includes('xpod'));
-      if (originalProviders.length > 0) {
-        restored = `${originalProviders.join('\n')}${restored ? `\n${restored}` : ''}`;
+      const originalRoot = originalHasXpodProjection
+        ? []
+        : rootLevelLines(originalContent, 'model_provider', 'model');
+      if (originalRoot.length > 0) {
+        restored = insertRootLevelLines(restored, originalRoot);
       }
     }
     return !originallyExisted && !restored ? null : `${restored}${restored ? '\n' : ''}`;
@@ -112,4 +116,69 @@ export class CodexConfigAdapter extends BaseAiClientConfigAdapter {
     if (end < 0) throw new Error('Codex xpod managed block is incomplete');
     return `${content.slice(0, start)}${content.slice(end + END.length)}`;
   }
+}
+
+/**
+ * Remove only the root-level keys owned by the Codex projection. A TOML key
+ * with the same name inside a profile/provider table belongs to the user and
+ * must remain untouched.
+ */
+function stripRootLevelModelKeys(content: string): string {
+  const lines = content.split('\n');
+  let inTable = false;
+  let removedRootKey = false;
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (isTomlTableHeader(line)) {
+      inTable = true;
+    }
+    if (!inTable && isRootModelKey(line)) {
+      removedRootKey = true;
+      continue;
+    }
+    kept.push(line);
+  }
+  if (removedRootKey) {
+    while (kept.length > 0 && kept[0]?.trim() === '') {
+      kept.shift();
+    }
+  }
+  return kept.join('\n');
+}
+
+function rootLevelLines(content: string, ...keys: string[]): string[] {
+  const wanted = new Set(keys);
+  const lines: string[] = [];
+  let inTable = false;
+  for (const line of content.split('\n')) {
+    if (isTomlTableHeader(line)) {
+      inTable = true;
+    }
+    if (!inTable && rootModelKey(line) && wanted.has(rootModelKey(line)!)) {
+      lines.push(line);
+    }
+  }
+  return lines;
+}
+
+function hasRootLevelKey(content: string, key: string): boolean {
+  return rootLevelLines(content, key).length > 0;
+}
+
+function insertRootLevelLines(content: string, lines: string[]): string {
+  const normalizedContent = content.replace(/^(?:\s*\n)+/u, '');
+  return `${lines.join('\n')}${normalizedContent ? `\n\n${normalizedContent}` : ''}`;
+}
+
+function isTomlTableHeader(line: string): boolean {
+  return /^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$/u.test(line);
+}
+
+function isRootModelKey(line: string): boolean {
+  return rootModelKey(line) !== undefined;
+}
+
+function rootModelKey(line: string): 'model_provider' | 'model' | undefined {
+  const match = /^\s*(model_provider|model)\s*=/.exec(line);
+  return match?.[1] as 'model_provider' | 'model' | undefined;
 }

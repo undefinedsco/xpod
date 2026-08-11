@@ -48,6 +48,7 @@ interface RunOptions {
   env?: string;
   port?: number;
   host?: string;
+  seedConfig?: string;
 }
 
 const EXIT_OK = 0;
@@ -292,21 +293,6 @@ async function startRuntime(options: RunOptions): Promise<void> {
     externalOidcIssuer,
   });
 
-  supervisor.register({
-    name: 'css',
-    command: childJsRuntime,
-    args: buildCssArgs({
-      cssBinary,
-      configPath: cssRuntimeConfig.configPath,
-      cssModuleRoot,
-      cssPort,
-      baseUrl,
-      externalOidcIssuer,
-    }),
-    cwd: cssRuntimeConfig.cwd,
-    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode),
-  });
-
   // API server: resolve the entry point dynamically
   // In dev (ts-node): use ts-node to run the .ts file
   // In production: use the compiled .js file
@@ -320,6 +306,22 @@ async function startRuntime(options: RunOptions): Promise<void> {
     : [path.join(__dirname, 'api', 'main.js')];
 
   const gatewayAdminProxyAuthSecret = createGatewayAdminProxyAuthSecret();
+
+  supervisor.register({
+    name: 'css',
+    command: childJsRuntime,
+    args: buildCssArgs({
+      cssBinary,
+      configPath: cssRuntimeConfig.configPath,
+      cssModuleRoot,
+      cssPort,
+      baseUrl,
+      externalOidcIssuer,
+      seedConfig: options.seedConfig,
+    }),
+    cwd: cssRuntimeConfig.cwd,
+    env: buildCssChildEnv(baseUrl, cssPort, externalOidcIssuer, authMode, process.env, gatewayAdminProxyAuthSecret),
+  });
 
   supervisor.register({
     name: 'api',
@@ -559,6 +561,7 @@ async function main(): Promise<void> {
       .option('env', { alias: 'e', type: 'string', description: 'Path to .env file' })
       .option('port', { alias: 'p', type: 'number', description: 'Gateway port', default: 3000 })
       .option('host', { type: 'string', description: 'Gateway bind host' })
+      .option('seedConfig', { type: 'string', description: 'Path to the file that will be used to seed accounts and pods' })
       .help()
       .parse();
 
@@ -569,6 +572,7 @@ async function main(): Promise<void> {
         env: argv.env,
         port: argv.port,
         host: argv.host,
+        seedConfig: argv.seedConfig,
       });
     } catch (error: unknown) {
       exitForCliError(error);
@@ -586,7 +590,8 @@ async function main(): Promise<void> {
         .option('mode', { alias: 'm', type: 'string', choices: [ 'local', 'cloud' ], description: 'Run mode' })
         .option('config', { alias: 'c', type: 'string', description: 'Path to config file (overrides --mode)' })
         .option('port', { alias: 'p', type: 'number', description: 'Gateway port', default: 3000 })
-        .option('host', { type: 'string', description: 'Gateway bind host' }),
+        .option('host', { type: 'string', description: 'Gateway bind host' })
+        .option('seedConfig', { type: 'string', description: 'Path to the file that will be used to seed accounts and pods' }),
       async(argv) => {
         try {
           await startRuntime({
@@ -595,6 +600,7 @@ async function main(): Promise<void> {
             env: argv.env,
             port: argv.port,
             host: argv.host,
+            seedConfig: argv.seedConfig,
           });
         } catch (error: unknown) {
           exitForCliError(error);

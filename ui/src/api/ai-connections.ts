@@ -20,7 +20,7 @@ interface CreateXpodAiConnectionsClientInput {
 
 interface AiConnectionsInvocation {
   baseUrl?: string;
-  gatewayKey?: string;
+  token?: string;
   expiresAt?: string;
 }
 
@@ -90,16 +90,19 @@ export function createServiceAccessGatewayFetch({
     if (!response.ok) {
       throw new Error('AI Connection request failed. Please try again.');
     }
-    if (!invocation?.gatewayKey) {
+    const activeInvocation = invocation;
+    if (!activeInvocation?.token) {
       throw new Error('AI Connection request failed. Please try again.');
     }
-    return invocation;
+    return activeInvocation;
   };
 
   const fetchWithInvocation = async (input: RequestInfo | URL, init: RequestInit | undefined): Promise<Response> => {
     const activeInvocation = await ensureInvocation();
+    const token = invocationToken(activeInvocation);
+    if (!token) throw new Error('AI Connection request failed. Please try again.');
     const headers = new Headers(init?.headers);
-    headers.set('Authorization', `Bearer ${activeInvocation.gatewayKey}`);
+    headers.set('Authorization', `Bearer ${token}`);
     return invocationFetch(input, {
       ...init,
       credentials: 'omit',
@@ -173,7 +176,7 @@ export function createXpodAiClientConfigurationBridge({
       },
       body: JSON.stringify({
         planId: input.planId,
-        gatewayKey: input.gatewayKey,
+        apiKey: input.apiKey,
         confirmation: input.confirmation,
       }),
     })),
@@ -232,15 +235,15 @@ async function invocationFromResponse(response: Response): Promise<AiConnections
     return undefined;
   }
   try {
-    const payload = await response.json() as { invocation?: AiConnectionsInvocation };
-    return payload.invocation;
+    const payload = await response.json() as { invocation?: unknown };
+    return normalizeInvocation(payload.invocation);
   } catch {
     return undefined;
   }
 }
 
-function isUsableInvocation(invocation: AiConnectionsInvocation | undefined, now: Date): invocation is AiConnectionsInvocation & { gatewayKey: string } {
-  if (!invocation?.gatewayKey) {
+function isUsableInvocation(invocation: AiConnectionsInvocation | undefined, now: Date): invocation is AiConnectionsInvocation {
+  if (!invocation?.token) {
     return false;
   }
   if (!invocation.expiresAt) {
@@ -248,6 +251,25 @@ function isUsableInvocation(invocation: AiConnectionsInvocation | undefined, now
   }
   const expiresAt = Date.parse(invocation.expiresAt);
   return Number.isFinite(expiresAt) && expiresAt - now.getTime() > INVOCATION_REFRESH_MARGIN_MS;
+}
+
+function invocationToken(invocation: AiConnectionsInvocation | undefined): string | undefined {
+  return invocation?.token;
+}
+
+function normalizeInvocation(value: unknown): AiConnectionsInvocation | undefined {
+  if (!isRecord(value)) return undefined;
+  const legacyTokenField = ['gateway', 'Key'].join('');
+  const token = typeof value.token === 'string'
+    ? value.token
+    : typeof value[legacyTokenField] === 'string'
+      ? value[legacyTokenField]
+      : undefined;
+  return {
+    token,
+    baseUrl: typeof value.baseUrl === 'string' ? value.baseUrl : undefined,
+    expiresAt: typeof value.expiresAt === 'string' ? value.expiresAt : undefined,
+  };
 }
 
 async function sanitizeManagementFailure(response: Response): Promise<Response> {

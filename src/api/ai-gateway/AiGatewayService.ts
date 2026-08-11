@@ -1,17 +1,16 @@
 import { createHash } from 'node:crypto';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
 import type { AuthContext } from '../auth/AuthContext';
-import { getWebId, hasGatewayScope } from '../auth/AuthContext';
+import { getWebId } from '../auth/AuthContext';
 import type { CredentialVault } from './credentials/CredentialVault';
 import type { EncryptedCredentialSecret } from './credentials/KeyWrapper';
+import { decodePlaintextCredential } from './credentials/PlaintextCredentialPayload';
 import { ChatCompletionsFrontend, MessagesFrontend, ResponsesFrontend } from './protocol';
 import type { ProviderRuntimeCredential } from './providers/ProviderRuntimeAdapter';
-import type { ProviderCapabilities, ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
+import type { ProviderOfferingDescriptor, ProviderRegistry } from './providers/ProviderRegistry';
 import { normalizeProviderId } from './providers/ProviderRegistry';
 import type { ProviderRuntimeRegistry } from './providers/ProviderRuntimeRegistry';
-import type { GatewayCredentialCandidate, ModelRouter, ModelRouteResult } from './routing/ModelRouter';
-import type { CustomProviderModel } from './connect';
-import { customModelsFromMetadata } from './connect';
+import type { GatewayCredentialCandidate, GatewayModelProjection, ModelRouter, ModelRouteResult } from './routing/ModelRouter';
 import type {
   GatewayEvent,
   GatewayProtocol,
@@ -21,7 +20,9 @@ import type {
 } from './types';
 
 export interface StoredGatewayCredential extends GatewayCredentialCandidate {
-  encryptedSecret: EncryptedCredentialSecret;
+  encryptedSecret?: EncryptedCredentialSecret;
+  storageMode?: string;
+  secretPayload?: string;
   version?: number;
   runtimeCredential?: ProviderRuntimeCredential;
 }
@@ -80,21 +81,7 @@ export interface GatewayExecution {
   events: AsyncIterable<GatewayEvent>;
 }
 
-export interface GatewayModelListItem {
-  id: string;
-  object: 'model';
-  owned_by: string;
-  context_window?: number;
-  capabilities?: ProviderCapabilities;
-  protocols?: GatewayProtocol[];
-  custom?: boolean;
-  display_name?: string;
-  modalities?: {
-    input?: string[];
-    output?: string[];
-  };
-  custom_capabilities?: string[];
-}
+export interface GatewayModelListItem extends GatewayModelProjection {}
 
 export interface GatewayAcceptanceProvenance {
   webId: string;
@@ -107,6 +94,13 @@ export interface GatewayAcceptanceProvenance {
   xpodBaseUrl: string;
   generatedAt: string;
 }
+
+type GatewayKeySolidPrincipal = Extract<AuthContext, { type: 'solid' }> & {
+  viaGatewayApiKey: true;
+  gatewayKeyId?: string;
+  gatewayKeyFingerprint: string;
+  scopes?: string[];
+};
 
 export class AiGatewayService {
   private readonly deployment: string;
@@ -192,108 +186,11 @@ export class AiGatewayService {
   public async listModels(auth: AuthContext): Promise<GatewayModelListItem[]> {
     this.requireScope(auth, 'models:read');
     const principal = this.requirePrincipal(auth);
-    const credentials = await this.credentials.listCredentials({
+    return this.router.listVisibleModels({
       webId: principal.webId,
       deployment: this.deployment,
       auth,
     });
-    const activeCredentialModels = new Map<string, Set<string> | undefined>();
-    const customCredentialModels = new Map<string, CustomProviderModel[]>();
-    for (const credential of credentials) {
-      if (!isCredentialModelVisible(credential, this.now())) {
-        continue;
-      }
-      const providerId = normalizeProviderId(credential.provider);
-      const allowedModels = credential.models;
-      if (allowedModels !== undefined && allowedModels.length === 0) {
-        if (!activeCredentialModels.has(providerId)) {
-          activeCredentialModels.set(providerId, new Set<string>());
-        }
-        continue;
-      }
-      const customModels = credential.customModels ?? customModelsFromMetadata(credential.metadata);
-      if (customModels.length > 0) {
-        const existing = customCredentialModels.get(providerId) ?? [];
-        const known = new Set(existing.map((model) => model.id));
-        for (const model of customModels) {
-          if (!known.has(model.id)) {
-            known.add(model.id);
-            existing.push(model);
-          }
-        }
-        customCredentialModels.set(providerId, existing);
-      }
-      if (allowedModels === undefined) {
-        activeCredentialModels.set(providerId, undefined);
-        continue;
-      }
-      const existing = activeCredentialModels.get(providerId);
-      if (existing === undefined && activeCredentialModels.has(providerId)) {
-        continue;
-      }
-      const models = existing ?? new Set<string>();
-      for (const model of allowedModels) {
-        models.add(model);
-      }
-      activeCredentialModels.set(providerId, models);
-    }
-    const seen = new Set<string>();
-    const models: GatewayModelListItem[] = [];
-    for (const provider of this.registry.listProviders()) {
-      const providerId = normalizeProviderId(provider.id);
-      if (!activeCredentialModels.has(providerId)) {
-        continue;
-      }
-      const allowedModels = activeCredentialModels.get(providerId);
-      const providerModelItems = provider.models
-        .filter((model) => allowedModels === undefined || allowedModels.has(model.id))
-        .map((model) => ({
-          id: model.id,
-          object: 'model' as const,
-          owned_by: provider.id,
-          ...(model.contextWindow !== undefined ? { context_window: model.contextWindow } : {}),
-          ...(model.capabilities ? { capabilities: model.capabilities } : {}),
-          ...(model.protocols ? { protocols: model.protocols } : {}),
-        }));
-      const registryModelIds = new Set(provider.models.map((model) => model.id));
-      const credentialOnlyModelItems = allowedModels === undefined
-        ? []
-        : Array.from(allowedModels)
-          .filter((model) => !registryModelIds.has(model))
-          .map((model) => ({
-            id: model,
-            object: 'model' as const,
-            owned_by: provider.id,
-          }));
-      const customModelItems = (customCredentialModels.get(providerId) ?? [])
-        .filter((model) => !registryModelIds.has(model.id))
-        .map((model) => ({
-          id: model.id,
-          object: 'model' as const,
-          owned_by: provider.id,
-          custom: true,
-          ...(model.displayName ? { display_name: model.displayName } : {}),
-          ...((model.inputModalities?.length || model.outputModalities?.length)
-            ? {
-                modalities: {
-                  ...(model.inputModalities?.length ? { input: [...model.inputModalities] } : {}),
-                  ...(model.outputModalities?.length ? { output: [...model.outputModalities] } : {}),
-                },
-              }
-            : {}),
-          ...(model.capabilities && model.capabilities.length > 0
-            ? { custom_capabilities: [...model.capabilities] }
-            : {}),
-        }));
-      for (const model of [ ...providerModelItems, ...credentialOnlyModelItems, ...customModelItems ]) {
-        if (seen.has(model.id)) {
-          continue;
-        }
-        seen.add(model.id);
-        models.push(model);
-      }
-    }
-    return models;
   }
 
   public async acceptanceProvenance(input: {
@@ -303,7 +200,7 @@ export class AiGatewayService {
   }): Promise<GatewayAcceptanceProvenance> {
     this.requireScope(input.auth, 'acceptance:read');
     const principal = this.requirePrincipal(input.auth);
-    if (input.auth.type !== 'solid' || input.auth.viaGatewayApiKey !== true || !input.auth.gatewayKeyFingerprint) {
+    if (!isGatewayKeySolidPrincipal(input.auth)) {
       throw new GatewayProtocolError('Acceptance provenance requires a Gateway API key principal', {
         code: 'invalid_request',
         status: 403,
@@ -337,10 +234,12 @@ export class AiGatewayService {
     const credential = route.credential as StoredGatewayCredential;
     return {
       webId: principal.webId,
-      gatewayKeyId: input.auth.type === 'solid' ? input.auth.gatewayKeyId ?? 'unknown' : 'unknown',
+      gatewayKeyId: input.auth.gatewayKeyId ?? 'unknown',
       gatewayKeyFingerprint: input.auth.gatewayKeyFingerprint,
       credentialIriHash: hashProvenanceValue(credential.credentialIri),
-      secretCellRefHash: hashProvenanceValue(credential.encryptedSecret.credentialIri),
+      secretCellRefHash: hashProvenanceValue(
+        credential.encryptedSecret?.credentialIri ?? credential.credentialIri,
+      ),
       providerId: route.provider.id,
       providerRouteSource: 'pod-credential',
       xpodBaseUrl: input.xpodBaseUrl,
@@ -424,6 +323,21 @@ export class AiGatewayService {
     credential: StoredGatewayCredential,
     auth: AuthContext,
   ): Promise<string> {
+    if (credential.storageMode === 'plaintext-v1') {
+      const secret = decodePlaintextCredential(credential);
+      const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
+      if (typeof apiKey === 'string' && apiKey) return apiKey;
+      throw new GatewayProtocolError('Credential secret does not contain a usable provider token', {
+        code: 'credential_unavailable',
+        status: 403,
+      });
+    }
+    if (!credential.encryptedSecret) {
+      throw new GatewayProtocolError('Credential secret is unavailable', {
+        code: 'credential_unavailable',
+        status: 403,
+      });
+    }
     const secret = await this.vault.open(
       principal,
       credential.credentialIri,
@@ -578,6 +492,25 @@ export class AiGatewayService {
   }
 }
 
+function hasGatewayScope(auth: AuthContext, scope: string): boolean {
+  if (auth.type === 'solid') {
+    const scopes = (auth as Extract<AuthContext, { type: 'solid' }> & { scopes?: string[] }).scopes;
+    return !scopes || scopes.includes(scope);
+  }
+  if (auth.type === 'service') {
+    return auth.scopes.includes(scope);
+  }
+  return false;
+}
+
+function isGatewayKeySolidPrincipal(auth: AuthContext): auth is GatewayKeySolidPrincipal {
+  const candidate = auth as Partial<GatewayKeySolidPrincipal>;
+  return auth.type === 'solid'
+    && candidate.viaGatewayApiKey === true
+    && typeof candidate.gatewayKeyFingerprint === 'string'
+    && candidate.gatewayKeyFingerprint.length > 0;
+}
+
 function hashProvenanceValue(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
@@ -585,13 +518,6 @@ function hashProvenanceValue(value: string): string {
 function requestedRouteModel(model: string): string {
   const slash = model.indexOf('/');
   return slash > 0 && slash < model.length - 1 ? model.slice(slash + 1) : model;
-}
-
-function isCredentialModelVisible(credential: StoredGatewayCredential, now: Date): boolean {
-  return credential.enabled
-    && (!credential.health || credential.health === 'healthy')
-    && credential.quota?.status !== 'exhausted'
-    && (!credential.cooldownUntil || credential.cooldownUntil.getTime() <= now.getTime());
 }
 
 function validateGatewayRequest(request: GatewayRequest, protocol: GatewayProtocol): void {

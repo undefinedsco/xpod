@@ -66,14 +66,21 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
   }, [identityKey, runtime.fetch, runtime.podUrl, runtime.webId]);
 
   useEffect(() => {
+    let cancelled = false;
     activeIdentityKeyRef.current = identityKey;
     requestIdRef.current += 1;
-    setStatus(undefined);
-    setError(undefined);
-    setLoading(false);
-    if (identityKey) {
-      void loadStatus();
-    }
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setStatus(undefined);
+      setError(undefined);
+      setLoading(false);
+      if (identityKey) {
+        void loadStatus();
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [identityKey, loadStatus]);
   /* eslint-enable react-hooks/set-state-in-effect */
 

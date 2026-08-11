@@ -663,7 +663,7 @@ export class PodQuotaSnapshotRepository implements QuotaSnapshotRepository {
     if (!isInternalPodAccessAllowed(auth)) {
       throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
     }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }

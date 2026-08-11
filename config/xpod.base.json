@@ -105,6 +105,17 @@
       }
     },
     {
+      "comment": "Resolve account WebID ownership through the CSS identity stores without opening a second database connection.",
+      "@id": "urn:undefineds:xpod:PodOwnershipResolver",
+      "@type": "CssPodOwnershipResolver",
+      "webIdStore": {
+        "@id": "urn:solid-server:default:WebIdStore"
+      },
+      "podStore": {
+        "@id": "urn:solid-server:default:PodStore"
+      }
+    },
+    {
       "comment": "Scope OIDC WebID choices to Pods known by the current storage provider.",
       "@type": "Override",
       "overrideInstance": {
@@ -112,8 +123,8 @@
       },
       "overrideParameters": {
         "@type": "ScopedPickWebIdHandler",
-        "webIdStore": {
-          "@id": "urn:solid-server:default:WebIdStore"
+        "ownershipResolver": {
+          "@id": "urn:undefineds:xpod:PodOwnershipResolver"
         },
         "providerFactory": {
           "@id": "urn:solid-server:default:IdentityProviderFactory"
@@ -124,10 +135,6 @@
         },
         "provisionBaseUrl": {
           "@id": "urn:solid-server:default:variable:oidcIssuer",
-          "@type": "Variable"
-        },
-        "identityDbUrl": {
-          "@id": "urn:solid-server:default:variable:identityDbUrl",
           "@type": "Variable"
         }
       }
@@ -270,6 +277,30 @@
       "options_defaultAccountBandwidthLimitBps": {
         "@type": "Literal",
         "value": 0
+      }
+    },
+    {
+      "comment": "Loopback-only runtime-signed hosted Pod data channel for AI Connection resources.",
+      "@type": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler",
+      "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler",
+      "@context": {
+        "resourceStore": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_resourceStore",
+        "patchBodyParser": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_patchBodyParser",
+        "sparqlHandler": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_sparqlHandler",
+        "baseUrl": "https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/dist/http/InternalPodDataHttpHandler.jsonld#InternalPodDataHttpHandler_options_baseUrl"
+      },
+      "resourceStore": {
+        "@id": "urn:solid-server:default:ResourceStore"
+      },
+      "patchBodyParser": {
+        "@id": "urn:solid-server:default:PatchBodyParser"
+      },
+      "sparqlHandler": {
+        "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
+      },
+      "baseUrl": {
+        "@id": "urn:solid-server:default:variable:baseUrl",
+        "@type": "Variable"
       }
     },
     {

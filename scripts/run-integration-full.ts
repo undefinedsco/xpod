@@ -12,10 +12,6 @@ const DEFAULT_STANDALONE_PORT = Number(process.env.STANDALONE_PORT || '5739');
 const COMPOSE_PROJECT = process.env.XPOD_FULL_PROJECT || 'xpod-full-test';
 const TEST_SECRET_CELL_KEY = Buffer.alloc(32, 3).toString('base64');
 const TEST_GATEWAY_ENV = {
-  XPOD_GATEWAY_LOCATOR_KEY_ID: 'integration-full',
-  XPOD_GATEWAY_LOCATOR_SECRET: 'integration-full-locator-secret',
-  XPOD_GATEWAY_INTERNAL_CLIENT_ID: 'integration-full-internal-client',
-  XPOD_GATEWAY_INTERNAL_CLIENT_SECRET: 'integration-full-internal-secret',
   XPOD_SECRET_CELL_KEY_ID: 'integration-full',
   XPOD_SECRET_CELL_KEY: TEST_SECRET_CELL_KEY,
   XPOD_SECRET_CELL_PREVIOUS_KEYS: JSON.stringify({

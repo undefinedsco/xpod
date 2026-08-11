@@ -111,8 +111,8 @@ export class AiGatewayHandler {
     response: ServerResponse,
   ): Promise<void> {
     try {
-      if (request.auth?.type !== 'solid' || request.auth.viaGatewayApiKey !== true) {
-        throw new GatewayProtocolError('Acceptance provenance requires a Gateway API key principal', {
+      if (request.auth?.type !== 'solid') {
+        throw new GatewayProtocolError('Acceptance provenance requires a Solid user principal', {
           code: 'invalid_request',
           status: 403,
         });

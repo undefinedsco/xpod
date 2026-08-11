@@ -11,6 +11,7 @@ data:
   API_PORT: "6301"
   CSS_LOGGING_LEVEL: info
   XPOD_EDGE_NODES_ENABLED: "true"
+  XPOD_AI_GATEWAY_CONNECT_ENABLED: "true"
 
   # Domain, storage and external service settings should be injected via
   # Secret / APP_ENV_FILE instead of hard-coded defaults here.

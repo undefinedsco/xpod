@@ -1,0 +1,327 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { parseDocument } from 'yaml';
+import { describe, expect, it } from 'vitest';
+
+const repoRoot = path.resolve(__dirname, '../..');
+const workflowPath = path.join(repoRoot, '.github/workflows/candidate.yml');
+
+type Workflow = Record<string, any>;
+
+async function loadWorkflow(): Promise<Workflow> {
+  const text = await readFile(workflowPath, 'utf8');
+  return parseDocument(text).toJSON() as Workflow;
+}
+
+function stepRuns(job: any): string[] {
+  return (job.steps ?? [])
+    .map((step: any) => step.run)
+    .filter((run: unknown): run is string => typeof run === 'string');
+}
+
+function allRunText(workflow: Workflow): string {
+  return Object.values(workflow.jobs ?? {})
+    .flatMap((job: any) => stepRuns(job))
+    .join('\n');
+}
+
+function jobRunText(workflow: Workflow, jobName: string): string {
+  return stepRuns(workflow.jobs[jobName]).join('\n');
+}
+
+function allRuns(workflow: Workflow): string[] {
+  return Object.values(workflow.jobs ?? {}).flatMap((job: any) => stepRuns(job));
+}
+
+describe('release candidate workflow', () => {
+  it('only runs on release branches with branch-scoped cancellation and minimal permissions', async () => {
+    const workflow = await loadWorkflow();
+
+    expect(workflow.on.push.branches).toEqual([ 'release/**' ]);
+    expect(workflow.on.push.tags).toBeUndefined();
+    expect(workflow.on.workflow_dispatch).toBeDefined();
+    expect(workflow.concurrency).toEqual({
+      group: expect.stringContaining('${{ github.ref }}'),
+      'cancel-in-progress': true,
+    });
+    expect(workflow.permissions).toEqual({
+      contents: 'read',
+    });
+    expect(workflow.jobs.build_image.permissions).toEqual({
+      contents: 'read',
+      packages: 'write',
+    });
+    expect(workflow.jobs.deploy_and_accept.permissions).toBeUndefined();
+    for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
+      if (jobName !== 'build_image') {
+        expect((job as any).permissions?.packages, jobName).toBeUndefined();
+      }
+    }
+  });
+
+  it('does not interpolate untrusted refs directly inside shell commands', async () => {
+    const workflow = await loadWorkflow();
+
+    for (const run of allRuns(workflow)) {
+      expect(run).not.toContain('${{ github.ref_name }}');
+    }
+  });
+
+  it('derives candidate metadata with release-candidate.cjs and exposes the expected job outputs', async () => {
+    const workflow = await loadWorkflow();
+    const metadata = workflow.jobs.metadata;
+    const runText = jobRunText(workflow, 'metadata');
+
+    expect(metadata.outputs).toMatchObject({
+      target: expect.stringContaining('target'),
+      candidate: expect.stringContaining('candidate'),
+      shaTag: expect.stringContaining('shaTag'),
+      sourceSha: expect.stringContaining('sourceSha'),
+    });
+    expect(runText).toContain('node scripts/release-candidate.cjs');
+    expect(runText).toContain('--branch');
+    expect(runText).toContain('--run-number');
+    expect(runText).toContain('--run-attempt');
+    expect(runText).toContain('--sha');
+    expect(runText).toContain('--json');
+  });
+
+  it('keeps RC service delivery independent from npm packaging and publishing', async () => {
+    const workflow = await loadWorkflow();
+
+    for (const jobName of [
+      'prepublish_npm_tarball',
+      'prepublish_bun_tarball',
+      'publish_npm_next',
+      'verify_npm_node',
+      'verify_npm_bun',
+    ]) {
+      expect(workflow.jobs[jobName], jobName).toBeUndefined();
+    }
+
+    const text = await readFile(workflowPath, 'utf8');
+    expect(text).not.toContain('NPM_TOKEN');
+    expect(text).not.toContain('publish-release.cjs');
+    expect(text).not.toContain('npm publish');
+    expect(text).not.toContain('XPOD_PUBLISH_TAG');
+    expect(text).not.toContain('@undefineds.co/xpod@');
+  });
+
+  it('checks all RC DNS names and assigned namespace access before publishing artifacts', async () => {
+    const workflow = await loadWorkflow();
+    const preflight = workflow.jobs.rc_prerequisites;
+    const runText = jobRunText(workflow, 'rc_prerequisites');
+
+    expect(preflight.needs).toBe('metadata');
+    expect(preflight.environment).toBe('rc');
+    expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
+    expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
+    expect(runText).toContain('id-rc.undefineds.co');
+    expect(runText).toContain('pods-rc.undefineds.co');
+    expect(runText).toContain('api-rc.undefineds.co');
+    expect(runText).toContain('auth can-i create deployments');
+    expect(runText).not.toContain('get secret xpod-rc-tls');
+  });
+
+  it('builds exactly one GHCR image with immutable sha and candidate tags and exposes the canonical digest', async () => {
+    const workflow = await loadWorkflow();
+    const build = workflow.jobs.build_image;
+    const runText = jobRunText(workflow, 'build_image');
+    const actionStep = build.steps.find((step: any) => step.uses === 'docker/build-push-action@v6');
+
+    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites' ]);
+    expect(build.outputs.digest).toContain('digest');
+    expect(actionStep.with.push).toBe(true);
+    expect(actionStep.with.tags).toContain('sha-${{ needs.metadata.outputs.sourceSha }}');
+    expect(actionStep.with.tags).toContain('${{ needs.metadata.outputs.candidate }}');
+    expect(actionStep.with.tags).not.toContain('latest');
+    expect(runText).not.toContain(':latest');
+  });
+
+  it('deploys after the image build, uses rc environment secrets, and deploys by digest', async () => {
+    const workflow = await loadWorkflow();
+    const deploy = workflow.jobs.deploy_and_accept;
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+
+    expect(deploy.environment).toBe('rc');
+    expect(deploy.needs).toEqual([ 'metadata', 'build_image' ]);
+    expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
+    expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
+    expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
+    expect(deploy.env.XPOD_RUNTIME_SECRET_NAME).toBe('${{ vars.XPOD_RUNTIME_SECRET_NAME }}');
+    expect(runText).toContain('node scripts/render-rc-manifests.cjs');
+    expect(runText).toContain('kubectl apply -f "$rendered_manifest"');
+    expect(runText).toContain('SEALOS_NAMESPACE is required');
+    expect(runText).toContain('XPOD_RUNTIME_SECRET_NAME is required');
+    expect(runText).toContain('must be a valid Kubernetes name');
+    expect(runText).not.toContain('SEALOS_NAMESPACE: xpod-rc');
+    expect(runText).not.toContain('xpod-rc-secret \\');
+    expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME"');
+    expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
+    expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
+    expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
+    expect(runText).toContain('https://id-rc.undefineds.co/service/status');
+    expect(runText).toContain('https://pods-rc.undefineds.co');
+    expect(runText).toContain('https://api-rc.undefineds.co');
+    expect(runText).toContain('/.well-known/openid-configuration');
+    expect(runText).toContain('https://id-rc.undefineds.co/dashboard/');
+    expect(runText).toContain('/settings/');
+    expect(runText).toContain('dashboard.html');
+    expect(runText).toContain('settings.html');
+    expect(runText).toContain('dashboard did not return HTML');
+    expect(runText).toContain('settings did not return HTML');
+    expect(runText).toContain('https://api-rc.undefineds.co/api/pod/settings/status');
+    for (const pair of [
+      [ 'xpod-rc-id-tls', 'id-rc.undefineds.co' ],
+      [ 'xpod-rc-pods-tls', 'pods-rc.undefineds.co' ],
+      [ 'xpod-rc-api-tls', 'api-rc.undefineds.co' ],
+    ]) {
+      expect(runText).toContain(pair[0]);
+      expect(runText).toContain(pair[1]);
+    }
+    expect(runText).toContain('401');
+    expect(runText).not.toContain('/settings/api/providers');
+    expect(runText).not.toContain('https://id.undefineds.co');
+    expect(runText).not.toContain('xpod-cloud-secret');
+    expect(runText).not.toMatch(/XPOD_GATEWAY_INTERNAL_CLIENT_(ID|SECRET).*required/i);
+  });
+
+  it('checks RC secret keys and production isolation without echoing secret values', async () => {
+    const workflow = await loadWorkflow();
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+
+    expect(runText).toContain('CSS_IDENTITY_DB_URL');
+    expect(runText).toContain('CSS_REDIS_CLIENT');
+    expect(runText).toContain('RC Redis DB must use a non-default database index');
+    expect(runText).toContain('RC Redis URL must include an explicit nonzero DB index');
+    expect(runText).toContain('production Redis is not allowed in RC APP_ENV_FILE');
+    for (const key of [
+      'CSS_MINIO_ENDPOINT',
+      'CSS_MINIO_BUCKET_NAME',
+      'CSS_MINIO_ACCESS_KEY',
+      'CSS_MINIO_SECRET_KEY',
+    ]) {
+      expect(runText).toContain(key);
+    }
+    expect(runText).toContain('RC object-store bucket must be xpod-rc');
+    expect(runText).toContain('bun scripts/verify-rc-r2-access.ts --env-file "$env_file"');
+    expect(runText).toContain('delete deployment/xpod-rc-minio service/xpod-rc-minio job/xpod-rc-minio-init pvc/xpod-rc-minio secret/xpod-rc-object-store --ignore-not-found');
+    expect(runText).not.toContain('create secret generic xpod-rc-object-store');
+    expect(runText).not.toContain('rollout status deployment/xpod-rc-minio');
+    expect(runText).toContain('XPOD_INNGEST_EVENT_KEY');
+    expect(runText).toContain('XPOD_INNGEST_SIGNING_KEY');
+    expect(runText).toContain('production database');
+    expect(runText).toContain('production database');
+    expect(runText).not.toMatch(/cat\s+["']?\$APP_ENV_FILE/);
+    expect(runText).not.toMatch(/grep .*APP_ENV_FILE/);
+  });
+
+  it('derives authenticated smoke configuration from the fixed RC seed instead of manual secrets', async () => {
+    const workflow = await loadWorkflow();
+    const deploy = workflow.jobs.deploy_and_accept;
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+
+    expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
+    expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
+    expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.co');
+    expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
+    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBeUndefined();
+    expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBeUndefined();
+    expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_POD_URL).toBeUndefined();
+    expect(deploy.env.XPOD_SETTINGS_E2E_TEST_API_KEY).toBeUndefined();
+    expect(deploy.env.RC_AUTHENTICATED_SMOKE_COMMAND).toBeUndefined();
+    expect(runText).toContain('XPOD_RC_SEED_CONFIG is required');
+    expect(runText).toContain('CSS_SEED_CONFIG=/app/config/seeds/rc.json');
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-seed');
+    expect(runText).toContain("secretName: 'xpod-rc-seed'");
+    expect(runText).toContain("mountPath: '/app/config/seeds'");
+    expect(runText).toContain('scripts/prepare-rc-authenticated-smoke.ts');
+    expect(runText).toContain('bunx playwright install --with-deps chromium');
+    expect(runText).toContain('--seed-config "${RUNNER_TEMP}/xpod-rc-seed.json"');
+    expect(runText).toContain('set -a');
+    expect(runText).toContain('${RUNNER_TEMP}/rc-authenticated-smoke.env');
+    expect(runText).toContain('bun scripts/accept-xpod-settings.ts --allow-incomplete');
+    expect(runText).toContain('xpod-light-settings-acceptance.md');
+    expect(runText).toContain('cat "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.md"');
+    expect(runText).toContain('node scripts/assert-rc-authenticated-smoke.cjs');
+    expect(runText).toContain('xpod-light-settings-acceptance.json');
+    expect(runText).not.toContain('RC_AUTHENTICATED_SMOKE_COMMAND');
+    expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_ALICE_STATE');
+    expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_BOB_STATE');
+    expect(runText).not.toContain('secrets.XPOD_SETTINGS_E2E_TEST_API_KEY');
+    expect(runText).not.toContain('vars.XPOD_SETTINGS_E2E_ALICE_POD_URL');
+    expect(runText).not.toMatch(/bash\s+-euo pipefail\s+-c|\bbash\s+-c|\bsh\s+-c/);
+    expect(runText).toContain('authenticated-pod');
+    expect(runText).not.toContain('"authenticated-pod":"passed"');
+  });
+
+  it('creates acceptance manifest artifacts with all required checks, diagnostics, and scale-to-zero cleanup', async () => {
+    const workflow = await loadWorkflow();
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+    const upload = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+
+    expect(runText).toContain('node scripts/release-acceptance-manifest.cjs create');
+    for (const check of [
+      'image',
+      'service-status',
+      'oidc',
+      'dashboard',
+      'protected-route',
+      'deployed-digest',
+      'direct-pod',
+      'public-service',
+      'secret-isolation',
+      'authenticated-pod',
+    ]) {
+      expect(runText).toContain(check);
+    }
+    expect(runText).not.toContain('npm-node');
+    expect(runText).not.toContain('npm-bun');
+    expect(runText).not.toContain('--npm-package');
+    expect(runText).not.toContain('--npm-version');
+    expect(upload.with.name).toBe('release-acceptance-${{ github.sha }}');
+    expect(upload.if).toBe('success()');
+
+    const diagnostics = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Dump diagnostics');
+    expect(diagnostics.if).toBe('failure()');
+    expect(diagnostics.run).toContain('kubectl -n "$SEALOS_NAMESPACE" get');
+    expect(diagnostics.run).toContain('describe deployment xpod-rc');
+    expect(diagnostics.run).toContain('--previous');
+
+    const cleanup = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
+    expect(cleanup.if).toContain('always()');
+    expect(cleanup.if).toContain("vars.XPOD_RC_SCALE_TO_ZERO == 'true'");
+    expect(cleanup.run).toContain('kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0');
+    expect(cleanup.run).not.toContain('deployment/xpod-inngest');
+  });
+
+  it('does not contain production deployment shortcuts, mutable latest tags, or continue-on-error release gates', async () => {
+    const workflow = await loadWorkflow();
+    const text = await readFile(workflowPath, 'utf8');
+
+    expect(text).not.toContain('continue-on-error');
+    expect(text).not.toMatch(/:latest\b|value=latest/);
+    expect(text).not.toContain('deploy/sealos/cloud');
+    expect(text).not.toContain('environment: production');
+    expect(allRunText(workflow)).not.toContain('https://id.undefineds.co');
+    expect(allRunText(workflow)).not.toContain('https://rc.id.undefineds.co');
+  });
+
+  it('binds deployment acceptance to the exact digest and direct pod health before public checks', async () => {
+    const workflow = await loadWorkflow();
+    const runText = jobRunText(workflow, 'deploy_and_accept');
+
+    expect(runText).toContain('kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc');
+    expect(runText).toContain('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
+    expect(runText).toContain('imageID');
+    expect(runText).toContain('direct-pod');
+    expect(runText).toContain('public-service');
+    expect(runText).toContain('deployed-digest');
+    expect(runText).toContain('127.0.0.1:3000/service/status');
+    expect(runText).not.toContain("jsonpath='{.items[0].metadata.name}'");
+    expect(runText).toContain('containerStatus?.ready');
+    expect(runText).toContain('metadata.deletionTimestamp');
+    expect(runText).not.toContain("image: 'passed'");
+  });
+});

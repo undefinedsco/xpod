@@ -1,0 +1,520 @@
+name: Release Candidate
+
+on:
+  push:
+    branches: ['release/**']
+  workflow_dispatch:
+
+concurrency:
+  group: candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.candidate.outputs.target }}
+      candidate: ${{ steps.candidate.outputs.candidate }}
+      shaTag: ${{ steps.candidate.outputs.shaTag }}
+      sourceSha: ${{ steps.candidate.outputs.sourceSha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release candidate metadata
+        id: candidate
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF_NAME" != release/* ]]; then
+            echo "::error::candidate workflow can only run on release/** branches"
+            exit 1
+          fi
+          metadata="$(node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "$RUN_NUMBER" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --sha "$SOURCE_SHA" \
+            --json)"
+          node -e '
+            const metadata = JSON.parse(process.argv[1]);
+            const fs = require("node:fs");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `target=${metadata.targetVersion}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `candidate=${metadata.candidateVersion}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `shaTag=${metadata.shaTag}\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `sourceSha=${metadata.sourceSha}\n`);
+          ' "$metadata"
+
+  rc_prerequisites:
+    needs: metadata
+    runs-on: ubuntu-latest
+    environment: rc
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+    steps:
+      - name: Verify RC DNS and namespace prerequisites
+        run: |
+          set -euo pipefail
+          if [ -z "$KUBE_CONFIG_DATA" ]; then
+            echo "::error::KUBE_CONFIG_DATA is required"
+            exit 1
+          fi
+          if [[ ! "$SEALOS_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#SEALOS_NAMESPACE} -gt 63 ]]; then
+            echo "::error::SEALOS_NAMESPACE must be a valid Kubernetes name"
+            exit 1
+          fi
+          node - <<'NODE'
+          const { Resolver } = require('node:dns').promises;
+          const hosts = [
+            'id-rc.undefineds.co',
+            'pods-rc.undefineds.co',
+            'api-rc.undefineds.co',
+          ];
+          const resolvers = [ undefined, [ '1.1.1.1', '8.8.8.8' ] ].map((servers) => {
+            const resolver = new Resolver();
+            if (servers) resolver.setServers(servers);
+            return resolver;
+          });
+          Promise.all(hosts.map(async (host) => {
+            for (const resolver of resolvers) {
+              try {
+                const addresses = await resolver.resolve4(host);
+                if (addresses.length) return;
+              } catch {}
+            }
+            throw new Error(`${host}: empty DNS result`);
+          })).catch((error) => {
+            console.error(`::error::all RC hosts must resolve before artifacts are published: ${error.message}`);
+            process.exit(1);
+          });
+          NODE
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl auth can-i create deployments -n "$SEALOS_NAMESPACE" | grep -qx yes
+          kubectl auth can-i create services -n "$SEALOS_NAMESPACE" | grep -qx yes
+          kubectl auth can-i create ingresses.networking.k8s.io -n "$SEALOS_NAMESPACE" | grep -qx yes
+
+  build_image:
+    needs: [metadata, rc_prerequisites]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    env:
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply candidate root version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+
+      - name: Build and push RC image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/undefinedsco/xpod:sha-${{ needs.metadata.outputs.sourceSha }}
+            ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
+
+  deploy_and_accept:
+    needs: [metadata, build_image]
+    runs-on: ubuntu-latest
+    environment: rc
+    env:
+      KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+      APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+      XPOD_RC_SEED_CONFIG: ${{ secrets.XPOD_RC_SEED_CONFIG }}
+      SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
+      XPOD_RUNTIME_SECRET_NAME: ${{ vars.XPOD_RUNTIME_SECRET_NAME }}
+      XPOD_ACCEPTANCE_REAL_XPOD: 'true'
+      XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
+      XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.co
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+
+      - run: bun install --frozen-lockfile
+
+      - name: Install Chromium for authenticated acceptance
+        run: bunx playwright install --with-deps chromium
+
+      - name: Set up kubeconfig
+        run: |
+          set -euo pipefail
+          validate_k8s_name() {
+            local name="$1"
+            local label="$2"
+            if [[ ! "$name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#name} -gt 63 ]]; then
+              echo "::error::${label} must be a valid Kubernetes name"
+              exit 1
+            fi
+          }
+          if [ -z "$SEALOS_NAMESPACE" ]; then
+            echo "::error::SEALOS_NAMESPACE is required"
+            exit 1
+          fi
+          if [ -z "$XPOD_RUNTIME_SECRET_NAME" ]; then
+            echo "::error::XPOD_RUNTIME_SECRET_NAME is required"
+            exit 1
+          fi
+          if [ -z "$XPOD_RC_SEED_CONFIG" ]; then
+            echo "::error::XPOD_RC_SEED_CONFIG is required"
+            exit 1
+          fi
+          validate_k8s_name "$SEALOS_NAMESPACE" SEALOS_NAMESPACE
+          validate_k8s_name "$XPOD_RUNTIME_SECRET_NAME" XPOD_RUNTIME_SECRET_NAME
+          mkdir -p ~/.kube
+          printf '%s' "$KUBE_CONFIG_DATA" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Validate RC runtime secret isolation
+        run: |
+          set -euo pipefail
+          env_file="${RUNNER_TEMP}/xpod-rc.env"
+          seed_file="${RUNNER_TEMP}/xpod-rc-seed.json"
+          printf '%s\n' "$APP_ENV_FILE" > "$env_file"
+          printf '%s\n' "$XPOD_RC_SEED_CONFIG" > "$seed_file"
+          chmod 600 "$env_file"
+          chmod 600 "$seed_file"
+          node - "$env_file" "$seed_file" <<'NODE'
+          const fs = require('node:fs');
+          const text = fs.readFileSync(process.argv[2], 'utf8');
+          const seedText = fs.readFileSync(process.argv[3], 'utf8');
+          const required = [
+            'CSS_SPARQL_ENDPOINT',
+            'CSS_IDENTITY_DB_URL',
+            'CSS_REDIS_CLIENT',
+            'CSS_MINIO_ENDPOINT',
+            'CSS_MINIO_BUCKET_NAME',
+            'CSS_MINIO_ACCESS_KEY',
+            'CSS_MINIO_SECRET_KEY',
+            'XPOD_INNGEST_EVENT_KEY',
+            'XPOD_INNGEST_SIGNING_KEY',
+          ];
+          const entries = new Map();
+          for (const line of text.split(/\r?\n/)) {
+            if (!line || line.trimStart().startsWith('#')) continue;
+            const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+            if (match) entries.set(match[1], match[2]);
+          }
+          for (const key of required) {
+            if (!entries.has(key) || entries.get(key).trim() === '') {
+              throw new Error(`missing required RC secret key: ${key}`);
+            }
+          }
+          const seed = JSON.parse(seedText);
+          if (!Array.isArray(seed)) {
+            throw new Error('XPOD_RC_SEED_CONFIG must be a seed account array');
+          }
+          const accountKeys = seed.map((entry) => `${entry?.email || ''} ${entry?.pods?.map?.((pod) => pod?.name).join(' ') || ''}`.toLowerCase());
+          if (!accountKeys.some((value) => value.includes('alice')) || !accountKeys.some((value) => value.includes('bob'))) {
+            throw new Error('XPOD_RC_SEED_CONFIG must include Alice and Bob seed accounts');
+          }
+          const databaseValues = [
+            entries.get('CSS_IDENTITY_DB_URL') || '',
+            entries.get('CSS_SPARQL_ENDPOINT') || '',
+          ].join('\n');
+          const productionDomainPattern = /(^|[^A-Za-z0-9.-])id\.undefineds\.co\b/;
+          if (/(?:prod|production|xpod-cloud)/i.test(databaseValues) || productionDomainPattern.test(databaseValues)) {
+            throw new Error('production database is not allowed in RC APP_ENV_FILE');
+          }
+          const redisValue = entries.get('CSS_REDIS_CLIENT') || '';
+          if (/(?:prod|production|xpod-cloud)/i.test(redisValue) || productionDomainPattern.test(redisValue)) {
+            throw new Error('production Redis is not allowed in RC APP_ENV_FILE');
+          }
+          let redisUrl;
+          try {
+            redisUrl = new URL(redisValue);
+          } catch {
+            throw new Error('CSS_REDIS_CLIENT must be a valid Redis URL');
+          }
+          if (!['redis:', 'rediss:'].includes(redisUrl.protocol)) {
+            throw new Error('CSS_REDIS_CLIENT must use redis:// or rediss://');
+          }
+          const dbMatch = /^\/([0-9]+)$/.exec(redisUrl.pathname);
+          if (!dbMatch) {
+            throw new Error('RC Redis URL must include an explicit nonzero DB index');
+          }
+          if (Number(dbMatch[1]) === 0) {
+            throw new Error('RC Redis DB must use a non-default database index');
+          }
+          if (entries.get('CSS_MINIO_BUCKET_NAME') !== 'xpod-rc') {
+            throw new Error('RC object-store bucket must be xpod-rc');
+          }
+          let objectStoreUrl;
+          try {
+            objectStoreUrl = new URL(entries.get('CSS_MINIO_ENDPOINT'));
+          } catch {
+            throw new Error('CSS_MINIO_ENDPOINT must be a valid URL');
+          }
+          if (objectStoreUrl.protocol !== 'https:' || !objectStoreUrl.hostname.endsWith('.r2.cloudflarestorage.com')) {
+            throw new Error('RC object-store endpoint must use Cloudflare R2 over HTTPS');
+          }
+          NODE
+          bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
+          printf '\nCSS_SEED_CONFIG=/app/config/seeds/rc.json\n' >> "$env_file"
+          echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
+
+      - name: Create runtime secrets
+        run: |
+          set -euo pipefail
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic "$XPOD_RUNTIME_SECRET_NAME" \
+            --from-env-file="${RUNNER_TEMP}/xpod-rc.env" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$SEALOS_NAMESPACE" create secret generic xpod-rc-seed \
+            --from-file=rc.json="${RUNNER_TEMP}/xpod-rc-seed.json" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy RC image by digest
+        run: |
+          set -euo pipefail
+          rendered_manifest="${RUNNER_TEMP}/xpod-rc.rendered.yaml"
+          node scripts/render-rc-manifests.cjs \
+            --overlay deploy/sealos/rc \
+            --output "$rendered_manifest" \
+            --namespace "$SEALOS_NAMESPACE" \
+            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
+          kubectl -n "$SEALOS_NAMESPACE" get configmap gateway -o yaml \
+            | node scripts/update-gateway-rc-configmap.cjs --namespace "$SEALOS_NAMESPACE" \
+            | kubectl apply -f -
+          kubectl apply -f "$rendered_manifest"
+          kubectl -n "$SEALOS_NAMESPACE" patch deployment/xpod-rc --type=strategic -p "$(node - <<'NODE'
+          process.stdout.write(JSON.stringify({
+            spec: {
+              template: {
+                spec: {
+                  containers: [
+                    {
+                      name: 'xpod',
+                      env: [
+                        {
+                          name: 'CSS_SEED_CONFIG',
+                          value: '/app/config/seeds/rc.json',
+                        },
+                      ],
+                      volumeMounts: [
+                        {
+                          name: 'xpod-rc-seed',
+                          mountPath: '/app/config/seeds',
+                          readOnly: true,
+                        },
+                      ],
+                    },
+                  ],
+                  volumes: [
+                    {
+                      name: 'xpod-rc-seed',
+                      secret: {
+                        secretName: 'xpod-rc-seed',
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          }));
+          NODE
+          )"
+          kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc xpod=ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-inngest -o json > "${RUNNER_TEMP}/inngest.json"
+          node scripts/patch-shared-inngest-rc.cjs \
+            --input "${RUNNER_TEMP}/inngest.json" \
+            --output "${RUNNER_TEMP}/inngest-rc.json" \
+            --secret-name "$XPOD_RUNTIME_SECRET_NAME"
+          kubectl apply -f "${RUNNER_TEMP}/inngest-rc.json"
+          kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/gateway
+          kubectl rollout status deployment/gateway -n "$SEALOS_NAMESPACE" --timeout=300s
+          kubectl rollout status deployment/xpod-rc -n "$SEALOS_NAMESPACE" --timeout=900s
+          expected_image="ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}"
+          deployment_image="$(kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc -o jsonpath='{.spec.template.spec.containers[?(@.name=="xpod")].image}')"
+          if [ "$deployment_image" != "$expected_image" ]; then
+            echo "::error::deployment image digest mismatch"
+            exit 1
+          fi
+          pod_name="$(kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-rc -o json | node -e '
+            const input = [];
+            process.stdin.on("data", (chunk) => input.push(chunk));
+            process.stdin.on("end", () => {
+              const digest = process.argv[1];
+              const pods = JSON.parse(Buffer.concat(input)).items || [];
+              const pod = pods.find(({ metadata, status }) => {
+                const containerStatus = status?.containerStatuses?.find(({ name }) => name === "xpod");
+                return !metadata.deletionTimestamp && status?.phase === "Running" &&
+                  containerStatus?.ready === true && containerStatus.imageID?.includes(digest);
+              });
+              if (!pod) process.exit(1);
+              process.stdout.write(pod.metadata.name);
+            });
+          ' "${{ needs.build_image.outputs.digest }}")"
+          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$pod_name" -o jsonpath='{.status.containerStatuses[?(@.name=="xpod")].imageID}')"
+          if [[ "$pod_image_id" != *"${{ needs.build_image.outputs.digest }}"* ]]; then
+            echo "::error::ready pod imageID digest mismatch"
+            exit 1
+          fi
+          kubectl -n "$SEALOS_NAMESPACE" exec "$pod_name" -c xpod -- node -e "fetch('http://127.0.0.1:3000/service/status').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
+          kubectl -n "$SEALOS_NAMESPACE" get secret "$XPOD_RUNTIME_SECRET_NAME" -o json \
+            | node -e "const input=[];process.stdin.on('data',(chunk)=>input.push(chunk));process.stdin.on('end',()=>{const data=JSON.parse(Buffer.concat(input)).data||{};for(const key of ['CSS_MINIO_ENDPOINT','CSS_MINIO_BUCKET_NAME','CSS_MINIO_ACCESS_KEY','CSS_MINIO_SECRET_KEY'])if(!data[key])throw new Error('deployed RC secret is missing '+key);});"
+          kubectl -n "$SEALOS_NAMESPACE" delete deployment/xpod-rc-minio service/xpod-rc-minio job/xpod-rc-minio-init pvc/xpod-rc-minio secret/xpod-rc-object-store --ignore-not-found
+          cat > "${RUNNER_TEMP}/deployment-checks.json" <<'JSON'
+          {
+            "image": "passed",
+            "deployed-digest": "passed",
+            "direct-pod": "passed"
+          }
+          JSON
+
+      - name: Verify RC TLS certificates
+        run: |
+          set -euo pipefail
+          for pair in \
+            'xpod-rc-id-tls:id-rc.undefineds.co' \
+            'xpod-rc-pods-tls:pods-rc.undefineds.co' \
+            'xpod-rc-api-tls:api-rc.undefineds.co'
+          do
+            secret_name="${pair%%:*}"
+            host="${pair#*:}"
+            cert_file="${RUNNER_TEMP}/${secret_name}.crt"
+            for attempt in $(seq 1 60); do
+              if kubectl -n "$SEALOS_NAMESPACE" get secret "$secret_name" -o 'jsonpath={.data.tls\.crt}' 2>/dev/null | base64 -d > "$cert_file" && [ -s "$cert_file" ]; then
+                break
+              fi
+              sleep 5
+            done
+            if [ ! -s "$cert_file" ]; then
+              echo "::error::$secret_name did not receive tls.crt"
+              exit 1
+            fi
+            openssl x509 -in "$cert_file" -noout -checkhost "$host"
+          done
+
+      - name: Verify public RC service
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/service/status > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://id-rc.undefineds.co/.well-known/openid-configuration > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://pods-rc.undefineds.co/ > /dev/null
+          curl --fail --silent --show-error --max-time 15 https://api-rc.undefineds.co/service/status > /dev/null
+          dashboard_file="$RUNNER_TEMP/dashboard.html"
+          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/dashboard/ --output "$dashboard_file"
+          if ! grep -qi '<!doctype html\|<html' "$dashboard_file"; then
+            echo "::error::dashboard did not return HTML"
+            exit 1
+          fi
+          settings_file="$RUNNER_TEMP/settings.html"
+          curl --fail --silent --show-error --location --max-time 15 https://id-rc.undefineds.co/settings/ --output "$settings_file"
+          if ! grep -qi '<!doctype html\|<html' "$settings_file"; then
+            echo "::error::settings did not return HTML"
+            exit 1
+          fi
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 15 https://api-rc.undefineds.co/api/pod/settings/status)"
+          if [ "$status" != "401" ]; then
+            echo "::error::protected settings route must reject anonymous requests with 401"
+            exit 1
+          fi
+          cat > "${RUNNER_TEMP}/public-checks.json" <<'JSON'
+          {
+            "service-status": "passed",
+            "public-service": "passed",
+            "oidc": "passed",
+            "dashboard": "passed",
+            "protected-route": "passed"
+          }
+          JSON
+
+      - name: Authenticated pod smoke
+        run: |
+          set -euo pipefail
+          bun scripts/prepare-rc-authenticated-smoke.ts \
+            --base-url "$XPOD_SETTINGS_E2E_BASE_URL" \
+            --seed-config "${RUNNER_TEMP}/xpod-rc-seed.json" \
+            --output-env "${RUNNER_TEMP}/rc-authenticated-smoke.env" \
+            --state-dir "${RUNNER_TEMP}/rc-authenticated-smoke-state"
+          set -a
+          . "${RUNNER_TEMP}/rc-authenticated-smoke.env"
+          set +a
+          set +e
+          bun scripts/accept-xpod-settings.ts --allow-incomplete --output-dir "${RUNNER_TEMP}/acceptance"
+          acceptance_status=$?
+          set -e
+          cat "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.md"
+          if [ "$acceptance_status" -ne 0 ]; then
+            exit "$acceptance_status"
+          fi
+          node scripts/assert-rc-authenticated-smoke.cjs "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.json"
+          printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
+
+      - name: Create acceptance manifest
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const temp = process.env.RUNNER_TEMP;
+          const checks = {
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'deployment-checks.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'authenticated-check.json'), 'utf8')),
+          };
+          fs.writeFileSync(path.join(temp, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+          node scripts/release-acceptance-manifest.cjs create \
+            --target-version "${{ needs.metadata.outputs.target }}" \
+            --candidate-version "${{ needs.metadata.outputs.candidate }}" \
+            --source-sha "${{ needs.metadata.outputs.sourceSha }}" \
+            --source-branch "$REF_NAME" \
+            --image-digest "${{ needs.build_image.outputs.digest }}" \
+            --endpoint "https://id-rc.undefineds.co" \
+            --accepted-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
+
+      - name: Upload acceptance manifest
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/release-acceptance.json
+          if-no-files-found: error
+
+      - name: Dump diagnostics
+        if: failure()
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" get deploy,rs,pods,svc -o wide || true
+          kubectl -n "$SEALOS_NAMESPACE" describe deployment xpod-rc || true
+          kubectl -n "$SEALOS_NAMESPACE" describe pods -l app=xpod-rc || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 || true
+          kubectl -n "$SEALOS_NAMESPACE" logs -l app=xpod-rc --all-containers=true --tail=200 --prefix=true --max-log-requests=10 --previous || true
+
+      - name: Scale RC deployments to zero
+        if: ${{ always() && vars.XPOD_RC_SCALE_TO_ZERO == 'true' }}
+        run: |
+          kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0 || true

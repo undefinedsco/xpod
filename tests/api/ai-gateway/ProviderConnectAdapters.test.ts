@@ -232,7 +232,7 @@ describe('Provider Connect capabilities', () => {
       publicCallbackSupported: false,
     });
     expect(registry.requireProvider('deepseek').connect).toMatchObject({
-      mode: 'connectUnsupported',
+      mode: 'browserAssistedApiKey',
       apiKeyManagementSupported: true,
     });
     for (const provider of ['openai', 'anthropic', 'bailian']) {
@@ -1390,7 +1390,7 @@ describe('ProviderConnectService', () => {
     });
   });
 
-  it('routes DeepSeek begin to connectUnsupported while keeping authenticated API key management separate', async () => {
+  it('routes DeepSeek browser-assisted begin to an explicit unsupported API-key-management response', async () => {
     const service = new ProviderConnectService({
       registry: createDefaultProviderRegistry(),
       adapters: [
@@ -1402,9 +1402,9 @@ describe('ProviderConnectService', () => {
       webId: WEB_ID,
       deployment: 'local',
       provider: 'deepseek',
-      requestedMode: 'connectUnsupported',
+      requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({
-      mode: 'connectUnsupported',
+      mode: 'browserAssistedApiKey',
       status: 'unsupported',
       apiKeyManagementSupported: true,
     });
@@ -1900,7 +1900,10 @@ describe('ProviderConnectService', () => {
       },
     })).rejects.toBe(ownerMismatch);
 
-    expect(getTrustedFetch).toHaveBeenCalledWith(WEB_ID);
+    expect(getTrustedFetch).toHaveBeenCalledWith(WEB_ID, expect.objectContaining({
+      type: 'solid',
+      webId: WEB_ID,
+    }));
 
     expect(browserFetch).not.toHaveBeenCalledWith(
       expect.anything(),

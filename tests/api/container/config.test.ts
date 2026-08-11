@@ -124,17 +124,19 @@ describe('loadConfigFromEnv', () => {
       secretCellCredentialVaultFactory: testCredentialVault,
     }));
 
-    const internalPodAccess = container.resolve('gatewayInternalPodAccess');
+    const internalPodAccess = container.resolve('hostedPodDataAccess');
     const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository') as any;
     const providerConnectService = container.resolve('providerConnectService') as any;
     const gatewayCredentialStore = container.resolve('gatewayCredentialStore') as any;
     const providerQuotaService = container.resolve('providerQuotaService') as any;
+    const podModelSelectionRepository = container.resolve('podModelSelectionRepository') as any;
 
     expect(gatewayAccessKeyRepository.internalPodAccess).toBe(internalPodAccess);
     expect(providerConnectService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
     expect(gatewayCredentialStore.internalPodAccess).toBe(internalPodAccess);
     expect(providerQuotaService.repository.internalPodAccess).toBe(internalPodAccess);
     expect(providerQuotaService.credentialRepository.internalPodAccess).toBe(internalPodAccess);
+    expect(podModelSelectionRepository.internalPodAccess).toBe(internalPodAccess);
   });
 
   it('restores first-run Local Cloud credentials from the default setup file without env tokens', () => {

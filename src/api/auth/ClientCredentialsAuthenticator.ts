@@ -65,8 +65,10 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     if (!token) {
       return false;
     }
-    // Only handle sk-xxx format or non-JWT tokens
-    return token.startsWith('sk-') || !this.isJwt(token);
+    // Xpod coding-client API keys are CSS client credentials wrapped as
+    // sk-base64(client_id:client_secret). Other bearer formats must be left
+    // for their owning authenticators or rejected by the auth chain.
+    return token.startsWith('sk-');
   }
 
   public async authenticate(request: IncomingMessage): Promise<AuthResult> {
@@ -175,16 +177,6 @@ export class ClientCredentialsAuthenticator implements Authenticator {
     expiresAt?: Date;
     error?: string;
   }> {
-    // 开发模式：跳过 CSS token exchange
-    if (process.env.NODE_ENV === 'development') {
-      this.logger.warn(`[DEV] Skipping token exchange for ${clientId.slice(0, 8)}...`);
-      return {
-        success: true,
-        token: `dev-token-${clientId}`,
-        expiresAt: new Date(Date.now() + 3600000),
-      };
-    }
-
     try {
       const response = await fetch(this.tokenEndpoint, {
         method: 'POST',

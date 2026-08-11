@@ -55,6 +55,14 @@ function normalizeOptionalBaseUrl(value: string | undefined): string | undefined
   return url.toString().replace(/\/$/u, '');
 }
 
+function resolveEdition(value: string | undefined): 'cloud' | 'local' {
+  const edition = (value ?? 'local').replace(/\s+#.*$/u, '').trim();
+  if (edition === 'cloud' || edition === 'local') {
+    return edition;
+  }
+  throw new Error('XPOD_EDITION must be either "local" or "cloud"');
+}
+
 /**
  * 创建 API 容器
  */
@@ -90,7 +98,7 @@ export function createApiContainer(config: ApiContainerConfig): AwilixContainer<
  * 从环境变量读取配置
  */
 export function loadConfigFromEnv(): ApiContainerConfig {
-  const edition = (process.env.XPOD_EDITION ?? 'local') as 'cloud' | 'local';
+  const edition = resolveEdition(process.env.XPOD_EDITION);
   const rootDir = process.env.CSS_ROOT_FILE_PATH || './data';
   const localSetupPath = resolveLocalSetupPath(process.env.XPOD_LOCAL_SETUP_PATH, rootDir);
   const localSetupProviderId = resolveLocalSetupProviderId(process.env.XPOD_PROVIDER_ID);
@@ -143,7 +151,13 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     gatewayPreviousLocatorSecrets: parseGatewayPreviousLocatorSecrets(process.env.XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS),
     gatewayInternalClientId: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_ID,
     gatewayInternalClientSecret: process.env.XPOD_GATEWAY_INTERNAL_CLIENT_SECRET,
+    aiConnectionInvocationSecret: process.env.XPOD_AI_CONNECTION_INVOCATION_SECRET,
+    aiConnectionInvocationKeyId: process.env.XPOD_AI_CONNECTION_INVOCATION_KEY_ID,
+    aiConnectionPreviousInvocationSecrets: parsePreviousInvocationSecrets(process.env.XPOD_AI_CONNECTION_PREVIOUS_INVOCATION_SECRETS),
+    aiGatewaySessionAffinitySecret: process.env.XPOD_AI_GATEWAY_SESSION_AFFINITY_SECRET,
     gatewayAdminProxyAuthSecret: process.env.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET,
+    // Connections are part of the product surface by default; operators can
+    // explicitly disable the management flow for a locked-down deployment.
     aiGatewayConnectEnabled: process.env.XPOD_AI_GATEWAY_CONNECT_ENABLED === 'true',
     secretCellCredentialVaultFactory,
     aiGatewayConnectSigningSecret: process.env.XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET,
@@ -273,6 +287,27 @@ function assertSecretCellKeyId(value: string, variable: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
     throw new Error(`${variable} must be 1-128 safe key ID characters`);
   }
+}
+
+function parsePreviousInvocationSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separator = entry.indexOf(':');
+      if (separator <= 0 || separator === entry.length - 1) {
+        throw new Error('XPOD_GATEWAY_PREVIOUS_LOCATOR_SECRETS entries must be kid:secret');
+      }
+      return {
+        kid: entry.slice(0, separator),
+        secret: entry.slice(separator + 1),
+      };
+    });
+  return entries.length ? entries : undefined;
 }
 
 function parseGatewayPreviousLocatorSecrets(value: string | undefined): Array<{ kid: string; secret: string }> | undefined {

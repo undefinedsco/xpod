@@ -10,6 +10,7 @@ import {
   readXpodSelectedStorage,
 } from '../auth/xpod-login-transaction';
 import { storageBindingKey } from '../auth/xpod-storage-selection';
+import { storedAccountTokenHeaders } from '../utils/account-session';
 import {
   getXpodSolidRuntimeValue,
   clearStoredXpodOidcIssuer,
@@ -40,6 +41,7 @@ export function XpodSolidRuntimeProvider({
   const [podError, setPodError] = useState<{ webId: string; error: Error }>();
   const [aiClientConfiguration, setAiClientConfiguration] =
     useState<Pick<AiClientConfigurationCapability, 'available' | 'authority' | 'manualInstructions'>>();
+  const [accountClientCredentialsUrl, setAccountClientCredentialsUrl] = useState<string>();
   const snapshotRef = useRef(snapshot);
 
   useEffect(() => {
@@ -53,12 +55,14 @@ export function XpodSolidRuntimeProvider({
         setSelectedStorage(undefined);
         setPodError(undefined);
         setAiClientConfiguration(undefined);
+        setAccountClientCredentialsUrl(undefined);
         runtime.pod.clear();
       } else if (previousSnapshot.status !== 'authenticated' || nextSnapshot.webId !== previousSnapshot.webId) {
         setCurrentPod(undefined);
         setSelectedStorage(undefined);
         setPodError(undefined);
         setAiClientConfiguration(undefined);
+        setAccountClientCredentialsUrl(undefined);
         runtime.pod.clear(previousSnapshot.status === 'authenticated'
           ? { webId: previousSnapshot.webId }
           : undefined);
@@ -162,6 +166,12 @@ export function XpodSolidRuntimeProvider({
   useEffect(() => {
     if (!authenticatedWebId) return;
     let cancelled = false;
+    void discoverAccountClientCredentialsUrl(fetch).then((url) => {
+      if (!cancelled && runtime.session.getSnapshot().status === 'authenticated' &&
+        runtime.session.getSnapshot().webId === authenticatedWebId) {
+        setAccountClientCredentialsUrl(url);
+      }
+    });
     void discoverAiClientConfigurationCapability(runtime.session.fetch).then((capability) => {
       if (!cancelled && runtime.session.getSnapshot().status === 'authenticated' &&
         runtime.session.getSnapshot().webId === authenticatedWebId) {
@@ -194,6 +204,7 @@ export function XpodSolidRuntimeProvider({
       currentPod,
       selectedStorage,
       aiClientConfiguration,
+      accountClientCredentialsUrl,
       login: async (transaction: WebIdLoginTransaction) => {
         const validated = normalizeXpodLoginTransaction(transaction);
         const oidcIssuer = normalizeXpodOidcIssuer(validated.route.identityProvider.url);
@@ -215,9 +226,10 @@ export function XpodSolidRuntimeProvider({
         setCurrentPod(undefined);
         setSelectedStorage(undefined);
         setAiClientConfiguration(undefined);
+        setAccountClientCredentialsUrl(undefined);
       },
     };
-  }, [aiClientConfiguration, currentPod, issuer, podError, runtime, selectedStorage, snapshot]);
+  }, [accountClientCredentialsUrl, aiClientConfiguration, currentPod, issuer, podError, runtime, selectedStorage, snapshot]);
 
   return (
     <SolidRuntimeProvider value={{ session: runtime.session, pod: runtime.pod, currentPod }}>
@@ -226,6 +238,22 @@ export function XpodSolidRuntimeProvider({
       </XpodSolidRuntimeContext.Provider>
     </SolidRuntimeProvider>
   );
+}
+
+async function discoverAccountClientCredentialsUrl(fetchImpl: typeof fetch): Promise<string | undefined> {
+  try {
+    const response = await fetchImpl('/.account/', {
+      credentials: 'include',
+      headers: storedAccountTokenHeaders({ accept: 'application/json' }),
+    });
+    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) return undefined;
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || !isRecord(payload.controls) || !isRecord(payload.controls.account)) return undefined;
+    const value = payload.controls.account.clientCredentials;
+    return typeof value === 'string' && value ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function sameUrl(left: string, right: string): boolean {

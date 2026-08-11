@@ -50,6 +50,34 @@ describe('ClientCredentialsAuthenticator', () => {
     });
   });
 
+  it('does not bypass the CSS exchange in development mode', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    try {
+      const authenticator = new ClientCredentialsAuthenticator({
+        tokenEndpoint: 'https://example.com/token',
+      });
+      const exchangeForToken = vi.fn().mockResolvedValue({
+        success: true,
+        token: 'development-solid-token',
+        tokenType: 'Bearer',
+        webId: TEST_WEB_ID,
+      });
+      (authenticator as any).exchangeForToken = exchangeForToken;
+
+      const result = await authenticator.authenticate(makeRequest(VALID_SK_KEY));
+
+      expect(exchangeForToken).toHaveBeenCalledWith(TEST_CLIENT_ID, TEST_CLIENT_SECRET);
+      expect(result).toMatchObject({
+        success: true,
+        context: { webId: TEST_WEB_ID, accessToken: 'development-solid-token' },
+      });
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
   it('returns cached access token in solid auth context', async () => {
     const tokenCache = {
       get: vi.fn().mockResolvedValue({
@@ -82,5 +110,14 @@ describe('ClientCredentialsAuthenticator', () => {
       tokenType: 'DPoP',
       viaApiKey: true,
     });
+  });
+
+  it('does not claim legacy xpod gateway or invocation bearer tokens', () => {
+    const authenticator = new ClientCredentialsAuthenticator({
+      tokenEndpoint: 'https://example.com/token',
+    });
+
+    expect(authenticator.canAuthenticate(makeRequest('xpod_gw_v1_cloud_gak_legacy_secret'))).toBe(false);
+    expect(authenticator.canAuthenticate(makeRequest('xpod_inv_v1.kid.nonce.ciphertext.tag'))).toBe(false);
   });
 });

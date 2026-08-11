@@ -26,6 +26,7 @@ import { AesGatewayKeyLocatorCodec } from '../ai-gateway/auth/GatewayKeyLocatorC
 import { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
 import { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
+import { HostedPodDataAccess } from '../ai-gateway/pod/HostedPodDataAccess';
 import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
@@ -37,6 +38,9 @@ import {
 } from '../ai-gateway/connect';
 import { createDefaultProviderRegistry as createDefaultGatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import { createProviderModelDiscoveryAdapters } from '../ai-gateway/models/ProviderModelDiscoveryAdapters';
+import { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
+import { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
 import { InMemorySessionAffinityStore } from '../ai-gateway/routing/InMemorySessionAffinityStore';
 import { RedisSessionAffinityStore } from '../ai-gateway/routing/RedisSessionAffinityStore';
@@ -90,6 +94,10 @@ function resolveCssServiceBaseUrl(): string {
   }
 
   return 'http://localhost:3000/';
+}
+
+function resolveHostedPodCssBaseUrl(): string {
+  return `http://127.0.0.1:${process.env.XPOD_MAIN_PORT ?? '3000'}/`;
 }
 
 function resolveAiConnectionsBaseUrl(config: ApiContainerCradle['config']): string {
@@ -167,6 +175,13 @@ export function registerCommonServices(
       return new CssAccountTokenResolver({ db, redisStorage });
     }).singleton(),
 
+    hostedPodDataAccess: asFunction(({ config }: ApiContainerCradle) => {
+      return new HostedPodDataAccess({
+        cssBaseUrl: resolveHostedPodCssBaseUrl(),
+        gatewayAdminProxyAuthSecret: config.gatewayAdminProxyAuthSecret,
+      });
+    }).singleton(),
+
     gatewayInternalPodAccess: asFunction(({ config }: ApiContainerCradle) => {
       if (!config.gatewayInternalClientId || !config.gatewayInternalClientSecret) {
         return undefined;
@@ -178,7 +193,7 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayAccessKeyRepository: asFunction(({ config, gatewayInternalPodAccess }: ApiContainerCradle) => {
+    gatewayAccessKeyRepository: asFunction(({ config, hostedPodDataAccess, gatewayInternalPodAccess }: ApiContainerCradle) => {
       if (!config.gatewayLocatorSecret) {
         return undefined;
       }
@@ -190,7 +205,7 @@ export function registerCommonServices(
           },
           previous: config.gatewayPreviousLocatorSecrets,
         }),
-        internalPodAccess: gatewayInternalPodAccess,
+        internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
       });
     }).singleton(),
 
@@ -220,7 +235,7 @@ export function registerCommonServices(
 
     providerConnectService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess;
       const credentialRepository = new PodConnectedCredentialRepository({ internalPodAccess });
       const vault = credentialVaultForConfig(config);
       if (!config.aiGatewayConnectEnabled) {
@@ -311,9 +326,31 @@ export function registerCommonServices(
         : [],
     })).singleton(),
 
-    gatewayCredentialStore: asFunction(({ gatewayInternalPodAccess }: ApiContainerCradle) => {
+    gatewayCredentialStore: asFunction(({ hostedPodDataAccess, gatewayInternalPodAccess }: ApiContainerCradle) => {
       return new PodConnectedCredentialRepository({
-        internalPodAccess: gatewayInternalPodAccess,
+        internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
+      });
+    }).singleton(),
+
+    podModelSelectionRepository: asFunction(({ hostedPodDataAccess, gatewayInternalPodAccess }: ApiContainerCradle) => {
+      return new PodModelSelectionRepository({
+        internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
+      });
+    }).singleton(),
+
+    providerModelSelectionService: asFunction(({
+      gatewayProviderRegistry,
+      hostedPodDataAccess,
+      gatewayInternalPodAccess,
+      podModelSelectionRepository,
+    }: ApiContainerCradle) => {
+      return new ProviderModelSelectionService({
+        credentialRepository: new PodConnectedCredentialRepository({
+          internalPodAccess: hostedPodDataAccess ?? gatewayInternalPodAccess,
+        }),
+        selectionRepository: podModelSelectionRepository,
+        providerRegistry: gatewayProviderRegistry,
+        discoveryRegistry: createProviderModelDiscoveryAdapters({ registry: gatewayProviderRegistry }),
       });
     }).singleton(),
 
@@ -346,6 +383,7 @@ export function registerCommonServices(
         registry: gatewayProviderRegistry,
         affinityStore: gatewaySessionAffinityStore,
         credentials: gatewayCredentialStore.listCredentials.bind(gatewayCredentialStore),
+        selectionRepository: cradle.podModelSelectionRepository,
       });
       return new AiGatewayService({
         deployment: config.edition,
@@ -359,7 +397,7 @@ export function registerCommonServices(
 
     providerQuotaService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess;
       return new ProviderQuotaService({
         repository: new PodQuotaSnapshotRepository({ internalPodAccess }),
         credentialRepository: new PodConnectedCredentialRepository({ internalPodAccess }),
@@ -381,7 +419,7 @@ export function registerCommonServices(
 
     providerModelsService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
-      const internalPodAccess = cradle.gatewayInternalPodAccess;
+      const internalPodAccess = cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess;
       const registry = cradle.gatewayProviderRegistry;
       const safeBaseUrls = (provider: string): string[] => [
         ...registry.requireProvider(provider).safeBaseUrls,
@@ -456,7 +494,7 @@ export function registerCommonServices(
       }
       return new ProviderCustomModelsService({
         credentialRepository: new PodConnectedCredentialRepository({
-          internalPodAccess: cradle.gatewayInternalPodAccess,
+          internalPodAccess: cradle.hostedPodDataAccess ?? cradle.gatewayInternalPodAccess,
         }),
       });
     }).singleton(),

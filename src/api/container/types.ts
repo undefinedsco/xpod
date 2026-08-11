@@ -53,6 +53,9 @@ import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinity
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import type { InvocationTokenCodec } from '../ai-gateway/auth/InvocationTokenCodec';
 import type { ClientCredentialsInternalPodAccessTokenProvider } from '../ai-gateway/auth/ClientCredentialsInternalPodAccessTokenProvider';
+import type { InternalPodAccessTokenProvider } from '../ai-gateway/pod/HostedPodDataAccess';
+import type { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
+import type { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import type { AiClientConfigurationService } from '../service/AiClientConfigurationService';
 
 /**
@@ -119,6 +122,12 @@ export interface ApiContainerConfig {
   gatewayLocatorSecret?: string;
   gatewayLocatorKeyId?: string;
   gatewayPreviousLocatorSecrets?: Array<{ kid: string; secret: string }>;
+
+  /** Stateless AI Connections invocation token signing config. */
+  aiConnectionInvocationSecret?: string;
+  aiConnectionInvocationKeyId?: string;
+  aiConnectionPreviousInvocationSecrets?: Array<{ kid: string; secret: string }>;
+  aiGatewaySessionAffinitySecret?: string;
 
   /** Internal service client used to read user-owned private Pod gateway-key hashes. */
   gatewayInternalClientId?: string;
@@ -240,6 +249,7 @@ export interface ApiContainerCradle {
   // 仓库
   nodeRepo: EdgeNodeRepository;
   serviceTokenRepo: ServiceTokenRepositoryPort;
+  hostedPodDataAccess: InternalPodAccessTokenProvider;
   gatewayInternalPodAccess?: ClientCredentialsInternalPodAccessTokenProvider;
   gatewayAccessKeyRepository?: GatewayAccessKeyRepository;
   invocationTokenCodec?: InvocationTokenCodec;
@@ -248,6 +258,8 @@ export interface ApiContainerCradle {
   providerConnectService: ProviderConnectService;
   providerQuotaService?: ProviderQuotaService;
   providerModelsService?: ProviderModelsService;
+  podModelSelectionRepository: PodModelSelectionRepository;
+  providerModelSelectionService: ProviderModelSelectionService;
   providerCustomModelsService?: ProviderCustomModelsService;
   gatewayProviderRegistry: GatewayProviderRegistry;
   gatewayCredentialStore: GatewayCredentialStore;

@@ -22,9 +22,10 @@ function tempHome(): string {
 function profile(overrides: Record<string, unknown> = {}) {
   return {
     endpoint: 'https://pod.example/alice/api/ai',
-    gatewayKey: XPOD_CLIENT_CREDENTIAL,
+    apiKey: XPOD_CLIENT_CREDENTIAL,
     webId: WEB_ID,
     model: 'gpt-5.4',
+    activeModels: [{ id: 'gpt-5.4', provider: 'openai', availability: 'available' }],
     ...overrides,
   }
 }
@@ -83,7 +84,7 @@ describe('publishable AI client config adapters', () => {
       expect(codexAuth).toMatchObject({ legacy: 'keep-me', OPENAI_API_KEY: XPOD_CLIENT_CREDENTIAL })
 
       const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
-      expect(claude.model).toBe('opus')
+      expect(claude.model).toBe('openai/gpt-5.4')
       expect(claude.env).toMatchObject({
         KEEP_ME: 'yes',
         ANTHROPIC_BASE_URL: 'https://pod.example/alice/api/ai',
@@ -93,7 +94,7 @@ describe('publishable AI client config adapters', () => {
 
       const piSettings = JSON.parse(fs.readFileSync(path.join(home, '.pi', 'agent', 'settings.json'), 'utf8'))
       const piModels = JSON.parse(fs.readFileSync(path.join(home, '.pi', 'agent', 'models.json'), 'utf8'))
-      expect(piSettings).toMatchObject({ theme: 'dark', defaultProvider: 'xpod', defaultModel: 'gpt-5.4' })
+      expect(piSettings).toMatchObject({ theme: 'dark', defaultProvider: 'xpod', defaultModel: 'openai/gpt-5.4' })
       expect(piModels.providers.custom.baseUrl).toBe('https://keep.example')
       expect(piModels.providers.xpod).toMatchObject({
         baseUrl: 'https://pod.example/alice/api/ai/v1',

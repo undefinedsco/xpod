@@ -123,10 +123,12 @@ function registerSharedRoutes(
   const rdfStorageStatsService = container.resolve('rdfStorageStatsService');
   const gatewayAccessKeyRepository = container.resolve('gatewayAccessKeyRepository');
   const gatewayInternalPodAccess = container.resolve('gatewayInternalPodAccess');
+  const hostedPodDataAccess = container.resolve('hostedPodDataAccess');
   const aiConnectionInvocationKeyIssuer = container.resolve('aiConnectionInvocationKeyIssuer');
   const providerConnectService = container.resolve('providerConnectService');
   const providerQuotaService = container.resolve('providerQuotaService', { allowUnregistered: true });
   const providerModelsService = container.resolve('providerModelsService', { allowUnregistered: true });
+  const providerModelSelectionService = container.resolve('providerModelSelectionService', { allowUnregistered: true });
   const providerCustomModelsService = container.resolve('providerCustomModelsService', { allowUnregistered: true });
   const config = container.resolve('config') as ApiContainerConfig;
   const aiClientConfigurationService = resolveAiClientConfigurationService(container, config);
@@ -187,6 +189,7 @@ function registerSharedRoutes(
     connectService: providerConnectService,
     quotaService: providerQuotaService,
     modelsService: providerModelsService,
+    providerModelSelectionService,
     customModelsService: providerCustomModelsService,
     servicePrincipal: gatewayInternalPodAccess,
     aiClientConfiguration: aiClientConfigurationService?.capability(),
@@ -203,7 +206,7 @@ function registerSharedRoutes(
   registerPodSettingsRoutes(server, {
     podLookupRepository,
     usageRepo: new UsageRepository(container.resolve('db')),
-    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(gatewayInternalPodAccess),
+    aiConnectionStatusReader: new DrizzlePodAiConnectionsStatusReader(hostedPodDataAccess ?? gatewayInternalPodAccess),
   });
   registerNetworkSettingsRoutes(server, {
     endpoint: () => resolveNetworkEndpoint(config),

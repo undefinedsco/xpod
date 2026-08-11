@@ -62,8 +62,8 @@ describe('AI Connection two-pane contribution', () => {
     for (const name of ['OpenAI', 'Anthropic', 'Kimi', '百炼', 'DeepSeek']) {
       expect(screen.getByRole('option', { name })).toBeTruthy()
     }
-    expect(screen.queryByRole('button', { name: 'Gateway Keys' })).toBeNull()
-    expect(screen.queryByRole('button', { name: '编码客户端' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Client Credentials' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Developer Access' })).toBeNull()
   })
 
   it('filters Providers from the header search', () => {

@@ -8,7 +8,7 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me';
 const POD_URL = 'https://pod.example/alice/';
 
 function serviceAccessPayload(overrides: Partial<{
-  gatewayKey: string;
+  token: string;
   expiresAt: string;
 }> = {}) {
   return {
@@ -27,7 +27,7 @@ function serviceAccessPayload(overrides: Partial<{
     ],
     invocation: {
       baseUrl: 'https://pod.example',
-      gatewayKey: overrides.gatewayKey ?? 'xpod_inv_v1.owner-bound-short-token',
+      token: overrides.token ?? 'xpod_inv_v1.owner-bound-short-token',
       expiresAt: overrides.expiresAt ?? '2099-01-01T00:10:00.000Z',
     },
   };
@@ -74,7 +74,7 @@ describe('Xpod AI Connection API client', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
-      return new Response(JSON.stringify({ invocation: { gatewayKey: 'untrusted' } }), {
+      return new Response(JSON.stringify({ invocation: { token: 'untrusted' } }), {
         headers: { 'content-type': 'application/json' },
       });
     }) as typeof fetch;
@@ -313,7 +313,7 @@ describe('Xpod AI Connection API client', () => {
       if (url.endsWith('/api/applets/service-access/ai-connections')) {
         const issue = calls.filter((call) => call.url.endsWith('/api/applets/service-access/ai-connections')).length;
         return new Response(JSON.stringify(serviceAccessPayload({
-          gatewayKey: `xpod_inv_v1.token-${issue}`,
+          token: `xpod_inv_v1.token-${issue}`,
           expiresAt: issue === 1 ? '2026-07-30T00:00:20.000Z' : '2026-07-30T00:10:00.000Z',
         })), {
           headers: { 'content-type': 'application/json' },
@@ -350,7 +350,7 @@ describe('Xpod AI Connection API client', () => {
       if (url.endsWith('/api/applets/service-access/ai-connections')) {
         const issue = calls.filter((call) => call.url.endsWith('/api/applets/service-access/ai-connections')).length;
         return new Response(JSON.stringify(serviceAccessPayload({
-          gatewayKey: `xpod_inv_v1.retry-${issue}`,
+          token: `xpod_inv_v1.retry-${issue}`,
         })), {
           headers: { 'content-type': 'application/json' },
         });

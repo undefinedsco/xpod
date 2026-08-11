@@ -1796,7 +1796,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(apply).toHaveBeenCalledWith({
       client: 'codex',
       planId: 'plan-1',
-      gatewayKey: 'xpod_once_secret',
+      apiKey: 'xpod_once_secret',
     }))
     expect(verify).toHaveBeenCalledWith({ client: 'codex', planId: 'plan-1' })
     expect(current.revokeGatewayKey).not.toHaveBeenCalled()
@@ -1841,7 +1841,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(apply).toHaveBeenCalledWith({
       client: 'pi',
       planId: 'plan-pi',
-      gatewayKey: 'xpod_once_secret',
+      apiKey: 'xpod_once_secret',
       confirmation: {
         token: 'confirm-plan-pi-target',
         targetHash: 'target-hash-pi',

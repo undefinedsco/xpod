@@ -36,7 +36,7 @@ import {
   AiClientConfigurationSection,
   type AiClientConfigurationBridge,
   type AiConnectionsClientId,
-  type ManagedGatewayKeyLease,
+  type ManagedClientCredentialLease,
 } from './AiClientConfigurationSection'
 import {
   AiProviderCard,
@@ -831,9 +831,9 @@ export function AiConnectionsPanel({
     setCopied(true)
   }
 
-  const createManagedGatewayKey = useCallback(async (
+  const createManagedClientCredential = useCallback(async (
     targetClient: AiConnectionsClientId,
-  ): Promise<ManagedGatewayKeyLease> => {
+  ): Promise<ManagedClientCredentialLease> => {
     const created = await client.createGatewayKey({
       name: `AI Connection · ${AI_CLIENT_LABELS[targetClient]}`,
     })
@@ -842,7 +842,7 @@ export function AiConnectionsPanel({
       ...current.filter((record) => record.id !== created.record.id),
     ])
     return {
-      gatewayKey: created.plaintext,
+      apiKey: created.plaintext,
       revoke: async () => {
         await client.revokeGatewayKey(created.record.id)
         setKeys((current) => current.map((record) => record.id === created.record.id
@@ -957,7 +957,7 @@ export function AiConnectionsPanel({
           <AiClientConfigurationSection
             bridge={clientConfigurationBridge}
             endpoint={client.apiBase}
-            createGatewayKey={createManagedGatewayKey}
+            createClientCredential={createManagedClientCredential}
           />
 
           <details className="space-y-4 border-t border-border/40 pt-4">

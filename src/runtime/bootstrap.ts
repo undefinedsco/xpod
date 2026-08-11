@@ -14,10 +14,12 @@ import { applyAuthModeEnv, resolveAuthModeInput } from '../authorization/AuthMod
 import { extractComponentParameterContext, normalizeComponentParameterKeys } from './component-parameter-keys';
 import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { createGatewayAdminProxyAuthSecret } from './GatewayAdminProxyAuth';
+import { normalizeDatabaseUrl } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
 const CSS_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/components/context.jsonld';
+const XPOD_COMPONENTS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/components/context.jsonld';
 const ASYNC_HANDLERS_CONTEXT = 'https://linkedsoftwaredependencies.org/bundles/npm/asynchronous-handlers/^1.0.0/components/context.jsonld';
 
 export interface RuntimeBootstrapState {
@@ -109,21 +111,6 @@ function withDefinedEntries(entries: Array<[string, string | number | boolean | 
     }
   }
   return result;
-}
-
-function normalizeDatabaseUrl(
-  value: string,
-  platform: Pick<RuntimePlatform, 'resolvePath'> = nodeRuntimePlatform,
-): string {
-  if (
-    value.startsWith('sqlite:') ||
-    value.startsWith('postgres://') ||
-    value.startsWith('postgresql://') ||
-    value.startsWith('mysql://')
-  ) {
-    return value;
-  }
-  return `sqlite:${platform.resolvePath(value)}`;
 }
 
 function readRuntimeEnvFile(
@@ -334,6 +321,7 @@ export function buildRuntimeShorthand(
       ['acmePropagationDelayMs', envValue('XPOD_ACME_DNS_PROPAGATION_DELAY_MS')],
       ['acmePostDeployCommand', envValue('XPOD_ACME_POST_DEPLOY_COMMAND')],
       ['serviceToken', envValue('XPOD_SERVICE_TOKEN')],
+      ['gatewayAdminProxyAuthSecret', envValue('XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET')],
     ]),
     baseUrl: state.baseUrl,
     rootFilePath: state.rootFilePath,
@@ -342,6 +330,7 @@ export function buildRuntimeShorthand(
     identityDbUrl: state.identityDbUrl,
     usageDbUrl: state.usageDbUrl,
     logLevel: state.logLevel,
+    ...(options.seedConfig ? { seedConfig: options.seedConfig } : {}),
     authMode: state.cssAuthMode,
     edition: state.mode === 'cloud' ? 'server' : 'local',
     edgeNodesEnabled: options.edgeNodesEnabled ?? false,
@@ -378,6 +367,7 @@ export function createCssRuntimeConfig(
   platform.writeTextFile(runtimeConfigPath, JSON.stringify({
     '@context': [
       CSS_COMPONENTS_CONTEXT,
+      XPOD_COMPONENTS_CONTEXT,
       ASYNC_HANDLERS_CONTEXT,
     ],
     import: [

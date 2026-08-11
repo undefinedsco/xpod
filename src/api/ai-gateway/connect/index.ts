@@ -702,7 +702,7 @@ export class PodConnectedCredentialRepository implements PodCredentialRepository
     if (!isInternalPodAccessAllowed(auth)) {
       throw new Error(CALLER_POD_ACCESS_UNAVAILABLE);
     }
-    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner);
+    const trustedFetch = await this.internalPodAccess?.getTrustedFetch(owner, auth);
     if (!trustedFetch) {
       throw new Error('AI Connection service identity is not configured');
     }
@@ -1367,7 +1367,7 @@ export class DeepSeekConnectAdapter implements ProviderConnectAdapter {
       throw new Error('Connect provider mismatch');
     }
     return {
-      mode: 'connectUnsupported',
+      mode: input.requestedMode,
       status: 'unsupported',
       provider: 'deepseek',
       deployment: input.deployment,

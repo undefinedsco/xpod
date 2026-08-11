@@ -56,7 +56,7 @@ describe('ChatKitService + ACP tool call', () => {
       aiConnectionInvocationKeyIssuer: {
         issue: async () => ({
           baseUrl: 'http://127.0.0.1:3000/v1',
-          gatewayKey: 'acp-tool-fixture-invocation',
+          apiKey: 'acp-tool-fixture-invocation',
         }),
       },
       requireAiConnectionsInvocationKeyIssuer: true,

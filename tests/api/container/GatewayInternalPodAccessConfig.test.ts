@@ -137,7 +137,7 @@ describe('Gateway internal Pod access container config', () => {
     });
 
     await expect(container.resolve('authenticator').authenticate({
-      headers: { authorization: `Bearer ${invocation.gatewayKey}` },
+      headers: { authorization: `Bearer ${invocation.apiKey}` },
     } as any)).resolves.toMatchObject({
       success: true,
       context: {

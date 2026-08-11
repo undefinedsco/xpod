@@ -570,6 +570,9 @@
         "@type": "StatusWaterfallHandler",
         "handlers": [
           {
+            "@id": "urn:undefineds:xpod:InternalPodDataHttpHandler"
+          },
+          {
             "@id": "urn:undefineds:xpod:SubgraphSparqlHttpHandler"
           },
           {

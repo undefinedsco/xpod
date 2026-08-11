@@ -9,9 +9,9 @@ export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections'
 const KNOWN_RESOURCE_IDS = new Set([
   'providerCredentials',
   'providerDefinitions',
-  'gatewayAccessKeys',
   'quotaSnapshots',
 ])
+const PROVIDER_DOCUMENT_ID = /^providerDocument:(openai|anthropic|kimi|bailian|deepseek|zhipu|custom)$/
 
 export function parseAiConnectionsServiceAccess(
   value: unknown,
@@ -58,7 +58,7 @@ function parseResource(
     || !isRecord(value.access)) {
     throw new Error('invalid_resource')
   }
-  if (!KNOWN_RESOURCE_IDS.has(value.id) || ids.has(value.id)) {
+  if ((!KNOWN_RESOURCE_IDS.has(value.id) && !PROVIDER_DOCUMENT_ID.test(value.id)) || ids.has(value.id)) {
     throw new Error('invalid_resource')
   }
   assertSafeResourceUrlString(value.url)

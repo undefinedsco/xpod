@@ -7,6 +7,7 @@ import { oidcTokenEndpoint } from './oidc-issuer';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
 import { cssAuthModeConfigImports } from './bootstrap';
+import { normalizeDatabaseUrl } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
 const XPOD_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@undefineds.co/xpod/^0.0.0/config/';
@@ -27,12 +28,16 @@ export function buildCssChildEnv(
   oidcIssuer?: string,
   authModeInput?: AuthMode | string,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  gatewayAdminProxyAuthSecret?: string,
 ): Record<string, string> {
   const authMode = resolveAuthModeInput(authModeInput, baseEnv);
   const env: Record<string, string> = {
     ...baseEnv,
     CSS_PORT: cssPort.toString(),
     CSS_BASE_URL: baseUrl,
+    ...((gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET)
+      ? { XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET: gatewayAdminProxyAuthSecret ?? baseEnv.XPOD_GATEWAY_ADMIN_PROXY_AUTH_SECRET }
+      : {}),
   } as Record<string, string>;
   applyAuthModeEnv(env, authMode);
 
@@ -41,6 +46,8 @@ export function buildCssChildEnv(
       delete env[key];
     }
   }
+
+  normalizeDatabaseEnv(env);
 
   return env;
 }
@@ -52,6 +59,29 @@ function isExternalOidcPollutionKey(key: string): boolean {
     normalized.includes('IDPJWKSURL') ||
     normalized.includes('IDENTITYPROVIDERURL') ||
     normalized.includes('IDENTITYPROVIDERJWKSURL');
+}
+
+function normalizeDatabaseEnv(env: Record<string, string | undefined>): void {
+  const identityInput = nonEmptyEnvValue(env.CSS_IDENTITY_DB_URL) ?? nonEmptyEnvValue(env.DATABASE_URL);
+  if (identityInput === undefined) {
+    delete env.CSS_IDENTITY_DB_URL;
+    delete env.DATABASE_URL;
+  } else {
+    const identityUrl = normalizeDatabaseUrl(identityInput);
+    env.CSS_IDENTITY_DB_URL = identityUrl;
+    env.DATABASE_URL = identityUrl;
+  }
+
+  const usageInput = nonEmptyEnvValue(env.CSS_USAGE_DB_URL);
+  if (usageInput === undefined) {
+    delete env.CSS_USAGE_DB_URL;
+  } else {
+    env.CSS_USAGE_DB_URL = normalizeDatabaseUrl(usageInput);
+  }
+}
+
+function nonEmptyEnvValue(value: string | undefined): string | undefined {
+  return value === undefined || value.trim() === '' ? undefined : value;
 }
 
 function toImportSpecifier(fromFilePath: string, toFilePath: string): string {
@@ -237,13 +267,33 @@ export function buildCssArgs(options: {
   cssPort: number
   baseUrl: string
   externalOidcIssuer?: string
+  seedConfig?: string
 }): string[] {
+  if (options.seedConfig) {
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(options.seedConfig);
+    } catch (error: unknown) {
+      const code = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: string }).code
+        : undefined;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        throw new Error(`Seed config file not found: ${options.seedConfig}`);
+      }
+      throw new Error(`Unable to read seed config file: ${options.seedConfig}`);
+    }
+    if (!stats.isFile()) {
+      throw new Error(`Seed config path is not a file: ${options.seedConfig}`);
+    }
+  }
+
   return [
     options.cssBinary,
     '-c', options.configPath,
     '-m', options.cssModuleRoot,
     '-p', options.cssPort.toString(),
     '-b', options.baseUrl,
+    ...(options.seedConfig ? ['--seedConfig', options.seedConfig] : []),
   ];
 }
 
@@ -273,5 +323,7 @@ export function buildApiChildEnv(options: {
       : `${options.baseUrl}.oidc/token`,
   } as Record<string, string>;
 
-  return applyAuthModeEnv(env, authMode);
+  applyAuthModeEnv(env, authMode);
+  normalizeDatabaseEnv(env);
+  return env;
 }

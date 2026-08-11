@@ -82,7 +82,7 @@ function createService(options: {
   const registry = createDefaultProviderRegistry();
   const runtime = { seenApiKeys: options.runtimeKeys ?? [] };
   const store: GatewayCredentialStore = {
-    listCredentials: vi.fn(async({ webId }) => options.credentials.filter((item) => item.encryptedSecret.webId === webId)),
+    listCredentials: vi.fn(async({ webId }) => options.credentials.filter((item) => item.encryptedSecret?.webId === webId)),
     recordSuccess: vi.fn(async() => {}),
     recordFailure: vi.fn(async() => {}),
   };
