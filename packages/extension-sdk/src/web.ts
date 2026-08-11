@@ -94,6 +94,12 @@ export interface AiConnectionsPodStore {
     priority?: number;
     compatibility?: 'auto' | 'openai' | 'anthropic';
   }): Promise<unknown>;
+  createLocalCredential?(provider: string, input: {
+    offeringId?: string;
+    label?: string;
+    baseUrl?: string;
+    priority?: number;
+  }): Promise<unknown>;
   saveOAuthCredential?(provider: string, input: AiConnectionsOAuthCredential): Promise<unknown>;
   updateOAuthCredential?(
     provider: string,
@@ -109,10 +115,16 @@ export interface AiConnectionsPodStore {
     baseUrl?: string;
     proxyUrl?: string;
   }): Promise<unknown>;
+  markCredentialHealth?(
+    provider: string,
+    credentialId: string,
+    health: 'healthy' | 'invalid' | 'expired' | 'unknown',
+    expectedVersion: number,
+  ): Promise<unknown>;
   deleteProviderCredential?(provider: string, credentialId: string): Promise<unknown | undefined>;
   readCredentialSecret?(provider: string, credentialId: string): Promise<Record<string, unknown>>;
   saveDiscoveredModels?(provider: string, credentialId: string, models: unknown[]): Promise<void>;
-  saveModelSelection?(provider: string, models: AiConnectionsModelSelection[]): Promise<void>;
+  saveModelSelection?(provider: string, models: AiConnectionsModelSelection[], credentialId?: string): Promise<void>;
 }
 
 /**

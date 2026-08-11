@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './setup-jsdom'
 import { describe, expect, it } from 'vitest'
 import * as React from 'react'
 import { createRequire } from 'node:module'

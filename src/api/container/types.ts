@@ -47,6 +47,7 @@ import type { ProviderQuotaService } from '../ai-gateway/quota';
 import type { ProviderCustomModelsService, ProviderModelsService } from '../ai-gateway/models';
 import type { AiGatewayService, GatewayCredentialStore } from '../ai-gateway/AiGatewayService';
 import type { ProviderRuntimeRegistry } from '../ai-gateway/providers/ProviderRuntimeRegistry';
+import type { ProviderHttpTransport } from '../service/provider-http-transport';
 import type { ProviderRegistry as GatewayProviderRegistry } from '../ai-gateway/providers/ProviderRegistry';
 import type { SessionAffinityStore } from '../ai-gateway/routing/SessionAffinityStore';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
@@ -251,6 +252,7 @@ export interface ApiContainerCradle {
   gatewayProviderRegistry: GatewayProviderRegistry;
   gatewayCredentialStore: GatewayCredentialStore;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;
+  providerHttpTransport: ProviderHttpTransport;
   gatewaySessionAffinityStore: SessionAffinityStore;
   aiGatewayService?: AiGatewayService;
 

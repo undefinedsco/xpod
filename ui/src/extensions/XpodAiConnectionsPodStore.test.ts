@@ -175,6 +175,312 @@ describe('XpodAiConnectionsPodStore', () => {
     );
   });
 
+  it('persists a credential-free proxy independently of its provider Base URL', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: () => ({ execute: async () => [...rows.values()] }) }),
+      findById: vi.fn(async (_resource: unknown, id: string) => rows.get(id) ?? null),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+      updateById: vi.fn(async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const current = rows.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rows.set(id, updated);
+        return updated;
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('zhipu', {
+      apiKey: 'id.secret-key',
+      offeringId: 'coding-plan',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    } as never);
+
+    expect(rows.get(created.id)).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    });
+    expect(created).toMatchObject({
+      offeringId: 'coding-plan',
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    });
+    await expect(store.createApiKeyCredential!('zhipu', {
+      apiKey: 'id.other-key',
+      offeringId: 'coding-plan',
+      proxyUrl: 'https://proxy-user:proxy-password@proxy.example:8443',
+    } as never)).rejects.toThrow('invalid_proxy_url');
+
+    const updated = await store.updateProviderCredential!('zhipu', created.id, {
+      expectedVersion: 1,
+      proxyUrl: 'https://proxy.example:8443',
+    } as never);
+    expect(rows.get(created.id)).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+    });
+    expect(updated).toMatchObject({
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      proxyUrl: 'https://proxy.example:8443',
+      version: 2,
+    });
+
+    const providers = await store.listProviders();
+    expect(providers.find((provider) => provider.id === 'zhipu')?.credentials).toEqual([
+      expect.objectContaining({
+        offeringId: 'coding-plan',
+        baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+        proxyUrl: 'https://proxy.example:8443',
+      }),
+    ]);
+  });
+
+  it('stores a custom Provider credential with normalized endpoint and restores its product metadata', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => resource === credentialResource ? [...rows.values()] : [],
+        }),
+      }),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const created = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-custom-secret',
+      label: 'timicc',
+      offeringId: 'openai-compatible',
+      baseUrl: 'https://timicc.com/v1',
+      compatibility: 'openai',
+    } as never);
+
+    expect(created).toMatchObject({
+      provider: 'custom',
+      label: 'timicc',
+      offeringId: 'openai-compatible',
+      baseUrl: 'https://timicc.com/v1',
+    });
+    expect(rows.get(created.id)?.metadata).toMatchObject({
+      offeringId: 'openai-compatible',
+      compatibility: 'openai',
+      baseUrl: 'https://timicc.com/v1',
+    });
+
+    const providers = await store.listProviders();
+    expect(providers.find((provider) => provider.id === 'custom')).toMatchObject({
+      id: 'custom',
+      name: 'timicc',
+      status: 'available',
+      offerings: [
+        expect.objectContaining({
+          id: 'openai-compatible',
+          label: 'OpenAI 兼容',
+          modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
+          endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://timicc.com/v1' }],
+        }),
+      ],
+      credentials: [
+        expect.objectContaining({
+          label: 'timicc',
+          baseUrl: 'https://timicc.com/v1',
+        }),
+      ],
+    });
+  });
+
+  it('assigns independent provider resources to custom credentials with the same protocol', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [...rows.values()] : [] }) }),
+      insert: () => ({ values: (value: Record<string, unknown>) => ({ execute: async () => { rows.set(String(value.id), value); return [value]; } }) }),
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+
+    const first = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-first', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
+    } as never);
+    const second = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-second', label: '备用接口', offeringId: 'openai-compatible', baseUrl: 'https://other.example/v1', compatibility: 'openai',
+    } as never);
+
+    expect(rows.get(first.id)?.provider).not.toBe(rows.get(second.id)?.provider);
+    expect(String(rows.get(first.id)?.provider)).toContain('custom-instance-');
+    expect(String(rows.get(second.id)?.provider)).toContain('custom-instance-');
+  });
+
+  it('persists model picks on the selected custom credential provider resource', async () => {
+    const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
+      [credentialResource, new Map()],
+      [aiProviderResource, new Map()],
+      [aiModelResource, new Map()],
+    ]);
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => [...(rowsByResource.get(resource)?.values() ?? [])] }) }),
+      insert: (resource: unknown) => ({ values: (value: Record<string, unknown>) => ({ execute: async () => {
+        rowsByResource.get(resource)!.set(String(value.id), value);
+        return [value];
+      } }) }),
+      findById: async (resource: unknown, id: string) => rowsByResource.get(resource)?.get(id) ?? null,
+      updateById: async (resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const current = rowsByResource.get(resource)?.get(id);
+        if (!current) return null;
+        const updated = { ...current, ...patch };
+        rowsByResource.get(resource)!.set(id, updated);
+        return updated;
+      },
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+    const first = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-first', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
+    } as never) as { id: string };
+    const second = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-second', label: '备用接口', offeringId: 'openai-compatible', baseUrl: 'https://other.example/v1', compatibility: 'openai',
+    } as never) as { id: string };
+    await store.saveDiscoveredModels!('custom', first.id, [{ id: 'shared-model' }]);
+    await store.saveDiscoveredModels!('custom', second.id, [{ id: 'shared-model' }]);
+
+    await store.saveModelSelection!('custom', [{ id: 'shared-model' }], second.id);
+
+    const firstProviderId = String(rowsByResource.get(credentialResource)!.get(first.id)!.provider);
+    const secondProviderId = String(rowsByResource.get(credentialResource)!.get(second.id)!.provider);
+    expect(rowsByResource.get(aiProviderResource)!.get(firstProviderId)?.hasModel).toBeUndefined();
+    expect(rowsByResource.get(aiProviderResource)!.get(secondProviderId)?.hasModel).toEqual([
+      `${secondProviderId.split('#', 1)[0]}#shared-model`,
+    ]);
+  });
+
+  it('persists credential health after a connection test', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [...rows.values()] : [] }) }),
+      insert: () => ({ values: (value: Record<string, unknown>) => ({ execute: async () => { rows.set(String(value.id), value); return [value]; } }) }),
+      findById: async (_resource: unknown, id: string) => rows.get(id) ?? null,
+      updateById: async (_resource: unknown, id: string, patch: Record<string, unknown>) => {
+        const updated = { ...rows.get(id), ...patch };
+        rows.set(id, updated);
+        return updated;
+      },
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+    const created = await store.createApiKeyCredential!('custom', {
+      apiKey: 'sk-test', label: 'timicc', offeringId: 'openai-compatible', baseUrl: 'https://timicc.com/v1', compatibility: 'openai',
+    } as never) as { id: string; version: number };
+
+    await store.markCredentialHealth!('custom', created.id, 'healthy', created.version);
+
+    expect(rows.get(created.id)?.metadata).toMatchObject({ health: 'healthy' });
+    expect(rows.get(created.id)?.keyVersion).toBe('2');
+  });
+
+  it('stores an Ollama local credential without an API key', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({ from: (resource: unknown) => ({ execute: async () => resource === credentialResource ? [...rows.values()] : [] }) }),
+      insert: () => ({ values: (value: Record<string, unknown>) => ({ execute: async () => { rows.set(String(value.id), value); return [value]; } }) }),
+    };
+    const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+
+    const created = await store.createLocalCredential!('ollama', {
+      offeringId: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+    }) as { id: string };
+    const row = rows.get(created.id)!;
+    expect(row).toMatchObject({ authMode: 'local', baseUrl: 'http://localhost:11434/v1' });
+    expect(JSON.stringify(row.encryptedSecret)).not.toContain('apiKey');
+  });
+
+  it('persists offering identity in the Provider relation when RDF metadata is not hydrated', async () => {
+    const rows = new Map<string, Record<string, unknown>>();
+    const database = {
+      init: vi.fn(),
+      select: () => ({
+        from: (resource: unknown) => ({
+          execute: async () => resource === credentialResource ? [...rows.values()] : [],
+        }),
+      }),
+      insert: () => ({
+        values: (value: Record<string, unknown>) => ({
+          execute: async () => {
+            rows.set(String(value.id), value);
+            return [value];
+          },
+        }),
+      }),
+    };
+    const store = createXpodAiConnectionsPodStore({
+      database: database as never,
+      podUrl: POD_URL,
+      webId: WEB_ID,
+    });
+
+    const kimi = await store.createApiKeyCredential!('kimi', {
+      apiKey: 'sk-kimi-subscription',
+      offeringId: 'subscription-key',
+    });
+    const bailian = await store.createApiKeyCredential!('bailian', {
+      apiKey: 'sk-sp-coding-plan',
+      offeringId: 'coding-plan',
+    });
+
+    expect(rows.get(kimi.id)?.provider).toBe(
+      aiProviderResource.buildId({ id: 'kimi-subscription-key.ttl#this' }),
+    );
+    expect(rows.get(bailian.id)?.provider).toBe(
+      aiProviderResource.buildId({ id: 'bailian-coding-plan-pro.ttl#this' }),
+    );
+
+    // drizzle-solid does not currently hydrate the JSON metadata object from
+    // this shared RDF resource. Offering identity must therefore survive in a
+    // first-class RDF relation rather than depending on that convenience bag.
+    rows.set(kimi.id, { ...rows.get(kimi.id)!, metadata: undefined });
+    rows.set(bailian.id, { ...rows.get(bailian.id)!, metadata: undefined });
+
+    const providers = await store.listProviders();
+    expect(providers.find((provider) => provider.id === 'kimi')?.credentials).toEqual([
+      expect.objectContaining({
+        offeringId: 'subscription-key',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+      }),
+    ]);
+    expect(providers.find((provider) => provider.id === 'bailian')?.credentials).toEqual([
+      expect.objectContaining({
+        offeringId: 'coding-plan',
+        baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+      }),
+    ]);
+  });
+
   it('lists complete Kimi offering metadata and derives offering base URLs', async () => {
     const rows = new Map<string, Record<string, unknown>>();
     const database = {
@@ -202,25 +508,6 @@ describe('XpodAiConnectionsPodStore', () => {
     const kimi = (await store.listProviders()).find((provider) => provider.id === 'kimi');
 
     expect(kimi?.offerings).toEqual([
-      expect.objectContaining({
-        id: 'official-subscription',
-        label: '官方订阅',
-        kind: 'oauth-subscription',
-        lifecycle: 'active',
-        authModes: ['oauth'],
-        productLabel: 'Kimi Coding',
-        runtimeProviderIds: ['kimi'],
-        consoleUrl: 'https://www.kimi.com/code',
-        subscriptionUrl: 'https://www.kimi.com/code',
-        endpoints: [
-          { protocol: 'chatCompletions', baseUrl: 'https://api.kimi.com/coding/v1', region: 'cn' },
-          { protocol: 'anthropic', baseUrl: 'https://api.kimi.com/coding/', region: 'cn' },
-        ],
-        modelDiscovery: { strategy: 'openaiCompatible', path: '/models', endpointProtocol: 'chatCompletions' },
-        quota: { strategy: 'subscription', url: 'https://www.kimi.com/code' },
-        usagePolicyUrl: 'https://www.kimi.com/user/agreement',
-        region: 'cn',
-      }),
       expect.objectContaining({
         id: 'subscription-key',
         label: 'Token 套餐',
@@ -260,11 +547,6 @@ describe('XpodAiConnectionsPodStore', () => {
       }),
     ]);
 
-    const official = await store.createApiKeyCredential!('kimi', {
-      apiKey: 'sk-kimi-official',
-      label: 'Official',
-      offeringId: 'official-subscription',
-    });
     const subscriptionKey = await store.createApiKeyCredential!('kimi', {
       apiKey: 'sk-kimi-subscription',
       label: 'Subscription Key',
@@ -276,7 +558,6 @@ describe('XpodAiConnectionsPodStore', () => {
       offeringId: 'api-platform',
     });
 
-    expect(rows.get(official.id)?.baseUrl).toBe('https://api.kimi.com/coding/v1');
     expect(rows.get(subscriptionKey.id)?.baseUrl).toBe('https://api.kimi.com/coding/v1');
     expect(rows.get(apiPlatform.id)?.baseUrl).toBe('https://api.moonshot.ai/v1');
   });
@@ -488,15 +769,22 @@ describe('XpodAiConnectionsPodStore', () => {
   });
 
   it('persists discovered models and provider selection while retaining missing selected models', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(null, { status: 204 }));
     const providerId = aiProviderResource.buildId({ id: 'deepseek' });
     const selectedModelId = 'deepseek.ttl#deepseek-reasoner';
     const rowsByResource = new Map<unknown, Map<string, Record<string, unknown>>>([
       [credentialResource, new Map()],
-      [aiProviderResource, new Map([[providerId, {
-        id: providerId,
-        displayName: 'DeepSeek',
-        hasModel: [selectedModelId],
-      }]])],
+      [aiProviderResource, new Map([
+        ['deepseek-api-platform.ttl#this', {
+          id: 'deepseek-api-platform.ttl#this',
+          displayName: 'DeepSeek API Platform',
+        }],
+        [providerId, {
+          id: providerId,
+          displayName: 'DeepSeek',
+          hasModel: [selectedModelId],
+        }],
+      ])],
       [aiModelResource, new Map([[selectedModelId, {
         id: selectedModelId,
         displayName: 'DeepSeek Reasoner',
@@ -531,6 +819,7 @@ describe('XpodAiConnectionsPodStore', () => {
     };
     const store = createXpodAiConnectionsPodStore({
       database: database as never,
+      authenticatedFetch,
       podUrl: POD_URL,
       webId: WEB_ID,
     });
@@ -557,6 +846,13 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(rowsByResource.get(aiProviderResource)?.get(providerId)?.hasModel).toEqual([
       'deepseek.ttl#deepseek-chat',
     ]);
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      expect.stringContaining('/settings/providers/deepseek.ttl'),
+      expect.objectContaining({
+        method: 'PATCH',
+        body: expect.stringContaining('https://undefineds.co/ns#hasModel'),
+      }),
+    );
 
     await store.saveModelSelection!('deepseek', [
       { id: 'stale-upstream-id', resourceId: 'deepseek.ttl#deepseek-chat' },

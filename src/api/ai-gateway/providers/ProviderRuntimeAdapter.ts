@@ -13,6 +13,7 @@ import type { ProviderDescriptor, ProviderModelDescriptor } from './ProviderRegi
 
 export interface ProviderRuntimeCredential {
   baseUrl?: string;
+  compatibility?: 'auto' | 'openai' | 'anthropic';
   keyType?: 'apiKey' | 'dashscope' | 'codingPlan' | string;
   supportsDeveloperMessages?: boolean;
   proxy?: string;
@@ -42,6 +43,8 @@ export interface CompatibleChatAdapterOptions extends ProviderRuntimeAdapterOpti
   provider: string;
   defaultBaseUrl: string;
   safeBaseUrls: string[];
+  allowCredentialBaseUrl?: boolean;
+  allowPrivateNetwork?: boolean;
   descriptor?: ProviderDescriptor;
   supportsImages?: boolean;
   supportsDeveloperMessages?: boolean;
@@ -68,8 +71,12 @@ export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapt
     configuredBaseUrl?: string;
     defaultBaseUrl: string;
     safeBaseUrls: string[];
+    allowCredentialBaseUrl?: boolean;
   }): string {
-    const candidate = trimTrailingSlash(input.configuredBaseUrl ?? input.defaultBaseUrl);
+    if (input.allowCredentialBaseUrl && input.configuredBaseUrl) {
+      return normalizeRuntimeBaseUrl(input.configuredBaseUrl);
+    }
+    const candidate = normalizeRuntimeBaseUrl(input.configuredBaseUrl ?? input.defaultBaseUrl);
     if (!input.safeBaseUrls.map(trimTrailingSlash).includes(candidate)) {
       throw new GatewayProtocolError('Configured provider endpoint is not allowed', {
         code: 'invalid_request',
@@ -115,6 +122,8 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
   public readonly provider: string;
   private readonly defaultBaseUrl: string;
   private readonly safeBaseUrls: string[];
+  private readonly allowCredentialBaseUrl: boolean;
+  private readonly allowPrivateNetwork: boolean;
   private readonly supportsImages: boolean;
   private readonly supportsDeveloperMessages: boolean;
   private readonly allowToolChoiceRequired: boolean;
@@ -129,6 +138,8 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
     this.provider = options.provider;
     this.defaultBaseUrl = options.defaultBaseUrl;
     this.safeBaseUrls = options.safeBaseUrls;
+    this.allowCredentialBaseUrl = options.allowCredentialBaseUrl ?? false;
+    this.allowPrivateNetwork = options.allowPrivateNetwork ?? false;
     this.supportsImages = options.supportsImages ?? true;
     this.supportsDeveloperMessages = options.supportsDeveloperMessages ?? true;
     this.allowToolChoiceRequired = options.allowToolChoiceRequired ?? true;
@@ -146,6 +157,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
       configuredBaseUrl: input.credential?.baseUrl,
       defaultBaseUrl: this.defaultBaseUrl,
       safeBaseUrls: this.safeBaseUrls,
+      allowCredentialBaseUrl: this.allowCredentialBaseUrl,
     });
     const model = this.findRegisteredModel(request.model);
     const compatibleBody = toChatCompletionsBody(request, {
@@ -162,6 +174,7 @@ export class OpenAiCompatibleRuntimeAdapter extends BaseProviderRuntimeAdapter {
         body,
         proxy: input.credential?.proxy,
         signal: input.signal,
+        allowPrivateNetwork: this.allowPrivateNetwork,
       }), input.apiKey);
     } catch (error) {
       this.handleTransportError(error, input.apiKey);
@@ -813,6 +826,34 @@ function compactUsage(usage: GatewayUsage): GatewayUsage | undefined {
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/u, '');
+}
+
+function normalizeRuntimeBaseUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new GatewayProtocolError('Configured provider endpoint is not allowed', {
+      code: 'invalid_request',
+      status: 400,
+    });
+  }
+  if (
+    (url.protocol !== 'https:' && url.protocol !== 'http:')
+    || url.username
+    || url.password
+    || url.search
+    || url.hash
+  ) {
+    throw new GatewayProtocolError('Configured provider endpoint is not allowed', {
+      code: 'invalid_request',
+      status: 400,
+    });
+  }
+  if (url.pathname === '' || url.pathname === '/') {
+    url.pathname = '/v1';
+  }
+  return trimTrailingSlash(url.href);
 }
 
 function redactSecret(value: string, secret: string): string {

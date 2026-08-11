@@ -11,7 +11,7 @@ import {
 } from './SessionAffinityStore';
 import type { AuthContext } from '../../auth/AuthContext';
 
-export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error';
+export type GatewayCredentialHealth = 'healthy' | 'reauthRequired' | 'disabled' | 'error' | 'invalid' | 'unknown';
 export type GatewayQuotaStatus = 'available' | 'unsupported' | 'exhausted' | 'error';
 export type ModelRouteSource =
   | 'alias'

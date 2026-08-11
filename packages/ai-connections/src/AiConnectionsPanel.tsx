@@ -63,10 +63,10 @@ export interface AiConnectionsPanelProps {
   openExternal?: (url: string) => void | Promise<void>
   clientConfigurationBridge?: AiClientConfigurationBridge
   selectedProvider?: AiConnectionsProvider
+  selectedCredentialId?: string
   providerSummaries?: Partial<Record<AiConnectionsProvider, AiProviderConnectionSummary>>
   providerProducts?: Partial<Record<AiConnectionsProvider, AiProviderSummary>>
   providerLoadError?: string
-  serviceAccessGranted?: boolean
   onProviderStateChange?: (
     provider: AiConnectionsProvider,
     state: ProviderProductState,
@@ -82,10 +82,10 @@ export function AiConnectionsPanel({
   openExternal = openExternalUrl,
   clientConfigurationBridge,
   selectedProvider,
+  selectedCredentialId,
   providerSummaries: providerSummariesInput = EMPTY_PROVIDER_SUMMARIES,
   providerProducts = {},
   providerLoadError,
-  serviceAccessGranted = false,
   onProviderStateChange,
   onModelSelectionChange,
 }: AiConnectionsPanelProps) {
@@ -222,7 +222,6 @@ export function AiConnectionsPanel({
   }, [openExternal])
 
   const beginApiKey = async (provider: AiConnectionsProvider) => {
-    if (!serviceAccessGranted) return
     setBusy(provider, true)
     setProviderError(provider)
     setAttemptOfferingIds((current) => ({ ...current, [provider]: undefined }))
@@ -248,7 +247,6 @@ export function AiConnectionsPanel({
   }
 
   const beginBrowserConnect = async (definition: AiProviderDefinition) => {
-    if (!serviceAccessGranted) return
     if (definition.browserMode === 'connectUnsupported') return
     if (definition.browserMode === 'browserAssistedApiKey') {
       await beginApiKey(definition.id)
@@ -275,7 +273,6 @@ export function AiConnectionsPanel({
     mode: AiConnectAttempt['mode'],
     offeringId?: string,
   ) => {
-    if (!serviceAccessGranted) return
     if (mode === 'connectUnsupported') return
     setBusy(provider, true)
     setProviderError(provider)
@@ -315,7 +312,6 @@ export function AiConnectionsPanel({
   }
 
   const saveApiKey = async (definition: AiProviderDefinition) => {
-    if (!serviceAccessGranted) return
     const apiKey = apiKeyInputs[definition.id]?.trim()
     const baseUrl = baseUrlInputs[definition.id]
       ?? providerSummariesInput[definition.id]?.baseUrl
@@ -339,7 +335,6 @@ export function AiConnectionsPanel({
   }
 
   const disconnect = async (provider: AiConnectionsProvider, credentialId?: string) => {
-    if (!serviceAccessGranted) return
     const offeringId = credentialId
       ? effectiveProviderProducts[provider]?.credentials.find((credential) => credential.id === credentialId)?.offeringId
       : undefined
@@ -481,10 +476,10 @@ export function AiConnectionsPanel({
       apiKey: string
       label?: string
       baseUrl?: string
+      proxyUrl?: string
       priority: number
     },
   ) => {
-    if (!serviceAccessGranted) return
     setBusy(provider, true)
     setProviderError(provider)
     try {
@@ -493,6 +488,7 @@ export function AiConnectionsPanel({
         apiKey: input.apiKey,
         label: input.label,
         baseUrl: input.baseUrl,
+        proxyUrl: input.proxyUrl,
         priority: input.priority,
       })
       mergeProviderCredential(provider, credential)
@@ -502,7 +498,37 @@ export function AiConnectionsPanel({
         credentialId: credential.id,
       })
     } catch (error) {
-      setProviderError(provider, errorMessage(error), offering.id)
+      const message = errorMessage(error)
+      setProviderError(provider, message, offering.id)
+      throw new Error(message)
+    } finally {
+      setBusy(provider, false)
+    }
+  }
+
+  const createLocalCredential = async (
+    provider: AiConnectionsProvider,
+    offering: AiProviderOffering,
+  ) => {
+    setBusy(provider, true)
+    setProviderError(provider)
+    try {
+      const credential = await client.createLocalCredential(provider, {
+        offeringId: offering.id,
+        label: 'Local Ollama',
+        baseUrl: offering.endpoints?.[0]?.baseUrl,
+        priority: 10,
+      })
+      mergeProviderCredential(provider, credential)
+      toast({ description: '本地 Ollama 已连接' })
+      await syncProviderModels(provider, {
+        offeringId: credential.offeringId,
+        credentialId: credential.id,
+      })
+    } catch (error) {
+      const message = errorMessage(error)
+      setProviderError(provider, message, offering.id)
+      throw new Error(message)
     } finally {
       setBusy(provider, false)
     }
@@ -516,9 +542,9 @@ export function AiConnectionsPanel({
       enabled?: boolean
       priority?: number
       baseUrl?: string
+      proxyUrl?: string
     },
   ) => {
-    if (!serviceAccessGranted) return
     setBusy(provider, true)
     setProviderError(provider)
     try {
@@ -535,7 +561,9 @@ export function AiConnectionsPanel({
         })
       }
     } catch (error) {
-      setProviderError(provider, errorMessage(error), credential.offeringId)
+      const message = errorMessage(error)
+      setProviderError(provider, message, credential.offeringId)
+      throw new Error(message)
     } finally {
       setBusy(provider, false)
     }
@@ -545,7 +573,6 @@ export function AiConnectionsPanel({
     provider: AiConnectionsProvider,
     credential: AiProviderCredentialSummary,
   ) => {
-    if (!serviceAccessGranted) return
     setBusy(provider, true)
     setProviderError(provider)
     try {
@@ -570,13 +597,29 @@ export function AiConnectionsPanel({
     provider: AiConnectionsProvider,
     credential: AiProviderCredentialSummary,
   ) => {
-    if (!serviceAccessGranted) return
     setBusy(provider, true)
     setProviderError(provider)
     try {
-      await client.testProviderCredential(provider, { credentialId: credential.id })
+      const result = await client.testProviderCredential(provider, { credentialId: credential.id })
+      const testedCredential = providerCredentialFromTestResult(result)
+      setProviderProductOverrides((current) => ({
+        ...current,
+        [provider]: testedCredential
+          ? providerProductWithCredential(effectiveProviderProducts[provider], provider, testedCredential)
+          : providerProductWithCredentialHealth(
+              effectiveProviderProducts[provider], provider, credential.id, 'healthy',
+            ),
+      }))
       toast({ variant: 'success', description: '测试通过' })
     } catch (error) {
+      const refreshedProduct = (await client.listProviders().catch(() => []))
+        .find((candidate) => candidate.id === provider)
+      setProviderProductOverrides((current) => ({
+        ...current,
+        [provider]: refreshedProduct ?? providerProductWithCredentialHealth(
+          effectiveProviderProducts[provider], provider, credential.id, 'invalid',
+        ),
+      }))
       setProviderError(provider, errorMessage(error), credential.offeringId)
     } finally {
       setBusy(provider, false)
@@ -590,7 +633,7 @@ export function AiConnectionsPanel({
     fromIndex: number,
     toIndex: number,
   ) => {
-    if (!serviceAccessGranted || toIndex < 0 || toIndex >= credentials.length) return
+    if (toIndex < 0 || toIndex >= credentials.length) return
     const reordered = [...credentials]
     const [moved] = reordered.splice(fromIndex, 1)
     if (!moved) return
@@ -661,7 +704,6 @@ export function AiConnectionsPanel({
   }
 
   const verifyProvider = async (provider: AiConnectionsProvider) => {
-    if (!serviceAccessGranted) return
     await syncProviderModels(provider, undefined, true)
   }
 
@@ -679,7 +721,7 @@ export function AiConnectionsPanel({
   }
 
   const saveProviderModel = async (value: AiModelEditorValue) => {
-    if (!modelEditor || !serviceAccessGranted) return
+    if (!modelEditor) return
     const editing = Boolean(modelEditor.model)
     setModelEditorSaving(true)
     setModelEditorError(undefined)
@@ -701,7 +743,6 @@ export function AiConnectionsPanel({
   }
 
   const deleteProviderModel = async (provider: AiConnectionsProvider, model: AiGatewayModel) => {
-    if (!serviceAccessGranted) return
     setProviderError(provider)
     try {
       await client.deleteProviderModel(provider, model.id)
@@ -735,7 +776,11 @@ export function AiConnectionsPanel({
           if (!model) return { id: selectionId }
           return compactModelSelection(model)
         })
-        await client.saveModelSelection?.(provider, selections)
+        if (provider === 'custom') {
+          await client.saveModelSelection?.(provider, selections, selectedCredentialId)
+        } else {
+          await client.saveModelSelection?.(provider, selections)
+        }
         if (modelSelectionGeneration.current[provider] === generation) {
           onModelSelectionChange?.(provider, ids)
         }
@@ -746,10 +791,9 @@ export function AiConnectionsPanel({
         toast({ variant: 'destructive', description: errorMessage(error) })
       }
     })()
-  }, [client, effectiveProviderProducts, modelSelectionGeneration, models, onModelSelectionChange, selectedModelIds])
+  }, [client, effectiveProviderProducts, modelSelectionGeneration, models, onModelSelectionChange, selectedCredentialId, selectedModelIds])
 
   const createKey = async () => {
-    if (!serviceAccessGranted) return
     setCreatingKey(true)
     setKeyError(undefined)
     setOneTimeKey(undefined)
@@ -769,7 +813,6 @@ export function AiConnectionsPanel({
   }
 
   const revokeKey = async (keyId: string) => {
-    if (!serviceAccessGranted) return
     setKeyError(undefined)
     try {
       const record = await client.revokeGatewayKey(keyId)
@@ -791,9 +834,6 @@ export function AiConnectionsPanel({
   const createManagedGatewayKey = useCallback(async (
     targetClient: AiConnectionsClientId,
   ): Promise<ManagedGatewayKeyLease> => {
-    if (!serviceAccessGranted) {
-      throw new Error('AI Connection service access is not granted')
-    }
     const created = await client.createGatewayKey({
       name: `AI Connection · ${AI_CLIENT_LABELS[targetClient]}`,
     })
@@ -810,7 +850,7 @@ export function AiConnectionsPanel({
           : record))
       },
     }
-  }, [client, serviceAccessGranted])
+  }, [client])
 
   return (
     <div
@@ -827,7 +867,8 @@ export function AiConnectionsPanel({
           {PROVIDERS.filter((definition) => definition.id === (selectedProvider ?? 'openai')).map((definition) => {
             const providerProduct = effectiveProviderProducts[definition.id]
             const providerModels = mergeProviderModelCatalog(
-              models.filter((model) => model.provider === definition.id),
+              models.filter((model) => model.provider === definition.id
+                && (definition.id !== 'custom' || !selectedCredentialId || model.credentialId === selectedCredentialId)),
               providerProduct?.selectedModels ?? [],
             )
             const providerSelectedModelIds = selectedModelIds[definition.id]
@@ -845,7 +886,6 @@ export function AiConnectionsPanel({
               apiKey={apiKeyInputs[definition.id] ?? ''}
               baseUrl={baseUrlInputs[definition.id] ?? providerSummariesInput[definition.id]?.baseUrl ?? ''}
               busy={Boolean(busyProviders[definition.id])}
-              disabled={!serviceAccessGranted}
               error={providerErrors[definition.id]}
               quotas={quotas[definition.id]}
               models={providerModels}
@@ -863,8 +903,9 @@ export function AiConnectionsPanel({
               onBeginBrowser={() => void beginBrowserConnect(definition)}
               onSaveApiKey={() => void saveApiKey(definition)}
               onDisconnect={(credential) => void disconnect(definition.id, credential?.id)}
-              onCreateApiKeyCredential={(offering, input) => void createApiKeyCredential(definition.id, offering, input)}
-              onUpdateCredential={(credential, patch) => void updateProviderCredential(definition.id, credential, patch)}
+              onCreateApiKeyCredential={(offering, input) => createApiKeyCredential(definition.id, offering, input)}
+              onCreateLocalCredential={(offering) => createLocalCredential(definition.id, offering)}
+              onUpdateCredential={(credential, patch) => updateProviderCredential(definition.id, credential, patch)}
               onDeleteCredential={(credential) => void deleteProviderCredential(definition.id, credential)}
               onTestCredential={(credential) => void testProviderCredential(definition.id, credential)}
               onReorderCredentials={(offering, credentials, fromIndex, toIndex) => void reorderProviderCredentials(
@@ -941,7 +982,7 @@ export function AiConnectionsPanel({
               value={keyName}
               onChange={(event) => setKeyName(event.target.value)}
             />
-            <Button onClick={() => void createKey()} disabled={creatingKey || !serviceAccessGranted}>
+            <Button onClick={() => void createKey()} disabled={creatingKey}>
               {creatingKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
               创建客户端凭证
             </Button>
@@ -989,7 +1030,7 @@ export function AiConnectionsPanel({
                     variant="ghost"
                     size="icon"
                     aria-label={`撤销 ${key.name || key.id}`}
-                    disabled={Boolean(key.revokedAt) || !serviceAccessGranted}
+                    disabled={Boolean(key.revokedAt)}
                     onClick={() => void revokeKey(key.id)}
                   >
                     <Trash2 className="h-4 w-4" />
@@ -1111,6 +1152,37 @@ function providerProductWithoutCredential(
     credentials,
     status: providerStatusFromCredentials(credentials),
   }
+}
+
+function providerProductWithCredentialHealth(
+  product: AiProviderSummary | undefined,
+  provider: AiConnectionsProvider,
+  credentialId: string,
+  health: AiProviderCredentialSummary['health'],
+): AiProviderSummary {
+  const base = product ?? emptyProviderProduct(provider)
+  const credentials = base.credentials.map((credential) => (
+    credential.id === credentialId ? { ...credential, health } : credential
+  ))
+  return {
+    ...base,
+    credentials,
+    status: credentials.some((credential) => credential.enabled && credential.health === 'invalid')
+      ? 'attention'
+      : providerStatusFromCredentials(credentials),
+  }
+}
+
+function providerCredentialFromTestResult(value: Record<string, unknown>): AiProviderCredentialSummary | undefined {
+  const credential = value.credential
+  if (!credential || typeof credential !== 'object') return undefined
+  const candidate = credential as Partial<AiProviderCredentialSummary>
+  return typeof candidate.id === 'string'
+    && typeof candidate.offeringId === 'string'
+    && (candidate.authMode === 'oauth' || candidate.authMode === 'deviceCode' || candidate.authMode === 'apiKey' || candidate.authMode === 'local')
+    && typeof candidate.version === 'number'
+    ? candidate as AiProviderCredentialSummary
+    : undefined
 }
 
 function providerStatusFromCredentials(

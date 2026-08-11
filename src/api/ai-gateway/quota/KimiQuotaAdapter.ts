@@ -8,21 +8,25 @@ import {
   type ProviderQuotaFetchInput,
   type QuotaWindow,
 } from './ProviderQuotaAdapter';
+import { ProviderHttpTransport } from '../../service/provider-http-transport';
 
 const KIMI_BASE_URL = 'https://api.moonshot.ai/v1';
 const SOURCE = 'kimi:/v1/users/me/balance';
 
 export interface KimiQuotaAdapterOptions {
   fetch?: typeof fetch;
+  transport?: ProviderHttpTransport;
 }
 
 export class KimiQuotaAdapter implements ProviderQuotaAdapter {
   public readonly provider = 'kimi';
   public readonly capability = { protocol: 'api-balance', profile: 'moonshot' } as const;
   private readonly fetchFn: typeof fetch;
+  private readonly transport?: ProviderHttpTransport;
 
   public constructor(options: KimiQuotaAdapterOptions = {}) {
     this.fetchFn = options.fetch ?? fetch;
+    this.transport = options.transport;
   }
 
   public async fetch(input: ProviderQuotaFetchInput): Promise<NormalizedQuotaSnapshot> {
@@ -37,8 +41,10 @@ export class KimiQuotaAdapter implements ProviderQuotaAdapter {
     }
     const result = await fetchJsonWithBearer({
       fetch: this.fetchFn,
+      transport: this.transport,
       url: `${KIMI_BASE_URL}/users/me/balance`,
       apiKey,
+      proxy: input.credential.proxyUrl,
       signal: input.signal,
     });
     if (!result.ok) {

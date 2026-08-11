@@ -443,6 +443,9 @@ export class AiGatewayService {
     }
     const apiKey = secret.apiKey ?? secret.accessToken ?? secret.token;
     if (typeof apiKey !== 'string' || !apiKey) {
+      if (isLocalOfferingRoute(this.registry, route, credential)) {
+        return '';
+      }
       throw new GatewayProtocolError('Credential secret does not contain a usable provider token', {
         code: 'credential_unavailable',
         status: 403,
@@ -499,7 +502,7 @@ export class AiGatewayService {
     }
     const standardOffering = credentialProviderId === normalizeProviderId(product.id)
       ? product.offerings.find((candidate) =>
-        candidate.kind === (credential.authMode === 'apiKey' ? 'api-platform' : 'oauth-subscription')
+        candidate.kind === (credential.authMode === 'apiKey' ? 'api-platform' : credential.authMode === 'local' ? 'local' : 'oauth-subscription')
         && offeringMatchesCredentialAuthMode(candidate, credential.authMode))
       : undefined;
     const offering = explicitOffering
@@ -637,6 +640,14 @@ function runtimeCredentialFromMetadata(metadata: Record<string, unknown> | undef
     ...runtimeCredential,
     ...stringMetadataFields(metadata, ['baseUrl', 'keyType', 'proxy', 'region', 'workspaceId']),
   };
+  const compatibility = stringMetadata(metadata, 'compatibility');
+  if (compatibility === 'auto' || compatibility === 'openai' || compatibility === 'anthropic') {
+    credential.compatibility = compatibility;
+  }
+  if (!credential.proxy) {
+    const proxyUrl = stringMetadata(metadata, 'proxyUrl');
+    if (proxyUrl) credential.proxy = proxyUrl;
+  }
   return Object.keys(credential).length > 0 ? credential : undefined;
 }
 
@@ -671,10 +682,30 @@ function offeringMatchesCredentialAuthMode(
   if (authMode === 'apiKey') {
     return offering.authModes.includes('apiKey');
   }
+  if (authMode === 'local') return offering.authModes.includes('local');
+  if (authMode === 'connectUnsupported') {
+    return offering.authModes.includes('local');
+  }
   if (authMode === 'deviceCodeOAuth') {
     return offering.authModes.includes('oauth') || offering.authModes.includes('deviceCode');
   }
   return true;
+}
+
+function isLocalOfferingRoute(
+  registry: ProviderRegistry,
+  route: ModelRouteResult,
+  credential: StoredGatewayCredential,
+): boolean {
+  const product = registry.getProduct(route.provider.id) ?? registry.getProduct(credential.provider);
+  const offeringId = stringMetadata(credential.metadata, 'offeringId');
+  const offering = offeringId
+    ? product?.offerings.find((candidate) => normalizeProviderId(candidate.id) === normalizeProviderId(offeringId))
+    : product?.offerings.find((candidate) =>
+      candidate.kind === 'local'
+      && candidate.runtimeProviderIds.some((runtimeProviderId) =>
+        normalizeProviderId(runtimeProviderId) === normalizeProviderId(credential.provider)));
+  return offering?.kind === 'local' && offering.authModes.includes('local');
 }
 
 function stringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {

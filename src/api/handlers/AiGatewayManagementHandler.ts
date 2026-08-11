@@ -26,7 +26,7 @@ import type {
   ProviderConnectService,
 } from '../ai-gateway/connect';
 import type { ProviderQuotaService } from '../ai-gateway/quota';
-import { ProviderModelsFetchError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
+import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -34,6 +34,7 @@ import {
   unavailableAiClientConfigurationCapability,
 } from '../service/AiClientConfigurationService';
 import { GatewayProtocolError, normalizeGatewayError } from '../ai-gateway/errors';
+import { normalizeProviderProxyUrl, redactProviderProxyUrl } from '../service/provider-http-transport';
 
 const logger = getLoggerFor('AiGatewayManagementHandler');
 
@@ -254,12 +255,41 @@ export function registerAiGatewayManagementRoutes(
         apiKey,
         label: normalizeOptionalString(body.label),
         baseUrl: normalizeOptionalString(body.baseUrl),
+        proxyUrl: normalizeOptionalString(body.proxyUrl),
         priority,
         auth: request.auth,
       });
       sendJson(response, 201, {
         credential: publicCredentialPoolCredential(credential),
       });
+    } catch (error) {
+      sendCredentialPoolError(response, error);
+    }
+  });
+
+  server.post('/api/ai/providers/:provider/credentials/local', async (request, response, params) => {
+    if (!authorizeProviderConnect(request, response)) return;
+    const body = await readJsonObject(request, response, jsonBodyLimitBytes);
+    if (!body) return;
+    const priority = normalizeOptionalNumber(body.priority);
+    if (body.priority !== undefined && priority === undefined) {
+      sendJson(response, 400, { error: 'priority must be a finite number' });
+      return;
+    }
+    const poolService = requireCredentialPoolManagementService(options, response);
+    if (!poolService) return;
+    try {
+      const credential = await poolService.createLocalCredential({
+        webId: request.auth.webId,
+        deployment: options.deployment,
+        provider: params.provider,
+        offeringId: normalizeOptionalString(body.offeringId),
+        label: normalizeOptionalString(body.label),
+        baseUrl: normalizeOptionalString(body.baseUrl),
+        priority,
+        auth: request.auth,
+      });
+      sendJson(response, 201, { credential: publicCredentialPoolCredential(credential) });
     } catch (error) {
       sendCredentialPoolError(response, error);
     }
@@ -621,6 +651,7 @@ export function registerAiGatewayManagementRoutes(
         offeringId: normalizeOptionalString(body.offeringId),
         authMode,
         baseUrl: normalizeOptionalString(body.baseUrl),
+        proxyUrl: normalizeOptionalString(body.proxyUrl),
         secret,
       });
       sendJson(response, 200, result);
@@ -646,7 +677,7 @@ export function registerAiGatewayManagementRoutes(
     try {
       const apiKey = normalizeOptionalString(body.apiKey);
       const credentialId = normalizeOptionalString(body.credentialId);
-      const authMode = body.authMode === 'apiKey' || body.authMode === 'deviceCodeOAuth'
+      const authMode = body.authMode === 'apiKey' || body.authMode === 'deviceCodeOAuth' || body.authMode === 'local'
         ? body.authMode
         : undefined;
       const secret = body.secret && typeof body.secret === 'object' && !Array.isArray(body.secret)
@@ -663,6 +694,8 @@ export function registerAiGatewayManagementRoutes(
           ...(secret ? { secret } : {}),
           ...(apiKey ? { apiKey } : {}),
           baseUrl: normalizeOptionalString(body.baseUrl),
+          proxyUrl: normalizeOptionalString(body.proxyUrl),
+          compatibility: normalizeCustomCompatibility(body.compatibility),
         })
         : await modelsService.list({
           webId: request.auth.webId,
@@ -734,6 +767,10 @@ export function registerAiGatewayManagementRoutes(
       sendCustomModelsError(response, error);
     }
   });
+}
+
+function normalizeCustomCompatibility(value: unknown): 'auto' | 'openai' | 'anthropic' | undefined {
+  return value === 'auto' || value === 'openai' || value === 'anthropic' ? value : undefined;
 }
 
 function authorizeGatewayKeyManagement(
@@ -905,12 +942,14 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
   enabled?: boolean;
   priority?: number;
   baseUrl?: string;
+  proxyUrl?: string;
 } | undefined {
   const patch: {
     label?: string;
     enabled?: boolean;
     priority?: number;
     baseUrl?: string;
+    proxyUrl?: string;
   } = {};
   if (body.label !== undefined) {
     const label = normalizeOptionalString(body.label);
@@ -938,6 +977,13 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
       return undefined;
     }
     patch.baseUrl = baseUrl;
+  }
+  if (body.proxyUrl !== undefined) {
+    try {
+      patch.proxyUrl = normalizeProviderProxyUrl(normalizeOptionalString(body.proxyUrl));
+    } catch {
+      return undefined;
+    }
   }
   return patch;
 }
@@ -1051,6 +1097,13 @@ function sendLegacyProviderConnectError(response: ServerResponse, error: unknown
 }
 
 function sendModelsError(response: ServerResponse, error: unknown): void {
+  if (error instanceof ProviderModelsResponseError) {
+    sendJson(response, 502, {
+      error: 'provider_models_response_error',
+      message: error.safeMessage,
+    });
+    return;
+  }
   if (error instanceof ProviderModelsFetchError) {
     logger.warn(`Provider models request returned ${error.providerStatus}`);
     sendJson(response, 502, {
@@ -1073,8 +1126,14 @@ function sendModelsError(response: ServerResponse, error: unknown): void {
     sendJson(response, 500, { error: 'Provider credential secret is unavailable' });
     return;
   }
-  if (message === 'unsafe_provider_base_url') {
+  if (message === 'unsafe_provider_base_url'
+    || message === 'unsafe_provider_target'
+    || message === 'invalid_provider_url') {
     sendJson(response, 400, { error: 'unsafe_provider_base_url' });
+    return;
+  }
+  if (message === 'invalid_proxy_url') {
+    sendJson(response, 400, { error: 'invalid_proxy_url' });
     return;
   }
   logger.error(`Provider models lookup failed: ${message}`);
@@ -1226,6 +1285,7 @@ function publicCredentialPoolCredential(value: unknown): Record<string, unknown>
     status?: string;
     expiresAt?: Date | string;
     baseUrl?: string;
+    proxyUrl?: string;
     maskedHint?: string;
     quota?: unknown;
     metadata?: Record<string, unknown>;
@@ -1245,6 +1305,7 @@ function publicCredentialPoolCredential(value: unknown): Record<string, unknown>
     maskedHint: record.maskedHint ?? stringMetadata(metadata, 'maskedHint'),
     expiresAt: record.expiresAt instanceof Date ? record.expiresAt.toISOString() : record.expiresAt,
     baseUrl: record.baseUrl ?? stringMetadata(metadata, 'baseUrl'),
+    proxyUrl: redactProviderProxyUrl(record.proxyUrl ?? stringMetadata(metadata, 'proxyUrl')),
     version: record.version,
     quota: record.quota ?? metadata.quota ?? metadata.quotaStatus,
   });

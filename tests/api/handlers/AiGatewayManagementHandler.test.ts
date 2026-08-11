@@ -1536,6 +1536,28 @@ describe('AiGatewayManagementHandler', () => {
     expect(JSON.stringify(JSON.parse(res.body))).not.toMatch(/sk-new-secret-key|encryptedSecret|cipher/);
   });
 
+  it('creates a local provider credential without accepting an API key', async () => {
+    const connectService = {
+      createLocalCredential: vi.fn(async (input: any) => ({
+        id: 'ollama-local', provider: input.provider, offeringId: input.offeringId,
+        authMode: 'local', enabled: true, priority: 10, health: 'healthy', version: 1,
+      })),
+    } as any;
+    const { server, routes } = createServer();
+    registerAiGatewayManagementRoutes(server, {
+      repository: new InMemoryGatewayAccessKeyRepository(), deployment: 'local', connectService,
+    });
+    const res = response();
+    await routes['POST /api/ai/providers/:provider/credentials/local'](request(
+      { type: 'solid', webId: WEB_ID },
+      { offeringId: 'local', baseUrl: 'http://localhost:11434/v1', priority: 10 },
+    ), res, { provider: 'ollama' });
+    expect(res.statusCode).toBe(201);
+    expect(connectService.createLocalCredential).toHaveBeenCalledWith(expect.objectContaining({
+      webId: WEB_ID, provider: 'ollama', offeringId: 'local', baseUrl: 'http://localhost:11434/v1',
+    }));
+  });
+
   it('returns coded invalid_request errors for incompatible API-key offerings', async () => {
     const connectService = {
       createApiKeyCredential: vi.fn(async () => {

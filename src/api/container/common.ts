@@ -32,8 +32,6 @@ import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault'
 import {
   BrowserAssistedApiKeyConnectAdapter,
   InMemoryConnectAttemptStore,
-  KimiDeviceCodeConnectAdapter,
-  OAuthIntegrationRegistry,
   PodConnectedCredentialRepository,
   ProviderConnectService,
 } from '../ai-gateway/connect';
@@ -63,6 +61,7 @@ import {
 } from '../ai-gateway/models';
 import { AuthMiddleware } from '../middleware/AuthMiddleware';
 import { VercelChatService } from '../service/VercelChatService';
+import { ProviderHttpTransport } from '../service/provider-http-transport';
 import { RedisKeyValueStorage } from '../../storage/keyvalue/RedisKeyValueStorage';
 import { VectorService } from '../service/VectorService';
 import { RdfStorageStatsService } from '../service/RdfStorageStatsService';
@@ -233,6 +232,7 @@ export function registerCommonServices(
               kimi: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               bailian: { configured: false, notes: ['AI Gateway provider Connect is disabled in this Xpod deployment.'] },
               deepseek: { configured: false },
+              ollama: { configured: true },
             },
           }),
           adapters: [],
@@ -245,7 +245,6 @@ export function registerCommonServices(
         throw new Error('AI Gateway Connect requires XPOD_AI_GATEWAY_CONNECT_SIGNING_SECRET or XPOD_GATEWAY_LOCATOR_SECRET');
       }
       const attempts = new InMemoryConnectAttemptStore();
-      const oauthIntegrations = createKimiOAuthIntegrations(config);
       const adapters = [
         new BrowserAssistedApiKeyConnectAdapter({
           provider: 'openai',
@@ -266,6 +265,15 @@ export function registerCommonServices(
           signingSecret,
         }),
         new BrowserAssistedApiKeyConnectAdapter({
+          provider: 'kimi',
+          consoleUrl: 'https://platform.moonshot.cn/console/api-keys',
+          attempts,
+          credentialRepository,
+          vault,
+          deployment: config.edition,
+          signingSecret,
+        }),
+        new BrowserAssistedApiKeyConnectAdapter({
           provider: 'bailian',
           consoleUrl: 'https://bailian.console.aliyun.com/',
           attempts,
@@ -275,25 +283,8 @@ export function registerCommonServices(
           signingSecret,
         }),
       ];
-      const kimiOAuth = oauthIntegrations?.require('kimi');
-      if (kimiOAuth) {
-        adapters.push(new KimiDeviceCodeConnectAdapter({
-          attempts,
-          credentialRepository,
-          vault,
-          deployment: config.edition,
-          signingSecret,
-          oauthIntegration: kimiOAuth,
-        }));
-      }
       return new ProviderConnectService({
-        registry: createDefaultGatewayProviderRegistry({
-          connect: {
-            kimi: kimiOAuth
-              ? { configured: true }
-              : { configured: false, notes: ['auth_not_available'] },
-          },
-        }),
+        registry: createDefaultGatewayProviderRegistry(),
         adapters,
         credentialRepository,
         vault,
@@ -313,14 +304,21 @@ export function registerCommonServices(
       return registry;
     }).singleton(),
 
+    providerHttpTransport: asFunction(() => new ProviderHttpTransport({
+      // The hermetic acceptance stack may allow only its own exact loopback origin.
+      allowedPrivateOrigins: process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN
+        ? [process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN]
+        : [],
+    })).singleton(),
+
     gatewayCredentialStore: asFunction(({ gatewayInternalPodAccess }: ApiContainerCradle) => {
       return new PodConnectedCredentialRepository({
         internalPodAccess: gatewayInternalPodAccess,
       });
     }).singleton(),
 
-    gatewayRuntimeRegistry: asFunction(({ gatewayProviderRegistry }: ApiContainerCradle) => {
-      return new ProviderRuntimeRegistry({ registry: gatewayProviderRegistry });
+    gatewayRuntimeRegistry: asFunction(({ gatewayProviderRegistry, providerHttpTransport }: ApiContainerCradle) => {
+      return new ProviderRuntimeRegistry({ registry: gatewayProviderRegistry, transport: providerHttpTransport });
     }).singleton(),
 
     gatewaySessionAffinityStore: asFunction(({ config }: ApiContainerCradle) => {
@@ -369,14 +367,14 @@ export function registerCommonServices(
         providerRegistry: cradle.gatewayProviderRegistry,
         adapters: [
           new UnsupportedQuotaAdapter(),
-          new CodexSubscriptionQuotaAdapter(),
+          new CodexSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),
           new OpenAiQuotaAdapter(),
-          new ClaudeSubscriptionQuotaAdapter(),
+          new ClaudeSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),
           new AnthropicQuotaAdapter(),
-          new KimiCodeSubscriptionQuotaAdapter(),
-          new KimiQuotaAdapter(),
+          new KimiCodeSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),
+          new KimiQuotaAdapter({ transport: cradle.providerHttpTransport }),
           new BailianQuotaAdapter(),
-          new DeepSeekQuotaAdapter(),
+          new DeepSeekQuotaAdapter({ transport: cradle.providerHttpTransport }),
         ],
       });
     }).singleton(),
@@ -398,34 +396,54 @@ export function registerCommonServices(
           new OpenAiCompatibleModelsAdapter({
             protocol: 'openai-models',
             registry,
+            transport: cradle.providerHttpTransport,
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'openai',
             defaultBaseUrl: 'https://api.openai.com/v1',
             safeBaseUrls: safeBaseUrls('openai'),
             product: registry.requireProduct('openai'),
+            transport: cradle.providerHttpTransport,
           }),
           new AnthropicModelsAdapter({
             safeBaseUrls: safeBaseUrls('anthropic'),
             product: registry.requireProduct('anthropic'),
+            transport: cradle.providerHttpTransport,
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'kimi',
             defaultBaseUrl: 'https://api.moonshot.ai/v1',
             safeBaseUrls: safeBaseUrls('kimi'),
             product: registry.requireProduct('kimi'),
+            transport: cradle.providerHttpTransport,
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'bailian',
             defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
             safeBaseUrls: safeBaseUrls('bailian'),
             product: registry.requireProduct('bailian'),
+            transport: cradle.providerHttpTransport,
           }),
           new OpenAiCompatibleModelsAdapter({
             provider: 'deepseek',
             defaultBaseUrl: 'https://api.deepseek.com/v1',
             safeBaseUrls: safeBaseUrls('deepseek'),
             product: registry.requireProduct('deepseek'),
+            transport: cradle.providerHttpTransport,
+          }),
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'zhipu',
+            defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+            safeBaseUrls: safeBaseUrls('zhipu'),
+            product: registry.requireProduct('zhipu'),
+            transport: cradle.providerHttpTransport,
+          }),
+          new OpenAiCompatibleModelsAdapter({
+            provider: 'ollama',
+            defaultBaseUrl: 'http://localhost:11434/v1',
+            safeBaseUrls: safeBaseUrls('ollama'),
+            product: registry.requireProduct('ollama'),
+            transport: cradle.providerHttpTransport,
           }),
         ],
       });
@@ -668,21 +686,4 @@ export function registerCommonServices(
       });
     }).singleton(),
   });
-}
-
-function createKimiOAuthIntegrations(config: ApiContainerCradle['config']): OAuthIntegrationRegistry | undefined {
-  try {
-    return OAuthIntegrationRegistry.fromServerConfig({
-      kimi: {
-        integrationId: config.aiGatewayKimiOAuthIntegrationId,
-        issuedBy: 'xpod',
-        clientId: config.aiGatewayKimiOAuthClientId,
-      },
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message === 'auth_not_available') {
-      return undefined;
-    }
-    throw error;
-  }
 }

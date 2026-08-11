@@ -17,6 +17,7 @@ import type { ConnectCredentialRecord, PodCredentialRepository } from '../connec
 import type { CredentialVault, ProviderSecret } from '../credentials/CredentialVault';
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
 import { QuotaCapabilityRegistry, type QuotaHandlerCapability } from './QuotaCapabilityRegistry';
+import { ProviderHttpTransport } from '../../service/provider-http-transport';
 
 export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
 
@@ -48,6 +49,7 @@ export interface NormalizedQuotaSnapshot {
 
 export interface QuotaCredentialRecord extends ConnectCredentialRecord {
   baseUrl?: string;
+  proxyUrl?: string;
   offeringId?: string;
 }
 
@@ -114,6 +116,7 @@ export interface CallerOwnedQuotaInput {
   credentialIri: string;
   authMode: 'apiKey' | 'deviceCodeOAuth';
   baseUrl?: string;
+  proxyUrl?: string;
   secret: ProviderSecret;
   now?: Date;
   signal?: AbortSignal;
@@ -196,6 +199,7 @@ export class ProviderQuotaService {
       status: 'active' as const,
       offeringId: input.offeringId,
       baseUrl: input.baseUrl,
+      proxyUrl: input.proxyUrl,
     };
     const adapter = this.findAdapter(provider, credential);
     if (!adapter) throw new Error(`quota_adapter_not_found:${provider}`);
@@ -735,26 +739,51 @@ export function apiKeyFromSecret(secret: ProviderSecret): string | undefined {
 
 export async function fetchJsonWithBearer(input: {
   fetch: typeof fetch;
+  transport?: ProviderHttpTransport;
   url: string;
   apiKey: string;
+  proxy?: string;
   signal?: AbortSignal;
 }): Promise<{ ok: true; body: unknown } | { ok: false; status: number; retryAfter?: string | null }> {
   const headers = new Headers();
   headers.set('Authorization', `Bearer ${input.apiKey}`);
-  const response = await input.fetch(input.url, {
-    method: 'GET',
-    headers,
-    signal: input.signal,
-  });
-  if (!response.ok) {
-    await response.text().catch(() => '');
-    return {
-      ok: false,
-      status: response.status,
-      retryAfter: response.headers.get('Retry-After') ?? response.headers.get('retry-after'),
-    };
+  try {
+    if (input.transport) {
+      return {
+        ok: true,
+        body: await input.transport.getJson({
+          url: input.url,
+          headers,
+          proxy: input.proxy,
+          signal: input.signal,
+        }),
+      };
+    }
+    const response = await input.fetch(input.url, {
+      method: 'GET',
+      headers,
+      signal: input.signal,
+    });
+    if (!response.ok) {
+      await response.text().catch(() => '');
+      return {
+        ok: false,
+        status: response.status,
+        retryAfter: response.headers.get('Retry-After') ?? response.headers.get('retry-after'),
+      };
+    }
+    return { ok: true, body: await response.json() };
+  } catch (error) {
+    const response = error as { status?: number; headers?: Headers };
+    if (typeof response.status === 'number') {
+      return {
+        ok: false,
+        status: response.status,
+        retryAfter: response.headers?.get('Retry-After') ?? response.headers?.get('retry-after'),
+      };
+    }
+    throw error;
   }
-  return { ok: true, body: await response.json() };
 }
 
 export function numeric(value: unknown): number | undefined {

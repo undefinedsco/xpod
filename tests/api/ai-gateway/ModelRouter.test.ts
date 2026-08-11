@@ -79,8 +79,11 @@ describe('ProviderRegistry', () => {
       safeBaseUrls: ['https://api.anthropic.com/v1'],
     });
     expect(registry.requireProvider('kimi')).toMatchObject({
-      authModes: ['deviceCodeOAuth', 'apiKey'],
-      connect: { mode: 'deviceCodeOAuth' },
+      authModes: ['browserAssistedApiKey', 'apiKey'],
+      connect: {
+        mode: 'browserAssistedApiKey',
+        notes: ['Device-code login is intentionally not offered; use a Token Plan or API Platform key.'],
+      },
       protocols: ['chatCompletions'],
     });
     expect(registry.requireProvider('bailian')).toMatchObject({

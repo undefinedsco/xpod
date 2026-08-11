@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createAiConnectionsClient,
+  normalizeProxyUrl,
   resolveAiConnectionsApiBase,
 } from '../src/ai-connections-client'
 
@@ -8,6 +9,11 @@ const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const POD_BASE = 'https://pod.example/alice/'
 
 describe('AI Connection management client', () => {
+  it('rejects proxy credentials because proxy auth is not stored in the Pod secret cell', () => {
+    expect(() => normalizeProxyUrl('https://user:password@proxy.example:8443'))
+      .toThrow('invalid_proxy_url')
+  })
+
   it('derives the management API from the current Pod and uses authenticated fetch', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
       status: 200,
@@ -684,6 +690,31 @@ describe('AI Connection management client', () => {
       })
       await expect(scoped.discoverModels('kimi')).rejects.toThrow(scenario.message)
     }
+  })
+
+  it('explains when a custom endpoint is blocked by the server network policy', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: 'unsafe_provider_base_url',
+    }), { status: 400, headers: { 'content-type': 'application/json' } }))
+    const scoped = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+
+    await expect(scoped.discoverModels('custom')).rejects.toThrow(
+      '该服务地址指向 Xpod 不允许访问的网络，请改用公网 HTTPS 地址。',
+    )
+  })
+
+  it('surfaces sanitized HTTP 200 provider business errors without marking discovery healthy', async () => {
+    const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
+      error: 'provider_models_response_error',
+      message: 'API Key 所属分组已停用',
+    }), { status: 502, headers: { 'content-type': 'application/json' } }))
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch,
+    })
+
+    await expect(client.discoverModels('ollama')).rejects.toThrow('API Key 所属分组已停用')
   })
 
   it('maps registry capability objects and custom capability lists onto catalog models', async () => {

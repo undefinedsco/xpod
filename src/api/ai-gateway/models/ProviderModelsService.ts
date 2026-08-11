@@ -9,6 +9,8 @@ import {
   type ModelsCredentialRecord,
   type ProviderModelDiscoverySource,
   type ProviderModelsAdapter,
+  ProviderModelsFetchError,
+  ProviderModelsResponseError,
 } from './ProviderModelsAdapter';
 
 export interface ProviderModelDiscovery {
@@ -76,18 +78,13 @@ export class ProviderModelsService {
       credentialIri: input.credentialIri,
       auth: input.auth,
     });
-    const adapter = this.findAdapter(provider, credential);
     const secret = await this.vault.open(
       { webId: input.webId },
       credential.credentialIri,
       provider,
       credential.encryptedSecret,
     );
-    const models = await adapter.fetch({
-      credential,
-      secret,
-      signal: input.signal,
-    });
+    const models = await this.fetchModels(provider, credential, secret, input.signal);
     return {
       provider,
       credential: credential.credentialIri,
@@ -106,6 +103,8 @@ export class ProviderModelsService {
     secret?: Record<string, unknown>;
     apiKey?: string;
     baseUrl?: string;
+    proxyUrl?: string;
+    compatibility?: 'auto' | 'openai' | 'anthropic';
     signal?: AbortSignal;
   }): Promise<ProviderModelDiscovery> {
     const provider = normalizeProvider(input.provider);
@@ -124,13 +123,15 @@ export class ProviderModelsService {
         reauthRequired: false,
         encryptedSecret: {} as never,
         baseUrl: input.baseUrl,
+        proxyUrl: input.proxyUrl,
+        metadata: input.compatibility ? { compatibility: input.compatibility } : undefined,
       };
-    const adapter = this.findAdapter(provider, credential);
-    const models = await adapter.fetch({
+    const models = await this.fetchModels(
+      provider,
       credential,
-      secret: normalizeCallerSuppliedModelsSecret(input),
-      signal: input.signal,
-    });
+      normalizeCallerSuppliedModelsSecret(input),
+      input.signal,
+    );
     return {
       provider,
       credential: input.credentialId,
@@ -168,11 +169,7 @@ export class ProviderModelsService {
       );
       return {
         credential,
-        models: await this.findAdapter(input.provider, credential).fetch({
-          credential,
-          secret,
-          signal: input.signal,
-        }),
+        models: await this.fetchModels(input.provider, credential, secret, input.signal),
       };
     }));
     const merged = new Map<string, DiscoveredProviderModel>();
@@ -250,6 +247,12 @@ export class ProviderModelsService {
   }
 
   private findAdapter(provider: string, credential: ModelsCredentialRecord): ProviderModelsAdapter {
+    if (provider === 'custom') {
+      const protocol = customModelsProtocol(credential);
+      const handler = this.protocolHandlers.get(protocol);
+      if (!handler) throw new Error(`models_protocol_handler_not_found:${protocol}`);
+      return handler;
+    }
     if (this.providerRegistry && credential.offeringId) {
       const offering = this.providerRegistry.requireOffering(provider, credential.offeringId);
       const capability = offering.upstream.find((candidate) => candidate.capability === 'models');
@@ -261,6 +264,32 @@ export class ProviderModelsService {
     const adapter = this.adapters.get(provider);
     if (!adapter) throw new Error(`models_adapter_not_found:${provider}`);
     return adapter;
+  }
+
+  private async fetchModels(
+    provider: string,
+    credential: ModelsCredentialRecord,
+    secret: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<DiscoveredProviderModel[]> {
+    if (provider === 'custom' && customCompatibility(credential) === 'auto') {
+      const openai = this.protocolHandlers.get('openai-models');
+      const anthropic = this.protocolHandlers.get('anthropic-models');
+      if (!openai || !anthropic) throw new Error('models_protocol_handler_not_found:auto');
+      try {
+        return await openai.fetch({ credential, secret, signal });
+      } catch (openaiError) {
+        try {
+          return await anthropic.fetch({ credential, secret, signal });
+        } catch (anthropicError) {
+          throw new ProviderModelsResponseError(
+            `OpenAI compatible probe failed (${safeProtocolFailure(openaiError)}); `
+            + `Anthropic compatible probe failed (${safeProtocolFailure(anthropicError)})`,
+          );
+        }
+      }
+    }
+    return this.findAdapter(provider, credential).fetch({ credential, secret, signal });
   }
 
   private async resolveCredential(input: {
@@ -310,11 +339,18 @@ export class ProviderModelsService {
   }
 }
 
+function safeProtocolFailure(error: unknown): string {
+  if (error instanceof ProviderModelsFetchError) return `HTTP ${error.providerStatus}`;
+  if (error instanceof ProviderModelsResponseError) return 'provider response rejected';
+  return 'connection failed';
+}
+
 function normalizeCallerSuppliedModelsSecret(input: {
   authMode?: ModelsCredentialRecord['authMode'];
   secret?: Record<string, unknown>;
   apiKey?: string;
 }): Record<string, unknown> {
+  if (input.authMode === 'local') return { type: 'local' };
   if (input.authMode === 'deviceCodeOAuth') {
     const accessToken = input.secret?.accessToken;
     return typeof accessToken === 'string' && accessToken.trim()
@@ -331,6 +367,22 @@ function normalizeCallerSuppliedModelsSecret(input: {
 
 function discoverySource(provider: string, offeringId?: string): string {
   return offeringId ? `${provider}:${offeringId}:/models` : `${provider}:/models`;
+}
+
+function customModelsProtocol(credential: ModelsCredentialRecord): string {
+  const compatibility = customCompatibility(credential);
+  if (compatibility === 'anthropic' || credential.offeringId === 'anthropic-compatible') {
+    return 'anthropic-models';
+  }
+  return 'openai-models';
+}
+
+function customCompatibility(credential: ModelsCredentialRecord): 'auto' | 'openai' | 'anthropic' {
+  const compatibility = credential.metadata?.compatibility;
+  if (compatibility === 'auto' || compatibility === 'openai' || compatibility === 'anthropic') {
+    return compatibility;
+  }
+  return credential.offeringId === 'anthropic-compatible' ? 'anthropic' : 'openai';
 }
 
 function isEligibleCredential(credential: ModelsCredentialRecord): boolean {

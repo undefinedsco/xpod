@@ -79,6 +79,7 @@ export function AiProviderCard({
   onSaveApiKey,
   onDisconnect,
   onCreateApiKeyCredential,
+  onCreateLocalCredential,
   onUpdateCredential,
   onDeleteCredential,
   onTestCredential,
@@ -117,14 +118,17 @@ export function AiProviderCard({
     apiKey: string
     label?: string
     baseUrl?: string
+    proxyUrl?: string
     priority: number
-  }) => void
+  }) => Promise<void>
+  onCreateLocalCredential?: (offering: AiProviderOffering) => Promise<void>
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
     label?: string
     enabled?: boolean
     priority?: number
     baseUrl?: string
-  }) => void
+    proxyUrl?: string
+  }) => Promise<void>
   onDeleteCredential?: (credential: AiProviderCredentialSummary) => void
   onTestCredential?: (credential: AiProviderCredentialSummary) => void
   onReorderCredentials?: (offering: AiProviderOffering, credentials: AiProviderCredentialSummary[], fromIndex: number, toIndex: number) => void
@@ -258,6 +262,7 @@ export function AiProviderCard({
           onSaveApiKey={onSaveApiKey}
           onDisconnect={onDisconnect}
           onCreateApiKeyCredential={product?.offerings.length ? onCreateApiKeyCredential : undefined}
+          onCreateLocalCredential={product?.offerings.length ? onCreateLocalCredential : undefined}
           onUpdateCredential={onUpdateCredential}
           onDeleteCredential={onDeleteCredential}
           onTestCredential={onTestCredential}
@@ -325,20 +330,18 @@ export function AiProviderCard({
                   ) : null}
                 </>
               ) : null}
-              {models.length > 0 ? (
-                <div className="relative w-full sm:w-auto">
-                  <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={modelSearch}
-                    onChange={(event) => setModelSearch(event.target.value)}
-                    placeholder="搜索模型..."
-                    className="h-8 w-full bg-background pl-8 text-xs sm:w-[232px]"
-                    autoComplete="off"
-                    data-lpignore="true"
-                    data-1p-ignore
-                  />
-                </div>
-              ) : null}
+              <div className="relative w-full sm:w-auto">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={modelSearch}
+                  onChange={(event) => setModelSearch(event.target.value)}
+                  placeholder="搜索模型..."
+                  className="h-8 w-full bg-background pl-8 text-xs sm:w-[232px]"
+                  autoComplete="off"
+                  data-lpignore="true"
+                  data-1p-ignore
+                />
+              </div>
             </div>
           </div>
 
@@ -519,6 +522,9 @@ function providerMark(provider: AiProviderDefinition['id']): string {
     case 'kimi': return 'K'
     case 'bailian': return '百'
     case 'deepseek': return 'DS'
+    case 'zhipu': return '智'
+    case 'ollama': return 'O'
+    case 'custom': return 'C'
   }
 }
 

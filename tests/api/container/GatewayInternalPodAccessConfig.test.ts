@@ -130,7 +130,9 @@ describe('Gateway internal Pod access container config', () => {
       gatewayLocatorSecret: undefined,
       gatewayLocatorKeyId: undefined,
     }));
-    const invocation = await container.resolve('aiConnectionInvocationKeyIssuer').issue({
+    const issuer = container.resolve('aiConnectionInvocationKeyIssuer');
+    expect(issuer).toBeDefined();
+    const invocation = await issuer!.issue({
       auth: { type: 'solid', webId: WEB_ID },
     });
 
@@ -222,15 +224,14 @@ describe('Gateway internal Pod access container config', () => {
       webId: 'https://id.example/alice/profile/card#me',
       deployment: 'local',
       provider: 'kimi',
-      requestedMode: 'deviceCodeOAuth',
+      requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({
-      status: 'unsupported',
-      mode: 'deviceCodeOAuth',
-      message: 'auth_not_available',
+      status: 'pending',
+      mode: 'browserAssistedApiKey',
     });
   });
 
-  it('constructs the configured provider Connect service with injected SecretCell vault and Xpod Kimi OAuth integration', async () => {
+  it('does not register Kimi device-code Connect even when legacy Kimi OAuth env exists', async () => {
     const service = createApiContainer(baseConfig({
       aiGatewayConnectEnabled: true,
       aiGatewayConnectSigningSecret: 'connect-signing-secret',
@@ -248,5 +249,21 @@ describe('Gateway internal Pod access container config', () => {
       status: 'pending',
       mode: 'browserAssistedApiKey',
     });
+    await expect(service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'kimi',
+      requestedMode: 'browserAssistedApiKey',
+    })).resolves.toMatchObject({
+      status: 'pending',
+      mode: 'browserAssistedApiKey',
+    });
+    expect(() => service.begin({
+      webId: 'https://id.example/alice/profile/card#me',
+      deployment: 'local',
+      provider: 'kimi',
+      requestedMode: 'deviceCodeOAuth',
+    })).toThrow('Requested Connect mode does not match provider capability');
+    expect((service as any).adapters.get('kimi')?.constructor.name).toBe('BrowserAssistedApiKeyConnectAdapter');
   });
 });

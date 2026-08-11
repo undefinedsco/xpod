@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createMockWebExtensionHost } from '@undefineds.co/extension-sdk/testing'
@@ -130,7 +131,7 @@ describe('AI Connection two-pane contribution', () => {
     expect(document.activeElement).toBe(mainPane)
   })
 
-  it('uses Add to open the first unconfigured Provider', () => {
+  it('uses Add to open the custom Provider form', () => {
     const mounted = mountTwoPaneApplet(
       aiConnectionApplet,
       createMockWebExtensionHost({ solid: readySolid() }),
@@ -141,6 +142,6 @@ describe('AI Connection two-pane contribution', () => {
     render(<>{mounted.listHeader}<div data-testid="main-header">{mounted.mainHeader}</div></>)
     fireEvent.click(screen.getByRole('button', { name: '添加 AI Connection' }))
 
-    expect(within(screen.getByTestId('main-header')).getByRole('heading', { name: 'Anthropic' })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: '添加自定义 Provider' })).toBeTruthy()
   })
 })

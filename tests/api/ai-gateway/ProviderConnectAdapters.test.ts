@@ -225,12 +225,11 @@ describe('Provider Connect capabilities', () => {
     });
     expect(registry.requireProvider('anthropic').connect?.mode).toBe('browserAssistedApiKey');
     expect(registry.requireProvider('bailian').connect?.mode).toBe('browserAssistedApiKey');
-    expect(registry.requireProvider('kimi').connect?.mode).toBe('deviceCodeOAuth');
+    expect(registry.requireProvider('kimi').connect?.mode).toBe('browserAssistedApiKey');
     expect(registry.requireProvider('kimi').connect).toMatchObject({
-      configured: false,
-      experimental: true,
+      configured: true,
+      requiresAuthenticatedManagementApi: true,
       publicCallbackSupported: false,
-      remoteRevocationSupported: false,
     });
     expect(registry.requireProvider('deepseek').connect).toMatchObject({
       mode: 'connectUnsupported',
@@ -265,7 +264,10 @@ describe('Provider credential pool management', () => {
     }
     expect(pools.find((pool) => pool.id === 'kimi')?.offerings.find(
       (offering) => offering.id === 'official-subscription',
-    )).toMatchObject({ lifecycle: 'active', authModes: ['oauth'] });
+    )).toBeUndefined();
+    expect(pools.find((pool) => pool.id === 'kimi')?.offerings.find(
+      (offering) => offering.id === 'subscription-key',
+    )).toMatchObject({ lifecycle: 'active', authModes: ['apiKey'] });
   });
 
   it('lists canonical provider summaries with aggregate status and selected models', async () => {
@@ -308,10 +310,10 @@ describe('Provider credential pool management', () => {
     })).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'kimi',
-        name: 'Kimi',
+        name: 'Moonshot (Kimi)',
         status: 'available',
         offerings: expect.arrayContaining([
-          expect.objectContaining({ id: 'official-subscription', lifecycle: 'active' }),
+          expect.objectContaining({ id: 'subscription-key', lifecycle: 'active' }),
           expect.objectContaining({ id: 'api-platform', lifecycle: 'active' }),
         ]),
         selectedModels: [
@@ -359,6 +361,12 @@ describe('Provider credential pool management', () => {
       baseUrl: 'https://api.moonshot.cn/v1',
       priority: 5,
     });
+    expect(repository.rows[0]).toMatchObject({
+      health: 'unknown',
+      metadata: {
+        health: 'unknown',
+      },
+    });
     const patched = await service.updateCredential({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -386,7 +394,7 @@ describe('Provider credential pool management', () => {
       label: 'Work key',
       enabled: true,
       priority: 5,
-      health: 'healthy',
+      health: 'unknown',
     });
     expect(JSON.stringify(created)).not.toContain('sk-new-secret');
     expect(patched).toMatchObject({
@@ -427,6 +435,26 @@ describe('Provider credential pool management', () => {
     });
   });
 
+  it('creates a local Ollama credential without an API key', async () => {
+    const repository = new RecordingCredentialRepository();
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+    const created = await service.createLocalCredential({
+      webId: WEB_ID,
+      deployment: 'local',
+      provider: 'ollama',
+      offeringId: 'local',
+      baseUrl: 'http://localhost:11434/v1',
+    });
+    expect(created).toMatchObject({ provider: 'ollama', offeringId: 'local', authMode: 'local' });
+    expect(repository.rows[0]).toMatchObject({ authMode: 'local' });
+    expect(JSON.stringify(repository.rows[0])).not.toContain('apiKey');
+  });
+
   it('tests stored credentials through ProviderModelsService and rejects temporary API keys', async () => {
     const repository = new RecordingCredentialRepository();
     repository.rows.push({
@@ -445,7 +473,7 @@ describe('Provider credential pool management', () => {
       offeringId: 'api-platform',
       enabled: true,
       priority: 10,
-      health: 'healthy',
+      health: 'unknown',
       version: 1,
     });
     const modelsService = {
@@ -481,6 +509,13 @@ describe('Provider credential pool management', () => {
       provider: 'kimi',
       credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
     });
+    expect(repository.rows[0]).toMatchObject({
+      health: 'healthy',
+      metadata: {
+        health: 'healthy',
+      },
+      version: 2,
+    });
     await expect(service.testCredential({
       webId: WEB_ID,
       deployment: 'cloud',
@@ -488,6 +523,54 @@ describe('Provider credential pool management', () => {
       apiKey: 'sk-temporary',
       modelsService,
     })).rejects.toThrow('credential_test_requires_credential_id');
+  });
+
+  it('marks a stored API-key credential invalid when the provider probe fails', async () => {
+    const repository = new RecordingCredentialRepository();
+    repository.rows.push({
+      id: 'kimi-key-a',
+      credentialIri: 'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+      webId: WEB_ID,
+      provider: 'kimi',
+      deployment: 'cloud',
+      authMode: 'apiKey',
+      encryptedSecret: await encryptedSecret(
+        'kimi',
+        'https://id.example/alice/settings/credentials/kimi.ttl#kimi-key-a',
+        { type: 'apiKey', apiKey: 'sk-secret' },
+      ),
+      status: 'active',
+      offeringId: 'api-platform',
+      enabled: true,
+      priority: 10,
+      health: 'unknown',
+      version: 1,
+    });
+    const service = new ProviderConnectService({
+      registry: createDefaultProviderRegistry(),
+      credentialRepository: repository,
+      vault: vault(),
+      adapters: [],
+    });
+
+    await expect(service.testCredential({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'kimi',
+      credentialId: 'kimi-key-a',
+      modelsService: {
+        list: vi.fn(async () => {
+          throw new Error('provider rejected key');
+        }),
+      },
+    })).rejects.toThrow('provider rejected key');
+    expect(repository.rows[0]).toMatchObject({
+      health: 'invalid',
+      metadata: {
+        health: 'invalid',
+      },
+      version: 2,
+    });
   });
 });
 
@@ -1284,9 +1367,13 @@ describe('KimiDeviceCodeConnectAdapter', () => {
 });
 
 describe('ProviderConnectService', () => {
-  it('reports disabled Connect capability instead of pretending Kimi device OAuth is configured', async () => {
+  it('reports disabled Kimi API-key assisted Connect capability when deployment disables it', async () => {
     const service = new ProviderConnectService({
-      registry: createDefaultProviderRegistry(),
+      registry: createDefaultProviderRegistry({
+        connect: {
+          kimi: { configured: false, notes: ['auth_not_available'] },
+        },
+      }),
       adapters: [],
     });
 
@@ -1294,11 +1381,12 @@ describe('ProviderConnectService', () => {
       webId: WEB_ID,
       deployment: 'cloud',
       provider: 'kimi',
-      requestedMode: 'deviceCodeOAuth',
+      requestedMode: 'browserAssistedApiKey',
     })).resolves.toMatchObject({
       status: 'unsupported',
-      mode: 'deviceCodeOAuth',
+      mode: 'browserAssistedApiKey',
       apiKeyManagementSupported: true,
+      message: 'auth_not_available',
     });
   });
 
@@ -1726,7 +1814,7 @@ describe('ProviderConnectService', () => {
       webId: WEB_ID,
       deployment: 'cloud',
     })).resolves.toEqual([
-      expect.objectContaining({ provider: 'openai', enabled: true, health: 'healthy' }),
+      expect.objectContaining({ provider: 'openai', enabled: true, health: 'unknown' }),
     ]);
     await expect(repository.rewrapCredential({
       webId: WEB_ID,
@@ -2313,7 +2401,7 @@ describe('ProviderConnectService', () => {
       credentialId: kimiOAuthId,
     })).resolves.toMatchObject({
       authMode: 'deviceCodeOAuth',
-      offeringId: 'official-subscription',
+      offeringId: 'subscription-key',
     });
   });
 
@@ -2753,7 +2841,7 @@ describe('ProviderConnectService', () => {
       return {
         id,
         owner: WEB_ID,
-        provider: 'kimi.ttl',
+        provider: `kimi-${offeringId}.ttl`,
         service: 'ai',
         authMode: 'apiKey',
         status: 'active',
@@ -2848,6 +2936,59 @@ describe('ProviderConnectService', () => {
       expect.objectContaining({ id: 'shared-model', offeringId: 'api-platform', resourceId: platformModel }),
     ]));
     expect(kimi?.selectedModels.map((model) => model.id)).toEqual(['shared-model', 'shared-model']);
+  });
+
+  it('maps a custom compatible Offering credential back to the custom runtime Provider', async () => {
+    const credentialId = 'credentials.ttl#custom-timicc';
+    const credentialIri = `https://id.example/alice/settings/${credentialId}`;
+    const row = {
+      id: credentialId,
+      owner: WEB_ID,
+      provider: 'custom-openai-compatible.ttl',
+      service: 'ai',
+      authMode: 'apiKey',
+      status: 'active',
+      encryptedSecret: JSON.stringify(await encryptedSecret('custom', credentialIri, {
+        type: 'apiKey',
+        apiKey: 'fixture-custom-key',
+      })),
+      keyVersion: '1',
+      metadata: { offeringId: 'openai-compatible', enabled: true, health: 'healthy' },
+    };
+    const selectedModel = 'custom-openai-compatible.ttl#gpt-custom';
+    const repository = new PodConnectedCredentialRepository({
+      providerIds: ['custom'],
+      internalPodAccess: { getTrustedFetch: async () => fetch },
+      dbFactory: async () => ({
+        init: vi.fn(),
+        insert: vi.fn(),
+        select: () => ({
+          from: () => ({ where: () => ({ execute: async () => [jsonClone(row)] }) }),
+        }),
+        findById: async (_resource: unknown, id: string) => id === 'custom.ttl'
+          ? { id, hasModel: [selectedModel] }
+          : null,
+        updateById: vi.fn(),
+        update: vi.fn(),
+      } as any),
+    });
+
+    await expect(repository.listProviderCredentials({
+      webId: WEB_ID,
+      provider: 'custom',
+      deployment: 'cloud',
+    })).resolves.toEqual([expect.objectContaining({
+      provider: 'custom-openai-compatible',
+      selectedModels: [expect.objectContaining({
+        id: 'gpt-custom',
+        provider: 'custom',
+        offeringId: 'openai-compatible',
+      })],
+    })]);
+    await expect(repository.listCredentials({
+      webId: WEB_ID,
+      deployment: 'cloud',
+    })).resolves.toEqual([expect.objectContaining({ provider: 'custom' })]);
   });
 
   it('reports a capability error when the Pod has no collection query sidecar', async () => {

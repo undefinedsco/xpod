@@ -633,6 +633,38 @@ describe('ProviderQuotaAdapters', () => {
     expect(new Set(repository.rows.map((row) => row.offeringId)).size).toBe(2);
   });
 
+  it('reports Ollama local quota as explicitly unsupported through offering metadata', async () => {
+    const repository = new InMemoryQuotaSnapshotRepository();
+    const vault = createVault();
+    const credentialIri = CREDENTIAL_IRI.replace('cloud-kimi', 'cloud-ollama-local');
+    const service = new ProviderQuotaService({
+      repository,
+      vault,
+      providerRegistry: createDefaultProviderRegistry(),
+      adapters: [new UnsupportedQuotaAdapter()],
+      credentials: [{
+        ...await credential('ollama', { type: 'apiKey' }),
+        id: 'ollama-local',
+        credentialIri,
+        offeringId: 'local',
+        encryptedSecret: await vault.seal({ webId: WEB_ID }, credentialIri, 'ollama', { type: 'apiKey' }),
+      }],
+      now: () => new Date('2026-08-10T00:00:00.000Z'),
+    });
+
+    await expect(service.status({
+      webId: WEB_ID,
+      deployment: 'cloud',
+      provider: 'ollama',
+      offeringId: 'local',
+      refresh: true,
+    })).resolves.toMatchObject({
+      credential: credentialIri,
+      status: 'unsupported',
+      source: 'ollama:local:quota-unsupported',
+    });
+  });
+
   it('selects quota adapters by provider offering and credential auth mode', async () => {
     const repository = new InMemoryQuotaSnapshotRepository();
     const vault = createVault();
@@ -727,7 +759,7 @@ describe('ProviderQuotaAdapters', () => {
       };
     };
     const adapters = [
-      ['rolling-quota-windows', 'kimi-code', 'oauth-quota'],
+      ['rolling-quota-windows', 'kimi-code', 'token-plan-quota'],
       ['api-balance', 'moonshot', 'api-balance'],
     ].map(([protocol, profile, source]) => ({
       provider: 'not-used-for-dispatch',
@@ -742,7 +774,6 @@ describe('ProviderQuotaAdapters', () => {
       })),
     }));
     const credentials = [
-      await makeCredential('oauth', 'official-subscription', 'deviceCodeOAuth'),
       await makeCredential('plan', 'subscription-key', 'apiKey'),
       await makeCredential('platform', 'api-platform', 'apiKey'),
     ];
@@ -755,10 +786,8 @@ describe('ProviderQuotaAdapters', () => {
       now: () => new Date('2026-08-10T00:00:00.000Z'),
     });
 
-    await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'official-subscription', refresh: true }))
-      .resolves.toMatchObject({ source: 'oauth-quota' });
     await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'subscription-key', refresh: true }))
-      .resolves.toMatchObject({ source: 'oauth-quota' });
+      .resolves.toMatchObject({ source: 'token-plan-quota' });
     await expect(service.status({ webId: WEB_ID, deployment: 'cloud', provider: 'kimi', offeringId: 'api-platform', refresh: true }))
       .resolves.toMatchObject({ source: 'api-balance' });
   });
@@ -892,11 +921,13 @@ describe('ProviderQuotaAdapters', () => {
       credentialId: 'credentials.ttl#deepseek-primary',
       credentialIri: CREDENTIAL_IRI,
       authMode: 'apiKey',
+      proxyUrl: 'https://proxy.example.test',
       secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
       now: new Date('2026-07-23T00:00:00.000Z'),
     })).resolves.toMatchObject({ status: 'available' });
 
     expect(adapter.fetch).toHaveBeenCalledWith(expect.objectContaining({
+      credential: expect.objectContaining({ proxyUrl: 'https://proxy.example.test' }),
       secret: { type: 'apiKey', apiKey: 'transient-provider-key' },
     }));
     expect(repository.findFresh).not.toHaveBeenCalled();

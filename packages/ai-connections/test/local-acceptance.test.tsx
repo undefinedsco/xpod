@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import './setup-jsdom'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -28,7 +29,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
@@ -73,7 +73,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={createAcceptanceClient(state)}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
@@ -101,7 +100,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
@@ -130,7 +128,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
         providerSummaries={{
           bailian: {
@@ -156,7 +153,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={createAcceptanceClient(state)}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
         providerSummaries={{
           bailian: {
@@ -185,7 +181,6 @@ describe('AI Connections local acceptance', () => {
       <AiConnectionsPanel
         client={current}
         selectedProvider="bailian"
-        serviceAccessGranted
         providerProducts={{ bailian: state.provider() }}
       />,
     )
