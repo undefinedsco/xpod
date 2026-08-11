@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { useContext, useMemo, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type {
   StorageBinding,
   WebIdAuthState,
@@ -27,6 +27,10 @@ import {
   type XpodRouteReadiness,
 } from './useXpodAuth';
 import type { XpodLoginTransactionStore } from './xpod-login-transaction';
+import {
+  createXpodLogoutCoordinator,
+  type XpodLogoutCoordinator,
+} from './xpod-logout';
 
 export interface XpodAuthProviderProps {
   children: ReactNode;
@@ -39,12 +43,16 @@ export interface XpodAuthProviderProps {
 
 export interface CreateXpodAuthValueOptions {
   account: XpodAuthAccountSource;
-  runtime?: Pick<XpodSolidRuntimeValue, 'state' | 'logout' | 'webId' | 'podUrl' | 'currentPod'>;
+  runtime?: Pick<XpodSolidRuntimeValue, 'state' | 'logout' | 'webId' | 'podUrl' | 'currentPod'> & {
+    session?: Pick<XpodSolidRuntimeValue['session'], 'getSnapshot'>;
+  };
   routes?: readonly WebIdLoginRouteDescriptor[];
   startLogin: (returnTo?: string, selectedStorage?: StorageBinding) => Promise<WebIdLoginTransaction | void>;
   retryLogin?: (returnTo?: string, selectedStorage?: StorageBinding) => Promise<WebIdLoginTransaction | void>;
   cancelLogin?: () => void;
   selectedStorage?: StorageBinding;
+  logoutCoordinator?: XpodLogoutCoordinator;
+  logoutState?: ReturnType<XpodLogoutCoordinator['getState']>;
 }
 
 export function XpodAuthProvider({
@@ -98,6 +106,40 @@ function XpodAuthCoordinator({
   const runtime = useContext(XpodSolidRuntimeContext);
   if (!runtime) throw new Error('XpodAuthProvider requires XpodSolidRuntimeProvider');
 
+  // Keep one coordinator for this host. Its ports read the latest context via
+  // a stable mutable closure, so rerenders do not construct a second
+  // transaction or lose partial-failure evidence.
+  const [ports] = useState(() => {
+    let currentAccount = account;
+    let currentRuntime = runtime;
+    return {
+      update(nextAccount: XpodAuthAccountSource, nextRuntime: XpodSolidRuntimeValue) {
+        currentAccount = nextAccount;
+        currentRuntime = nextRuntime;
+      },
+      account: {
+        logout: async () => {
+          await currentAccount.logout();
+          await currentAccount.refetchControls();
+        },
+        verifyAnonymous: () => currentAccount.isAnonymous?.() ?? !currentAccount.isLoggedIn,
+      },
+      webId: {
+        logout: () => currentRuntime.logout(),
+        verifyAnonymous: () => currentRuntime.session.getSnapshot().status === 'anonymous',
+      },
+    };
+  });
+  useEffect(() => {
+    ports.update(account, runtime);
+  }, [account, ports, runtime]);
+  const logoutCoordinator = useMemo<XpodLogoutCoordinator>(() => createXpodLogoutCoordinator(ports), [ports]);
+  const logoutState = useSyncExternalStore(
+    logoutCoordinator.subscribe,
+    logoutCoordinator.getState,
+    logoutCoordinator.getState,
+  );
+
   const controller = useMemo<XpodLoginControllerApi>(() => createXpodLoginController({
     runtime,
     transactionStore,
@@ -111,7 +153,9 @@ function XpodAuthCoordinator({
     retryLogin: controller.retryLogin,
     cancelLogin: controller.cancelLogin,
     selectedStorage,
-  }), [account, controller, runtime, selectedStorage]);
+    logoutCoordinator,
+    logoutState,
+  }), [account, controller, logoutCoordinator, logoutState, runtime, selectedStorage]);
 
   return (
     <XpodAuthContext.Provider value={value}>
@@ -124,6 +168,21 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
   const routes = [createXpodLoginRoute(typeof window === 'undefined' ? 'http://localhost' : window.location)];
   const selected = options.selectedStorage;
   const baseStartLogin = options.startLogin;
+  const logoutCoordinator = options.logoutCoordinator ?? createXpodLogoutCoordinator({
+    account: {
+      logout: async () => {
+        await options.account.logout();
+        await options.account.refetchControls();
+      },
+      verifyAnonymous: () => options.account.isAnonymous?.() ?? !options.account.isLoggedIn,
+    },
+    webId: {
+      logout: () => options.runtime?.logout() ?? Promise.resolve(),
+      verifyAnonymous: () => options.runtime?.session
+        ? options.runtime.session.getSnapshot().status === 'anonymous'
+        : options.runtime?.state.status !== 'authenticated',
+    },
+  });
   const startLogin = async (returnTo?: string, selectedStorage?: StorageBinding) => {
     if (options.runtime?.state.status === 'authenticated' && !options.account.isLoggedIn) {
       try {
@@ -131,7 +190,8 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
       } catch {
         // A stale transaction may already have expired; logout still proceeds.
       }
-      await options.runtime.logout();
+      const staleLogout = await logoutCoordinator.logout();
+      if (staleLogout.status !== 'complete') throw new Error('Existing Xpod session could not be cleared');
     }
     return baseStartLogin(returnTo, selectedStorage);
   };
@@ -143,7 +203,8 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
         } catch {
           // A stale transaction may already have expired; logout still proceeds.
         }
-        await options.runtime.logout();
+        const staleLogout = await logoutCoordinator.logout();
+        if (staleLogout.status !== 'complete') throw new Error('Existing Xpod session could not be cleared');
       }
       return options.retryLogin?.(returnTo, selectedStorage);
     }
@@ -153,9 +214,13 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
     solidState: options.runtime?.state ?? { status: 'anonymous' },
     selectedStorage: selected,
   });
-  const logout = async () => {
-    if (options.runtime) await options.runtime.logout();
-    await options.account.logout();
+  const logout = () => logoutCoordinator.logout();
+  const retryLogout = () => logoutCoordinator.retry();
+  const switchAccount = async (returnTo?: string, selectedStorage?: StorageBinding) => {
+    const logoutState = await logoutCoordinator.logout();
+    if (logoutState.status !== 'complete') return logoutState;
+    logoutCoordinator.reset();
+    return baseStartLogin(returnTo, selectedStorage);
   };
 
   return {
@@ -169,6 +234,10 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
     retryLogin,
     cancelLogin: options.cancelLogin ?? (() => undefined),
     logout,
+    retryLogout,
+    logoutState: options.logoutState ?? logoutCoordinator.getState(),
+    logoutCoordinator,
+    switchAccount,
   };
 }
 
@@ -214,6 +283,7 @@ function accountSourceFromContext(context: AuthContextType | null): XpodAuthAcco
   return {
     accountState: context.accountState,
     isLoggedIn: context.isLoggedIn,
+    isAnonymous: context.isAnonymous,
     identity: context.identity,
     retry: context.retry,
     refetchControls: context.refetchControls,

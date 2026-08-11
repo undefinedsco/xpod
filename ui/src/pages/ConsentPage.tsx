@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AuthSurface,
@@ -13,8 +13,9 @@ import {
 } from '@undefineds.co/shared-ui';
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { useAuth } from '../context/AuthContextValue';
+import { XpodAuthContext } from '../auth/useXpodAuth';
 import { persistReturnTo } from '../utils/returnTo';
-import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
+import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
 import { createFirstPodAndWaitForBinding, deriveFirstPodNameCandidate } from '../utils/consent-first-pod';
 import {
@@ -68,7 +69,8 @@ function safeConsentError(value: unknown, fallback: string): string {
 }
 
 export function ConsentPage() {
-  const { idpIndex, isLoggedIn, controls } = useAuth();
+  const { idpIndex, isLoggedIn, controls, logout: accountLogout } = useAuth();
+  const xpodAuth = useContext(XpodAuthContext);
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [clientInfo, setClientInfo] = useState<ConsentClientInfo | null>(null);
@@ -209,13 +211,16 @@ export function ConsentPage() {
   // Switch to a different account (logout + redirect to login)
   const handleSwitchAccount = async () => {
     try {
-      if (controls?.account?.logout) {
-        await fetch(controls.account.logout, { method: 'POST', headers: storedAccountTokenHeaders(), credentials: 'include' });
+      const state = xpodAuth
+        ? await (xpodAuth.logoutState.status === 'error' ? xpodAuth.retryLogout() : xpodAuth.logout())
+        : (await accountLogout(), { status: 'complete', account: 'complete', webId: 'complete' } as const);
+      if (state.status === 'complete') {
+        window.location.href = '/.account/login/password/';
+      } else {
+        setError('Sign out incomplete. Please try again.');
       }
-      clearAccountSessionToken();
-      window.location.href = '/.account/login/password/';
     } catch {
-      window.location.href = '/.account/login/password/';
+      setError('Sign out incomplete. Please try again.');
     }
   };
 

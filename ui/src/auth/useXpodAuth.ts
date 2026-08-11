@@ -8,10 +8,12 @@ import type {
 import type { AccountAuthState } from '@undefineds.co/shared-ui';
 import type { SanitizedAccountIdentity } from '../context/AuthContextValue';
 import type { XpodSolidRuntimeValue } from '../solid/XpodSolidRuntime';
+import type { XpodLogoutCoordinator, XpodLogoutState } from './xpod-logout';
 
 export interface XpodAuthAccountSource {
   accountState: AccountAuthState;
   isLoggedIn: boolean;
+  isAnonymous?: () => boolean;
   identity?: SanitizedAccountIdentity;
   retry: () => Promise<void>;
   refetchControls: () => Promise<void>;
@@ -34,7 +36,11 @@ export interface XpodAuthValue {
   readonly startLogin: (returnTo?: string, selectedStorage?: StorageBinding) => Promise<WebIdLoginTransaction | void>;
   readonly retryLogin: (returnTo?: string, selectedStorage?: StorageBinding) => Promise<WebIdLoginTransaction | void>;
   readonly cancelLogin: () => void;
-  readonly logout: () => Promise<void>;
+  readonly logout: () => Promise<XpodLogoutState>;
+  readonly retryLogout: () => Promise<XpodLogoutState>;
+  readonly logoutState: XpodLogoutState;
+  readonly logoutCoordinator: XpodLogoutCoordinator;
+  readonly switchAccount: (returnTo?: string, selectedStorage?: StorageBinding) => Promise<XpodLogoutState | WebIdLoginTransaction | void>;
 }
 
 export const XpodAuthContext = createContext<XpodAuthValue | null>(null);

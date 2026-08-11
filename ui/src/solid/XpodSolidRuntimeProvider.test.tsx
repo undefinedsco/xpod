@@ -392,6 +392,7 @@ describe('Xpod Solid runtime', () => {
     );
 
     expect(container.textContent).toContain('authenticated');
+    window.sessionStorage.setItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY, 'https://issuer.identity.example/');
 
     const [loginButton, logoutButton, fetchButton] = Array.from(container.querySelectorAll('button'));
     await act(async () => {
@@ -406,6 +407,7 @@ describe('Xpod Solid runtime', () => {
     })]);
     expect(session.fetch).toHaveBeenCalledWith('/resource');
     expect(localStorageSet).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY)).toBeNull();
     expect(container.textContent).toContain('anonymous');
     await unmount(root);
   });

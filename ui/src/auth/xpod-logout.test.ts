@@ -1,0 +1,71 @@
+import { describe, expect, test, vi } from 'vitest';
+import {
+  createXpodLogoutCoordinator,
+  type XpodLogoutDomainPort,
+} from './xpod-logout';
+
+function port(overrides: Partial<XpodLogoutDomainPort> = {}): XpodLogoutDomainPort {
+  return {
+    logout: vi.fn(async () => undefined),
+    verifyAnonymous: vi.fn(async () => true),
+    ...overrides,
+  };
+}
+
+describe('Xpod logout coordinator', () => {
+  test('runs both domains, verifies anonymity, and is idempotent after completion', async () => {
+    const account = port();
+    const webId = port();
+    const coordinator = createXpodLogoutCoordinator({ account, webId });
+
+    expect(coordinator.getState()).toEqual({ status: 'idle' });
+    await expect(coordinator.logout()).resolves.toEqual({
+      status: 'complete',
+      account: 'complete',
+      webId: 'complete',
+    });
+    await coordinator.logout();
+
+    expect(account.logout).toHaveBeenCalledTimes(1);
+    expect(webId.logout).toHaveBeenCalledTimes(1);
+    expect(account.verifyAnonymous).toHaveBeenCalledTimes(1);
+    expect(webId.verifyAnonymous).toHaveBeenCalledTimes(1);
+  });
+
+  test('records partial failure and retries only the unfinished domain', async () => {
+    const account = port({
+      logout: vi.fn()
+        .mockRejectedValueOnce(new Error('Bearer token leaked by upstream'))
+        .mockResolvedValue(undefined),
+    });
+    const webId = port();
+    const coordinator = createXpodLogoutCoordinator({ account, webId });
+
+    await expect(coordinator.logout()).resolves.toMatchObject({
+      status: 'error',
+      account: 'error',
+      webId: 'complete',
+    });
+    expect(JSON.stringify(coordinator.getState())).not.toContain('Bearer token');
+
+    await expect(coordinator.retry()).resolves.toEqual({
+      status: 'complete',
+      account: 'complete',
+      webId: 'complete',
+    });
+    expect(account.logout).toHaveBeenCalledTimes(2);
+    expect(webId.logout).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not report success when a domain cannot verify anonymity', async () => {
+    const account = port({ verifyAnonymous: vi.fn(async () => false) });
+    const webId = port();
+    const coordinator = createXpodLogoutCoordinator({ account, webId });
+
+    await expect(coordinator.logout()).resolves.toEqual({
+      status: 'error',
+      account: 'error',
+      webId: 'complete',
+    });
+  });
+});

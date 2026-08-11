@@ -223,6 +223,15 @@ function readStoredOidcIssuer(): string | undefined {
   }
 }
 
+/** Clear the host-only issuer hint after a verified WebID logout. */
+export function clearStoredXpodOidcIssuer(): void {
+  try {
+    globalThis.window?.sessionStorage.removeItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY);
+  } catch {
+    // Browser storage can be unavailable in private or embedded contexts.
+  }
+}
+
 function writeStoredOidcIssuer(issuer: string): void {
   try {
     globalThis.window?.sessionStorage.setItem(XPOD_LAST_OIDC_ISSUER_STORAGE_KEY, issuer);

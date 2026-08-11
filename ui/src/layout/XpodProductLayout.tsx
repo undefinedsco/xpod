@@ -2,6 +2,7 @@ import { AppLayout } from '@undefineds.co/extension-sdk/react';
 import { clsx } from 'clsx';
 import type { ComponentType } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
+import { XpodUserCard } from './XpodUserCard';
 
 export interface ProductNavigationItem {
   id: string;
@@ -43,21 +44,13 @@ export function ProductNavLinks({ items, label }: { items: readonly ProductNavig
 }
 
 export function XpodProductLayout({ product, items, switchHref }: XpodProductLayoutProps) {
-  const switchLabel = product === 'dashboard' ? 'Open Settings' : 'Open Dashboard';
   return (
     <AppLayout
       className={`xpod-${product}-shell`}
       navigation={
         <div className="flex min-h-full flex-col items-center">
-          <div className="flex shrink-0 flex-col items-center pt-12">
-            <a
-              aria-label={switchLabel}
-              className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-sm font-semibold text-primary-foreground shadow-sm"
-              href={switchHref}
-              title={switchLabel}
-            >
-              X
-            </a>
+          <div className="flex shrink-0 flex-col items-center pt-3">
+            <XpodUserCard product={product} switchHref={switchHref} />
           </div>
           <ProductNavLinks items={items} label={`Primary ${product} sections`} />
         </div>

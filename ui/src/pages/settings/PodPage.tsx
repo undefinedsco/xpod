@@ -1,21 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { TwoPaneLayout } from '@undefineds.co/extension-sdk/react';
 import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@undefineds.co/shared-ui';
 import { Database, ExternalLink, LogIn, LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchPodSettingsStatus, type PodSettingsStatus } from '../../api/pod-settings';
-import { createXpodLoginController } from '../../auth/XpodLoginController';
+import { XpodAuthContext } from '../../auth/useXpodAuth';
 import { useXpodSolidRuntime } from '../../solid/useXpodSolidRuntime';
 import { PaneListHeader } from './PaneListHeader';
 
 export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'settings' | 'usage' }) {
   const runtime = useXpodSolidRuntime();
+  const xpodAuth = useContext(XpodAuthContext);
   const [status, setStatus] = useState<PodSettingsStatus>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const requestIdRef = useRef(0);
   const activeIdentityKeyRef = useRef<string | undefined>(undefined);
   const mountedRef = useRef(true);
-  const loginController = useMemo(() => createXpodLoginController({ runtime }), [runtime]);
 
   const canLoad = runtime.state.status === 'authenticated' && Boolean(runtime.webId && runtime.podUrl);
   const identityKey = canLoad ? `${runtime.webId}\n${runtime.podUrl}` : undefined;
@@ -90,10 +90,6 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
     window.open(identity.podUrl, '_blank', 'noopener,noreferrer');
   };
 
-  const loginAgain = () => {
-    void loginController.startLogin();
-  };
-
   return (
     <TwoPaneLayout
       mode="auto"
@@ -107,8 +103,8 @@ export default function PodPage({ view = 'combined' }: { view?: 'combined' | 'se
               issuer={identity.issuer}
               sessionStatus={runtime.state.status}
               onOpenPod={openPod}
-              onLogout={() => void runtime.logout()}
-              onLoginAgain={loginAgain}
+              onLogout={() => void xpodAuth?.logout()}
+              onLoginAgain={() => void xpodAuth?.startLogin()}
               canLoginAgain={runtime.state.status !== 'loading'}
             />
           ) : null}

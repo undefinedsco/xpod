@@ -34,6 +34,8 @@ export interface AuthContextType {
   initError: string | null;
   idpIndex: string;
   isLoggedIn: boolean;
+  /** Read the latest Account auth state without relying on a stale render value. */
+  isAnonymous?: () => boolean;
   authenticating: boolean;
   hasOidcPending: boolean;
   refetchControls: () => Promise<void>;

@@ -43,13 +43,17 @@ describe('XpodAuthProvider policy', () => {
   });
 
   test('stale authenticated WebID is logged out before the one local transaction starts', async () => {
-    const logout = vi.fn(async () => undefined);
+    let webIdStatus: 'authenticated' | 'anonymous' = 'authenticated';
+    const logout = vi.fn(async () => {
+      webIdStatus = 'anonymous';
+    });
     const startLogin = vi.fn(async () => undefined);
     const value = createXpodAuthValue({
       account: account(),
       runtime: {
         state: { status: 'authenticated', webId: binding.webId },
         logout,
+        session: { getSnapshot: () => ({ status: webIdStatus, ...(webIdStatus === 'authenticated' ? { webId: binding.webId } : {}) }) },
       },
       startLogin,
     });
@@ -67,5 +71,53 @@ describe('XpodAuthProvider policy', () => {
     });
     expect(value.readiness.dashboard).toBe(false);
     expect(value.readiness.localSettings).toBe(true);
+  });
+
+  test('coordinates Account and WebID logout and refreshes Account controls before success', async () => {
+    let webIdStatus: 'authenticated' | 'anonymous' = 'authenticated';
+    const accountLogout = vi.fn(async () => undefined);
+    const refetchControls = vi.fn(async () => undefined);
+    const runtimeLogout = vi.fn(async () => {
+      webIdStatus = 'anonymous';
+    });
+    const value = createXpodAuthValue({
+      account: account({ isLoggedIn: true, accountState: { status: 'authenticated' }, isAnonymous: () => true, logout: accountLogout, refetchControls }),
+      runtime: {
+        state: { status: 'authenticated', webId: binding.webId },
+        logout: runtimeLogout,
+        session: { getSnapshot: () => ({ status: webIdStatus, ...(webIdStatus === 'authenticated' ? { webId: binding.webId } : {}) }) },
+      },
+      startLogin: vi.fn(async () => undefined),
+    });
+
+    await expect(value.logout()).resolves.toEqual({
+      status: 'complete',
+      account: 'complete',
+      webId: 'complete',
+    });
+    expect(accountLogout).toHaveBeenCalledTimes(1);
+    expect(refetchControls).toHaveBeenCalledTimes(1);
+    expect(runtimeLogout).toHaveBeenCalledTimes(1);
+  });
+
+  test('switch Account waits for the same complete logout transaction before local login', async () => {
+    let webIdStatus: 'authenticated' | 'anonymous' = 'authenticated';
+    const accountLogout = vi.fn(async () => undefined);
+    const runtimeLogout = vi.fn(async () => { webIdStatus = 'anonymous'; });
+    const startLogin = vi.fn(async () => undefined);
+    const value = createXpodAuthValue({
+      account: account({ isLoggedIn: true, accountState: { status: 'authenticated' }, isAnonymous: () => true, logout: accountLogout }),
+      runtime: {
+        state: { status: 'authenticated', webId: binding.webId },
+        logout: runtimeLogout,
+        session: { getSnapshot: () => ({ status: webIdStatus, ...(webIdStatus === 'authenticated' ? { webId: binding.webId } : {}) }) },
+      },
+      startLogin,
+    });
+
+    await value.switchAccount('/dashboard/overview');
+    expect(accountLogout).toHaveBeenCalledTimes(1);
+    expect(runtimeLogout).toHaveBeenCalledTimes(1);
+    expect(startLogin).toHaveBeenCalledWith('/dashboard/overview', undefined);
   });
 });

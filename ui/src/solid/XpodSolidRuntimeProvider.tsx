@@ -9,6 +9,7 @@ import {
 } from '../auth/xpod-login-transaction';
 import {
   getXpodSolidRuntimeValue,
+  clearStoredXpodOidcIssuer,
   initializedRuntimes,
   normalizeXpodOidcIssuer,
   normalizeXpodLoginTransaction,
@@ -186,12 +187,13 @@ export function XpodSolidRuntimeProvider({
         });
       },
       logout: async () => {
+        await runtime.session.logout();
         runtime.pod.clear();
         clearXpodSelectedStorage();
+        clearStoredXpodOidcIssuer();
         setCurrentPod(undefined);
         setSelectedStorage(undefined);
         setAiClientConfiguration(undefined);
-        await runtime.session.logout();
       },
     };
   }, [aiClientConfiguration, currentPod, issuer, podError, runtime, selectedStorage, snapshot]);

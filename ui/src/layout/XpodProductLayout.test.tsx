@@ -26,7 +26,8 @@ describe('XpodProductLayout', () => {
     expect(html).toContain('aria-label="Pod"');
     expect(html).toContain('aria-label="Network"');
     expect(html).toContain('aria-label="Services"');
-    expect(html).toContain('href="/dashboard/overview"');
+    expect(html).toContain('data-testid="xpod-user-card-trigger"');
+    expect(html).not.toContain('>X</a>');
   });
 
   test('renders Dashboard observability navigation without Settings items', () => {
@@ -37,6 +38,7 @@ describe('XpodProductLayout', () => {
     }
     expect(html).not.toContain('aria-label="Models"');
     expect(html).not.toContain('aria-label="Pod"');
-    expect(html).toContain('href="/settings/models"');
+    expect(html).toContain('data-testid="xpod-user-card-trigger"');
+    expect(html).not.toContain('>X</a>');
   });
 });

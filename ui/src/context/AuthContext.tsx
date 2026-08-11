@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { storedAccountTokenHeaders, clearAccountSessionToken } from '../utils/account-session';
 import { AuthContext, type AccountAuthState, type Controls, type SanitizedAccountIdentity } from './AuthContextValue';
 
@@ -39,6 +39,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const isLoggedIn = accountState.status === 'authenticated';
   const authenticating = isInitializing || accountState.status === 'submitting';
+  const isLoggedInRef = useRef(isLoggedIn);
+  useEffect(() => {
+    isLoggedInRef.current = isLoggedIn;
+  }, [isLoggedIn]);
 
   const checkOidcPending = useCallback(async (): Promise<boolean> => {
     try {
@@ -123,14 +127,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         failed = true;
       }
     }
+    if (failed) {
+      // Keep the controls/token available for a deterministic retry. The
+      // host logout coordinator must not claim Account success before the CSS
+      // controls verify an anonymous session.
+      setAccountState({ status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE });
+      return;
+    }
     clearAccountSessionToken();
     setHasOidcPending(false);
     setControls({});
     setInitError(null);
-    setAccountState(failed
-      ? { status: 'error', mode: 'login', message: ACCOUNT_ERROR_MESSAGE }
-      : { status: 'anonymous', mode: 'login' });
-    if (failed) return;
+    setAccountState({ status: 'anonymous', mode: 'login' });
   }, [controls?.account?.logout]);
 
   const identity = useMemo(() => accountIdentityFromControls(controls), [controls]);
@@ -142,6 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       initError,
       idpIndex,
       isLoggedIn,
+      isAnonymous: () => !isLoggedInRef.current,
       authenticating,
       hasOidcPending,
       refetchControls,

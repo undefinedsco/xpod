@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { LogOut, User, HardDrive, Key, Plus, Trash2, Globe, Database, Shield, Copy, Check, ChevronDown, Info, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContextValue';
+import { XpodAuthContext } from '../auth/useXpodAuth';
+import type { XpodLogoutState } from '../auth/xpod-logout';
 import { buildPodCreatePayload, clearStoredProvisionCode, getStoredProvisionCode } from '../utils/pod';
-import { clearAccountSessionToken, storedAccountTokenHeaders } from '../utils/account-session';
+import { storedAccountTokenHeaders } from '../utils/account-session';
 import type { StorageBinding } from '@undefineds.co/solid-sdk';
 import { fetchAccountStorageBindings } from '../auth/account-storage-bindings';
 import {
@@ -104,7 +106,8 @@ function getAiApiBaseUrl(): string {
 }
 
 export function AccountPage() {
-  const { controls, refetchControls, hasOidcPending } = useAuth();
+  const { controls, refetchControls, hasOidcPending, logout: accountLogout } = useAuth();
+  const xpodAuth = useContext(XpodAuthContext);
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(false);
   const [webIds, setWebIds] = useState<string[]>([]);
@@ -218,22 +221,19 @@ export function AccountPage() {
   }, [fetchData]);
 
   const handleLogout = async () => {
-    if (!controls?.account?.logout) return;
     setIsLoading(true);
     try {
-      const res = await fetch(controls.account.logout, {
-        method: 'POST',
-        headers: storedAccountTokenHeaders(),
-        credentials: 'include',
-      });
-      if (res.ok) {
+      const state: XpodLogoutState = xpodAuth
+        ? await (xpodAuth.logoutState.status === 'error' ? xpodAuth.retryLogout() : xpodAuth.logout())
+        : (await accountLogout(), { status: 'complete', account: 'complete', webId: 'complete' });
+      if (state.status === 'complete') {
         clearStoredProvisionCode();
-        clearAccountSessionToken();
-        await refetchControls();
         navigate('/.account/');
+      } else {
+        alert('Sign out incomplete. Please try again.');
       }
     } catch {
-      alert('Logout failed');
+      alert('Sign out incomplete. Please try again.');
     } finally {
       setIsLoading(false);
     }
