@@ -320,25 +320,7 @@ export function SettingsPage() {
   const isManaged = isLocal && hasCloudEndpoint;
   const managedBaseUrl = ddnsStatus?.baseUrl || env.CSS_BASE_URL || (ddnsStatus?.fqdn ? `https://${ddnsStatus.fqdn}/` : '');
 
-  useEffect(() => {
-    void loadConfig();
-  }, []);
-
-  useEffect(() => {
-    if (loading) return;
-    void refreshPublicIpCheck(isManaged ? managedBaseUrl : env.CSS_BASE_URL);
-  }, [env.CSS_BASE_URL, isManaged, managedBaseUrl, mode, loading]);
-
-  useEffect(() => {
-    if (loading) return;
-    if (isManaged) {
-      void loadDdnsStatus();
-    } else {
-      setDdnsStatus(null);
-    }
-  }, [isManaged, loading]);
-
-  const loadDdnsStatus = async (): Promise<void> => {
+  const loadDdnsStatus = useCallback(async (): Promise<void> => {
     try {
       const result = await getDdnsStatus();
       setDdnsStatus(result);
@@ -346,9 +328,9 @@ export function SettingsPage() {
       console.error('Failed to load ddns status:', e);
       setDdnsStatus(null);
     }
-  };
+  }, []);
 
-  const loadConfig = async (): Promise<void> => {
+  const loadConfig = useCallback(async (): Promise<void> => {
     try {
       const config = await getAdminConfig();
       const loadedEnv = { ...(config?.env ?? {}) };
@@ -361,9 +343,9 @@ export function SettingsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const refreshPublicIpCheck = async (baseUrl?: string): Promise<void> => {
+  const refreshPublicIpCheck = useCallback(async (baseUrl?: string): Promise<void> => {
     setCheckingIp(true);
     try {
       const result = await getPublicIpCheck(baseUrl);
@@ -374,7 +356,25 @@ export function SettingsPage() {
     } finally {
       setCheckingIp(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => loadConfig());
+  }, [loadConfig]);
+
+  useEffect(() => {
+    if (loading) return;
+    void Promise.resolve().then(() => refreshPublicIpCheck(isManaged ? managedBaseUrl : env.CSS_BASE_URL));
+  }, [env.CSS_BASE_URL, isManaged, managedBaseUrl, loading, refreshPublicIpCheck]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (isManaged) {
+      void Promise.resolve().then(() => loadDdnsStatus());
+    } else {
+      void Promise.resolve().then(() => setDdnsStatus(null));
+    }
+  }, [isManaged, loadDdnsStatus, loading]);
 
   const updateEnv = (key: string, value: string): void => {
     setEnv((prev) => fieldChange(prev, key, value));

@@ -70,7 +70,7 @@ export default function ServicesPage({
 
   useEffect(() => {
     mountedRef.current = true;
-    void loadSnapshot(true);
+    void Promise.resolve().then(() => loadSnapshot(true));
     const interval = setInterval(() => void loadSnapshot(false), 10_000);
 
     return () => {

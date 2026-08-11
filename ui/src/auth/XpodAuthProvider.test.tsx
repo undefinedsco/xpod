@@ -158,4 +158,53 @@ describe('XpodAuthProvider policy', () => {
     expect(accountLogout).toHaveBeenCalledTimes(2);
     expect(runtimeLogout).toHaveBeenCalledTimes(2);
   });
+
+  test('resets terminal logout after both domains are anonymous before a fresh login', async () => {
+    let accountLoggedIn = true;
+    let runtimeState: { status: 'authenticated'; webId: string } | { status: 'anonymous' } = {
+      status: 'authenticated',
+      webId: binding.webId,
+    };
+    const accountSource = account({
+      isLoggedIn: true,
+      isAnonymous: () => !accountLoggedIn,
+    });
+    const accountLogout = vi.fn(async () => {
+      accountLoggedIn = false;
+      accountSource.isLoggedIn = false;
+    });
+    accountSource.logout = accountLogout;
+    const runtimeLogout = vi.fn(async () => {
+      runtimeState = { status: 'anonymous' };
+    });
+    const startLogin = vi.fn(async () => {
+      accountLoggedIn = true;
+      accountSource.isLoggedIn = true;
+      runtimeState = { status: 'authenticated', webId: binding.webId };
+    });
+    const value = createXpodAuthValue({
+      account: accountSource,
+      runtime: {
+        get state() {
+          return runtimeState;
+        },
+        logout: runtimeLogout,
+        session: {
+          getSnapshot: () => runtimeState.status === 'authenticated'
+            ? { status: 'authenticated', webId: runtimeState.webId }
+            : { status: 'anonymous' },
+        },
+      },
+      startLogin,
+    });
+
+    await value.logout();
+    expect(accountSource.isLoggedIn).toBe(false);
+    expect(runtimeState.status).toBe('anonymous');
+    await value.startLogin('/dashboard/overview');
+    await value.logout();
+
+    expect(accountLogout).toHaveBeenCalledTimes(2);
+    expect(runtimeLogout).toHaveBeenCalledTimes(2);
+  });
 });

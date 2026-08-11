@@ -195,9 +195,14 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
     // a new login so the next logout can run both domain ports again.
     logoutCoordinator.reset();
   };
+  const resetTerminalLogout = () => {
+    if (logoutCoordinator.getState().status === 'complete') logoutCoordinator.reset();
+  };
   const startLogin = async (returnTo?: string, selectedStorage?: StorageBinding) => {
     if (options.runtime?.state.status === 'authenticated' && !options.account.isLoggedIn) {
       await clearStaleSession();
+    } else {
+      resetTerminalLogout();
     }
     return baseStartLogin(returnTo, selectedStorage);
   };
@@ -205,6 +210,8 @@ export function createXpodAuthValue(options: CreateXpodAuthValueOptions): XpodAu
     ? async (returnTo?: string, selectedStorage?: StorageBinding) => {
       if (options.runtime?.state.status === 'authenticated' && !options.account.isLoggedIn) {
         await clearStaleSession();
+      } else {
+        resetTerminalLogout();
       }
       return options.retryLogin?.(returnTo, selectedStorage);
     }

@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { AuthContext, type AuthContextType, type Controls } from '../context/AuthContextValue';
 import { XpodAuthContext, type XpodAuthValue } from '../auth/useXpodAuth';
+import { createXpodLoginRoute } from '../auth/xpod-login-route';
 import { createXpodLogoutCoordinator } from '../auth/xpod-logout';
+import { createXpodLoginTransactionStore } from '../auth/xpod-login-transaction';
 import { LoginSelectPage } from './LoginSelectPage';
 import { WelcomePage } from './WelcomePage';
 import { ForgotPasswordPage } from './ForgotPasswordPage';
@@ -154,8 +156,40 @@ describe('CSS identity page controllers', () => {
 
     await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Use a different account' }));
-    await waitFor(() => expect(switchAccount).toHaveBeenCalledWith(expect.any(String)));
+    await waitFor(() => expect(switchAccount).toHaveBeenCalledWith('/dashboard'));
     expect(accountLogout).not.toHaveBeenCalled();
+  });
+
+  it('preserves a normalized pending product return path when switching account', async () => {
+    window.sessionStorage.clear();
+    const transactionStore = createXpodLoginTransactionStore({
+      storage: window.sessionStorage,
+      origin: window.location.origin,
+    });
+    transactionStore.begin({
+      id: 'return-to-test-1234',
+      route: createXpodLoginRoute(window.location),
+      authorizationSurface: 'redirect',
+      discovery: 'strict',
+      returnTo: '/settings/models',
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ registered: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const switchAccount = vi.fn(async () => undefined);
+
+    renderWithAuth(
+      <ConsentPage />,
+      { isLoggedIn: true, controls: { account: { bindings: '/.account/account/bindings' } } },
+      ['/'],
+      xpodAuthValue({ switchAccount }),
+    );
+
+    await waitFor(() => expect(screen.getByTestId('oidc-consent-scroll')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Use a different account' }));
+    await waitFor(() => expect(switchAccount).toHaveBeenCalledWith('/settings/models'));
   });
 
   it('uses shared restoring and failure views for identity loading states', async () => {

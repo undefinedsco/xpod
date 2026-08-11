@@ -14,6 +14,7 @@ import {
 import type { StorageBinding, WebIdLoginTransaction } from '@undefineds.co/solid-sdk';
 import { useAuth } from '../context/AuthContextValue';
 import { XpodAuthContext } from '../auth/useXpodAuth';
+import { normalizeXpodReturnTo } from '../auth/xpod-login-route';
 import { persistReturnTo } from '../utils/returnTo';
 import { storedAccountTokenHeaders } from '../utils/account-session';
 import { getStoredProvisionCode, resolveProvisionCodeForCurrentScope } from '../utils/pod';
@@ -211,8 +212,14 @@ export function ConsentPage() {
   // Let the host coordinator clear both auth domains before starting login.
   const handleSwitchAccount = async () => {
     try {
+      let returnTo = '/dashboard';
+      try {
+        returnTo = normalizeXpodReturnTo(pendingTransaction?.returnTo) ?? '/dashboard';
+      } catch {
+        // A malformed pending path must not escape the product allow-list.
+      }
       if (xpodAuth) {
-        const result = await xpodAuth.switchAccount(window.location.href);
+        const result = await xpodAuth.switchAccount(returnTo);
         if (result && typeof result === 'object' && 'status' in result && result.status !== 'complete') {
           setError('Sign out incomplete. Please try again.');
         }
